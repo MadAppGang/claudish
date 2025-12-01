@@ -32,7 +32,7 @@ async function runCli() {
   const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
-  const { selectModel, promptForApiKey } = await import("./model-selector.js");
+  const { selectModel, promptForApiKey, promptForPoeApiKey, determineModelProvider, validateApiKeys } = await import("./model-selector.js");
   const { initLogger, getLogFilePath } = await import("./logger.js");
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("./proxy-server.js");
@@ -82,20 +82,61 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
-      cliConfig.openrouterApiKey = await promptForApiKey();
-      console.log(""); // Empty line after input
+    // Validate API keys using unified approach
+    const validation = validateApiKeys(
+      cliConfig.model,
+      cliConfig.interactive && !cliConfig.monitor,
+      cliConfig.openrouterApiKey,
+      cliConfig.poeApiKey
+    );
+
+    if (!validation.isValid) {
+      console.error(`Error: ${validation.error}`);
+      process.exit(1);
     }
+
+    // Update config with validated API keys
+    cliConfig.openrouterApiKey = validation.openrouterApiKey;
+    cliConfig.poeApiKey = validation.poeApiKey;
 
     // Show interactive model selector ONLY in interactive mode when model not specified
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
       cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
       console.log(""); // Empty line after selection
+
+      // Re-validate API keys after model selection in interactive mode
+      const postSelectionValidation = validateApiKeys(
+        cliConfig.model,
+        true, // Always interactive when we just selected a model
+        cliConfig.openrouterApiKey,
+        cliConfig.poeApiKey
+      );
+
+      if (!postSelectionValidation.isValid) {
+        console.error(`Error: ${postSelectionValidation.error}`);
+        process.exit(1);
+      }
+
+      // Prompt for missing API keys in interactive mode
+      const requiredProvider = determineModelProvider(cliConfig.model);
+      if (requiredProvider === 'poe' && !cliConfig.poeApiKey) {
+        cliConfig.poeApiKey = await promptForPoeApiKey();
+        console.log(""); // Empty line after input
+      } else if (requiredProvider === 'openrouter' && !cliConfig.openrouterApiKey) {
+        cliConfig.openrouterApiKey = await promptForApiKey();
+        console.log(""); // Empty line after input
+      }
     }
 
-    // In non-interactive mode, model must be specified (via --model flag or CLAUDISH_MODEL env var)
-    if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
+    // Check if this is a model listing command that doesn't need model specification
+    const isModelListing = process.argv.includes("--models") ||
+                          process.argv.includes("-s") ||
+                          process.argv.includes("--search") ||
+                          process.argv.includes("--top-models") ||
+                          process.argv.includes("--list-models");
+
+    // In non-interactive mode, model must be specified unless it's a listing command
+    if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !isModelListing) {
       console.error("Error: Model must be specified in non-interactive mode");
       console.error("Use --model <model> flag or set CLAUDISH_MODEL environment variable");
       console.error("Try: claudish --list-models");
@@ -119,6 +160,7 @@ async function runCli() {
     const proxy = await createProxyServer(
       port,
       cliConfig.monitor ? undefined : cliConfig.openrouterApiKey!,
+      cliConfig.monitor ? undefined : cliConfig.poeApiKey!,
       cliConfig.monitor ? undefined : (typeof cliConfig.model === "string" ? cliConfig.model : undefined),
       cliConfig.monitor,
       cliConfig.anthropicApiKey,

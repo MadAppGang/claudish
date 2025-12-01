@@ -152,6 +152,8 @@ export function getAvailableModels(): OpenRouterModel[] {
 
 // Cache for OpenRouter API response
 let _cachedOpenRouterModels: any[] | null = null;
+// Cache for Poe API response
+let _cachedPoeModels: any[] | null = null;
 
 /**
  * Fetch exact context window size from OpenRouter API
@@ -159,6 +161,11 @@ let _cachedOpenRouterModels: any[] | null = null;
  * @returns Context window size in tokens (default: 128000)
  */
 export async function fetchModelContextWindow(modelId: string): Promise<number> {
+	// Check if this is a Poe model
+	if (modelId.startsWith("poe/")) {
+		return await fetchPoeModelContextWindow(modelId);
+	}
+
 	// 1. Use cached API data if available
 	if (_cachedOpenRouterModels) {
 		const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
@@ -217,11 +224,53 @@ export async function fetchModelContextWindow(modelId: string): Promise<number> 
 }
 
 /**
- * Check if a model supports reasoning capabilities based on OpenRouter metadata
- * @param modelId The full OpenRouter model ID
+ * Fetch exact context window size from Poe API
+ * @param modelId The Poe model ID with "poe/" prefix (e.g. "poe/grok-4")
+ * @returns Context window size in tokens (default: 128000)
+ */
+async function fetchPoeModelContextWindow(modelId: string): Promise<number> {
+	// Extract actual model name without "poe/" prefix
+	const actualModelName = modelId.replace(/^poe\//, "");
+
+	// 1. Use cached API data if available
+	if (_cachedPoeModels) {
+		const model = _cachedPoeModels.find((m: any) => m.id === actualModelName);
+		if (model && model.context_length) {
+			return model.context_length;
+		}
+	}
+
+	// 2. Try to fetch from Poe API
+	try {
+		const response = await fetch("https://api.poe.com/v1/models");
+		if (response.ok) {
+			const data: any = await response.json();
+			_cachedPoeModels = data.data;
+
+			const model = _cachedPoeModels?.find((m: any) => m.id === actualModelName);
+			if (model && model.context_length) {
+				return model.context_length;
+			}
+		}
+	} catch (error) {
+		// Silent fail on network error - will assume default
+	}
+
+	// 3. Absolute fallback for Poe models
+	return 128000; // 128k is a reasonable default for Poe models
+}
+
+/**
+ * Check if a model supports reasoning capabilities based on OpenRouter or Poe metadata
+ * @param modelId The full model ID (OpenRouter or Poe)
  * @returns True if model supports reasoning/thinking
  */
 export async function doesModelSupportReasoning(modelId: string): Promise<boolean> {
+	// Check if this is a Poe model
+	if (modelId.startsWith("poe/")) {
+		return await doesPoeModelSupportReasoning(modelId);
+	}
+
 	// Ensure cache is populated
 	if (!_cachedOpenRouterModels) {
 		await fetchModelContextWindow(modelId); // This side-effect populates the cache
@@ -236,6 +285,48 @@ export async function doesModelSupportReasoning(modelId: string): Promise<boolea
                    model.id.includes("o1") ||
                    model.id.includes("o3") ||
                    model.id.includes("r1");
+		}
+	}
+
+    // Default to false if no metadata available (safe default)
+    return false;
+}
+
+/**
+ * Check if a Poe model supports reasoning capabilities based on Poe metadata
+ * @param modelId The Poe model ID with "poe/" prefix (e.g. "poe/grok-4")
+ * @returns True if model supports reasoning/thinking
+ */
+async function doesPoeModelSupportReasoning(modelId: string): Promise<boolean> {
+	// Extract actual model name without "poe/" prefix
+	const actualModelName = modelId.replace(/^poe\//, "");
+
+	// Ensure Poe cache is populated
+	if (!_cachedPoeModels) {
+		await fetchPoeModelContextWindow(modelId); // This side-effect populates the cache
+	}
+
+	if (_cachedPoeModels) {
+		const model = _cachedPoeModels.find((m: any) => m.id === actualModelName);
+		if (model) {
+			// Check description for reasoning/thinking keywords
+			const description = model.description?.toLowerCase() || "";
+			const modelName = model.id?.toLowerCase() || "";
+
+			return description.includes("reasoning") ||
+			       description.includes("thinking") ||
+			       description.includes("thought") ||
+			       modelName.includes("thinking") ||
+			       modelName.includes("reasoning") ||
+			       // Known reasoning models based on Poe API data
+			       modelName.includes("o1") ||
+			       modelName.includes("o3") ||
+			       modelName.includes("r1") ||
+			       modelName.includes("deepseek-r1") ||
+			       modelName.includes("kimi-k2-thinking") ||
+			       modelName.includes("grok-4") ||
+			       modelName.includes("claude-opus-4") ||
+			       modelName.includes("gemini-3-pro");
 		}
 	}
 

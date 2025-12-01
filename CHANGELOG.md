@@ -1,5 +1,126 @@
 # Changelog
 
+## [2.4.0] - 2025-12-01
+
+### 🎉 Major: Poe API Integration + Smart Model Discovery
+
+#### ✨ Added: Poe API Support
+- ✅ **Complete Poe API Integration** - Full support for Poe models alongside OpenRouter
+  - New `src/handlers/poe-handler.ts` implementing `ModelHandler` interface
+  - Poe models use `poe/` prefix convention (e.g., `poe/grok-4-fast-reasoning`)
+  - Separate `POE_API_KEY` environment variable for authentication
+  - Full OpenAI-compatible endpoint integration with Poe API
+  - Streaming responses with proper SSE formatting
+  - Context window caching and cost tracking for Poe models
+- ✅ **13+ Premium Poe Models Added**:
+  - `poe/grok-4-fast-reasoning` - Fast reasoning model from xAI via Poe
+  - `poe/grok-4.1` - Latest Grok model via Poe
+  - `poe/gpt-5.1` - OpenAI GPT-5.1 via Poe
+  - `poe/claude-4.5` - Claude 4.5 Sonnet via Poe
+  - `poe/gemini-3-pro` - Google Gemini 3 Pro via Poe
+  - And 8+ more high-performance models
+- ✅ **Smart Model Routing** - Automatic detection and routing to appropriate handler:
+  - Models prefixed with `poe/` → PoeHandler
+  - All other models → OpenRouterHandler
+  - Monitor mode → Native Anthropic API
+  - Handler caching for optimal performance
+
+#### 🧠 Smart Model Discovery System
+- ✅ **Multi-Source Model Discovery** - Intelligent model browsing without API barriers
+  - `src/model-discovery.ts`: Smart categorization and API key detection
+  - Models categorized by accessibility: ✅ Available, 📡 Needs OpenRouter, 🟣 Needs Poe
+  - Works with any combination of API keys (none, Poe only, OpenRouter only, both)
+  - Graceful degradation when API keys are missing
+- ✅ **Zero Barrier Entry** - Users can browse models before setting up API keys
+  - `claudish --models` works without any API keys
+  - Shows cached models + setup guidance
+  - Context-aware messaging based on available keys
+- ✅ **Enhanced Model Listing Commands**:
+  - All commands now use smart discovery: `--models`, `--top-models`, `--models <query>`
+  - Consistent JSON output format across all commands with availability indicators
+  - Visual indicators for model accessibility and API key requirements
+  - Smart filtering and search across all providers
+
+#### 🔧 Enhanced User Experience
+- ✅ **Consistent Model Listing UX** - All model listing commands now use smart discovery:
+  - `claudish --model` (no args) shows smart discovery instead of OpenRouter-only models
+  - `claudish --top-models` uses smart discovery based on available API keys
+  - `claudish --models <query>` provides smart search across providers
+- ✅ **Context-Aware Guidance** - Helpful setup tips based on user's API key configuration:
+  - Shows which API keys are detected
+  - Provides setup guidance for missing keys
+  - Clear visual indicators (✅, 📡, 🟣) for model accessibility
+- ✅ **Updated Documentation** - Help text reflects multi-provider support:
+  - Updated main description: "Run Claude Code with OpenRouter & Poe models"
+  - Enhanced examples for both providers
+  - Clarified API key flexibility
+
+#### 🛠️ Technical Implementation
+- ✅ **Handler Architecture** - Clean, extensible handler pattern:
+  - `ModelHandler` interface for consistent provider integration
+  - PoeHandler follows exact same pattern as OpenRouterHandler
+  - Easy to add more providers in future
+- ✅ **Smart Categorization Engine**:
+  - `getAvailableApiKeys()` - Detect available API keys
+  - `categorizeModelsByAccess()` - Smart model categorization
+  - `printSetupGuidance()` - Context-aware help system
+- ✅ **Enhanced Model Loading**:
+  - `getAllModelsForSearch()` - Unified model fetching from all providers
+  - `fetchAllPoeModels()` - Poe API integration with caching
+  - Backward compatibility with existing OpenRouter integration
+
+#### 🧪 Comprehensive Testing
+- ✅ **Poe Handler Tests** (`tests/poe-handler.test.ts`):
+  - Authentication, streaming, tool calling, error handling
+  - 304 lines of comprehensive test coverage
+- ✅ **Poe Integration Tests** (`tests/poe-integration.test.ts`):
+  - API connectivity, request/response format validation
+  - 212 lines of integration testing
+- ✅ **UX Testing** - Verified all API key combinations work correctly:
+  - No API keys → Shows cached models + setup guidance
+  - Poe only → Shows Poe models as available
+  - OpenRouter only → Shows OpenRouter models as available
+  - Both keys → Shows all models as available
+
+#### 📚 Documentation
+- ✅ **Complete Installation Guide** (`POE_INSTALLATION_AND_SETUP.md`):
+  - 288 lines covering prerequisites, setup, and verification
+- ✅ **Comprehensive Testing Guide** (`POE_INTEGRATION_TESTING_GUIDE.md`):
+  - 317 lines covering 6 phases of testing strategies
+- ✅ **Enhanced README** - Updated with both provider information
+
+### 🔧 Breaking Changes (Minimal Impact)
+- **None** - Full backward compatibility maintained
+- All existing usage patterns continue to work identically
+
+### 📈 Benefits
+- **Dual Provider Support** - Access to both OpenRouter and Poe models
+- **Smart Discovery** - Browse models without API key barriers
+- **Consistent UX** - Same interface across all providers
+- **Extensible Design** - Easy to add more providers
+- **Zero Friction Onboarding** - Users can explore before committing to API keys
+
+### 💡 Example Usage
+```bash
+# Set up both providers
+export POE_API_KEY=your_poe_key
+export OPENROUTER_API_KEY=your_openrouter_key
+
+# Browse all available models
+claudish --models
+
+# Search across providers
+claudish --models grok
+
+# Use Poe models
+claudish --model poe/grok-4-fast-reasoning
+
+# Use OpenRouter models
+claudish --model x-ai/grok-code-fast-1
+
+# Works with any combination of API keys!
+```
+
 ## [2.3.1] - 2025-11-25
 
 ### Fixed

@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenRouterModel } from "./types.js";
 import { getAvailableModels } from "./model-loader.js";
+import { POE_MODEL_INFO } from "./config.js";
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -59,19 +60,45 @@ const TRUSTED_FREE_PROVIDERS = [
 ];
 
 /**
- * Load recommended models from JSON
+ * Load recommended models from JSON and Poe config
  */
-function loadRecommendedModels(): ModelInfo[] {
+async function loadRecommendedModels(): Promise<ModelInfo[]> {
+  const models: ModelInfo[] = [];
+
+  // Load OpenRouter recommended models from JSON
   if (existsSync(RECOMMENDED_MODELS_JSON_PATH)) {
     try {
       const content = readFileSync(RECOMMENDED_MODELS_JSON_PATH, "utf-8");
       const data = JSON.parse(content);
-      return data.models || [];
+      if (data.models) {
+        models.push(...data.models);
+      }
     } catch {
-      return [];
+      // Ignore JSON errors
     }
   }
-  return [];
+
+  // Add Poe models from config
+  for (const [modelId, modelInfo] of Object.entries(POE_MODEL_INFO)) {
+    models.push({
+      id: modelId,
+      name: modelInfo.name,
+      description: modelInfo.description,
+      provider: modelInfo.provider,
+      pricing: {
+        input: "N/A",
+        output: "N/A",
+        average: "N/A", // Will be fetched from API if needed
+      },
+      context: "N/A", // Will be fetched from API if needed
+      supportsTools: true,
+      supportsReasoning: modelId.includes("grok") || modelId.includes("claude-opus") || modelId.includes("deepseek"),
+      supportsVision: modelId.includes("claude") || modelId.includes("gemini") || modelId.includes("gpt-4"),
+      isFree: false,
+    });
+  }
+
+  return models;
 }
 
 /**
@@ -168,6 +195,88 @@ function toModelInfo(model: any): ModelInfo {
 }
 
 /**
+ * Fetch all models from Poe API
+ */
+async function fetchAllPoeModels(): Promise<ModelInfo[]> {
+  try {
+    const response = await fetch("https://api.poe.com/v1/models");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const models = data.data || [];
+
+    // Convert Poe models to ModelInfo format
+    return models.map((model: any) => {
+      const contextLen = model.context_length || 128000;
+      const promptPrice = parseFloat(model.pricing?.prompt || "0");
+      const completionPrice = parseFloat(model.pricing?.completion || "0");
+      const requestPrice = parseFloat(model.pricing?.request || "0");
+      const isFree = (promptPrice === 0 && completionPrice === 0 && requestPrice === 0);
+
+      // Format pricing for Poe (different structure than OpenRouter)
+      let pricingStr = "N/A";
+      if (isFree) {
+        pricingStr = "FREE";
+      } else if (requestPrice > 0) {
+        pricingStr = `$${requestPrice.toFixed(4)}/req`;
+      } else if (promptPrice > 0 || completionPrice > 0) {
+        const avgPrice = (promptPrice + completionPrice) / 2;
+        if (avgPrice < 0.001) {
+          pricingStr = `$${(avgPrice * 1000000).toFixed(2)}/1M`;
+        } else {
+          pricingStr = `$${avgPrice.toFixed(4)}/1K`;
+        }
+      }
+
+      // Check capabilities from architecture
+      const inputModalities = model.architecture?.input_modalities || [];
+      const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+      const supportsAudio = inputModalities.includes("audio");
+
+      // Check reasoning support from description and model name
+      const description = (model.description || "").toLowerCase();
+      const modelId = (model.id || "").toLowerCase();
+      const supportsReasoning = description.includes("reasoning") ||
+                               description.includes("thinking") ||
+                               description.includes("thought") ||
+                               modelId.includes("thinking") ||
+                               modelId.includes("reasoning") ||
+                               modelId.includes("o1") ||
+                               modelId.includes("o3") ||
+                               modelId.includes("r1") ||
+                               modelId.includes("deepseek-r1") ||
+                               modelId.includes("kimi-k2-thinking") ||
+                               modelId.includes("grok-4") ||
+                               modelId.includes("claude-opus-4") ||
+                               modelId.includes("gemini-3-pro");
+
+      return {
+        id: `poe/${model.id}`, // Add poe/ prefix
+        name: model.name || model.id,
+        description: model.description || "",
+        provider: "Poe",
+        pricing: {
+          input: model.pricing?.prompt || "N/A",
+          output: model.pricing?.completion || "N/A",
+          average: pricingStr,
+        },
+        context: contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A",
+        contextLength: contextLen,
+        supportsTools: true, // Assume Poe models support tools unless specified otherwise
+        supportsReasoning,
+        supportsVision,
+        isFree,
+      };
+    });
+  } catch (error) {
+    console.error(`Failed to fetch Poe models: ${error}`);
+    return [];
+  }
+}
+
+/**
  * Get free models from cache/API
  */
 async function getFreeModels(): Promise<ModelInfo[]> {
@@ -207,9 +316,17 @@ async function getFreeModels(): Promise<ModelInfo[]> {
 /**
  * Get all models for search
  */
-async function getAllModelsForSearch(): Promise<ModelInfo[]> {
-  const allModels = await fetchAllModels();
-  return allModels.map(toModelInfo);
+export async function getAllModelsForSearch(): Promise<ModelInfo[]> {
+  // Fetch both OpenRouter and Poe models
+  const [openRouterModels, poeModels] = await Promise.all([
+    fetchAllModels(),
+    fetchAllPoeModels(),
+  ]);
+
+  // Convert OpenRouter models and combine with Poe models
+  const openRouterModelInfos = openRouterModels.map(toModelInfo);
+
+  return [...openRouterModelInfos, ...poeModels];
 }
 
 /**
@@ -280,7 +397,7 @@ export async function selectModel(
     }
   } else if (recommended) {
     // Load recommended models first
-    const recommendedModels = loadRecommendedModels();
+    const recommendedModels = await loadRecommendedModels();
     if (recommendedModels.length > 0) {
       models = recommendedModels;
     } else {
@@ -431,6 +548,38 @@ export async function promptForApiKey(): Promise<string> {
 }
 
 /**
+ * Prompt for Poe API key
+ */
+export async function promptForPoeApiKey(): Promise<string> {
+  console.log("\nPoe API Key Required");
+  console.log("Get your API key from: https://poe.com/blog/introducing-the-poe-api\n");
+
+  const apiKey = await input({
+    message: "Enter your Poe API key:",
+    validate: (value) => {
+      if (!value.trim()) {
+        return "API key cannot be empty";
+      }
+      if (value.length < 10) {
+        return "API key appears to be too short";
+      }
+      return true;
+    },
+  });
+
+  return apiKey;
+}
+
+/**
+ * Determine which provider a model belongs to
+ */
+export function determineModelProvider(model?: string): 'openrouter' | 'poe' | 'unknown' {
+  if (!model) return 'unknown';
+  if (model.startsWith('poe/')) return 'poe';
+  return 'openrouter';
+}
+
+/**
  * Prompt for profile name
  */
 export async function promptForProfileName(
@@ -490,4 +639,78 @@ export async function selectProfile(
  */
 export async function confirmAction(message: string): Promise<boolean> {
   return confirm({ message, default: false });
+}
+
+/**
+ * API key validation result
+ */
+export interface ApiKeyValidationResult {
+  isValid: boolean;
+  openrouterApiKey?: string;
+  poeApiKey?: string;
+  missingProvider?: 'openrouter' | 'poe';
+  error?: string;
+}
+
+/**
+ * Validate API keys based on model requirements and mode
+ */
+export function validateApiKeys(
+  model?: string,
+  interactive = false,
+  openrouterApiKey?: string,
+  poeApiKey?: string,
+): ApiKeyValidationResult {
+  // If no model specified, we can't validate
+  if (!model) {
+    return { isValid: true, openrouterApiKey, poeApiKey };
+  }
+
+  const requiredProvider = determineModelProvider(model);
+
+  // Check environment variables as fallback
+  const hasOpenRouterKey = openrouterApiKey || process.env.OPENROUTER_API_KEY;
+  const hasPoeKey = poeApiKey || process.env.POE_API_KEY;
+
+  // Validate based on required provider
+  if (requiredProvider === 'openrouter') {
+    if (!hasOpenRouterKey) {
+      if (interactive) {
+        // Interactive mode - we'll prompt for this later
+        return { isValid: true, openrouterApiKey, poeApiKey };
+      } else {
+        // Non-interactive mode - return error
+        return {
+          isValid: false,
+          openrouterApiKey,
+          poeApiKey,
+          missingProvider: 'openrouter',
+          error: `OpenRouter API key required for model '${model}'. Set OPENROUTER_API_KEY environment variable or use interactive mode.`,
+        };
+      }
+    }
+  } else if (requiredProvider === 'poe') {
+    if (!hasPoeKey) {
+      if (interactive) {
+        // Interactive mode - we'll prompt for this later
+        return { isValid: true, openrouterApiKey, poeApiKey };
+      } else {
+        // Non-interactive mode - return error
+        return {
+          isValid: false,
+          openrouterApiKey,
+          poeApiKey,
+          missingProvider: 'poe',
+          error: `Poe API key required for model '${model}'. Set POE_API_KEY environment variable or use interactive mode.`,
+        };
+      }
+    }
+  }
+
+  // Return with actual API key values
+  return {
+    isValid: true,
+    openrouterApiKey: hasOpenRouterKey,
+    poeApiKey: hasPoeKey,
+  };
 }

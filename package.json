@@ -14,7 +14,7 @@
     "dev:grok:debug": "bun run src/index.ts --interactive --debug --log-level info --model x-ai/grok-code-fast-1",
     "dev:info": "bun run src/index.ts --interactive --monitor",
     "extract-models": "bun run scripts/extract-models.ts",
-    "build": "bun run extract-models && bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
+    "build": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
     "link": "npm link",
     "unlink": "npm unlink -g claudish",
     "install-global": "bun run build && npm link",

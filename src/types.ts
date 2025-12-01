@@ -28,7 +28,8 @@ export interface ClaudishConfig {
   jsonOutput: boolean; // Output in JSON format for tool integration
   monitor: boolean; // Monitor mode - proxy to real Anthropic API and log everything
   stdin: boolean; // Read prompt from stdin instead of args
-  openrouterApiKey?: string; // Optional in monitor mode
+  openrouterApiKey?: string; // Optional in monitor mode, required for OpenRouter models
+  poeApiKey?: string; // Required for Poe models
   anthropicApiKey?: string; // Required in monitor mode
   agent?: string; // Agent to use for execution (e.g., "frontend:developer")
   freeOnly?: boolean; // Show only free models in selector

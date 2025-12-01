@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { fuzzyScore } from "./utils.js";
 import { getProfile, getDefaultProfile, getModelMapping } from "./profile-config.js";
+import { getAvailableApiKeys, categorizeModelsByAccess, filterModelsByQuery, printSetupGuidance, getApiKeyDescription } from "./model-discovery.js";
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -14,6 +15,17 @@ const packageJson = JSON.parse(
   readFileSync(join(__dirname, "../package.json"), "utf-8")
 );
 const VERSION = packageJson.version;
+
+/**
+ * Check if the command is a model listing command that doesn't need API key validation
+ */
+function isModelListingCommand(args: string[]): boolean {
+  return args.includes("--models") ||
+         args.includes("-s") ||
+         args.includes("--search") ||
+         args.includes("--top-models") ||
+         args.includes("--list-models");
+}
 
 /**
  * Get current version
@@ -77,7 +89,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const modelArg = args[++i];
       if (!modelArg) {
         console.error("--model requires a value");
-        printAvailableModels();
+        await printAllModels(false, false); // jsonOutput=false, forceUpdate=false
         process.exit(1);
       }
       config.model = modelArg; // Accept any model ID
@@ -165,18 +177,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       await initializeClaudishSkill();
       process.exit(0);
     } else if (arg === "--top-models") {
-      // Show recommended/top models (curated list)
+      // Show recommended/top models using smart discovery system
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
-      // Auto-update if cache is stale (>2 days) or if --force-update is specified
-      await checkAndUpdateModelsCache(forceUpdate);
-
-      if (hasJsonFlag) {
-        printAvailableModelsJSON();
-      } else {
-        printAvailableModels();
-      }
+      // Use smart discovery system instead of hardcoded OpenRouter-only models
+      await printAllModels(hasJsonFlag, forceUpdate);
       process.exit(0);
     } else if (arg === "--models" || arg === "-s" || arg === "--search") {
       // Check for optional search query (next arg that doesn't start with --)
@@ -229,28 +235,66 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
-      if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
-        console.error("Get your API key from: https://openrouter.ai/keys");
-        console.error("");
-        console.error("Set it now:");
-        console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
-        process.exit(1);
+    // Check if this is a model listing command that doesn't need API validation
+    const isListing = isModelListingCommand(args);
+
+    if (!isListing) {
+      // OpenRouter/Poe mode: requires API key for the selected provider
+      const openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
+      const poeApiKey = process.env[ENV.POE_API_KEY];
+
+      // Determine which provider is needed based on model
+      const needsPoe = config.model?.startsWith("poe/") || false;
+      const needsOpenRouter = !needsPoe; // Default to OpenRouter for non-Poe models
+
+      if (needsPoe) {
+        // Poe mode: requires Poe API key
+        if (!poeApiKey) {
+          if (!config.interactive) {
+            console.error("Error: POE_API_KEY environment variable is required for Poe models");
+            console.error("Get your API key from: https://poe.com/blog/introducing-the-poe-api");
+            console.error("");
+            console.error("Set it now:");
+            console.error("  export POE_API_KEY='your-poe-api-key'");
+            process.exit(1);
+          }
+          // Will be prompted for in interactive mode
+          config.poeApiKey = undefined;
+        } else {
+          config.poeApiKey = poeApiKey;
+        }
+        config.openrouterApiKey = openrouterApiKey; // May be needed for other models
+      } else if (needsOpenRouter) {
+        // OpenRouter mode: requires OpenRouter API key
+        if (!openrouterApiKey) {
+          if (!config.interactive) {
+            console.error("Error: OPENROUTER_API_KEY environment variable is required for OpenRouter models");
+            console.error("Get your API key from: https://openrouter.ai/keys");
+            console.error("");
+            console.error("Set it now:");
+            console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
+            process.exit(1);
+          }
+          // Will be prompted for in interactive mode
+          config.openrouterApiKey = undefined;
+        } else {
+          config.openrouterApiKey = openrouterApiKey;
+        }
+        config.poeApiKey = poeApiKey; // May be needed if user switches to Poe models
+      } else {
+        // No model specified yet, need both API keys for flexibility
+        config.openrouterApiKey = openrouterApiKey;
+        config.poeApiKey = poeApiKey;
       }
-      // Will be prompted for in interactive mode
-      config.openrouterApiKey = undefined;
     } else {
-      config.openrouterApiKey = apiKey;
+      // Model listing command - just set API keys without validation
+      config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
+      config.poeApiKey = process.env[ENV.POE_API_KEY];
     }
 
     // Note: ANTHROPIC_API_KEY is NOT required here
     // claude-runner.ts automatically sets a placeholder if not provided (see line 138)
-    // This allows single-variable setup - users only need OPENROUTER_API_KEY
+    // This allows single-variable setup - users only need OPENROUTER_API_KEY and/or POE_API_KEY
     config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   }
 
@@ -296,226 +340,230 @@ const MODELS_JSON_PATH = join(__dirname, "../recommended-models.json");
 const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
 
 /**
- * Search all available models and print results
+ * Search all available models with smart discovery and print results
  */
 async function searchAndPrintModels(query: string, forceUpdate: boolean): Promise<void> {
-  let models: any[] = [];
+  // Show API key status
+  console.log(`🔑 ${getApiKeyDescription()}\n`);
 
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
+  // Get models using smart discovery system
+  const { getAllModelsForSearch } = await import("./model-selector.js");
+  const allModels = await getAllModelsForSearch();
 
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-      }
-    } catch (e) {
-      // Ignore cache error
+  // Filter by search query
+  const filteredModels = filterModelsByQuery(allModels, query);
+
+  // Categorize by accessibility
+  const categorized = categorizeModelsByAccess(filteredModels);
+
+  // Show available models first
+  if (categorized.available.length > 0) {
+    console.log(`✅ ${categorized.available.length} Available Models:\n`);
+    console.log("  Model                          Provider    Pricing     Context");
+    console.log("  " + "─".repeat(75));
+
+    for (const model of categorized.available.slice(0, 10)) {
+      printModelRow(model);
+    }
+
+    if (categorized.available.length > 10) {
+      console.log(`  ... and ${categorized.available.length - 10} more available models\n`);
     }
   }
 
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter (this may take a moment)...");
-    try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
+  // Show models requiring API keys
+  if (categorized.needsOpenRouter.length > 0) {
+    console.log(`📡 ${categorized.needsOpenRouter.length} Models Need OpenRouter API Key:\n`);
+    console.log("  Model                          Provider    Pricing     Context");
+    console.log("  " + "─".repeat(75));
 
-      const data = await response.json();
-      models = data.data;
+    for (const model of categorized.needsOpenRouter.slice(0, 5)) {
+      printModelRow(model);
+    }
 
-      // Cache result
-      writeFileSync(ALL_MODELS_JSON_PATH, JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models
-      }), "utf-8");
-
-      console.error(`✅ Cached ${models.length} models`);
-    } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
+    if (categorized.needsOpenRouter.length > 5) {
+      console.log(`  ... and ${categorized.needsOpenRouter.length - 5} more models\n`);
     }
   }
 
-  // Perform fuzzy search
-  const results = models
-    .map(model => {
-      const nameScore = fuzzyScore(model.name || "", query);
-      const idScore = fuzzyScore(model.id || "", query);
-      const descScore = fuzzyScore(model.description || "", query) * 0.5; // Lower weight for description
+  if (categorized.needsPoe.length > 0) {
+    console.log(`🟣 ${categorized.needsPoe.length} Models Need Poe API Key:\n`);
+    console.log("  Model                          Provider    Pricing     Context");
+    console.log("  " + "─".repeat(75));
 
-      return {
-        model,
-        score: Math.max(nameScore, idScore, descScore)
-      };
-    })
-    .filter(item => item.score > 0.2) // Filter low relevance
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 20); // Top 20 results
+    for (const model of categorized.needsPoe.slice(0, 5)) {
+      printModelRow(model);
+    }
 
-  if (results.length === 0) {
+    if (categorized.needsPoe.length > 5) {
+      console.log(`  ... and ${categorized.needsPoe.length - 5} more models\n`);
+    }
+  }
+
+  if (filteredModels.length === 0) {
     console.log(`No models found matching "${query}"`);
-    return;
+  } else {
+    console.log(`Found ${filteredModels.length} total models matching "${query}"`);
   }
 
-  console.log(`\nFound ${results.length} matching models:\n`);
-  console.log("  Model                          Provider    Pricing     Context  Score");
-  console.log("  " + "─".repeat(80));
-
-  for (const { model, score } of results) {
-      // Format model ID (truncate if too long)
-      const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
-      const modelIdPadded = modelId.padEnd(30);
-
-      // Determine provider from ID
-      const providerName = model.id.split('/')[0];
-      const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
-      const providerPadded = provider.padEnd(10);
-
-      // Format pricing (handle special cases: negative = varies, 0 = free)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
-      const avg = (promptPrice + completionPrice) / 2;
-      let pricing: string;
-      if (avg < 0) {
-        pricing = "varies";  // Auto-router or dynamic pricing
-      } else if (avg === 0) {
-        pricing = "FREE";
-      } else {
-        pricing = `$${avg.toFixed(2)}/1M`;
-      }
-      const pricingPadded = pricing.padEnd(10);
-
-      // Context
-      const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
-      const contextPadded = context.padEnd(7);
-
-      console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
+  // Show setup guidance if needed
+  const keys = getAvailableApiKeys();
+  if (!keys.openrouter || !keys.poe) {
+    printSetupGuidance();
   }
-  console.log("");
-  console.log("Use a model: claudish --model <model-id>");
+
+  console.log("\nUse a model: claudish --model <model-id>");
 }
 
 /**
- * Print ALL available models from OpenRouter
+ * Print a single model row in the search results
+ */
+function printModelRow(model: any): void {
+  // Format model ID (truncate if too long)
+  const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+  const modelIdPadded = modelId.padEnd(30);
+
+  // Determine provider from ID
+  const providerName = model.id.split('/')[0];
+  const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
+  const providerPadded = provider.padEnd(10);
+
+  // Format pricing (handle special cases: negative = varies, 0 = free)
+  const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
+  const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
+  const avg = (promptPrice + completionPrice) / 2;
+  let pricing: string;
+  if (avg < 0) {
+    pricing = "varies";  // Auto-router or dynamic pricing
+  } else if (avg === 0) {
+    pricing = "FREE";
+  } else {
+    pricing = `$${avg.toFixed(2)}/1M`;
+  }
+  const pricingPadded = pricing.padEnd(10);
+
+  // Context
+  const contextLen = model.context_length || model.top_provider?.context_length || 0;
+  const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
+  const contextPadded = context.padEnd(7);
+
+  console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded}`);
+}
+
+/**
+ * Print ALL available models with smart discovery and accessibility indicators
  */
 async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promise<void> {
-  let models: any[] = [];
+  // Show API key status
+  console.log(`🔑 ${getApiKeyDescription()}\n`);
 
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
+  // Get models using smart discovery system
+  const { getAllModelsForSearch } = await import("./model-selector.js");
+  const allModels = await getAllModelsForSearch();
 
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-        if (!jsonOutput) {
-          console.error(`✓ Using cached models (last updated: ${cacheData.lastUpdated.split('T')[0]})`);
-        }
-      }
-    } catch (e) {
-      // Ignore cache error
-    }
-  }
-
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter...");
-    try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-      const data = await response.json();
-      models = data.data;
-
-      // Cache result
-      writeFileSync(ALL_MODELS_JSON_PATH, JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models
-      }), "utf-8");
-
-      console.error(`✅ Cached ${models.length} models`);
-    } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
-    }
-  }
+  // Categorize by accessibility
+  const categorized = categorizeModelsByAccess(allModels);
 
   // JSON output
   if (jsonOutput) {
     console.log(JSON.stringify({
-      count: models.length,
+      totalModels: allModels.length,
+      availableModels: categorized.available.length,
+      needsOpenRouter: categorized.needsOpenRouter.length,
+      needsPoe: categorized.needsPoe.length,
       lastUpdated: new Date().toISOString().split('T')[0],
-      models: models.map(m => ({
+      models: allModels.map(m => ({
         id: m.id,
         name: m.name,
+        description: m.description,
+        provider: m.provider,
         context: m.context_length || m.top_provider?.context_length,
-        pricing: m.pricing
+        pricing: m.pricing,
+        available: categorized.available.includes(m)
       }))
     }, null, 2));
     return;
   }
 
-  // Group by provider
-  const byProvider = new Map<string, any[]>();
-  for (const model of models) {
-    const provider = model.id.split('/')[0];
-    if (!byProvider.has(provider)) {
-      byProvider.set(provider, []);
+  // Show available models first
+  if (categorized.available.length > 0) {
+    console.log(`✅ Available Models (${categorized.available.length}):\n`);
+
+    // Group available models by provider
+    const byProvider = new Map<string, any[]>();
+    for (const model of categorized.available) {
+      const provider = model.id.split('/')[0];
+      if (!byProvider.has(provider)) {
+        byProvider.set(provider, []);
+      }
+      byProvider.get(provider)!.push(model);
     }
-    byProvider.get(provider)!.push(model);
+
+    // Sort providers alphabetically
+    const sortedProviders = [...byProvider.keys()].sort();
+
+    for (const provider of sortedProviders) {
+      const providerModels = byProvider.get(provider)!;
+      console.log(`  ${provider.toUpperCase()} (${providerModels.length} models)`);
+      console.log("  " + "─".repeat(70));
+
+      for (const model of providerModels.slice(0, 10)) { // Limit per provider
+        printModelRow(model);
+      }
+
+      if (providerModels.length > 10) {
+        console.log(`    ... and ${providerModels.length - 10} more ${provider} models`);
+      }
+      console.log("");
+    }
   }
 
-  // Sort providers alphabetically
-  const sortedProviders = [...byProvider.keys()].sort();
-
-  console.log(`\nAll OpenRouter Models (${models.length} total):\n`);
-
-  for (const provider of sortedProviders) {
-    const providerModels = byProvider.get(provider)!;
-    console.log(`\n  ${provider.toUpperCase()} (${providerModels.length} models)`);
+  // Show models requiring API keys
+  if (categorized.needsOpenRouter.length > 0) {
+    console.log(`📡 Models Requiring OpenRouter API Key (${categorized.needsOpenRouter.length}):\n`);
+    console.log("  Get your key at: https://openrouter.ai/keys\n");
+    console.log("  Top OpenRouter models:");
     console.log("  " + "─".repeat(70));
 
-    for (const model of providerModels) {
-      // Format model ID (remove provider prefix, truncate if too long)
-      const shortId = model.id.split('/').slice(1).join('/');
-      const modelId = shortId.length > 40 ? shortId.substring(0, 37) + "..." : shortId;
-      const modelIdPadded = modelId.padEnd(42);
+    // Show top 10 OpenRouter models
+    const topOpenRouter = categorized.needsOpenRouter.slice(0, 10);
+    for (const model of topOpenRouter) {
+      printModelRow(model);
+    }
 
-      // Format pricing (handle special cases: negative = varies, 0 = free)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
-      const avg = (promptPrice + completionPrice) / 2;
-      let pricing: string;
-      if (avg < 0) {
-        pricing = "varies";  // Auto-router or dynamic pricing
-      } else if (avg === 0) {
-        pricing = "FREE";
-      } else {
-        pricing = `$${avg.toFixed(2)}/1M`;
-      }
-      const pricingPadded = pricing.padEnd(12);
-
-      // Context
-      const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
-      const contextPadded = context.padEnd(8);
-
-      console.log(`    ${modelIdPadded} ${pricingPadded} ${contextPadded}`);
+    if (categorized.needsOpenRouter.length > 10) {
+      console.log(`  ... and ${categorized.needsOpenRouter.length - 10} more models\n`);
     }
   }
 
-  console.log("\n");
-  console.log("Use a model: claudish --model <provider/model-id>");
-  console.log("Search:      claudish --search <query>");
-  console.log("Top models:  claudish --top-models");
+  if (categorized.needsPoe.length > 0) {
+    console.log(`🟣 Models Requiring Poe API Key (${categorized.needsPoe.length}):\n`);
+    console.log("  Get your key at: https://poe.com/blog/introducing-the-poe-api\n");
+    console.log("  Top Poe models:");
+    console.log("  " + "─".repeat(70));
+
+    // Show top 10 Poe models
+    const topPoe = categorized.needsPoe.slice(0, 10);
+    for (const model of topPoe) {
+      printModelRow(model);
+    }
+
+    if (categorized.needsPoe.length > 10) {
+      console.log(`  ... and ${categorized.needsPoe.length - 10} more models\n`);
+    }
+  }
+
+  // Show setup guidance if needed
+  const keys = getAvailableApiKeys();
+  if (!keys.openrouter || !keys.poe) {
+    printSetupGuidance();
+  }
+
+  console.log(`\nTotal: ${allModels.length} models (${categorized.available.length} available, ${categorized.needsOpenRouter.length + categorized.needsPoe.length} need API keys)`);
+  console.log("Use:         claudish --model <model-id>");
+  console.log("Search:       claudish --models <query>");
+  console.log("Top models:   claudish --top-models");
+  console.log("Force update: claudish --models --force-update\n");
 }
 
 /**
@@ -752,7 +800,7 @@ function printVersion(): void {
  */
 function printHelp(): void {
   console.log(`
-claudish - Run Claude Code with OpenRouter models
+claudish - Run Claude Code with OpenRouter & Poe models
 
 USAGE:
   claudish                                # Interactive mode (default, shows model selector)
@@ -776,11 +824,11 @@ OPTIONS:
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
   --reset-costs            Reset accumulated cost statistics
-  --models                 List ALL OpenRouter models grouped by provider
+  --models                 List ALL available models (OpenRouter + Poe) with accessibility indicators
   --models <query>         Fuzzy search all models by name, ID, or description
-  --top-models             List recommended/top programming models (curated)
+  --top-models             List top models from all available providers based on your API keys
   --json                   Output in JSON format (use with --models or --top-models)
-  --force-update           Force refresh model cache from OpenRouter API
+  --force-update           Force refresh model cache from available APIs
   --version                Show version information
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
@@ -802,8 +850,9 @@ MODEL MAPPING (per-role override):
   --model-subagent <model> Model for sub-agents (Task tool)
 
 CUSTOM MODELS:
-  Claudish accepts ANY valid OpenRouter model ID, even if not in --list-models
-  Example: claudish --model your_provider/custom-model-123 "task"
+  Claudish accepts ANY valid OpenRouter OR Poe model ID, even if not in --list-models
+  OpenRouter example: claudish --model your_provider/custom-model-123 "task"
+  Poe example: claudish --model poe/your-model-name "task"
 
 MODES:
   • Interactive mode (default): Shows model selector, starts persistent session
@@ -818,7 +867,10 @@ NOTES:
 ENVIRONMENT VARIABLES:
   Claudish automatically loads .env file from current directory.
 
-  OPENROUTER_API_KEY              Required: Your OpenRouter API key
+  OPENROUTER_API_KEY              Required for OpenRouter models: Your OpenRouter API key
+                                    Get from: https://openrouter.ai/keys
+  POE_API_KEY                     Required for Poe models: Your Poe API key
+                                    Get from: https://poe.com/blog/introducing-the-poe-api
   CLAUDISH_MODEL                  Default model to use (takes priority)
   ANTHROPIC_MODEL                 Claude Code standard: model to use (fallback)
   CLAUDISH_PORT                   Default port for proxy
@@ -844,10 +896,12 @@ EXAMPLES:
 
   # Interactive mode with pre-selected model
   claudish --model x-ai/grok-code-fast-1
+  claudish --model poe/grok-4-fast-reasoning
 
   # Single-shot mode - one task and exit (requires --model or CLAUDISH_MODEL env var)
   claudish --model openai/gpt-5-codex "implement user authentication"
   claudish --model x-ai/grok-code-fast-1 "add tests for login"
+  claudish --model poe/grok-4 "debug the issue"
 
   # Per-role model mapping (use different models for different Claude Code roles)
   claudish --model-opus openai/gpt-5 --model-sonnet x-ai/grok-code-fast-1 --model-haiku minimax/minimax-m2
@@ -888,12 +942,12 @@ EXAMPLES:
   claudish --verbose "analyze code structure"
 
 AVAILABLE MODELS:
-  List all models:     claudish --models
-  Search models:       claudish --models <query>
-  Top recommended:     claudish --top-models
-  JSON output:         claudish --models --json  |  claudish --top-models --json
-  Force cache update:  claudish --models --force-update
-  (Cache auto-updates every 2 days)
+  List all models:     claudish --models                 # Shows available models based on your API keys
+  Search models:       claudish --models <query>         # Fuzzy search across all providers
+  Top recommended:     claudish --top-models              # Smart recommendations from your available providers
+  JSON output:         claudish --models --json           # Export model data with availability info
+  Force cache update:  claudish --models --force-update   # Refresh from all available APIs
+  (Works with any combination of API keys: OpenRouter, Poe, both, or none)
 
 MORE INFO:
   GitHub: https://github.com/MadAppGang/claude-code
