@@ -219,8 +219,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     // Monitor mode: extracts API key from Claude Code's requests
     // No need for user to provide API key - we intercept it from Claude Code
     // IMPORTANT: Unset ANTHROPIC_API_KEY if it's a placeholder, so Claude Code uses its native auth
-    if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.includes("placeholder")) {
-      delete process.env.ANTHROPIC_API_KEY;
+    if (process.env.ANTHROPIC_API_KEY?.includes("placeholder")) {
+      process.env.ANTHROPIC_API_KEY = undefined;
       if (!config.quiet) {
         console.log(
           "[claudish] Removed placeholder API key - Claude Code will use native authentication"
@@ -234,13 +234,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
+    // Check which provider is needed based on the model
+    const isPoeModel = config.model?.startsWith("poe/");
+    const isOpenRouterModel = config.model?.includes("/") && !isPoeModel;
+
+    // Handle OpenRouter API key
+    const openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
+    if (isOpenRouterModel && !openrouterApiKey) {
+      // OpenRouter model requires OpenRouter API key
       if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
+        console.error(
+          "Error: OPENROUTER_API_KEY environment variable is required for OpenRouter models"
+        );
         console.error("Get your API key from: https://openrouter.ai/keys");
         console.error("");
         console.error("Set it now:");
@@ -250,12 +255,30 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Will be prompted for in interactive mode
       config.openrouterApiKey = undefined;
     } else {
-      config.openrouterApiKey = apiKey;
+      config.openrouterApiKey = openrouterApiKey;
+    }
+
+    // Handle Poe API key
+    const poeApiKey = process.env[ENV.POE_API_KEY];
+    if (isPoeModel && !poeApiKey) {
+      // Poe model requires Poe API key
+      if (!config.interactive) {
+        console.error("Error: POE_API_KEY environment variable is required for Poe models");
+        console.error("Get your API key from: https://poe.com/api_key");
+        console.error("");
+        console.error("Set it now:");
+        console.error("  export POE_API_KEY='your-poe-api-key'");
+        process.exit(1);
+      }
+      // Will be prompted for in interactive mode
+      config.poeApiKey = undefined;
+    } else {
+      config.poeApiKey = poeApiKey;
     }
 
     // Note: ANTHROPIC_API_KEY is NOT required here
     // claude-runner.ts automatically sets a placeholder if not provided (see line 138)
-    // This allows single-variable setup - users only need OPENROUTER_API_KEY
+    // This allows single-variable setup - users only need OPENROUTER_API_KEY or POE_API_KEY
     config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   }
 
@@ -378,16 +401,16 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
 
   console.log(`\nFound ${results.length} matching models:\n`);
   console.log("  Model                          Provider    Pricing     Context  Score");
-  console.log("  " + "─".repeat(80));
+  console.log(`  ${"─".repeat(80)}`);
 
   for (const { model, score } of results) {
     // Format model ID (truncate if too long)
-    const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+    const modelId = model.id.length > 30 ? `${model.id.substring(0, 27)}...` : model.id;
     const modelIdPadded = modelId.padEnd(30);
 
     // Determine provider from ID
     const providerName = model.id.split("/")[0];
-    const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
+    const provider = providerName.length > 10 ? `${providerName.substring(0, 7)}...` : providerName;
     const providerPadded = provider.padEnd(10);
 
     // Format pricing (handle special cases: negative = varies, 0 = free)
@@ -510,12 +533,12 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   for (const provider of sortedProviders) {
     const providerModels = byProvider.get(provider)!;
     console.log(`\n  ${provider.toUpperCase()} (${providerModels.length} models)`);
-    console.log("  " + "─".repeat(70));
+    console.log(`  ${"─".repeat(70)}`);
 
     for (const model of providerModels) {
       // Format model ID (remove provider prefix, truncate if too long)
       const shortId = model.id.split("/").slice(1).join("/");
-      const modelId = shortId.length > 40 ? shortId.substring(0, 37) + "..." : shortId;
+      const modelId = shortId.length > 40 ? `${shortId.substring(0, 37)}...` : shortId;
       const modelIdPadded = modelId.padEnd(42);
 
       // Format pricing (handle special cases: negative = varies, 0 = free)
@@ -678,7 +701,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
 
       // Determine category based on description and capabilities
       let category = "programming"; // default since we're filtering programming models
-      const lowerDesc = description.toLowerCase() + " " + name.toLowerCase();
+      const lowerDesc = `${description.toLowerCase()} ${name.toLowerCase()}`;
 
       if (
         lowerDesc.includes("vision") ||
@@ -1067,17 +1090,17 @@ function printAvailableModels(): void {
 
   // Table header
   console.log("  Model                          Provider    Pricing     Context  Capabilities");
-  console.log("  " + "─".repeat(86));
+  console.log(`  ${"─".repeat(86)}`);
 
   // Table rows
   for (const model of models) {
     // Format model ID (truncate if too long)
-    const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+    const modelId = model.id.length > 30 ? `${model.id.substring(0, 27)}...` : model.id;
     const modelIdPadded = modelId.padEnd(30);
 
     // Format provider (max 10 chars)
     const provider =
-      model.provider.length > 10 ? model.provider.substring(0, 7) + "..." : model.provider;
+      model.provider.length > 10 ? `${model.provider.substring(0, 7)}...` : model.provider;
     const providerPadded = provider.padEnd(10);
 
     // Format pricing (average) - handle special cases

@@ -390,7 +390,7 @@ export async function selectModelsForProfile(): Promise<{
 }
 
 /**
- * Prompt for API key
+ * Prompt for OpenRouter API key
  */
 export async function promptForApiKey(): Promise<string> {
   console.log("\nOpenRouter API Key Required");
@@ -404,6 +404,26 @@ export async function promptForApiKey(): Promise<string> {
       }
       if (!value.startsWith("sk-or-")) {
         return 'API key should start with "sk-or-"';
+      }
+      return true;
+    },
+  });
+
+  return apiKey;
+}
+
+/**
+ * Prompt for Poe API key
+ */
+export async function promptForPoeApiKey(): Promise<string> {
+  console.log("\nPoe API Key Required");
+  console.log("Get your API key from: https://poe.com/api_key\n");
+
+  const apiKey = await input({
+    message: "Enter your Poe API key:",
+    validate: (value) => {
+      if (!value.trim()) {
+        return "API key cannot be empty";
       }
       return true;
     },
