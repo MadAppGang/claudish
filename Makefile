@@ -77,7 +77,7 @@ dev-debug: ## Run with full debug output
 
 ##@ 🏗️ Build
 
-build: extract-models ## Build the project for production
+build: ## Build the project for production
 	@echo "$(CYAN)🏗️  Building project...$(RESET)"
 	@$(BUN) build src/index.ts --outdir dist --target node
 	@chmod +x dist/index.js
