@@ -3,9 +3,17 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { OpenRouterHandler } from "./handlers/openrouter-handler.js";
+import { PoeHandler } from "./handlers/poe-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { isLoggingEnabled, log } from "./logger.js";
 import type { ProxyServer } from "./types.js";
+
+/**
+ * Check if model is a Poe model (has poe/ prefix).
+ */
+function isPoeModel(model: string): boolean {
+  return model.startsWith("poe/");
+}
 
 export async function createProxyServer(
   port: number,
@@ -13,33 +21,58 @@ export async function createProxyServer(
   model?: string,
   monitorMode = false,
   anthropicApiKey?: string,
-  modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string }
+  modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
+  poeApiKey?: string
 ): Promise<ProxyServer> {
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(anthropicApiKey);
-  const handlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Handler Instance
+  const openrouterHandlers = new Map<string, ModelHandler>();
+  const poeHandlers = new Map<string, ModelHandler>();
 
-  // Helper to get or create handler for a target model
+  // Helper to get or create OpenRouter handler for a target model
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
-    if (!handlers.has(targetModel)) {
-      handlers.set(targetModel, new OpenRouterHandler(targetModel, openrouterApiKey, port));
+    if (!openrouterHandlers.has(targetModel)) {
+      openrouterHandlers.set(
+        targetModel,
+        new OpenRouterHandler(targetModel, openrouterApiKey, port)
+      );
     }
-    return handlers.get(targetModel)!;
+    return openrouterHandlers.get(targetModel)!;
   };
 
-  // Pre-initialize handlers for mapped models to ensure warm-up (context window fetch etc)
-  if (model) getOpenRouterHandler(model);
-  if (modelMap?.opus) getOpenRouterHandler(modelMap.opus);
-  if (modelMap?.sonnet) getOpenRouterHandler(modelMap.sonnet);
-  if (modelMap?.haiku) getOpenRouterHandler(modelMap.haiku);
-  if (modelMap?.subagent) getOpenRouterHandler(modelMap.subagent);
+  // Helper to get or create Poe handler for a target model
+  const getPoeHandler = (targetModel: string): ModelHandler => {
+    if (!poeHandlers.has(targetModel)) {
+      poeHandlers.set(targetModel, new PoeHandler(targetModel, poeApiKey, port));
+    }
+    return poeHandlers.get(targetModel)!;
+  };
+
+  // Pre-initialize handlers for mapped models to ensure warm-up
+  const initHandler = (m: string | undefined) => {
+    if (!m) return;
+    if (isPoeModel(m)) {
+      getPoeHandler(m);
+    } else if (m.includes("/")) {
+      getOpenRouterHandler(m);
+    }
+  };
+
+  initHandler(model);
+  initHandler(modelMap?.opus);
+  initHandler(modelMap?.sonnet);
+  initHandler(modelMap?.haiku);
+  initHandler(modelMap?.subagent);
 
   const getHandlerForRequest = (requestedModel: string): ModelHandler => {
+    log(`[Proxy] getHandlerForRequest called with: ${requestedModel}`);
+
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
 
     // 2. Resolve target model based on mappings or defaults
     let target = model || requestedModel; // Start with global default or request
+    log(`[Proxy] Initial target: ${target}, global model: ${model}`);
 
     const req = requestedModel.toLowerCase();
     if (modelMap) {
@@ -51,7 +84,15 @@ export async function createProxyServer(
       // Assuming Haiku mapping covers subagent unless custom logic added.
     }
 
-    // 3. Native vs OpenRouter Decision
+    log(`[Proxy] After mapping check, target: ${target}`);
+
+    // 3. Poe Model Detection (poe/ prefix)
+    if (isPoeModel(target)) {
+      log(`[Proxy] Routing to Poe: ${target}`);
+      return getPoeHandler(target);
+    }
+
+    // 4. Native vs OpenRouter Decision
     // Heuristic: OpenRouter models have "/", Native ones don't.
     const isNative = !target.includes("/");
 
@@ -60,7 +101,7 @@ export async function createProxyServer(
       return nativeHandler;
     }
 
-    // 4. OpenRouter Handler
+    // 5. OpenRouter Handler (default for provider/model format)
     return getOpenRouterHandler(target);
   };
 
@@ -94,11 +135,10 @@ export async function createProxyServer(
           body: JSON.stringify(body),
         });
         return c.json(await res.json());
-      } else {
-        // OpenRouter handler logic (estimation)
-        const txt = JSON.stringify(body);
-        return c.json({ input_tokens: Math.ceil(txt.length / 4) });
       }
+      // OpenRouter handler logic (estimation)
+      const txt = JSON.stringify(body);
+      return c.json({ input_tokens: Math.ceil(txt.length / 4) });
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }

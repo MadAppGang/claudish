@@ -64,6 +64,7 @@ export const MODEL_INFO: Record<
 // Environment variable names
 export const ENV = {
   OPENROUTER_API_KEY: "OPENROUTER_API_KEY",
+  POE_API_KEY: "POE_API_KEY",
   CLAUDISH_MODEL: "CLAUDISH_MODEL",
   CLAUDISH_PORT: "CLAUDISH_PORT",
   CLAUDISH_ACTIVE_MODEL_NAME: "CLAUDISH_ACTIVE_MODEL_NAME", // Set by claudish to show active model in status line
