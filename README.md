@@ -107,6 +107,7 @@ claudish
 # Set up environment
 export OPENROUTER_API_KEY=sk-or-v1-...
 export ANTHROPIC_API_KEY=sk-ant-api03-placeholder
+export OLLAMA_API_KEY=ollama
 
 # Run with specific task
 claudish "implement user authentication"
