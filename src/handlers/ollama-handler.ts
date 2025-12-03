@@ -212,6 +212,7 @@ export class OllamaCloudHandler implements ModelHandler {
 
     const middlewareManager = this.middlewareManager;
     const streamMetadata = new Map<string, any>();
+    const handler = this; // Capturar referencia para usar en closure
 
     return c.body(new ReadableStream({
       async start(controller) {
@@ -226,6 +227,8 @@ export class OllamaCloudHandler implements ModelHandler {
         let textIdx = -1;
         let curIdx = 0;
         let lastActivity = Date.now();
+        let cumulativeInputTokens = 0;
+        let cumulativeOutputTokens = 0;
 
         send("message_start", {
           type: "message_start",
@@ -320,8 +323,21 @@ export class OllamaCloudHandler implements ModelHandler {
                   }
                 }
 
-                // Ollama marca done cuando termina
+                // Ollama marca done cuando termina y puede incluir información de tokens
                 if (chunk.done) {
+                  // OllamaCloud puede devolver tokens en la respuesta final
+                  if (chunk.prompt_eval_count !== undefined) {
+                    cumulativeInputTokens += chunk.prompt_eval_count;
+                  }
+                  if (chunk.eval_count !== undefined) {
+                    cumulativeOutputTokens += chunk.eval_count;
+                  }
+                  
+                  // Escribir archivo de tokens para la línea de estado
+                  if (cumulativeInputTokens > 0 || cumulativeOutputTokens > 0) {
+                    handler.writeTokenFile(cumulativeInputTokens, cumulativeOutputTokens);
+                  }
+                  
                   await finalize("done");
                   return;
                 }
