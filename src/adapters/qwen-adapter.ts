@@ -2,7 +2,7 @@ import { log } from "../logger";
 import { type AdapterResult, BaseModelAdapter } from "./base-adapter";
 
 export class QwenAdapter extends BaseModelAdapter {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Qwen models return standard content
     // However, some newer models might wrap thinking in <think> tags which we might want to handle
     // For now, we pass through as is, similar to OpenAI
@@ -29,7 +29,7 @@ export class QwenAdapter extends BaseModelAdapter {
       );
 
       // Cleanup: Remove raw thinking object
-      delete request.thinking;
+      request.thinking = undefined;
     }
 
     return request;

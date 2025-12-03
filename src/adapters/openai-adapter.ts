@@ -9,7 +9,7 @@ import { log } from "../logger.js";
 import { type AdapterResult, BaseModelAdapter } from "./base-adapter.js";
 
 export class OpenAIAdapter extends BaseModelAdapter {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // OpenAI models return standard content, no XML parsing needed for tool calls
     // (OpenRouter handles standard tool_calls mapping for us)
     return {
@@ -45,7 +45,7 @@ export class OpenAIAdapter extends BaseModelAdapter {
 
       // Cleanup: Remove raw thinking object as we've translated it
       // This prevents OpenRouter from having both params if it decides to pass thinking through
-      delete request.thinking;
+      request.thinking = undefined;
 
       log(`[OpenAIAdapter] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
     }

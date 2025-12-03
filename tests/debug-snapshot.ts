@@ -2,8 +2,8 @@
  * Debug script to inspect actual SSE events from proxy
  */
 
-import { readFileSync } from "fs";
-import { join } from "path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createProxyServer } from "../src/proxy-server";
 import type { ProxyServer } from "../src/types";
 

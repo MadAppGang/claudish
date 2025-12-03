@@ -48,7 +48,7 @@ const FeatureSection: React.FC = () => {
           <div className="bg-[#0a0a0a] rounded-xl border border-red-500/20 overflow-hidden shadow-lg group hover:border-red-500/40 transition-colors h-full flex flex-col">
             <div className="bg-red-500/5 px-4 py-3 border-b border-red-500/10 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-red-500/50"></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-red-500/50" />
                 <span className="text-xs font-mono text-red-400/60">zsh — 80x24</span>
               </div>
               <span className="text-[10px] font-bold text-red-500/50 uppercase tracking-widest">
@@ -75,7 +75,7 @@ const FeatureSection: React.FC = () => {
           <div className="bg-[#0a0a0a] rounded-xl border border-claude-ish/20 overflow-hidden shadow-[0_0_30px_rgba(0,212,170,0.05)] group hover:border-claude-ish/40 transition-colors h-full flex flex-col">
             <div className="bg-claude-ish/5 px-4 py-3 border-b border-claude-ish/10 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-claude-ish"></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-claude-ish" />
                 <span className="text-xs font-mono text-claude-ish/60">zsh — 80x24</span>
               </div>
               <span className="text-[10px] font-bold text-claude-ish uppercase tracking-widest">
@@ -271,7 +271,7 @@ const FeatureSection: React.FC = () => {
                 </p>
 
                 {/* Corner Accent */}
-                <div className="absolute bottom-0 right-0 w-3 h-3 border-r border-b border-gray-800 group-hover:border-claude-ish/50 transition-colors"></div>
+                <div className="absolute bottom-0 right-0 w-3 h-3 border-r border-b border-gray-800 group-hover:border-claude-ish/50 transition-colors" />
               </div>
             ))}
           </div>
@@ -387,7 +387,7 @@ const FeatureSection: React.FC = () => {
               Competitive Analysis
             </span>
             <span className="text-xs font-mono text-gray-600 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-claude-ish animate-pulse"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-claude-ish animate-pulse" />
               LIVE
             </span>
           </div>

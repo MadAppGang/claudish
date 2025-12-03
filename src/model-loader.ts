@@ -194,14 +194,14 @@ export async function fetchModelContextWindow(modelId: string): Promise<number> 
       const jsonContent = readFileSync(jsonPath, "utf-8");
       const data: RecommendedModelsJSON = JSON.parse(jsonContent);
       const model = data.models.find((m) => m.id === modelId);
-      if (model && model.context) {
+      if (model?.context) {
         // Parse "200K" -> 200000, "1M" -> 1000000
         const ctxStr = model.context.toUpperCase();
         if (ctxStr.includes("K")) return Number.parseFloat(ctxStr.replace("K", "")) * 1024; // Usually 1K=1000 or 1024? OpenRouter uses 1000 often but binary is standard. Let's use 1000 for simplicity or 1024.
         // Actually, standard is usually 1000 for LLM context "200k" = 200,000.
         if (ctxStr.includes("M")) return Number.parseFloat(ctxStr.replace("M", "")) * 1000000;
         const val = Number.parseInt(ctxStr);
-        if (!isNaN(val)) return val;
+        if (!Number.isNaN(val)) return val;
       }
     } catch (e) {}
   }
@@ -223,7 +223,7 @@ export async function doesModelSupportReasoning(modelId: string): Promise<boolea
 
   if (_cachedOpenRouterModels) {
     const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
-    if (model && model.supported_parameters) {
+    if (model?.supported_parameters) {
       return (
         model.supported_parameters.includes("include_reasoning") ||
         model.supported_parameters.includes("reasoning") ||

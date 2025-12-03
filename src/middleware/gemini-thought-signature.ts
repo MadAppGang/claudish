@@ -103,7 +103,7 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
         }
 
         if (!msg.reasoning_details && isLoggingEnabled()) {
-          log(`[Gemini] WARNING: No reasoning_details found for assistant message with tool_calls`);
+          log("[Gemini] WARNING: No reasoning_details found for assistant message with tool_calls");
           log(`[Gemini] Tool call IDs: ${msg.tool_calls.map((tc: any) => tc.id).join(", ")}`);
         }
       }

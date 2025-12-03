@@ -28,7 +28,8 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
       ); // Add slight randomness for realism
 
       return () => clearTimeout(timeout);
-    } else if (onComplete) {
+    }
+    if (onComplete) {
       onComplete();
     }
   }, [currentIndex, text, speed, onComplete]);

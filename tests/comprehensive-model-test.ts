@@ -82,10 +82,10 @@ describe("Comprehensive Model Identity Tests", () => {
         const proxy = await startTestProxy(model, port);
         const info = MODEL_INFO[model];
 
-        console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         console.log(`🧪 Testing: ${info.name} (${model})`);
         console.log(`📍 Expected Provider: ${info.provider}`);
-        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
         const prompt = `Identify yourself: state your model name and creator. For example: 'I am GPT-4 by OpenAI' or 'I am Claude by Anthropic' or 'I am Grok by xAI'.`;
 
@@ -116,10 +116,10 @@ describe("Comprehensive Model Identity Tests", () => {
             responseText.includes("anthropic") || responseText.includes("claude");
 
           if (mentionsAnthropic) {
-            console.log(`❌ FAILED: Response mentions Anthropic/Claude!`);
+            console.log("❌ FAILED: Response mentions Anthropic/Claude!");
             console.log(`   This suggests we might be getting Anthropic's model`);
           } else {
-            console.log(`✅ PASSED: Does NOT mention Anthropic or Claude`);
+            console.log("✅ PASSED: Does NOT mention Anthropic or Claude");
           }
 
           expect(mentionsAnthropic).toBe(false);
@@ -134,7 +134,7 @@ describe("Comprehensive Model Identity Tests", () => {
           expect(mentionsAnthropic).toBe(true);
         }
 
-        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
       }, 30000);
     }
   });
@@ -240,7 +240,7 @@ describe("Comprehensive Model Identity Tests", () => {
           console.log(`   ✅ Correctly identifies as ${testCase.expectedProvider}`);
         } else {
           console.log(`   ⚠️  Doesn't mention expected keywords: ${testCase.keywords.join(", ")}`);
-          console.log(`   Note: This might still be correct, just phrased differently`);
+          console.log("   Note: This might still be correct, just phrased differently");
         }
 
         // Main assertion: Should NOT mention Anthropic (except for Anthropic model)

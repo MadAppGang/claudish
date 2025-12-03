@@ -1,5 +1,5 @@
-import { appendFile, existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { appendFile, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 let logFilePath: string | null = null;
 let logLevel: "debug" | "info" | "minimal" = "info"; // Default to structured logging

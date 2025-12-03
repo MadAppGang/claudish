@@ -68,14 +68,14 @@ export const SmartRouting: React.FC = () => {
   return (
     <div className="w-full relative">
       {/* Background Grid Texture */}
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none -z-10"></div>
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none -z-10" />
 
       {/* Section Header */}
       <div className="text-center mb-24 relative z-10">
         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#1a1a1a] border border-gray-800 text-[11px] font-mono text-gray-400 uppercase tracking-widest mb-6 shadow-xl">
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-claude-ish opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-claude-ish"></span>
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-claude-ish opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-claude-ish" />
           </span>
           Dynamic Route Resolution
         </div>
@@ -189,12 +189,12 @@ export const SmartRouting: React.FC = () => {
         <div className="relative z-20 flex justify-center mb-24 md:mb-32">
           <div className="relative group">
             {/* Glow effect */}
-            <div className="absolute inset-0 bg-claude-ish/20 blur-xl rounded-lg group-hover:bg-claude-ish/30 transition-all"></div>
+            <div className="absolute inset-0 bg-claude-ish/20 blur-xl rounded-lg group-hover:bg-claude-ish/30 transition-all" />
 
             <div className="bg-[#0f0f0f] border-2 border-gray-700 w-[320px] rounded-lg p-1 relative shadow-2xl">
               {/* Port labels */}
-              <div className="absolute -left-2 top-4 w-1 h-3 bg-gray-600 rounded-l"></div>
-              <div className="absolute -right-2 top-4 w-1 h-3 bg-gray-600 rounded-r"></div>
+              <div className="absolute -left-2 top-4 w-1 h-3 bg-gray-600 rounded-l" />
+              <div className="absolute -right-2 top-4 w-1 h-3 bg-gray-600 rounded-r" />
 
               <div className="bg-[#050505] rounded border border-gray-800 p-4 relative overflow-hidden">
                 <div className="flex justify-between items-center mb-3 border-b border-gray-800 pb-2">
@@ -202,8 +202,8 @@ export const SmartRouting: React.FC = () => {
                     CLAUDISH_ROUTER
                   </span>
                   <div className="flex gap-1">
-                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                    <div className="w-2 h-2 rounded-full bg-yellow-500"></div>
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    <div className="w-2 h-2 rounded-full bg-yellow-500" />
                   </div>
                 </div>
 
@@ -234,7 +234,7 @@ export const SmartRouting: React.FC = () => {
                         }
                     `}
           >
-            <div className="bg-[#d97757] p-1"></div> {/* Colored Top Bar */}
+            <div className="bg-[#d97757] p-1" /> {/* Colored Top Bar */}
             <div className="p-6 flex-1 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3
@@ -281,7 +281,7 @@ export const SmartRouting: React.FC = () => {
                         }
                     `}
           >
-            <div className="bg-[#3fb950] p-1"></div>
+            <div className="bg-[#3fb950] p-1" />
             <div className="p-6 flex-1 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3
@@ -330,7 +330,7 @@ export const SmartRouting: React.FC = () => {
                         }
                     `}
           >
-            <div className="bg-[#8b5cf6] p-1"></div>
+            <div className="bg-[#8b5cf6] p-1" />
             <div className="p-6 flex-1 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3
@@ -560,7 +560,7 @@ export const SmartRouting: React.FC = () => {
               className={`flex items-center mt-2 ${actionStep >= 8 ? "opacity-100" : "opacity-0"}`}
             >
               <span className="text-claude-ish mr-2">$</span>
-              <div className="w-2.5 h-4 bg-gray-500/50 animate-cursor-blink"></div>
+              <div className="w-2.5 h-4 bg-gray-500/50 animate-cursor-blink" />
             </div>
           </div>
         </TerminalWindow>

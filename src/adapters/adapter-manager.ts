@@ -38,7 +38,7 @@ export class AdapterManager {
    */
   getAdapter(): BaseModelAdapter {
     for (const adapter of this.adapters) {
-      if (adapter.shouldHandle(this.defaultAdapter["modelId"])) {
+      if (adapter.shouldHandle(this.defaultAdapter.getModelId())) {
         return adapter;
       }
     }

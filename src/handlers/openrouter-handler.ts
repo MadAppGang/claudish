@@ -79,7 +79,7 @@ export class OpenRouterHandler implements ModelHandler {
     const target = this.targetModel;
     await this.fetchContextWindow(target);
 
-    logStructured(`OpenRouter Request`, {
+    logStructured("OpenRouter Request", {
       targetModel: target,
       originalModel: claudePayload.model,
     });
@@ -144,7 +144,7 @@ export class OpenRouterHandler implements ModelHandler {
     if (modelId.includes("grok") || modelId.includes("x-ai")) {
       const msg =
         "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
-      if (messages.length > 0 && messages[0].role === "system") messages[0].content += "\n\n" + msg;
+      if (messages.length > 0 && messages[0].role === "system") messages[0].content += `\n\n${msg}`;
       else messages.unshift({ role: "system", content: msg });
     }
 

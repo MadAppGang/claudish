@@ -363,9 +363,9 @@ function printProfile(profile: Profile, isDefault: boolean, verbose = false): vo
  * Print model mapping
  */
 function printModelMapping(models: ModelMapping): void {
-  console.log(`  ${CYAN}opus${RESET}:     ${models.opus || DIM + "not set" + RESET}`);
-  console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || DIM + "not set" + RESET}`);
-  console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || DIM + "not set" + RESET}`);
+  console.log(`  ${CYAN}opus${RESET}:     ${models.opus || `${DIM}not set${RESET}`}`);
+  console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || `${DIM}not set${RESET}`}`);
+  console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || `${DIM}not set${RESET}`}`);
   if (models.subagent) {
     console.log(`  ${CYAN}subagent${RESET}: ${models.subagent}`);
   }

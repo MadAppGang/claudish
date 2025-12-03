@@ -9,7 +9,7 @@ const SupportSection: React.FC = () => {
           {/* Header bar */}
           <div className="bg-[#111] px-6 py-3 border-b border-gray-800 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="w-2 h-2 rounded-full bg-yellow-500/80"></span>
+              <span className="w-2 h-2 rounded-full bg-yellow-500/80" />
               <span className="text-xs font-mono text-gray-500 uppercase tracking-widest">
                 Open Source Status
               </span>

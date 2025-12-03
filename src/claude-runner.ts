@@ -192,7 +192,7 @@ export async function runClaudeWithProxy(
     // Monitor mode: Don't set ANTHROPIC_API_KEY at all
     // This allows Claude Code to use its native authentication
     // Delete any placeholder keys from environment
-    delete env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_API_KEY = undefined;
   } else {
     // OpenRouter mode: Use placeholder to prevent Claude Code dialog
     // The proxy will handle authentication with OPENROUTER_API_KEY
