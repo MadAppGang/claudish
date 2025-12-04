@@ -10,31 +10,31 @@
  * - claudish profile show [name]: Show profile details
  */
 
+import { confirm, select } from "@inquirer/prompts";
 import {
-  loadConfig,
-  saveConfig,
-  getProfile,
-  getDefaultProfile,
-  getProfileNames,
-  setProfile,
-  deleteProfile,
-  setDefaultProfile,
-  createProfile,
-  listProfiles,
-  configExists,
-  getConfigPath,
-  type Profile,
-  type ModelMapping,
-} from "./profile-config.js";
-import {
+  confirmAction,
+  promptForProfileDescription,
+  promptForProfileName,
   selectModel,
   selectModelsForProfile,
-  promptForProfileName,
-  promptForProfileDescription,
   selectProfile,
-  confirmAction,
 } from "./model-selector.js";
-import { select, confirm } from "@inquirer/prompts";
+import {
+  type ModelMapping,
+  type Profile,
+  configExists,
+  createProfile,
+  deleteProfile,
+  getConfigPath,
+  getDefaultProfile,
+  getProfile,
+  getProfileNames,
+  listProfiles,
+  loadConfig,
+  saveConfig,
+  setDefaultProfile,
+  setProfile,
+} from "./profile-config.js";
 
 // ANSI colors
 const RESET = "\x1b[0m";
@@ -64,7 +64,9 @@ export async function initCommand(): Promise<void> {
     }
   }
 
-  console.log(`${DIM}This wizard will help you set up Claudish with your preferred models.${RESET}\n`);
+  console.log(
+    `${DIM}This wizard will help you set up Claudish with your preferred models.${RESET}\n`
+  );
 
   // Create default profile
   console.log(`${BOLD}Step 1: Create your default profile${RESET}\n`);
@@ -73,7 +75,9 @@ export async function initCommand(): Promise<void> {
   const description = await promptForProfileDescription();
 
   console.log(`\n${BOLD}Step 2: Select models for each Claude tier${RESET}`);
-  console.log(`${DIM}These models will be used when Claude Code requests specific model types.${RESET}\n`);
+  console.log(
+    `${DIM}These models will be used when Claude Code requests specific model types.${RESET}\n`
+  );
 
   const models = await selectModelsForProfile();
 
@@ -339,11 +343,7 @@ export async function profileEditCommand(name?: string): Promise<void> {
 /**
  * Print a profile
  */
-function printProfile(
-  profile: Profile,
-  isDefault: boolean,
-  verbose = false
-): void {
+function printProfile(profile: Profile, isDefault: boolean, verbose = false): void {
   const defaultBadge = isDefault ? ` ${YELLOW}(default)${RESET}` : "";
   console.log(`${BOLD}${profile.name}${RESET}${defaultBadge}`);
 
@@ -363,9 +363,9 @@ function printProfile(
  * Print model mapping
  */
 function printModelMapping(models: ModelMapping): void {
-  console.log(`  ${CYAN}opus${RESET}:     ${models.opus || DIM + "not set" + RESET}`);
-  console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || DIM + "not set" + RESET}`);
-  console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || DIM + "not set" + RESET}`);
+  console.log(`  ${CYAN}opus${RESET}:     ${models.opus || `${DIM}not set${RESET}`}`);
+  console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || `${DIM}not set${RESET}`}`);
+  console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || `${DIM}not set${RESET}`}`);
   if (models.subagent) {
     console.log(`  ${CYAN}subagent${RESET}: ${models.subagent}`);
   }

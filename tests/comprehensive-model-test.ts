@@ -32,10 +32,7 @@ const ANTHROPIC_MODEL: OpenRouterModel = "anthropic/claude-sonnet-4.5";
 
 const activeProxies: ProxyServer[] = [];
 
-async function startTestProxy(
-  model: OpenRouterModel,
-  port: number
-): Promise<ProxyServer> {
+async function startTestProxy(model: OpenRouterModel, port: number): Promise<ProxyServer> {
   const proxy = await createProxyServer(port, OPENROUTER_API_KEY!, model);
   activeProxies.push(proxy);
   return proxy;
@@ -85,10 +82,10 @@ describe("Comprehensive Model Identity Tests", () => {
         const proxy = await startTestProxy(model, port);
         const info = MODEL_INFO[model];
 
-        console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         console.log(`🧪 Testing: ${info.name} (${model})`);
         console.log(`📍 Expected Provider: ${info.provider}`);
-        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
         const prompt = `Identify yourself: state your model name and creator. For example: 'I am GPT-4 by OpenAI' or 'I am Claude by Anthropic' or 'I am Grok by xAI'.`;
 
@@ -101,7 +98,9 @@ describe("Comprehensive Model Identity Tests", () => {
 
         const responseText = response.content[0].text?.toLowerCase() || "";
         console.log(`💬 Response: "${response.content[0].text}"`);
-        console.log(`📊 Tokens: ${response.usage.input_tokens} in, ${response.usage.output_tokens} out`);
+        console.log(
+          `📊 Tokens: ${response.usage.input_tokens} in, ${response.usage.output_tokens} out`
+        );
 
         // Verify it's an Anthropic-format response (proxy working)
         expect(response.type).toBe("message");
@@ -117,10 +116,10 @@ describe("Comprehensive Model Identity Tests", () => {
             responseText.includes("anthropic") || responseText.includes("claude");
 
           if (mentionsAnthropic) {
-            console.log(`❌ FAILED: Response mentions Anthropic/Claude!`);
+            console.log("❌ FAILED: Response mentions Anthropic/Claude!");
             console.log(`   This suggests we might be getting Anthropic's model`);
           } else {
-            console.log(`✅ PASSED: Does NOT mention Anthropic or Claude`);
+            console.log("✅ PASSED: Does NOT mention Anthropic or Claude");
           }
 
           expect(mentionsAnthropic).toBe(false);
@@ -135,7 +134,7 @@ describe("Comprehensive Model Identity Tests", () => {
           expect(mentionsAnthropic).toBe(true);
         }
 
-        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
       }, 30000);
     }
   });
@@ -155,7 +154,8 @@ describe("Comprehensive Model Identity Tests", () => {
         const response = await makeAnthropicRequest(proxy.url, [
           {
             role: "user",
-            content: "Identify yourself: state your model name and creator. For example: 'I am GPT-4 by OpenAI' or 'I am Claude by Anthropic' or 'I am Grok by xAI'.",
+            content:
+              "Identify yourself: state your model name and creator. For example: 'I am GPT-4 by OpenAI' or 'I am Claude by Anthropic' or 'I am Grok by xAI'.",
           },
         ]);
 
@@ -223,7 +223,8 @@ describe("Comprehensive Model Identity Tests", () => {
         const response = await makeAnthropicRequest(proxy.url, [
           {
             role: "user",
-            content: "Identify yourself: state your model name and creator. For example: 'I am GPT-4 by OpenAI' or 'I am Claude by Anthropic' or 'I am Grok by xAI'.",
+            content:
+              "Identify yourself: state your model name and creator. For example: 'I am GPT-4 by OpenAI' or 'I am Claude by Anthropic' or 'I am Grok by xAI'.",
           },
         ]);
 
@@ -238,16 +239,16 @@ describe("Comprehensive Model Identity Tests", () => {
         if (mentionsProvider) {
           console.log(`   ✅ Correctly identifies as ${testCase.expectedProvider}`);
         } else {
-          console.log(
-            `   ⚠️  Doesn't mention expected keywords: ${testCase.keywords.join(", ")}`
-          );
-          console.log(`   Note: This might still be correct, just phrased differently`);
+          console.log(`   ⚠️  Doesn't mention expected keywords: ${testCase.keywords.join(", ")}`);
+          console.log("   Note: This might still be correct, just phrased differently");
         }
 
         // Main assertion: Should NOT mention Anthropic (except for Anthropic model)
         const mentionsAnthropic =
           responseText.includes("anthropic") || responseText.includes("claude");
-        console.log(`   ${mentionsAnthropic ? "❌" : "✅"} Anthropic mentioned: ${mentionsAnthropic}`);
+        console.log(
+          `   ${mentionsAnthropic ? "❌" : "✅"} Anthropic mentioned: ${mentionsAnthropic}`
+        );
 
         expect(mentionsAnthropic).toBe(false);
 
@@ -286,12 +287,8 @@ describe("Comprehensive Model Identity Tests", () => {
       // The Anthropic model SHOULD mention Anthropic
       expect(mentionsAnthropic).toBe(true);
 
-      console.log(
-        "   ✅ BASELINE CONFIRMED: Anthropic model identifies as Anthropic"
-      );
-      console.log(
-        "   This proves other models NOT mentioning Anthropic are different!\n"
-      );
+      console.log("   ✅ BASELINE CONFIRMED: Anthropic model identifies as Anthropic");
+      console.log("   This proves other models NOT mentioning Anthropic are different!\n");
     }, 30000);
   });
 });

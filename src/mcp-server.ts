@@ -7,13 +7,13 @@
  * Run with: claudish-mcp (stdio transport)
  */
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 import { config } from "dotenv";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 // Load environment variables
 config();
@@ -212,7 +212,9 @@ async function main() {
     "run_prompt",
     "Run a prompt through an OpenRouter model (Grok, GPT-5, Gemini, etc.)",
     {
-      model: z.string().describe("OpenRouter model ID (e.g., 'x-ai/grok-code-fast-1', 'openai/gpt-5.1-codex')"),
+      model: z
+        .string()
+        .describe("OpenRouter model ID (e.g., 'x-ai/grok-code-fast-1', 'openai/gpt-5.1-codex')"),
       prompt: z.string().describe("The prompt to send to the model"),
       system_prompt: z.string().optional().describe("Optional system prompt"),
       max_tokens: z.number().optional().describe("Maximum tokens in response (default: 4096)"),
@@ -229,7 +231,12 @@ async function main() {
         return { content: [{ type: "text", text: response }] };
       } catch (error) {
         return {
-          content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [
+            {
+              type: "text",
+              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
           isError: true,
         };
       }
@@ -246,7 +253,9 @@ async function main() {
 
       if (models.length === 0) {
         return {
-          content: [{ type: "text", text: "No recommended models found. Try search_models instead." }],
+          content: [
+            { type: "text", text: "No recommended models found. Try search_models instead." },
+          ],
         };
       }
 
@@ -285,7 +294,9 @@ async function main() {
 
       if (allModels.length === 0) {
         return {
-          content: [{ type: "text", text: "Failed to load models. Check your internet connection." }],
+          content: [
+            { type: "text", text: "Failed to load models. Check your internet connection." },
+          ],
           isError: true,
         };
       }
@@ -314,11 +325,14 @@ async function main() {
 
       for (const { model } of results) {
         const provider = model.id.split("/")[0];
-        const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-        const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
+        const promptPrice = Number.parseFloat(model.pricing?.prompt || "0") * 1000000;
+        const completionPrice = Number.parseFloat(model.pricing?.completion || "0") * 1000000;
         const avgPrice = (promptPrice + completionPrice) / 2;
-        const pricing = avgPrice > 0 ? `$${avgPrice.toFixed(2)}/1M` : avgPrice < 0 ? "varies" : "FREE";
-        const context = model.context_length ? `${Math.round(model.context_length / 1000)}K` : "N/A";
+        const pricing =
+          avgPrice > 0 ? `$${avgPrice.toFixed(2)}/1M` : avgPrice < 0 ? "varies" : "FREE";
+        const context = model.context_length
+          ? `${Math.round(model.context_length / 1000)}K`
+          : "N/A";
 
         output += `| ${model.id} | ${provider} | ${pricing} | ${context} |\n`;
       }
@@ -339,7 +353,12 @@ async function main() {
       system_prompt: z.string().optional().describe("Optional system prompt"),
     },
     async ({ models, prompt, system_prompt }) => {
-      const results: Array<{ model: string; response: string; error?: string; tokens?: { input: number; output: number } }> = [];
+      const results: Array<{
+        model: string;
+        response: string;
+        error?: string;
+        tokens?: { input: number; output: number };
+      }> = [];
 
       for (const model of models) {
         try {
@@ -366,7 +385,7 @@ async function main() {
         if (result.error) {
           output += `**Error:** ${result.error}\n\n`;
         } else {
-          output += result.response + "\n\n";
+          output += `${result.response}\n\n`;
           if (result.tokens) {
             output += `*Tokens: ${result.tokens.input} in, ${result.tokens.output} out*\n\n`;
           }

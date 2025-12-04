@@ -6,10 +6,10 @@
  */
 
 import { execSync } from "node:child_process";
-import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { tmpdir, homedir, platform } from "node:os";
+import { createInterface } from "node:readline";
 
 const isWindows = platform() === "win32";
 

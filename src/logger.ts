@@ -1,5 +1,5 @@
-import { writeFileSync, appendFile, existsSync, mkdirSync } from "fs";
-import { join } from "path";
+import { appendFile, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 let logFilePath: string | null = null;
 let logLevel: "debug" | "info" | "minimal" = "info"; // Default to structured logging
@@ -73,7 +73,12 @@ export function initLogger(debugMode: boolean, level: "debug" | "info" | "minima
   }
 
   // Create log file with timestamp
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").split("T").join("_").slice(0, -5);
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .split("T")
+    .join("_")
+    .slice(0, -5);
   logFilePath = join(logsDir, `claudish_${timestamp}.log`);
 
   // Write header (sync on init is fine)
@@ -158,7 +163,7 @@ export function getLogLevel(): "debug" | "info" | "minimal" {
 /**
  * Truncate content for logging (keeps first N chars + "...")
  */
-export function truncateContent(content: string | any, maxLength: number = 200): string {
+export function truncateContent(content: string | any, maxLength = 200): string {
   const str = typeof content === "string" ? content : JSON.stringify(content);
   if (str.length <= maxLength) {
     return str;

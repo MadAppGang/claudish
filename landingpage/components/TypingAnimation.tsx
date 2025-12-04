@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import type React from "react";
+import { useEffect, useState } from "react";
 
 interface TypingAnimationProps {
   text: string;
@@ -7,24 +8,28 @@ interface TypingAnimationProps {
   className?: string;
 }
 
-export const TypingAnimation: React.FC<TypingAnimationProps> = ({ 
-  text, 
-  speed = 30, 
+export const TypingAnimation: React.FC<TypingAnimationProps> = ({
+  text,
+  speed = 30,
   onComplete,
-  className = '' 
+  className = "",
 }) => {
-  const [displayedText, setDisplayedText] = useState('');
+  const [displayedText, setDisplayedText] = useState("");
   const [currentIndex, setCurrentIndex] = useState(0);
 
   useEffect(() => {
     if (currentIndex < text.length) {
-      const timeout = setTimeout(() => {
-        setDisplayedText(prev => prev + text[currentIndex]);
-        setCurrentIndex(prev => prev + 1);
-      }, speed + (Math.random() * 20)); // Add slight randomness for realism
+      const timeout = setTimeout(
+        () => {
+          setDisplayedText((prev) => prev + text[currentIndex]);
+          setCurrentIndex((prev) => prev + 1);
+        },
+        speed + Math.random() * 20
+      ); // Add slight randomness for realism
 
       return () => clearTimeout(timeout);
-    } else if (onComplete) {
+    }
+    if (onComplete) {
       onComplete();
     }
   }, [currentIndex, text, speed, onComplete]);

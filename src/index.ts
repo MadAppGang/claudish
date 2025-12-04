@@ -82,10 +82,21 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
-      cliConfig.openrouterApiKey = await promptForApiKey();
-      console.log(""); // Empty line after input
+    // Prompt for API keys if not set (interactive mode only, not monitor mode)
+    // Check which API key is needed based on model selection
+    if (cliConfig.interactive && !cliConfig.monitor) {
+      const isPoeModel = cliConfig.model?.startsWith("poe/");
+      const isOpenRouterModel = cliConfig.model?.includes("/") && !isPoeModel;
+
+      // Prompt for appropriate API key
+      if (isPoeModel && !cliConfig.poeApiKey) {
+        const { promptForPoeApiKey } = await import("./model-selector.js");
+        cliConfig.poeApiKey = await promptForPoeApiKey();
+        console.log(""); // Empty line after input
+      } else if (isOpenRouterModel && !cliConfig.openrouterApiKey) {
+        cliConfig.openrouterApiKey = await promptForApiKey();
+        console.log(""); // Empty line after input
+      }
     }
 
     // Show interactive model selector ONLY in interactive mode when model not specified
@@ -119,7 +130,11 @@ async function runCli() {
     const proxy = await createProxyServer(
       port,
       cliConfig.monitor ? undefined : cliConfig.openrouterApiKey!,
-      cliConfig.monitor ? undefined : (typeof cliConfig.model === "string" ? cliConfig.model : undefined),
+      cliConfig.monitor
+        ? undefined
+        : typeof cliConfig.model === "string"
+          ? cliConfig.model
+          : undefined,
       cliConfig.monitor,
       cliConfig.anthropicApiKey,
       {
@@ -127,7 +142,8 @@ async function runCli() {
         sonnet: cliConfig.modelSonnet,
         haiku: cliConfig.modelHaiku,
         subagent: cliConfig.modelSubagent,
-      }
+      },
+      cliConfig.poeApiKey
     );
 
     // Run Claude Code with proxy

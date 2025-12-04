@@ -1,0 +1,4 @@
+# Poe API Python dependencies
+# Install with: pip install -r requirements.txt
+
+fastapi-poe>=0.0.36

@@ -1,5 +1,5 @@
-import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported } from "firebase/analytics";
+import { initializeApp } from "firebase/app";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCNkRYx0x-dcjPQJSGgCqugOJ17BwOpcDQ",
@@ -14,6 +14,4 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 
 // Analytics only works in browser, not during SSR/build
-export const analytics = isSupported().then((supported) =>
-  supported ? getAnalytics(app) : null
-);
+export const analytics = isSupported().then((supported) => (supported ? getAnalytics(app) : null));

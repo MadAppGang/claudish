@@ -39,13 +39,7 @@
     "@types/bun": "latest",
     "typescript": "^5.9.3"
   },
-  "files": [
-    "dist/",
-    "scripts/",
-    "skills/",
-    "AI_AGENT_GUIDE.md",
-    "recommended-models.json"
-  ],
+  "files": ["dist/", "scripts/", "skills/", "AI_AGENT_GUIDE.md", "recommended-models.json"],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

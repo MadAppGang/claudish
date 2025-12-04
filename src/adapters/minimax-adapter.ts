@@ -1,11 +1,8 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
 import { log } from "../logger";
+import { type AdapterResult, BaseModelAdapter } from "./base-adapter";
 
 export class MiniMaxAdapter extends BaseModelAdapter {
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // MiniMax interleaved thinking is handled by the model
     return {
       cleanedText: textContent,
@@ -22,10 +19,10 @@ export class MiniMaxAdapter extends BaseModelAdapter {
       // MiniMax uses reasoning_split boolean
       request.reasoning_split = true;
 
-      log(`[MiniMaxAdapter] Enabled reasoning_split: true`);
+      log("[MiniMaxAdapter] Enabled reasoning_split: true");
 
       // Cleanup: Remove raw thinking object
-      delete request.thinking;
+      request.thinking = undefined;
     }
 
     return request;

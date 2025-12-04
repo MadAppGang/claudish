@@ -22,20 +22,20 @@
  * for later inclusion in tool results.
  */
 
-import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
 import { log } from "../logger";
+import { type AdapterResult, BaseModelAdapter } from "./base-adapter";
 
 export class GeminiAdapter extends BaseModelAdapter {
   // Store for thought signatures: tool_call_id -> signature
   private thoughtSignatures = new Map<string, string>();
 
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Gemini doesn't use special text formats like Grok's XML
     // This adapter is primarily for reasoning_details extraction
     return {
       cleanedText: textContent,
       extractedToolCalls: [],
-      wasTransformed: false
+      wasTransformed: false,
     };
   }
 
@@ -59,13 +59,15 @@ export class GeminiAdapter extends BaseModelAdapter {
         const budget = Math.min(budget_tokens, MAX_GEMINI_BUDGET);
 
         request.thinking_config = {
-          thinking_budget: budget
+          thinking_budget: budget,
         };
-        log(`[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_config.thinking_budget: ${budget}`);
+        log(
+          `[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_config.thinking_budget: ${budget}`
+        );
       }
 
       // Cleanup: Remove raw thinking object
-      delete request.thinking;
+      request.thinking = undefined;
     }
     return request;
   }
@@ -74,7 +76,9 @@ export class GeminiAdapter extends BaseModelAdapter {
    * Extract thought signatures from reasoning_details
    * This should be called when processing streaming chunks
    */
-  extractThoughtSignaturesFromReasoningDetails(reasoningDetails: any[] | undefined): Map<string, string> {
+  extractThoughtSignaturesFromReasoningDetails(
+    reasoningDetails: any[] | undefined
+  ): Map<string, string> {
     const extracted = new Map<string, string>();
 
     if (!reasoningDetails || !Array.isArray(reasoningDetails)) {

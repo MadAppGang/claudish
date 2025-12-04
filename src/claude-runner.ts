@@ -1,8 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
-import { tmpdir, platform } from "node:os";
-import { join, basename } from "node:path";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 
@@ -192,11 +192,13 @@ export async function runClaudeWithProxy(
     // Monitor mode: Don't set ANTHROPIC_API_KEY at all
     // This allows Claude Code to use its native authentication
     // Delete any placeholder keys from environment
-    delete env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_API_KEY = undefined;
   } else {
     // OpenRouter mode: Use placeholder to prevent Claude Code dialog
     // The proxy will handle authentication with OPENROUTER_API_KEY
-    env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
+    env.ANTHROPIC_API_KEY =
+      process.env.ANTHROPIC_API_KEY ||
+      "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
   }
 
   // Helper function to log messages (respects quiet flag)
