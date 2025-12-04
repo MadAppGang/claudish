@@ -15,6 +15,7 @@ Environment:
     POE_API_KEY - API key from https://poe.com/api_key
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -217,24 +218,171 @@ async def stream_response(
 def extract_system(request: dict[str, Any]) -> str:
     """Extract system message from request."""
     system = request.get("system", "")
-    
+
     if isinstance(system, str):
         return system
-    
+
     if isinstance(system, list):
         parts = []
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(block.get("text", ""))
         return "\n".join(parts)
-    
+
     return ""
+
+
+async def diagnose_poe_connection(bot: str, message: str, api_key: str) -> None:
+    """Diagnose Poe API connection for a specific bot and message.
+
+    Args:
+        bot: The bot name (without 'poe/' prefix)
+        message: Test message to send
+        api_key: Poe API key
+    """
+    print(f"🔍 Diagnosing Poe API connection for bot: {bot}", file=sys.stderr)
+    print(f"📝 Test message: {message}", file=sys.stderr)
+    print(f"🔑 API Key: {'✓ Present' if api_key else '✗ Missing'}", file=sys.stderr)
+    print("-" * 60, file=sys.stderr)
+
+    # Test basic connectivity
+    print("1. Testing basic connectivity...", file=sys.stderr)
+    try:
+        # Create a simple test request
+        test_messages = [fp.ProtocolMessage(role="user", content=message)]
+
+        print(f"   📤 Sending request to Poe API...", file=sys.stderr)
+        print(f"   🤖 Bot name: {bot}", file=sys.stderr)
+        print(f"   🔗 API endpoint: fastapi-poe SDK", file=sys.stderr)
+
+        response_count = 0
+        response_chunks = []
+        response_iterator = None
+        try:
+            response_iterator = fp.get_bot_response(
+                messages=test_messages,
+                bot_name=bot,
+                api_key=api_key
+            )
+
+            async for partial in response_iterator:
+                response_count += 1
+                if partial.text:
+                    response_chunks.append(partial.text)
+        finally:
+            # Ensure the async generator is properly closed
+            if response_iterator is not None:
+                try:
+                    await response_iterator.aclose()
+                except Exception:
+                    # Ignore cleanup errors - they don't affect the test result
+                    pass
+
+        if response_count > 0:
+            print(f"   ✅ SUCCESS: Received {response_count} response chunks", file=sys.stderr)
+            print(f"   📥 Received response chunks:", file=sys.stderr)
+            print(f"   ---", file=sys.stderr)
+            for chunk in response_chunks:
+                print(f"   {chunk}", file=sys.stderr)
+            print(f"   ---", file=sys.stderr)
+        else:
+            print(f"   ⚠️  WARNING: No response chunks received", file=sys.stderr)
+
+    except Exception as e:
+        print(f"   ❌ ERROR: {str(e)}", file=sys.stderr)
+
+        # Analyze common error types
+        error_str = str(e).lower()
+        if "401" in error_str or "unauthorized" in error_str:
+            print(f"   🔍 Analysis: Authentication error (401)", file=sys.stderr)
+            print(f"   💡 Suggestions:", file=sys.stderr)
+            print(f"      - Check if POE_API_KEY is valid", file=sys.stderr)
+            print(f"      - Verify API key hasn't expired", file=sys.stderr)
+            print(f"      - Ensure bot '{bot}' is accessible with your key", file=sys.stderr)
+        elif "no cookie auth credentials found" in error_str:
+            print(f"   🔍 Analysis: Cookie authentication required", file=sys.stderr)
+            print(f"   💡 This suggests bot '{bot}' may require special authentication", file=sys.stderr)
+            print(f"   💡 Suggestions:", file=sys.stderr)
+            print(f"      - Try a different bot (e.g., grok-4.1-fast-reasoning)", file=sys.stderr)
+            print(f"      - Check if bot is available via API", file=sys.stderr)
+            print(f"      - Contact Poe support about bot access", file=sys.stderr)
+        elif "unknown model" in error_str or "not found" in error_str:
+            print(f"   🔍 Analysis: Bot not found or unavailable", file=sys.stderr)
+            print(f"   💡 Suggestions:", file=sys.stderr)
+            print(f"      - Verify bot name '{bot}' is correct", file=sys.stderr)
+            print(f"      - Check bot availability in your region", file=sys.stderr)
+            print(f"      - Try alternative bot names", file=sys.stderr)
+        else:
+            print(f"   🔍 Analysis: Unknown error type", file=sys.stderr)
+            print(f"   💡 Check Poe API status and network connectivity", file=sys.stderr)
+
+    print("-" * 60, file=sys.stderr)
+    print("🏁 Diagnosis complete", file=sys.stderr)
+
+
+def parse_diagnostic_args() -> argparse.Namespace:
+    """Parse command line arguments for diagnostic mode."""
+    parser = argparse.ArgumentParser(
+        description="Diagnose Poe API connection issues",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  POE_API_KEY=your-key python poe-bridge.py --diagnose claude-haiku-4.5 --message "hello"
+  POE_API_KEY=your-key python poe-bridge.py --diagnose grok-4.1-fast-reasoning --message "test"
+        """
+    )
+
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Run in diagnostic mode to test Poe API connectivity"
+    )
+
+    parser.add_argument(
+        "bot",
+        nargs="?",
+        help="Bot name to test (without 'poe/' prefix)"
+    )
+
+    parser.add_argument(
+        "--message",
+        type=str,
+        default="Hello, this is a test message.",
+        help="Test message to send to the model"
+    )
+
+    return parser.parse_args()
 
 
 def main() -> None:
     """Main entry point."""
+    # Parse command line arguments first
+    try:
+        args = parse_diagnostic_args()
+    except SystemExit:
+        # argparse calls sys.exit on --help, which we want to allow
+        return
+
+    # Check if we're in diagnostic mode
+    if args.diagnose:
+        if not args.bot:
+            print("❌ ERROR: bot name is required when using --diagnose", file=sys.stderr)
+            print("Example: python poe-bridge.py --diagnose claude-haiku-4.5", file=sys.stderr)
+            sys.exit(1)
+
+        api_key = os.environ.get("POE_API_KEY")
+        if not api_key:
+            print("❌ ERROR: POE_API_KEY environment variable not set", file=sys.stderr)
+            print("Get your key from: https://poe.com/api_key", file=sys.stderr)
+            sys.exit(1)
+
+        # Run diagnostic
+        asyncio.run(diagnose_poe_connection(args.bot, args.message, api_key))
+        return
+
+    # Original bridge mode
     api_key = os.environ.get("POE_API_KEY")
-    
+
     if not api_key:
         send_sse("error", {
             "type": "error",
@@ -245,7 +393,7 @@ def main() -> None:
         })
         print("data: [DONE]", flush=True)
         sys.exit(1)
-    
+
     # Read request from stdin
     try:
         raw_input = sys.stdin.read()
@@ -262,12 +410,12 @@ def main() -> None:
         })
         print("data: [DONE]", flush=True)
         sys.exit(1)
-    
+
     bot_name = request.get("model", "GPT-3.5-Turbo")
     messages = request.get("messages", [])
     system = extract_system(request)
     thinking_budget = request.get("thinking_budget")
-    
+
     # Run async stream
     asyncio.run(stream_response(bot_name, messages, system, api_key, thinking_budget))
 

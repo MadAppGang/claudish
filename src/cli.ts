@@ -155,6 +155,67 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--reset-costs") {
       // Reset accumulated cost statistics
       config.resetCosts = true;
+    } else if (arg === "--diagnose-poe") {
+      const modelArg = args[++i];
+      const messageArg = args[++i];
+
+      if (!modelArg) {
+        console.error("--diagnose-poe requires a bot name");
+        console.error("Usage: --diagnose-poe <bot> [message]");
+        console.error("Example: --diagnose-poe claude-haiku-4.5 \"Hello, test message\"");
+        process.exit(1);
+      }
+
+      // Strip poe/ prefix if present
+      const botName = modelArg.replace(/^poe\//, "");
+      const message = messageArg || "Hello, this is a test message.";
+
+      console.log(`🔍 Diagnosing Poe API connection for bot: ${botName}`);
+      console.log(`📝 Test message: ${message}`);
+      console.log("-".repeat(60));
+
+      // Check for POE_API_KEY
+      const poeApiKey = process.env.POE_API_KEY;
+      if (!poeApiKey) {
+        console.error("❌ ERROR: POE_API_KEY environment variable not set");
+        console.error("Get your key from: https://poe.com/api_key");
+        process.exit(1);
+      }
+
+      console.log("🔑 API Key: ✓ Present");
+      console.log("");
+
+      // Run Python bridge diagnostic mode
+      const { spawn } = await import("child_process");
+      const pythonBridge = spawn("python3", [
+        "scripts/poe-bridge.py",
+        "--diagnose",
+        botName,
+        "--message", message
+      ], {
+        stdio: "inherit",
+        env: { ...process.env, POE_API_KEY: poeApiKey }
+      });
+
+      pythonBridge.on("exit", (code) => {
+        if (code !== 0) {
+          console.error(`\n❌ Diagnostic failed with exit code: ${code}`);
+          console.error("💡 Try running the Python bridge directly:");
+          console.error(`   POE_API_KEY=your-key python3 scripts/poe-bridge.py --diagnose ${botName}`);
+        }
+        process.exit(code || 0);
+      });
+
+      pythonBridge.on("error", (error) => {
+        console.error("❌ Failed to run Python bridge diagnostic:");
+        console.error(error.message);
+        console.error("\n💡 Make sure python3 is installed and fastapi-poe is available:");
+        console.error("   pip install fastapi-poe");
+        process.exit(1);
+      });
+
+      // Don't continue with normal execution
+      process.exit(0);
     } else if (arg === "--version") {
       printVersion();
       process.exit(0);
