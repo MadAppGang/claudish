@@ -1,21 +1,48 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir, platform } from "node:os";
-import { join, basename } from "node:path";
+import { posix as pathPosix, win32 as pathWin32 } from "node:path";
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 
 const isWindows = platform() === "win32";
+const path = isWindows ? pathWin32 : pathPosix;
+
+/**
+ * Get a safe temp directory path that works with Windows paths containing spaces
+ * Uses the current working directory's temp folder if system temp has spaces
+ */
+function getSafeTempDir(): string {
+  const systemTemp = tmpdir();
+
+  // On Windows, if system temp has spaces, try to use a path without spaces
+  if (isWindows && systemTemp.includes(" ")) {
+    // Try to use a temp directory in the current project
+    // This is a workaround for Windows paths with spaces
+    const projectTemp = pathWin32.join(process.cwd(), ".claudish-temp");
+    try {
+      // Try to create it if it doesn't exist (will be cleaned up later)
+      if (!existsSync(projectTemp)) {
+        mkdirSync(projectTemp, { recursive: true });
+      }
+      return projectTemp;
+    } catch (e) {
+      // Fallback to system temp if project temp fails
+    }
+  }
+
+  return systemTemp;
+}
 
 /**
  * Create a cross-platform Node.js script for status line
  * This replaces the bash script to work on Windows
  */
 function createStatusLineScript(tokenFilePath: string): string {
-  const tempDir = tmpdir();
+  const tempDir = getSafeTempDir();
   const timestamp = Date.now();
-  const scriptPath = join(tempDir, `claudish-status-${timestamp}.js`);
+  const scriptPath = path.join(tempDir, `claudish-status-${timestamp}.js`);
 
   // Escape backslashes for Windows paths in the script
   const escapedTokenPath = tokenFilePath.replace(/\\/g, "\\\\");
@@ -71,13 +98,13 @@ process.stdin.on('end', () => {
  * This ensures each Claudish instance has its own status line without affecting
  * global Claude Code settings or other running instances
  */
-function createTempSettingsFile(modelDisplay: string, port: string): string {
-  const tempDir = tmpdir();
+function createTempSettingsFile(_modelDisplay: string, port: string): string {
+  const tempDir = getSafeTempDir();
   const timestamp = Date.now();
-  const tempPath = join(tempDir, `claudish-settings-${timestamp}.json`);
+  const tempPath = path.join(tempDir, `claudish-settings-${timestamp}.json`);
 
   // Token file path (cross-platform)
-  const tokenFilePath = join(tempDir, `claudish-tokens-${port}.json`);
+  const tokenFilePath = path.join(tempDir, `claudish-tokens-${port}.json`);
 
   let statusCommand: string;
 
@@ -107,7 +134,9 @@ function createTempSettingsFile(modelDisplay: string, port: string): string {
     },
   };
 
+  // Write file using native path format
   writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
+  // Return path in native format
   return tempPath;
 }
 
@@ -133,7 +162,16 @@ export async function runClaudeWithProxy(
   const claudeArgs: string[] = [];
 
   // Add settings file flag first (applies to this instance only)
-  claudeArgs.push("--settings", tempSettingsPath);
+  // Convert to absolute path using native path module
+  let absoluteSettingsPath = path.resolve(tempSettingsPath);
+
+  // For Windows, ensure we use forward slashes in the path passed to Claude Code
+  // Claude Code on Windows can handle both, but forward slashes are safer
+  if (isWindows) {
+    absoluteSettingsPath = absoluteSettingsPath.replace(/\\/g, "/");
+  }
+
+  claudeArgs.push("--settings", absoluteSettingsPath);
 
   // Interactive mode - no automatic arguments
   if (config.interactive) {
@@ -215,10 +253,23 @@ export async function runClaudeWithProxy(
 
   // Spawn claude CLI process using Node.js child_process (works on both Node.js and Bun)
   // Windows needs shell: true to find .cmd/.bat files like claude.cmd
+  // When using shell on Windows, spawn handles argument quoting automatically
+  // but we ensure paths with spaces are properly handled by using array format
   const proc = spawn("claude", claudeArgs, {
     env,
     stdio: "inherit", // Stream stdin/stdout/stderr to parent
     shell: isWindows,
+  });
+
+  // Handle process errors (e.g., command not found)
+  proc.on("error", (error) => {
+    console.error("\n[claudish] Error starting Claude Code:", error.message);
+    if (error.message.includes("ENOENT") || error.message.includes("not found")) {
+      console.error("[claudish] Claude Code CLI not found in PATH");
+      console.error("[claudish] Install it from: https://claude.com/claude-code");
+      console.error("[claudish] Or run: npm install -g claude-code");
+    }
+    process.exit(1);
   });
 
   // Handle process termination signals (includes cleanup)
