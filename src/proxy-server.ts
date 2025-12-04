@@ -70,7 +70,13 @@ export async function createProxyServer(
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
 
-    // 2. Resolve target model based on mappings or defaults
+    // 2. Poe Model Detection (poe/ prefix) - Check original request first
+    if (isPoeModel(requestedModel)) {
+      log(`[Proxy] Routing to Poe: ${requestedModel}`);
+      return getPoeHandler(requestedModel);
+    }
+
+    // 3. Resolve target model based on mappings or defaults (for non-Poe models)
     let target = model || requestedModel; // Start with global default or request
     log(`[Proxy] Initial target: ${target}, global model: ${model}`);
 
@@ -85,12 +91,6 @@ export async function createProxyServer(
     }
 
     log(`[Proxy] After mapping check, target: ${target}`);
-
-    // 3. Poe Model Detection (poe/ prefix)
-    if (isPoeModel(target)) {
-      log(`[Proxy] Routing to Poe: ${target}`);
-      return getPoeHandler(target);
-    }
 
     // 4. Native vs OpenRouter Decision
     // Heuristic: OpenRouter models have "/", Native ones don't.
