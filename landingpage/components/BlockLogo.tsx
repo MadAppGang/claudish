@@ -64,14 +64,14 @@ export const BlockLogo: React.FC = () => {
         <span className="font-hand text-5xl md:text-7xl text-claude-ish opacity-0 animate-writeIn block -rotate-6">
           ish
         </span>
-        <div className="absolute top-0 right-[-10px] w-2 h-2 rounded-full bg-claude-ish/50 animate-ping delay-1000"></div>
+        <div className="absolute top-0 right-[-10px] w-2 h-2 rounded-full bg-claude-ish/50 animate-ping delay-1000" />
       </div>
     </div>
   );
 };
 
 const Letter: React.FC<{ char: string }> = ({ char }) => {
-  const grid = LETTERS[char] || LETTERS["I"];
+  const grid = LETTERS[char] || LETTERS.I;
 
   // Dimensions for blocks
   const blockSize = "w-2 h-2 md:w-[18px] md:h-[18px]";

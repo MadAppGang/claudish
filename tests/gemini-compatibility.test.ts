@@ -47,7 +47,7 @@ describe("Gemini Thinking Block Compatibility", () => {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk1)}\n\n`));
             setTimeout(() => {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk2)}\n\n`));
-              controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
               controller.close();
             }, 10);
           },

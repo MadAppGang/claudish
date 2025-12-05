@@ -43,6 +43,13 @@ export abstract class BaseModelAdapter {
   abstract shouldHandle(modelId: string): boolean;
 
   /**
+   * Get the model ID (public accessor)
+   */
+  getModelId(): string {
+    return this.modelId;
+  }
+
+  /**
    * Get adapter name for logging
    */
   abstract getName(): string;
@@ -51,10 +58,10 @@ export abstract class BaseModelAdapter {
    * Handle any request preparation before sending to the model
    * Useful for mapping parameters like thinking budget -> reasoning_effort
    * @param request - The OpenRouter payload being prepared
-   * @param originalRequest - The original Claude-format request
+   * @param _originalRequest - The original Claude-format request (unused in base class)
    * @returns The modified request payload
    */
-  prepareRequest(request: any, originalRequest: any): any {
+  prepareRequest(request: any, _originalRequest: any): any {
     return request;
   }
 
@@ -71,7 +78,7 @@ export abstract class BaseModelAdapter {
  * Default adapter that does no transformation
  */
 export class DefaultAdapter extends BaseModelAdapter {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],
@@ -79,7 +86,7 @@ export class DefaultAdapter extends BaseModelAdapter {
     };
   }
 
-  shouldHandle(modelId: string): boolean {
+  shouldHandle(_modelId: string): boolean {
     return false; // Default adapter is fallback
   }
 

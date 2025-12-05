@@ -23,13 +23,13 @@
  */
 
 import { log } from "../logger";
-import { type AdapterResult, BaseModelAdapter, ToolCall } from "./base-adapter";
+import { type AdapterResult, BaseModelAdapter } from "./base-adapter";
 
 export class GeminiAdapter extends BaseModelAdapter {
   // Store for thought signatures: tool_call_id -> signature
   private thoughtSignatures = new Map<string, string>();
 
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Gemini doesn't use special text formats like Grok's XML
     // This adapter is primarily for reasoning_details extraction
     return {
@@ -67,7 +67,7 @@ export class GeminiAdapter extends BaseModelAdapter {
       }
 
       // Cleanup: Remove raw thinking object
-      delete request.thinking;
+      request.thinking = undefined;
     }
     return request;
   }

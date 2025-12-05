@@ -6,8 +6,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { createProxyServer } from "../src/proxy-server";
 import type { ProxyServer } from "../src/types";
 

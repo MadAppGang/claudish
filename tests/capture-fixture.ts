@@ -10,8 +10,8 @@
  *   bun tests/capture-fixture.ts logs/monitor.log --name "simple_query" --category "text"
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 interface FixtureEvent {
   event: string;
@@ -126,7 +126,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
       !line.includes("API Key found:") &&
       !line.includes("Request body:")
     ) {
-      jsonBuffer += line + "\n";
+      jsonBuffer += `${line}\n`;
     }
 
     // Capture response events (SSE format)

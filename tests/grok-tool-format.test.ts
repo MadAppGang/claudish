@@ -186,7 +186,7 @@ describe("Grok Tool Format Fix", () => {
       };
 
       try {
-        const response = await fetch(`http://localhost:8340/v1/messages`, {
+        const response = await fetch("http://localhost:8340/v1/messages", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

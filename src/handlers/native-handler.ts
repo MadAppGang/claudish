@@ -19,7 +19,7 @@ export class NativeHandler implements ModelHandler {
 
     // Extract API key
     const extractedApiKey =
-      originalHeaders["x-api-key"] || originalHeaders["authorization"] || this.apiKey;
+      originalHeaders["x-api-key"] || originalHeaders.authorization || this.apiKey;
 
     if (!extractedApiKey) {
       log("[Native] WARNING: No API key found in headers!");
@@ -38,8 +38,8 @@ export class NativeHandler implements ModelHandler {
       "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
     };
 
-    if (originalHeaders["authorization"]) {
-      headers["authorization"] = originalHeaders["authorization"];
+    if (originalHeaders.authorization) {
+      headers.authorization = originalHeaders.authorization;
     }
     if (originalHeaders["x-api-key"]) {
       headers["x-api-key"] = originalHeaders["x-api-key"];
@@ -84,7 +84,7 @@ export class NativeHandler implements ModelHandler {
                   buffer += decoder.decode(value, { stream: true });
                   const lines = buffer.split("\n");
                   buffer = lines.pop() || "";
-                  for (const line of lines) if (line.trim()) eventLog += line + "\n";
+                  for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
                 }
                 if (eventLog) log(eventLog);
                 controller.close();

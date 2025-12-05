@@ -385,7 +385,7 @@ async function main() {
         if (result.error) {
           output += `**Error:** ${result.error}\n\n`;
         } else {
-          output += result.response + "\n\n";
+          output += `${result.response}\n\n`;
           if (result.tokens) {
             output += `*Tokens: ${result.tokens.input} in, ${result.tokens.output} out*\n\n`;
           }

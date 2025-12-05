@@ -140,7 +140,7 @@ const HeroSection: React.FC = () => {
       <div className="text-center mb-12 max-w-5xl mx-auto z-10 flex flex-col items-center">
         <div className="flex gap-3 mb-8 animate-fadeIn">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-claude-ish">
-            <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse"></span>
+            <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse" />
             v2.4.0 Public Beta
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-900/20 border border-green-500/20 text-xs font-mono text-green-400">
@@ -180,7 +180,7 @@ const HeroSection: React.FC = () => {
                 <span className="text-claude-ish select-none font-bold">$</span>
                 <span>npm install -g claudish</span>
               </div>
-              <div className="w-full h-[1px] bg-white/5"></div>
+              <div className="w-full h-[1px] bg-white/5" />
               <div className="flex items-center gap-3 text-white font-bold">
                 <span className="text-claude-ish select-none font-bold">$</span>
                 <span>claudish --free</span>
@@ -262,7 +262,7 @@ const HeroSection: React.FC = () => {
                                 <span className="text-gray-600">39m ago</span>
                                 <span>Refactoring Auth Middleware</span>
                               </div>
-                              <div className="w-full h-[1px] bg-[#30363d] my-2"></div>
+                              <div className="w-full h-[1px] bg-[#30363d] my-2" />
                               <div className="text-[#d97757] font-bold">What's new</div>
                               <div className="text-gray-400">
                                 Fixed duplicate message display when using Gemini.
@@ -300,7 +300,7 @@ const HeroSection: React.FC = () => {
                       {line.type === "tool" && (
                         <div className="my-2 px-2">
                           <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                            <div className="w-2 h-2 rounded-full bg-blue-500" />
                             <span className="bg-[#1f2937] text-blue-400 px-1 rounded text-xs font-bold">
                               {line.content.split("(")[0]}
                             </span>

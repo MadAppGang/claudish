@@ -16,7 +16,7 @@ import { type AdapterResult, BaseModelAdapter, type ToolCall } from "./base-adap
 export class GrokAdapter extends BaseModelAdapter {
   private xmlBuffer = "";
 
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Accumulate text to handle XML split across multiple chunks
     this.xmlBuffer += textContent;
 
@@ -99,7 +99,7 @@ export class GrokAdapter extends BaseModelAdapter {
       }
 
       // Always remove raw thinking object for Grok to avoid API errors
-      delete request.thinking;
+      request.thinking = undefined;
     }
 
     return request;

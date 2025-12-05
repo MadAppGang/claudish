@@ -64,7 +64,7 @@ for (const model of USER_SPECIFIED_MODELS) {
 
       // Try to suggest correct model ID
       if (error.includes("not a valid model")) {
-        console.log(`  💡 Suggestion: This model ID may be outdated`);
+        console.log("  💡 Suggestion: This model ID may be outdated");
       }
     }
   } catch (err) {
