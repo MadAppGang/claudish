@@ -17,10 +17,16 @@ export const MODEL_INFO: Record<
     priority: 1,
     provider: "xAI",
   },
+  "x-ai/grok-4.1-fast": {
+    name: "Fast agentic tool calling",
+    description: "Fast agentic tool calling, 2M context",
+    priority: 2,
+    provider: "xAI",
+  },
   "minimax/minimax-m2": {
     name: "Compact high-efficiency",
     description: "Compact high-efficiency",
-    priority: 2,
+    priority: 3,
     provider: "MiniMax",
   },
   "google/gemini-2.5-flash": {
