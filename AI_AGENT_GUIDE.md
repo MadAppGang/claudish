@@ -10,7 +10,7 @@
 
 ```bash
 # 1. Get available models
-claudish --list-models --json
+claudish --models --json
 
 # 2. Run task with specific model
 claudish --model x-ai/grok-code-fast-1 "your task here"
@@ -57,7 +57,7 @@ Claudish = Claude Code + OpenRouter models
 
 **Update models:**
 ```bash
-claudish --list-models --force-update
+claudish --models --force-update
 ```
 
 ## Critical: File-Based Pattern for Sub-Agents
@@ -177,7 +177,7 @@ for (const model of models) {
 | `--model <model>` | OpenRouter model to use | `--model x-ai/grok-code-fast-1` |
 | `--stdin` | Read prompt from stdin | `cat task.md \| claudish --stdin --model grok` |
 | `--json` | JSON output (structured) | `claudish --json "task"` |
-| `--list-models` | List available models | `claudish --list-models --json` |
+| `--models` | List available models | `claudish --models --json` |
 
 ### Useful Flags
 
@@ -223,7 +223,7 @@ claudish --model qwen/qwen3-vl-235b-a22b-instruct "implement dashboard from desi
 ### JSON Output (Recommended)
 
 ```bash
-claudish --list-models --json
+claudish --models --json
 ```
 
 **Output:**
@@ -256,7 +256,7 @@ claudish --list-models --json
 ### Parse in TypeScript
 
 ```typescript
-const { stdout } = await Bash("claudish --list-models --json");
+const { stdout } = await Bash("claudish --models --json");
 const data = JSON.parse(stdout);
 
 // Get all model IDs
@@ -332,7 +332,7 @@ try {
 } catch (error) {
   if (error.message.includes("Model not found")) {
     console.error("Model unavailable. Listing alternatives...");
-    await Bash("claudish --list-models");
+    await Bash("claudish --models");
   } else {
     console.error("Claudish error:", error.message);
   }
@@ -413,7 +413,7 @@ console.log(`Total cost: $${totalCost.toFixed(4)}`);
 npm install -g claudish
 
 # Get models
-claudish --list-models --json
+claudish --models --json
 
 # Run task
 claudish --model x-ai/grok-code-fast-1 "your task"
@@ -425,7 +425,7 @@ git diff | claudish --stdin --model google/gemini-2.5-flash "review"
 claudish --json --model grok "task" | jq -r '.total_cost_usd'
 
 # Update models
-claudish --list-models --force-update
+claudish --models --force-update
 
 # Get help
 claudish --help

@@ -942,7 +942,7 @@ MODEL MAPPING (per-role override):
   --model-subagent <model> Model for sub-agents (Task tool)
 
 CUSTOM MODELS:
-  Claudish accepts ANY valid OpenRouter model ID, even if not in --list-models
+  Claudish accepts ANY valid OpenRouter model ID, even if not in --models
   Example: claudish --model your_provider/custom-model-123 "task"
 
 MODES:
@@ -1216,7 +1216,7 @@ function printAvailableModels(): void {
   console.log("Set default with: export CLAUDISH_MODEL=<model>");
   console.log("               or: export ANTHROPIC_MODEL=<model>");
   console.log("Or use: claudish --model <model> ...");
-  console.log("\nForce update: claudish --list-models --force-update\n");
+  console.log("\nForce update: claudish --models --force-update\n");
 }
 
 /**
