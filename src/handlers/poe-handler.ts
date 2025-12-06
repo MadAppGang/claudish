@@ -34,6 +34,13 @@ interface ContentBlock {
   stopped: boolean;
 }
 
+interface ToolBlock extends ContentBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 /**
  * Enhanced SSE parser for robust handling of Server-Sent Events
  */
@@ -89,6 +96,8 @@ class SSEParser {
  */
 class ContentBlockTracker {
   private blocks: Map<number, ContentBlock> = new Map();
+  private tools: Map<number, ToolBlock> = new Map();
+  private toolIndexToBlockIndex: Map<number, number> = new Map();
   private nextIndex: number = 0;
 
   /**
@@ -105,6 +114,24 @@ class ContentBlockTracker {
   }
 
   /**
+   * Start a new tool block and return its index
+   */
+  startToolBlock(toolIndex: number, id: string, name: string): number {
+    const blockIndex = this.nextIndex++;
+    const toolBlock: ToolBlock = {
+      type: "tool_use",
+      id,
+      name,
+      arguments: "",
+      started: true,
+      stopped: false
+    };
+    this.tools.set(blockIndex, toolBlock);
+    this.toolIndexToBlockIndex.set(toolIndex, blockIndex);
+    return blockIndex;
+  }
+
+  /**
    * Add text delta to a block
    */
   addTextDelta(index: number, text: string): void {
@@ -116,6 +143,19 @@ class ContentBlockTracker {
   }
 
   /**
+   * Add arguments delta to a tool block
+   */
+  addToolArguments(toolIndex: number, args: string): void {
+    const blockIndex = this.toolIndexToBlockIndex.get(toolIndex);
+    if (blockIndex !== undefined) {
+      const tool = this.tools.get(blockIndex);
+      if (tool && tool.started && !tool.stopped) {
+        tool.arguments += args;
+      }
+    }
+  }
+
+  /**
    * Stop a specific block
    */
   stopBlock(index: number): void {
@@ -123,6 +163,18 @@ class ContentBlockTracker {
     if (block && block.started && !block.stopped) {
       block.stopped = true;
     }
+
+    const tool = this.tools.get(index);
+    if (tool && tool.started && !tool.stopped) {
+      tool.stopped = true;
+    }
+  }
+
+  /**
+   * Get the block index for a tool index
+   */
+  getToolBlockIndex(toolIndex: number): number | undefined {
+    return this.toolIndexToBlockIndex.get(toolIndex);
   }
 
   /**
@@ -130,12 +182,21 @@ class ContentBlockTracker {
    */
   ensureAllBlocksStopped(): number[] {
     const stoppedIndices: number[] = [];
+
     for (const [index, block] of this.blocks) {
       if (block.started && !block.stopped) {
         block.stopped = true;
         stoppedIndices.push(index);
       }
     }
+
+    for (const [index, tool] of this.tools) {
+      if (tool.started && !tool.stopped) {
+        tool.stopped = true;
+        stoppedIndices.push(index);
+      }
+    }
+
     return stoppedIndices;
   }
 }
@@ -414,10 +475,12 @@ export class PoeHandler implements ModelHandler {
         return null;
       }
 
-      // Handle tool_calls deltas (if supported)
+      // Handle tool_calls deltas with full Claude compatibility
       if (delta.tool_calls) {
-        // For now, ignore tool_calls chunks but don't log as error
-        return null;
+        return {
+          type: "tool_calls",
+          tool_calls: delta.tool_calls
+        };
       }
 
       // Handle empty deltas (valid OpenAI chunks that contain no content)
@@ -584,6 +647,79 @@ export class PoeHandler implements ModelHandler {
                         index: currentBlockIndex
                       });
                       currentBlockIndex = null;
+                    } else if (claudeChunk.type === "tool_calls" && claudeChunk.tool_calls) {
+                      // Handle tool_calls with elegant Claude-compatible conversion
+                      for (const toolCall of claudeChunk.tool_calls) {
+                        const toolIndex = toolCall.index;
+
+                        // Start tool block if we have a function name
+                        if (toolCall.function?.name) {
+                          const existingBlockIndex = blockTracker.getToolBlockIndex(toolIndex);
+
+                          if (!existingBlockIndex) {
+                            // Stop any current text block before starting tool block
+                            if (currentBlockIndex !== null) {
+                              send("content_block_stop", {
+                                type: "content_block_stop",
+                                index: currentBlockIndex
+                              });
+                              blockTracker.stopBlock(currentBlockIndex);
+                              currentBlockIndex = null;
+                            }
+
+                            // Start new tool block with elegant ID generation
+                            const toolId = toolCall.id || `tool_${Date.now()}_${toolIndex}`;
+                            const toolBlockIndex = blockTracker.startToolBlock(
+                              toolIndex,
+                              toolId,
+                              toolCall.function.name
+                            );
+
+                            send("content_block_start", {
+                              type: "content_block_start",
+                              index: toolBlockIndex,
+                              content_block: {
+                                type: "tool_use",
+                                id: toolId,
+                                name: toolCall.function.name
+                              }
+                            });
+                          }
+                        }
+
+                        // Add function arguments if present
+                        if (toolCall.function?.arguments) {
+                          blockTracker.addToolArguments(toolIndex, toolCall.function.arguments);
+
+                          const toolBlockIndex = blockTracker.getToolBlockIndex(toolIndex);
+                          if (toolBlockIndex !== undefined) {
+                            send("content_block_delta", {
+                              type: "content_block_delta",
+                              index: toolBlockIndex,
+                              delta: {
+                                type: "input_json_delta",
+                                partial_json: toolCall.function.arguments
+                              }
+                            });
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Handle tool_calls finish reason
+                  if (openaiChunk.choices?.[0]?.finish_reason === "tool_calls") {
+                    // Stop all tool blocks elegantly
+                    const stoppedBlocks = blockTracker.ensureAllBlocksStopped();
+                    for (const blockIndex of stoppedBlocks) {
+                      try {
+                        send("content_block_stop", {
+                          type: "content_block_stop",
+                          index: blockIndex
+                        });
+                      } catch (e) {
+                        // Ignore errors during tool block cleanup
+                      }
                     }
                   }
                 } catch (e) {
