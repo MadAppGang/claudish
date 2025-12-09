@@ -8,13 +8,13 @@
  * - Others: (future)
  */
 
-import { BaseModelAdapter, DefaultAdapter } from "./base-adapter";
-import { GrokAdapter } from "./grok-adapter";
+import { type BaseModelAdapter, DefaultAdapter } from "./base-adapter";
+import { DeepSeekAdapter } from "./deepseek-adapter";
 import { GeminiAdapter } from "./gemini-adapter";
+import { GrokAdapter } from "./grok-adapter";
+import { MiniMaxAdapter } from "./minimax-adapter";
 import { OpenAIAdapter } from "./openai-adapter";
 import { QwenAdapter } from "./qwen-adapter";
-import { MiniMaxAdapter } from "./minimax-adapter";
-import { DeepSeekAdapter } from "./deepseek-adapter";
 
 export class AdapterManager {
   private adapters: BaseModelAdapter[];
@@ -28,7 +28,7 @@ export class AdapterManager {
       new OpenAIAdapter(modelId),
       new QwenAdapter(modelId),
       new MiniMaxAdapter(modelId),
-      new DeepSeekAdapter(modelId)
+      new DeepSeekAdapter(modelId),
     ];
     this.defaultAdapter = new DefaultAdapter(modelId);
   }
@@ -38,7 +38,7 @@ export class AdapterManager {
    */
   getAdapter(): BaseModelAdapter {
     for (const adapter of this.adapters) {
-      if (adapter.shouldHandle(this.defaultAdapter["modelId"])) {
+      if (adapter.shouldHandle(this.defaultAdapter.getModelId())) {
         return adapter;
       }
     }

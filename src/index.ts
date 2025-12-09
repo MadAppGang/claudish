@@ -33,7 +33,7 @@ async function runCli() {
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
-  const { initLogger, getLogFilePath } = await import("./logger.js");
+  const { initLogger, getLogFilePath, initializeDebugConfig } = await import("./logger.js");
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdates } = await import("./update-checker.js");
@@ -56,11 +56,22 @@ async function runCli() {
     // Initialize logger if debug mode with specified log level
     initLogger(cliConfig.debug, cliConfig.logLevel);
 
+    // Initialize enhanced debug configuration from environment variables
+    const debugConfig = initializeDebugConfig();
+
     // Show debug log location if enabled
-    if (cliConfig.debug && !cliConfig.quiet) {
+    if ((cliConfig.debug || debugConfig.enabled) && !cliConfig.quiet) {
       const logFile = getLogFilePath();
       if (logFile) {
         console.log(`[claudish] Debug log: ${logFile}`);
+      }
+      if (debugConfig.enabled) {
+        const enabledComponents = Object.entries(debugConfig.components)
+          .filter(([_, enabled]) => enabled)
+          .map(([name, _]) => name);
+        if (enabledComponents.length > 0) {
+          console.log(`[claudish] Debug components: ${enabledComponents.join(', ')}`);
+        }
       }
     }
 
@@ -82,10 +93,21 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
-      cliConfig.openrouterApiKey = await promptForApiKey();
-      console.log(""); // Empty line after input
+    // Prompt for API keys if not set (interactive mode only, not monitor mode)
+    // Check which API key is needed based on model selection
+    if (cliConfig.interactive && !cliConfig.monitor) {
+      const isPoeModel = cliConfig.model?.startsWith("poe:");
+      const isOpenRouterModel = cliConfig.model?.includes("/") && !isPoeModel;
+
+      // Prompt for appropriate API key
+      if (isPoeModel && !cliConfig.poeApiKey) {
+        const { promptForPoeApiKey } = await import("./model-selector.js");
+        cliConfig.poeApiKey = await promptForPoeApiKey();
+        console.log(""); // Empty line after input
+      } else if (isOpenRouterModel && !cliConfig.openrouterApiKey) {
+        cliConfig.openrouterApiKey = await promptForApiKey();
+        console.log(""); // Empty line after input
+      }
     }
 
     // Show interactive model selector ONLY in interactive mode when model not specified
@@ -98,7 +120,7 @@ async function runCli() {
     if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
       console.error("Error: Model must be specified in non-interactive mode");
       console.error("Use --model <model> flag or set CLAUDISH_MODEL environment variable");
-      console.error("Try: claudish --list-models");
+      console.error("Try: claudish --models");
       process.exit(1);
     }
 
@@ -119,7 +141,11 @@ async function runCli() {
     const proxy = await createProxyServer(
       port,
       cliConfig.monitor ? undefined : cliConfig.openrouterApiKey!,
-      cliConfig.monitor ? undefined : (typeof cliConfig.model === "string" ? cliConfig.model : undefined),
+      cliConfig.monitor
+        ? undefined
+        : typeof cliConfig.model === "string"
+          ? cliConfig.model
+          : undefined,
       cliConfig.monitor,
       cliConfig.anthropicApiKey,
       {
@@ -127,7 +153,8 @@ async function runCli() {
         sonnet: cliConfig.modelSonnet,
         haiku: cliConfig.modelHaiku,
         subagent: cliConfig.modelSubagent,
-      }
+      },
+      cliConfig.poeApiKey
     );
 
     // Run Claude Code with proxy

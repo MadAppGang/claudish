@@ -10,22 +10,18 @@
  * This adapter translates that to Claude Code's expected tool_calls format.
  */
 
-import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
 import { log } from "../logger";
+import { type AdapterResult, BaseModelAdapter, type ToolCall } from "./base-adapter";
 
 export class GrokAdapter extends BaseModelAdapter {
-  private xmlBuffer: string = "";
+  private xmlBuffer = "";
 
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Accumulate text to handle XML split across multiple chunks
     this.xmlBuffer += textContent;
 
     // Pattern to match complete xAI function calls
-    const xmlPattern =
-      /<xai:function_call name="([^"]+)">(.*?)<\/xai:function_call>/gs;
+    const xmlPattern = /<xai:function_call name="([^"]+)">(.*?)<\/xai:function_call>/gs;
     const matches = [...this.xmlBuffer.matchAll(xmlPattern)];
 
     if (matches.length === 0) {
@@ -103,7 +99,7 @@ export class GrokAdapter extends BaseModelAdapter {
       }
 
       // Always remove raw thinking object for Grok to avoid API errors
-      delete request.thinking;
+      request.thinking = undefined;
     }
 
     return request;
@@ -115,8 +111,7 @@ export class GrokAdapter extends BaseModelAdapter {
    */
   private parseXmlParameters(xmlContent: string): Record<string, any> {
     const params: Record<string, any> = {};
-    const paramPattern =
-      /<xai:parameter name="([^"]+)">([^<]*)<\/xai:parameter>/g;
+    const paramPattern = /<xai:parameter name="([^"]+)">([^<]*)<\/xai:parameter>/g;
 
     let match;
     while ((match = paramPattern.exec(xmlContent)) !== null) {

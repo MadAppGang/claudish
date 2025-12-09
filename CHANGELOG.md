@@ -36,16 +36,16 @@ claudish --search "gpt-5" --force-update
 ## [2.2.1]
 
 ### Added
-- ✅ **JSON Output for Model List** - `--list-models --json` returns machine-readable JSON
+- ✅ **JSON Output for Model List** - `--models --json` returns machine-readable JSON
   - Enables programmatic access to model metadata
   - Returns complete model information: id, name, description, provider, category, priority, pricing, context
   - Clean JSON output (no extra logging) for easy parsing
-  - Order-independent flags: `--list-models --json` OR `--json --list-models`
+  - Order-independent flags: `--models --json` OR `--json --models`
   - Supports integration with Claude Code commands for dynamic model selection
 
 ### Changed
-- Enhanced `--list-models` command with optional JSON output format
-- Updated help text to document new `--list-models --json` option
+- Enhanced `--models` command with optional JSON output format
+- Updated help text to document new `--models --json` option
 
 ### Technical Details
 - New function: `printAvailableModelsJSON()` in `src/cli.ts`
@@ -63,17 +63,17 @@ claudish --search "gpt-5" --force-update
 ### Example Usage
 ```bash
 # Text output (existing behavior)
-claudish --list-models
+claudish --models
 
 # JSON output (new feature)
-claudish --list-models --json
+claudish --models --json
 
 # Parse with jq
-claudish --list-models --json | jq '.models[0].id'
+claudish --models --json | jq '.models[0].id'
 # Output: x-ai/grok-code-fast-1
 
 # Count models
-claudish --list-models --json | jq '.models | length'
+claudish --models --json | jq '.models | length'
 # Output: 7
 ```
 
@@ -84,7 +84,7 @@ claudish --list-models --json | jq '.models | length'
 ### Added
 - ✅ **Shared Model List Integration** - Claudish now uses curated model list from `shared/recommended-models.md`
   - Build process automatically extracts 11 recommended models from shared source
-  - `--list-models` command now shows all models from the shared curated list
+  - `--models` command now shows all models from the shared curated list
   - Models are auto-synced during build (no manual updates needed)
   - Added 4 new models:
     - `google/gemini-2.5-flash` - Advanced reasoning with built-in thinking
@@ -149,7 +149,7 @@ claudish --list-models --json | jq '.models | length'
   3. `ANTHROPIC_MODEL` environment variable (Claude Code standard, new fallback)
   4. Interactive prompt (if none set)
 - Updated help text to document new environment variables
-- Updated `--list-models` output to show both `CLAUDISH_MODEL` and `ANTHROPIC_MODEL` options
+- Updated `--models` output to show both `CLAUDISH_MODEL` and `ANTHROPIC_MODEL` options
 
 ### Benefits
 - **Better Integration**: Seamless compatibility with Claude Code's standard environment variables

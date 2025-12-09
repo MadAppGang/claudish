@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { createProxyServer } from "../src/proxy-server.js";
 import { OPENROUTER_MODELS } from "../src/types.js";
 import type { AnthropicRequest, AnthropicResponse, OpenRouterModel } from "../src/types.js";
-import { createProxyServer } from "../src/proxy-server.js";
 import type { ProxyServer } from "../src/types.js";
 
 // Load .env file
@@ -33,10 +33,7 @@ const TEST_MODELS: OpenRouterModel[] = [
 const activeProxies: ProxyServer[] = [];
 
 // Helper: Start proxy server
-async function startTestProxy(
-  model: OpenRouterModel,
-  port: number
-): Promise<ProxyServer> {
+async function startTestProxy(model: OpenRouterModel, port: number): Promise<ProxyServer> {
   const proxy = await createProxyServer(port, OPENROUTER_API_KEY!, model);
   activeProxies.push(proxy);
   return proxy;
@@ -79,8 +76,8 @@ async function makeAnthropicRequest(
     const decoder = new TextDecoder();
     let buffer = "";
     let messageId = "";
-    let content: any[] = [];
-    let usage = { input_tokens: 0, output_tokens: 0 };
+    const content: any[] = [];
+    const usage = { input_tokens: 0, output_tokens: 0 };
     let stopReason = null;
     let textContent = "";
 
@@ -205,7 +202,6 @@ Do not include any other text or explanation.`;
         const port = 3200 + TEST_MODELS.indexOf(model);
         const proxy = await startTestProxy(model, port);
 
-
         const response = await makeAnthropicRequest(proxy.url, [
           {
             role: "user",
@@ -244,8 +240,7 @@ Do not include any other text or explanation.`;
 
   describe("Multiple Models Comparison", () => {
     test("should get different responses from different models", async () => {
-      const question =
-        "In exactly 5 words, what is your model name?";
+      const question = "In exactly 5 words, what is your model name?";
       const responses: Record<string, string> = {};
 
       // Test first 3 models for speed
@@ -271,7 +266,7 @@ Do not include any other text or explanation.`;
       }
 
       // Filter out empty responses and verify diversity
-      const nonEmptyResponses = Object.values(responses).filter(r => r.trim().length > 0);
+      const nonEmptyResponses = Object.values(responses).filter((r) => r.trim().length > 0);
       const uniqueResponses = new Set(nonEmptyResponses);
 
       // At least 2 different non-empty responses expected

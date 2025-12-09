@@ -30,6 +30,7 @@
     "@inquirer/prompts": "^8.0.1",
     "@inquirer/search": "^4.0.1",
     "@modelcontextprotocol/sdk": "^1.22.0",
+    "chalk": "^5.6.2",
     "dotenv": "^17.2.3",
     "hono": "^4.10.6",
     "zod": "^4.1.13"
@@ -39,13 +40,7 @@
     "@types/bun": "latest",
     "typescript": "^5.9.3"
   },
-  "files": [
-    "dist/",
-    "scripts/",
-    "skills/",
-    "AI_AGENT_GUIDE.md",
-    "recommended-models.json"
-  ],
+  "files": ["dist/", "scripts/", "skills/", "AI_AGENT_GUIDE.md", "recommended-models.json"],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

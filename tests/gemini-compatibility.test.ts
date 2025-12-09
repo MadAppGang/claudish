@@ -1,5 +1,4 @@
-
-import { describe, expect, test, mock } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { createProxyServer } from "../src/proxy-server.js";
 
 // Mock fetch to simulate OpenRouter response
@@ -22,36 +21,40 @@ describe("Gemini Thinking Block Compatibility", () => {
             const chunk1 = {
               id: "msg_123",
               model: model,
-              choices: [{
-                delta: {
-                  reasoning: "This is a thought process.",
-                  role: "assistant"
-                }
-              }]
+              choices: [
+                {
+                  delta: {
+                    reasoning: "This is a thought process.",
+                    role: "assistant",
+                  },
+                },
+              ],
             };
 
             // Chunk 2: Content
             const chunk2 = {
               id: "msg_123",
               model: model,
-              choices: [{
-                delta: {
-                  content: "Here is the result."
-                }
-              }]
+              choices: [
+                {
+                  delta: {
+                    content: "Here is the result.",
+                  },
+                },
+              ],
             };
 
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk1)}\n\n`));
             setTimeout(() => {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk2)}\n\n`));
-              controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
               controller.close();
             }, 10);
-          }
+          },
         });
 
         return new Response(stream, {
-          headers: { "Content-Type": "text/event-stream" }
+          headers: { "Content-Type": "text/event-stream" },
         });
       }
       return originalFetch(url, options);
@@ -68,8 +71,8 @@ describe("Gemini Thinking Block Compatibility", () => {
         body: JSON.stringify({
           messages: [{ role: "user", content: "Hello" }],
           max_tokens: 100,
-          stream: true
-        })
+          stream: true,
+        }),
       });
 
       const reader = response.body?.getReader();
@@ -103,10 +106,10 @@ describe("Gemini Thinking Block Compatibility", () => {
           }
         }
         if (event.includes("content_block_delta")) {
-           const data = JSON.parse(event.split("data: ")[1]);
-           if (data.delta?.type === "text_delta") {
-             textContent += data.delta.text;
-           }
+          const data = JSON.parse(event.split("data: ")[1]);
+          if (data.delta?.type === "text_delta") {
+            textContent += data.delta.text;
+          }
         }
       }
 
@@ -124,7 +127,6 @@ describe("Gemini Thinking Block Compatibility", () => {
 
       // Un-mock fetch
       global.fetch = originalFetch;
-
     } finally {
       await proxy.shutdown();
       global.fetch = originalFetch;

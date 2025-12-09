@@ -1,6 +1,17 @@
 export interface TerminalLine {
   id: string;
-  type: 'input' | 'output' | 'success' | 'info' | 'ascii' | 'progress' | 'system' | 'welcome' | 'rich-input' | 'thinking' | 'tool';
+  type:
+    | "input"
+    | "output"
+    | "success"
+    | "info"
+    | "ascii"
+    | "progress"
+    | "system"
+    | "welcome"
+    | "rich-input"
+    | "thinking"
+    | "tool";
   content: string | any;
   prefix?: string;
   delay?: number; // Simulated delay before appearing

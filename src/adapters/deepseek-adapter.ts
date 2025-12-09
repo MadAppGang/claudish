@@ -1,11 +1,8 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
 import { log } from "../logger";
+import { type AdapterResult, BaseModelAdapter } from "./base-adapter";
 
 export class DeepSeekAdapter extends BaseModelAdapter {
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],
@@ -22,10 +19,10 @@ export class DeepSeekAdapter extends BaseModelAdapter {
       // It thinks automatically or via other means (R1)
       // Stripping thinking object to prevent API errors
 
-      log(`[DeepSeekAdapter] Stripping thinking object (not supported by API)`);
+      log("[DeepSeekAdapter] Stripping thinking object (not supported by API)");
 
       // Cleanup: Remove raw thinking object
-      delete request.thinking;
+      request.thinking = undefined;
     }
 
     return request;

@@ -220,6 +220,9 @@ claudish [OPTIONS] <claude-args...>
 | `-d, --debug` | Enable debug logging to file | `false` |
 | `--no-auto-approve` | Disable auto-approve (require prompts) | Auto-approve **enabled** |
 | `--dangerous` | Pass `--dangerouslyDisableSandbox` | `false` |
+| `--provider <provider>` | Filter models by provider (openrouter, poe, all) | `all` |
+| `--force-update` | Force refresh model cache from all providers | `false` |
+| `--force-update=<p>` | Force update specific provider (poe, openrouter, all) | `all` |
 | `--agent <agent>` | Use specific agent (e.g., `frontend:developer`) | - |
 | `--models` | List all models or search (e.g., `--models gemini`) | - |
 | `--top-models` | Show top recommended programming models | - |
@@ -245,32 +248,51 @@ claudish [OPTIONS] <claude-args...>
 
 ## Available Models
 
-Claudish supports 5 OpenRouter models in priority order:
+Claudish supports models from multiple providers:
 
-1. **x-ai/grok-code-fast-1** (Default)
-   - Fast coding-focused model from xAI
-   - Best for quick iterations
+### OpenRouter Models
+- **x-ai/grok-code-fast-1** (Default) - Fast coding-focused model from xAI
+- **openai/gpt-5-codex** - Advanced coding model from OpenAI
+- **minimax/minimax-m2** - High-performance model from MiniMax
+- And many more OpenRouter models
 
-2. **openai/gpt-5-codex**
-   - Advanced coding model from OpenAI
-   - Best for complex implementations
+### Poe Models
+- **poe/grok-4** - Grok model with reasoning capabilities
+- **poe/claude-4.5-series** - Latest Claude models (Opus, Sonnet, Haiku)
+- **poe/gemini-2.5-series** - Google's latest models
+- **poe/deepseek-series** - Advanced reasoning models
+- And 300+ more models from 31 providers
 
-3. **minimax/minimax-m2**
-   - High-performance model from MiniMax
-   - Good for general coding tasks
+### Multi-Provider Commands
 
-4. **zhipu-ai/glm-4.6**
-   - Advanced model from Zhipu AI
-   - Good for multilingual code
-
-5. **qwen/qwen3-vl-235b-a22b-instruct**
-   - Vision-language model from Alibaba
-   - Best for UI/visual tasks
-
-List models anytime with:
-
+**List all models:**
 ```bash
 claudish --models
+```
+
+**List only Poe models:**
+```bash
+claudish --models --provider poe
+```
+
+**List only OpenRouter models:**
+```bash
+claudish --models --provider openrouter
+```
+
+**Update all models:**
+```bash
+claudish --force-update
+```
+
+**Update only Poe models:**
+```bash
+claudish --force-update=poe
+```
+
+**Update only OpenRouter models:**
+```bash
+claudish --force-update=openrouter
 ```
 
 ## Agent Support (NEW in v2.1.0)

@@ -1,18 +1,18 @@
-import { ENV } from "./config.js";
-import type { ClaudishConfig } from "./types.js";
-import { loadModelInfo, getAvailableModels } from "./model-loader.js";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import chalk from "chalk";
+import { ENV } from "./config.js";
+import { getAvailableModels, loadModelInfo, getMultiProviderModels } from "./model-loader.js";
+import { getDefaultProfile, getModelMapping, getProfile } from "./profile-config.js";
+import type { ClaudishConfig } from "./types.js";
 import { fuzzyScore } from "./utils.js";
-import { getProfile, getDefaultProfile, getModelMapping } from "./profile-config.js";
+import { printHybridRecommendations, printProviderSections } from "./utils/model-display.js";
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const packageJson = JSON.parse(
-  readFileSync(join(__dirname, "../package.json"), "utf-8")
-);
+const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
 const VERSION = packageJson.version;
 
 /**
@@ -26,6 +26,10 @@ export function getVersion(): string {
  * Parse CLI arguments and environment variables
  */
 export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
+  // Get __dirname equivalent for this function
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+
   const config: Partial<ClaudishConfig> = {
     model: undefined, // Will prompt interactively if not provided
     autoApprove: true, // Skip permissions by default (--dangerously-skip-permissions)
@@ -38,8 +42,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     monitor: false, // Monitor mode disabled by default
     stdin: false, // Read prompt from stdin instead of args
     freeOnly: false, // Show all models by default
+    provider: undefined, // Will be set by --provider flag
     claudeArgs: [],
   };
+
+  // Collect immediate-exit flags to process after parsing all args
+  let immediateActions: string[] = [];
 
   // Check for environment variable overrides
   // Priority order: CLAUDISH_MODEL (Claudish-specific) > ANTHROPIC_MODEL (Claude Code standard)
@@ -55,10 +63,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   // Parse model mappings from env vars
   // Priority: CLAUDISH_MODEL_* (highest) > ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL (fallback)
-  config.modelOpus = process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
-  config.modelSonnet = process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
-  config.modelHaiku = process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
-  config.modelSubagent = process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
+  config.modelOpus =
+    process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
+  config.modelSonnet =
+    process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
+  config.modelHaiku =
+    process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
+  config.modelSubagent =
+    process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
 
   const envPort = process.env[ENV.CLAUDISH_PORT];
   if (envPort) {
@@ -73,15 +85,22 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   while (i < args.length) {
     const arg = args[i];
 
-    if (arg === "--model" || arg === "-m") {
+    // Parse provider flag first (before any flags that might exit)
+    if (arg.startsWith("--provider=")) {
+      // Filter models by provider
+      config.provider = arg.split("=")[1];
+    } else if (arg === "--provider" && args[i + 1] && !args[i + 1].startsWith("--")) {
+      config.provider = args[++i];
+    } else if (arg === "--model" || arg === "-m") {
       const modelArg = args[++i];
       if (!modelArg) {
         console.error("--model requires a value");
-        printAvailableModels();
+        await printAvailableModels();
         process.exit(1);
       }
       config.model = modelArg; // Accept any model ID
-    } else if (arg === "--model-opus") { // Model mapping flags
+    } else if (arg === "--model-opus") {
+      // Model mapping flags
       const val = args[++i];
       if (val) config.modelOpus = val;
     } else if (arg === "--model-sonnet") {
@@ -152,31 +171,65 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--reset-costs") {
       // Reset accumulated cost statistics
       config.resetCosts = true;
-    } else if (arg === "--version") {
-      printVersion();
-      process.exit(0);
-    } else if (arg === "--help" || arg === "-h") {
-      printHelp();
-      process.exit(0);
-    } else if (arg === "--help-ai") {
-      printAIAgentGuide();
-      process.exit(0);
-    } else if (arg === "--init") {
-      await initializeClaudishSkill();
-      process.exit(0);
-    } else if (arg === "--top-models") {
-      // Show recommended/top models (curated list)
-      const hasJsonFlag = args.includes("--json");
-      const forceUpdate = args.includes("--force-update");
-
-      // Auto-update if cache is stale (>2 days) or if --force-update is specified
-      await checkAndUpdateModelsCache(forceUpdate);
-
-      if (hasJsonFlag) {
-        printAvailableModelsJSON();
-      } else {
-        printAvailableModels();
+    } else if (arg === "--poe-warmup") {
+      // Pre-warm Poe connection
+      const modelArg = args[++i];
+      if (!modelArg) {
+        console.error("--poe-warmup requires a model");
+        console.error("Usage: --poe-warmup <model>");
+        console.error("Example: --poe-warmup poe/claude-haiku-4.5");
+        process.exit(1);
       }
+
+      console.log(`🔥 Warming up Poe connection for: ${modelArg}`);
+
+      // Check for POE_API_KEY
+      const poeApiKey = process.env.POE_API_KEY;
+      if (!poeApiKey) {
+        console.error("❌ ERROR: POE_API_KEY environment variable not set");
+        console.error("Get your key from: https://poe.com/api_key");
+        process.exit(1);
+      }
+
+      // Set the model and continue with normal execution
+      config.model = modelArg;
+      config.poeWarmup = true;
+    } else if (arg === "--version") {
+      immediateActions.push("version");
+    } else if (arg === "--help" || arg === "-h") {
+      immediateActions.push("help");
+    } else if (arg === "--help-ai") {
+      immediateActions.push("help-ai");
+    } else if (arg === "--init") {
+      immediateActions.push("init");
+    } else if (arg === "--top-models") {
+      immediateActions.push("top-models");
+  } else if (arg.startsWith("--force-update=")) {
+      // Selective force update: --force-update=poe or --force-update=openrouter
+      const provider = arg.split("=")[1];
+      if (!["poe", "openrouter", "all"].includes(provider.toLowerCase())) {
+        console.error(`Invalid provider for --force-update: ${provider}. Use: poe, openrouter, or all`);
+        process.exit(1);
+      }
+
+      // Run extraction script with provider
+      const { execSync } = require('child_process');
+      const scriptPath = join(__dirname, "../scripts/extract-models.ts");
+
+      console.log(`🔄 Updating ${provider} models...`);
+      execSync(`bun run ${scriptPath} ${provider}`, { stdio: 'inherit' });
+
+      console.log("✅ Models updated successfully");
+      process.exit(0);
+    } else if (arg === "--force-update") {
+      // Update all providers
+      const { execSync } = require('child_process');
+      const scriptPath = join(__dirname, "../scripts/extract-models.ts");
+
+      console.log("🔄 Updating all models...");
+      execSync(`bun run ${scriptPath} all`, { stdio: 'inherit' });
+
+      console.log("✅ All models updated successfully");
       process.exit(0);
     } else if (arg === "--models" || arg === "-s" || arg === "--search") {
       // Check for optional search query (next arg that doesn't start with --)
@@ -185,16 +238,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const query = hasQuery ? args[++i] : null;
 
       const hasJsonFlag = args.includes("--json");
-      const forceUpdate = args.includes("--force-update");
 
+      // Store models action with parameters
       if (query) {
-        // Search mode: fuzzy search all models
-        await searchAndPrintModels(query, forceUpdate);
+        immediateActions.push(`models-search:${query}:${hasJsonFlag}`);
       } else {
-        // List mode: show all models grouped by provider
-        await printAllModels(hasJsonFlag, forceUpdate);
+        immediateActions.push(`models-list:${hasJsonFlag}`);
       }
-      process.exit(0);
     } else {
       // All remaining args go to claude CLI
       config.claudeArgs = args.slice(i);
@@ -216,10 +266,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     // Monitor mode: extracts API key from Claude Code's requests
     // No need for user to provide API key - we intercept it from Claude Code
     // IMPORTANT: Unset ANTHROPIC_API_KEY if it's a placeholder, so Claude Code uses its native auth
-    if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.includes('placeholder')) {
-      delete process.env.ANTHROPIC_API_KEY;
+    if (process.env.ANTHROPIC_API_KEY?.includes("placeholder")) {
+      process.env.ANTHROPIC_API_KEY = undefined;
       if (!config.quiet) {
-        console.log("[claudish] Removed placeholder API key - Claude Code will use native authentication");
+        console.log(
+          "[claudish] Removed placeholder API key - Claude Code will use native authentication"
+        );
       }
     }
 
@@ -229,13 +281,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
+    // Check which provider is needed based on the model
+    const isPoeModel = config.model?.startsWith("poe:");
+    const isOpenRouterModel = config.model?.includes("/") && !isPoeModel;
+
+    // Handle OpenRouter API key
+    const openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
+    if (isOpenRouterModel && !openrouterApiKey) {
+      // OpenRouter model requires OpenRouter API key
       if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
+        console.error(
+          "Error: OPENROUTER_API_KEY environment variable is required for OpenRouter models"
+        );
         console.error("Get your API key from: https://openrouter.ai/keys");
         console.error("");
         console.error("Set it now:");
@@ -245,12 +302,30 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Will be prompted for in interactive mode
       config.openrouterApiKey = undefined;
     } else {
-      config.openrouterApiKey = apiKey;
+      config.openrouterApiKey = openrouterApiKey;
+    }
+
+    // Handle Poe API key
+    const poeApiKey = process.env[ENV.POE_API_KEY];
+    if (isPoeModel && !poeApiKey) {
+      // Poe model requires Poe API key
+      if (!config.interactive) {
+        console.error("Error: POE_API_KEY environment variable is required for Poe models");
+        console.error("Get your API key from: https://poe.com/api_key");
+        console.error("");
+        console.error("Set it now:");
+        console.error("  export POE_API_KEY='your-poe-api-key'");
+        process.exit(1);
+      }
+      // Will be prompted for in interactive mode
+      config.poeApiKey = undefined;
+    } else {
+      config.poeApiKey = poeApiKey;
     }
 
     // Note: ANTHROPIC_API_KEY is NOT required here
     // claude-runner.ts automatically sets a placeholder if not provided (see line 138)
-    // This allows single-variable setup - users only need OPENROUTER_API_KEY
+    // This allows single-variable setup - users only need OPENROUTER_API_KEY or POE_API_KEY
     config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   }
 
@@ -267,7 +342,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   // Apply profile model mappings (profile < CLI flags < env vars for override order)
   // Profile provides defaults, CLI flags override, env vars override CLI
-  if (config.profile || !config.modelOpus || !config.modelSonnet || !config.modelHaiku || !config.modelSubagent) {
+  if (
+    config.profile ||
+    !config.modelOpus ||
+    !config.modelSonnet ||
+    !config.modelHaiku ||
+    !config.modelSubagent
+  ) {
     const profileModels = getModelMapping(config.profile);
 
     // Apply profile models only if not set by CLI flags
@@ -285,6 +366,45 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     }
   }
 
+  // Execute immediate actions (after all args parsed)
+  for (const action of immediateActions) {
+    if (action === "version") {
+      printVersion();
+      process.exit(0);
+    } else if (action === "help") {
+      printHelp();
+      process.exit(0);
+    } else if (action === "help-ai") {
+      printAIAgentGuide();
+      process.exit(0);
+    } else if (action === "init") {
+      await initializeClaudishSkill();
+      process.exit(0);
+    } else if (action === "top-models") {
+      const hasJsonFlag = args.includes("--json");
+      const forceUpdate = args.includes("--force-update");
+
+      await checkAndUpdateModelsCache(forceUpdate);
+
+      if (hasJsonFlag) {
+        printAvailableModelsJSON();
+      } else {
+        await printAvailableModels();
+      }
+      process.exit(0);
+    } else if (action.startsWith("models-list:")) {
+      const hasJsonFlag = action.split(":")[1] === "true";
+      await printAllModels(hasJsonFlag, false, config.provider);
+      process.exit(0);
+    } else if (action.startsWith("models-search:")) {
+      const parts = action.split(":");
+      const query = parts[1];
+      const hasJsonFlag = parts[2] === "true";
+      await searchAndPrintModels(query, false, config.provider);
+      process.exit(0);
+    }
+  }
+
   return config as ClaudishConfig;
 }
 
@@ -298,61 +418,51 @@ const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
 /**
  * Search all available models and print results
  */
-async function searchAndPrintModels(query: string, forceUpdate: boolean): Promise<void> {
-  let models: any[] = [];
+async function searchAndPrintModels(query: string, forceUpdate: boolean, providerFilter?: string): Promise<void> {
+  const { PoeProvider, OpenRouterProvider } = await import("./providers/index.js");
+  const providers = [];
 
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-      }
-    } catch (e) {
-      // Ignore cache error
+  if (providerFilter) {
+    if (providerFilter === 'poe') {
+      providers.push(new PoeProvider());
+    } else if (providerFilter === 'openrouter') {
+      providers.push(new OpenRouterProvider());
+    } else {
+      console.error(`Invalid provider filter: ${providerFilter}. Use: poe, openrouter, or omit for all`);
+      process.exit(1);
     }
+  } else {
+    providers.push(new OpenRouterProvider(), new PoeProvider());
   }
 
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter (this may take a moment)...");
+  let allModels: any[] = [];
+
+  for (const provider of providers) {
+    if (!forceUpdate) {
+      console.error(`🔄 Fetching ${provider.name} models...`);
+    }
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-      const data = await response.json();
-      models = data.data;
-
-      // Cache result
-      writeFileSync(ALL_MODELS_JSON_PATH, JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models
-      }), "utf-8");
-
-      console.error(`✅ Cached ${models.length} models`);
+      const models = await provider.fetchModels();
+      allModels = allModels.concat(models);
     } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
+      console.error(`❌ Failed to fetch from ${provider.name}: ${error}`);
+      // Continue with other providers
     }
   }
 
   // Perform fuzzy search
-  const results = models
-    .map(model => {
+  const results = allModels
+    .map((model) => {
       const nameScore = fuzzyScore(model.name || "", query);
       const idScore = fuzzyScore(model.id || "", query);
       const descScore = fuzzyScore(model.description || "", query) * 0.5; // Lower weight for description
 
       return {
         model,
-        score: Math.max(nameScore, idScore, descScore)
+        score: Math.max(nameScore, idScore, descScore),
       };
     })
-    .filter(item => item.score > 0.2) // Filter low relevance
+    .filter((item) => item.score > 0.2) // Filter low relevance
     .sort((a, b) => b.score - a.score)
     .slice(0, 20); // Top 20 results
 
@@ -363,149 +473,185 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
 
   console.log(`\nFound ${results.length} matching models:\n`);
   console.log("  Model                          Provider    Pricing     Context  Score");
-  console.log("  " + "─".repeat(80));
+  console.log(`  ${"─".repeat(80)}`);
 
   for (const { model, score } of results) {
-      // Format model ID (truncate if too long)
-      const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
-      const modelIdPadded = modelId.padEnd(30);
-
-      // Determine provider from ID
-      const providerName = model.id.split('/')[0];
-      const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
-      const providerPadded = provider.padEnd(10);
-
-      // Format pricing (handle special cases: negative = varies, 0 = free)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
-      const avg = (promptPrice + completionPrice) / 2;
-      let pricing: string;
-      if (avg < 0) {
-        pricing = "varies";  // Auto-router or dynamic pricing
-      } else if (avg === 0) {
-        pricing = "FREE";
+    // Format model ID for display based on provider
+    let displayId: string;
+    if (model.provider === 'openrouter') {
+      // Keep full provider/model format for OpenRouter
+      displayId = model.id;
+    } else {
+      // For non-OpenRouter, check if model already has provider:format
+      if (model.id.includes(":")) {
+        // Model already has provider:format (e.g., poe:grok-4)
+        displayId = model.id;
       } else {
-        pricing = `$${avg.toFixed(2)}/1M`;
+        // Convert old provider/ format to provider:format
+        const cleanId = model.id.includes("/") ? model.id.split("/").slice(1).join("/") : model.id;
+        displayId = `${model.provider}:${cleanId}`;
       }
-      const pricingPadded = pricing.padEnd(10);
+    }
+    const modelId = displayId.length > 30 ? `${displayId.substring(0, 27)}...` : displayId;
+    const modelIdPadded = modelId.padEnd(30);
 
-      // Context
-      const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
-      const contextPadded = context.padEnd(7);
+    // Use provider from model object
+    const provider = model.provider.length > 10 ? `${model.provider.substring(0, 7)}...` : model.provider;
+    const providerPadded = provider.padEnd(10);
 
-      console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
+    // Format pricing (handle special cases: negative = varies, 0 = free)
+    const promptPrice = Number.parseFloat(model.pricing?.prompt || "0") * 1000000;
+    const completionPrice = Number.parseFloat(model.pricing?.completion || "0") * 1000000;
+    const avg = (promptPrice + completionPrice) / 2;
+    let pricing: string;
+    if (avg < 0) {
+      pricing = "varies"; // Auto-router or dynamic pricing
+    } else if (avg === 0) {
+      pricing = "FREE";
+    } else {
+      pricing = `$${avg.toFixed(2)}/1M`;
+    }
+    const pricingPadded = pricing.padEnd(10);
+
+    // Context
+    const contextLen = model.context_length || model.top_provider?.context_length || 0;
+    const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
+    const contextPadded = context.padEnd(7);
+
+    console.log(
+      `  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`
+    );
   }
   console.log("");
   console.log("Use a model: claudish --model <model-id>");
 }
 
 /**
- * Print ALL available models from OpenRouter
+ * Print ALL available models from all providers
  */
-async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promise<void> {
-  let models: any[] = [];
+async function printAllModels(jsonOutput: boolean, forceUpdate: boolean, providerFilter?: string): Promise<void> {
+  const { PoeProvider, OpenRouterProvider } = await import("./providers/index.js");
+  const providers = [];
 
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-        if (!jsonOutput) {
-          console.error(`✓ Using cached models (last updated: ${cacheData.lastUpdated.split('T')[0]})`);
-        }
-      }
-    } catch (e) {
-      // Ignore cache error
+  if (providerFilter) {
+    if (providerFilter === 'poe') {
+      providers.push(new PoeProvider());
+    } else if (providerFilter === 'openrouter') {
+      providers.push(new OpenRouterProvider());
+    } else {
+      console.error(`Invalid provider filter: ${providerFilter}. Use: poe, openrouter, or omit for all`);
+      process.exit(1);
     }
+  } else {
+    providers.push(new OpenRouterProvider(), new PoeProvider());
   }
 
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter...");
+  let allModels: any[] = [];
+
+  for (const provider of providers) {
+    if (!forceUpdate) {
+      console.error(`🔄 Fetching ${provider.name} models...`);
+    }
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-      const data = await response.json();
-      models = data.data;
-
-      // Cache result
-      writeFileSync(ALL_MODELS_JSON_PATH, JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models
-      }), "utf-8");
-
-      console.error(`✅ Cached ${models.length} models`);
+      const models = await provider.fetchModels();
+      allModels = allModels.concat(models);
     } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
+      console.error(`❌ Failed to fetch from ${provider.name}: ${error}`);
+      // Continue with other providers
     }
   }
 
   // JSON output
   if (jsonOutput) {
-    console.log(JSON.stringify({
-      count: models.length,
-      lastUpdated: new Date().toISOString().split('T')[0],
-      models: models.map(m => ({
-        id: m.id,
-        name: m.name,
-        context: m.context_length || m.top_provider?.context_length,
-        pricing: m.pricing
-      }))
-    }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          count: allModels.length,
+          lastUpdated: new Date().toISOString().split("T")[0],
+          models: allModels.map((m) => ({
+            id: m.id,
+            name: m.name,
+            context: m.context_length,
+            pricing: m.pricing,
+            provider: m.provider,
+          })),
+        },
+        null,
+        2
+      )
+    );
     return;
   }
 
   // Group by provider
   const byProvider = new Map<string, any[]>();
-  for (const model of models) {
-    const provider = model.id.split('/')[0];
-    if (!byProvider.has(provider)) {
-      byProvider.set(provider, []);
+  for (const model of allModels) {
+    if (!byProvider.has(model.provider)) {
+      byProvider.set(model.provider, []);
     }
-    byProvider.get(provider)!.push(model);
+    byProvider.get(model.provider)!.push(model);
   }
 
   // Sort providers alphabetically
   const sortedProviders = [...byProvider.keys()].sort();
 
-  console.log(`\nAll OpenRouter Models (${models.length} total):\n`);
+  console.log(`\nAll Available Models (${allModels.length} total):\n`);
 
   for (const provider of sortedProviders) {
     const providerModels = byProvider.get(provider)!;
     console.log(`\n  ${provider.toUpperCase()} (${providerModels.length} models)`);
-    console.log("  " + "─".repeat(70));
+    console.log(`  ${"─".repeat(70)}`);
 
     for (const model of providerModels) {
-      // Format model ID (remove provider prefix, truncate if too long)
-      const shortId = model.id.split('/').slice(1).join('/');
-      const modelId = shortId.length > 40 ? shortId.substring(0, 37) + "..." : shortId;
+      // Format model ID based on provider
+      let displayId: string;
+      if (model.provider === 'openrouter') {
+        // Keep full provider/model format for OpenRouter
+        displayId = model.id;
+      } else {
+        // For non-OpenRouter, check if model already has provider:format
+        if (model.id.includes(":")) {
+          // Model already has provider:format (e.g., poe:grok-4)
+          displayId = model.id;
+        } else {
+          // Convert old provider/ format to provider:format
+          const cleanId = model.id.includes("/") ? model.id.split("/").slice(1).join("/") : model.id;
+          displayId = `${model.provider}:${cleanId}`;
+        }
+      }
+      const modelId = displayId.length > 40 ? `${displayId.substring(0, 37)}...` : displayId;
       const modelIdPadded = modelId.padEnd(42);
 
       // Format pricing (handle special cases: negative = varies, 0 = free)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
+      const promptPrice = Number.parseFloat(model.pricing?.prompt || "0") * 1000000;
+      const completionPrice = Number.parseFloat(model.pricing?.completion || "0") * 1000000;
       const avg = (promptPrice + completionPrice) / 2;
       let pricing: string;
-      if (avg < 0) {
-        pricing = "varies";  // Auto-router or dynamic pricing
-      } else if (avg === 0) {
-        pricing = "FREE";
+      if (provider === 'poe') {
+        // Poe models use compute points
+        const promptPoints = Number.parseFloat(model.pricing?.prompt || "0");
+        const completionPoints = Number.parseFloat(model.pricing?.completion || "0");
+        const avgPoints = (promptPoints + completionPoints) / 2;
+        if (avgPoints === 0) {
+          pricing = "FREE";
+        } else {
+          pricing = `${avgPoints.toFixed(4)} pts`;
+        }
       } else {
-        pricing = `$${avg.toFixed(2)}/1M`;
+        // OpenRouter models use dollars
+        if (avg < 0) {
+          pricing = "varies"; // Auto-router or dynamic pricing
+        } else if (avg === 0) {
+          pricing = "FREE";
+        } else {
+          pricing = `$${avg.toFixed(2)}/1M`;
+        }
       }
       const pricingPadded = pricing.padEnd(12);
 
       // Context
-      const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
+      const contextLen = model.context_length || 0;
+      const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
       const contextPadded = context.padEnd(8);
 
       console.log(`    ${modelIdPadded} ${pricingPadded} ${contextPadded}`);
@@ -575,18 +721,18 @@ async function updateModelsFromOpenRouter(): Promise<void> {
     // The website is client-side rendered (React), so we can't scrape it with HTTP.
     // The API doesn't expose the "top-weekly" ranking, so we maintain this manually.
     const topWeeklyProgrammingModels = [
-      "google/gemini-3-pro-preview",      // #0: Google Gemini 3 Pro Preview (New!)
-      "openai/gpt-5.1-codex",             // #0: OpenAI Codex 5.1 (New!)
-      "x-ai/grok-code-fast-1",            // #1: xAI Grok Code Fast 1
-      "anthropic/claude-sonnet-4.5",      // #2: Anthropic Claude Sonnet 4.5
-      "google/gemini-2.5-flash",          // #3: Google Gemini 2.5 Flash
-      "minimax/minimax-m2",               // #4: MiniMax M2
-      "anthropic/claude-sonnet-4",        // #5: Anthropic Claude Sonnet 4
-      "z-ai/glm-4.6",                     // #6: Z.AI GLM 4.6
-      "anthropic/claude-haiku-4.5",       // #7: Anthropic Claude Haiku 4.5
-      "openai/gpt-5",                     // #8: OpenAI GPT-5
+      "google/gemini-3-pro-preview", // #0: Google Gemini 3 Pro Preview (New!)
+      "openai/gpt-5.1-codex", // #0: OpenAI Codex 5.1 (New!)
+      "x-ai/grok-code-fast-1", // #1: xAI Grok Code Fast 1
+      "anthropic/claude-sonnet-4.5", // #2: Anthropic Claude Sonnet 4.5
+      "google/gemini-2.5-flash", // #3: Google Gemini 2.5 Flash
+      "minimax/minimax-m2", // #4: MiniMax M2
+      "anthropic/claude-sonnet-4", // #5: Anthropic Claude Sonnet 4
+      "z-ai/glm-4.6", // #6: Z.AI GLM 4.6
+      "anthropic/claude-haiku-4.5", // #7: Anthropic Claude Haiku 4.5
+      "openai/gpt-5", // #8: OpenAI GPT-5
       "qwen/qwen3-vl-235b-a22b-instruct", // #9: Qwen3 VL 235B
-      "openrouter/polaris-alpha",         // #10: Polaris Alpha (OpenRouter experimental)
+      "openrouter/polaris-alpha", // #10: Polaris Alpha (OpenRouter experimental)
     ];
 
     // Fetch model metadata from OpenRouter API
@@ -636,24 +782,26 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       const supportedParams = model.supported_parameters || [];
 
       // Calculate pricing (handle both per-token and per-million formats)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0");
-      const completionPrice = parseFloat(model.pricing?.completion || "0");
+      const promptPrice = Number.parseFloat(model.pricing?.prompt || "0");
+      const completionPrice = Number.parseFloat(model.pricing?.completion || "0");
 
-      const inputPrice = promptPrice > 0
-        ? `$${(promptPrice * 1000000).toFixed(2)}/1M`
-        : "FREE";
-      const outputPrice = completionPrice > 0
-        ? `$${(completionPrice * 1000000).toFixed(2)}/1M`
-        : "FREE";
-      const avgPrice = (promptPrice > 0 || completionPrice > 0)
-        ? `$${((promptPrice + completionPrice) / 2 * 1000000).toFixed(2)}/1M`
-        : "FREE";
+      const inputPrice = promptPrice > 0 ? `$${(promptPrice * 1000000).toFixed(2)}/1M` : "FREE";
+      const outputPrice =
+        completionPrice > 0 ? `$${(completionPrice * 1000000).toFixed(2)}/1M` : "FREE";
+      const avgPrice =
+        promptPrice > 0 || completionPrice > 0
+          ? `$${(((promptPrice + completionPrice) / 2) * 1000000).toFixed(2)}/1M`
+          : "FREE";
 
       // Determine category based on description and capabilities
       let category = "programming"; // default since we're filtering programming models
-      const lowerDesc = description.toLowerCase() + " " + name.toLowerCase();
+      const lowerDesc = `${description.toLowerCase()} ${name.toLowerCase()}`;
 
-      if (lowerDesc.includes("vision") || lowerDesc.includes("vl-") || lowerDesc.includes("multimodal")) {
+      if (
+        lowerDesc.includes("vision") ||
+        lowerDesc.includes("vl-") ||
+        lowerDesc.includes("multimodal")
+      ) {
         category = "vision";
       } else if (lowerDesc.includes("reason")) {
         category = "reasoning";
@@ -669,7 +817,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
         pricing: {
           input: inputPrice,
           output: outputPrice,
-          average: avgPrice
+          average: avgPrice,
         },
         context: topProvider.context_length
           ? `${Math.floor(topProvider.context_length / 1000)}K`
@@ -677,11 +825,13 @@ async function updateModelsFromOpenRouter(): Promise<void> {
         maxOutputTokens: topProvider.max_completion_tokens || null,
         modality: architecture.modality || "text->text",
         supportsTools: supportedParams.includes("tools") || supportedParams.includes("tool_choice"),
-        supportsReasoning: supportedParams.includes("reasoning") || supportedParams.includes("include_reasoning"),
-        supportsVision: (architecture.input_modalities || []).includes("image") ||
-                       (architecture.input_modalities || []).includes("video"),
+        supportsReasoning:
+          supportedParams.includes("reasoning") || supportedParams.includes("include_reasoning"),
+        supportsVision:
+          (architecture.input_modalities || []).includes("image") ||
+          (architecture.input_modalities || []).includes("video"),
         isModerated: topProvider.is_moderated || false,
-        recommended: true
+        recommended: true,
       });
 
       providers.add(provider);
@@ -701,17 +851,21 @@ async function updateModelsFromOpenRouter(): Promise<void> {
     // Create new JSON structure
     const updatedData = {
       version,
-      lastUpdated: new Date().toISOString().split('T')[0], // YYYY-MM-DD format
+      lastUpdated: new Date().toISOString().split("T")[0], // YYYY-MM-DD format
       source: "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
-      models: recommendations
+      models: recommendations,
     };
 
     // Write to file
     writeFileSync(MODELS_JSON_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
 
-    console.error(`✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`);
+    console.error(
+      `✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`
+    );
   } catch (error) {
-    console.error(`❌ Failed to update models: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `❌ Failed to update models: ${error instanceof Error ? error.message : String(error)}`
+    );
     console.error("   Using cached models (if available)");
   }
 }
@@ -719,7 +873,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
 /**
  * Check cache staleness and update if needed
  */
-async function checkAndUpdateModelsCache(forceUpdate: boolean = false): Promise<void> {
+async function checkAndUpdateModelsCache(forceUpdate = false): Promise<void> {
   if (forceUpdate) {
     console.error("🔄 Force update requested...");
     await updateModelsFromOpenRouter();
@@ -776,11 +930,13 @@ OPTIONS:
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
   --reset-costs            Reset accumulated cost statistics
-  --models                 List ALL OpenRouter models grouped by provider
+  --models                 List ALL models grouped by provider (OpenRouter + Poe)
   --models <query>         Fuzzy search all models by name, ID, or description
   --top-models             List recommended/top programming models (curated)
+  --provider <provider>    Filter models by provider (openrouter, poe, all)
   --json                   Output in JSON format (use with --models or --top-models)
-  --force-update           Force refresh model cache from OpenRouter API
+  --force-update           Force refresh model cache from all providers
+  --force-update=<p>       Force update specific provider (poe, openrouter, all)
   --version                Show version information
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
@@ -802,7 +958,7 @@ MODEL MAPPING (per-role override):
   --model-subagent <model> Model for sub-agents (Task tool)
 
 CUSTOM MODELS:
-  Claudish accepts ANY valid OpenRouter model ID, even if not in --list-models
+  Claudish accepts ANY valid OpenRouter model ID, even if not in --models
   Example: claudish --model your_provider/custom-model-123 "task"
 
 MODES:
@@ -914,7 +1070,9 @@ function printAIAgentGuide(): void {
     console.error(error instanceof Error ? error.message : String(error));
     console.error("\nThe guide should be located at: AI_AGENT_GUIDE.md");
     console.error("You can also view it online at:");
-    console.error("https://github.com/MadAppGang/claude-code/blob/main/mcp/claudish/AI_AGENT_GUIDE.md");
+    console.error(
+      "https://github.com/MadAppGang/claude-code/blob/main/mcp/claudish/AI_AGENT_GUIDE.md"
+    );
     process.exit(1);
   }
 }
@@ -981,7 +1139,7 @@ async function initializeClaudishSkill(): Promise<void> {
     console.log("   - Restart Claude Code, or");
     console.log("   - Re-open your project\n");
     console.log("2. Use Claudish with external models:");
-    console.log("   - User: \"use Grok to implement feature X\"");
+    console.log('   - User: "use Grok to implement feature X"');
     console.log("   - Claude will automatically use the skill\n");
     console.log("💡 The skill enforces best practices:");
     console.log("   ✅ Mandatory sub-agent delegation");
@@ -989,7 +1147,6 @@ async function initializeClaudishSkill(): Promise<void> {
     console.log("   ✅ Context window protection\n");
     console.log("📖 For more info: claudish --help-ai\n");
     console.log("━".repeat(60));
-
   } catch (error) {
     console.error("\n❌ Error installing Claudish skill:");
     console.error(error instanceof Error ? error.message : String(error));
@@ -999,62 +1156,82 @@ async function initializeClaudishSkill(): Promise<void> {
 }
 
 /**
- * Print available models in enhanced table format
+ * Print available models in enhanced multi-provider format
  */
-function printAvailableModels(): void {
-  // Try to read enhanced model data from JSON file
-  let lastUpdated = "unknown";
-  let models: any[] = [];
-
+async function printAvailableModels(): Promise<void> {
   try {
-    if (existsSync(MODELS_JSON_PATH)) {
-      const data = JSON.parse(readFileSync(MODELS_JSON_PATH, "utf-8"));
-      lastUpdated = data.lastUpdated || "unknown";
-      models = data.models || [];
+    // Get models from multiple providers
+    const { openrouter, poe } = await getMultiProviderModels();
+
+    console.log(chalk.bold('\n🏆 Best Overall Models\n'));
+
+    // Show best overall (top 3 from each provider)
+    const bestOverall = [...openrouter.slice(0, 3), ...poe.slice(0, 3)]
+      .sort((a, b) => (a.globalPriority || 999) - (b.globalPriority || 999))
+      .slice(0, 6);
+
+    // Print best overall in table format
+    if (bestOverall.length > 0) {
+      printModelTableSimple(bestOverall);
     }
-  } catch {
-    // Fallback to basic model list
+
+    // Always show provider sections
+    console.log(chalk.bold('\n📋 Top Models by Provider\n'));
+    printProviderSections({ openrouter, poe });
+
+    console.log(chalk.gray('\n💡 Tip: Use claudish --model <model-id> to select a model'));
+    console.log(chalk.gray('Set default with: export CLAUDISH_MODEL=<model>\n'));
+
+  } catch (error) {
+    console.error(chalk.red('❌ Error loading multi-provider models:'), error);
+
+    // Fallback to basic OpenRouter models
+    console.log(chalk.yellow('\n⚠️  Falling back to OpenRouter models only...\n'));
+
     const basicModels = getAvailableModels();
     const modelInfo = loadModelInfo();
-    for (const model of basicModels) {
+    for (const model of basicModels.slice(0, 10)) {
       const info = modelInfo[model];
       console.log(`  ${model}`);
       console.log(`    ${info.name} - ${info.description}`);
       console.log("");
     }
-    return;
   }
+}
 
-  console.log(`\nAvailable OpenRouter Models (last updated: ${lastUpdated}):\n`);
+/**
+ * Simple table printing for best overall models
+ */
+function printModelTableSimple(models: any[]): void {
+  if (models.length === 0) return;
 
   // Table header
   console.log("  Model                          Provider    Pricing     Context  Capabilities");
-  console.log("  " + "─".repeat(86));
+  console.log(`  ${"─".repeat(86)}`);
 
   // Table rows
   for (const model of models) {
     // Format model ID (truncate if too long)
-    const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+    const modelId = model.id.length > 30 ? `${model.id.substring(0, 27)}...` : model.id;
     const modelIdPadded = modelId.padEnd(30);
 
     // Format provider (max 10 chars)
-    const provider = model.provider.length > 10 ? model.provider.substring(0, 7) + "..." : model.provider;
+    const provider = model.provider === 'openrouter' ? 'OpenRouter' : 'Poe';
     const providerPadded = provider.padEnd(10);
 
-    // Format pricing (average) - handle special cases
-    let pricing = model.pricing?.average || "N/A";
-
-    // Handle special pricing cases
-    if (pricing.includes("-1000000")) {
-      pricing = "varies"; // Auto-router pricing varies by routed model
-    } else if (pricing === "$0.00/1M" || pricing === "FREE") {
+    // Format pricing
+    let pricing = model.pricing?.prompt || "N/A";
+    if (pricing === "$0.00" || pricing === "0") {
       pricing = "FREE";
+    } else if (pricing.includes("/")) {
+      pricing = pricing;
+    } else {
+      pricing = `$${pricing}/1M`;
     }
-
     const pricingPadded = pricing.padEnd(10);
 
     // Format context
-    const context = model.context || "N/A";
+    const context = formatContext(model.context_length);
     const contextPadded = context.padEnd(7);
 
     // Capabilities emojis
@@ -1063,16 +1240,25 @@ function printAvailableModels(): void {
     const vision = model.supportsVision ? "👁️ " : "  ";
     const capabilities = `${tools} ${reasoning} ${vision}`;
 
-    console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${capabilities}`);
+    console.log(
+      `  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${capabilities}`
+    );
   }
 
   console.log("");
   console.log("  Capabilities: 🔧 Tools  🧠 Reasoning  👁️  Vision");
-  console.log("");
-  console.log("Set default with: export CLAUDISH_MODEL=<model>");
-  console.log("               or: export ANTHROPIC_MODEL=<model>");
-  console.log("Or use: claudish --model <model> ...");
-  console.log("\nForce update: claudish --list-models --force-update\n");
+}
+
+/**
+ * Format context window for display
+ */
+function formatContext(contextLength: number): string {
+  if (contextLength >= 1000000) {
+    return `${(contextLength / 1000000).toFixed(1)}M`;
+  } else if (contextLength >= 1000) {
+    return `${(contextLength / 1000).toFixed(0)}K`;
+  }
+  return contextLength.toString();
 }
 
 /**
@@ -1094,20 +1280,20 @@ function printAvailableModelsJSON(): void {
 
     const output = {
       version: VERSION,
-      lastUpdated: new Date().toISOString().split('T')[0],
+      lastUpdated: new Date().toISOString().split("T")[0],
       source: "runtime",
       models: models
-        .filter(m => m !== 'custom')
-        .map(modelId => {
+        .filter((m) => m !== "custom")
+        .map((modelId) => {
           const info = modelInfo[modelId];
           return {
             id: modelId,
             name: info.name,
             description: info.description,
             provider: info.provider,
-            priority: info.priority
+            priority: info.priority,
           };
-        })
+        }),
     };
 
     console.log(JSON.stringify(output, null, 2));
