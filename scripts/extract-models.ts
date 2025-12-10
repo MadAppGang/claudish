@@ -115,8 +115,10 @@ ${modelInfo},
 // Environment variable names
 export const ENV = {
   OPENROUTER_API_KEY: "OPENROUTER_API_KEY",
+  OLLAMA_API_KEY: "OLLAMA_API_KEY",
   CLAUDISH_MODEL: "CLAUDISH_MODEL",
   CLAUDISH_PORT: "CLAUDISH_PORT",
+  CLAUDISH_PROVIDER: "CLAUDISH_PROVIDER", // "openrouter" | "ollama" | "auto"
   CLAUDISH_ACTIVE_MODEL_NAME: "CLAUDISH_ACTIVE_MODEL_NAME", // Set by claudish to show active model in status line
   ANTHROPIC_MODEL: "ANTHROPIC_MODEL", // Claude Code standard env var for model selection
   ANTHROPIC_SMALL_FAST_MODEL: "ANTHROPIC_SMALL_FAST_MODEL", // Claude Code standard env var for fast model
@@ -137,6 +139,13 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
 export const OPENROUTER_HEADERS = {
   "HTTP-Referer": "https://github.com/MadAppGang/claude-code",
   "X-Title": "Claudish - OpenRouter Proxy",
+} as const;
+
+// OllamaCloud API Configuration
+export const OLLAMA_API_URL = "https://ollama.com/api/chat";
+export const OLLAMA_HEADERS = {
+  "HTTP-Referer": "https://github.com/MadAppGang/claude-code",
+  "X-Title": "Claudish - Ollama Cloud Proxy",
 } as const;
 `;
 }
@@ -169,8 +178,22 @@ try {
 	const configPath = join(import.meta.dir, "../src/config.ts");
 	const typesPath = join(import.meta.dir, "../src/types.ts");
 
-	console.log("📖 Reading shared/recommended-models.md...");
-	const markdownContent = readFileSync(sharedModelsPath, "utf-8");
+	// Check if shared markdown file exists
+	let markdownContent: string;
+	try {
+		console.log("📖 Reading shared/recommended-models.md...");
+		markdownContent = readFileSync(sharedModelsPath, "utf-8");
+	} catch (error: any) {
+		if (error.code === "ENOENT") {
+			console.log("⚠️  shared/recommended-models.md not found, skipping model extraction");
+			console.log("✅ Using existing config.ts and types.ts files");
+			console.log("");
+			console.log("Note: If you need to regenerate models, create the markdown file at:");
+			console.log(`   ${sharedModelsPath}`);
+			process.exit(0);
+		}
+		throw error;
+	}
 
 	console.log("🔍 Extracting model information...");
 	const models = extractModels(markdownContent);

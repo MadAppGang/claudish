@@ -5,6 +5,7 @@ import { log, isLoggingEnabled } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { OpenRouterHandler } from "./handlers/openrouter-handler.js";
+import { OllamaCloudHandler } from "./handlers/ollama-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 
 export async function createProxyServer(
@@ -13,56 +14,110 @@ export async function createProxyServer(
   model?: string,
   monitorMode: boolean = false,
   anthropicApiKey?: string,
-  modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string }
+  modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
+  ollamaApiKey?: string,
+  providerOverride?: "openrouter" | "ollama" | "auto"
 ): Promise<ProxyServer> {
 
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(anthropicApiKey);
-  const handlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Handler Instance
+  const handlers = new Map<string, ModelHandler>(); // Map from "provider:model" -> Handler Instance
 
-  // Helper to get or create handler for a target model
+  // Helper to get or create OpenRouter handler
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
-      if (!handlers.has(targetModel)) {
-          handlers.set(targetModel, new OpenRouterHandler(targetModel, openrouterApiKey, port));
+      const key = `openrouter:${targetModel}`;
+      if (!handlers.has(key)) {
+          handlers.set(key, new OpenRouterHandler(targetModel, openrouterApiKey, port));
       }
-      return handlers.get(targetModel)!;
+      return handlers.get(key)!;
   };
 
-  // Pre-initialize handlers for mapped models to ensure warm-up (context window fetch etc)
-  if (model) getOpenRouterHandler(model);
-  if (modelMap?.opus) getOpenRouterHandler(modelMap.opus);
-  if (modelMap?.sonnet) getOpenRouterHandler(modelMap.sonnet);
-  if (modelMap?.haiku) getOpenRouterHandler(modelMap.haiku);
-  if (modelMap?.subagent) getOpenRouterHandler(modelMap.subagent);
+  // Helper to get or create OllamaCloud handler
+  const getOllamaHandler = (targetModel: string): ModelHandler => {
+      const key = `ollama:${targetModel}`;
+      if (!handlers.has(key)) {
+          handlers.set(key, new OllamaCloudHandler(targetModel, ollamaApiKey, port));
+      }
+      return handlers.get(key)!;
+  };
 
-  const getHandlerForRequest = (requestedModel: string): ModelHandler => {
-      // 1. Monitor Mode Override
-      if (monitorMode) return nativeHandler;
+  // Detect provider based on model name and override
+  const detectProvider = (
+      requestedModel: string,
+      defaultModel?: string,
+      modelMap?: typeof modelMap
+  ): "openrouter" | "ollama" | "native" => {
+      // 1. Override explícito (más alta prioridad)
+      if (providerOverride && providerOverride !== "auto") {
+          return providerOverride;
+      }
 
-      // 2. Resolve target model based on mappings or defaults
-      let target = model || requestedModel; // Start with global default or request
-
+      // 2. Resolver modelo target
+      let target = defaultModel || requestedModel;
       const req = requestedModel.toLowerCase();
       if (modelMap) {
           if (req.includes("opus") && modelMap.opus) target = modelMap.opus;
           else if (req.includes("sonnet") && modelMap.sonnet) target = modelMap.sonnet;
           else if (req.includes("haiku") && modelMap.haiku) target = modelMap.haiku;
-          // Note: We don't verify "subagent" string because we don't know what Claude sends for subagents
-          // unless it's "claude-3-haiku" (which is covered above) or specific.
-          // Assuming Haiku mapping covers subagent unless custom logic added.
       }
 
-      // 3. Native vs OpenRouter Decision
-      // Heuristic: OpenRouter models have "/", Native ones don't.
-      const isNative = !target.includes("/");
+      // 3. Heurística: modelos con "-cloud" o ":cloud" → OllamaCloud
+      if (target.includes("-cloud") || target.endsWith(":cloud") || (target.includes(":") && !target.includes("/"))) {
+          return "ollama";
+      }
 
-      if (isNative) {
-          // If we mapped to a native string (unlikely) or passed through
+      // 4. Heurística: modelos con "/" → OpenRouter
+      if (target.includes("/")) {
+          return "openrouter";
+      }
+
+      // 5. Default: Native
+      return "native";
+  };
+
+  // Pre-initialize handlers for mapped models
+  if (model) {
+      const provider = detectProvider(model, model, modelMap);
+      if (provider === "openrouter") getOpenRouterHandler(model);
+      else if (provider === "ollama") getOllamaHandler(model);
+  }
+  if (modelMap?.opus) {
+      const provider = detectProvider(modelMap.opus, model, modelMap);
+      if (provider === "openrouter") getOpenRouterHandler(modelMap.opus);
+      else if (provider === "ollama") getOllamaHandler(modelMap.opus);
+  }
+  if (modelMap?.sonnet) {
+      const provider = detectProvider(modelMap.sonnet, model, modelMap);
+      if (provider === "openrouter") getOpenRouterHandler(modelMap.sonnet);
+      else if (provider === "ollama") getOllamaHandler(modelMap.sonnet);
+  }
+  if (modelMap?.haiku) {
+      const provider = detectProvider(modelMap.haiku, model, modelMap);
+      if (provider === "openrouter") getOpenRouterHandler(modelMap.haiku);
+      else if (provider === "ollama") getOllamaHandler(modelMap.haiku);
+  }
+  if (modelMap?.subagent) {
+      const provider = detectProvider(modelMap.subagent, model, modelMap);
+      if (provider === "openrouter") getOpenRouterHandler(modelMap.subagent);
+      else if (provider === "ollama") getOllamaHandler(modelMap.subagent);
+  }
+
+  const getHandlerForRequest = (requestedModel: string): ModelHandler => {
+      // 1. Monitor Mode Override
+      if (monitorMode) return nativeHandler;
+
+      // 2. Detectar proveedor
+      const provider = detectProvider(requestedModel, model, modelMap);
+      const target = model || requestedModel;
+
+      // 3. Seleccionar handler según proveedor
+      if (provider === "ollama") {
+          return getOllamaHandler(target);
+      } else if (provider === "openrouter") {
+          return getOpenRouterHandler(target);
+      } else {
           return nativeHandler;
       }
-
-      // 4. OpenRouter Handler
-      return getOpenRouterHandler(target);
   };
 
   const app = new Hono();

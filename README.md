@@ -1,8 +1,8 @@
 # Claudish
 
-> Run Claude Code with OpenRouter models via local proxy
+> Run Claude Code with OpenRouter or OllamaCloud models via local proxy
 
-**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any OpenRouter model by proxying requests through a local Anthropic API-compatible server.
+**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any OpenRouter or OllamaCloud model by proxying requests through a local Anthropic API-compatible server.
 
 ## Features
 
@@ -19,8 +19,9 @@
 - ✅ **Parallel runs** - Each instance gets isolated proxy
 - ✅ **Autonomous mode** - Bypass all prompts with flags
 - ✅ **Context inheritance** - Runs in current directory with same `.claude` settings
-- ✅ **Multiple models** - 10+ prioritized OpenRouter models
+- ✅ **Multiple models** - 10+ prioritized OpenRouter models + OllamaCloud support
 - ✅ **Agent support** - Use Claude Code agents in headless mode with `--agent`
+- ✅ **Multi-provider** - Use OpenRouter or OllamaCloud with automatic detection
 
 ## Installation
 
@@ -28,7 +29,8 @@
 
 - **Node.js 18+** or **Bun 1.0+** - JavaScript runtime (either works!)
 - [Claude Code](https://claude.com/claude-code) - Claude CLI must be installed
-- [OpenRouter API Key](https://openrouter.ai/keys) - Free tier available
+- [OpenRouter API Key](https://openrouter.ai/keys) - Free tier available (for OpenRouter models)
+- [OllamaCloud API Key](https://ollama.com/settings/keys) - Optional (for OllamaCloud models)
 
 ### Install Claudish
 
@@ -104,7 +106,7 @@ claudish
 ### Option 2: With Environment Variables
 
 ```bash
-# Set up environment
+# Set up environment for OpenRouter
 export OPENROUTER_API_KEY=sk-or-v1-...
 export ANTHROPIC_API_KEY=sk-ant-api03-placeholder
 
@@ -113,6 +115,10 @@ claudish "implement user authentication"
 
 # Or with specific model
 claudish --model openai/gpt-5-codex "add tests"
+
+# Or use OllamaCloud provider
+export OLLAMA_API_KEY=your-ollama-key
+claudish --provider ollama --model gpt-oss:120b-cloud "explain quantum computing"
 ```
 
 **Note:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it. This makes first-time usage super simple!
@@ -212,7 +218,8 @@ claudish [OPTIONS] <claude-args...>
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-i, --interactive` | Run in interactive mode (persistent session) | Single-shot mode |
-| `-m, --model <model>` | OpenRouter model to use | `x-ai/grok-code-fast-1` |
+| `-m, --model <model>` | Model to use (OpenRouter or OllamaCloud) | `x-ai/grok-code-fast-1` |
+| `--provider <provider>` | Provider to use: `openrouter`, `ollama`, or `auto` | `auto` |
 | `-p, --port <port>` | Proxy server port | Random (3000-9000) |
 | `-q, --quiet` | Suppress [claudish] log messages | **Quiet in single-shot** |
 | `-v, --verbose` | Show [claudish] log messages | Verbose in interactive |
@@ -233,7 +240,9 @@ claudish [OPTIONS] <claude-args...>
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ **Optional in interactive mode** (will prompt if not set)<br>✅ **Required in non-interactive mode** |
+| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ **Optional in interactive mode** (will prompt if not set)<br>✅ **Required for OpenRouter models** |
+| `OLLAMA_API_KEY` | Your OllamaCloud API key | ✅ **Required for OllamaCloud models**<br>Get it from: https://ollama.com/settings/keys |
+| `CLAUDISH_PROVIDER` | Provider selection: `openrouter`, `ollama`, or `auto` | ❌ No (default: `auto`) |
 | `ANTHROPIC_API_KEY` | Placeholder to prevent Claude Code dialog (not used for auth) | ✅ **Required** |
 | `CLAUDISH_MODEL` | Default model to use | ❌ No |
 | `CLAUDISH_PORT` | Default proxy port | ❌ No |
@@ -242,10 +251,43 @@ claudish [OPTIONS] <claude-args...>
 **Important Notes:**
 - **NEW in v1.3.0:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it
 - You MUST set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value). Without it, Claude Code will show a dialog
+- Provider auto-detection: Models with `-cloud` suffix, `:cloud` suffix, or format `model:tag` (without `/`) are automatically detected as OllamaCloud
+
+## Provider Support
+
+Claudish supports two providers with automatic detection:
+
+- **OpenRouter** - Access to 100+ AI models from various providers
+- **OllamaCloud** - Use Ollama models (local or cloud-hosted)
+
+### Provider Selection
+
+Claudish automatically detects the provider based on model name format:
+
+- Models with `/` (e.g., `openai/gpt-4`) → OpenRouter
+- Models with `-cloud` or `:cloud` suffix → OllamaCloud
+- Models with `:` but no `/` (e.g., `model:tag`) → OllamaCloud
+
+You can also explicitly set the provider:
+
+```bash
+# Force OpenRouter provider
+claudish --provider openrouter --model openai/gpt-4 "task"
+
+# Force OllamaCloud provider
+claudish --provider ollama --model llama-3:70b-cloud "task"
+
+# Auto-detect (default)
+claudish --provider auto --model gpt-oss:120b-cloud  # Detects OllamaCloud
+```
 
 ## Available Models
 
-Claudish supports 5 OpenRouter models in priority order:
+Claudish supports multiple providers and models:
+
+### OpenRouter Models
+
+Claudish supports 5+ prioritized OpenRouter models:
 
 1. **x-ai/grok-code-fast-1** (Default)
    - Fast coding-focused model from xAI
@@ -267,10 +309,78 @@ Claudish supports 5 OpenRouter models in priority order:
    - Vision-language model from Alibaba
    - Best for UI/visual tasks
 
-List models anytime with:
+### OllamaCloud Models
+
+Claudish also supports OllamaCloud models for local and cloud-hosted inference:
+
+- Models are specified with `-cloud` suffix or `:cloud` tag
+- Format: `model-name-cloud` or `model-name:tag-cloud`
+- Example: `gpt-oss:120b-cloud`, `llama-3:70b-cloud`
+
+**OllamaCloud Features:**
+- ✅ Free tier available
+- ✅ Local inference support
+- ✅ Cloud-hosted models
+- ⚠️ Tool calling not supported (tools are automatically ignored)
+
+### Using OllamaCloud
+
+**Setup:**
+
+1. Get your OllamaCloud API key from [ollama.com/settings/keys](https://ollama.com/settings/keys)
+2. Set it as an environment variable:
 
 ```bash
+export OLLAMA_API_KEY=your-ollama-api-key
+```
+
+**Usage Examples:**
+
+```bash
+# Use OllamaCloud with auto-detection (model has -cloud suffix)
+claudish --model gpt-oss:120b-cloud "explain quantum computing"
+
+# Explicitly set provider
+claudish --provider ollama --model llama-3:70b-cloud "implement sorting algorithm"
+
+# Use with environment variable
+export CLAUDISH_PROVIDER=ollama
+claudish --model llama-3:70b-cloud "your task"
+
+# Interactive mode with OllamaCloud
+export OLLAMA_API_KEY=your-key
+claudish --provider ollama
+# Then select or specify your OllamaCloud model
+```
+
+**Model Naming Format:**
+
+OllamaCloud models follow these naming patterns:
+- `model-name-cloud` (e.g., `gpt-oss-cloud`)
+- `model-name:tag-cloud` (e.g., `llama-3:70b-cloud`)
+- `model:tag` (without `/` and with `:cloud` suffix)
+
+**⚠️ Important Limitations:**
+
+- ❌ **Tool calling is NOT supported** - OllamaCloud's `/api/chat` endpoint does not support function calling
+- ❌ **Tools will NOT work** - Tools like `write_to_file`, `bash`, `read`, etc. are silently ignored
+- ❌ **Files won't be created** - If the model says it used `write_to_file`, the file was NOT actually created
+- ❌ **Commands won't run** - If the model says it ran a command, it did NOT execute
+- ⚠️ **Use OpenRouter for tools** - If you need tool support, use OpenRouter provider instead
+- Cost tracking is not available (shows as N/A in status line)
+
+**Why this matters:**
+If you're using OllamaCloud and Claude Code tries to use tools, you'll see warnings but the tools will be silently ignored. The model may respond as if it used tools successfully, but nothing actually happened. For tasks requiring file operations or command execution, use OpenRouter models instead.
+
+List all available models:
+
+```bash
+# OpenRouter models
 claudish --models
+
+# Search for specific models
+claudish --models grok
+claudish --models cloud
 ```
 
 ## Agent Support (NEW in v2.1.0)
@@ -303,16 +413,16 @@ Claudish automatically shows critical information in the Claude Code status bar 
 
 **Visual Design:**
 - 🔵 **Directory** (bright cyan, bold) - Where you are
-- 🟡 **Model ID** (bright yellow) - Actual OpenRouter model ID
-- 🟢 **Cost** (bright green) - Real-time session cost from OpenRouter
+- 🟡 **Model ID** (bright yellow) - Actual model ID (OpenRouter or OllamaCloud)
+- 🟢 **Cost** (bright green) - Real-time session cost (OpenRouter) or N/A (OllamaCloud)
 - 🟣 **Context** (bright magenta) - % of context window remaining
 - ⚪ **Separators** (dim) - Visual dividers
 
 **Examples:**
-- `claudish • x-ai/grok-code-fast-1 • $0.003 • 95%` - Using Grok, $0.003 spent, 95% context left
-- `my-project • openai/gpt-5-codex • $0.12 • 67%` - Using GPT-5, $0.12 spent, 67% context left
-- `backend • minimax/minimax-m2 • $0.05 • 82%` - Using MiniMax M2, $0.05 spent, 82% left
-- `test • openrouter/auto • $0.01 • 90%` - Using any custom model, $0.01 spent, 90% left
+- `claudish • x-ai/grok-code-fast-1 • $0.003 • 95%` - Using Grok (OpenRouter), $0.003 spent, 95% context left
+- `my-project • openai/gpt-5-codex • $0.12 • 67%` - Using GPT-5 (OpenRouter), $0.12 spent, 67% context left
+- `backend • llama-3:70b-cloud • N/A • 82%` - Using OllamaCloud model, 82% context left
+- `test • gpt-oss:120b-cloud • N/A • 90%` - Using OllamaCloud model, 90% context left
 
 **Critical Tracking (Live Updates):**
 - 💰 **Cost tracking** - Real-time USD from Claude Code session data
@@ -329,10 +439,11 @@ Claudish automatically shows critical information in the Claude Code status bar 
 
 **Custom Model Support:**
 - ✅ **ANY OpenRouter model** - Not limited to shortlist (e.g., `openrouter/auto`, custom models)
-- ✅ **Actual model IDs** - Shows exact OpenRouter model ID (no translation)
+- ✅ **ANY OllamaCloud model** - Supports all OllamaCloud models with `-cloud` suffix or `:cloud` tag
+- ✅ **Actual model IDs** - Shows exact model ID (no translation)
 - ✅ **Context fallback** - Unknown models use 100k context window (safe default)
 - ✅ **Shortlist optimized** - Our recommended models have accurate context sizes
-- ✅ **Future-proof** - Works with new models added to OpenRouter
+- ✅ **Future-proof** - Works with new models added to OpenRouter or OllamaCloud
 
 **How it works:**
 - Each Claudish instance creates a temporary settings file with custom status line
@@ -366,14 +477,23 @@ claudish "implement user authentication with JWT tokens"
 ### With Specific Model
 
 ```bash
-# Use Grok for fast coding
+# Use Grok for fast coding (OpenRouter)
 claudish --model x-ai/grok-code-fast-1 "add error handling"
 
-# Use GPT-5 Codex for complex tasks
+# Use GPT-5 Codex for complex tasks (OpenRouter)
 claudish --model openai/gpt-5-codex "refactor entire API layer"
 
-# Use Qwen for UI tasks
+# Use Qwen for UI tasks (OpenRouter)
 claudish --model qwen/qwen3-vl-235b-a22b-instruct "implement dashboard UI"
+
+# Use OllamaCloud models
+claudish --provider ollama --model gpt-oss:120b-cloud "explain quantum computing"
+claudish --model llama-3:70b-cloud "implement sorting algorithm"  # Auto-detected
+
+# Provider auto-detection (default: auto)
+export OLLAMA_API_KEY=your-key
+claudish --model model-name-cloud  # Automatically uses OllamaCloud
+claudish --model provider/model-name  # Automatically uses OpenRouter
 ```
 
 ### Autonomous Mode
@@ -556,13 +676,14 @@ done | awk '{sum+=$1} END {print "Total: $"sum}'
 ```
 claudish "your prompt"
     ↓
-1. Parse arguments (--model, --no-auto-approve, --dangerous, etc.)
-2. Find available port (random or specified)
-3. Start local proxy on http://127.0.0.1:PORT
-4. Spawn: claude --auto-approve --env ANTHROPIC_BASE_URL=http://127.0.0.1:PORT
-5. Proxy translates: Anthropic API → OpenRouter API
-6. Stream output in real-time
-7. Cleanup proxy on exit
+1. Parse arguments (--model, --provider, --no-auto-approve, --dangerous, etc.)
+2. Detect provider (auto-detect from model name or use --provider flag)
+3. Find available port (random or specified)
+4. Start local proxy on http://127.0.0.1:PORT
+5. Spawn: claude --auto-approve --env ANTHROPIC_BASE_URL=http://127.0.0.1:PORT
+6. Proxy translates: Anthropic API → OpenRouter/OllamaCloud API
+7. Stream output in real-time
+8. Cleanup proxy on exit
 ```
 
 ### Request Flow
@@ -572,6 +693,13 @@ claudish "your prompt"
 Claude Code → Anthropic API format → Local Proxy → OpenRouter API format → OpenRouter
                                          ↓
 Claude Code ← Anthropic API format ← Local Proxy ← OpenRouter API format ← OpenRouter
+```
+
+**OllamaCloud Mode:**
+```
+Claude Code → Anthropic API format → Local Proxy → OllamaCloud API format → OllamaCloud
+                                         ↓
+Claude Code ← Anthropic API format ← Local Proxy ← OllamaCloud API format ← OllamaCloud
 ```
 
 **Monitor Mode (Anthropic Passthrough):**
@@ -592,14 +720,14 @@ Each `claudish` invocation:
 This allows multiple parallel runs:
 
 ```bash
-# Terminal 1
+# Terminal 1 - OpenRouter model
 claudish --model x-ai/grok-code-fast-1 "task A"
 
-# Terminal 2
+# Terminal 2 - OpenRouter model
 claudish --model openai/gpt-5-codex "task B"
 
-# Terminal 3
-claudish --model minimax/minimax-m2 "task C"
+# Terminal 3 - OllamaCloud model
+claudish --provider ollama --model llama-3:70b-cloud "task C"
 ```
 
 ## Extended Thinking Support
@@ -783,9 +911,10 @@ mcp/claudish/
 Claudish uses a **Hono-based proxy server** inspired by [claude-code-proxy](https://github.com/kiyo-e/claude-code-proxy):
 
 - **Framework**: [Hono](https://hono.dev/) - Fast, lightweight web framework
-- **API Translation**: Converts Anthropic API format ↔ OpenAI format
+- **API Translation**: Converts Anthropic API format ↔ OpenRouter/OllamaCloud format
 - **Streaming**: Full support for Server-Sent Events (SSE)
-- **Tool Calling**: Handles Claude's tool_use ↔ OpenAI's tool_calls
+- **Tool Calling**: Handles Claude's tool_use ↔ OpenAI's tool_calls (OpenRouter only)
+- **Multi-provider**: Supports both OpenRouter and OllamaCloud providers
 - **Battle-tested**: Based on production-ready claude-code-proxy implementation
 
 **Why Hono?**
@@ -887,6 +1016,23 @@ echo 'export OPENROUTER_API_KEY=sk-or-v1-...' >> ~/.zshrc
 source ~/.zshrc
 ```
 
+### "OLLAMA_API_KEY environment variable is required for OllamaCloud"
+
+Set your OllamaCloud API key:
+
+```bash
+export OLLAMA_API_KEY=your-ollama-api-key
+```
+
+Get your API key from: https://ollama.com/settings/keys
+
+Or add to your shell profile (`~/.zshrc`, `~/.bashrc`):
+
+```bash
+echo 'export OLLAMA_API_KEY=your-ollama-api-key' >> ~/.zshrc
+source ~/.zshrc
+```
+
 ### "No available ports found"
 
 Specify a custom port:
@@ -899,11 +1045,14 @@ Or increase port range in `src/config.ts`.
 
 ### Proxy errors
 
-Check OpenRouter API status:
-- https://openrouter.ai/status
+**For OpenRouter:**
+- Check OpenRouter API status: https://openrouter.ai/status
+- Verify your API key works: https://openrouter.ai/keys
 
-Verify your API key works:
-- https://openrouter.ai/keys
+**For OllamaCloud:**
+- Check OllamaCloud API status: https://ollama.com/status
+- Verify your API key works: https://ollama.com/settings/keys
+- Ensure your model name has the correct format (`-cloud` suffix or `:cloud` tag)
 
 ### Status line not showing model
 
@@ -948,18 +1097,20 @@ If the status line doesn't show the model name:
 
 | Feature | Claude Code | Claudish |
 |---------|-------------|----------|
-| Model | Anthropic models only | Any OpenRouter model |
-| API | Anthropic API | OpenRouter API |
-| Cost | Anthropic pricing | OpenRouter pricing |
-| Setup | API key → direct | API key → proxy → OpenRouter |
+| Model | Anthropic models only | Any OpenRouter or OllamaCloud model |
+| API | Anthropic API | OpenRouter API or OllamaCloud API |
+| Cost | Anthropic pricing | OpenRouter pricing or OllamaCloud pricing |
+| Setup | API key → direct | API key → proxy → provider |
 | Speed | Direct connection | ~Same (local proxy) |
 | Features | All Claude Code features | All Claude Code features |
 
 **When to use Claudish:**
-- ✅ Want to try different models (Grok, GPT-5, etc.)
-- ✅ Need OpenRouter-specific features
-- ✅ Prefer OpenRouter pricing
+- ✅ Want to try different models (Grok, GPT-5, Ollama models, etc.)
+- ✅ Need OpenRouter-specific features (including tool calling)
+- ✅ Prefer OpenRouter or OllamaCloud pricing
 - ✅ Testing model performance
+- ✅ Want to use cloud-hosted Ollama models (for tasks that don't require tools)
+- ⚠️ **Note:** Use OpenRouter provider if you need tool support (file operations, command execution, etc.)
 
 **When to use Claude Code:**
 - ✅ Want latest Anthropic models only

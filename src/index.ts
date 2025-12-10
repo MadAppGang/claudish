@@ -82,8 +82,29 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
+    // Prompt for OpenRouter API key only if needed (interactive mode only, not monitor mode)
+    // Skip if provider is "ollama" or if the model is detected as Ollama or if OLLAMA_API_KEY is configured
+    const provider = cliConfig.provider || "auto";
+    
+    // Detect if model is from Ollama based on name (same logic as proxy-server.ts)
+    const isOllamaModel = (modelName?: string): boolean => {
+      if (!modelName) return false;
+      // Models with "-cloud" or ":cloud" suffix, or format "model:tag" (without "/") are Ollama
+      return modelName.includes("-cloud") || 
+             modelName.endsWith(":cloud") || 
+             (modelName.includes(":") && !modelName.includes("/"));
+    };
+    
+    const modelIsOllama = cliConfig.model ? isOllamaModel(cliConfig.model) : false;
+    const hasOllamaKey = !!cliConfig.ollamaApiKey;
+    // Don't ask for OpenRouter if:
+    // 1. Provider is explicitly "ollama"
+    // 2. Model is detected as Ollama (has "-cloud" or ":cloud" or format "model:tag")
+    // 3. Provider is "auto" and has OLLAMA_API_KEY configured
+    const needsOpenRouter = provider === "openrouter" || 
+                           (provider === "auto" && !modelIsOllama && !hasOllamaKey);
+    
+    if (cliConfig.interactive && !cliConfig.monitor && needsOpenRouter && !cliConfig.openrouterApiKey) {
       cliConfig.openrouterApiKey = await promptForApiKey();
       console.log(""); // Empty line after input
     }
@@ -127,7 +148,9 @@ async function runCli() {
         sonnet: cliConfig.modelSonnet,
         haiku: cliConfig.modelHaiku,
         subagent: cliConfig.modelSubagent,
-      }
+      },
+      cliConfig.ollamaApiKey,
+      cliConfig.provider
     );
 
     // Run Claude Code with proxy

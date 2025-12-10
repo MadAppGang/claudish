@@ -53,6 +53,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.model = anthropicModel; // Fall back to Claude Code standard
   }
 
+  // Read provider from environment (default: "auto")
+  const envProvider = process.env[ENV.CLAUDISH_PROVIDER];
+  if (envProvider && ["openrouter", "ollama", "auto"].includes(envProvider)) {
+    config.provider = envProvider as "openrouter" | "ollama" | "auto";
+  } else {
+    config.provider = "auto";
+  }
+
   // Parse model mappings from env vars
   // Priority: CLAUDISH_MODEL_* (highest) > ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL (fallback)
   config.modelOpus = process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
@@ -139,6 +147,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.profile = profileArg;
+    } else if (arg === "--provider") {
+      const providerArg = args[++i];
+      if (!providerArg || !["openrouter", "ollama", "auto"].includes(providerArg)) {
+        console.error("--provider requires one of: openrouter, ollama, auto");
+        process.exit(1);
+      }
+      config.provider = providerArg as "openrouter" | "ollama" | "auto";
     } else if (arg === "--cost-tracker") {
       // Enable cost tracking for this session
       config.costTracking = true;
@@ -164,8 +179,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--init") {
       await initializeClaudishSkill();
       process.exit(0);
-    } else if (arg === "--top-models") {
+    } else if (arg === "--top-models" || arg === "--list-models") {
       // Show recommended/top models (curated list)
+      // --list-models is an alias for --top-models
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
@@ -229,28 +245,54 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
-      if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
-        console.error("Get your API key from: https://openrouter.ai/keys");
-        console.error("");
-        console.error("Set it now:");
-        console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
-        process.exit(1);
+    // Provider mode: handle API keys based on provider selection
+    const provider = config.provider || "auto";
+
+    // OpenRouter API key (needed if provider is openrouter or auto)
+    if (provider === "openrouter" || provider === "auto") {
+      const apiKey = process.env[ENV.OPENROUTER_API_KEY];
+      if (!apiKey) {
+        if (!config.interactive) {
+          if (provider === "openrouter") {
+            console.error("Error: OPENROUTER_API_KEY environment variable is required");
+            console.error("Get your API key from: https://openrouter.ai/keys");
+            console.error("");
+            console.error("Set it now:");
+            console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
+            process.exit(1);
+          }
+          // In auto mode, we'll try Ollama if OpenRouter key is missing
+        }
+        config.openrouterApiKey = undefined;
+      } else {
+        config.openrouterApiKey = apiKey;
       }
-      // Will be prompted for in interactive mode
-      config.openrouterApiKey = undefined;
-    } else {
-      config.openrouterApiKey = apiKey;
+    }
+
+    // OllamaCloud API key (needed if provider is ollama or auto)
+    if (provider === "ollama" || provider === "auto") {
+      const ollamaKey = process.env[ENV.OLLAMA_API_KEY];
+      if (!ollamaKey) {
+        if (!config.interactive) {
+          if (provider === "ollama") {
+            console.error("Error: OLLAMA_API_KEY environment variable is required for OllamaCloud");
+            console.error("Get your API key from: https://ollama.com/settings/keys");
+            console.error("");
+            console.error("Set it now:");
+            console.error("  export OLLAMA_API_KEY='your_api_key'");
+            process.exit(1);
+          }
+          // In auto mode, we'll try OpenRouter if Ollama key is missing
+        }
+        config.ollamaApiKey = undefined;
+      } else {
+        config.ollamaApiKey = ollamaKey;
+      }
     }
 
     // Note: ANTHROPIC_API_KEY is NOT required here
     // claude-runner.ts automatically sets a placeholder if not provided (see line 138)
-    // This allows single-variable setup - users only need OPENROUTER_API_KEY
+    // This allows single-variable setup - users only need OPENROUTER_API_KEY or OLLAMA_API_KEY
     config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   }
 
@@ -760,7 +802,8 @@ USAGE:
 
 OPTIONS:
   -i, --interactive        Run in interactive mode (default when no prompt given)
-  -m, --model <model>      OpenRouter model to use (required for single-shot mode)
+  -m, --model <model>      Model to use (required for single-shot mode)
+  --provider <provider>    Provider to use: openrouter, ollama, or auto (default: auto)
   -p, --profile <name>     Use named profile for model mapping (default: uses default profile)
   --port <port>            Proxy server port (default: random)
   -d, --debug              Enable debug logging to file (logs/claudish_*.log)
@@ -818,7 +861,9 @@ NOTES:
 ENVIRONMENT VARIABLES:
   Claudish automatically loads .env file from current directory.
 
-  OPENROUTER_API_KEY              Required: Your OpenRouter API key
+  OPENROUTER_API_KEY              Your OpenRouter API key (required for OpenRouter provider)
+  OLLAMA_API_KEY                  Your OllamaCloud API key (required for Ollama provider)
+  CLAUDISH_PROVIDER               Provider selection: openrouter, ollama, or auto (default: auto)
   CLAUDISH_MODEL                  Default model to use (takes priority)
   ANTHROPIC_MODEL                 Claude Code standard: model to use (fallback)
   CLAUDISH_PORT                   Default port for proxy
@@ -848,6 +893,11 @@ EXAMPLES:
   # Single-shot mode - one task and exit (requires --model or CLAUDISH_MODEL env var)
   claudish --model openai/gpt-5-codex "implement user authentication"
   claudish --model x-ai/grok-code-fast-1 "add tests for login"
+
+  # Use OllamaCloud provider
+  claudish --provider ollama --model gpt-oss:120b-cloud "explain quantum computing"
+  export CLAUDISH_PROVIDER=ollama
+  claudish --model gpt-oss:120b-cloud "your task"
 
   # Per-role model mapping (use different models for different Claude Code roles)
   claudish --model-opus openai/gpt-5 --model-sonnet x-ai/grok-code-fast-1 --model-haiku minimax/minimax-m2

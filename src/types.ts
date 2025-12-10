@@ -29,7 +29,9 @@ export interface ClaudishConfig {
   monitor: boolean; // Monitor mode - proxy to real Anthropic API and log everything
   stdin: boolean; // Read prompt from stdin instead of args
   openrouterApiKey?: string; // Optional in monitor mode
+  ollamaApiKey?: string; // Optional for OllamaCloud provider
   anthropicApiKey?: string; // Required in monitor mode
+  provider?: "openrouter" | "ollama" | "auto"; // Provider selection
   agent?: string; // Agent to use for execution (e.g., "frontend:developer")
   freeOnly?: boolean; // Show only free models in selector
   profile?: string; // Profile name to use for model mapping
