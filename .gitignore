@@ -33,3 +33,15 @@ coverage/
 tmp/
 temp/
 all-models.json
+
+# Claude Code local files
+.claude/
+.claudemem/
+
+# npm lockfile (we use bun.lock)
+package-lock.json
+
+# Dev/test files
+__tests__/
+*.jinja
+logs/
