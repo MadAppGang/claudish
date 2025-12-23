@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenRouterModel } from "./types.js";
-import { getAvailableModels } from "./model-loader.js";
+import { getAvailableModels, loadModelInfo } from "./model-loader.js";
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -59,19 +59,41 @@ const TRUSTED_FREE_PROVIDERS = [
 ];
 
 /**
- * Load recommended models from JSON
+ * Load recommended models from JSON or fall back to config
  */
 function loadRecommendedModels(): ModelInfo[] {
+  // Try to load from JSON file first
   if (existsSync(RECOMMENDED_MODELS_JSON_PATH)) {
     try {
       const content = readFileSync(RECOMMENDED_MODELS_JSON_PATH, "utf-8");
       const data = JSON.parse(content);
-      return data.models || [];
+      if (data.models && data.models.length > 0) {
+        return data.models;
+      }
     } catch {
-      return [];
+      // Fall through to config fallback
     }
   }
-  return [];
+
+  // Fall back to built-in config models
+  try {
+    const modelIds = getAvailableModels().filter(id => id !== "custom");
+    const modelInfo = loadModelInfo();
+
+    return modelIds.map(id => {
+      const info = modelInfo[id as OpenRouterModel];
+      const provider = id.split("/")[0];
+      return {
+        id,
+        name: info?.name || id,
+        description: info?.description || "",
+        provider: provider.charAt(0).toUpperCase() + provider.slice(1),
+        // Pricing will be fetched dynamically when model is selected
+      } as ModelInfo;
+    });
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -282,7 +304,23 @@ export async function selectModel(
     // Load recommended models first
     const recommendedModels = loadRecommendedModels();
     if (recommendedModels.length > 0) {
-      models = recommendedModels;
+      // Enrich with pricing from OpenRouter API
+      const allModels = await fetchAllModels();
+      const modelMap = new Map(allModels.map(m => [m.id, m]));
+
+      models = recommendedModels.map(rec => {
+        const apiModel = modelMap.get(rec.id);
+        if (apiModel) {
+          // Merge API data with config data
+          const enriched = toModelInfo(apiModel);
+          return {
+            ...enriched,
+            name: rec.name || enriched.name,
+            description: rec.description || enriched.description,
+          };
+        }
+        return rec;
+      });
     } else {
       // Fall back to fetching
       const allModels = await getAllModelsForSearch();

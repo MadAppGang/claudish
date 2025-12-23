@@ -4,6 +4,7 @@
 // OpenRouter Models - Top Recommended for Development (Priority Order)
 export const OPENROUTER_MODELS = [
   "x-ai/grok-code-fast-1",
+  "x-ai/grok-4.1-fast",
   "minimax/minimax-m2",
   "google/gemini-2.5-flash",
   "openai/gpt-5",
