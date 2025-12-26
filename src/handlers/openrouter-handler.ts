@@ -6,7 +6,7 @@ import type { ModelHandler } from "./types.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { transformOpenAIToClaude, removeUriFormat } from "../transform.js";
-import { log, logStructured, isLoggingEnabled } from "../logger.js";
+import { log, logStructured, isLoggingEnabled, getLogLevel, truncateContent } from "../logger.js";
 import { fetchModelContextWindow, doesModelSupportReasoning } from "../model-loader.js";
 import { validateToolArguments } from "./shared/openai-compat.js";
 
@@ -73,12 +73,38 @@ export class OpenRouterHandler implements ModelHandler {
     const target = this.targetModel;
     await this.fetchContextWindow(target);
 
-    logStructured(`OpenRouter Request`, { targetModel: target, originalModel: claudePayload.model });
-
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(claudePayload);
     const messages = this.convertMessages(claudeRequest, target);
     const tools = this.convertTools(claudeRequest);
     const supportsReasoning = await doesModelSupportReasoning(target);
+
+    // Log request summary
+    const systemPromptLength = typeof claudeRequest.system === 'string' ? claudeRequest.system.length : 0;
+    logStructured(`OpenRouter Request`, {
+      targetModel: target,
+      originalModel: claudePayload.model,
+      messageCount: messages.length,
+      toolCount: tools.length,
+      systemPromptLength,
+      maxTokens: claudeRequest.max_tokens
+    });
+
+    // Log detailed content in debug mode
+    if (getLogLevel() === "debug") {
+      // Log last user message (most relevant for debugging)
+      const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
+      if (lastUserMsg) {
+        const content = typeof lastUserMsg.content === 'string'
+          ? lastUserMsg.content
+          : JSON.stringify(lastUserMsg.content);
+        log(`[OpenRouter] Last user message: ${truncateContent(content, 500)}`);
+      }
+      // Log tool names
+      if (tools.length > 0) {
+        const toolNames = tools.map((t: any) => t.function?.name || t.name).join(", ");
+        log(`[OpenRouter] Tools: ${toolNames}`);
+      }
+    }
 
     const openRouterPayload: any = {
         model: target,
@@ -115,7 +141,12 @@ export class OpenRouterHandler implements ModelHandler {
         body: JSON.stringify(openRouterPayload)
     });
 
-    if (!response.ok) return c.json({ error: await response.text() }, response.status as any);
+    log(`[OpenRouter] Response status: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      log(`[OpenRouter] Error: ${errorText}`);
+      return c.json({ error: errorText }, response.status as any);
+    }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
 
     return this.handleStreamingResponse(c, response, adapter, target, claudeRequest);
@@ -214,8 +245,9 @@ export class OpenRouterHandler implements ModelHandler {
       const encoder = new TextEncoder();
       const decoder = new TextDecoder();
 
-      // Capture middleware manager for use in closure
+      // Capture references for use in closure
       const middlewareManager = this.middlewareManager;
+      const writeTokens = (input: number, output: number) => this.writeTokenFile(input, output);
       // Shared metadata for middleware across all chunks in this stream
       const streamMetadata = new Map<string, any>();
 
@@ -261,12 +293,28 @@ export class OpenRouterHandler implements ModelHandler {
                   if (textStarted) { send("content_block_stop", { type: "content_block_stop", index: textIdx }); textStarted = false; }
                   for (const [_, t] of tools) if (t.started && !t.closed) { send("content_block_stop", { type: "content_block_stop", index: t.blockIndex }); t.closed = true; }
 
+                  // Log tool calls summary
+                  if (tools.size > 0) {
+                      const toolSummary = Array.from(tools.values()).map(t => `${t.name}(${t.arguments.length} chars)`).join(", ");
+                      log(`[OpenRouter] Tool calls: ${toolSummary}`);
+                  }
+
+                  // Log and write token usage
+                  if (usage) {
+                      log(`[OpenRouter] Usage: prompt=${usage.prompt_tokens || 0}, completion=${usage.completion_tokens || 0}, total=${usage.total_tokens || 0}`);
+                      writeTokens(usage.prompt_tokens || 0, usage.completion_tokens || 0);
+                  } else {
+                      log(`[OpenRouter] Warning: No usage data received from model`);
+                  }
+
                   // Call middleware afterStreamComplete to save reasoning_details to persistent cache
                   await middlewareManager.afterStreamComplete(target, streamMetadata);
 
                   if (reason === "error") {
+                      log(`[OpenRouter] Stream error: ${err}`);
                       send("error", { type: "error", error: { type: "api_error", message: err } });
                   } else {
+                      log(`[OpenRouter] Stream complete: ${reason}`);
                       send("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: usage?.completion_tokens || 0 } });
                       send("message_stop", { type: "message_stop" });
                   }
@@ -344,6 +392,9 @@ export class OpenRouterHandler implements ModelHandler {
                                           if (toolSchemas.length > 0) {
                                               const validation = validateToolArguments(t.name, t.arguments, toolSchemas);
                                               if (!validation.valid) {
+                                                  // Log validation failure
+                                                  log(`[OpenRouter] Tool validation FAILED: ${t.name} - missing: ${validation.missingParams.join(", ")}`);
+                                                  log(`[OpenRouter] Tool args received: ${truncateContent(t.arguments, 300)}`);
                                                   // Send error text about the invalid tool call
                                                   const errorIdx = curIdx++;
                                                   const errorMsg = `\n\n⚠️ Tool call "${t.name}" failed validation: missing required parameters: ${validation.missingParams.join(", ")}. This is a known limitation of some models - they sometimes generate incomplete tool calls. Please try again or use a different model.`;
@@ -354,6 +405,7 @@ export class OpenRouterHandler implements ModelHandler {
                                                   continue;
                                               }
                                           }
+                                          log(`[OpenRouter] Tool validated: ${t.name}`);
                                           send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
                                           t.closed = true;
                                       }

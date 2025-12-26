@@ -119,6 +119,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.interactive = true;
     } else if (arg === "--debug" || arg === "-d") {
       config.debug = true;
+      // Default to debug log level when --debug is enabled (can be overridden by --log-level)
+      if (config.logLevel === "info") {
+        config.logLevel = "debug";
+      }
     } else if (arg === "--log-level") {
       const levelArg = args[++i];
       if (!levelArg || !["debug", "info", "minimal"].includes(levelArg)) {
