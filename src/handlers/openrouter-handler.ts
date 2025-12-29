@@ -1,6 +1,6 @@
 import type { Context } from "hono";
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelHandler } from "./types.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
@@ -64,7 +64,10 @@ export class OpenRouterHandler implements ModelHandler {
               context_left_percent: leftPct,
               updated_at: Date.now()
           };
-          writeFileSync(join(tmpdir(), `claudish-tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
+          // Write to ~/.claudish/ directory (same location status line reads from)
+          const claudishDir = join(homedir(), ".claudish");
+          mkdirSync(claudishDir, { recursive: true });
+          writeFileSync(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
       } catch (e) {}
   }
 
