@@ -390,4 +390,92 @@ describe("GeminiAdapter", () => {
       expect(result.wasTransformed).toBe(false);
     });
   });
+
+  describe("Reasoning Filtering", () => {
+    it("should filter 'Wait, I'm' reasoning patterns", () => {
+      const result = adapter.processTextContent("Wait, I'm checking the file first.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'Wait, if' reasoning patterns", () => {
+      const result = adapter.processTextContent("Wait, if I wrap the component...", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'Let me check' reasoning patterns", () => {
+      const result = adapter.processTextContent("Let me check the styles.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'Let's check' reasoning patterns", () => {
+      const result = adapter.processTextContent("Let's check the file again.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'I'll check' reasoning patterns", () => {
+      const result = adapter.processTextContent("I'll check the configuration.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'I'll fix' reasoning patterns", () => {
+      const result = adapter.processTextContent("I'll fix the button styling.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'I'll modify' reasoning patterns", () => {
+      const result = adapter.processTextContent("I'll modify the component file.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'I need to' reasoning patterns", () => {
+      const result = adapter.processTextContent("I need to add position relative.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'I should' reasoning patterns", () => {
+      const result = adapter.processTextContent("I should refactor this function.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'I also notice' observations", () => {
+      const result = adapter.processTextContent("I also notice the button is misaligned.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should filter 'The goal is' observations", () => {
+      const result = adapter.processTextContent("The goal is to make the panel half overflow.", "");
+      expect(result.cleanedText).toBe("");
+      expect(result.wasTransformed).toBe(true);
+    });
+
+    it("should preserve normal text content", () => {
+      const result = adapter.processTextContent("Here's the updated code:", "");
+      expect(result.cleanedText).toBe("Here's the updated code:");
+      expect(result.wasTransformed).toBe(false);
+    });
+
+    it("should preserve tool call announcements", () => {
+      const result = adapter.processTextContent("Running the tests now.", "");
+      expect(result.cleanedText).toBe("Running the tests now.");
+      expect(result.wasTransformed).toBe(false);
+    });
+
+    it("should filter multiline reasoning keeping valid lines", () => {
+      const text = "I'll check the file.\nHere's the code:\nconst x = 1;";
+      const result = adapter.processTextContent(text, "");
+      // First line filtered, remaining lines preserved (join removes empty first element)
+      expect(result.cleanedText).toBe("Here's the code:\nconst x = 1;");
+      expect(result.wasTransformed).toBe(true);
+    });
+  });
 });

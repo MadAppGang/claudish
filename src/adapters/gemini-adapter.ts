@@ -33,10 +33,14 @@ import { log } from "../logger";
 const REASONING_PATTERNS = [
   // "Wait, I'm X-ing" pattern (the scaling tools bug)
   /^Wait,?\s+I(?:'m|\s+am)\s+\w+ing\b/i,
+  // "Wait, if/that/the/this" reasoning patterns
+  /^Wait,?\s+(?:if|that|the|this|I\s+(?:need|should|will|have|already))/i,
   // Simple "Wait" or "Wait." lines
   /^Wait[.!]?\s*$/i,
   // "Let me think/check/verify" patterns
-  /^Let\s+me\s+(think|check|verify|see|look|analyze|consider)/i,
+  /^Let\s+me\s+(think|check|verify|see|look|analyze|consider|first|start)/i,
+  // "Let's" patterns (common in Gemini reasoning)
+  /^Let's\s+(check|see|look|start|first|try|think|verify|examine|analyze)/i,
   // "I need to" reasoning
   /^I\s+need\s+to\s+/i,
   // "Okay" or "Ok" standalone or with trailing reasoning
@@ -49,10 +53,22 @@ const REASONING_PATTERNS = [
   /^(?:First|Next|Then|Now)[,.]?\s+(?:I|let|we)/i,
   // "Thinking about" or "Considering"
   /^(?:Thinking\s+about|Considering)/i,
-  // "I should" or "I'll" planning
-  /^I(?:'ll|\s+will|\s+should)\s+(?:first|now|start|begin|try)/i,
+  // "I should/will/ll" followed by verbs - EXPANDED to catch more patterns
+  // This catches most "I'll <verb>" reasoning patterns
+  /^I(?:'ll|\s+will)\s+(?:first|now|start|begin|try|check|fix|look|examine|modify|create|update|read|investigate|adjust|improve|integrate|mark|also|verify|need|rethink|add|help|use|run|search|find|explore|analyze|review|test|implement|write|make|set|get|see|open|close|save|load|fetch|call|send|build|compile|execute|process|handle|parse|format|validate|clean|clear|remove|delete|move|copy|rename|install|configure|setup|initialize|prepare|work|continue|proceed|ensure|confirm)/i,
+  /^I\s+should\s+/i,
+  // "I will" at start of sentence (planning statement)
+  /^I\s+will\s+(?:first|now|start|verify|check|create|modify|look|need|also|add|help|use|run|search|find|explore|analyze|review|test|implement|write)/i,
   // Internal debugging statements
   /^(?:Debug|Checking|Verifying|Looking\s+at):/i,
+  // "I also" observations
+  /^I\s+also\s+(?:notice|need|see|want)/i,
+  // "The goal is" or "The issue is" observations
+  /^The\s+(?:goal|issue|problem|idea|plan)\s+is/i,
+  // "In the old/current/previous" design observations
+  /^In\s+the\s+(?:old|current|previous|new|existing)\s+/i,
+  // Code-like reasoning with backticks followed by observations
+  /^`[^`]+`\s+(?:is|has|does|needs|should|will|doesn't|hasn't)/i,
 ];
 
 /**
@@ -62,12 +78,34 @@ const REASONING_PATTERNS = [
 const REASONING_CONTINUATION_PATTERNS = [
   // "And then" or "And I"
   /^And\s+(?:then|I|now|so)/i,
+  // "And I'll" continuation
+  /^And\s+I(?:'ll|\s+will)/i,
   // "But" reasoning pivots
-  /^But\s+(?:I|first|wait|actually)/i,
+  /^But\s+(?:I|first|wait|actually|the|if)/i,
   // "Actually" corrections
   /^Actually[,.]?\s+/i,
+  // "Also" additions
+  /^Also[,.]?\s+(?:I|the|check|note)/i,
   // Numbered steps (1., 2., etc) in reasoning
-  /^\d+\.\s+(?:I|First|Check|Run|Create|Update|Read)/i,
+  /^\d+\.\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix|Look)/i,
+  // Dash-prefixed steps
+  /^-\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix)/i,
+  // "Or" alternatives in reasoning
+  /^Or\s+(?:I|just|we|maybe|perhaps)/i,
+  // "Since" explanations
+  /^Since\s+(?:I|the|this|we|it)/i,
+  // "Because" explanations
+  /^Because\s+(?:I|the|this|we|it)/i,
+  // "If" conditional reasoning
+  /^If\s+(?:I|the|this|we|it)\s+/i,
+  // "This" observations in reasoning context
+  /^This\s+(?:is|means|requires|should|will|confirms|suggests)/i,
+  // "That" observations
+  /^That\s+(?:means|is|should|will|explains|confirms)/i,
+  // Code file references in reasoning
+  /^Lines?\s+\d+/i,
+  // Variable/property observations
+  /^The\s+`[^`]+`\s+(?:is|has|contains|needs|should)/i,
 ];
 
 export class GeminiAdapter extends BaseModelAdapter {
