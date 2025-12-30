@@ -574,15 +574,13 @@ export function transformClaudeToGemini(claudePayload: any, modelId: string): { 
   if (claudeRequest.thinking) {
     const { budget_tokens } = claudeRequest.thinking;
     if (modelId.includes("gemini-3")) {
-      // Gemini 3 uses thinking_level
       const level = budget_tokens >= 16000 ? "high" : "low";
-      geminiPayload.thinking_level = level;
+      geminiPayload.generationConfig.thinkingConfig = {
+        thinkingLevel: level
+      };
     } else {
-      // Gemini 2.5/2.0 uses thinking_config
-      const MAX_GEMINI_BUDGET = 24576;
-      const budget = Math.min(budget_tokens, MAX_GEMINI_BUDGET);
-      geminiPayload.thinking_config = {
-        thinking_budget: budget,
+      geminiPayload.generationConfig.thinking_config = {
+        thinking_budget: Math.min(budget_tokens, 24576),
       };
     }
   }
