@@ -82,16 +82,37 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
-      cliConfig.openrouterApiKey = await promptForApiKey();
-      console.log(""); // Empty line after input
-    }
-
     // Show interactive model selector ONLY in interactive mode when model not specified
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
-      cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
+      let providerFilter: string | undefined;
+
+      if (cliConfig.googleApiKey && !cliConfig.openrouterApiKey && !cliConfig.anthropicApiKey) {
+        providerFilter = "google";
+      }
+
+      cliConfig.model = await selectModel({
+        freeOnly: cliConfig.freeOnly,
+        providerFilter
+      });
       console.log(""); // Empty line after selection
+    }
+
+    // Prompt for API key if not set (interactive mode only, not monitor mode)
+    if (cliConfig.interactive && !cliConfig.monitor) {
+      const selectedModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
+      const isGeminiModel = selectedModel && (selectedModel.startsWith("google/gemini-") || selectedModel.startsWith("gemini-"));
+      const isAnthropicModel = selectedModel && selectedModel.startsWith("claude-");
+
+      if (isGeminiModel && !cliConfig.googleApiKey) {
+        cliConfig.googleApiKey = await promptForApiKey("google");
+        console.log("");
+      } else if (isAnthropicModel && !cliConfig.anthropicApiKey) {
+        cliConfig.anthropicApiKey = await promptForApiKey("anthropic");
+        console.log("");
+      } else if (!isGeminiModel && !isAnthropicModel && !cliConfig.openrouterApiKey) {
+        cliConfig.openrouterApiKey = await promptForApiKey("openrouter");
+        console.log("");
+      }
     }
 
     // In non-interactive mode, model must be specified (via --model flag or CLAUDISH_MODEL env var)
@@ -135,7 +156,8 @@ async function runCli() {
       modelMap,
       {
         summarizeTools: cliConfig.summarizeTools,
-      }
+      },
+      cliConfig.googleApiKey
     );
 
     // Run Claude Code with proxy

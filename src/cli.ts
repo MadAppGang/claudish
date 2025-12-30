@@ -242,29 +242,35 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
+    // Non-monitor mode: requires at least one API key
+    const openRouterKey = process.env[ENV.OPENROUTER_API_KEY];
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    const googleKey = process.env.GOOGLE_API_KEY;
+
+    config.openrouterApiKey = openRouterKey;
+    config.anthropicApiKey = anthropicKey;
+    config.googleApiKey = googleKey;
+
+    // Check if we have at least one API key or if we're in interactive mode
+    const hasAnyApiKey = openRouterKey || anthropicKey || googleKey;
+
+    if (!hasAnyApiKey) {
+      // In interactive mode, we'll prompt for the appropriate key later based on model selection
+      // In non-interactive mode, we need at least one API key
       if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
-        console.error("Get your API key from: https://openrouter.ai/keys");
+        console.error("Error: At least one API key is required");
         console.error("");
-        console.error("Set it now:");
-        console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
+        console.error("Available options:");
+        console.error("  - OpenRouter: export OPENROUTER_API_KEY='sk-or-v1-...'");
+        console.error("    Get your key from: https://openrouter.ai/keys");
+        console.error("  - Google Gemini: export GOOGLE_API_KEY='AIza...'");
+        console.error("    Get your key from: https://aistudio.google.com/app/apikey");
+        console.error("  - Anthropic Claude: export ANTHROPIC_API_KEY='sk-ant-...'");
+        console.error("    Get your key from: https://console.anthropic.com/");
         process.exit(1);
       }
-      // Will be prompted for in interactive mode
-      config.openrouterApiKey = undefined;
-    } else {
-      config.openrouterApiKey = apiKey;
+      // Will be prompted for in interactive mode based on model selection
     }
-
-    // Note: ANTHROPIC_API_KEY is NOT required here
-    // claude-runner.ts automatically sets a placeholder if not provided (see line 138)
-    // This allows single-variable setup - users only need OPENROUTER_API_KEY
-    config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   }
 
   // Set default for quiet mode if not explicitly set

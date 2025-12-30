@@ -21,7 +21,7 @@
     "build:binary:mac": "bun run extract-models && bun build src/index.ts --compile --target=bun-darwin-arm64 --outfile claudish-darwin-arm64",
     "link": "npm link",
     "unlink": "npm unlink -g claudish",
-    "install-global": "bun run build && npm link",
+    "install-global": "bun run build:ci && npm link",
     "kill-all": "pkill -f 'bun.*claudish' || pkill -f 'claude.*claudish-settings' || echo 'No claudish processes found'",
     "test": "bun test ./tests/comprehensive-model-test.ts",
     "typecheck": "tsc --noEmit",

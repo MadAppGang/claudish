@@ -86,6 +86,8 @@ export const ENV = {
   VLLM_BASE_URL: "VLLM_BASE_URL", // vLLM server (default: http://localhost:8000)
   // Local model optimizations
   CLAUDISH_SUMMARIZE_TOOLS: "CLAUDISH_SUMMARIZE_TOOLS", // Summarize tool descriptions to reduce prompt size
+  // Google Gemini API (direct access)
+  GOOGLE_API_KEY: "GOOGLE_API_KEY", // Google API key for direct Gemini access
 } as const;
 
 // OpenRouter API Configuration
