@@ -29,7 +29,7 @@ export function fuzzyScore(text: string, query: string): number {
 
   while (tIdx < t.length && qIdx < q.length) {
     if (t[tIdx] === q[qIdx]) {
-      score += 1 + (consecutive * 0.5); // Bonus for consecutive matches
+      score += 1 + consecutive * 0.5; // Bonus for consecutive matches
       consecutive++;
       qIdx++;
     } else {
@@ -43,7 +43,7 @@ export function fuzzyScore(text: string, query: string): number {
     // Normalize score between 0.1 and 0.5 depending on compactness
     // Higher score if match spans shorter distance
     const compactness = q.length / (tIdx + 1); // +1 to avoid division by zero, though tIdx always >= 1 here
-    return 0.1 + (0.4 * compactness * (score / (q.length * 2))); // Heuristic
+    return 0.1 + 0.4 * compactness * (score / (q.length * 2)); // Heuristic
   }
 
   return 0;

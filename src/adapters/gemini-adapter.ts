@@ -135,7 +135,7 @@ export class GeminiAdapter extends BaseModelAdapter {
     }
 
     // Check for reasoning patterns in the new content
-    const lines = textContent.split('\n');
+    const lines = textContent.split("\n");
     const cleanedLines: string[] = [];
     let wasFiltered = false;
 
@@ -175,12 +175,12 @@ export class GeminiAdapter extends BaseModelAdapter {
       cleanedLines.push(line);
     }
 
-    const cleanedText = cleanedLines.join('\n');
+    const cleanedText = cleanedLines.join("\n");
 
     return {
       cleanedText: wasFiltered ? cleanedText : textContent,
       extractedToolCalls: [],
-      wasTransformed: wasFiltered
+      wasTransformed: wasFiltered,
     };
   }
 
@@ -188,14 +188,14 @@ export class GeminiAdapter extends BaseModelAdapter {
    * Check if a line matches known reasoning patterns
    */
   private isReasoningLine(line: string): boolean {
-    return REASONING_PATTERNS.some(pattern => pattern.test(line));
+    return REASONING_PATTERNS.some((pattern) => pattern.test(line));
   }
 
   /**
    * Check if a line is likely a continuation of reasoning
    */
   private isReasoningContinuation(line: string): boolean {
-    return REASONING_CONTINUATION_PATTERNS.some(pattern => pattern.test(line));
+    return REASONING_CONTINUATION_PATTERNS.some((pattern) => pattern.test(line));
   }
 
   /**
@@ -227,9 +227,11 @@ export class GeminiAdapter extends BaseModelAdapter {
         const budget = Math.min(budget_tokens, MAX_GEMINI_BUDGET);
 
         request.thinking_config = {
-          thinking_budget: budget
+          thinking_budget: budget,
         };
-        log(`[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_config.thinking_budget: ${budget}`);
+        log(
+          `[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_config.thinking_budget: ${budget}`
+        );
       }
 
       // Cleanup: Remove raw thinking object
@@ -242,7 +244,9 @@ export class GeminiAdapter extends BaseModelAdapter {
    * Extract thought signatures from reasoning_details
    * This should be called when processing streaming chunks
    */
-  extractThoughtSignaturesFromReasoningDetails(reasoningDetails: any[] | undefined): Map<string, string> {
+  extractThoughtSignaturesFromReasoningDetails(
+    reasoningDetails: any[] | undefined
+  ): Map<string, string> {
     const extracted = new Map<string, string>();
 
     if (!reasoningDetails || !Array.isArray(reasoningDetails)) {

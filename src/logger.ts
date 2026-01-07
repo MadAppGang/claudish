@@ -73,7 +73,12 @@ export function initLogger(debugMode: boolean, level: "debug" | "info" | "minima
   }
 
   // Create log file with timestamp
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").split("T").join("_").slice(0, -5);
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .split("T")
+    .join("_")
+    .slice(0, -5);
   logFilePath = join(logsDir, `claudish_${timestamp}.log`);
 
   // Write header (sync on init is fine)

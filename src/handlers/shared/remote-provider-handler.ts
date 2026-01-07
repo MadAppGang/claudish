@@ -57,9 +57,9 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     this.adapterManager = new AdapterManager(targetModel);
     this.middlewareManager = new MiddlewareManager();
     this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
-    this.middlewareManager.initialize().catch(err =>
-      log(`[Handler:${targetModel}] Middleware init error: ${err}`)
-    );
+    this.middlewareManager
+      .initialize()
+      .catch((err) => log(`[Handler:${targetModel}] Middleware init error: ${err}`));
   }
 
   /**
@@ -78,11 +78,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
    * @param messages - Converted messages
    * @param tools - Converted tools
    */
-  protected abstract buildRequestPayload(
-    claudeRequest: any,
-    messages: any[],
-    tools: any[]
-  ): any;
+  protected abstract buildRequestPayload(claudeRequest: any, messages: any[], tools: any[]): any;
 
   /**
    * Get additional request headers (beyond Authorization)
@@ -112,9 +108,13 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   protected writeTokenFile(input: number, output: number): void {
     try {
       const total = input + output;
-      const leftPct = this.contextWindow > 0
-        ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100)))
-        : 100;
+      const leftPct =
+        this.contextWindow > 0
+          ? Math.max(
+              0,
+              Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100))
+            )
+          : 100;
 
       const data = {
         input_tokens: input,
@@ -142,8 +142,9 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
-    const cost = (inputTokens / 1_000_000) * pricing.inputCostPer1M +
-                 (outputTokens / 1_000_000) * pricing.outputCostPer1M;
+    const cost =
+      (inputTokens / 1_000_000) * pricing.inputCostPer1M +
+      (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
     this.writeTokenFile(inputTokens, this.sessionOutputTokens);
@@ -198,7 +199,8 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     const tools = this.convertTools(claudeRequest);
 
     // Log request summary
-    const systemPromptLength = typeof claudeRequest.system === 'string' ? claudeRequest.system.length : 0;
+    const systemPromptLength =
+      typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
     logStructured(`${config.name} Request`, {
       targetModel: this.targetModel,
       originalModel: payload.model,
@@ -212,9 +214,10 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     if (getLogLevel() === "debug") {
       const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
       if (lastUserMsg) {
-        const content = typeof lastUserMsg.content === 'string'
-          ? lastUserMsg.content
-          : JSON.stringify(lastUserMsg.content);
+        const content =
+          typeof lastUserMsg.content === "string"
+            ? lastUserMsg.content
+            : JSON.stringify(lastUserMsg.content);
         log(`[${config.name}] Last user message: ${truncateContent(content, 500)}`);
       }
       if (tools.length > 0) {
@@ -228,7 +231,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
 
     // Get adapter and prepare request
     const adapter = this.adapterManager.getAdapter();
-    if (typeof adapter.reset === 'function') adapter.reset();
+    if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(requestPayload, claudeRequest);
 
     // Call middleware
@@ -243,7 +246,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     const endpoint = this.getApiEndpoint();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${this.apiKey}`,
+      Authorization: `Bearer ${this.apiKey}`,
       ...this.getAdditionalHeaders(),
     };
 

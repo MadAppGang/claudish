@@ -28,7 +28,7 @@ export class AdapterManager {
       new OpenAIAdapter(modelId),
       new QwenAdapter(modelId),
       new MiniMaxAdapter(modelId),
-      new DeepSeekAdapter(modelId)
+      new DeepSeekAdapter(modelId),
     ];
     this.defaultAdapter = new DefaultAdapter(modelId);
   }

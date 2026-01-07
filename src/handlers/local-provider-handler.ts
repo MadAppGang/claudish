@@ -27,8 +27,8 @@ import {
 // Create a custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
 const localProviderAgent = new Agent({
-  headersTimeout: 600000,  // 10 minutes for headers (prompt processing time)
-  bodyTimeout: 600000,     // 10 minutes for body (generation time)
+  headersTimeout: 600000, // 10 minutes for headers (prompt processing time)
+  bodyTimeout: 600000, // 10 minutes for body (generation time)
   keepAliveTimeout: 30000, // 30 seconds keepalive
   keepAliveMaxTimeout: 600000,
 });
@@ -50,7 +50,12 @@ export class LocalProviderHandler implements ModelHandler {
   private sessionOutputTokens = 0;
   private options: LocalProviderOptions;
 
-  constructor(provider: LocalProvider, modelName: string, port: number, options: LocalProviderOptions = {}) {
+  constructor(
+    provider: LocalProvider,
+    modelName: string,
+    port: number,
+    options: LocalProviderOptions = {}
+  ) {
     this.provider = provider;
     this.modelName = modelName;
     this.port = port;
@@ -99,9 +104,13 @@ export class LocalProviderHandler implements ModelHandler {
         log(`[LocalProvider:${this.provider.name}] Health check passed (/api/tags)`);
         return true;
       }
-      log(`[LocalProvider:${this.provider.name}] /api/tags returned ${response.status}, trying /v1/models`);
+      log(
+        `[LocalProvider:${this.provider.name}] /api/tags returned ${response.status}, trying /v1/models`
+      );
     } catch (e: any) {
-      log(`[LocalProvider:${this.provider.name}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
+      log(
+        `[LocalProvider:${this.provider.name}] /api/tags failed: ${e?.message || e}, trying /v1/models`
+      );
     }
 
     // Try generic OpenAI-compatible health check (works for MLX, LM Studio, vLLM, etc.)
@@ -139,7 +148,9 @@ export class LocalProviderHandler implements ModelHandler {
     } else if (this.provider.name === "lmstudio") {
       await this.fetchLMStudioContextWindow();
     } else {
-      log(`[LocalProvider:${this.provider.name}] No context window fetch for this provider, using default: ${this.contextWindow}`);
+      log(
+        `[LocalProvider:${this.provider.name}] No context window fetch for this provider, using default: ${this.contextWindow}`
+      );
     }
   }
 
@@ -156,7 +167,7 @@ export class LocalProviderHandler implements ModelHandler {
       });
 
       if (response.ok) {
-        const data = await response.json() as any;
+        const data = (await response.json()) as any;
         // Ollama returns context window in model_info
         // Can be at general.context_length OR {architecture}.context_length
         let ctxFromInfo = data.model_info?.["general.context_length"];
@@ -178,7 +189,9 @@ export class LocalProviderHandler implements ModelHandler {
           this.contextWindow = parseInt(ctxFromParams, 10);
         } else {
           // Keep class default (32K)
-          log(`[LocalProvider:${this.provider.name}] No context info found, using default: ${this.contextWindow}`);
+          log(
+            `[LocalProvider:${this.provider.name}] No context info found, using default: ${this.contextWindow}`
+          );
         }
         if (ctxFromInfo || ctxFromParams) {
           log(`[LocalProvider:${this.provider.name}] Context window: ${this.contextWindow}`);
@@ -200,23 +213,25 @@ export class LocalProviderHandler implements ModelHandler {
       });
 
       if (response.ok) {
-        const data = await response.json() as any;
+        const data = (await response.json()) as any;
         log(`[LocalProvider:lmstudio] Models response: ${JSON.stringify(data).slice(0, 500)}`);
 
         // LM Studio returns models in data array
         // Look for the loaded model and check for context_length
         const models = data.data || [];
         // Try exact match first, then path-based match (model names often include org/name)
-        const targetModel = models.find((m: any) => m.id === this.modelName) ||
-                           models.find((m: any) => m.id?.endsWith(`/${this.modelName}`)) ||
-                           models.find((m: any) => this.modelName.includes(m.id));
+        const targetModel =
+          models.find((m: any) => m.id === this.modelName) ||
+          models.find((m: any) => m.id?.endsWith(`/${this.modelName}`)) ||
+          models.find((m: any) => this.modelName.includes(m.id));
 
         if (targetModel) {
           // Check various possible locations for context length
-          const ctxLength = targetModel.context_length ||
-                           targetModel.max_context_length ||
-                           targetModel.context_window ||
-                           targetModel.max_tokens;
+          const ctxLength =
+            targetModel.context_length ||
+            targetModel.max_context_length ||
+            targetModel.context_window ||
+            targetModel.max_tokens;
           if (ctxLength && typeof ctxLength === "number") {
             this.contextWindow = ctxLength;
             log(`[LocalProvider:lmstudio] Context window from model: ${this.contextWindow}`);
@@ -232,7 +247,9 @@ export class LocalProviderHandler implements ModelHandler {
     } catch (e: any) {
       // Use default - LM Studio typically supports at least 4K
       this.contextWindow = 32768;
-      log(`[LocalProvider:lmstudio] Failed to fetch model info: ${e?.message || e}. Using default: ${this.contextWindow}`);
+      log(
+        `[LocalProvider:lmstudio] Failed to fetch model info: ${e?.message || e}. Using default: ${this.contextWindow}`
+      );
     }
   }
 
@@ -251,9 +268,16 @@ export class LocalProviderHandler implements ModelHandler {
       const sessionTotal = this.sessionInputTokens + this.sessionOutputTokens;
 
       // Calculate context usage: input (full context) + accumulated outputs
-      const leftPct = this.contextWindow > 0
-        ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - sessionTotal) / this.contextWindow) * 100)))
-        : 100;
+      const leftPct =
+        this.contextWindow > 0
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round(((this.contextWindow - sessionTotal) / this.contextWindow) * 100)
+              )
+            )
+          : 100;
 
       const data = {
         input_tokens: this.sessionInputTokens,
@@ -268,11 +292,7 @@ export class LocalProviderHandler implements ModelHandler {
       // Write to ~/.claudish/ directory (same location status line reads from)
       const claudishDir = join(homedir(), ".claudish");
       mkdirSync(claudishDir, { recursive: true });
-      writeFileSync(
-        join(claudishDir, `tokens-${this.port}.json`),
-        JSON.stringify(data),
-        "utf-8"
-      );
+      writeFileSync(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
     } catch (e) {
       // Ignore write errors
     }
@@ -303,7 +323,12 @@ export class LocalProviderHandler implements ModelHandler {
     // Use simple format for providers that don't support complex message structures
     // MLX doesn't handle array content or tool role messages
     const useSimpleFormat = this.provider.name === "mlx";
-    const messages = convertMessagesToOpenAI(claudeRequest, target, filterIdentity, useSimpleFormat);
+    const messages = convertMessagesToOpenAI(
+      claudeRequest,
+      target,
+      filterIdentity,
+      useSimpleFormat
+    );
     const tools = convertToolsToOpenAI(claudeRequest, this.options.summarizeTools);
 
     // Check capability: strip tools if not supported
@@ -393,7 +418,7 @@ If you cannot use structured tool_calls, format as JSON:
           top_p: 0.8,
           top_k: 20,
           min_p: 0.0,
-          repetition_penalty: 1.05,  // Slight penalty helps with Qwen repetition
+          repetition_penalty: 1.05, // Slight penalty helps with Qwen repetition
         };
       }
       if (isDeepSeekModel) {
@@ -437,7 +462,9 @@ If you cannot use structured tool_calls, format as JSON:
     };
 
     const samplingParams = getSamplingParams();
-    log(`[LocalProvider:${this.provider.name}] Using sampling params: temp=${samplingParams.temperature}, top_p=${samplingParams.top_p}, top_k=${samplingParams.top_k}`);
+    log(
+      `[LocalProvider:${this.provider.name}] Using sampling params: temp=${samplingParams.temperature}, top_p=${samplingParams.top_p}, top_k=${samplingParams.top_k}`
+    );
 
     // For local providers, ensure max_tokens is set to a reasonable value
     // Some local providers have very low defaults or ignore Claude's max_tokens
@@ -445,7 +472,9 @@ If you cannot use structured tool_calls, format as JSON:
     const requestedMaxTokens = claudeRequest.max_tokens || 4096;
     const effectiveMaxTokens = Math.max(requestedMaxTokens, 8192);
 
-    log(`[LocalProvider:${this.provider.name}] max_tokens: requested=${requestedMaxTokens}, effective=${effectiveMaxTokens}`);
+    log(
+      `[LocalProvider:${this.provider.name}] max_tokens: requested=${requestedMaxTokens}, effective=${effectiveMaxTokens}`
+    );
 
     // Build OpenAI-compatible payload
     const openAIPayload: any = {
@@ -457,11 +486,14 @@ If you cannot use structured tool_calls, format as JSON:
       top_p: samplingParams.top_p,
       top_k: samplingParams.top_k,
       min_p: samplingParams.min_p,
-      repetition_penalty: samplingParams.repetition_penalty > 1 ? samplingParams.repetition_penalty : undefined,
+      repetition_penalty:
+        samplingParams.repetition_penalty > 1 ? samplingParams.repetition_penalty : undefined,
       stream: this.provider.capabilities.supportsStreaming,
       max_tokens: effectiveMaxTokens,
       tools: finalTools.length > 0 ? finalTools : undefined,
-      stream_options: this.provider.capabilities.supportsStreaming ? { include_usage: true } : undefined,
+      stream_options: this.provider.capabilities.supportsStreaming
+        ? { include_usage: true }
+        : undefined,
       // Note: Removed stop sequences - they can cause premature termination
       // The chat template should handle turn boundaries naturally
     };
@@ -481,7 +513,9 @@ If you cannot use structured tool_calls, format as JSON:
       // Use detected context window, or 32K minimum for tool calling (Claude Code sends large system prompts)
       const numCtx = Math.max(this.contextWindow, 32768);
       openAIPayload.options = { num_ctx: numCtx };
-      log(`[LocalProvider:${this.provider.name}] Setting num_ctx: ${numCtx} (detected: ${this.contextWindow})`);
+      log(
+        `[LocalProvider:${this.provider.name}] Setting num_ctx: ${numCtx} (detected: ${this.contextWindow})`
+      );
     }
 
     // Handle tool choice
@@ -518,7 +552,9 @@ If you cannot use structured tool_calls, format as JSON:
     const apiUrl = `${this.provider.baseUrl}${this.provider.apiPath}`;
 
     // Debug logging (only to file, not console)
-    log(`[LocalProvider:${this.provider.name}] Request: ${openAIPayload.tools?.length || 0} tools, ${messages.length} messages`);
+    log(
+      `[LocalProvider:${this.provider.name}] Request: ${openAIPayload.tools?.length || 0} tools, ${messages.length} messages`
+    );
     log(`[LocalProvider:${this.provider.name}] Endpoint: ${apiUrl}`);
 
     try {
@@ -566,7 +602,7 @@ If you cannot use structured tool_calls, format as JSON:
           target,
           this.middlewareManager,
           (input, output) => this.writeTokenFile(input, output),
-          claudeRequest.tools  // Pass tool schemas for validation
+          claudeRequest.tools // Pass tool schemas for validation
         );
       }
 
@@ -588,7 +624,10 @@ If you cannot use structured tool_calls, format as JSON:
       const errorMsg = parsed.error?.message || parsed.error || errorBody;
 
       // Model not found
-      if (errorMsg.includes("model") && (errorMsg.includes("not found") || errorMsg.includes("does not exist"))) {
+      if (
+        errorMsg.includes("model") &&
+        (errorMsg.includes("not found") || errorMsg.includes("does not exist"))
+      ) {
         return this.errorResponse(
           c,
           "model_not_found",
@@ -597,7 +636,10 @@ If you cannot use structured tool_calls, format as JSON:
       }
 
       // Model doesn't support tools - provide helpful message
-      if (errorMsg.includes("does not support tools") || errorMsg.includes("tool") && errorMsg.includes("not supported")) {
+      if (
+        errorMsg.includes("does not support tools") ||
+        (errorMsg.includes("tool") && errorMsg.includes("not supported"))
+      ) {
         return this.errorResponse(
           c,
           "capability_error",

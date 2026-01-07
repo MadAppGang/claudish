@@ -35,10 +35,7 @@ export abstract class BaseModelAdapter {
    * @param accumulatedText - The accumulated text so far (for multi-chunk parsing)
    * @returns Cleaned text and any extracted tool calls
    */
-  abstract processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult;
+  abstract processTextContent(textContent: string, accumulatedText: string): AdapterResult;
 
   /**
    * Check if this adapter should be used for the given model
@@ -78,7 +75,7 @@ export class DefaultAdapter extends BaseModelAdapter {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],
-      wasTransformed: false
+      wasTransformed: false,
     };
   }
 

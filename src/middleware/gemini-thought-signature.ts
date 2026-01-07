@@ -38,10 +38,13 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
    *
    * Maps: assistant_message_id -> { reasoning_details: array, tool_call_ids: Set }
    */
-  private persistentReasoningDetails = new Map<string, {
-    reasoning_details: any[];
-    tool_call_ids: Set<string>;
-  }>();
+  private persistentReasoningDetails = new Map<
+    string,
+    {
+      reasoning_details: any[];
+      tool_call_ids: Set<string>;
+    }
+  >();
 
   shouldHandle(modelId: string): boolean {
     return modelId.includes("gemini") || modelId.includes("google/");
@@ -116,21 +119,29 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
       log("[Gemini] DEBUG: Messages after injection:");
       for (let i = 0; i < context.messages.length; i++) {
         const msg = context.messages[i];
-        log(`[Gemini] Message ${i}: role=${msg.role}, has_content=${!!msg.content}, has_tool_calls=${!!msg.tool_calls}, tool_call_id=${msg.tool_call_id || "N/A"}`);
+        log(
+          `[Gemini] Message ${i}: role=${msg.role}, has_content=${!!msg.content}, has_tool_calls=${!!msg.tool_calls}, tool_call_id=${msg.tool_call_id || "N/A"}`
+        );
         if (msg.role === "assistant" && msg.tool_calls) {
           log(`  - Assistant has ${msg.tool_calls.length} tool call(s), content="${msg.content}"`);
           for (const tc of msg.tool_calls) {
-            log(`    * Tool call: ${tc.id}, function=${tc.function?.name}, has extra_content: ${!!tc.extra_content}, has thought_signature: ${!!tc.extra_content?.google?.thought_signature}`);
+            log(
+              `    * Tool call: ${tc.id}, function=${tc.function?.name}, has extra_content: ${!!tc.extra_content}, has thought_signature: ${!!tc.extra_content?.google?.thought_signature}`
+            );
             if (tc.extra_content) {
               log(`      extra_content keys: ${Object.keys(tc.extra_content).join(", ")}`);
               if (tc.extra_content.google) {
                 log(`      google keys: ${Object.keys(tc.extra_content.google).join(", ")}`);
-                log(`      thought_signature length: ${tc.extra_content.google.thought_signature?.length || 0}`);
+                log(
+                  `      thought_signature length: ${tc.extra_content.google.thought_signature?.length || 0}`
+                );
               }
             }
           }
         } else if (msg.role === "tool") {
-          log(`  - Tool result: tool_call_id=${msg.tool_call_id}, has extra_content: ${!!msg.extra_content}`);
+          log(
+            `  - Tool result: tool_call_id=${msg.tool_call_id}, has extra_content: ${!!msg.extra_content}`
+          );
         }
       }
     }

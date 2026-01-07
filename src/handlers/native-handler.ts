@@ -18,7 +18,8 @@ export class NativeHandler implements ModelHandler {
     log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
 
     // Extract API key
-    const extractedApiKey = originalHeaders["x-api-key"] || originalHeaders["authorization"] || this.apiKey;
+    const extractedApiKey =
+      originalHeaders["x-api-key"] || originalHeaders["authorization"] || this.apiKey;
 
     if (!extractedApiKey) {
       log("[Native] WARNING: No API key found in headers!");
@@ -51,74 +52,73 @@ export class NativeHandler implements ModelHandler {
 
     // Execute fetch
     try {
-        const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(payload),
-        });
+      const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
 
-        const contentType = anthropicResponse.headers.get("content-type") || "";
+      const contentType = anthropicResponse.headers.get("content-type") || "";
 
-        // Handle streaming
-        if (contentType.includes("text/event-stream")) {
-            log("[Native] Streaming response detected");
-            return c.body(
-                new ReadableStream({
-                    async start(controller) {
-                        const reader = anthropicResponse.body?.getReader();
-                        if (!reader) throw new Error("No reader");
+      // Handle streaming
+      if (contentType.includes("text/event-stream")) {
+        log("[Native] Streaming response detected");
+        return c.body(
+          new ReadableStream({
+            async start(controller) {
+              const reader = anthropicResponse.body?.getReader();
+              if (!reader) throw new Error("No reader");
 
-                        const decoder = new TextDecoder();
-                        let buffer = "";
-                        let eventLog = "";
+              const decoder = new TextDecoder();
+              let buffer = "";
+              let eventLog = "";
 
-                        try {
-                            while (true) {
-                                const { done, value } = await reader.read();
-                                if (done) break;
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
 
-                                controller.enqueue(value);
+                  controller.enqueue(value);
 
-                                // Basic logging
-                                buffer += decoder.decode(value, { stream: true });
-                                const lines = buffer.split("\n");
-                                buffer = lines.pop() || "";
-                                for (const line of lines) if (line.trim()) eventLog += line + "\n";
-                            }
-                            if (eventLog) log(eventLog);
-                            controller.close();
-                        } catch (e) {
-                            log(`[Native] Stream Error: ${e}`);
-                            controller.close();
-                        }
-                    }
-                }),
-                {
-                    headers: {
-                        "Content-Type": contentType,
-                        "Cache-Control": "no-cache",
-                        Connection: "keep-alive",
-                        "anthropic-version": "2023-06-01"
-                    }
+                  // Basic logging
+                  buffer += decoder.decode(value, { stream: true });
+                  const lines = buffer.split("\n");
+                  buffer = lines.pop() || "";
+                  for (const line of lines) if (line.trim()) eventLog += line + "\n";
                 }
-            );
-        }
+                if (eventLog) log(eventLog);
+                controller.close();
+              } catch (e) {
+                log(`[Native] Stream Error: ${e}`);
+                controller.close();
+              }
+            },
+          }),
+          {
+            headers: {
+              "Content-Type": contentType,
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+              "anthropic-version": "2023-06-01",
+            },
+          }
+        );
+      }
 
-        // Handle JSON
-        const data = await anthropicResponse.json();
-        log("\n=== [NATIVE] Response ===");
-        log(JSON.stringify(data, null, 2));
+      // Handle JSON
+      const data = await anthropicResponse.json();
+      log("\n=== [NATIVE] Response ===");
+      log(JSON.stringify(data, null, 2));
 
-        const responseHeaders: Record<string, string> = { "Content-Type": "application/json" };
-        if (anthropicResponse.headers.has("anthropic-version")) {
-            responseHeaders["anthropic-version"] = anthropicResponse.headers.get("anthropic-version")!;
-        }
+      const responseHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (anthropicResponse.headers.has("anthropic-version")) {
+        responseHeaders["anthropic-version"] = anthropicResponse.headers.get("anthropic-version")!;
+      }
 
-        return c.json(data, { status: anthropicResponse.status as any, headers: responseHeaders });
-
+      return c.json(data, { status: anthropicResponse.status as any, headers: responseHeaders });
     } catch (error) {
-        log(`[Native] Fetch Error: ${error}`);
-        return c.json({ error: { type: "api_error", message: String(error) } }, 500);
+      log(`[Native] Fetch Error: ${error}`);
+      return c.json({ error: { type: "api_error", message: String(error) } }, 500);
     }
   }
 

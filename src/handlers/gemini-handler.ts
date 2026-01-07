@@ -17,7 +17,11 @@ import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middlewa
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
 import { filterIdentity } from "./shared/openai-compat.js";
-import { getModelPricing, type ModelPricing, type RemoteProvider } from "./shared/remote-provider-types.js";
+import {
+  getModelPricing,
+  type ModelPricing,
+  type RemoteProvider,
+} from "./shared/remote-provider-types.js";
 
 /**
  * Gemini API Handler
@@ -48,9 +52,9 @@ export class GeminiHandler implements ModelHandler {
     this.adapterManager = new AdapterManager(`gemini/${modelName}`);
     this.middlewareManager = new MiddlewareManager();
     this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
-    this.middlewareManager.initialize().catch(err =>
-      log(`[GeminiHandler:${modelName}] Middleware init error: ${err}`)
-    );
+    this.middlewareManager
+      .initialize()
+      .catch((err) => log(`[GeminiHandler:${modelName}] Middleware init error: ${err}`));
   }
 
   /**
@@ -75,9 +79,13 @@ export class GeminiHandler implements ModelHandler {
   private writeTokenFile(input: number, output: number): void {
     try {
       const total = input + output;
-      const leftPct = this.contextWindow > 0
-        ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100)))
-        : 100;
+      const leftPct =
+        this.contextWindow > 0
+          ? Math.max(
+              0,
+              Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100))
+            )
+          : 100;
 
       const data = {
         input_tokens: input,
@@ -105,8 +113,9 @@ export class GeminiHandler implements ModelHandler {
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
-    const cost = (inputTokens / 1_000_000) * pricing.inputCostPer1M +
-                 (outputTokens / 1_000_000) * pricing.outputCostPer1M;
+    const cost =
+      (inputTokens / 1_000_000) * pricing.inputCostPer1M +
+      (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
     this.writeTokenFile(inputTokens, this.sessionOutputTokens);
@@ -160,14 +169,17 @@ export class GeminiHandler implements ModelHandler {
           // Need to look up the function name from our tool call map
           const functionName = this.toolCallMap.get(block.tool_use_id);
           if (!functionName) {
-            log(`[GeminiHandler:${this.modelName}] Warning: No function name found for tool_use_id ${block.tool_use_id}`);
+            log(
+              `[GeminiHandler:${this.modelName}] Warning: No function name found for tool_use_id ${block.tool_use_id}`
+            );
             continue;
           }
           parts.push({
             functionResponse: {
               name: functionName,
               response: {
-                content: typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                content:
+                  typeof block.content === "string" ? block.content : JSON.stringify(block.content),
               },
             },
           });
@@ -401,11 +413,19 @@ export class GeminiHandler implements ModelHandler {
               }
             }
 
-            await this.middlewareManager.afterStreamComplete(`gemini/${this.modelName}`, streamMetadata);
+            await this.middlewareManager.afterStreamComplete(
+              `gemini/${this.modelName}`,
+              streamMetadata
+            );
 
             if (usage) {
-              log(`[GeminiHandler] Usage: prompt=${usage.promptTokenCount || 0}, completion=${usage.candidatesTokenCount || 0}`);
-              this.updateTokenTracking(usage.promptTokenCount || 0, usage.candidatesTokenCount || 0);
+              log(
+                `[GeminiHandler] Usage: prompt=${usage.promptTokenCount || 0}, completion=${usage.candidatesTokenCount || 0}`
+              );
+              this.updateTokenTracking(
+                usage.promptTokenCount || 0,
+                usage.candidatesTokenCount || 0
+              );
             }
 
             if (reason === "error") {
@@ -487,7 +507,10 @@ export class GeminiHandler implements ModelHandler {
                       if (part.text) {
                         // Close thinking block before text
                         if (thinkingStarted) {
-                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: thinkingIdx,
+                          });
                           thinkingStarted = false;
                         }
 
@@ -516,11 +539,17 @@ export class GeminiHandler implements ModelHandler {
                       if (part.functionCall) {
                         // Close other blocks
                         if (thinkingStarted) {
-                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: thinkingIdx,
+                          });
                           thinkingStarted = false;
                         }
                         if (textStarted) {
-                          send("content_block_stop", { type: "content_block_stop", index: textIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: textIdx,
+                          });
                           textStarted = false;
                         }
 
@@ -546,7 +575,10 @@ export class GeminiHandler implements ModelHandler {
                           index: t.blockIndex,
                           delta: { type: "input_json_delta", partial_json: t.arguments },
                         });
-                        send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                        send("content_block_stop", {
+                          type: "content_block_stop",
+                          index: t.blockIndex,
+                        });
                         t.closed = true;
                       }
                     }
@@ -554,7 +586,10 @@ export class GeminiHandler implements ModelHandler {
 
                   // Check for finish reason
                   if (candidate?.finishReason) {
-                    if (candidate.finishReason === "STOP" || candidate.finishReason === "MAX_TOKENS") {
+                    if (
+                      candidate.finishReason === "STOP" ||
+                      candidate.finishReason === "MAX_TOKENS"
+                    ) {
                       await finalize("done");
                       return;
                     }
@@ -593,7 +628,8 @@ export class GeminiHandler implements ModelHandler {
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
     // Log request summary
-    const systemPromptLength = typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
+    const systemPromptLength =
+      typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
     logStructured("Gemini Request", {
       targetModel: `gemini/${this.modelName}`,
       originalModel: payload.model,

@@ -16,16 +16,12 @@ import { log } from "../logger";
 export class GrokAdapter extends BaseModelAdapter {
   private xmlBuffer: string = "";
 
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // Accumulate text to handle XML split across multiple chunks
     this.xmlBuffer += textContent;
 
     // Pattern to match complete xAI function calls
-    const xmlPattern =
-      /<xai:function_call name="([^"]+)">(.*?)<\/xai:function_call>/gs;
+    const xmlPattern = /<xai:function_call name="([^"]+)">(.*?)<\/xai:function_call>/gs;
     const matches = [...this.xmlBuffer.matchAll(xmlPattern)];
 
     if (matches.length === 0) {
@@ -115,8 +111,7 @@ export class GrokAdapter extends BaseModelAdapter {
    */
   private parseXmlParameters(xmlContent: string): Record<string, any> {
     const params: Record<string, any> = {};
-    const paramPattern =
-      /<xai:parameter name="([^"]+)">([^<]*)<\/xai:parameter>/g;
+    const paramPattern = /<xai:parameter name="([^"]+)">([^<]*)<\/xai:parameter>/g;
 
     let match;
     while ((match = paramPattern.exec(xmlContent)) !== null) {

@@ -51,7 +51,7 @@ const getProviders = (): LocalProvider[] => [
     baseUrl: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234",
     apiPath: "/v1/chat/completions",
     envVar: "LMSTUDIO_BASE_URL",
-    prefixes: ["lmstudio/", "lmstudio:", "mlstudio/", "mlstudio:"],  // mlstudio alias for common typo
+    prefixes: ["lmstudio/", "lmstudio:", "mlstudio/", "mlstudio:"], // mlstudio alias for common typo
     capabilities: {
       supportsTools: true,
       supportsVision: false,

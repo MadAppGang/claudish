@@ -9,10 +9,7 @@ import { BaseModelAdapter, AdapterResult } from "./base-adapter.js";
 import { log } from "../logger.js";
 
 export class OpenAIAdapter extends BaseModelAdapter {
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // OpenAI models return standard content, no XML parsing needed for tool calls
     // (OpenRouter handles standard tool_calls mapping for us)
     return {
@@ -60,9 +57,9 @@ export class OpenAIAdapter extends BaseModelAdapter {
     // Handle explicit OpenAI models or OpenRouter prefixes for OpenAI reasoning models
     // Checking for o1/o3 specifically as they are the current reasoning models
     return (
-      modelId.startsWith("openai/") ||
-      modelId.includes("o1") ||
-      modelId.includes("o3")
+      modelId.startsWith("oai/") || // Only match oai/ prefix for Direct API
+      modelId.includes("o1") || // Keep o1 detection for OpenRouter's openai/o1 models
+      modelId.includes("o3") // Keep o3 detection for OpenRouter's openai/o3 models
     );
   }
 

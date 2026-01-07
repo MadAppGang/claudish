@@ -235,11 +235,7 @@ export function getModelMapping(profileName?: string): ModelMapping {
 /**
  * Create a new profile with the given models
  */
-export function createProfile(
-  name: string,
-  models: ModelMapping,
-  description?: string
-): Profile {
+export function createProfile(name: string, models: ModelMapping, description?: string): Profile {
   const now = new Date().toISOString();
   const profile: Profile = {
     name,

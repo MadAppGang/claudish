@@ -1,16 +1,22 @@
 /**
  * Remote Provider Registry
  *
- * Handles resolution of remote cloud API providers (Gemini, OpenAI)
+ * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM)
  * based on model ID prefixes.
  *
  * Prefix patterns:
  * - g/, gemini/ -> Google Gemini API (direct)
  * - oai/, openai/ -> OpenAI API
+ * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
+ * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
+ * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
  * - or/, no prefix with "/" -> OpenRouter (existing handler)
  */
 
-import type { RemoteProvider, ResolvedRemoteProvider } from "../handlers/shared/remote-provider-types.js";
+import type {
+  RemoteProvider,
+  ResolvedRemoteProvider,
+} from "../handlers/shared/remote-provider-types.js";
 
 /**
  * Remote provider configurations
@@ -35,7 +41,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENAI_API_KEY",
-    prefixes: ["oai/", "openai/"],
+    prefixes: ["oai/"], // Removed openai/ to prevent collision with OpenRouter models
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -60,6 +66,49 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsStreaming: true,
       supportsJsonMode: true,
       supportsReasoning: true,
+    },
+  },
+  {
+    name: "minimax",
+    baseUrl: process.env.MINIMAX_BASE_URL || "https://api.minimax.io",
+    apiPath: "/anthropic/v1/messages",
+    apiKeyEnvVar: "MINIMAX_API_KEY",
+    prefixes: ["mmax/", "mm/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: false,
+    },
+  },
+  {
+    name: "kimi",
+    baseUrl:
+      process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "https://api.moonshot.ai",
+    apiPath: "/anthropic/v1/messages",
+    apiKeyEnvVar: "MOONSHOT_API_KEY",
+    prefixes: ["kimi/", "moonshot/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: true,
+    },
+  },
+  {
+    name: "glm",
+    baseUrl: process.env.ZHIPU_BASE_URL || process.env.GLM_BASE_URL || "https://open.bigmodel.cn",
+    apiPath: "/api/paas/v4/chat/completions",
+    apiKeyEnvVar: "ZHIPU_API_KEY",
+    prefixes: ["glm/", "zhipu/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: false,
     },
   },
 ];
@@ -110,9 +159,16 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
 
   if (!apiKey) {
     const examples: Record<string, string> = {
-      GEMINI_API_KEY: "export GEMINI_API_KEY='your-key' (get from https://aistudio.google.com/app/apikey)",
-      OPENAI_API_KEY: "export OPENAI_API_KEY='sk-...' (get from https://platform.openai.com/api-keys)",
-      OPENROUTER_API_KEY: "export OPENROUTER_API_KEY='sk-or-...' (get from https://openrouter.ai/keys)",
+      GEMINI_API_KEY:
+        "export GEMINI_API_KEY='your-key' (get from https://aistudio.google.com/app/apikey)",
+      OPENAI_API_KEY:
+        "export OPENAI_API_KEY='sk-...' (get from https://platform.openai.com/api-keys)",
+      OPENROUTER_API_KEY:
+        "export OPENROUTER_API_KEY='sk-or-...' (get from https://openrouter.ai/keys)",
+      MINIMAX_API_KEY: "export MINIMAX_API_KEY='your-key' (get from https://www.minimaxi.com/)",
+      MOONSHOT_API_KEY:
+        "export MOONSHOT_API_KEY='your-key' (get from https://platform.moonshot.cn/)",
+      ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
     };
 
     const example = examples[provider.apiKeyEnvVar] || `export ${provider.apiKeyEnvVar}='your-key'`;

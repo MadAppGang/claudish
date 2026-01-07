@@ -23,7 +23,11 @@ import {
   filterIdentity,
   createStreamingResponseHandler,
 } from "./shared/openai-compat.js";
-import { getModelPricing, type ModelPricing, type RemoteProvider } from "./shared/remote-provider-types.js";
+import {
+  getModelPricing,
+  type ModelPricing,
+  type RemoteProvider,
+} from "./shared/remote-provider-types.js";
 
 /**
  * OpenAI API Handler
@@ -51,9 +55,9 @@ export class OpenAIHandler implements ModelHandler {
     this.adapterManager = new AdapterManager(`openai/${modelName}`);
     this.middlewareManager = new MiddlewareManager();
     this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
-    this.middlewareManager.initialize().catch(err =>
-      log(`[OpenAIHandler:${modelName}] Middleware init error: ${err}`)
-    );
+    this.middlewareManager
+      .initialize()
+      .catch((err) => log(`[OpenAIHandler:${modelName}] Middleware init error: ${err}`));
 
     // Set context window based on model
     this.setContextWindow();
@@ -97,9 +101,13 @@ export class OpenAIHandler implements ModelHandler {
   private writeTokenFile(input: number, output: number): void {
     try {
       const total = input + output;
-      const leftPct = this.contextWindow > 0
-        ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100)))
-        : 100;
+      const leftPct =
+        this.contextWindow > 0
+          ? Math.max(
+              0,
+              Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100))
+            )
+          : 100;
 
       const data = {
         input_tokens: input,
@@ -127,8 +135,9 @@ export class OpenAIHandler implements ModelHandler {
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
-    const cost = (inputTokens / 1_000_000) * pricing.inputCostPer1M +
-                 (outputTokens / 1_000_000) * pricing.outputCostPer1M;
+    const cost =
+      (inputTokens / 1_000_000) * pricing.inputCostPer1M +
+      (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
     this.writeTokenFile(inputTokens, this.sessionOutputTokens);
@@ -194,7 +203,9 @@ export class OpenAIHandler implements ModelHandler {
       else if (budget_tokens >= 32000) effort = "high";
 
       payload.reasoning_effort = effort;
-      log(`[OpenAIHandler] Mapped thinking.budget_tokens ${budget_tokens} -> reasoning_effort: ${effort}`);
+      log(
+        `[OpenAIHandler] Mapped thinking.budget_tokens ${budget_tokens} -> reasoning_effort: ${effort}`
+      );
     }
 
     return payload;
@@ -212,7 +223,8 @@ export class OpenAIHandler implements ModelHandler {
     const tools = this.convertTools(claudeRequest);
 
     // Log request summary
-    const systemPromptLength = typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
+    const systemPromptLength =
+      typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
     logStructured("OpenAI Request", {
       targetModel: `openai/${this.modelName}`,
       originalModel: payload.model,
@@ -226,9 +238,10 @@ export class OpenAIHandler implements ModelHandler {
     if (getLogLevel() === "debug") {
       const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
       if (lastUserMsg) {
-        const content = typeof lastUserMsg.content === "string"
-          ? lastUserMsg.content
-          : JSON.stringify(lastUserMsg.content);
+        const content =
+          typeof lastUserMsg.content === "string"
+            ? lastUserMsg.content
+            : JSON.stringify(lastUserMsg.content);
         log(`[OpenAI] Last user message: ${truncateContent(content, 500)}`);
       }
       if (tools.length > 0) {
@@ -261,7 +274,7 @@ export class OpenAIHandler implements ModelHandler {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(openAIPayload),
     });

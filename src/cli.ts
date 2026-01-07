@@ -10,9 +10,7 @@ import { getProfile, getDefaultProfile, getModelMapping } from "./profile-config
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const packageJson = JSON.parse(
-  readFileSync(join(__dirname, "../package.json"), "utf-8")
-);
+const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
 const VERSION = packageJson.version;
 
 /**
@@ -55,10 +53,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   // Parse model mappings from env vars
   // Priority: CLAUDISH_MODEL_* (highest) > ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL (fallback)
-  config.modelOpus = process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
-  config.modelSonnet = process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
-  config.modelHaiku = process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
-  config.modelSubagent = process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
+  config.modelOpus =
+    process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
+  config.modelSonnet =
+    process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
+  config.modelHaiku =
+    process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
+  config.modelSubagent =
+    process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
 
   const envPort = process.env[ENV.CLAUDISH_PORT];
   if (envPort) {
@@ -87,7 +89,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.model = modelArg; // Accept any model ID
-    } else if (arg === "--model-opus") { // Model mapping flags
+    } else if (arg === "--model-opus") {
+      // Model mapping flags
       const val = args[++i];
       if (val) config.modelOpus = val;
     } else if (arg === "--model-sonnet") {
@@ -229,10 +232,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     // Monitor mode: extracts API key from Claude Code's requests
     // No need for user to provide API key - we intercept it from Claude Code
     // IMPORTANT: Unset ANTHROPIC_API_KEY if it's a placeholder, so Claude Code uses its native auth
-    if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.includes('placeholder')) {
+    if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.includes("placeholder")) {
       delete process.env.ANTHROPIC_API_KEY;
       if (!config.quiet) {
-        console.log("[claudish] Removed placeholder API key - Claude Code will use native authentication");
+        console.log(
+          "[claudish] Removed placeholder API key - Claude Code will use native authentication"
+        );
       }
     }
 
@@ -280,7 +285,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   // Apply profile model mappings (profile < CLI flags < env vars for override order)
   // Profile provides defaults, CLI flags override, env vars override CLI
-  if (config.profile || !config.modelOpus || !config.modelSonnet || !config.modelHaiku || !config.modelSubagent) {
+  if (
+    config.profile ||
+    !config.modelOpus ||
+    !config.modelSonnet ||
+    !config.modelHaiku ||
+    !config.modelSubagent
+  ) {
     const profileModels = getModelMapping(config.profile);
 
     // Apply profile models only if not set by CLI flags
@@ -313,7 +324,8 @@ const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
  * Returns empty array if Ollama is not running
  */
 async function fetchOllamaModels(): Promise<any[]> {
-  const ollamaHost = process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+  const ollamaHost =
+    process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434";
 
   try {
     const response = await fetch(`${ollamaHost}/api/tags`, {
@@ -345,9 +357,9 @@ async function fetchOllamaModels(): Promise<any[]> {
         }
 
         const supportsTools = capabilities.includes("tools");
-        const isEmbeddingModel = capabilities.includes("embedding") ||
-          m.name.toLowerCase().includes("embed");
-        const sizeInfo = m.details?.parameter_size || 'unknown size';
+        const isEmbeddingModel =
+          capabilities.includes("embedding") || m.name.toLowerCase().includes("embed");
+        const sizeInfo = m.details?.parameter_size || "unknown size";
         const toolsIndicator = supportsTools ? "✓ tools" : "✗ no tools";
 
         return {
@@ -408,10 +420,14 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       models = data.data;
 
       // Cache result
-      writeFileSync(ALL_MODELS_JSON_PATH, JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models
-      }), "utf-8");
+      writeFileSync(
+        ALL_MODELS_JSON_PATH,
+        JSON.stringify({
+          lastUpdated: new Date().toISOString(),
+          models,
+        }),
+        "utf-8"
+      );
 
       console.error(`✅ Cached ${models.length} models`);
     } catch (error) {
@@ -429,17 +445,17 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
 
   // Perform fuzzy search
   const results = models
-    .map(model => {
+    .map((model) => {
       const nameScore = fuzzyScore(model.name || "", query);
       const idScore = fuzzyScore(model.id || "", query);
       const descScore = fuzzyScore(model.description || "", query) * 0.5; // Lower weight for description
 
       return {
         model,
-        score: Math.max(nameScore, idScore, descScore)
+        score: Math.max(nameScore, idScore, descScore),
       };
     })
-    .filter(item => item.score > 0.2) // Filter low relevance
+    .filter((item) => item.score > 0.2) // Filter low relevance
     .sort((a, b) => b.score - a.score)
     .slice(0, 20); // Top 20 results
 
@@ -459,49 +475,57 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
   console.log("  " + "─".repeat(80));
 
   for (const { model, score } of results) {
-      // Format model ID (truncate if too long)
-      const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
-      const modelIdPadded = modelId.padEnd(30);
+    // Format model ID (truncate if too long)
+    const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+    const modelIdPadded = modelId.padEnd(30);
 
-      // Determine provider from ID
-      const providerName = model.id.split('/')[0];
-      const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
-      const providerPadded = provider.padEnd(10);
+    // Determine provider from ID
+    const providerName = model.id.split("/")[0];
+    const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
+    const providerPadded = provider.padEnd(10);
 
-      // Format pricing (handle special cases: local, negative = varies, 0 = free)
-      let pricing: string;
-      if (model.isLocal) {
-        pricing = "LOCAL";
+    // Format pricing (handle special cases: local, negative = varies, 0 = free)
+    let pricing: string;
+    if (model.isLocal) {
+      pricing = "LOCAL";
+    } else {
+      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
+      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
+      const avg = (promptPrice + completionPrice) / 2;
+      if (avg < 0) {
+        pricing = "varies"; // Auto-router or dynamic pricing
+      } else if (avg === 0) {
+        pricing = "FREE";
       } else {
-        const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-        const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
-        const avg = (promptPrice + completionPrice) / 2;
-        if (avg < 0) {
-          pricing = "varies";  // Auto-router or dynamic pricing
-        } else if (avg === 0) {
-          pricing = "FREE";
-        } else {
-          pricing = `$${avg.toFixed(2)}/1M`;
-        }
+        pricing = `$${avg.toFixed(2)}/1M`;
       }
-      const pricingPadded = pricing.padEnd(10);
+    }
+    const pricingPadded = pricing.padEnd(10);
 
-      // Context
-      const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
-      const contextPadded = context.padEnd(7);
+    // Context
+    const contextLen = model.context_length || model.top_provider?.context_length || 0;
+    const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
+    const contextPadded = context.padEnd(7);
 
-      // Color code local models based on tool support
-      if (model.isLocal && model.supportsTools === false) {
-        console.log(`  ${RED}${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}% ✗ no tools${RESET}`);
-      } else if (model.isLocal && model.supportsTools === true) {
-        console.log(`  ${GREEN}${modelIdPadded}${RESET} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
-      } else {
-        console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
-      }
+    // Color code local models based on tool support
+    if (model.isLocal && model.supportsTools === false) {
+      console.log(
+        `  ${RED}${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}% ✗ no tools${RESET}`
+      );
+    } else if (model.isLocal && model.supportsTools === true) {
+      console.log(
+        `  ${GREEN}${modelIdPadded}${RESET} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`
+      );
+    } else {
+      console.log(
+        `  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`
+      );
+    }
   }
   console.log("");
-  console.log(`${DIM}Local models: ${RED}red${RESET}${DIM} = no tool support (incompatible), ${GREEN}green${RESET}${DIM} = compatible${RESET}`);
+  console.log(
+    `${DIM}Local models: ${RED}red${RESET}${DIM} = no tool support (incompatible), ${GREEN}green${RESET}${DIM} = compatible${RESET}`
+  );
   console.log("");
   console.log("Use a model: claudish --model <model-id>");
   console.log("Local models: claudish --model ollama/<model-name>");
@@ -527,7 +551,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       if (ageInDays <= CACHE_MAX_AGE_DAYS) {
         models = cacheData.models;
         if (!jsonOutput) {
-          console.error(`✓ Using cached models (last updated: ${cacheData.lastUpdated.split('T')[0]})`);
+          console.error(
+            `✓ Using cached models (last updated: ${cacheData.lastUpdated.split("T")[0]})`
+          );
         }
       }
     } catch (e) {
@@ -546,10 +572,14 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       models = data.data;
 
       // Cache result
-      writeFileSync(ALL_MODELS_JSON_PATH, JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models
-      }), "utf-8");
+      writeFileSync(
+        ALL_MODELS_JSON_PATH,
+        JSON.stringify({
+          lastUpdated: new Date().toISOString(),
+          models,
+        }),
+        "utf-8"
+      );
 
       console.error(`✅ Cached ${models.length} models`);
     } catch (error) {
@@ -561,18 +591,24 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   // JSON output
   if (jsonOutput) {
     const allModels = [...ollamaModels, ...models];
-    console.log(JSON.stringify({
-      count: allModels.length,
-      localCount: ollamaModels.length,
-      lastUpdated: new Date().toISOString().split('T')[0],
-      models: allModels.map(m => ({
-        id: m.id,
-        name: m.name,
-        context: m.context_length || m.top_provider?.context_length,
-        pricing: m.pricing,
-        isLocal: m.isLocal || false
-      }))
-    }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          count: allModels.length,
+          localCount: ollamaModels.length,
+          lastUpdated: new Date().toISOString().split("T")[0],
+          models: allModels.map((m) => ({
+            id: m.id,
+            name: m.name,
+            context: m.context_length || m.top_provider?.context_length,
+            pricing: m.pricing,
+            isLocal: m.isLocal || false,
+          })),
+        },
+        null,
+        2
+      )
+    );
     return;
   }
 
@@ -585,7 +621,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   // Print local Ollama models first if available
   if (ollamaModels.length > 0) {
     const toolCapableCount = ollamaModels.filter((m: any) => m.supportsTools).length;
-    console.log(`\n🏠 LOCAL OLLAMA MODELS (${ollamaModels.length} installed, ${toolCapableCount} with tool support):\n`);
+    console.log(
+      `\n🏠 LOCAL OLLAMA MODELS (${ollamaModels.length} installed, ${toolCapableCount} with tool support):\n`
+    );
     console.log("    Model                                     Size         Params    Tools");
     console.log("  " + "─".repeat(76));
 
@@ -606,7 +644,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     }
     console.log("");
     console.log(`  ${GREEN}✓${RESET} = Compatible with Claude Code (supports tool calling)`);
-    console.log(`  ${RED}✗${RESET} = Not compatible ${DIM}(Claude Code requires tool support)${RESET}`);
+    console.log(
+      `  ${RED}✗${RESET} = Not compatible ${DIM}(Claude Code requires tool support)${RESET}`
+    );
     console.log("");
     console.log("  Use: claudish --model ollama/<model-name>");
     console.log("  Pull a compatible model: ollama pull llama3.2");
@@ -619,7 +659,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   // Group by provider
   const byProvider = new Map<string, any[]>();
   for (const model of models) {
-    const provider = model.id.split('/')[0];
+    const provider = model.id.split("/")[0];
     if (!byProvider.has(provider)) {
       byProvider.set(provider, []);
     }
@@ -638,7 +678,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 
     for (const model of providerModels) {
       // Format model ID (remove provider prefix, truncate if too long)
-      const shortId = model.id.split('/').slice(1).join('/');
+      const shortId = model.id.split("/").slice(1).join("/");
       const modelId = shortId.length > 40 ? shortId.substring(0, 37) + "..." : shortId;
       const modelIdPadded = modelId.padEnd(42);
 
@@ -648,7 +688,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       const avg = (promptPrice + completionPrice) / 2;
       let pricing: string;
       if (avg < 0) {
-        pricing = "varies";  // Auto-router or dynamic pricing
+        pricing = "varies"; // Auto-router or dynamic pricing
       } else if (avg === 0) {
         pricing = "FREE";
       } else {
@@ -658,7 +698,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 
       // Context
       const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
+      const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
       const contextPadded = context.padEnd(8);
 
       console.log(`    ${modelIdPadded} ${pricingPadded} ${contextPadded}`);
@@ -729,17 +769,17 @@ async function updateModelsFromOpenRouter(): Promise<void> {
     // The website is client-side rendered (React), so we can't scrape it with HTTP.
     // The API doesn't expose the "top-weekly" ranking, so we maintain this manually.
     const topWeeklyProgrammingModels = [
-      "x-ai/grok-code-fast-1",              // #1: xAI Grok Code Fast 1
-      "minimax/minimax-m2.1",               // #2: MiniMax M2.1 (Updated)
-      "z-ai/glm-4.7",                       // #3: Z.AI GLM 4.7 (Updated)
-      "google/gemini-3-pro-preview",        // #4: Google Gemini 3 Pro Preview
-      "openai/gpt-5.2",                     // #5: OpenAI GPT-5.2 (Updated)
-      "moonshotai/kimi-k2-thinking",        // #6: MoonShot Kimi K2 Thinking (New!)
-      "deepseek/deepseek-v3.2",             // #7: DeepSeek V3.2 (New!)
-      "qwen/qwen3-vl-235b-a22b-thinking",   // #8: Qwen3 VL 235B Thinking (Updated)
-      "anthropic/claude-sonnet-4.5",        // #9: Anthropic Claude Sonnet 4.5
-      "anthropic/claude-sonnet-4",          // #10: Anthropic Claude Sonnet 4
-      "anthropic/claude-haiku-4.5",         // #11: Anthropic Claude Haiku 4.5
+      "x-ai/grok-code-fast-1", // #1: xAI Grok Code Fast 1
+      "minimax/minimax-m2.1", // #2: MiniMax M2.1 (Updated)
+      "z-ai/glm-4.7", // #3: Z.AI GLM 4.7 (Updated)
+      "google/gemini-3-pro-preview", // #4: Google Gemini 3 Pro Preview
+      "openai/gpt-5.2", // #5: OpenAI GPT-5.2 (Updated)
+      "moonshotai/kimi-k2-thinking", // #6: MoonShot Kimi K2 Thinking (New!)
+      "deepseek/deepseek-v3.2", // #7: DeepSeek V3.2 (New!)
+      "qwen/qwen3-vl-235b-a22b-thinking", // #8: Qwen3 VL 235B Thinking (Updated)
+      "anthropic/claude-sonnet-4.5", // #9: Anthropic Claude Sonnet 4.5
+      "anthropic/claude-sonnet-4", // #10: Anthropic Claude Sonnet 4
+      "anthropic/claude-haiku-4.5", // #11: Anthropic Claude Haiku 4.5
     ];
 
     // Fetch model metadata from OpenRouter API
@@ -792,21 +832,23 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       const promptPrice = parseFloat(model.pricing?.prompt || "0");
       const completionPrice = parseFloat(model.pricing?.completion || "0");
 
-      const inputPrice = promptPrice > 0
-        ? `$${(promptPrice * 1000000).toFixed(2)}/1M`
-        : "FREE";
-      const outputPrice = completionPrice > 0
-        ? `$${(completionPrice * 1000000).toFixed(2)}/1M`
-        : "FREE";
-      const avgPrice = (promptPrice > 0 || completionPrice > 0)
-        ? `$${((promptPrice + completionPrice) / 2 * 1000000).toFixed(2)}/1M`
-        : "FREE";
+      const inputPrice = promptPrice > 0 ? `$${(promptPrice * 1000000).toFixed(2)}/1M` : "FREE";
+      const outputPrice =
+        completionPrice > 0 ? `$${(completionPrice * 1000000).toFixed(2)}/1M` : "FREE";
+      const avgPrice =
+        promptPrice > 0 || completionPrice > 0
+          ? `$${(((promptPrice + completionPrice) / 2) * 1000000).toFixed(2)}/1M`
+          : "FREE";
 
       // Determine category based on description and capabilities
       let category = "programming"; // default since we're filtering programming models
       const lowerDesc = description.toLowerCase() + " " + name.toLowerCase();
 
-      if (lowerDesc.includes("vision") || lowerDesc.includes("vl-") || lowerDesc.includes("multimodal")) {
+      if (
+        lowerDesc.includes("vision") ||
+        lowerDesc.includes("vl-") ||
+        lowerDesc.includes("multimodal")
+      ) {
         category = "vision";
       } else if (lowerDesc.includes("reason")) {
         category = "reasoning";
@@ -822,7 +864,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
         pricing: {
           input: inputPrice,
           output: outputPrice,
-          average: avgPrice
+          average: avgPrice,
         },
         context: topProvider.context_length
           ? `${Math.floor(topProvider.context_length / 1000)}K`
@@ -830,11 +872,13 @@ async function updateModelsFromOpenRouter(): Promise<void> {
         maxOutputTokens: topProvider.max_completion_tokens || null,
         modality: architecture.modality || "text->text",
         supportsTools: supportedParams.includes("tools") || supportedParams.includes("tool_choice"),
-        supportsReasoning: supportedParams.includes("reasoning") || supportedParams.includes("include_reasoning"),
-        supportsVision: (architecture.input_modalities || []).includes("image") ||
-                       (architecture.input_modalities || []).includes("video"),
+        supportsReasoning:
+          supportedParams.includes("reasoning") || supportedParams.includes("include_reasoning"),
+        supportsVision:
+          (architecture.input_modalities || []).includes("image") ||
+          (architecture.input_modalities || []).includes("video"),
         isModerated: topProvider.is_moderated || false,
-        recommended: true
+        recommended: true,
       });
 
       providers.add(provider);
@@ -854,17 +898,21 @@ async function updateModelsFromOpenRouter(): Promise<void> {
     // Create new JSON structure
     const updatedData = {
       version,
-      lastUpdated: new Date().toISOString().split('T')[0], // YYYY-MM-DD format
+      lastUpdated: new Date().toISOString().split("T")[0], // YYYY-MM-DD format
       source: "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
-      models: recommendations
+      models: recommendations,
     };
 
     // Write to file
     writeFileSync(MODELS_JSON_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
 
-    console.error(`✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`);
+    console.error(
+      `✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`
+    );
   } catch (error) {
-    console.error(`❌ Failed to update models: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `❌ Failed to update models: ${error instanceof Error ? error.message : String(error)}`
+    );
     console.error("   Using cached models (if available)");
   }
 }
@@ -905,7 +953,7 @@ function printVersion(): void {
  */
 function printHelp(): void {
   console.log(`
-claudish - Run Claude Code with any AI model (OpenRouter, Gemini, OpenAI, Local)
+claudish - Run Claude Code with any AI model (OpenRouter, Gemini, OpenAI, MiniMax, Kimi, GLM, Local)
 
 USAGE:
   claudish                                # Interactive mode (default, shows model selector)
@@ -914,7 +962,10 @@ USAGE:
 MODEL ROUTING (prefix-based):
   (no prefix)      OpenRouter (default)   claudish --model openai/gpt-5.2 "task"
   g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
-  oai/, openai/    OpenAI API             claudish --model oai/gpt-4o "task"
+  oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
+  mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
+  kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
+  glm/, zhipu/     GLM Direct API         claudish --model glm/glm-4.7 "task"
   ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
   lmstudio/        LM Studio (local)      claudish --model lmstudio/qwen "task"
   vllm/            vLLM (local)           claudish --model vllm/model "task"
@@ -985,11 +1036,21 @@ ENVIRONMENT VARIABLES:
   OPENROUTER_API_KEY              OpenRouter API key (default backend)
   GEMINI_API_KEY                  Google Gemini API key (for g/ prefix)
   OPENAI_API_KEY                  OpenAI API key (for oai/ prefix)
+  MINIMAX_API_KEY                 MiniMax API key (for mmax/, mm/ prefix)
+  MOONSHOT_API_KEY                Kimi/Moonshot API key (for kimi/, moonshot/ prefix)
+  KIMI_API_KEY                    Alias for MOONSHOT_API_KEY
+  ZHIPU_API_KEY                   GLM/Zhipu API key (for glm/, zhipu/ prefix)
+  GLM_API_KEY                     Alias for ZHIPU_API_KEY
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
 
   Custom endpoints:
   GEMINI_BASE_URL                 Custom Gemini endpoint
   OPENAI_BASE_URL                 Custom OpenAI/Azure endpoint
+  MINIMAX_BASE_URL                Custom MiniMax endpoint
+  MOONSHOT_BASE_URL               Custom Kimi/Moonshot endpoint
+  KIMI_BASE_URL                   Alias for MOONSHOT_BASE_URL
+  ZHIPU_BASE_URL                  Custom GLM/Zhipu endpoint
+  GLM_BASE_URL                    Alias for ZHIPU_BASE_URL
 
   Local providers:
   OLLAMA_BASE_URL                 Ollama server (default: http://localhost:11434)
@@ -1027,14 +1088,26 @@ EXAMPLES:
 
   # Direct OpenAI API
   claudish --model oai/gpt-4o "implement feature"
-  claudish --model openai/o1 "complex reasoning"
+  claudish --model oai/o1 "complex reasoning"
+
+  # Direct MiniMax API
+  claudish --model mmax/MiniMax-M2.1 "implement feature"
+  claudish --model mm/MiniMax-M2 "code review"
+
+  # Direct Kimi API (with reasoning support)
+  claudish --model kimi/kimi-k2-thinking-turbo "complex analysis"
+  claudish --model moonshot/kimi-k2-turbo-preview "implement feature"
+
+  # Direct GLM API
+  claudish --model glm/glm-4.7 "code generation"
+  claudish --model zhipu/glm-4-plus "complex task"
 
   # Local models (free, private)
   claudish --model ollama/llama3.2 "code review"
   claudish --model lmstudio/qwen2.5-coder "refactor"
 
   # Per-role model mapping
-  claudish --model-opus openai/gpt-5.2 --model-sonnet deepseek/deepseek-v3.2 --model-haiku minimax/minimax-m2.1
+  claudish --model-opus openai/gpt-5.2 --model-sonnet deepseek/deepseek-v3.2 --model-haiku mmax/MiniMax-M2.1
 
   # Use stdin for large prompts (e.g., git diffs, code review)
   echo "Review this code..." | claudish --stdin --model g/gemini-2.0-flash
@@ -1107,7 +1180,9 @@ function printAIAgentGuide(): void {
     console.error(error instanceof Error ? error.message : String(error));
     console.error("\nThe guide should be located at: AI_AGENT_GUIDE.md");
     console.error("You can also view it online at:");
-    console.error("https://github.com/MadAppGang/claude-code/blob/main/mcp/claudish/AI_AGENT_GUIDE.md");
+    console.error(
+      "https://github.com/MadAppGang/claude-code/blob/main/mcp/claudish/AI_AGENT_GUIDE.md"
+    );
     process.exit(1);
   }
 }
@@ -1174,7 +1249,7 @@ async function initializeClaudishSkill(): Promise<void> {
     console.log("   - Restart Claude Code, or");
     console.log("   - Re-open your project\n");
     console.log("2. Use Claudish with external models:");
-    console.log("   - User: \"use Grok to implement feature X\"");
+    console.log('   - User: "use Grok to implement feature X"');
     console.log("   - Claude will automatically use the skill\n");
     console.log("💡 The skill enforces best practices:");
     console.log("   ✅ Mandatory sub-agent delegation");
@@ -1182,7 +1257,6 @@ async function initializeClaudishSkill(): Promise<void> {
     console.log("   ✅ Context window protection\n");
     console.log("📖 For more info: claudish --help-ai\n");
     console.log("━".repeat(60));
-
   } catch (error) {
     console.error("\n❌ Error installing Claudish skill:");
     console.error(error instanceof Error ? error.message : String(error));
@@ -1231,7 +1305,8 @@ function printAvailableModels(): void {
     const modelIdPadded = modelId.padEnd(30);
 
     // Format provider (max 10 chars)
-    const provider = model.provider.length > 10 ? model.provider.substring(0, 7) + "..." : model.provider;
+    const provider =
+      model.provider.length > 10 ? model.provider.substring(0, 7) + "..." : model.provider;
     const providerPadded = provider.padEnd(10);
 
     // Format pricing (average) - handle special cases
@@ -1256,7 +1331,9 @@ function printAvailableModels(): void {
     const vision = model.supportsVision ? "👁️ " : "  ";
     const capabilities = `${tools} ${reasoning} ${vision}`;
 
-    console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${capabilities}`);
+    console.log(
+      `  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${capabilities}`
+    );
   }
 
   console.log("");
@@ -1287,20 +1364,20 @@ function printAvailableModelsJSON(): void {
 
     const output = {
       version: VERSION,
-      lastUpdated: new Date().toISOString().split('T')[0],
+      lastUpdated: new Date().toISOString().split("T")[0],
       source: "runtime",
       models: models
-        .filter(m => m !== 'custom')
-        .map(modelId => {
+        .filter((m) => m !== "custom")
+        .map((modelId) => {
           const info = modelInfo[modelId];
           return {
             id: modelId,
             name: info.name,
             description: info.description,
             provider: info.provider,
-            priority: info.priority
+            priority: info.priority,
           };
-        })
+        }),
     };
 
     console.log(JSON.stringify(output, null, 2));

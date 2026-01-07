@@ -64,7 +64,9 @@ export async function initCommand(): Promise<void> {
     }
   }
 
-  console.log(`${DIM}This wizard will help you set up Claudish with your preferred models.${RESET}\n`);
+  console.log(
+    `${DIM}This wizard will help you set up Claudish with your preferred models.${RESET}\n`
+  );
 
   // Create default profile
   console.log(`${BOLD}Step 1: Create your default profile${RESET}\n`);
@@ -73,7 +75,9 @@ export async function initCommand(): Promise<void> {
   const description = await promptForProfileDescription();
 
   console.log(`\n${BOLD}Step 2: Select models for each Claude tier${RESET}`);
-  console.log(`${DIM}These models will be used when Claude Code requests specific model types.${RESET}\n`);
+  console.log(
+    `${DIM}These models will be used when Claude Code requests specific model types.${RESET}\n`
+  );
 
   const models = await selectModelsForProfile();
 
@@ -339,11 +343,7 @@ export async function profileEditCommand(name?: string): Promise<void> {
 /**
  * Print a profile
  */
-function printProfile(
-  profile: Profile,
-  isDefault: boolean,
-  verbose = false
-): void {
+function printProfile(profile: Profile, isDefault: boolean, verbose = false): void {
   const defaultBadge = isDefault ? ` ${YELLOW}(default)${RESET}` : "";
   console.log(`${BOLD}${profile.name}${RESET}${defaultBadge}`);
 

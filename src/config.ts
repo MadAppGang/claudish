@@ -59,7 +59,7 @@ export const MODEL_INFO: Record<
     priority: 8,
     provider: "Alibaba",
   },
-  "custom": {
+  custom: {
     name: "Custom Model",
     description: "Enter any OpenRouter model ID manually",
     priority: 999,
@@ -93,7 +93,7 @@ export const ENV = {
   // Remote cloud provider API keys and endpoints
   GEMINI_API_KEY: "GEMINI_API_KEY", // Google Gemini API key (for g/, gemini/ prefixes)
   GEMINI_BASE_URL: "GEMINI_BASE_URL", // Custom Gemini API endpoint (default: https://generativelanguage.googleapis.com)
-  OPENAI_API_KEY: "OPENAI_API_KEY", // OpenAI API key (for oai/, openai/ prefixes)
+  OPENAI_API_KEY: "OPENAI_API_KEY", // OpenAI API key (for oai/ prefix - Direct API)
   OPENAI_BASE_URL: "OPENAI_BASE_URL", // Custom OpenAI API endpoint (default: https://api.openai.com)
   // Local model optimizations
   CLAUDISH_SUMMARIZE_TOOLS: "CLAUDISH_SUMMARIZE_TOOLS", // Summarize tool descriptions to reduce prompt size

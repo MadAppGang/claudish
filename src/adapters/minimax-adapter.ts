@@ -2,10 +2,7 @@ import { BaseModelAdapter, AdapterResult } from "./base-adapter";
 import { log } from "../logger";
 
 export class MiniMaxAdapter extends BaseModelAdapter {
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // MiniMax interleaved thinking is handled by the model
     return {
       cleanedText: textContent,

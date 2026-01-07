@@ -11,10 +11,7 @@ const QWEN_SPECIAL_TOKENS = [
 ];
 
 export class QwenAdapter extends BaseModelAdapter {
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // Strip Qwen special tokens that may leak through
     // This can happen when the model gets confused and outputs its chat template
     let cleanedText = textContent;
@@ -55,7 +52,9 @@ export class QwenAdapter extends BaseModelAdapter {
       request.enable_thinking = true;
       request.thinking_budget = budget_tokens;
 
-      log(`[QwenAdapter] Mapped budget ${budget_tokens} -> enable_thinking: true, thinking_budget: ${budget_tokens}`);
+      log(
+        `[QwenAdapter] Mapped budget ${budget_tokens} -> enable_thinking: true, thinking_budget: ${budget_tokens}`
+      );
 
       // Cleanup: Remove raw thinking object
       delete request.thinking;

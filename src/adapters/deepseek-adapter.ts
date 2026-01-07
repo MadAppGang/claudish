@@ -2,10 +2,7 @@ import { BaseModelAdapter, AdapterResult } from "./base-adapter";
 import { log } from "../logger";
 
 export class DeepSeekAdapter extends BaseModelAdapter {
-  processTextContent(
-    textContent: string,
-    accumulatedText: string
-  ): AdapterResult {
+  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],

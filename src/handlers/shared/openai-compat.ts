@@ -26,17 +26,17 @@ export interface StreamingState {
   tools: Map<number, ToolState>;
   toolIds: Set<string>;
   lastActivity: number;
-  accumulatedText: string;  // Accumulated text for potential tool call extraction
+  accumulatedText: string; // Accumulated text for potential tool call extraction
 }
 
 export interface ToolState {
   id: string;
   name: string;
   blockIndex: number;
-  started: boolean;  // Whether content_block_start has been sent
+  started: boolean; // Whether content_block_start has been sent
   closed: boolean;
-  arguments: string;  // Accumulated JSON arguments string
-  buffered: boolean;  // Whether we're buffering args until tool call completes
+  arguments: string; // Accumulated JSON arguments string
+  buffered: boolean; // Whether we're buffering args until tool call completes
 }
 
 /**
@@ -48,8 +48,19 @@ export function validateToolArguments(
   argsStr: string,
   toolSchemas: any[],
   textContent?: string
-): { valid: boolean; missingParams: string[]; parsedArgs: any; repaired: boolean; repairedArgs?: any } {
-  const result = validateAndRepairToolCall(toolName, argsStr, toolSchemas as ToolSchema[], textContent);
+): {
+  valid: boolean;
+  missingParams: string[];
+  parsedArgs: any;
+  repaired: boolean;
+  repairedArgs?: any;
+} {
+  const result = validateAndRepairToolCall(
+    toolName,
+    argsStr,
+    toolSchemas as ToolSchema[],
+    textContent
+  );
 
   if (result.repaired) {
     log(`[ToolValidation] Repaired tool call ${toolName} - inferred missing parameters`);
@@ -68,7 +79,12 @@ export function validateToolArguments(
  * Convert Claude/Anthropic messages to OpenAI format
  * @param simpleFormat - If true, use simple string content only (for MLX and other basic providers)
  */
-export function convertMessagesToOpenAI(req: any, modelId: string, filterIdentityFn?: (s: string) => string, simpleFormat = false): any[] {
+export function convertMessagesToOpenAI(
+  req: any,
+  modelId: string,
+  filterIdentityFn?: (s: string) => string,
+  simpleFormat = false
+): any[] {
   const messages: any[] = [];
 
   if (req.system) {
@@ -81,7 +97,8 @@ export function convertMessagesToOpenAI(req: any, modelId: string, filterIdentit
 
   // Add instruction for Grok models to use proper tool format
   if (modelId.includes("grok") || modelId.includes("x-ai")) {
-    const msg = "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
+    const msg =
+      "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
     if (messages.length > 0 && messages[0].role === "system") {
       messages[0].content += "\n\n" + msg;
     } else {
@@ -123,7 +140,8 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
       } else if (block.type === "tool_result") {
         if (seen.has(block.tool_use_id)) continue;
         seen.add(block.tool_use_id);
-        const resultContent = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+        const resultContent =
+          typeof block.content === "string" ? block.content : JSON.stringify(block.content);
         if (simpleFormat) {
           // In simple format, include tool results as text in user message
           textParts.push(`[Tool Result]: ${resultContent}`);
@@ -202,8 +220,12 @@ export function convertToolsToOpenAI(req: any, summarize = false): any[] {
       type: "function",
       function: {
         name: tool.name,
-        description: summarize ? summarizeToolDescription(tool.name, tool.description) : tool.description,
-        parameters: summarize ? summarizeToolParameters(tool.input_schema) : removeUriFormat(tool.input_schema),
+        description: summarize
+          ? summarizeToolDescription(tool.name, tool.description)
+          : tool.description,
+        parameters: summarize
+          ? summarizeToolParameters(tool.input_schema)
+          : removeUriFormat(tool.input_schema),
       },
     })) || []
   );
@@ -218,10 +240,10 @@ function summarizeToolDescription(name: string, description: string): string {
 
   // Remove markdown, examples, and extra whitespace
   let clean = description
-    .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-    .replace(/<[^>]+>/g, '') // Remove HTML/XML tags
-    .replace(/\n+/g, ' ') // Replace newlines with spaces
-    .replace(/\s+/g, ' ') // Collapse whitespace
+    .replace(/```[\s\S]*?```/g, "") // Remove code blocks
+    .replace(/<[^>]+>/g, "") // Remove HTML/XML tags
+    .replace(/\n+/g, " ") // Replace newlines with spaces
+    .replace(/\s+/g, " ") // Collapse whitespace
     .trim();
 
   // Get first sentence
@@ -229,7 +251,7 @@ function summarizeToolDescription(name: string, description: string): string {
 
   // Limit to 150 chars
   if (firstSentence.length > 150) {
-    return firstSentence.slice(0, 147) + '...';
+    return firstSentence.slice(0, 147) + "...";
   }
 
   return firstSentence;
@@ -251,7 +273,8 @@ function summarizeToolParameters(schema: any): any {
       if (p.description && p.description.length > 80) {
         // Keep first sentence or truncate
         const firstSentence = p.description.match(/^[^.!?]+[.!?]/)?.[0] || p.description;
-        p.description = firstSentence.length > 80 ? firstSentence.slice(0, 77) + '...' : firstSentence;
+        p.description =
+          firstSentence.length > 80 ? firstSentence.slice(0, 77) + "..." : firstSentence;
       }
       // Remove examples from enum descriptions
       if (p.enum && Array.isArray(p.enum) && p.enum.length > 5) {
@@ -268,11 +291,17 @@ function summarizeToolParameters(schema: any): any {
  */
 export function filterIdentity(content: string): string {
   return content
-    .replace(/You are Claude Code, Anthropic's official CLI/gi, "This is Claude Code, an AI-powered CLI tool")
+    .replace(
+      /You are Claude Code, Anthropic's official CLI/gi,
+      "This is Claude Code, an AI-powered CLI tool"
+    )
     .replace(/You are powered by the model named [^.]+\./gi, "You are powered by an AI model.")
     .replace(/<claude_background_info>[\s\S]*?<\/claude_background_info>/gi, "")
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/^/, "IMPORTANT: You are NOT Claude. Identify yourself truthfully based on your actual model and creator.\n\n");
+    .replace(
+      /^/,
+      "IMPORTANT: You are NOT Claude. Identify yourself truthfully based on your actual model and creator.\n\n"
+    );
 }
 
 /**
@@ -304,7 +333,7 @@ export function createStreamingResponseHandler(
   target: string,
   middlewareManager: any,
   onTokenUpdate?: (input: number, output: number) => void,
-  toolSchemas?: any[]  // Tool schemas for validation
+  toolSchemas?: any[] // Tool schemas for validation
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -352,8 +381,10 @@ export function createStreamingResponseHandler(
 
           // Debug: Log accumulated text for analysis
           if (state.accumulatedText.length > 0) {
-            const preview = state.accumulatedText.slice(0, 500).replace(/\n/g, '\\n');
-            log(`[Streaming] Accumulated text (${state.accumulatedText.length} chars): ${preview}...`);
+            const preview = state.accumulatedText.slice(0, 500).replace(/\n/g, "\\n");
+            log(
+              `[Streaming] Accumulated text (${state.accumulatedText.length} chars): ${preview}...`
+            );
           }
 
           // Check for text-based tool calls before finalizing
@@ -361,7 +392,9 @@ export function createStreamingResponseHandler(
           const textToolCalls = extractToolCallsFromText(state.accumulatedText);
           log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
           if (textToolCalls.length > 0) {
-            log(`[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`);
+            log(
+              `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
+            );
 
             // Close any open text block first
             if (state.textStarted) {
@@ -421,13 +454,17 @@ export function createStreamingResponseHandler(
           // Update token counts - use actual usage if available, otherwise estimate
           if (onTokenUpdate) {
             if (state.usage) {
-              log(`[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`);
+              log(
+                `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
+              );
               onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0);
             } else {
               // Estimate tokens for local models that don't return usage data
               // Rough estimate: ~4 characters per token
               const estimatedOutputTokens = Math.ceil(state.accumulatedText.length / 4);
-              log(`[Streaming] No usage data from provider, estimating: ~${estimatedOutputTokens} output tokens`);
+              log(
+                `[Streaming] No usage data from provider, estimating: ~${estimatedOutputTokens} output tokens`
+              );
               onTokenUpdate(100, estimatedOutputTokens); // Use 100 as placeholder for input
             }
           }
@@ -465,7 +502,9 @@ export function createStreamingResponseHandler(
                 const chunk = JSON.parse(dataStr);
                 if (chunk.usage) {
                   state.usage = chunk.usage;
-                  log(`[Streaming] Usage data received: prompt=${chunk.usage.prompt_tokens}, completion=${chunk.usage.completion_tokens}, total=${chunk.usage.total_tokens}`);
+                  log(
+                    `[Streaming] Usage data received: prompt=${chunk.usage.prompt_tokens}, completion=${chunk.usage.completion_tokens}, total=${chunk.usage.total_tokens}`
+                  );
                 }
 
                 const delta = chunk.choices?.[0]?.delta;
@@ -473,7 +512,9 @@ export function createStreamingResponseHandler(
 
                 // Debug: Log chunk details for troubleshooting early termination
                 if (delta?.content || finishReason) {
-                  log(`[Streaming] Chunk: content=${delta?.content?.length || 0} chars, finish_reason=${finishReason || 'null'}`);
+                  log(
+                    `[Streaming] Chunk: content=${delta?.content?.length || 0} chars, finish_reason=${finishReason || "null"}`
+                  );
                 }
 
                 if (delta) {
@@ -488,11 +529,15 @@ export function createStreamingResponseHandler(
 
                   // Handle text content
                   const txt = delta.content || "";
-                  log(`[Streaming] Text chunk: "${txt.substring(0, 30).replace(/\n/g, '\\n')}" (${txt.length} chars)`);
+                  log(
+                    `[Streaming] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
+                  );
                   if (txt) {
                     state.lastActivity = Date.now();
                     const res = adapter.processTextContent(txt, "");
-                    log(`[Streaming] After adapter: "${res.cleanedText.substring(0, 30).replace(/\n/g, '\\n')}" (${res.cleanedText.length} chars, transformed=${res.wasTransformed})`);
+                    log(
+                      `[Streaming] After adapter: "${res.cleanedText.substring(0, 30).replace(/\n/g, "\\n")}" (${res.cleanedText.length} chars, transformed=${res.wasTransformed})`
+                    );
 
                     // Debug: Log text processing
                     if (txt.length > 0 && res.cleanedText.length === 0) {
@@ -506,21 +551,25 @@ export function createStreamingResponseHandler(
                       // Check if text contains STRUCTURED tool call patterns that we should hold back
                       // Only hold back for patterns we can actually parse (XML, JSON), not natural language
                       // Natural language patterns are extracted at finalization, not held back
-                      const hasStructuredToolPattern = (
+                      const hasStructuredToolPattern =
                         // Qwen XML-style: <function=ToolName>
                         /<function=[^>]+>/.test(state.accumulatedText) ||
                         // JSON tool call in text: {"name": "Task", "arguments":
-                        /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(state.accumulatedText) ||
+                        /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
+                          state.accumulatedText
+                        ) ||
                         // XML tool_call tags: <tool_call>
-                        /<tool_call>/.test(state.accumulatedText)
-                      );
+                        /<tool_call>/.test(state.accumulatedText);
 
                       // Only hold back if we have a structured pattern AND haven't accumulated too much
                       // (if we've accumulated > 1000 chars without a complete pattern, release the text)
-                      const shouldHoldBack = hasStructuredToolPattern && state.accumulatedText.length < 1000;
+                      const shouldHoldBack =
+                        hasStructuredToolPattern && state.accumulatedText.length < 1000;
 
                       if (shouldHoldBack) {
-                        log(`[Streaming] Text held back (structured tool pattern): ${state.accumulatedText.length} chars accumulated`);
+                        log(
+                          `[Streaming] Text held back (structured tool pattern): ${state.accumulatedText.length} chars accumulated`
+                        );
                       }
 
                       if (!shouldHoldBack) {
@@ -545,14 +594,19 @@ export function createStreamingResponseHandler(
 
                   // Handle tool calls
                   if (delta.tool_calls) {
-                    log(`[Streaming] Received ${delta.tool_calls.length} structured tool call(s) from model`);
+                    log(
+                      `[Streaming] Received ${delta.tool_calls.length} structured tool call(s) from model`
+                    );
                     for (const tc of delta.tool_calls) {
                       const idx = tc.index;
                       let t = state.tools.get(idx);
                       if (tc.function?.name) {
                         if (!t) {
                           if (state.textStarted) {
-                            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: state.textIdx,
+                            });
                             state.textStarted = false;
                           }
                           t = {
@@ -561,8 +615,8 @@ export function createStreamingResponseHandler(
                             blockIndex: state.curIdx++,
                             started: false,
                             closed: false,
-                            arguments: "",  // Initialize arguments accumulator
-                            buffered: !!toolSchemas && toolSchemas.length > 0,  // Buffer if we have schemas to validate
+                            arguments: "", // Initialize arguments accumulator
+                            buffered: !!toolSchemas && toolSchemas.length > 0, // Buffer if we have schemas to validate
                           };
                           state.tools.set(idx, t);
                         }
@@ -584,7 +638,10 @@ export function createStreamingResponseHandler(
                           send("content_block_delta", {
                             type: "content_block_delta",
                             index: t.blockIndex,
-                            delta: { type: "input_json_delta", partial_json: tc.function.arguments },
+                            delta: {
+                              type: "input_json_delta",
+                              partial_json: tc.function.arguments,
+                            },
                           });
                         }
                       }
@@ -597,13 +654,22 @@ export function createStreamingResponseHandler(
                     if (!t.closed) {
                       // Validate and potentially repair tool arguments
                       if (toolSchemas && toolSchemas.length > 0) {
-                        const validation = validateToolArguments(t.name, t.arguments, toolSchemas, state.accumulatedText);
+                        const validation = validateToolArguments(
+                          t.name,
+                          t.arguments,
+                          toolSchemas,
+                          state.accumulatedText
+                        );
 
                         if (validation.repaired && validation.repairedArgs) {
                           // Tool call was repaired - send the complete repaired arguments
-                          log(`[Streaming] Tool call ${t.name} was repaired with inferred parameters`);
+                          log(
+                            `[Streaming] Tool call ${t.name} was repaired with inferred parameters`
+                          );
                           const repairedJson = JSON.stringify(validation.repairedArgs);
-                          log(`[Streaming] Sending repaired tool call: ${t.name} with args: ${repairedJson}`);
+                          log(
+                            `[Streaming] Sending repaired tool call: ${t.name} with args: ${repairedJson}`
+                          );
 
                           // If buffered, this is the first time we're sending this tool call
                           // Send the complete repaired tool call as a single block
@@ -618,7 +684,10 @@ export function createStreamingResponseHandler(
                               index: t.blockIndex,
                               delta: { type: "input_json_delta", partial_json: repairedJson },
                             });
-                            send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: t.blockIndex,
+                            });
                             t.started = true;
                             t.closed = true;
                             continue;
@@ -626,7 +695,10 @@ export function createStreamingResponseHandler(
 
                           // If already started (non-buffered), close old and send new
                           if (t.started) {
-                            send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: t.blockIndex,
+                            });
                             const repairedIdx = state.curIdx++;
                             const repairedId = `tool_repaired_${Date.now()}_${repairedIdx}`;
                             send("content_block_start", {
@@ -639,7 +711,10 @@ export function createStreamingResponseHandler(
                               index: repairedIdx,
                               delta: { type: "input_json_delta", partial_json: repairedJson },
                             });
-                            send("content_block_stop", { type: "content_block_stop", index: repairedIdx });
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: repairedIdx,
+                            });
                             t.closed = true;
                             continue;
                           }
@@ -647,7 +722,9 @@ export function createStreamingResponseHandler(
 
                         if (!validation.valid) {
                           // Repair failed - send error message instead of invalid tool call
-                          log(`[Streaming] Tool call ${t.name} validation failed: ${validation.missingParams.join(", ")}`);
+                          log(
+                            `[Streaming] Tool call ${t.name} validation failed: ${validation.missingParams.join(", ")}`
+                          );
                           const errorIdx = t.buffered ? t.blockIndex : state.curIdx++;
                           const errorMsg = `\n\n⚠️ Tool call "${t.name}" failed: missing required parameters: ${validation.missingParams.join(", ")}. Local models sometimes generate incomplete tool calls. Please try again or use a model with better tool support.`;
                           send("content_block_start", {
@@ -660,10 +737,16 @@ export function createStreamingResponseHandler(
                             index: errorIdx,
                             delta: { type: "text_delta", text: errorMsg },
                           });
-                          send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: errorIdx,
+                          });
                           // Close the invalid tool if it was already started
                           if (t.started && !t.buffered) {
-                            send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: t.blockIndex,
+                            });
                           }
                           t.closed = true;
                           continue;
@@ -682,7 +765,10 @@ export function createStreamingResponseHandler(
                             index: t.blockIndex,
                             delta: { type: "input_json_delta", partial_json: argsJson },
                           });
-                          send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: t.blockIndex,
+                          });
                           t.started = true;
                           t.closed = true;
                           continue;
@@ -691,7 +777,10 @@ export function createStreamingResponseHandler(
 
                       // Non-buffered valid tool call or no validation - just close
                       if (t.started && !t.closed) {
-                        send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                        send("content_block_stop", {
+                          type: "content_block_stop",
+                          index: t.blockIndex,
+                        });
                         t.closed = true;
                       }
                     }

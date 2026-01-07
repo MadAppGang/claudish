@@ -84,8 +84,7 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
       const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
       const lastUpdated = new Date(cacheData.lastUpdated);
       const now = new Date();
-      const ageInDays =
-        (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
+      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
 
       if (ageInDays <= CACHE_MAX_AGE_DAYS) {
         return cacheData.models;
@@ -127,8 +126,7 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
  */
 function toModelInfo(model: any): ModelInfo {
   const provider = model.id.split("/")[0];
-  const contextLen =
-    model.context_length || model.top_provider?.context_length || 0;
+  const contextLen = model.context_length || model.top_provider?.context_length || 0;
   const promptPrice = parseFloat(model.pricing?.prompt || "0");
   const completionPrice = parseFloat(model.pricing?.completion || "0");
   const isFree = promptPrice === 0 && completionPrice === 0;
@@ -160,9 +158,7 @@ function toModelInfo(model: any): ModelInfo {
     contextLength: contextLen,
     supportsTools: (model.supported_parameters || []).includes("tools"),
     supportsReasoning: (model.supported_parameters || []).includes("reasoning"),
-    supportsVision: (model.architecture?.input_modalities || []).includes(
-      "image"
-    ),
+    supportsVision: (model.architecture?.input_modalities || []).includes("image"),
     isFree,
   };
 }
@@ -254,7 +250,7 @@ function fuzzyMatch(text: string, query: string): number {
     }
   }
 
-  return queryIdx === lowerQuery.length ? score / lowerQuery.length * 0.6 : 0;
+  return queryIdx === lowerQuery.length ? (score / lowerQuery.length) * 0.6 : 0;
 }
 
 export interface ModelSelectorOptions {
@@ -266,9 +262,7 @@ export interface ModelSelectorOptions {
 /**
  * Select a model interactively with fuzzy search
  */
-export async function selectModel(
-  options: ModelSelectorOptions = {}
-): Promise<string> {
+export async function selectModel(options: ModelSelectorOptions = {}): Promise<string> {
   const { freeOnly = false, recommended = true, message } = options;
 
   let models: ModelInfo[];
@@ -292,9 +286,9 @@ export async function selectModel(
     models = await getAllModelsForSearch();
   }
 
-  const promptMessage = message || (freeOnly
-    ? "Select a FREE model (type to search):"
-    : "Select a model (type to search):");
+  const promptMessage =
+    message ||
+    (freeOnly ? "Select a FREE model (type to search):" : "Select a model (type to search):");
 
   const selected = await search<string>({
     message: promptMessage,
@@ -347,10 +341,7 @@ export async function selectModelsForProfile(): Promise<{
   console.log("\nConfigure models for each Claude tier:\n");
 
   // Helper to select a model for a tier
-  const selectForTier = async (
-    tier: string,
-    description: string
-  ): Promise<string | undefined> => {
+  const selectForTier = async (tier: string, description: string): Promise<string | undefined> => {
     const useCustom = await confirm({
       message: `Configure ${tier} model? (${description})`,
       default: true,
@@ -390,19 +381,10 @@ export async function selectModelsForProfile(): Promise<{
     });
   };
 
-  const opus = await selectForTier(
-    "Opus",
-    "Most capable, used for complex reasoning"
-  );
-  const sonnet = await selectForTier(
-    "Sonnet",
-    "Balanced, used for general tasks"
-  );
+  const opus = await selectForTier("Opus", "Most capable, used for complex reasoning");
+  const sonnet = await selectForTier("Sonnet", "Balanced, used for general tasks");
   const haiku = await selectForTier("Haiku", "Fast & cheap, used for simple tasks");
-  const subagent = await selectForTier(
-    "Subagent",
-    "Used for spawned sub-agents"
-  );
+  const subagent = await selectForTier("Subagent", "Used for spawned sub-agents");
 
   return { opus, sonnet, haiku, subagent };
 }
@@ -433,9 +415,7 @@ export async function promptForApiKey(): Promise<string> {
 /**
  * Prompt for profile name
  */
-export async function promptForProfileName(
-  existing: string[] = []
-): Promise<string> {
+export async function promptForProfileName(existing: string[] = []): Promise<string> {
   const name = await input({
     message: "Enter profile name:",
     validate: (value) => {

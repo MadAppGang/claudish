@@ -119,12 +119,14 @@ async function runCli() {
     // When --model is specified, use it for all requests (skip profile mappings)
     // Profile mappings only apply when no explicit model is set
     const explicitModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
-    const modelMap = explicitModel ? undefined : {
-      opus: cliConfig.modelOpus,
-      sonnet: cliConfig.modelSonnet,
-      haiku: cliConfig.modelHaiku,
-      subagent: cliConfig.modelSubagent,
-    };
+    const modelMap = explicitModel
+      ? undefined
+      : {
+          opus: cliConfig.modelOpus,
+          sonnet: cliConfig.modelSonnet,
+          haiku: cliConfig.modelHaiku,
+          subagent: cliConfig.modelSubagent,
+        };
 
     const proxy = await createProxyServer(
       port,
