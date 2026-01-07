@@ -390,3 +390,210 @@ export function transformOpenAIToClaude(claudeRequestInput: any): { claudeReques
     isO3Model
   }
 }
+
+/**
+ * Clean JSON Schema for Gemini API compatibility
+ * Gemini doesn't support certain JSON Schema validation fields
+ */
+function cleanSchemaForGemini(schema: any): any {
+  if (!schema || typeof schema !== 'object') return schema
+
+  if (Array.isArray(schema)) {
+    return schema.map(item => cleanSchemaForGemini(item))
+  }
+
+  const UNSUPPORTED_FIELDS = [
+    '$schema',
+    'additionalProperties',
+    'exclusiveMinimum',
+    'exclusiveMaximum',
+    'multipleOf',
+    'patternProperties',
+    'dependencies',
+    'const',
+    'if',
+    'then',
+    'else',
+    'allOf',
+    'anyOf',
+    'oneOf',
+    'not'
+  ]
+
+  const cleaned: any = {}
+  for (const key in schema) {
+    if (UNSUPPORTED_FIELDS.includes(key)) {
+      continue
+    }
+
+    if (key === 'properties' && typeof schema[key] === 'object') {
+      cleaned[key] = {}
+      for (const propKey in schema[key]) {
+        cleaned[key][propKey] = cleanSchemaForGemini(schema[key][propKey])
+      }
+    } else if (key === 'items' && typeof schema[key] === 'object') {
+      cleaned[key] = cleanSchemaForGemini(schema[key])
+    } else if (typeof schema[key] === 'object' && !Array.isArray(schema[key])) {
+      cleaned[key] = cleanSchemaForGemini(schema[key])
+    } else if (Array.isArray(schema[key])) {
+      cleaned[key] = schema[key].map((item: any) =>
+        typeof item === 'object' ? cleanSchemaForGemini(item) : item
+      )
+    } else {
+      cleaned[key] = schema[key]
+    }
+  }
+
+  return cleaned
+}
+
+/**
+ * Transform Claude format to Gemini's native format
+ * Gemini uses a different structure: contents array with parts, generationConfig, etc.
+ */
+export function transformClaudeToGemini(claudePayload: any, modelId: string): { geminiPayload: any, claudeRequest: any } {
+  const claudeRequest = claudePayload;
+  const geminiPayload: any = {
+    contents: [],
+    generationConfig: {},
+  };
+
+  // Add system instruction (Gemini supports this at the root level)
+  if (claudeRequest.system) {
+    let systemContent = claudeRequest.system;
+    if (Array.isArray(systemContent)) {
+      systemContent = systemContent.map((i: any) => i.text || i).join("\n\n");
+    }
+    geminiPayload.systemInstruction = {
+      parts: [{ text: systemContent }]
+    };
+  }
+
+  // Convert messages to Gemini's contents format
+  if (claudeRequest.messages && Array.isArray(claudeRequest.messages)) {
+    for (const msg of claudeRequest.messages) {
+      const geminiMessage: any = {
+        role: msg.role === "assistant" ? "model" : msg.role,
+        parts: [],
+      };
+
+      // Handle message content
+      if (typeof msg.content === "string") {
+        geminiMessage.parts.push({ text: msg.content });
+      } else if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "text") {
+            geminiMessage.parts.push({ text: block.text });
+          } else if (block.type === "image") {
+            // Convert Claude image format to Gemini format
+            geminiMessage.parts.push({
+              inlineData: {
+                mimeType: block.source.media_type || "image/png",
+                data: block.source.data,
+              },
+            });
+          } else if (block.type === "tool_use") {
+            // Gemini uses functionCall format
+            // Extract thought_signature from tool ID if present (format: toolu_xxx__ts_base64sig)
+            const part: any = {
+              functionCall: {
+                name: block.name,
+                args: block.input,
+              }
+            };
+
+            if (block.id && block.id.includes('__ts_')) {
+              const [, sigEncoded] = block.id.split('__ts_');
+              if (sigEncoded) {
+                try {
+                  // Decode the thought_signature from URL encoding
+                  // IMPORTANT: preserve exactly as received
+                  // thoughtSignature goes at the SAME LEVEL as functionCall, not inside it
+                  const thoughtSignature = decodeURIComponent(sigEncoded);
+                  part.thoughtSignature = thoughtSignature;
+                } catch (e) {
+                  // Silently ignore decode errors
+                }
+              }
+            }
+
+            geminiMessage.parts.push(part);
+          } else if (block.type === "tool_result") {
+            // Tool results go in a separate message
+            geminiPayload.contents.push({
+              role: "function",
+              parts: [{
+                functionResponse: {
+                  name: block.tool_use_id,
+                  response: {
+                    content: typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                  },
+                },
+              }],
+            });
+            continue;
+          }
+        }
+      }
+
+      if (geminiMessage.parts.length > 0) {
+        geminiPayload.contents.push(geminiMessage);
+      }
+    }
+  }
+
+  // Convert generation parameters
+  if (claudeRequest.temperature !== undefined) {
+    geminiPayload.generationConfig.temperature = claudeRequest.temperature;
+  }
+  if (claudeRequest.max_tokens !== undefined) {
+    geminiPayload.generationConfig.maxOutputTokens = claudeRequest.max_tokens;
+  }
+  if (claudeRequest.stop_sequences && Array.isArray(claudeRequest.stop_sequences)) {
+    geminiPayload.generationConfig.stopSequences = claudeRequest.stop_sequences;
+  }
+  if (claudeRequest.top_p !== undefined) {
+    geminiPayload.generationConfig.topP = claudeRequest.top_p;
+  }
+  if (claudeRequest.top_k !== undefined) {
+    geminiPayload.generationConfig.topK = claudeRequest.top_k;
+  }
+
+  // Convert tools to Gemini's functionDeclarations format
+  if (claudeRequest.tools && Array.isArray(claudeRequest.tools)) {
+    geminiPayload.tools = [{
+      functionDeclarations: claudeRequest.tools.map((tool: any) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: cleanSchemaForGemini(tool.input_schema),
+      })),
+    }];
+  }
+
+  // Handle thinking/reasoning config
+  if (claudeRequest.thinking) {
+    const { budget_tokens } = claudeRequest.thinking;
+    if (modelId.includes("gemini-3")) {
+      const level = budget_tokens >= 16000 ? "high" : "low";
+      geminiPayload.generationConfig.thinkingConfig = {
+        thinkingLevel: level
+      };
+    } else {
+      geminiPayload.generationConfig.thinking_config = {
+        thinking_budget: Math.min(budget_tokens, 24576),
+      };
+    }
+  }
+
+  return { geminiPayload, claudeRequest };
+}
+
+/**
+ * Transform a Gemini streaming chunk to Claude format
+ * (This is handled inline in the GeminiHandler for better control)
+ */
+export function transformGeminiChunkToClaude(geminiChunk: any): any {
+  // This function is provided for completeness but the actual transformation
+  // is done in GeminiHandler.handleStreamingResponse() for better streaming control
+  return geminiChunk;
+}

@@ -261,6 +261,7 @@ export interface ModelSelectorOptions {
   freeOnly?: boolean;
   recommended?: boolean;
   message?: string;
+  providerFilter?: string;
 }
 
 /**
@@ -269,7 +270,7 @@ export interface ModelSelectorOptions {
 export async function selectModel(
   options: ModelSelectorOptions = {}
 ): Promise<string> {
-  const { freeOnly = false, recommended = true, message } = options;
+  const { freeOnly = false, recommended = true, message, providerFilter } = options;
 
   let models: ModelInfo[];
 
@@ -290,6 +291,18 @@ export async function selectModel(
     }
   } else {
     models = await getAllModelsForSearch();
+  }
+
+  if (providerFilter) {
+    models = models.filter((m) => {
+      if (providerFilter === "google") {
+        return m.id.startsWith("google/") || m.id.startsWith("gemini-");
+      }
+      return m.id.startsWith(providerFilter + "/");
+    });
+    if (models.length === 0) {
+      throw new Error(`No models available for provider: ${providerFilter}`);
+    }
   }
 
   const promptMessage = message || (freeOnly
@@ -407,21 +420,42 @@ export async function selectModelsForProfile(): Promise<{
   return { opus, sonnet, haiku, subagent };
 }
 
-/**
- * Prompt for API key
- */
-export async function promptForApiKey(): Promise<string> {
-  console.log("\nOpenRouter API Key Required");
-  console.log("Get your free API key from: https://openrouter.ai/keys\n");
+export async function promptForApiKey(
+  provider: "openrouter" | "google" | "anthropic" = "openrouter"
+): Promise<string> {
+  const config = {
+    openrouter: {
+      title: "OpenRouter API Key Required",
+      url: "https://openrouter.ai/keys",
+      message: "Enter your OpenRouter API key:",
+      prefix: "sk-or-",
+    },
+    google: {
+      title: "Google API Key Required",
+      url: "https://aistudio.google.com/app/apikey",
+      message: "Enter your Google API key:",
+      prefix: "AIza",
+    },
+    anthropic: {
+      title: "Anthropic API Key Required",
+      url: "https://console.anthropic.com/",
+      message: "Enter your Anthropic API key:",
+      prefix: "sk-ant-",
+    },
+  };
+
+  const cfg = config[provider];
+  console.log(`\n${cfg.title}`);
+  console.log(`Get your free API key from: ${cfg.url}\n`);
 
   const apiKey = await input({
-    message: "Enter your OpenRouter API key:",
+    message: cfg.message,
     validate: (value) => {
       if (!value.trim()) {
         return "API key cannot be empty";
       }
-      if (!value.startsWith("sk-or-")) {
-        return 'API key should start with "sk-or-"';
+      if (!value.startsWith(cfg.prefix)) {
+        return `API key should start with "${cfg.prefix}"`;
       }
       return true;
     },
