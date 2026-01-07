@@ -79,9 +79,7 @@ const getProviders = (): LocalProvider[] => [
     envVar: "MLX_BASE_URL",
     prefixes: ["mlx/", "mlx:"],
     capabilities: {
-      // MLX server's tool parsing is fragile with Qwen models
-      // Disable native tools - claudish will extract tool calls from text instead
-      supportsTools: false,
+      supportsTools: true,
       supportsVision: false,
       supportsStreaming: true,
       supportsJsonMode: true,

@@ -12,8 +12,8 @@ import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager } from "../middleware/index.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "undici";
 import {
@@ -265,8 +265,11 @@ export class LocalProviderHandler implements ModelHandler {
         updated_at: Date.now(),
       };
 
+      // Write to ~/.claudish/ directory (same location status line reads from)
+      const claudishDir = join(homedir(), ".claudish");
+      mkdirSync(claudishDir, { recursive: true });
       writeFileSync(
-        join(tmpdir(), `claudish-tokens-${this.port}.json`),
+        join(claudishDir, `tokens-${this.port}.json`),
         JSON.stringify(data),
         "utf-8"
       );

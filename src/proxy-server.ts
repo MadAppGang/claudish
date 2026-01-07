@@ -7,8 +7,10 @@ import { NativeHandler } from "./handlers/native-handler.js";
 import { OpenRouterHandler } from "./handlers/openrouter-handler.js";
 import { LocalProviderHandler, type LocalProviderOptions } from "./handlers/local-provider-handler.js";
 import { GeminiHandler } from "./handlers/gemini-handler.js";
+import { OpenAIHandler } from "./handlers/openai-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { resolveProvider, parseUrlModel, createUrlProvider } from "./providers/provider-registry.js";
+import { resolveRemoteProvider, validateRemoteProviderApiKey } from "./providers/remote-provider-registry.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -21,15 +23,14 @@ export async function createProxyServer(
   monitorMode: boolean = false,
   anthropicApiKey?: string,
   modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
-  options: ProxyServerOptions = {},
-  googleApiKey?: string
+  options: ProxyServerOptions = {}
 ): Promise<ProxyServer> {
 
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(anthropicApiKey);
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
-  const geminiHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini Handler
+  const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
 
   // Helper to get or create OpenRouter handler for a target model
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
@@ -37,21 +38,6 @@ export async function createProxyServer(
           openRouterHandlers.set(targetModel, new OpenRouterHandler(targetModel, openrouterApiKey, port));
       }
       return openRouterHandlers.get(targetModel)!;
-  };
-
-  // Helper to get or create Gemini handler for a target model
-  const getGeminiHandler = (targetModel: string): ModelHandler | null => {
-      if (!googleApiKey) {
-          log(`[Proxy] No GOOGLE_API_KEY provided for Gemini model: ${targetModel}`);
-          return null;
-      }
-      if (!geminiHandlers.has(targetModel)) {
-          // Remove google/ prefix if present
-          const modelName = targetModel.startsWith("google/") ? targetModel.slice(7) : targetModel;
-          geminiHandlers.set(targetModel, new GeminiHandler(modelName, googleApiKey, port));
-          log(`[Proxy] Created Gemini handler: ${modelName}`);
-      }
-      return geminiHandlers.get(targetModel)!;
   };
 
   // Local provider options
@@ -87,6 +73,46 @@ export async function createProxyServer(
       return null;
   };
 
+  // Helper to get or create remote provider handler (Gemini, OpenAI)
+  const getRemoteProviderHandler = (targetModel: string): ModelHandler | null => {
+      if (remoteProviderHandlers.has(targetModel)) {
+          return remoteProviderHandlers.get(targetModel)!;
+      }
+
+      // Check for remote provider prefix (g/, gemini/, oai/, openai/, or/)
+      const resolved = resolveRemoteProvider(targetModel);
+      if (!resolved) {
+          return null;
+      }
+
+      // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
+      if (resolved.provider.name === "openrouter") {
+          return null; // Will fall through to OpenRouterHandler
+      }
+
+      // Validate API key
+      const apiKeyError = validateRemoteProviderApiKey(resolved.provider);
+      if (apiKeyError) {
+          throw new Error(apiKeyError);
+      }
+
+      const apiKey = process.env[resolved.provider.apiKeyEnvVar]!;
+
+      let handler: ModelHandler;
+      if (resolved.provider.name === "gemini") {
+          handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+          log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "openai") {
+          handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+          log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
+      } else {
+          return null; // Unknown provider
+      }
+
+      remoteProviderHandlers.set(targetModel, handler);
+      return handler;
+  };
+
   // Handlers are created lazily on first request - no pre-warming needed
 
   const getHandlerForRequest = (requestedModel: string): ModelHandler => {
@@ -106,15 +132,9 @@ export async function createProxyServer(
           // Assuming Haiku mapping covers subagent unless custom logic added.
       }
 
-      // 3. Check for Direct Gemini (google/gemini-* or gemini-*)
-      // Only use direct Gemini if GOOGLE_API_KEY is available
-      if (googleApiKey && (target.startsWith("google/gemini-") || target.startsWith("gemini-"))) {
-          const geminiHandler = getGeminiHandler(target);
-          if (geminiHandler) {
-              log(`[Proxy] Using direct Gemini handler for: ${target}`);
-              return geminiHandler;
-          }
-      }
+      // 3. Check for Remote Provider (g/, gemini/, oai/, openai/)
+      const remoteHandler = getRemoteProviderHandler(target);
+      if (remoteHandler) return remoteHandler;
 
       // 4. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
       const localHandler = getLocalProviderHandler(target);
@@ -129,7 +149,7 @@ export async function createProxyServer(
           return nativeHandler;
       }
 
-      // 6. OpenRouter Handler (default for external models)
+      // 6. OpenRouter Handler (default for any model with "/" not matched above)
       return getOpenRouterHandler(target);
   };
 

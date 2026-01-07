@@ -1,6 +1,6 @@
 # Claudish AI Agent Usage Guide
 
-**Version:** 1.0.0
+**Version:** 2.0.0
 **Target Audience:** AI Agents running within Claude Code
 **Purpose:** Quick reference for using Claudish CLI in agentic workflows
 
@@ -10,23 +10,42 @@
 
 ```bash
 # 1. Get available models
-claudish --list-models --json
+claudish --models --json
 
-# 2. Run task with specific model
-claudish --model x-ai/grok-code-fast-1 "your task here"
+# 2. Run task with specific model (OpenRouter)
+claudish --model openai/gpt-5.2 "your task here"
 
-# 3. For large prompts, use stdin
-echo "your task" | claudish --stdin --model x-ai/grok-code-fast-1
+# 3. Run with direct Gemini API
+claudish --model g/gemini-2.0-flash "your task here"
+
+# 4. Run with local model
+claudish --model ollama/llama3.2 "your task here"
+
+# 5. For large prompts, use stdin
+echo "your task" | claudish --stdin --model openai/gpt-5.2
 ```
 
 ## What is Claudish?
 
-Claudish = Claude Code + OpenRouter models
+Claudish = Claude Code + Any AI Model
 
-- ✅ Run Claude Code with **any OpenRouter model** (Grok, GPT-5, Gemini, MiniMax, etc.)
+- ✅ Run Claude Code with **any AI model** via prefix-based routing
+- ✅ Supports OpenRouter (100+ models), direct Gemini API, direct OpenAI API
+- ✅ Supports local models (Ollama, LM Studio, vLLM, MLX)
 - ✅ 100% Claude Code feature compatibility
 - ✅ Local proxy server (no data sent to Claudish servers)
 - ✅ Cost tracking and model selection
+
+## Model Routing
+
+| Prefix | Backend | Example |
+|--------|---------|---------|
+| _(none)_ | OpenRouter | `openai/gpt-5.2` |
+| `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
+| `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
+| `ollama/` | Ollama | `ollama/llama3.2` |
+| `lmstudio/` | LM Studio | `lmstudio/model` |
+| `http://...` | Custom | `http://localhost:8000/model` |
 
 ## Prerequisites
 
@@ -49,15 +68,25 @@ Claudish = Claude Code + OpenRouter models
 
 | Model ID | Provider | Category | Best For |
 |----------|----------|----------|----------|
-| `x-ai/grok-code-fast-1` | xAI | Coding | Fast iterations, agentic coding |
-| `google/gemini-2.5-flash` | Google | Reasoning | Complex analysis, 1000K context |
-| `minimax/minimax-m2` | MiniMax | Coding | General coding tasks |
-| `openai/gpt-5` | OpenAI | Reasoning | Architecture decisions |
-| `qwen/qwen3-vl-235b-a22b-instruct` | Alibaba | Vision | UI/visual tasks |
+| `openai/gpt-5.2` | OpenAI | Reasoning | **Default** - Most advanced reasoning |
+| `minimax/minimax-m2.1` | MiniMax | Coding | Budget-friendly, fast |
+| `z-ai/glm-4.7` | Z.AI | Coding | Balanced performance |
+| `google/gemini-3-pro-preview` | Google | Reasoning | 1M context window |
+| `moonshotai/kimi-k2-thinking` | MoonShot | Reasoning | Extended thinking |
+| `deepseek/deepseek-v3.2` | DeepSeek | Coding | Code specialist |
+| `qwen/qwen3-vl-235b-a22b-thinking` | Alibaba | Vision | Vision + reasoning |
+
+**Direct API Options (lower latency):**
+
+| Model ID | Backend | Best For |
+|----------|---------|----------|
+| `g/gemini-2.0-flash` | Gemini | Fast tasks, large context |
+| `oai/gpt-4o` | OpenAI | General purpose |
+| `ollama/llama3.2` | Local | Free, private |
 
 **Update models:**
 ```bash
-claudish --list-models --force-update
+claudish --models --force-update
 ```
 
 ## Critical: File-Based Pattern for Sub-Agents
@@ -529,6 +558,6 @@ claudish --help-ai > claudish-agent-guide.md
 
 ---
 
-**Version:** 1.0.0
-**Last Updated:** November 19, 2025
+**Version:** 2.0.0
+**Last Updated:** January 5, 2026
 **Maintained by:** MadAppGang

@@ -1,12 +1,12 @@
 import type { Context } from "hono";
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelHandler } from "./types.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { transformOpenAIToClaude, removeUriFormat } from "../transform.js";
-import { log, logStructured, isLoggingEnabled } from "../logger.js";
+import { log, logStructured, isLoggingEnabled, getLogLevel, truncateContent } from "../logger.js";
 import { fetchModelContextWindow, doesModelSupportReasoning } from "../model-loader.js";
 import { validateToolArguments } from "./shared/openai-compat.js";
 
@@ -64,7 +64,10 @@ export class OpenRouterHandler implements ModelHandler {
               context_left_percent: leftPct,
               updated_at: Date.now()
           };
-          writeFileSync(join(tmpdir(), `claudish-tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
+          // Write to ~/.claudish/ directory (same location status line reads from)
+          const claudishDir = join(homedir(), ".claudish");
+          mkdirSync(claudishDir, { recursive: true });
+          writeFileSync(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
       } catch (e) {}
   }
 
@@ -73,12 +76,38 @@ export class OpenRouterHandler implements ModelHandler {
     const target = this.targetModel;
     await this.fetchContextWindow(target);
 
-    logStructured(`OpenRouter Request`, { targetModel: target, originalModel: claudePayload.model });
-
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(claudePayload);
     const messages = this.convertMessages(claudeRequest, target);
     const tools = this.convertTools(claudeRequest);
     const supportsReasoning = await doesModelSupportReasoning(target);
+
+    // Log request summary
+    const systemPromptLength = typeof claudeRequest.system === 'string' ? claudeRequest.system.length : 0;
+    logStructured(`OpenRouter Request`, {
+      targetModel: target,
+      originalModel: claudePayload.model,
+      messageCount: messages.length,
+      toolCount: tools.length,
+      systemPromptLength,
+      maxTokens: claudeRequest.max_tokens
+    });
+
+    // Log detailed content in debug mode
+    if (getLogLevel() === "debug") {
+      // Log last user message (most relevant for debugging)
+      const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
+      if (lastUserMsg) {
+        const content = typeof lastUserMsg.content === 'string'
+          ? lastUserMsg.content
+          : JSON.stringify(lastUserMsg.content);
+        log(`[OpenRouter] Last user message: ${truncateContent(content, 500)}`);
+      }
+      // Log tool names
+      if (tools.length > 0) {
+        const toolNames = tools.map((t: any) => t.function?.name || t.name).join(", ");
+        log(`[OpenRouter] Tools: ${toolNames}`);
+      }
+    }
 
     const openRouterPayload: any = {
         model: target,
@@ -115,7 +144,12 @@ export class OpenRouterHandler implements ModelHandler {
         body: JSON.stringify(openRouterPayload)
     });
 
-    if (!response.ok) return c.json({ error: await response.text() }, response.status as any);
+    log(`[OpenRouter] Response status: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      log(`[OpenRouter] Error: ${errorText}`);
+      return c.json({ error: errorText }, response.status as any);
+    }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
 
     return this.handleStreamingResponse(c, response, adapter, target, claudeRequest);
@@ -133,6 +167,19 @@ export class OpenRouterHandler implements ModelHandler {
           const msg = "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
           if (messages.length > 0 && messages[0].role === 'system') messages[0].content += "\n\n" + msg;
           else messages.unshift({ role: "system", content: msg });
+      }
+
+      // Gemini-specific instructions to suppress raw reasoning output
+      if (modelId.includes("gemini") || modelId.includes("google/")) {
+          const geminiMsg = `CRITICAL INSTRUCTION FOR OUTPUT FORMAT:
+1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
+2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so...", "First, I need to..."
+3. Do NOT output numbered planning steps or internal debugging statements.
+4. Only output: final responses, tool calls, and code. Nothing else.
+5. When calling tools, proceed directly without announcing your intentions.
+6. Your internal thinking should use the reasoning/thinking API, not visible text output.`;
+          if (messages.length > 0 && messages[0].role === 'system') messages[0].content += "\n\n" + geminiMsg;
+          else messages.unshift({ role: "system", content: geminiMsg });
       }
 
       if (req.messages) {
@@ -214,8 +261,9 @@ export class OpenRouterHandler implements ModelHandler {
       const encoder = new TextEncoder();
       const decoder = new TextDecoder();
 
-      // Capture middleware manager for use in closure
+      // Capture references for use in closure
       const middlewareManager = this.middlewareManager;
+      const writeTokens = (input: number, output: number) => this.writeTokenFile(input, output);
       // Shared metadata for middleware across all chunks in this stream
       const streamMetadata = new Map<string, any>();
 
@@ -228,12 +276,13 @@ export class OpenRouterHandler implements ModelHandler {
               let usage: any = null;
               let finalized = false;
               let textStarted = false; let textIdx = -1;
-              let reasoningStarted = false; let reasoningIdx = -1;
+              let thinkingStarted = false; let thinkingIdx = -1;
               let curIdx = 0;
               const tools = new Map<number, any>();
               const toolIds = new Set<string>();
               let accTxt = 0;
               let lastActivity = Date.now();
+              let accumulatedThinking = ""; // For accumulating thinking content
 
               send("message_start", {
                   type: "message_start",
@@ -257,16 +306,32 @@ export class OpenRouterHandler implements ModelHandler {
               const finalize = async (reason: string, err?: string) => {
                   if (finalized) return;
                   finalized = true;
-                  if (reasoningStarted) { send("content_block_stop", { type: "content_block_stop", index: reasoningIdx }); reasoningStarted = false; }
+                  if (thinkingStarted) { send("content_block_stop", { type: "content_block_stop", index: thinkingIdx }); thinkingStarted = false; }
                   if (textStarted) { send("content_block_stop", { type: "content_block_stop", index: textIdx }); textStarted = false; }
                   for (const [_, t] of tools) if (t.started && !t.closed) { send("content_block_stop", { type: "content_block_stop", index: t.blockIndex }); t.closed = true; }
+
+                  // Log tool calls summary
+                  if (tools.size > 0) {
+                      const toolSummary = Array.from(tools.values()).map(t => `${t.name}(${t.arguments.length} chars)`).join(", ");
+                      log(`[OpenRouter] Tool calls: ${toolSummary}`);
+                  }
+
+                  // Log and write token usage
+                  if (usage) {
+                      log(`[OpenRouter] Usage: prompt=${usage.prompt_tokens || 0}, completion=${usage.completion_tokens || 0}, total=${usage.total_tokens || 0}`);
+                      writeTokens(usage.prompt_tokens || 0, usage.completion_tokens || 0);
+                  } else {
+                      log(`[OpenRouter] Warning: No usage data received from model`);
+                  }
 
                   // Call middleware afterStreamComplete to save reasoning_details to persistent cache
                   await middlewareManager.afterStreamComplete(target, streamMetadata);
 
                   if (reason === "error") {
+                      log(`[OpenRouter] Stream error: ${err}`);
                       send("error", { type: "error", error: { type: "api_error", message: err } });
                   } else {
+                      log(`[OpenRouter] Stream complete: ${reason}`);
                       send("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: usage?.completion_tokens || 0 } });
                       send("message_stop", { type: "message_stop" });
                   }
@@ -300,10 +365,47 @@ export class OpenRouterHandler implements ModelHandler {
                                       metadata: streamMetadata,
                                   });
 
+                                  // Handle reasoning_details from Gemini/OpenRouter models
+                                  // Convert to Claude thinking blocks for native display
+                                  if (delta.reasoning_details && delta.reasoning_details.length > 0) {
+                                      for (const detail of delta.reasoning_details) {
+                                          // Handle text and summary reasoning types
+                                          if (detail.type === "reasoning.text" || detail.type === "reasoning.summary") {
+                                              const thinkingContent = detail.content || detail.text || detail.summary || "";
+                                              if (thinkingContent) {
+                                                  lastActivity = Date.now();
+                                                  // Start thinking block if not started
+                                                  if (!thinkingStarted) {
+                                                      thinkingIdx = curIdx++;
+                                                      send("content_block_start", {
+                                                          type: "content_block_start",
+                                                          index: thinkingIdx,
+                                                          content_block: { type: "thinking", thinking: "" }
+                                                      });
+                                                      thinkingStarted = true;
+                                                  }
+                                                  // Send thinking delta
+                                                  send("content_block_delta", {
+                                                      type: "content_block_delta",
+                                                      index: thinkingIdx,
+                                                      delta: { type: "thinking_delta", thinking: thinkingContent }
+                                                  });
+                                                  accumulatedThinking += thinkingContent;
+                                              }
+                                          }
+                                          // Note: reasoning.encrypted is handled by middleware for signature storage
+                                      }
+                                  }
+
                                   // Logic for content handling (simplified port)
                                   const txt = delta.content || "";
                                   if (txt) {
                                       lastActivity = Date.now();
+                                      // Close thinking block before starting text
+                                      if (thinkingStarted) {
+                                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                                          thinkingStarted = false;
+                                      }
                                       if (!textStarted) {
                                           textIdx = curIdx++;
                                           send("content_block_start", { type: "content_block_start", index: textIdx, content_block: { type: "text", text: "" } });
@@ -320,6 +422,8 @@ export class OpenRouterHandler implements ModelHandler {
                                           let t = tools.get(idx);
                                           if (tc.function?.name) {
                                               if (!t) {
+                                                  // Close thinking and text blocks before starting tool
+                                                  if (thinkingStarted) { send("content_block_stop", { type: "content_block_stop", index: thinkingIdx }); thinkingStarted = false; }
                                                   if (textStarted) { send("content_block_stop", { type: "content_block_stop", index: textIdx }); textStarted = false; }
                                                   t = { id: tc.id || `tool_${Date.now()}_${idx}`, name: tc.function.name, blockIndex: curIdx++, started: false, closed: false, arguments: "" };
                                                   tools.set(idx, t);
@@ -344,6 +448,9 @@ export class OpenRouterHandler implements ModelHandler {
                                           if (toolSchemas.length > 0) {
                                               const validation = validateToolArguments(t.name, t.arguments, toolSchemas);
                                               if (!validation.valid) {
+                                                  // Log validation failure
+                                                  log(`[OpenRouter] Tool validation FAILED: ${t.name} - missing: ${validation.missingParams.join(", ")}`);
+                                                  log(`[OpenRouter] Tool args received: ${truncateContent(t.arguments, 300)}`);
                                                   // Send error text about the invalid tool call
                                                   const errorIdx = curIdx++;
                                                   const errorMsg = `\n\n⚠️ Tool call "${t.name}" failed validation: missing required parameters: ${validation.missingParams.join(", ")}. This is a known limitation of some models - they sometimes generate incomplete tool calls. Please try again or use a different model.`;
@@ -354,6 +461,7 @@ export class OpenRouterHandler implements ModelHandler {
                                                   continue;
                                               }
                                           }
+                                          log(`[OpenRouter] Tool validated: ${t.name}`);
                                           send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
                                           t.closed = true;
                                       }

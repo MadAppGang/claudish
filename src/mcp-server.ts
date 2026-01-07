@@ -263,9 +263,11 @@ async function main() {
 
       output += "\n## Quick Picks\n";
       output += "- **Fast & cheap**: `x-ai/grok-code-fast-1` ($0.85/1M)\n";
-      output += "- **Code specialist**: `openai/gpt-5.1-codex` ($5.63/1M)\n";
+      output += "- **Most advanced**: `openai/gpt-5.2` ($5.00/1M)\n";
       output += "- **Large context**: `google/gemini-3-pro-preview` (1M tokens)\n";
-      output += "- **Budget**: `minimax/minimax-m2` ($0.60/1M)\n";
+      output += "- **Reasoning**: `moonshotai/kimi-k2-thinking` ($2.50/1M)\n";
+      output += "- **Budget**: `minimax/minimax-m2.1` ($0.60/1M)\n";
+      output += "- **Code specialist**: `deepseek/deepseek-v3.2` ($1.00/1M)\n";
 
       return { content: [{ type: "text", text: output }] };
     }

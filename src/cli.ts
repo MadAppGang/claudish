@@ -119,6 +119,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.interactive = true;
     } else if (arg === "--debug" || arg === "-d") {
       config.debug = true;
+      // Default to debug log level when --debug is enabled (can be overridden by --log-level)
+      if (config.logLevel === "info") {
+        config.logLevel = "debug";
+      }
     } else if (arg === "--log-level") {
       const levelArg = args[++i];
       if (!levelArg || !["debug", "info", "minimal"].includes(levelArg)) {
@@ -725,24 +729,23 @@ async function updateModelsFromOpenRouter(): Promise<void> {
   try {
     // Top Weekly Programming Models (manually verified from the website)
     // Source: https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly
-    // Last verified: 2025-11-19
+    // Last verified: 2026-01-05
     //
     // This list represents the EXACT ranking shown on OpenRouter's website.
     // The website is client-side rendered (React), so we can't scrape it with HTTP.
     // The API doesn't expose the "top-weekly" ranking, so we maintain this manually.
     const topWeeklyProgrammingModels = [
-      "google/gemini-3-pro-preview",      // #0: Google Gemini 3 Pro Preview (New!)
-      "openai/gpt-5.1-codex",             // #0: OpenAI Codex 5.1 (New!)
-      "x-ai/grok-code-fast-1",            // #1: xAI Grok Code Fast 1
-      "anthropic/claude-sonnet-4.5",      // #2: Anthropic Claude Sonnet 4.5
-      "google/gemini-2.5-flash",          // #3: Google Gemini 2.5 Flash
-      "minimax/minimax-m2",               // #4: MiniMax M2
-      "anthropic/claude-sonnet-4",        // #5: Anthropic Claude Sonnet 4
-      "z-ai/glm-4.6",                     // #6: Z.AI GLM 4.6
-      "anthropic/claude-haiku-4.5",       // #7: Anthropic Claude Haiku 4.5
-      "openai/gpt-5",                     // #8: OpenAI GPT-5
-      "qwen/qwen3-vl-235b-a22b-instruct", // #9: Qwen3 VL 235B
-      "openrouter/polaris-alpha",         // #10: Polaris Alpha (OpenRouter experimental)
+      "x-ai/grok-code-fast-1",              // #1: xAI Grok Code Fast 1
+      "minimax/minimax-m2.1",               // #2: MiniMax M2.1 (Updated)
+      "z-ai/glm-4.7",                       // #3: Z.AI GLM 4.7 (Updated)
+      "google/gemini-3-pro-preview",        // #4: Google Gemini 3 Pro Preview
+      "openai/gpt-5.2",                     // #5: OpenAI GPT-5.2 (Updated)
+      "moonshotai/kimi-k2-thinking",        // #6: MoonShot Kimi K2 Thinking (New!)
+      "deepseek/deepseek-v3.2",             // #7: DeepSeek V3.2 (New!)
+      "qwen/qwen3-vl-235b-a22b-thinking",   // #8: Qwen3 VL 235B Thinking (Updated)
+      "anthropic/claude-sonnet-4.5",        // #9: Anthropic Claude Sonnet 4.5
+      "anthropic/claude-sonnet-4",          // #10: Anthropic Claude Sonnet 4
+      "anthropic/claude-haiku-4.5",         // #11: Anthropic Claude Haiku 4.5
     ];
 
     // Fetch model metadata from OpenRouter API
@@ -908,11 +911,21 @@ function printVersion(): void {
  */
 function printHelp(): void {
   console.log(`
-claudish - Run Claude Code with OpenRouter models
+claudish - Run Claude Code with any AI model (OpenRouter, Gemini, OpenAI, Local)
 
 USAGE:
   claudish                                # Interactive mode (default, shows model selector)
   claudish [OPTIONS] <claude-args...>     # Single-shot mode (requires --model)
+
+MODEL ROUTING (prefix-based):
+  (no prefix)      OpenRouter (default)   claudish --model openai/gpt-5.2 "task"
+  g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
+  oai/, openai/    OpenAI API             claudish --model oai/gpt-4o "task"
+  ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
+  lmstudio/        LM Studio (local)      claudish --model lmstudio/qwen "task"
+  vllm/            vLLM (local)           claudish --model vllm/model "task"
+  mlx/             MLX (local)            claudish --model mlx/model "task"
+  http://...       Custom endpoint        claudish --model http://localhost:8000/model "task"
 
 OPTIONS:
   -i, --interactive        Run in interactive mode (default when no prompt given)
@@ -974,27 +987,33 @@ NOTES:
 ENVIRONMENT VARIABLES:
   Claudish automatically loads .env file from current directory.
 
-  OPENROUTER_API_KEY              Required: Your OpenRouter API key (for OpenRouter models)
-  CLAUDISH_MODEL                  Default model to use (takes priority)
-  ANTHROPIC_MODEL                 Claude Code standard: model to use (fallback)
-  CLAUDISH_PORT                   Default port for proxy
-  CLAUDISH_ACTIVE_MODEL_NAME      Auto-set by claudish (read-only) - shows active model
+  API Keys (at least one required for cloud models):
+  OPENROUTER_API_KEY              OpenRouter API key (default backend)
+  GEMINI_API_KEY                  Google Gemini API key (for g/ prefix)
+  OPENAI_API_KEY                  OpenAI API key (for oai/ prefix)
+  ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
 
-  Model mapping (CLAUDISH_* takes priority over ANTHROPIC_DEFAULT_*):
+  Custom endpoints:
+  GEMINI_BASE_URL                 Custom Gemini endpoint
+  OPENAI_BASE_URL                 Custom OpenAI/Azure endpoint
+
+  Local providers:
+  OLLAMA_BASE_URL                 Ollama server (default: http://localhost:11434)
+  OLLAMA_HOST                     Alias for OLLAMA_BASE_URL
+  LMSTUDIO_BASE_URL               LM Studio server (default: http://localhost:1234)
+  VLLM_BASE_URL                   vLLM server (default: http://localhost:8000)
+  MLX_BASE_URL                    MLX server (default: http://127.0.0.1:8080)
+
+  Model settings:
+  CLAUDISH_MODEL                  Default model to use (default: openai/gpt-5.2)
+  CLAUDISH_PORT                   Default port for proxy
+  CLAUDISH_CONTEXT_WINDOW         Override context window size
+
+  Model mapping (per-role):
   CLAUDISH_MODEL_OPUS             Override model for Opus role
   CLAUDISH_MODEL_SONNET           Override model for Sonnet role
   CLAUDISH_MODEL_HAIKU            Override model for Haiku role
   CLAUDISH_MODEL_SUBAGENT         Override model for sub-agents
-  ANTHROPIC_DEFAULT_OPUS_MODEL    Claude Code standard: Opus model (fallback)
-  ANTHROPIC_DEFAULT_SONNET_MODEL  Claude Code standard: Sonnet model (fallback)
-  ANTHROPIC_DEFAULT_HAIKU_MODEL   Claude Code standard: Haiku model (fallback)
-  CLAUDE_CODE_SUBAGENT_MODEL      Claude Code standard: sub-agent model (fallback)
-
-  Local providers (OpenAI-compatible):
-  OLLAMA_BASE_URL                 Ollama server (default: http://localhost:11434)
-  OLLAMA_HOST                     Alias for OLLAMA_BASE_URL (same default)
-  LMSTUDIO_BASE_URL               LM Studio server (default: http://localhost:1234)
-  VLLM_BASE_URL                   vLLM server (default: http://localhost:8000)
 
 EXAMPLES:
   # Interactive mode (default) - shows model selector
@@ -1004,26 +1023,28 @@ EXAMPLES:
   # Interactive mode with only FREE models
   claudish --free
 
-  # Interactive mode with pre-selected model
-  claudish --model x-ai/grok-code-fast-1
+  # OpenRouter models (default)
+  claudish --model openai/gpt-5.2 "implement user authentication"
+  claudish --model deepseek/deepseek-v3.2 "add tests for login"
 
-  # Single-shot mode - one task and exit (requires --model or CLAUDISH_MODEL env var)
-  claudish --model openai/gpt-5-codex "implement user authentication"
-  claudish --model x-ai/grok-code-fast-1 "add tests for login"
+  # Direct Gemini API (lower latency)
+  claudish --model g/gemini-2.0-flash "quick fix"
+  claudish --model gemini/gemini-2.5-pro "complex analysis"
 
-  # Per-role model mapping (use different models for different Claude Code roles)
-  claudish --model-opus openai/gpt-5 --model-sonnet x-ai/grok-code-fast-1 --model-haiku minimax/minimax-m2
+  # Direct OpenAI API
+  claudish --model oai/gpt-4o "implement feature"
+  claudish --model openai/o1 "complex reasoning"
 
-  # Use named profiles for pre-configured model mappings
-  claudish -p frontend "implement component"
-  claudish --profile debug "investigate error"
+  # Local models (free, private)
+  claudish --model ollama/llama3.2 "code review"
+  claudish --model lmstudio/qwen2.5-coder "refactor"
 
-  # Hybrid: Native Anthropic for Opus, OpenRouter for Sonnet/Haiku
-  claudish --model-opus claude-3-opus-20240229 --model-sonnet x-ai/grok-code-fast-1
+  # Per-role model mapping
+  claudish --model-opus openai/gpt-5.2 --model-sonnet deepseek/deepseek-v3.2 --model-haiku minimax/minimax-m2.1
 
   # Use stdin for large prompts (e.g., git diffs, code review)
-  echo "Review this code..." | claudish --stdin --model x-ai/grok-code-fast-1
-  git diff | claudish --stdin --model openai/gpt-5-codex "Review these changes"
+  echo "Review this code..." | claudish --stdin --model g/gemini-2.0-flash
+  git diff | claudish --stdin --model openai/gpt-5.2 "Review these changes"
 
   # Monitor mode - understand how Claude Code works (requires real Anthropic API key)
   claudish --monitor --debug "analyze code structure"

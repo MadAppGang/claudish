@@ -1,12 +1,12 @@
 ---
 name: claudish-usage
-description: CRITICAL - Guide for using Claudish CLI ONLY through sub-agents to run Claude Code with OpenRouter models (Grok, GPT-5, Gemini, MiniMax). NEVER run Claudish directly in main context unless user explicitly requests it. Use when user mentions external AI models, Claudish, OpenRouter, or alternative models. Includes mandatory sub-agent delegation patterns, agent selection guide, file-based instructions, and strict rules to prevent context window pollution.
+description: CRITICAL - Guide for using Claudish CLI ONLY through sub-agents to run Claude Code with any AI model (OpenRouter, Gemini, OpenAI, local models). NEVER run Claudish directly in main context unless user explicitly requests it. Use when user mentions external AI models, Claudish, OpenRouter, Gemini, OpenAI, Ollama, or alternative models. Includes mandatory sub-agent delegation patterns, agent selection guide, file-based instructions, and strict rules to prevent context window pollution.
 ---
 
 # Claudish Usage Skill
 
-**Version:** 1.1.0
-**Purpose:** Guide AI agents on how to use Claudish CLI to run Claude Code with OpenRouter models
+**Version:** 2.0.0
+**Purpose:** Guide AI agents on how to use Claudish CLI to run Claude Code with any AI model
 **Status:** Production Ready
 
 ## ⚠️ CRITICAL RULES - READ FIRST
@@ -151,50 +151,71 @@ Decision:
 
 ## Overview
 
-**Claudish** is a CLI tool that allows running Claude Code with any OpenRouter model (Grok, GPT-5, MiniMax, Gemini, etc.) by proxying requests through a local Anthropic API-compatible server.
+**Claudish** is a CLI tool that allows running Claude Code with any AI model via prefix-based routing. Supports OpenRouter (100+ models), direct Google Gemini API, direct OpenAI API, and local models (Ollama, LM Studio, vLLM, MLX).
 
 **Key Principle:** **ALWAYS** use Claudish through sub-agents with file-based instructions to avoid context window pollution.
 
 ## What is Claudish?
 
 Claudish (Claude-ish) is a proxy tool that:
-- ✅ Runs Claude Code with **any OpenRouter model** (not just Anthropic models)
+- ✅ Runs Claude Code with **any AI model** via prefix-based routing
+- ✅ Supports OpenRouter, Gemini, OpenAI, and local models
 - ✅ Uses local API-compatible proxy server
 - ✅ Supports 100% of Claude Code features
 - ✅ Provides cost tracking and model selection
 - ✅ Enables multi-model workflows
 
+## Model Routing
+
+| Prefix | Backend | Example |
+|--------|---------|---------|
+| _(none)_ | OpenRouter | `openai/gpt-5.2` |
+| `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
+| `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
+| `ollama/` | Ollama | `ollama/llama3.2` |
+| `lmstudio/` | LM Studio | `lmstudio/model` |
+| `http://...` | Custom | `http://localhost:8000/model` |
+
 **Use Cases:**
-- Run tasks with different AI models (Grok for speed, GPT-5 for reasoning, Gemini for vision)
+- Run tasks with different AI models (Grok for speed, GPT-5 for reasoning, Gemini for large context)
+- Use direct APIs for lower latency (Gemini, OpenAI)
+- Use local models for free, private inference (Ollama, LM Studio)
 - Compare model performance on same task
 - Reduce costs with cheaper models for simple tasks
-- Access models with specialized capabilities
 
 ## Requirements
 
 ### System Requirements
-- **OpenRouter API Key** - Required (set as `OPENROUTER_API_KEY` environment variable)
 - **Claudish CLI** - Install with: `npm install -g claudish` or `bun install -g claudish`
 - **Claude Code** - Must be installed
+- **At least one API key** (see below)
 
 ### Environment Variables
 
 ```bash
-# Required
-export OPENROUTER_API_KEY='sk-or-v1-...'  # Your OpenRouter API key
+# API Keys (at least one required)
+export OPENROUTER_API_KEY='sk-or-v1-...'  # OpenRouter (100+ models)
+export GEMINI_API_KEY='...'               # Direct Gemini API (g/ prefix)
+export OPENAI_API_KEY='sk-...'            # Direct OpenAI API (oai/ prefix)
 
-# Optional (but recommended)
-export ANTHROPIC_API_KEY='sk-ant-api03-placeholder'  # Prevents Claude Code dialog
+# Placeholder (required to prevent Claude Code dialog)
+export ANTHROPIC_API_KEY='sk-ant-api03-placeholder'
 
-# Optional - default model
-export CLAUDISH_MODEL='x-ai/grok-code-fast-1'  # or ANTHROPIC_MODEL
+# Custom endpoints (optional)
+export GEMINI_BASE_URL='https://...'      # Custom Gemini endpoint
+export OPENAI_BASE_URL='https://...'      # Custom OpenAI/Azure endpoint
+export OLLAMA_BASE_URL='http://...'       # Custom Ollama server
+export LMSTUDIO_BASE_URL='http://...'     # Custom LM Studio server
+
+# Default model (optional)
+export CLAUDISH_MODEL='openai/gpt-5.2'    # Default model
 ```
 
-**Get OpenRouter API Key:**
-1. Visit https://openrouter.ai/keys
-2. Sign up (free tier available)
-3. Create API key
-4. Set as environment variable
+**Get API Keys:**
+- OpenRouter: https://openrouter.ai/keys (free tier available)
+- Gemini: https://aistudio.google.com/apikey
+- OpenAI: https://platform.openai.com/api-keys
+- Local models: No API key needed
 
 ## Quick Start Guide
 
@@ -254,32 +275,25 @@ git diff | claudish --stdin --model openai/gpt-5-codex "Review these changes"
 
 ## Recommended Models
 
-**Top Models for Development (verified from OpenRouter):**
+**Top Models for Development (v3.1.1):**
 
-1. **x-ai/grok-code-fast-1** - xAI's Grok (fast coding, visible reasoning)
-   - Category: coding
-   - Context: 256K
-   - Best for: Quick iterations, agentic coding
+| Model | Provider | Best For |
+|-------|----------|----------|
+| `openai/gpt-5.2` | OpenAI | **Default** - Most advanced reasoning |
+| `minimax/minimax-m2.1` | MiniMax | Budget-friendly, fast |
+| `z-ai/glm-4.7` | Z.AI | Balanced performance |
+| `google/gemini-3-pro-preview` | Google | 1M context window |
+| `moonshotai/kimi-k2-thinking` | MoonShot | Extended thinking |
+| `deepseek/deepseek-v3.2` | DeepSeek | Code specialist |
+| `qwen/qwen3-vl-235b-a22b-thinking` | Alibaba | Vision + reasoning |
 
-2. **google/gemini-2.5-flash** - Google's Gemini (state-of-the-art reasoning)
-   - Category: reasoning
-   - Context: 1000K
-   - Best for: Complex analysis, multi-step reasoning
+**Direct API Options (lower latency):**
 
-3. **minimax/minimax-m2** - MiniMax M2 (high performance)
-   - Category: coding
-   - Context: 128K
-   - Best for: General coding tasks
-
-4. **openai/gpt-5** - OpenAI's GPT-5 (advanced reasoning)
-   - Category: reasoning
-   - Context: 128K
-   - Best for: Complex implementations, architecture decisions
-
-5. **qwen/qwen3-vl-235b-a22b-instruct** - Alibaba's Qwen (vision-language)
-   - Category: vision
-   - Context: 32K
-   - Best for: UI/visual tasks, design implementation
+| Model | Backend | Best For |
+|-------|---------|----------|
+| `g/gemini-2.0-flash` | Gemini | Fast tasks, large context |
+| `oai/gpt-4o` | OpenAI | General purpose |
+| `ollama/llama3.2` | Local | Free, private |
 
 **Get Latest Models:**
 ```bash
@@ -1294,5 +1308,5 @@ claudish --help-ai     # AI agent usage guide
 ---
 
 **Maintained by:** MadAppGang
-**Last Updated:** November 25, 2025
-**Skill Version:** 1.1.0
+**Last Updated:** January 5, 2026
+**Skill Version:** 2.0.0

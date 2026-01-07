@@ -92,7 +92,7 @@ async function runCli() {
 
       cliConfig.model = await selectModel({
         freeOnly: cliConfig.freeOnly,
-        providerFilter
+        providerFilter,
       });
       console.log(""); // Empty line after selection
     }
@@ -100,8 +100,10 @@ async function runCli() {
     // Prompt for API key if not set (interactive mode only, not monitor mode)
     if (cliConfig.interactive && !cliConfig.monitor) {
       const selectedModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
-      const isGeminiModel = selectedModel && (selectedModel.startsWith("google/gemini-") || selectedModel.startsWith("gemini-"));
-      const isAnthropicModel = selectedModel && selectedModel.startsWith("claude-");
+      const isGeminiModel =
+        selectedModel &&
+        (selectedModel.startsWith("google/gemini-") || selectedModel.startsWith("gemini-"));
+      const isAnthropicModel = selectedModel?.startsWith("claude-");
 
       if (isGeminiModel && !cliConfig.googleApiKey) {
         cliConfig.googleApiKey = await promptForApiKey("google");
@@ -140,12 +142,14 @@ async function runCli() {
     // When --model is specified, use it for all requests (skip profile mappings)
     // Profile mappings only apply when no explicit model is set
     const explicitModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
-    const modelMap = explicitModel ? undefined : {
-      opus: cliConfig.modelOpus,
-      sonnet: cliConfig.modelSonnet,
-      haiku: cliConfig.modelHaiku,
-      subagent: cliConfig.modelSubagent,
-    };
+    const modelMap = explicitModel
+      ? undefined
+      : {
+          opus: cliConfig.modelOpus,
+          sonnet: cliConfig.modelSonnet,
+          haiku: cliConfig.modelHaiku,
+          subagent: cliConfig.modelSubagent,
+        };
 
     const proxy = await createProxyServer(
       port,
@@ -156,8 +160,7 @@ async function runCli() {
       modelMap,
       {
         summarizeTools: cliConfig.summarizeTools,
-      },
-      cliConfig.googleApiKey
+      }
     );
 
     // Run Claude Code with proxy

@@ -25,18 +25,186 @@
 import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
 import { log } from "../logger";
 
+/**
+ * Patterns that indicate internal reasoning/monologue that should be filtered
+ * These are common patterns Gemini uses when "thinking out loud" instead of
+ * keeping reasoning internal.
+ */
+const REASONING_PATTERNS = [
+  // "Wait, I'm X-ing" pattern (the scaling tools bug)
+  /^Wait,?\s+I(?:'m|\s+am)\s+\w+ing\b/i,
+  // "Wait, if/that/the/this" reasoning patterns
+  /^Wait,?\s+(?:if|that|the|this|I\s+(?:need|should|will|have|already))/i,
+  // Simple "Wait" or "Wait." lines
+  /^Wait[.!]?\s*$/i,
+  // "Let me think/check/verify" patterns
+  /^Let\s+me\s+(think|check|verify|see|look|analyze|consider|first|start)/i,
+  // "Let's" patterns (common in Gemini reasoning)
+  /^Let's\s+(check|see|look|start|first|try|think|verify|examine|analyze)/i,
+  // "I need to" reasoning
+  /^I\s+need\s+to\s+/i,
+  // "Okay" or "Ok" standalone or with trailing reasoning
+  /^O[kK](?:ay)?[.,!]?\s*(?:so|let|I|now|first)?/i,
+  // "Hmm" thinking
+  /^[Hh]mm+/,
+  // "So," or "So I" reasoning connectors
+  /^So[,.]?\s+(?:I|let|first|now|the)/i,
+  // "First," "Next," "Then," step reasoning
+  /^(?:First|Next|Then|Now)[,.]?\s+(?:I|let|we)/i,
+  // "Thinking about" or "Considering"
+  /^(?:Thinking\s+about|Considering)/i,
+  // "I should/will/ll" followed by verbs - EXPANDED to catch more patterns
+  // This catches most "I'll <verb>" reasoning patterns
+  /^I(?:'ll|\s+will)\s+(?:first|now|start|begin|try|check|fix|look|examine|modify|create|update|read|investigate|adjust|improve|integrate|mark|also|verify|need|rethink|add|help|use|run|search|find|explore|analyze|review|test|implement|write|make|set|get|see|open|close|save|load|fetch|call|send|build|compile|execute|process|handle|parse|format|validate|clean|clear|remove|delete|move|copy|rename|install|configure|setup|initialize|prepare|work|continue|proceed|ensure|confirm)/i,
+  /^I\s+should\s+/i,
+  // "I will" at start of sentence (planning statement)
+  /^I\s+will\s+(?:first|now|start|verify|check|create|modify|look|need|also|add|help|use|run|search|find|explore|analyze|review|test|implement|write)/i,
+  // Internal debugging statements
+  /^(?:Debug|Checking|Verifying|Looking\s+at):/i,
+  // "I also" observations
+  /^I\s+also\s+(?:notice|need|see|want)/i,
+  // "The goal is" or "The issue is" observations
+  /^The\s+(?:goal|issue|problem|idea|plan)\s+is/i,
+  // "In the old/current/previous" design observations
+  /^In\s+the\s+(?:old|current|previous|new|existing)\s+/i,
+  // Code-like reasoning with backticks followed by observations
+  /^`[^`]+`\s+(?:is|has|does|needs|should|will|doesn't|hasn't)/i,
+];
+
+/**
+ * Patterns that indicate a line is likely part of reasoning block
+ * Used for multi-line reasoning detection
+ */
+const REASONING_CONTINUATION_PATTERNS = [
+  // "And then" or "And I"
+  /^And\s+(?:then|I|now|so)/i,
+  // "And I'll" continuation
+  /^And\s+I(?:'ll|\s+will)/i,
+  // "But" reasoning pivots
+  /^But\s+(?:I|first|wait|actually|the|if)/i,
+  // "Actually" corrections
+  /^Actually[,.]?\s+/i,
+  // "Also" additions
+  /^Also[,.]?\s+(?:I|the|check|note)/i,
+  // Numbered steps (1., 2., etc) in reasoning
+  /^\d+\.\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix|Look)/i,
+  // Dash-prefixed steps
+  /^-\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix)/i,
+  // "Or" alternatives in reasoning
+  /^Or\s+(?:I|just|we|maybe|perhaps)/i,
+  // "Since" explanations
+  /^Since\s+(?:I|the|this|we|it)/i,
+  // "Because" explanations
+  /^Because\s+(?:I|the|this|we|it)/i,
+  // "If" conditional reasoning
+  /^If\s+(?:I|the|this|we|it)\s+/i,
+  // "This" observations in reasoning context
+  /^This\s+(?:is|means|requires|should|will|confirms|suggests)/i,
+  // "That" observations
+  /^That\s+(?:means|is|should|will|explains|confirms)/i,
+  // Code file references in reasoning
+  /^Lines?\s+\d+/i,
+  // Variable/property observations
+  /^The\s+`[^`]+`\s+(?:is|has|contains|needs|should)/i,
+];
+
 export class GeminiAdapter extends BaseModelAdapter {
   // Store for thought signatures: tool_call_id -> signature
   private thoughtSignatures = new Map<string, string>();
 
+  // Buffer for detecting multi-line reasoning blocks
+  private reasoningBuffer: string[] = [];
+  private inReasoningBlock = false;
+  private reasoningBlockDepth = 0;
+
+  /**
+   * Process text content from Gemini, filtering out internal reasoning
+   * that should not be displayed to the user.
+   *
+   * Gemini models (especially through OpenRouter) sometimes output their
+   * internal reasoning as regular text instead of keeping it in reasoning_details.
+   * This manifests as lines like:
+   * - "Wait, I'm scaling tools."
+   * - "Let me check the file first."
+   * - "Okay, so I need to..."
+   */
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    // Gemini doesn't use special text formats like Grok's XML
-    // This adapter is primarily for reasoning_details extraction
+    // Skip empty content
+    if (!textContent || textContent.trim() === "") {
+      return { cleanedText: textContent, extractedToolCalls: [], wasTransformed: false };
+    }
+
+    // Check for reasoning patterns in the new content
+    const lines = textContent.split('\n');
+    const cleanedLines: string[] = [];
+    let wasFiltered = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Skip empty lines
+      if (!trimmed) {
+        cleanedLines.push(line);
+        continue;
+      }
+
+      // Check if this line matches reasoning patterns
+      const isReasoning = this.isReasoningLine(trimmed);
+
+      if (isReasoning) {
+        log(`[GeminiAdapter] Filtered reasoning: "${trimmed.substring(0, 50)}..."`);
+        wasFiltered = true;
+        this.inReasoningBlock = true;
+        this.reasoningBlockDepth++;
+        continue; // Skip this line
+      }
+
+      // Check for reasoning continuation
+      if (this.inReasoningBlock && this.isReasoningContinuation(trimmed)) {
+        log(`[GeminiAdapter] Filtered reasoning continuation: "${trimmed.substring(0, 50)}..."`);
+        wasFiltered = true;
+        continue;
+      }
+
+      // End reasoning block on substantial non-reasoning content
+      if (this.inReasoningBlock && trimmed.length > 20 && !this.isReasoningContinuation(trimmed)) {
+        this.inReasoningBlock = false;
+        this.reasoningBlockDepth = 0;
+      }
+
+      cleanedLines.push(line);
+    }
+
+    const cleanedText = cleanedLines.join('\n');
+
     return {
-      cleanedText: textContent,
+      cleanedText: wasFiltered ? cleanedText : textContent,
       extractedToolCalls: [],
-      wasTransformed: false
+      wasTransformed: wasFiltered
     };
+  }
+
+  /**
+   * Check if a line matches known reasoning patterns
+   */
+  private isReasoningLine(line: string): boolean {
+    return REASONING_PATTERNS.some(pattern => pattern.test(line));
+  }
+
+  /**
+   * Check if a line is likely a continuation of reasoning
+   */
+  private isReasoningContinuation(line: string): boolean {
+    return REASONING_CONTINUATION_PATTERNS.some(pattern => pattern.test(line));
+  }
+
+  /**
+   * Reset reasoning state (called between messages)
+   */
+  private resetReasoningState(): void {
+    this.reasoningBuffer = [];
+    this.inReasoningBlock = false;
+    this.reasoningBlockDepth = 0;
   }
 
   /**
@@ -113,10 +281,11 @@ export class GeminiAdapter extends BaseModelAdapter {
   }
 
   /**
-   * Clear stored signatures (call between requests)
+   * Clear stored signatures and reasoning state (call between requests)
    */
   reset(): void {
     this.thoughtSignatures.clear();
+    this.resetReasoningState();
   }
 
   shouldHandle(modelId: string): boolean {
