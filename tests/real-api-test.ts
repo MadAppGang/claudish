@@ -24,10 +24,8 @@ async function testOpenAI() {
       body: JSON.stringify({
         model: "oai/gpt-4o-mini",
         max_tokens: 100,
-        messages: [
-          { role: "user", content: "Say 'Hello from OpenAI!' in exactly 5 words." }
-        ]
-      })
+        messages: [{ role: "user", content: "Say 'Hello from OpenAI!' in exactly 5 words." }],
+      }),
     });
 
     if (!response.ok) {
@@ -93,10 +91,8 @@ async function testGemini() {
       body: JSON.stringify({
         model: "g/gemini-2.0-flash",
         max_tokens: 100,
-        messages: [
-          { role: "user", content: "Say 'Hello from Gemini!' in exactly 5 words." }
-        ]
-      })
+        messages: [{ role: "user", content: "Say 'Hello from Gemini!' in exactly 5 words." }],
+      }),
     });
 
     if (!response.ok) {
@@ -163,7 +159,7 @@ async function testToolCall() {
         model: "oai/gpt-4o-mini",
         max_tokens: 200,
         messages: [
-          { role: "user", content: "What is 2 + 2? Use the calculator tool to compute this." }
+          { role: "user", content: "What is 2 + 2? Use the calculator tool to compute this." },
         ],
         tools: [
           {
@@ -173,13 +169,13 @@ async function testToolCall() {
               type: "object",
               properties: {
                 a: { type: "number", description: "First number" },
-                b: { type: "number", description: "Second number" }
+                b: { type: "number", description: "Second number" },
               },
-              required: ["a", "b"]
-            }
-          }
-        ]
-      })
+              required: ["a", "b"],
+            },
+          },
+        ],
+      }),
     });
 
     if (!response.ok) {
@@ -236,7 +232,15 @@ async function main() {
 
   // Start proxy server
   console.log("\n📡 Starting proxy server...");
-  const proxy = await createProxyServer(testPort, undefined, undefined, false, undefined, undefined, {});
+  const proxy = await createProxyServer(
+    testPort,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    {}
+  );
   console.log(`✅ Proxy server running on port ${testPort}`);
 
   let passed = 0;

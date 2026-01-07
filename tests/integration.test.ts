@@ -33,10 +33,7 @@ const TEST_MODELS: OpenRouterModel[] = [
 const activeProxies: ProxyServer[] = [];
 
 // Helper: Start proxy server
-async function startTestProxy(
-  model: OpenRouterModel,
-  port: number
-): Promise<ProxyServer> {
+async function startTestProxy(model: OpenRouterModel, port: number): Promise<ProxyServer> {
   const proxy = await createProxyServer(port, OPENROUTER_API_KEY!, model);
   activeProxies.push(proxy);
   return proxy;
@@ -205,7 +202,6 @@ Do not include any other text or explanation.`;
         const port = 3200 + TEST_MODELS.indexOf(model);
         const proxy = await startTestProxy(model, port);
 
-
         const response = await makeAnthropicRequest(proxy.url, [
           {
             role: "user",
@@ -244,8 +240,7 @@ Do not include any other text or explanation.`;
 
   describe("Multiple Models Comparison", () => {
     test("should get different responses from different models", async () => {
-      const question =
-        "In exactly 5 words, what is your model name?";
+      const question = "In exactly 5 words, what is your model name?";
       const responses: Record<string, string> = {};
 
       // Test first 3 models for speed
@@ -271,7 +266,7 @@ Do not include any other text or explanation.`;
       }
 
       // Filter out empty responses and verify diversity
-      const nonEmptyResponses = Object.values(responses).filter(r => r.trim().length > 0);
+      const nonEmptyResponses = Object.values(responses).filter((r) => r.trim().length > 0);
       const uniqueResponses = new Set(nonEmptyResponses);
 
       // At least 2 different non-empty responses expected

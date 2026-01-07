@@ -9,7 +9,9 @@ const testPort = 9997;
 
 // Fetch the Google logo for testing
 async function getGoogleLogo(): Promise<string> {
-  const response = await fetch("https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png");
+  const response = await fetch(
+    "https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png"
+  );
   const buffer = await response.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
 }
@@ -23,7 +25,15 @@ async function main() {
   console.log("🚀 Testing Gemini Vision (Image Input)");
   console.log("======================================\n");
 
-  const proxy = await createProxyServer(testPort, undefined, undefined, false, undefined, undefined, {});
+  const proxy = await createProxyServer(
+    testPort,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    {}
+  );
   console.log(`✅ Proxy server running on port ${testPort}\n`);
 
   try {
@@ -48,17 +58,17 @@ async function main() {
                 source: {
                   type: "base64",
                   media_type: "image/png",
-                  data: googleLogo
-                }
+                  data: googleLogo,
+                },
               },
               {
                 type: "text",
-                text: "What company logo is this? Answer in one word."
-              }
-            ]
-          }
-        ]
-      })
+                text: "What company logo is this? Answer in one word.",
+              },
+            ],
+          },
+        ],
+      }),
     });
 
     if (!response.ok) {
@@ -112,7 +122,6 @@ async function main() {
     } else {
       console.log(`❌ No text response received`);
     }
-
   } finally {
     console.log("\n🧹 Shutting down...");
     await proxy.shutdown();

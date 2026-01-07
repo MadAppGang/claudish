@@ -16,7 +16,15 @@ async function main() {
   console.log("🚀 Testing Gemini Tool Calling");
   console.log("==============================\n");
 
-  const proxy = await createProxyServer(testPort, undefined, undefined, false, undefined, undefined, {});
+  const proxy = await createProxyServer(
+    testPort,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    {}
+  );
   console.log(`✅ Proxy server running on port ${testPort}\n`);
 
   try {
@@ -29,7 +37,10 @@ async function main() {
         model: "g/gemini-2.0-flash",
         max_tokens: 200,
         messages: [
-          { role: "user", content: "Calculate 15 + 27 using the calculator tool. You must use the tool." }
+          {
+            role: "user",
+            content: "Calculate 15 + 27 using the calculator tool. You must use the tool.",
+          },
         ],
         tools: [
           {
@@ -39,14 +50,14 @@ async function main() {
               type: "object",
               properties: {
                 a: { type: "number", description: "First number to add" },
-                b: { type: "number", description: "Second number to add" }
+                b: { type: "number", description: "Second number to add" },
               },
-              required: ["a", "b"]
-            }
-          }
+              required: ["a", "b"],
+            },
+          },
         ],
-        tool_choice: { type: "tool", name: "calculator" }
-      })
+        tool_choice: { type: "tool", name: "calculator" },
+      }),
     });
 
     if (!response.ok) {
@@ -111,7 +122,6 @@ async function main() {
     } else {
       console.log(`❌ No tool call or text received`);
     }
-
   } finally {
     console.log("\n🧹 Shutting down...");
     await proxy.shutdown();

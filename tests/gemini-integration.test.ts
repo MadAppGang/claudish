@@ -20,19 +20,21 @@ describe("Gemini Integration Workflow", () => {
       // Step 1: Simulate receiving streaming chunk with reasoning_details
       const streamingChunk = {
         id: "gen-1763985429-MxzWCknTGYuK9AfiX4QQ",
-        choices: [{
-          delta: {
-            reasoning_details: [
-              {
-                id: "tool_Bash_ZOJxtsiJqi9njkBUmCeV",
-                type: "reasoning.encrypted",
-                data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
-                format: "google-gemini-v1",
-                index: 0
-              }
-            ]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_Bash_ZOJxtsiJqi9njkBUmCeV",
+                  type: "reasoning.encrypted",
+                  data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       // Step 2: Extract signatures (this is what proxy-server does)
@@ -55,8 +57,8 @@ describe("Gemini Integration Workflow", () => {
       if (signature) {
         toolResultMsg.extra_content = {
           google: {
-            thought_signature: signature
-          }
+            thought_signature: signature,
+          },
         };
       }
 
@@ -71,17 +73,21 @@ describe("Gemini Integration Workflow", () => {
     it("should handle multiple tool calls in sequence", () => {
       // First tool call
       const firstChunk = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_Bash_first",
-              type: "reasoning.encrypted",
-              data: "signature-1",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_Bash_first",
+                  type: "reasoning.encrypted",
+                  data: "signature-1",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -90,17 +96,21 @@ describe("Gemini Integration Workflow", () => {
 
       // Second tool call (simulating a multi-turn conversation)
       const secondChunk = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_Bash_second",
-              type: "reasoning.encrypted",
-              data: "signature-2",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_Bash_second",
+                  type: "reasoning.encrypted",
+                  data: "signature-2",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -122,17 +132,21 @@ describe("Gemini Integration Workflow", () => {
     it("should persist signatures across multiple extraction calls", () => {
       // Simulate progressive streaming with multiple chunks
       const chunk1 = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_1",
-              type: "reasoning.encrypted",
-              data: "sig-part-1",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_1",
+                  type: "reasoning.encrypted",
+                  data: "sig-part-1",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -143,17 +157,21 @@ describe("Gemini Integration Workflow", () => {
 
       // Simulate another chunk with same tool (should override)
       const chunk2 = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_1",
-              type: "reasoning.encrypted",
-              data: "sig-part-2",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_1",
+                  type: "reasoning.encrypted",
+                  data: "sig-part-2",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -170,25 +188,27 @@ describe("Gemini Integration Workflow", () => {
     it("should handle OpenRouter streaming response with mixed content types", () => {
       // OpenRouter sends both reasoning.text and reasoning.encrypted in same response
       const mixedChunk = {
-        choices: [{
-          delta: {
-            reasoning_details: [
-              {
-                format: "google-gemini-v1",
-                index: 0,
-                type: "reasoning.text",
-                text: "**Analyzing Command**\n\nDecided to use Bash tool..."
-              },
-              {
-                id: "tool_Bash_real",
-                format: "google-gemini-v1",
-                index: 0,
-                type: "reasoning.encrypted",
-                data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA=="
-              }
-            ]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  format: "google-gemini-v1",
+                  index: 0,
+                  type: "reasoning.text",
+                  text: "**Analyzing Command**\n\nDecided to use Bash tool...",
+                },
+                {
+                  id: "tool_Bash_real",
+                  format: "google-gemini-v1",
+                  index: 0,
+                  type: "reasoning.encrypted",
+                  data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
+                },
+              ],
+            },
+          },
+        ],
       };
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -208,19 +228,21 @@ describe("Gemini Integration Workflow", () => {
     it("should handle non-streaming response format", () => {
       // Non-streaming responses have same structure but in message.reasoning_details
       const nonStreamingResponse = {
-        choices: [{
-          message: {
-            reasoning_details: [
-              {
-                id: "tool_Bash_non_stream",
-                format: "google-gemini-v1",
-                index: 0,
-                type: "reasoning.encrypted",
-                data: "encrypted-signature-data-here"
-              }
-            ]
-          }
-        }]
+        choices: [
+          {
+            message: {
+              reasoning_details: [
+                {
+                  id: "tool_Bash_non_stream",
+                  format: "google-gemini-v1",
+                  index: 0,
+                  type: "reasoning.encrypted",
+                  data: "encrypted-signature-data-here",
+                },
+              ],
+            },
+          },
+        ],
       };
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -228,39 +250,43 @@ describe("Gemini Integration Workflow", () => {
       );
 
       expect(extracted.size).toBe(1);
-      expect(adapter.getThoughtSignature("tool_Bash_non_stream")).toBe("encrypted-signature-data-here");
+      expect(adapter.getThoughtSignature("tool_Bash_non_stream")).toBe(
+        "encrypted-signature-data-here"
+      );
     });
 
     it("should handle parallel function calls", () => {
       // Gemini can make multiple tool calls in parallel
       const parallelChunk = {
-        choices: [{
-          delta: {
-            reasoning_details: [
-              {
-                id: "tool_Bash_parallel_1",
-                type: "reasoning.encrypted",
-                data: "sig-parallel-1",
-                format: "google-gemini-v1",
-                index: 0
-              },
-              {
-                id: "tool_Bash_parallel_2",
-                type: "reasoning.encrypted",
-                data: "sig-parallel-2",
-                format: "google-gemini-v1",
-                index: 1
-              },
-              {
-                id: "tool_Bash_parallel_3",
-                type: "reasoning.encrypted",
-                data: "sig-parallel-3",
-                format: "google-gemini-v1",
-                index: 2
-              }
-            ]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_Bash_parallel_1",
+                  type: "reasoning.encrypted",
+                  data: "sig-parallel-1",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+                {
+                  id: "tool_Bash_parallel_2",
+                  type: "reasoning.encrypted",
+                  data: "sig-parallel-2",
+                  format: "google-gemini-v1",
+                  index: 1,
+                },
+                {
+                  id: "tool_Bash_parallel_3",
+                  type: "reasoning.encrypted",
+                  data: "sig-parallel-3",
+                  format: "google-gemini-v1",
+                  index: 2,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -283,17 +309,21 @@ describe("Gemini Integration Workflow", () => {
   describe("Edge Cases", () => {
     it("should handle tool call with same ID as previous (override)", () => {
       const first = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_same_id",
-              type: "reasoning.encrypted",
-              data: "first-signature",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_same_id",
+                  type: "reasoning.encrypted",
+                  data: "first-signature",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -304,17 +334,21 @@ describe("Gemini Integration Workflow", () => {
 
       // Second call with same ID
       const second = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_same_id",
-              type: "reasoning.encrypted",
-              data: "second-signature",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_same_id",
+                  type: "reasoning.encrypted",
+                  data: "second-signature",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(
@@ -326,17 +360,21 @@ describe("Gemini Integration Workflow", () => {
 
     it("should handle reset between requests", () => {
       const firstRequest = {
-        choices: [{
-          delta: {
-            reasoning_details: [{
-              id: "tool_request_1",
-              type: "reasoning.encrypted",
-              data: "sig-request-1",
-              format: "google-gemini-v1",
-              index: 0
-            }]
-          }
-        }]
+        choices: [
+          {
+            delta: {
+              reasoning_details: [
+                {
+                  id: "tool_request_1",
+                  type: "reasoning.encrypted",
+                  data: "sig-request-1",
+                  format: "google-gemini-v1",
+                  index: 0,
+                },
+              ],
+            },
+          },
+        ],
       };
 
       adapter.extractThoughtSignaturesFromReasoningDetails(

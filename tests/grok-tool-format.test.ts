@@ -45,8 +45,8 @@ describe("Grok Tool Format Fix", () => {
       messages: [
         {
           role: "user",
-          content: "Read the package.json file"
-        }
+          content: "Read the package.json file",
+        },
       ],
       tools: [
         {
@@ -57,13 +57,13 @@ describe("Grok Tool Format Fix", () => {
             properties: {
               file_path: {
                 type: "string",
-                description: "The absolute path to the file to read"
-              }
+                description: "The absolute path to the file to read",
+              },
             },
-            required: ["file_path"]
-          }
-        }
-      ]
+            required: ["file_path"],
+          },
+        },
+      ],
     };
 
     // Mock fetch to capture the request sent to OpenRouter
@@ -75,13 +75,15 @@ describe("Grok Tool Format Fix", () => {
         // Return a mock response to avoid actual API call
         return new Response(
           JSON.stringify({
-            choices: [{
-              message: { role: "assistant", content: "Test response" }
-            }]
+            choices: [
+              {
+                message: { role: "assistant", content: "Test response" },
+              },
+            ],
           }),
           {
             status: 200,
-            headers: { "Content-Type": "application/json" }
+            headers: { "Content-Type": "application/json" },
           }
         );
       }
@@ -94,9 +96,9 @@ describe("Grok Tool Format Fix", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "anthropic-version": "2023-06-01"
+          "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify(claudeRequest)
+        body: JSON.stringify(claudeRequest),
       });
 
       // Wait for response
@@ -143,8 +145,8 @@ describe("Grok Tool Format Fix", () => {
         messages: [
           {
             role: "user",
-            content: "Read the package.json file"
-          }
+            content: "Read the package.json file",
+          },
         ],
         tools: [
           {
@@ -153,12 +155,12 @@ describe("Grok Tool Format Fix", () => {
             input_schema: {
               type: "object",
               properties: {
-                file_path: { type: "string" }
+                file_path: { type: "string" },
               },
-              required: ["file_path"]
-            }
-          }
-        ]
+              required: ["file_path"],
+            },
+          },
+        ],
       };
 
       let capturedPayload: any = null;
@@ -168,13 +170,15 @@ describe("Grok Tool Format Fix", () => {
           capturedPayload = JSON.parse(options.body);
           return new Response(
             JSON.stringify({
-              choices: [{
-                message: { role: "assistant", content: "Test response" }
-              }]
+              choices: [
+                {
+                  message: { role: "assistant", content: "Test response" },
+                },
+              ],
             }),
             {
               status: 200,
-              headers: { "Content-Type": "application/json" }
+              headers: { "Content-Type": "application/json" },
             }
           );
         }
@@ -186,9 +190,9 @@ describe("Grok Tool Format Fix", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
           },
-          body: JSON.stringify(claudeRequest)
+          body: JSON.stringify(claudeRequest),
         });
 
         await response.text();
@@ -220,8 +224,8 @@ describe("Grok Tool Format Fix", () => {
       messages: [
         {
           role: "user",
-          content: "Read the package.json file"
-        }
+          content: "Read the package.json file",
+        },
       ],
       tools: [
         {
@@ -230,12 +234,12 @@ describe("Grok Tool Format Fix", () => {
           input_schema: {
             type: "object",
             properties: {
-              file_path: { type: "string" }
+              file_path: { type: "string" },
             },
-            required: ["file_path"]
-          }
-        }
-      ]
+            required: ["file_path"],
+          },
+        },
+      ],
     };
 
     let capturedPayload: any = null;
@@ -245,13 +249,15 @@ describe("Grok Tool Format Fix", () => {
         capturedPayload = JSON.parse(options.body);
         return new Response(
           JSON.stringify({
-            choices: [{
-              message: { role: "assistant", content: "Test response" }
-            }]
+            choices: [
+              {
+                message: { role: "assistant", content: "Test response" },
+              },
+            ],
           }),
           {
             status: 200,
-            headers: { "Content-Type": "application/json" }
+            headers: { "Content-Type": "application/json" },
           }
         );
       }
@@ -263,9 +269,9 @@ describe("Grok Tool Format Fix", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "anthropic-version": "2023-06-01"
+          "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify(claudeRequest)
+        body: JSON.stringify(claudeRequest),
       });
 
       await response.text();
@@ -294,5 +300,5 @@ export const GROK_FIX_DOCUMENTATION = {
   fix: "Inject system message forcing OpenAI tool_calls format",
   tested: "Regression test validates system message injection",
   discovered: "2025-11-11",
-  severity: "CRITICAL"
+  severity: "CRITICAL",
 };

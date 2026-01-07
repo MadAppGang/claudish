@@ -14,6 +14,4 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 
 // Analytics only works in browser, not during SSR/build
-export const analytics = isSupported().then((supported) =>
-  supported ? getAnalytics(app) : null
-);
+export const analytics = isSupported().then((supported) => (supported ? getAnalytics(app) : null));

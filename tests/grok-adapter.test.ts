@@ -12,7 +12,8 @@ describe("GrokAdapter XML Parser", () => {
   test("should detect and parse simple xAI function call", () => {
     const adapter = new GrokAdapter("x-ai/grok-code-fast-1");
 
-    const xmlText = '<xai:function_call name="Read"><xai:parameter name="file_path">/path/to/file</xai:parameter></xai:function_call>';
+    const xmlText =
+      '<xai:function_call name="Read"><xai:parameter name="file_path">/path/to/file</xai:parameter></xai:function_call>';
 
     const result = adapter.processTextContent(xmlText, xmlText);
 
@@ -43,7 +44,8 @@ describe("GrokAdapter XML Parser", () => {
   test("should handle text before and after XML", () => {
     const adapter = new GrokAdapter("x-ai/grok-code-fast-1");
 
-    const xmlText = 'Let me read that file. <xai:function_call name="Read"><xai:parameter name="file_path">/test.txt</xai:parameter></xai:function_call> Done!';
+    const xmlText =
+      'Let me read that file. <xai:function_call name="Read"><xai:parameter name="file_path">/test.txt</xai:parameter></xai:function_call> Done!';
 
     const result = adapter.processTextContent(xmlText, xmlText);
 
@@ -56,7 +58,8 @@ describe("GrokAdapter XML Parser", () => {
   test("should handle multiple function calls", () => {
     const adapter = new GrokAdapter("x-ai/grok-code-fast-1");
 
-    const xmlText = '<xai:function_call name="Read"><xai:parameter name="file_path">/a.txt</xai:parameter></xai:function_call><xai:function_call name="Read"><xai:parameter name="file_path">/b.txt</xai:parameter></xai:function_call>';
+    const xmlText =
+      '<xai:function_call name="Read"><xai:parameter name="file_path">/a.txt</xai:parameter></xai:function_call><xai:function_call name="Read"><xai:parameter name="file_path">/b.txt</xai:parameter></xai:function_call>';
 
     const result = adapter.processTextContent(xmlText, xmlText);
 
@@ -102,7 +105,8 @@ describe("GrokAdapter XML Parser", () => {
   test("should handle JSON parameter values", () => {
     const adapter = new GrokAdapter("x-ai/grok-code-fast-1");
 
-    const xmlText = '<xai:function_call name="Edit"><xai:parameter name="options">{"replace_all":true}</xai:parameter></xai:function_call>';
+    const xmlText =
+      '<xai:function_call name="Edit"><xai:parameter name="options">{"replace_all":true}</xai:parameter></xai:function_call>';
 
     const result = adapter.processTextContent(xmlText, xmlText);
 
@@ -129,7 +133,10 @@ describe("GrokAdapter XML Parser", () => {
     const adapter = new GrokAdapter("x-ai/grok-code-fast-1");
 
     // Process partial XML
-    adapter.processTextContent('<xai:function_call name="Read">', '<xai:function_call name="Read">');
+    adapter.processTextContent(
+      '<xai:function_call name="Read">',
+      '<xai:function_call name="Read">'
+    );
 
     // Reset
     adapter.reset();
@@ -143,9 +150,10 @@ describe("GrokAdapter XML Parser", () => {
 // Export for documentation
 export const GROK_ADAPTER_DOCUMENTATION = {
   purpose: "Translate Grok's xAI XML format to Claude Code tool_calls",
-  format: "<xai:function_call name='ToolName'><xai:parameter name='key'>value</xai:parameter></xai:function_call>",
+  format:
+    "<xai:function_call name='ToolName'><xai:parameter name='key'>value</xai:parameter></xai:function_call>",
   handles: ["x-ai/grok-code-fast-1", "x-ai/grok-4", "grok-*"],
   tested: "Unit tests validate XML parsing, multi-chunk handling, and edge cases",
   discovered: "2025-11-11",
-  status: "IMPLEMENTED"
+  status: "IMPLEMENTED",
 };

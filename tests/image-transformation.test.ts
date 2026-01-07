@@ -1,31 +1,33 @@
-
 import { describe, it, expect, spyOn, mock } from "bun:test";
 import { createProxyServer } from "../src/proxy-server";
 
 // Mock fetch globally
 const originalFetch = global.fetch;
 const mockFetch = mock(async (url: string | Request | URL, init?: RequestInit) => {
-  return new Response(JSON.stringify({
-    id: "test-id",
-    choices: [{
-      message: {
-        content: "Response content",
-        role: "assistant"
+  return new Response(
+    JSON.stringify({
+      id: "test-id",
+      choices: [
+        {
+          message: {
+            content: "Response content",
+            role: "assistant",
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
       },
-      finish_reason: "stop"
-    }],
-    usage: {
-      prompt_tokens: 10,
-      completion_tokens: 5,
-      total_tokens: 15
-    }
-  }), { status: 200 });
+    }),
+    { status: 200 }
+  );
 });
 
 // Helper to parse the request bodysent to OpenRouter
-async function captureOpenRouterRequest(
-  requestPayload: any
-): Promise<any> {
+async function captureOpenRouterRequest(requestPayload: any): Promise<any> {
   // Reset mock
   mockFetch.mockClear();
   global.fetch = mockFetch;
@@ -42,15 +44,15 @@ async function captureOpenRouterRequest(
       headers: {
         "Content-Type": "application/json",
         "x-api-key": "dummy-key",
-        "anthropic-version": "2023-06-01"
+        "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify(requestPayload)
+      body: JSON.stringify(requestPayload),
     });
 
     // Verify fetch was called with OpenRouter URL
     const calls = mockFetch.mock.calls;
-    const openRouterCall = calls.find(call =>
-      call[0].toString() === "https://openrouter.ai/api/v1/chat/completions"
+    const openRouterCall = calls.find(
+      (call) => call[0].toString() === "https://openrouter.ai/api/v1/chat/completions"
     );
 
     if (!openRouterCall) {
@@ -81,16 +83,16 @@ describe("Image Transformation", () => {
               source: {
                 type: "base64",
                 media_type: "image/jpeg",
-                data: "/9j/4AAQSkZJRg..." // Shortened base64 data
-              }
+                data: "/9j/4AAQSkZJRg...", // Shortened base64 data
+              },
             },
             {
               type: "text",
-              text: "What is in this image?"
-            }
-          ]
-        }
-      ]
+              text: "What is in this image?",
+            },
+          ],
+        },
+      ],
     };
 
     // Execute test
@@ -128,24 +130,24 @@ describe("Image Transformation", () => {
               source: {
                 type: "base64",
                 media_type: "image/png",
-                data: "png-data-1"
-              }
+                data: "png-data-1",
+              },
             },
             {
               type: "text",
-              text: "Compare these two."
+              text: "Compare these two.",
             },
             {
               type: "image",
               source: {
                 type: "base64",
                 media_type: "image/jpeg",
-                data: "jpeg-data-2"
-              }
-            }
-          ]
-        }
-      ]
+                data: "jpeg-data-2",
+              },
+            },
+          ],
+        },
+      ],
     };
 
     const openRouterBody = await captureOpenRouterRequest(anthropicRequest);
@@ -173,19 +175,19 @@ describe("Image Transformation", () => {
             {
               type: "tool_result",
               tool_use_id: "tool_1",
-              content: "Tool output"
+              content: "Tool output",
             },
             {
               type: "image",
               source: {
                 type: "base64",
                 media_type: "image/webp",
-                data: "webp-data"
-              }
-            }
-          ]
-        }
-      ]
+                data: "webp-data",
+              },
+            },
+          ],
+        },
+      ],
     };
 
     const openRouterBody = await captureOpenRouterRequest(anthropicRequest);
@@ -223,23 +225,23 @@ describe("Image Transformation", () => {
           content: [
             {
               type: "text",
-              text: `Here is the current implementation of the component:\n\n<file_content path="src/Component.tsx">\n${fileContent}\n</file_content>`
+              text: `Here is the current implementation of the component:\n\n<file_content path="src/Component.tsx">\n${fileContent}\n</file_content>`,
             },
             {
               type: "image",
               source: {
                 type: "base64",
                 media_type: "image/png",
-                data: "ui-screenshot-data"
-              }
+                data: "ui-screenshot-data",
+              },
             },
             {
               type: "text",
-              text: "Does this code match the screenshot?"
-            }
-          ]
-        }
-      ]
+              text: "Does this code match the screenshot?",
+            },
+          ],
+        },
+      ],
     };
 
     const openRouterBody = await captureOpenRouterRequest(anthropicRequest);
@@ -249,8 +251,10 @@ describe("Image Transformation", () => {
 
     // Check file content text preservation
     expect(message.content[0].type).toBe("text");
-    expect(message.content[0].text).toContain("<file_content path=\"src/Component.tsx\">");
-    expect(message.content[0].text).toHaveLength(anthropicRequest.messages[0].content[0].text.length);
+    expect(message.content[0].text).toContain('<file_content path="src/Component.tsx">');
+    expect(message.content[0].text).toHaveLength(
+      anthropicRequest.messages[0].content[0].text.length
+    );
 
     // Check image
     expect(message.content[1].type).toBe("image_url");

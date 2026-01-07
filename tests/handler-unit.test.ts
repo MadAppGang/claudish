@@ -29,7 +29,7 @@ const mockOpenAIProvider: RemoteProvider = {
   baseUrl: "https://api.openai.com",
   apiPath: "/v1/chat/completions",
   apiKeyEnvVar: "OPENAI_API_KEY",
-  prefixes: ["oai/", "openai/"],
+  prefixes: ["oai/"], // Only oai/ prefix for OpenAI Direct
   capabilities: {
     supportsTools: true,
     supportsVision: true,
@@ -51,7 +51,9 @@ describe("GeminiHandler", () => {
     const handler = new GeminiHandler(mockGeminiProvider, "gemini-2.5-flash", "fake-key", 3000);
     // Access private method via any cast for testing
     const endpoint = (handler as any).getApiEndpoint();
-    expect(endpoint).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse");
+    expect(endpoint).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    );
   });
 
   test("should track tool call mappings", () => {
@@ -62,8 +64,8 @@ describe("GeminiHandler", () => {
       role: "assistant",
       content: [
         { type: "text", text: "Let me read that file." },
-        { type: "tool_use", id: "toolu_123", name: "Read", input: { file_path: "/test.txt" } }
-      ]
+        { type: "tool_use", id: "toolu_123", name: "Read", input: { file_path: "/test.txt" } },
+      ],
     };
 
     // Call convertAssistantMessageParts (private method)

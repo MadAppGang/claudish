@@ -48,8 +48,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -66,15 +66,15 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "signature-data-1",
           format: "google-gemini-v1",
-          index: 0
+          index: 0,
         },
         {
           id: "tool_2",
           type: "reasoning.encrypted",
           data: "signature-data-2",
           format: "google-gemini-v1",
-          index: 1
-        }
+          index: 1,
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -91,15 +91,15 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "signature-data-1",
           format: "google-gemini-v1",
-          index: 0
+          index: 0,
         },
         {
           id: "tool_2",
           type: "reasoning.text", // Not encrypted, should skip
           text: "thinking process...",
           format: "google-gemini-v1",
-          index: 1
-        }
+          index: 1,
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -115,9 +115,9 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "signature-data-1",
           format: "google-gemini-v1",
-          index: 0
+          index: 0,
           // Missing id
-        }
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -131,9 +131,9 @@ describe("GeminiAdapter", () => {
           id: "tool_1",
           type: "reasoning.encrypted",
           format: "google-gemini-v1",
-          index: 0
+          index: 0,
           // Missing data
-        }
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -160,8 +160,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "encrypted-signature-data",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -177,8 +177,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "test-signature-xyz",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -203,8 +203,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "sig-1",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       const reasoningDetails2 = [
@@ -213,8 +213,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "sig-2",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails1);
@@ -233,8 +233,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "original-signature",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       const reasoningDetails2 = [
@@ -243,8 +243,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "updated-signature",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails1);
@@ -262,15 +262,15 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "sig-1",
           format: "google-gemini-v1",
-          index: 0
+          index: 0,
         },
         {
           id: "tool_2",
           type: "reasoning.encrypted",
           data: "sig-2",
           format: "google-gemini-v1",
-          index: 1
-        }
+          index: 1,
+        },
       ];
 
       adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -292,15 +292,15 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "sig-1",
           format: "google-gemini-v1",
-          index: 0
+          index: 0,
         },
         {
           id: "tool_2",
           type: "reasoning.encrypted",
           data: "sig-2",
           format: "google-gemini-v1",
-          index: 1
-        }
+          index: 1,
+        },
       ];
 
       adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -330,8 +330,8 @@ describe("GeminiAdapter", () => {
           type: "reasoning.encrypted",
           data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
           format: "google-gemini-v1",
-          index: 0
-        }
+          index: 0,
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
@@ -353,15 +353,15 @@ describe("GeminiAdapter", () => {
           format: "google-gemini-v1",
           index: 0,
           type: "reasoning.text",
-          text: "**Analyzing Command Execution**\n\nI've decided on the Bash tool..."
+          text: "**Analyzing Command Execution**\n\nI've decided on the Bash tool...",
         },
         {
           id: "tool_Bash_xCnVDMy3yKKLMmubLViZ",
           format: "google-gemini-v1",
           index: 0,
           type: "reasoning.encrypted",
-          data: "CiQB4/H/Xpq6W/zfkirEV83BJOnpNRAEsRj3j95YOEooIPrBh1cKZgHj8f9eJ8A0IFVGYoG0HDJXG0MuH41sRRpJkvtF2vmnl36y0KOrmiKGnoKerQlRKodqdQBh1N04iwI8+9ULLbnnk/4YSpAi2/uh2xqOHnt2jluPJbnpZOJ1Cd+zHf7/VZqj1WZbEgpaAePx/158Zpu4rKl4VbaLLmuJfwoLFE58SrhoOqhpu52Fsw3JeEl4ezcOlxYkA91fFNVDcVaE9J3sdfeUUsP7c6EPNwKX0Roj4xGAn6R4THYoZaLRdBoaTt7bClEB4/H/Xm1hmM8Qwyj4XqSLOH1e4lbgYwYYECa0060K6z8YTS+wKaKkAWrk7WpDDovNzrTihw1aMvBy5oY0kVjhvKe0s48QiStQx/KBrwU3xfY="
-        }
+          data: "CiQB4/H/Xpq6W/zfkirEV83BJOnpNRAEsRj3j95YOEooIPrBh1cKZgHj8f9eJ8A0IFVGYoG0HDJXG0MuH41sRRpJkvtF2vmnl36y0KOrmiKGnoKerQlRKodqdQBh1N04iwI8+9ULLbnnk/4YSpAi2/uh2xqOHnt2jluPJbnpZOJ1Cd+zHf7/VZqj1WZbEgpaAePx/158Zpu4rKl4VbaLLmuJfwoLFE58SrhoOqhpu52Fsw3JeEl4ezcOlxYkA91fFNVDcVaE9J3sdfeUUsP7c6EPNwKX0Roj4xGAn6R4THYoZaLRdBoaTt7bClEB4/H/Xm1hmM8Qwyj4XqSLOH1e4lbgYwYYECa0060K6z8YTS+wKaKkAWrk7WpDDovNzrTihw1aMvBy5oY0kVjhvKe0s48QiStQx/KBrwU3xfY=",
+        },
       ];
 
       const extracted = adapter.extractThoughtSignaturesFromReasoningDetails(reasoningDetails);

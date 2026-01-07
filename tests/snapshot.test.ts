@@ -49,9 +49,9 @@ interface Fixture {
  */
 function loadFixtures(): Fixture[] {
   const fixturesDir = join(import.meta.dir, "fixtures");
-  const files = readdirSync(fixturesDir).filter(f => f.endsWith(".json"));
+  const files = readdirSync(fixturesDir).filter((f) => f.endsWith(".json"));
 
-  return files.map(file => {
+  return files.map((file) => {
     const content = readFileSync(join(fixturesDir, file), "utf-8");
     return JSON.parse(content) as Fixture;
   });
@@ -138,8 +138,8 @@ function validateEventSequence(
   }
 
   // Check content blocks have proper start/stop pairs
-  const blockStarts = actual.filter(e => e === "content_block_start").length;
-  const blockStops = actual.filter(e => e === "content_block_stop").length;
+  const blockStarts = actual.filter((e) => e === "content_block_start").length;
+  const blockStops = actual.filter((e) => e === "content_block_stop").length;
 
   if (blockStarts !== blockStops) {
     errors.push(`Mismatched content blocks: ${blockStarts} starts, ${blockStops} stops`);
@@ -184,9 +184,7 @@ function validateContentBlocks(
   } else {
     for (let i = 0; i < blocks.length; i++) {
       if (blocks[i].type !== expected[i].type) {
-        errors.push(
-          `Block ${i}: expected type ${expected[i].type}, got ${blocks[i].type}`
-        );
+        errors.push(`Block ${i}: expected type ${expected[i].type}, got ${blocks[i].type}`);
       }
 
       // Check tool names if present
@@ -207,9 +205,7 @@ function validateContentBlocks(
 /**
  * Validate tool input streaming (fine-grained)
  */
-function validateToolInputStreaming(
-  events: FixtureEvent[]
-): { valid: boolean; errors: string[] } {
+function validateToolInputStreaming(events: FixtureEvent[]): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
   const toolBlocks = new Map<number, { args: string; complete: boolean }>();
 
@@ -243,7 +239,9 @@ function validateToolInputStreaming(
           try {
             JSON.parse(toolState.args);
           } catch (e) {
-            errors.push(`Tool at index ${index}: incomplete or malformed JSON: ${toolState.args.substring(0, 100)}...`);
+            errors.push(
+              `Tool at index ${index}: incomplete or malformed JSON: ${toolState.args.substring(0, 100)}...`
+            );
           }
         }
       }
@@ -270,14 +268,14 @@ function validateUsage(
   }
 
   // Check message_start has usage
-  const messageStart = events.find(e => e.event === "message_start");
+  const messageStart = events.find((e) => e.event === "message_start");
   if (!messageStart?.data?.message?.usage) {
     errors.push("message_start missing usage field");
   }
 
   // Check message_delta has usage
   // According to real Claude Code protocol, message_delta should ONLY have output_tokens
-  const messageDelta = events.find(e => e.event === "message_delta");
+  const messageDelta = events.find((e) => e.event === "message_delta");
   if (!messageDelta?.data?.usage) {
     errors.push("message_delta missing usage field");
   } else {
@@ -287,7 +285,9 @@ function validateUsage(
     }
     // input_tokens and cache tokens should NOT be in message_delta (only in message_start)
     if (usage.input_tokens !== undefined) {
-      errors.push("message_delta should not contain input_tokens (only output_tokens per protocol)");
+      errors.push(
+        "message_delta should not contain input_tokens (only output_tokens per protocol)"
+      );
     }
   }
 
@@ -306,7 +306,7 @@ function validateStopReason(
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
 
-  const messageDelta = events.find(e => e.event === "message_delta");
+  const messageDelta = events.find((e) => e.event === "message_delta");
   if (!messageDelta) {
     errors.push("message_delta event not found");
     return { valid: false, errors };
@@ -394,12 +394,12 @@ describe("Snapshot Integration Tests", () => {
       });
 
       test.skipIf(!OPENROUTER_API_KEY)("validates event sequence", () => {
-        const actualSequence = actualEvents.map(e => e.event);
+        const actualSequence = actualEvents.map((e) => e.event);
         const result = validateEventSequence(actualSequence, fixture.assertions.eventSequence);
 
         if (!result.valid) {
           console.error("Event sequence errors:");
-          result.errors.forEach(err => console.error(`  - ${err}`));
+          result.errors.forEach((err) => console.error(`  - ${err}`));
         }
 
         expect(result.valid).toBe(true);
@@ -410,14 +410,14 @@ describe("Snapshot Integration Tests", () => {
 
         if (!result.valid) {
           console.error("Content block errors:");
-          result.errors.forEach(err => console.error(`  - ${err}`));
+          result.errors.forEach((err) => console.error(`  - ${err}`));
         }
 
         expect(result.valid).toBe(true);
       });
 
       test.skipIf(!OPENROUTER_API_KEY)("validates tool input streaming (if tool_use)", () => {
-        const hasTools = fixture.assertions.contentBlocks.some(b => b.type === "tool_use");
+        const hasTools = fixture.assertions.contentBlocks.some((b) => b.type === "tool_use");
 
         if (!hasTools) {
           return; // Skip if no tools
@@ -427,7 +427,7 @@ describe("Snapshot Integration Tests", () => {
 
         if (!result.valid) {
           console.error("Tool input streaming errors:");
-          result.errors.forEach(err => console.error(`  - ${err}`));
+          result.errors.forEach((err) => console.error(`  - ${err}`));
         }
 
         expect(result.valid).toBe(true);
@@ -438,7 +438,7 @@ describe("Snapshot Integration Tests", () => {
 
         if (!result.valid) {
           console.error("Usage validation errors:");
-          result.errors.forEach(err => console.error(`  - ${err}`));
+          result.errors.forEach((err) => console.error(`  - ${err}`));
         }
 
         expect(result.valid).toBe(true);
@@ -449,7 +449,7 @@ describe("Snapshot Integration Tests", () => {
 
         if (!result.valid) {
           console.error("Stop reason errors:");
-          result.errors.forEach(err => console.error(`  - ${err}`));
+          result.errors.forEach((err) => console.error(`  - ${err}`));
         }
 
         expect(result.valid).toBe(true);

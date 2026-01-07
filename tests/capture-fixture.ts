@@ -120,7 +120,12 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
     }
 
     // Capture request body
-    if (inRequest && !line.includes("Headers received:") && !line.includes("API Key found:") && !line.includes("Request body:")) {
+    if (
+      inRequest &&
+      !line.includes("Headers received:") &&
+      !line.includes("API Key found:") &&
+      !line.includes("Request body:")
+    ) {
       jsonBuffer += line + "\n";
     }
 
@@ -153,8 +158,11 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
   // Try to parse request JSON
   if (jsonBuffer.trim()) {
     try {
-      const lines = jsonBuffer.trim().split("\n").filter(l => l.trim());
-      const jsonStart = lines.findIndex(l => l.trim().startsWith("{"));
+      const lines = jsonBuffer
+        .trim()
+        .split("\n")
+        .filter((l) => l.trim());
+      const jsonStart = lines.findIndex((l) => l.trim().startsWith("{"));
       if (jsonStart >= 0) {
         const jsonStr = lines.slice(jsonStart).join("\n");
         request = JSON.parse(jsonStr);
@@ -175,7 +183,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
  * Analyze response and build assertions
  */
 function buildAssertions(events: FixtureEvent[]): Fixture["assertions"] {
-  const eventSequence = events.map(e => e.event);
+  const eventSequence = events.map((e) => e.event);
   const contentBlocks: Array<{
     index: number;
     type: string;
@@ -246,14 +254,12 @@ function buildAssertions(events: FixtureEvent[]): Fixture["assertions"] {
  * Infer category from response
  */
 function inferCategory(events: FixtureEvent[]): string {
-  const hasToolUse = events.some(e =>
-    e.event === "content_block_start" &&
-    e.data.content_block?.type === "tool_use"
+  const hasToolUse = events.some(
+    (e) => e.event === "content_block_start" && e.data.content_block?.type === "tool_use"
   );
 
-  const toolCount = events.filter(e =>
-    e.event === "content_block_start" &&
-    e.data.content_block?.type === "tool_use"
+  const toolCount = events.filter(
+    (e) => e.event === "content_block_start" && e.data.content_block?.type === "tool_use"
   ).length;
 
   if (toolCount > 1) return "multi_tool";
@@ -353,8 +359,8 @@ Examples:
   // Generate description if not provided
   if (!description) {
     const toolNames = assertions.contentBlocks
-      .filter(b => b.type === "tool_use" && b.name)
-      .map(b => b.name)
+      .filter((b) => b.type === "tool_use" && b.name)
+      .map((b) => b.name)
       .join(", ");
 
     if (toolNames) {
@@ -373,7 +379,8 @@ Examples:
     request: {
       headers: {
         "anthropic-version": "2023-06-01",
-        "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+        "anthropic-beta":
+          "oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
         "content-type": "application/json",
       },
       body: normalizeValue("request", request),
@@ -407,7 +414,7 @@ Summary:
   Stop Reason: ${assertions.stopReason}
 
 Content Blocks:
-${assertions.contentBlocks.map(b => `  [${b.index}] ${b.type}${b.name ? ` (${b.name})` : ""}`).join("\n")}
+${assertions.contentBlocks.map((b) => `  [${b.index}] ${b.type}${b.name ? ` (${b.name})` : ""}`).join("\n")}
 
 Event Sequence:
   ${assertions.eventSequence.slice(0, 10).join(" → ")}${assertions.eventSequence.length > 10 ? ` ... (${assertions.eventSequence.length} total)` : ""}

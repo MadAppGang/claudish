@@ -45,7 +45,10 @@ async function parseSSE(response: Response) {
           const data = JSON.parse(dataStr);
           const eventType = currentEvent || data.type || "unknown";
           events.push({ event: eventType, data });
-          console.log(`[${events.length}] ${eventType}`, data.index !== undefined ? `(index: ${data.index})` : "");
+          console.log(
+            `[${events.length}] ${eventType}`,
+            data.index !== undefined ? `(index: ${data.index})` : ""
+          );
         } catch (e) {
           console.warn("Parse error:", dataStr);
         }
@@ -88,13 +91,15 @@ async function main() {
   console.log(`\nTotal events: ${events.length}\n`);
 
   // Analyze content blocks
-  const starts = events.filter(e => e.event === "content_block_start");
-  const stops = events.filter(e => e.event === "content_block_stop");
+  const starts = events.filter((e) => e.event === "content_block_start");
+  const stops = events.filter((e) => e.event === "content_block_stop");
 
   console.log("Content Block Analysis:");
   console.log(`  Starts: ${starts.length}`);
   starts.forEach((e, i) => {
-    console.log(`    [${i}] index=${e.data.index}, type=${e.data.content_block?.type}, name=${e.data.content_block?.name || "n/a"}`);
+    console.log(
+      `    [${i}] index=${e.data.index}, type=${e.data.content_block?.type}, name=${e.data.content_block?.name || "n/a"}`
+    );
   });
 
   console.log(`  Stops: ${stops.length}`);
@@ -106,7 +111,7 @@ async function main() {
   console.log("\n✅ Test complete");
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("Error:", err);
   process.exit(1);
 });

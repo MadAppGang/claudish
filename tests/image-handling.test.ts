@@ -5,7 +5,8 @@ describe("Image Handling", () => {
   const PORT = 4000;
 
   // Mock data - 1x1 transparent PNG
-  const base64Image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const base64Image =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const mediaType = "image/png";
 
   it("should transform Anthropic image format to OpenAI image_url format", async () => {
@@ -16,20 +17,27 @@ describe("Image Handling", () => {
     const mockFetch = mock((url, options) => {
       // Intercept OpenRouter API calls
       if (url === "https://openrouter.ai/api/v1/chat/completions") {
-        return Promise.resolve(new Response(JSON.stringify({
-          id: "test-id",
-          choices: [{
-            message: {
-              role: "assistant", // OpenRouter/OpenAI returns role: assistant in message, not delta for non-streaming
-              content: "I see a 1x1 pixel image."
-            },
-            finish_reason: "stop"
-          }],
-          usage: { prompt_tokens: 10, completion_tokens: 5 }
-        }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "test-id",
+              choices: [
+                {
+                  message: {
+                    role: "assistant", // OpenRouter/OpenAI returns role: assistant in message, not delta for non-streaming
+                    content: "I see a 1x1 pixel image.",
+                  },
+                  finish_reason: "stop",
+                },
+              ],
+              usage: { prompt_tokens: 10, completion_tokens: 5 },
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }
+          )
+        );
       }
 
       // Pass through other calls (like the request to the proxy itself)
@@ -64,18 +72,18 @@ describe("Image Handling", () => {
                   source: {
                     type: "base64",
                     media_type: mediaType,
-                    data: base64Image
-                  }
+                    data: base64Image,
+                  },
                 },
                 {
                   type: "text",
-                  text: "What is this?"
-                }
-              ]
-            }
+                  text: "What is this?",
+                },
+              ],
+            },
           ],
-          max_tokens: 100
-        })
+          max_tokens: 100,
+        }),
       });
 
       const result = await response.json();
@@ -86,8 +94,8 @@ describe("Image Handling", () => {
 
       // 2. Verify OpenRouter request structure
       // Find the call to OpenRouter in the mock's history
-      const openRouterCall = mockFetch.mock.calls.find(call =>
-        call[0] === "https://openrouter.ai/api/v1/chat/completions"
+      const openRouterCall = mockFetch.mock.calls.find(
+        (call) => call[0] === "https://openrouter.ai/api/v1/chat/completions"
       );
 
       expect(openRouterCall).toBeDefined();
@@ -96,11 +104,11 @@ describe("Image Handling", () => {
       const requestBody = JSON.parse(openRouterCall[1].body);
 
       // Check message content
-      const userMessage = requestBody.messages.find(m => m.role === "user");
+      const userMessage = requestBody.messages.find((m) => m.role === "user");
       expect(userMessage).toBeDefined();
 
       // Find the image part (should be converted to image_url)
-      const imagePart = userMessage.content.find(c => c.type === "image_url");
+      const imagePart = userMessage.content.find((c) => c.type === "image_url");
       expect(imagePart).toBeDefined();
 
       // Verify structure matches OpenAI format: { type: "image_url", image_url: { url: "data..." } }
@@ -108,10 +116,9 @@ describe("Image Handling", () => {
       expect(imagePart.image_url.url).toBe(`data:${mediaType};base64,${base64Image}`);
 
       // Verify text is preserved
-      const textPart = userMessage.content.find(c => c.type === "text");
+      const textPart = userMessage.content.find((c) => c.type === "text");
       expect(textPart).toBeDefined();
       expect(textPart.text).toBe("What is this?");
-
     } finally {
       // Cleanup
       if (proxy) await proxy.shutdown();

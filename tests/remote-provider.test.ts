@@ -3,7 +3,11 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { resolveRemoteProvider, validateRemoteProviderApiKey, getRemoteProviderType } from "../src/providers/remote-provider-registry";
+import {
+  resolveRemoteProvider,
+  validateRemoteProviderApiKey,
+  getRemoteProviderType,
+} from "../src/providers/remote-provider-registry";
 import { getModelPricing, calculateCost } from "../src/handlers/shared/remote-provider-types";
 import { createProxyServer } from "../src/proxy-server";
 import type { ProxyServer } from "../src/types";
@@ -37,11 +41,10 @@ describe("Remote Provider Registry", () => {
       expect(result?.modelName).toBe("gpt-4o");
     });
 
-    test("should resolve openai/ prefix to openai", () => {
+    test("should NOT resolve openai/ prefix (routes to OpenRouter)", () => {
+      // openai/model should fall through to OpenRouter, not direct OpenAI API
       const result = resolveRemoteProvider("openai/gpt-5");
-      expect(result).not.toBeNull();
-      expect(result?.provider.name).toBe("openai");
-      expect(result?.modelName).toBe("gpt-5");
+      expect(result).toBeNull(); // null means use OpenRouter default
     });
 
     test("should resolve or/ prefix to openrouter", () => {
@@ -117,25 +120,25 @@ describe("Model Pricing", () => {
     test("should return pricing for known Gemini model", () => {
       const pricing = getModelPricing("gemini", "gemini-2.5-flash");
       expect(pricing.inputCostPer1M).toBe(0.15);
-      expect(pricing.outputCostPer1M).toBe(0.60);
+      expect(pricing.outputCostPer1M).toBe(0.6);
     });
 
     test("should return pricing for known OpenAI model", () => {
       const pricing = getModelPricing("openai", "gpt-4o");
-      expect(pricing.inputCostPer1M).toBe(2.50);
-      expect(pricing.outputCostPer1M).toBe(10.00);
+      expect(pricing.inputCostPer1M).toBe(2.5);
+      expect(pricing.outputCostPer1M).toBe(10.0);
     });
 
     test("should return default pricing for unknown Gemini model", () => {
       const pricing = getModelPricing("gemini", "gemini-unknown-model");
-      expect(pricing.inputCostPer1M).toBe(0.50); // default
-      expect(pricing.outputCostPer1M).toBe(2.00); // default
+      expect(pricing.inputCostPer1M).toBe(0.5); // default
+      expect(pricing.outputCostPer1M).toBe(2.0); // default
     });
 
     test("should match partial model names", () => {
       // "gpt-4o-2024-08-06" should match "gpt-4o"
       const pricing = getModelPricing("openai", "gpt-4o-2024-08-06");
-      expect(pricing.inputCostPer1M).toBe(2.50);
+      expect(pricing.inputCostPer1M).toBe(2.5);
     });
   });
 
@@ -149,7 +152,7 @@ describe("Model Pricing", () => {
     test("should calculate cost correctly for OpenAI", () => {
       // 1M input tokens at $2.50 + 1M output tokens at $10.00 = $12.50
       const cost = calculateCost("openai", "gpt-4o", 1_000_000, 1_000_000);
-      expect(cost).toBeCloseTo(12.50, 2);
+      expect(cost).toBeCloseTo(12.5, 2);
     });
 
     test("should handle small token counts", () => {
@@ -167,7 +170,15 @@ describe("Proxy Server Routing", () => {
 
   beforeAll(async () => {
     // Create proxy server without API keys (we're testing routing, not actual API calls)
-    proxy = await createProxyServer(testPort, undefined, undefined, false, undefined, undefined, {});
+    proxy = await createProxyServer(
+      testPort,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {}
+    );
   });
 
   afterAll(async () => {
@@ -186,13 +197,13 @@ describe("Proxy Server Routing", () => {
         body: JSON.stringify({
           model: "g/gemini-2.5-flash",
           max_tokens: 100,
-          messages: [{ role: "user", content: "Hello" }]
-        })
+          messages: [{ role: "user", content: "Hello" }],
+        }),
       });
 
       // Should return an error about missing API key
       expect(response.status).toBe(500);
-      const data = await response.json() as any;
+      const data = (await response.json()) as any;
       expect(data.error.message).toContain("GEMINI_API_KEY");
     } finally {
       // Restore
@@ -212,13 +223,13 @@ describe("Proxy Server Routing", () => {
         body: JSON.stringify({
           model: "oai/gpt-4o",
           max_tokens: 100,
-          messages: [{ role: "user", content: "Hello" }]
-        })
+          messages: [{ role: "user", content: "Hello" }],
+        }),
       });
 
       // Should return an error about missing API key
       expect(response.status).toBe(500);
-      const data = await response.json() as any;
+      const data = (await response.json()) as any;
       expect(data.error.message).toContain("OPENAI_API_KEY");
     } finally {
       // Restore
@@ -234,8 +245,8 @@ describe("Proxy Server Routing", () => {
       body: JSON.stringify({
         model: "anthropic/claude-3-opus",
         max_tokens: 100,
-        messages: [{ role: "user", content: "Hello" }]
-      })
+        messages: [{ role: "user", content: "Hello" }],
+      }),
     });
 
     // Should get an auth error from OpenRouter (not a routing error)
@@ -245,7 +256,7 @@ describe("Proxy Server Routing", () => {
   test("health endpoint should work", async () => {
     const response = await fetch(`http://127.0.0.1:${testPort}/health`);
     expect(response.status).toBe(200);
-    const data = await response.json() as any;
+    const data = (await response.json()) as any;
     expect(data.status).toBe("ok");
   });
 });
