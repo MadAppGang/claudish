@@ -60,9 +60,13 @@ const TRUSTED_FREE_PROVIDERS = [
  * Direct provider models (no OpenRouter key needed)
  * These use direct APIs: Gemini OAuth, OpenAI key, etc.
  * Free with Gemini OAuth (Code Assist) for personal use.
+ * 
+ * Valid model names from gemini-cli:
+ * - gemini-3-pro-preview, gemini-3-flash-preview (preview models)
+ * - gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
  */
 const DIRECT_PROVIDER_MODELS: ModelInfo[] = [
-  // Gemini 3.x models
+  // Gemini 3.x Preview models
   {
     id: "g/gemini-3-pro-preview",
     name: "Gemini 3 Pro Preview (Direct)",
@@ -77,9 +81,9 @@ const DIRECT_PROVIDER_MODELS: ModelInfo[] = [
     isFree: true,
   },
   {
-    id: "g/gemini-3.0-flash",
-    name: "Gemini 3.0 Flash (Direct)",
-    description: "Fast Gemini 3 model - uses Gemini OAuth, no API key needed",
+    id: "g/gemini-3-flash-preview",
+    name: "Gemini 3 Flash Preview (Direct)",
+    description: "Fast Gemini 3 preview model - uses Gemini OAuth, no API key needed",
     provider: "Gemini Direct",
     pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
     context: "1048K",
@@ -89,7 +93,7 @@ const DIRECT_PROVIDER_MODELS: ModelInfo[] = [
     supportsVision: true,
     isFree: true,
   },
-  // Gemini 2.5 models
+  // Gemini 2.5 models (stable)
   {
     id: "g/gemini-2.5-pro",
     name: "Gemini 2.5 Pro (Direct)",
@@ -116,30 +120,16 @@ const DIRECT_PROVIDER_MODELS: ModelInfo[] = [
     supportsVision: true,
     isFree: true,
   },
-  // Gemini 2.0 models
   {
-    id: "g/gemini-2.0-flash",
-    name: "Gemini 2.0 Flash (Direct)",
-    description: "Fast Gemini 2 model - uses Gemini OAuth, no API key needed",
+    id: "g/gemini-2.5-flash-lite",
+    name: "Gemini 2.5 Flash Lite (Direct)",
+    description: "Lightweight & fast Gemini model - uses Gemini OAuth, no API key needed",
     provider: "Gemini Direct",
     pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
     context: "1048K",
     contextLength: 1048576,
     supportsTools: true,
     supportsReasoning: false,
-    supportsVision: true,
-    isFree: true,
-  },
-  {
-    id: "g/gemini-2.0-flash-thinking",
-    name: "Gemini 2.0 Flash Thinking (Direct)",
-    description: "Gemini with extended thinking/reasoning - uses Gemini OAuth, no API key needed",
-    provider: "Gemini Direct",
-    pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
-    context: "1048K",
-    contextLength: 1048576,
-    supportsTools: true,
-    supportsReasoning: true,
     supportsVision: true,
     isFree: true,
   },
