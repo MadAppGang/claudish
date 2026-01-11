@@ -157,6 +157,11 @@ export function getRemoteProviderType(modelId: string): string | null {
 export function validateRemoteProviderApiKey(provider: RemoteProvider): string | null {
   const apiKey = process.env[provider.apiKeyEnvVar];
 
+  // Special handling for Gemini: allow if API key is missing (will try OAuth)
+  if (provider.name === "gemini" && !apiKey) {
+    return null;
+  }
+
   if (!apiKey) {
     const examples: Record<string, string> = {
       GEMINI_API_KEY:

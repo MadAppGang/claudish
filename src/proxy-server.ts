@@ -10,6 +10,7 @@ import {
   type LocalProviderOptions,
 } from "./handlers/local-provider-handler.js";
 import { GeminiHandler } from "./handlers/gemini-handler.js";
+import { GeminiCodeAssistHandler } from "./handlers/gemini-codeassist-handler.js";
 import { OpenAIHandler } from "./handlers/openai-handler.js";
 import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
@@ -123,22 +124,27 @@ export async function createProxyServer(
       throw new Error(apiKeyError);
     }
 
-    const apiKey = process.env[resolved.provider.apiKeyEnvVar]!;
+    const apiKey = process.env[resolved.provider.apiKeyEnvVar];
 
     let handler: ModelHandler;
     if (resolved.provider.name === "gemini") {
-      handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
+      if (apiKey) {
+        handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created Gemini handler (API Key): ${resolved.modelName}`);
+      } else {
+        handler = new GeminiCodeAssistHandler(resolved.provider, resolved.modelName, port);
+        log(`[Proxy] Created Gemini Code Assist handler (OAuth): ${resolved.modelName}`);
+      }
     } else if (resolved.provider.name === "openai") {
-      handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+      handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey!, port);
       log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi") {
       // MiniMax and Kimi use Anthropic-compatible APIs
-      handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
+      handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey!, port);
       log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "glm") {
       // GLM uses OpenAI-compatible API
-      handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+      handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey!, port);
       log(`[Proxy] Created GLM handler: ${resolved.modelName}`);
     } else {
       return null; // Unknown provider
