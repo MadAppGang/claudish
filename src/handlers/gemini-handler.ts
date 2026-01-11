@@ -41,7 +41,7 @@ export class GeminiHandler implements ModelHandler {
   private sessionTotalCost = 0;
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
-  private contextWindow = 1000000; // Gemini has 1M context by default
+  private contextWindow = 1048576; // Gemini has 1M context by default (2^20)
   private toolCallMap = new Map<string, string>(); // tool_use_id -> function_name for tool result mapping
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
