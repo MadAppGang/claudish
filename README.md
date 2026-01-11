@@ -47,6 +47,7 @@ bun install -g claudish
 - At least one API key:
   - [OpenRouter API Key](https://openrouter.ai/keys) - Access 100+ models (free tier available)
   - [Google Gemini API Key](https://aistudio.google.com/apikey) - For direct Gemini access
+  - **OR** Gemini Pro Subscription (via `claudish --gemini-login`) - No API key needed!
   - [OpenAI API Key](https://platform.openai.com/api-keys) - For direct OpenAI access
   - Or local models (Ollama, LM Studio) - No API key needed
 
@@ -97,6 +98,10 @@ claudish --init
 ```bash
 # Just run it - will prompt for API key and model
 claudish
+
+# Login to Gemini (for API-key-free usage with Gemini Pro)
+claudish --gemini-login
+# Follow the browser prompt to authenticate with Google
 
 # Enter your OpenRouter API key when prompted
 # Select a model from the list
@@ -238,7 +243,7 @@ claudish [OPTIONS] <claude-args...>
 | Variable | Description | Used For |
 |----------|-------------|----------|
 | `OPENROUTER_API_KEY` | OpenRouter API key | Default backend (100+ models) |
-| `GEMINI_API_KEY` | Google Gemini API key | Direct Gemini access (`g/` prefix) |
+| `GEMINI_API_KEY` | Google Gemini API key | Direct Gemini access (optional if logged in) |
 | `OPENAI_API_KEY` | OpenAI API key | Direct OpenAI access (`oai/` prefix) |
 | `ANTHROPIC_API_KEY` | Placeholder (any value) | Prevents Claude Code dialog |
 
