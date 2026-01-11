@@ -6,9 +6,10 @@ import { randomBytes, createHash } from "node:crypto";
 import { exec } from "node:child_process";
 import { log } from "../logger.js";
 
-// Constants from gemini-cli
-const OAUTH_CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const OAUTH_CLIENT_SECRET = "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";
+// Constants from gemini-cli (these are public OAuth credentials for CLI usage)
+// Default values are from the official gemini-cli - they're public by design for CLI tools
+const OAUTH_CLIENT_ID = process.env.GEMINI_OAUTH_CLIENT_ID ?? "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const OAUTH_CLIENT_SECRET = process.env.GEMINI_OAUTH_CLIENT_SECRET ?? "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";
 const OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
   "https://www.googleapis.com/auth/userinfo.email",
