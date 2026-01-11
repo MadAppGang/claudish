@@ -47,6 +47,9 @@ export interface ClaudishConfig {
   auditCosts?: boolean;
   resetCosts?: boolean;
 
+  // Gemini OAuth
+  geminiLogin?: boolean;
+
   // Local model optimizations
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size for local models
 }

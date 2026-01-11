@@ -75,6 +75,14 @@ async function runCli() {
       }
     }
 
+    // Check for Gemini login
+    if (cliConfig.geminiLogin) {
+      console.log("[claudish] Starting Gemini OAuth login...");
+      const { performGeminiOAuthLogin } = await import("./auth/gemini-oauth.js");
+      await performGeminiOAuthLogin();
+      process.exit(0);
+    }
+
     // Check if Claude Code is installed
     if (!(await checkClaudeInstalled())) {
       console.error("Error: Claude Code CLI is not installed");

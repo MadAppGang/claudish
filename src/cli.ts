@@ -177,6 +177,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--init") {
       await initializeClaudishSkill();
       process.exit(0);
+    } else if (arg === "--gemini-login") {
+      config.geminiLogin = true;
     } else if (arg === "--top-models") {
       // Show recommended/top models (curated list)
       const hasJsonFlag = args.includes("--json");
@@ -247,9 +249,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
+    // OpenRouter mode: requires OpenRouter API key (unless using direct provider like Gemini)
     const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
+    
+    // Check if model uses a direct provider that doesn't need OpenRouter
+    const isGeminiModel = config.model?.startsWith("g/") || config.model?.startsWith("gemini/");
+    const isOpenAIModel = config.model?.startsWith("oai/");
+    const isLocalModel = config.model?.startsWith("ollama/") || config.model?.startsWith("lmstudio/") || 
+                         config.model?.startsWith("vllm/") || config.model?.startsWith("mlx/") ||
+                         config.model?.startsWith("http://") || config.model?.startsWith("https://");
+    const isDirectProvider = isGeminiModel || isOpenAIModel || isLocalModel;
+    
+    if (!apiKey && !isDirectProvider) {
       // In interactive mode, we'll prompt for it later
       // In non-interactive mode, it's required now
       if (!config.interactive) {
@@ -999,6 +1010,7 @@ OPTIONS:
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
   --init                   Install Claudish skill in current project (.claude/skills/)
+  --gemini-login           Log in to Gemini (OAuth) for API-key-free usage with Code Assist
 
 PROFILE MANAGEMENT:
   claudish init            Setup wizard - create config and first profile
