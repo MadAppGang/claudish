@@ -141,15 +141,26 @@ export class GeminiCodeAssistHandler implements ModelHandler {
 
   private convertAssistantMessageParts(msg: any): any[] {
     const parts: any[] = [];
+    let isFirstFunctionCall = true;
+    
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === "text") {
           parts.push({ text: block.text });
         } else if (block.type === "tool_use") {
           this.toolCallMap.set(block.id, block.name);
-          parts.push({
+          const part: any = {
             functionCall: { name: block.name, args: block.input },
-          });
+          };
+          
+          // Gemini 3 models require thoughtSignature on the first functionCall in active loops
+          // Use synthetic signature to bypass validation (as gemini-cli does)
+          if (this.modelName.includes("gemini-3") && isFirstFunctionCall) {
+            part.thoughtSignature = "skip_thought_signature_validator";
+            isFirstFunctionCall = false;
+          }
+          
+          parts.push(part);
         }
       }
     } else if (typeof msg.content === "string") {
