@@ -87,7 +87,7 @@ function openUrl(url: string) {
     process.platform == "darwin"
       ? "open"
       : process.platform == "win32"
-      ? "start"
+      ? "start \"\""  // Empty title required: start treats first quoted arg as window title
       : "xdg-open";
   exec(`${start} "${url}"`);
 }
