@@ -586,7 +586,7 @@ export class GeminiCodeAssistHandler implements ModelHandler {
     } catch (e: any) {
       log(`[GeminiCodeAssist] Handler error: ${e.message}`);
       // Special handling for auth errors
-      if (e.message.includes("No OAuth credentials") || e.message.includes("Run `claudish --gemini-login`")) {
+      if (e.message.includes("No OAuth credentials") || e.message.includes("run `claudish --gemini-login`")) {
          return c.json({ 
              error: { 
                  type: "authentication_error", 
