@@ -90,16 +90,34 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
-      cliConfig.openrouterApiKey = await promptForApiKey();
-      console.log(""); // Empty line after input
-    }
-
-    // Show interactive model selector ONLY in interactive mode when model not specified
+    // Show interactive model selector FIRST (before API key prompt)
+    // This allows users to pick direct provider models (Gemini, OpenAI, local) without needing OpenRouter key
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
       cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
       console.log(""); // Empty line after selection
+    }
+
+    // Check if the selected model needs OpenRouter API key
+    // Direct providers (Gemini, OpenAI, MiniMax, Kimi, GLM, local) don't need it
+    const modelNeedsOpenRouter = (model: string | undefined): boolean => {
+      if (!model) return true; // No model selected = will use OpenRouter
+      const directPrefixes = [
+        "g/", "gemini/",           // Gemini
+        "oai/",                    // OpenAI direct
+        "mmax/", "mm/",            // MiniMax
+        "kimi/", "moonshot/",      // Kimi/Moonshot
+        "glm/", "zhipu/",          // GLM/Zhipu
+        "ollama/", "lmstudio/",    // Local providers
+        "vllm/", "mlx/",
+        "http://", "https://",     // Custom endpoints
+      ];
+      return !directPrefixes.some(prefix => model.startsWith(prefix));
+    };
+
+    // Prompt for OpenRouter API key if not set AND model needs it (interactive mode only)
+    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey && modelNeedsOpenRouter(cliConfig.model)) {
+      cliConfig.openrouterApiKey = await promptForApiKey();
+      console.log(""); // Empty line after input
     }
 
     // In non-interactive mode, model must be specified (via --model flag or CLAUDISH_MODEL env var)

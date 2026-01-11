@@ -253,12 +253,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     const apiKey = process.env[ENV.OPENROUTER_API_KEY];
     
     // Check if model uses a direct provider that doesn't need OpenRouter
-    const isGeminiModel = config.model?.startsWith("g/") || config.model?.startsWith("gemini/");
-    const isOpenAIModel = config.model?.startsWith("oai/");
-    const isLocalModel = config.model?.startsWith("ollama/") || config.model?.startsWith("lmstudio/") || 
-                         config.model?.startsWith("vllm/") || config.model?.startsWith("mlx/") ||
-                         config.model?.startsWith("http://") || config.model?.startsWith("https://");
-    const isDirectProvider = isGeminiModel || isOpenAIModel || isLocalModel;
+    // Direct providers: Gemini, OpenAI, MiniMax, Kimi/Moonshot, GLM/Zhipu, local providers
+    const directPrefixes = [
+      "g/", "gemini/",           // Gemini
+      "oai/",                    // OpenAI direct
+      "mmax/", "mm/",            // MiniMax
+      "kimi/", "moonshot/",      // Kimi/Moonshot
+      "glm/", "zhipu/",          // GLM/Zhipu
+      "ollama/", "lmstudio/",    // Local providers
+      "vllm/", "mlx/",
+      "http://", "https://",     // Custom endpoints
+    ];
+    const isDirectProvider = config.model && directPrefixes.some(prefix => config.model!.startsWith(prefix));
     
     if (!apiKey && !isDirectProvider) {
       // In interactive mode, we'll prompt for it later
