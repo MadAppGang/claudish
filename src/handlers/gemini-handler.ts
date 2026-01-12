@@ -42,7 +42,7 @@ export class GeminiHandler implements ModelHandler {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private contextWindow = 1000000; // Gemini has 1M context by default
-  private toolCallMap = new Map<string, string>(); // tool_use_id -> function_name for tool result mapping
+  private toolCallMap = new Map<string, { name: string; thoughtSignature?: string }>(); // tool_use_id -> { name, thoughtSignature }
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
     this.provider = provider;
@@ -167,8 +167,8 @@ export class GeminiHandler implements ModelHandler {
         } else if (block.type === "tool_result") {
           // Gemini handles tool results as functionResponse
           // Need to look up the function name from our tool call map
-          const functionName = this.toolCallMap.get(block.tool_use_id);
-          if (!functionName) {
+          const toolInfo = this.toolCallMap.get(block.tool_use_id);
+          if (!toolInfo) {
             log(
               `[GeminiHandler:${this.modelName}] Warning: No function name found for tool_use_id ${block.tool_use_id}`
             );
@@ -176,7 +176,7 @@ export class GeminiHandler implements ModelHandler {
           }
           parts.push({
             functionResponse: {
-              name: functionName,
+              name: toolInfo.name,
               response: {
                 content:
                   typeof block.content === "string" ? block.content : JSON.stringify(block.content),
@@ -203,14 +203,33 @@ export class GeminiHandler implements ModelHandler {
         if (block.type === "text") {
           parts.push({ text: block.text });
         } else if (block.type === "tool_use") {
-          // Track the mapping from tool_use_id to function name for tool results
-          this.toolCallMap.set(block.id, block.name);
-          parts.push({
+          // Look up the stored thoughtSignature for this tool call
+          const toolInfo = this.toolCallMap.get(block.id);
+          let thoughtSignature = toolInfo?.thoughtSignature;
+
+          // If no signature found, use dummy signature to skip validation
+          // This is REQUIRED for Gemini 3/2.5 with thinking enabled
+          // Handles cases like session recovery, migrations, or first request with history
+          // See: https://ai.google.dev/gemini-api/docs/thought-signatures
+          if (!thoughtSignature) {
+            thoughtSignature = "skip_thought_signature_validator";
+            log(`[GeminiHandler:${this.modelName}] Using dummy thoughtSignature for tool ${block.name} (${block.id})`);
+          }
+
+          // Build the function call part
+          const functionCallPart: any = {
             functionCall: {
               name: block.name,
               args: block.input,
             },
-          });
+          };
+
+          // Include thoughtSignature (REQUIRED for Gemini 3/2.5 with thinking enabled)
+          if (thoughtSignature) {
+            functionCallPart.thoughtSignature = thoughtSignature;
+          }
+
+          parts.push(functionCallPart);
         }
       }
     } else if (typeof msg.content === "string") {
@@ -418,6 +437,10 @@ export class GeminiHandler implements ModelHandler {
     const streamMetadata = new Map<string, any>();
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
+
+    // Capture reference to toolCallMap for use in the streaming closure
+    const toolCallMap = this.toolCallMap;
+    const modelName = this.modelName;
 
     return c.body(
       new ReadableStream({
@@ -631,6 +654,17 @@ export class GeminiHandler implements ModelHandler {
                           arguments: JSON.stringify(part.functionCall.args || {}),
                         };
                         tools.set(toolIdx, t);
+
+                        // Extract and store thoughtSignature for Gemini 3/2.5 thinking support
+                        // This is REQUIRED when thinking is enabled - Gemini validates signatures on subsequent requests
+                        const thoughtSignature = part.thoughtSignature;
+                        if (thoughtSignature) {
+                          log(`[GeminiHandler:${modelName}] Captured thoughtSignature for tool ${t.name} (${t.id})`);
+                        }
+                        toolCallMap.set(t.id, {
+                          name: t.name,
+                          thoughtSignature: thoughtSignature,
+                        });
 
                         send("content_block_start", {
                           type: "content_block_start",
