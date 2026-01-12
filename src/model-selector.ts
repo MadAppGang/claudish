@@ -8,8 +8,6 @@ import { search, select, input, confirm } from "@inquirer/prompts";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OpenRouterModel } from "./types.js";
-import { getAvailableModels } from "./model-loader.js";
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -59,6 +57,85 @@ const TRUSTED_FREE_PROVIDERS = [
 ];
 
 /**
+ * Direct provider models (no OpenRouter key needed)
+ * These use direct APIs: Gemini OAuth, OpenAI key, etc.
+ * Free with Gemini OAuth (Code Assist) for personal use.
+ * 
+ * Valid model names from gemini-cli:
+ * - gemini-3-pro-preview, gemini-3-flash-preview (preview models)
+ * - gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
+ */
+const DIRECT_PROVIDER_MODELS: ModelInfo[] = [
+  // Gemini 3.x Preview models
+  {
+    id: "g/gemini-3-pro-preview",
+    name: "Gemini 3 Pro Preview (Direct)",
+    description: "Google's latest preview model - uses Gemini OAuth, no API key needed",
+    provider: "Gemini Direct",
+    pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
+    context: "1048K",
+    contextLength: 1048576,
+    supportsTools: true,
+    supportsReasoning: true,
+    supportsVision: true,
+    isFree: true,
+  },
+  {
+    id: "g/gemini-3-flash-preview",
+    name: "Gemini 3 Flash Preview (Direct)",
+    description: "Fast Gemini 3 preview model - uses Gemini OAuth, no API key needed",
+    provider: "Gemini Direct",
+    pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
+    context: "1048K",
+    contextLength: 1048576,
+    supportsTools: true,
+    supportsReasoning: false,
+    supportsVision: true,
+    isFree: true,
+  },
+  // Gemini 2.5 models (stable)
+  {
+    id: "g/gemini-2.5-pro",
+    name: "Gemini 2.5 Pro (Direct)",
+    description: "Google's most capable stable model - uses Gemini OAuth, no API key needed",
+    provider: "Gemini Direct",
+    pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
+    context: "1048K",
+    contextLength: 1048576,
+    supportsTools: true,
+    supportsReasoning: true,
+    supportsVision: true,
+    isFree: true,
+  },
+  {
+    id: "g/gemini-2.5-flash",
+    name: "Gemini 2.5 Flash (Direct)",
+    description: "Fast & efficient Gemini model - uses Gemini OAuth, no API key needed",
+    provider: "Gemini Direct",
+    pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
+    context: "1048K",
+    contextLength: 1048576,
+    supportsTools: true,
+    supportsReasoning: false,
+    supportsVision: true,
+    isFree: true,
+  },
+  {
+    id: "g/gemini-2.5-flash-lite",
+    name: "Gemini 2.5 Flash Lite (Direct)",
+    description: "Lightweight & fast Gemini model - uses Gemini OAuth, no API key needed",
+    provider: "Gemini Direct",
+    pricing: { input: "FREE*", output: "FREE*", average: "FREE*" },
+    context: "1048K",
+    contextLength: 1048576,
+    supportsTools: true,
+    supportsReasoning: false,
+    supportsVision: true,
+    isFree: true,
+  },
+];
+
+/**
  * Load recommended models from JSON
  */
 function loadRecommendedModels(): ModelInfo[] {
@@ -100,7 +177,7 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
     const response = await fetch("https://openrouter.ai/api/v1/models");
     if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-    const data = await response.json();
+    const data = await response.json() as { data: any[] };
     const models = data.data;
 
     // Cache result
@@ -268,22 +345,25 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   let models: ModelInfo[];
 
   if (freeOnly) {
-    models = await getFreeModels();
+    // Include direct provider models (they're free with OAuth) + free OpenRouter models
+    const freeOpenRouterModels = await getFreeModels();
+    models = [...DIRECT_PROVIDER_MODELS, ...freeOpenRouterModels];
     if (models.length === 0) {
       throw new Error("No free models available");
     }
   } else if (recommended) {
-    // Load recommended models first
+    // Load recommended models first, with direct providers at the top
     const recommendedModels = loadRecommendedModels();
     if (recommendedModels.length > 0) {
-      models = recommendedModels;
+      models = [...DIRECT_PROVIDER_MODELS, ...recommendedModels];
     } else {
       // Fall back to fetching
       const allModels = await getAllModelsForSearch();
-      models = allModels.slice(0, 20);
+      models = [...DIRECT_PROVIDER_MODELS, ...allModels.slice(0, 20)];
     }
   } else {
-    models = await getAllModelsForSearch();
+    const allModels = await getAllModelsForSearch();
+    models = [...DIRECT_PROVIDER_MODELS, ...allModels];
   }
 
   const promptMessage =

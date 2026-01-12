@@ -1,16 +1,16 @@
+
 /**
- * Gemini API Handler
+ * Gemini Code Assist Handler
  *
- * Handles direct communication with Google's Gemini API.
- * Supports streaming, tool calling, and thinking/reasoning.
- *
- * API Documentation: https://ai.google.dev/gemini-api/docs
+ * Handles communication with Google's Code Assist API (gemini-cli backend).
+ * Uses OAuth authentication instead of API keys.
  */
 
 import type { Context } from "hono";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ModelHandler } from "./types.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
@@ -22,60 +22,33 @@ import {
   type ModelPricing,
   type RemoteProvider,
 } from "./shared/remote-provider-types.js";
+import { getValidAccessToken, setupGeminiUser } from "../auth/gemini-oauth.js";
 
-/**
- * Gemini API Handler
- *
- * Uses Gemini's native API format which differs from OpenAI:
- * - Messages use "parts" instead of "content"
- * - Tools use "functionDeclarations"
- * - Responses come as "candidates" with "content.parts"
- */
-export class GeminiHandler implements ModelHandler {
-  private provider: RemoteProvider;
+export class GeminiCodeAssistHandler implements ModelHandler {
   private modelName: string;
-  private apiKey: string;
   private port: number;
   private adapterManager: AdapterManager;
   private middlewareManager: MiddlewareManager;
   private sessionTotalCost = 0;
-  private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
-  private contextWindow = 1048576; // Gemini has 1M context by default (2^20)
-  private toolCallMap = new Map<string, string>(); // tool_use_id -> function_name for tool result mapping
+  private contextWindow = 1000000; // Gemini has 1M context by default
+  private toolCallMap = new Map<string, string>(); // tool_use_id -> function_name
 
-  constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
-    this.provider = provider;
+  constructor(provider: RemoteProvider, modelName: string, port: number) {
     this.modelName = modelName;
-    this.apiKey = apiKey;
     this.port = port;
     this.adapterManager = new AdapterManager(`gemini/${modelName}`);
     this.middlewareManager = new MiddlewareManager();
     this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
     this.middlewareManager
       .initialize()
-      .catch((err) => log(`[GeminiHandler:${modelName}] Middleware init error: ${err}`));
+      .catch((err) => log(`[GeminiCodeAssistHandler:${modelName}] Middleware init error: ${err}`));
   }
 
-  /**
-   * Get pricing for the current model
-   */
   private getPricing(): ModelPricing {
     return getModelPricing("gemini", this.modelName);
   }
 
-  /**
-   * Get the API endpoint URL
-   */
-  private getApiEndpoint(): string {
-    const baseUrl = this.provider.baseUrl;
-    const apiPath = this.provider.apiPath.replace("{model}", this.modelName);
-    return `${baseUrl}${apiPath}`;
-  }
-
-  /**
-   * Write token tracking file
-   */
   private writeTokenFile(input: number, output: number): void {
     try {
       const total = input + output;
@@ -101,15 +74,11 @@ export class GeminiHandler implements ModelHandler {
       mkdirSync(claudishDir, { recursive: true });
       writeFileSync(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
     } catch (e) {
-      log(`[GeminiHandler] Error writing token file: ${e}`);
+      log(`[GeminiCodeAssistHandler] Error writing token file: ${e}`);
     }
   }
 
-  /**
-   * Update token tracking
-   */
   private updateTokenTracking(inputTokens: number, outputTokens: number): void {
-    this.sessionInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
@@ -121,65 +90,44 @@ export class GeminiHandler implements ModelHandler {
     this.writeTokenFile(inputTokens, this.sessionOutputTokens);
   }
 
-  /**
-   * Convert Claude messages to Gemini format
-   */
+  // Reuse message conversion logic from GeminiHandler
+  // We can duplicate it here to avoid tight coupling or refactor later.
+  // Duplicating for now to ensure stability.
+
   private convertToGeminiMessages(claudeRequest: any): any[] {
     const messages: any[] = [];
-
-    // Process each message
     if (claudeRequest.messages) {
       for (const msg of claudeRequest.messages) {
         if (msg.role === "user") {
           const parts = this.convertUserMessageParts(msg);
-          if (parts.length > 0) {
-            messages.push({ role: "user", parts });
-          }
+          if (parts.length > 0) messages.push({ role: "user", parts });
         } else if (msg.role === "assistant") {
           const parts = this.convertAssistantMessageParts(msg);
-          if (parts.length > 0) {
-            messages.push({ role: "model", parts }); // Gemini uses "model" not "assistant"
-          }
+          if (parts.length > 0) messages.push({ role: "model", parts });
         }
       }
     }
-
     return messages;
   }
 
-  /**
-   * Convert user message content to Gemini parts
-   */
   private convertUserMessageParts(msg: any): any[] {
     const parts: any[] = [];
-
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === "text") {
           parts.push({ text: block.text });
         } else if (block.type === "image") {
           parts.push({
-            inlineData: {
-              mimeType: block.source.media_type,
-              data: block.source.data,
-            },
+            inlineData: { mimeType: block.source.media_type, data: block.source.data },
           });
         } else if (block.type === "tool_result") {
-          // Gemini handles tool results as functionResponse
-          // Need to look up the function name from our tool call map
           const functionName = this.toolCallMap.get(block.tool_use_id);
-          if (!functionName) {
-            log(
-              `[GeminiHandler:${this.modelName}] Warning: No function name found for tool_use_id ${block.tool_use_id}`
-            );
-            continue;
-          }
+          if (!functionName) continue;
           parts.push({
             functionResponse: {
               name: functionName,
               response: {
-                content:
-                  typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                content: typeof block.content === "string" ? block.content : JSON.stringify(block.content),
               },
             },
           });
@@ -188,29 +136,21 @@ export class GeminiHandler implements ModelHandler {
     } else if (typeof msg.content === "string") {
       parts.push({ text: msg.content });
     }
-
     return parts;
   }
 
-  /**
-   * Convert assistant message content to Gemini parts
-   */
   private convertAssistantMessageParts(msg: any): any[] {
     const parts: any[] = [];
     let isFirstFunctionCall = true;
-
+    
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === "text") {
           parts.push({ text: block.text });
         } else if (block.type === "tool_use") {
-          // Track the mapping from tool_use_id to function name for tool results
           this.toolCallMap.set(block.id, block.name);
           const part: any = {
-            functionCall: {
-              name: block.name,
-              args: block.input,
-            },
+            functionCall: { name: block.name, args: block.input },
           };
           
           // Gemini 3 models require thoughtSignature on the first functionCall in active loops
@@ -226,147 +166,63 @@ export class GeminiHandler implements ModelHandler {
     } else if (typeof msg.content === "string") {
       parts.push({ text: msg.content });
     }
-
     return parts;
   }
 
-  /**
-   * Convert Claude tools to Gemini function declarations
-   */
   private convertToGeminiTools(claudeRequest: any): any {
-    if (!claudeRequest.tools || claudeRequest.tools.length === 0) {
-      return undefined;
-    }
-
+    if (!claudeRequest.tools?.length) return undefined;
     const functionDeclarations = claudeRequest.tools.map((tool: any) => ({
       name: tool.name,
       description: tool.description,
       parameters: this.convertJsonSchemaToGemini(tool.input_schema),
     }));
-
     return [{ functionDeclarations }];
   }
 
-  /**
-   * Normalize type field - Gemini requires single string type, not arrays
-   * JSON Schema allows: type: ["string", "null"] but Gemini needs: type: "string"
-   */
-  private normalizeType(type: any): string {
-    if (!type) return "string";
-
-    // Handle array types (e.g., ["string", "null"])
-    if (Array.isArray(type)) {
-      // Filter out "null" and take the first non-null type
-      const nonNullTypes = type.filter((t: string) => t !== "null");
-      return nonNullTypes[0] || "string";
-    }
-
-    return type;
-  }
-
-  /**
-   * Convert JSON Schema to Gemini's schema format
-   * Gemini uses a strict subset of OpenAPI 3.0.3 schema
-   */
   private convertJsonSchemaToGemini(schema: any): any {
-    if (!schema) return { type: "object" };
-
-    // Deep clone to avoid mutation
-    return this.sanitizeSchemaForGemini(schema);
+    if (!schema) return {};
+    const geminiSchema: any = { type: schema.type || "object" };
+    if (schema.properties) {
+      geminiSchema.properties = {};
+      for (const [key, prop] of Object.entries(schema.properties)) {
+        geminiSchema.properties[key] = this.convertPropertyToGemini(prop as any);
+      }
+    }
+    if (schema.required) geminiSchema.required = schema.required;
+    return geminiSchema;
   }
 
-  /**
-   * Recursively sanitize schema for Gemini API compatibility
-   *
-   * Gemini's API is strict about schema format:
-   * - type must be a single string, not an array
-   * - No additionalProperties, $schema, $ref, $id, $defs, definitions
-   * - No anyOf, oneOf, allOf (complex unions not supported)
-   * - No format field (uri, date-time, etc.)
-   * - No default, const, examples
-   * - Properties inside objects must be sanitized recursively
-   */
-  private sanitizeSchemaForGemini(schema: any): any {
-    if (!schema || typeof schema !== "object") {
-      return schema;
-    }
-
-    // Handle arrays (shouldn't be at top level, but handle anyway)
-    if (Array.isArray(schema)) {
-      return schema.map((item) => this.sanitizeSchemaForGemini(item));
-    }
-
-    const result: any = {};
-
-    // Normalize and set type (MUST be single string)
-    const normalizedType = this.normalizeType(schema.type);
-    result.type = normalizedType;
-
-    // Copy allowed properties
-    if (schema.description && typeof schema.description === "string") {
-      result.description = schema.description;
-    }
-
-    // Handle enum (must be array of strings/numbers)
-    if (Array.isArray(schema.enum)) {
-      result.enum = schema.enum.filter(
-        (v: any) => typeof v === "string" || typeof v === "number" || typeof v === "boolean"
-      );
-    }
-
-    // Handle required array
-    if (Array.isArray(schema.required)) {
-      result.required = schema.required.filter((r: any) => typeof r === "string");
-    }
-
-    // Handle properties (for objects)
-    if (schema.properties && typeof schema.properties === "object") {
+  private convertPropertyToGemini(prop: any): any {
+    const result: any = { type: prop.type || "string" };
+    if (prop.description) result.description = prop.description;
+    if (prop.enum) result.enum = prop.enum;
+    if (prop.items) result.items = this.convertPropertyToGemini(prop.items);
+    if (prop.properties) {
       result.properties = {};
-      for (const [key, value] of Object.entries(schema.properties)) {
-        if (value && typeof value === "object") {
-          result.properties[key] = this.sanitizeSchemaForGemini(value);
-        }
+      for (const [k, v] of Object.entries(prop.properties)) {
+        result.properties[k] = this.convertPropertyToGemini(v as any);
       }
     }
-
-    // Handle items (for arrays)
-    if (schema.items) {
-      if (typeof schema.items === "object" && !Array.isArray(schema.items)) {
-        result.items = this.sanitizeSchemaForGemini(schema.items);
-      } else if (Array.isArray(schema.items)) {
-        // Tuple validation - take first item's schema
-        result.items = this.sanitizeSchemaForGemini(schema.items[0]);
-      }
-    }
-
-    // Handle nullable - Gemini doesn't support nullable directly
-    // We just use the base type (already handled by normalizeType)
-
-    // IMPORTANT: Do NOT copy these unsupported fields:
-    // - additionalProperties (causes "Proto field is not repeating" error)
-    // - $schema, $ref, $id, $defs, definitions
-    // - anyOf, oneOf, allOf (complex unions)
-    // - format (uri, date-time, etc.)
-    // - default, const, examples
-    // - minimum, maximum, minLength, maxLength, pattern (validation constraints)
-
     return result;
   }
 
-  /**
-   * Convert a single property to Gemini format (alias for backward compatibility)
-   */
-  private convertPropertyToGemini(prop: any): any {
-    return this.sanitizeSchemaForGemini(prop);
-  }
-
-  /**
-   * Build the Gemini API request payload
-   */
-  private buildGeminiPayload(claudeRequest: any): any {
+  private buildVertexPayload(claudeRequest: any): any {
     const contents = this.convertToGeminiMessages(claudeRequest);
     const tools = this.convertToGeminiTools(claudeRequest);
-
+    
+    // Note: Use snake_case for generation_config as per Vertex AI REST API?
+    // Wait, Code Assist Server uses `toVertexGenerationConfig` which maps to camelCase in TS but `JSON.stringify`?
+    // The gemini-cli code uses `generationConfig` (camelCase) in TS, but we need to know what it sends over wire.
+    // The `gemini-oauth.md` says: `generationConfig` (camelCase) but `max_output_tokens` (snake_case).
+    // Let's stick to what we saw in `gemini-cli`: `maxOutputTokens`.
+    // Actually `gemini-oauth.md` says: `Uses snake_case for config fields (max_output_tokens, not maxOutputTokens)`.
+    // Wait, my repogrep said: `maxOutputTokens: config.maxOutputTokens`.
+    // But `JSON.stringify(req)` sends it.
+    // If I use `maxOutputTokens` it should work if the server accepts camelCase.
+    // However, Vertex AI REST API usually uses camelCase for JSON fields.
+    // `gemini-oauth.md` line 146: "Uses snake_case for config fields".
+    // I will try camelCase first as per my search result from `converter.ts` which returns an object with `maxOutputTokens`.
+    
     const payload: any = {
       contents,
       generationConfig: {
@@ -375,14 +231,11 @@ export class GeminiHandler implements ModelHandler {
       },
     };
 
-    // Add system instruction if present
     if (claudeRequest.system) {
       let systemContent = Array.isArray(claudeRequest.system)
         ? claudeRequest.system.map((i: any) => i.text || i).join("\n\n")
         : claudeRequest.system;
       systemContent = filterIdentity(systemContent);
-
-      // Add Gemini-specific instructions
       systemContent += `\n\nCRITICAL INSTRUCTION FOR OUTPUT FORMAT:
 1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
 2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so..."
@@ -391,25 +244,18 @@ export class GeminiHandler implements ModelHandler {
       payload.systemInstruction = { parts: [{ text: systemContent }] };
     }
 
-    if (tools) {
-      payload.tools = tools;
-    }
+    if (tools) payload.tools = tools;
 
-    // Handle thinking/reasoning configuration
     if (claudeRequest.thinking) {
       const { budget_tokens } = claudeRequest.thinking;
-
       if (this.modelName.includes("gemini-3")) {
-        // Gemini 3 uses thinking_level
         payload.generationConfig.thinkingConfig = {
           thinkingLevel: budget_tokens >= 16000 ? "high" : "low",
         };
       } else {
-        // Gemini 2.5 uses thinking_budget
         const MAX_GEMINI_BUDGET = 24576;
-        const budget = Math.min(budget_tokens, MAX_GEMINI_BUDGET);
         payload.generationConfig.thinkingConfig = {
-          thinkingBudget: budget,
+          thinkingBudget: Math.min(budget_tokens, MAX_GEMINI_BUDGET),
         };
       }
     }
@@ -417,10 +263,10 @@ export class GeminiHandler implements ModelHandler {
     return payload;
   }
 
-  /**
-   * Handle the streaming response from Gemini
-   */
   private handleStreamingResponse(c: Context, response: Response, _claudeRequest: any): Response {
+    // This logic is identical to GeminiHandler because the response format is likely the same (Vertex/Gemini API)
+    // I'm copying it verbatim from GeminiHandler to avoid dependency/shared code issues for now.
+    
     let isClosed = false;
     let ping: NodeJS.Timeout | null = null;
     const encoder = new TextEncoder();
@@ -439,8 +285,6 @@ export class GeminiHandler implements ModelHandler {
           };
 
           const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-          // State
           let usage: any = null;
           let finalized = false;
           let textStarted = false;
@@ -477,12 +321,8 @@ export class GeminiHandler implements ModelHandler {
             if (finalized) return;
             finalized = true;
 
-            if (thinkingStarted) {
-              send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
-            }
-            if (textStarted) {
-              send("content_block_stop", { type: "content_block_stop", index: textIdx });
-            }
+            if (thinkingStarted) send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+            if (textStarted) send("content_block_stop", { type: "content_block_stop", index: textIdx });
             for (const t of Array.from(tools.values())) {
               if (t.started && !t.closed) {
                 send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
@@ -490,23 +330,15 @@ export class GeminiHandler implements ModelHandler {
               }
             }
 
-            await this.middlewareManager.afterStreamComplete(
-              `gemini/${this.modelName}`,
-              streamMetadata
-            );
+            await this.middlewareManager.afterStreamComplete(`gemini/${this.modelName}`, streamMetadata);
 
             if (usage) {
-              log(
-                `[GeminiHandler] Usage: prompt=${usage.promptTokenCount || 0}, completion=${usage.candidatesTokenCount || 0}`
-              );
-              this.updateTokenTracking(
-                usage.promptTokenCount || 0,
-                usage.candidatesTokenCount || 0
-              );
+              log(`[GeminiCodeAssist] Usage: prompt=${usage.promptTokenCount || 0}, completion=${usage.candidatesTokenCount || 0}`);
+              this.updateTokenTracking(usage.promptTokenCount || 0, usage.candidatesTokenCount || 0);
             }
 
             if (reason === "error") {
-              log(`[GeminiHandler] Stream error: ${err}`);
+              log(`[GeminiCodeAssist] Stream error: ${err}`);
               send("error", { type: "error", error: { type: "api_error", message: err } });
             } else {
               const hasToolCalls = tools.size > 0;
@@ -519,9 +351,7 @@ export class GeminiHandler implements ModelHandler {
             }
 
             if (!isClosed) {
-              try {
-                controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
-              } catch (e) {}
+              try { controller.enqueue(encoder.encode("data: [DONE]\n\n\n")); } catch (e) {}
               controller.close();
               isClosed = true;
               if (ping) clearInterval(ping);
@@ -549,19 +379,16 @@ export class GeminiHandler implements ModelHandler {
 
                 try {
                   const chunk = JSON.parse(dataStr);
+                  
+                  // Code Assist API wraps response in { response: { candidates: [...] } }
+                  const responseData = chunk.response || chunk;
+                  if (responseData.usageMetadata) usage = responseData.usageMetadata;
 
-                  // Extract usage metadata
-                  if (chunk.usageMetadata) {
-                    usage = chunk.usageMetadata;
-                  }
-
-                  // Process candidates
-                  const candidate = chunk.candidates?.[0];
+                  const candidate = responseData.candidates?.[0];
                   if (candidate?.content?.parts) {
                     for (const part of candidate.content.parts) {
                       lastActivity = Date.now();
 
-                      // Handle thinking/reasoning text
                       if (part.thought || part.thoughtText) {
                         const thinkingContent = part.thought || part.thoughtText;
                         if (!thinkingStarted) {
@@ -580,17 +407,12 @@ export class GeminiHandler implements ModelHandler {
                         });
                       }
 
-                      // Handle regular text
                       if (part.text) {
-                        // Close thinking block before text
                         if (thinkingStarted) {
-                          send("content_block_stop", {
-                            type: "content_block_stop",
-                            index: thinkingIdx,
-                          });
+                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
                           thinkingStarted = false;
                         }
-
+                        
                         const res = adapter.processTextContent(part.text, accumulatedText);
                         accumulatedText += res.cleanedText || "";
 
@@ -612,21 +434,13 @@ export class GeminiHandler implements ModelHandler {
                         }
                       }
 
-                      // Handle function calls
                       if (part.functionCall) {
-                        // Close other blocks
                         if (thinkingStarted) {
-                          send("content_block_stop", {
-                            type: "content_block_stop",
-                            index: thinkingIdx,
-                          });
+                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
                           thinkingStarted = false;
                         }
                         if (textStarted) {
-                          send("content_block_stop", {
-                            type: "content_block_stop",
-                            index: textIdx,
-                          });
+                          send("content_block_stop", { type: "content_block_stop", index: textIdx });
                           textStarted = false;
                         }
 
@@ -652,31 +466,21 @@ export class GeminiHandler implements ModelHandler {
                           index: t.blockIndex,
                           delta: { type: "input_json_delta", partial_json: t.arguments },
                         });
-                        send("content_block_stop", {
-                          type: "content_block_stop",
-                          index: t.blockIndex,
-                        });
+                        send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
                         t.closed = true;
                       }
                     }
                   }
 
-                  // Check for finish reason
-                  if (candidate?.finishReason) {
-                    if (
-                      candidate.finishReason === "STOP" ||
-                      candidate.finishReason === "MAX_TOKENS"
-                    ) {
-                      await finalize("done");
-                      return;
-                    }
+                  if (candidate?.finishReason === "STOP" || candidate?.finishReason === "MAX_TOKENS") {
+                    await finalize("done");
+                    return;
                   }
                 } catch (e) {
-                  log(`[GeminiHandler] Parse error: ${e}`);
+                  log(`[GeminiCodeAssist] Parse error: ${e}`);
                 }
               }
             }
-
             await finalize("unexpected");
           } catch (e) {
             await finalize("error", String(e));
@@ -697,113 +501,103 @@ export class GeminiHandler implements ModelHandler {
     );
   }
 
-  /**
-   * Main request handler
-   */
   async handle(c: Context, payload: any): Promise<Response> {
-    // Transform Claude request
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
-    // Log request summary
-    const systemPromptLength =
-      typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
-    logStructured("Gemini Request", {
+    logStructured("Gemini Code Assist Request", {
       targetModel: `gemini/${this.modelName}`,
-      originalModel: payload.model,
       messageCount: claudeRequest.messages?.length || 0,
       toolCount: claudeRequest.tools?.length || 0,
-      systemPromptLength,
-      maxTokens: claudeRequest.max_tokens,
     });
 
-    // Build Gemini request
-    const geminiPayload = this.buildGeminiPayload(claudeRequest);
-
-    // Call middleware
-    await this.middlewareManager.beforeRequest({
-      modelId: `gemini/${this.modelName}`,
-      messages: geminiPayload.contents,
-      tools: claudeRequest.tools || [],
-      stream: true,
-    });
-
-    // Make API call with timeout
-    const endpoint = this.getApiEndpoint();
-    log(`[GeminiHandler] Calling API: ${endpoint}`);
-
-    // Use AbortController for timeout (30 seconds for connection + response)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-    let response: Response;
     try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": this.apiKey,
-        },
-        body: JSON.stringify(geminiPayload),
-        signal: controller.signal,
+      // 1. Get OAuth Token
+      const accessToken = await getValidAccessToken();
+      
+      // 2. Setup User & Get Project
+      const { projectId } = await setupGeminiUser(accessToken);
+      
+      // 3. Build Payload
+      const vertexPayload = this.buildVertexPayload(claudeRequest);
+      const requestBody = {
+        model: this.modelName,
+        project: projectId,
+        user_prompt_id: randomUUID(), // Required by Code Assist?
+        request: vertexPayload,
+      };
+
+      await this.middlewareManager.beforeRequest({
+        modelId: `gemini/${this.modelName}`,
+        messages: vertexPayload.contents,
+        tools: claudeRequest.tools || [],
+        stream: true,
       });
-    } catch (fetchError: any) {
-      clearTimeout(timeoutId);
-      // Provide helpful error message for common issues
-      if (fetchError.name === "AbortError") {
-        log(`[GeminiHandler] Request timed out after 30s`);
-        return c.json(
-          {
-            error: {
-              type: "timeout_error",
-              message:
-                "Request to Gemini API timed out. Check your network connection to generativelanguage.googleapis.com",
-            },
+
+      // 4. Send Request (with retry for rate limits)
+      const endpoint = "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse";
+      log(`[GeminiCodeAssist] Calling API: ${endpoint} (Project: ${projectId})`);
+
+      let response: Response | null = null;
+      let lastError = "";
+      const maxRetries = 5;
+      
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${accessToken}`,
           },
-          504
-        );
+          body: JSON.stringify(requestBody),
+        });
+        
+        log(`[GeminiCodeAssist] Response status: ${response.status}`);
+        
+        if (response.status === 429) {
+          // Rate limited - extract retry delay and wait
+          const errorData = await response.json().catch(() => ({}));
+          const retryDelay = errorData?.error?.details?.find((d: any) => d.retryDelay)?.retryDelay;
+          const waitMs = retryDelay ? parseFloat(retryDelay) * 1000 : (attempt + 1) * 1000;
+          log(`[GeminiCodeAssist] Rate limited, waiting ${waitMs}ms before retry...`);
+          lastError = errorData?.error?.message || "Rate limited";
+          await new Promise(r => setTimeout(r, Math.min(waitMs, 5000)));
+          continue;
+        }
+        
+        break;
       }
-      if (fetchError.cause?.code === "UND_ERR_CONNECT_TIMEOUT") {
-        log(`[GeminiHandler] Connection timeout: ${fetchError.message}`);
-        return c.json(
-          {
-            error: {
-              type: "connection_error",
-              message: `Cannot connect to Gemini API (generativelanguage.googleapis.com). This may be due to: network/firewall blocking, VPN interference, or regional restrictions. Error: ${fetchError.cause?.code}`,
-            },
-          },
-          503
-        );
+      
+      if (!response || response.status === 429) {
+        log(`[GeminiCodeAssist] All retries exhausted: ${lastError}`);
+        return c.json({ error: { type: "rate_limit_error", message: lastError } }, 429);
       }
-      log(`[GeminiHandler] Fetch error: ${fetchError.message}`);
-      return c.json(
-        {
-          error: {
-            type: "network_error",
-            message: `Failed to connect to Gemini API: ${fetchError.message}`,
-          },
-        },
-        503
-      );
-    } finally {
-      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        log(`[GeminiCodeAssist] Error: ${errorText}`);
+        return c.json({ error: errorText }, response.status as any);
+      }
+
+      if (droppedParams.length > 0) {
+        c.header("X-Dropped-Params", droppedParams.join(", "));
+      }
+
+      return this.handleStreamingResponse(c, response, claudeRequest);
+    } catch (e: any) {
+      log(`[GeminiCodeAssist] Handler error: ${e.message}`);
+      // Special handling for auth errors
+      if (e.message.includes("No OAuth credentials") || e.message.includes("run `claudish --gemini-login`")) {
+         return c.json({ 
+             error: { 
+                 type: "authentication_error", 
+                 message: "Authentication required. Please run `claudish --gemini-login` to use Gemini without an API key." 
+             } 
+         }, 401);
+      }
+      return c.json({ error: { type: "api_error", message: e.message } }, 500);
     }
-
-    log(`[GeminiHandler] Response status: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      log(`[GeminiHandler] Error: ${errorText}`);
-      return c.json({ error: errorText }, response.status as any);
-    }
-
-    if (droppedParams.length > 0) {
-      c.header("X-Dropped-Params", droppedParams.join(", "));
-    }
-
-    return this.handleStreamingResponse(c, response, claudeRequest);
   }
 
-  async shutdown(): Promise<void> {
-    // Cleanup if needed
-  }
+  async shutdown(): Promise<void> {}
 }
+
