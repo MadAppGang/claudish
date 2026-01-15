@@ -246,15 +246,116 @@ export class OpenAIHandler implements ModelHandler {
   }
 
   /**
+   * Convert messages from Chat Completions format to Responses API format
+   * Key differences:
+   * - User messages: type "text" -> "input_text"
+   * - Assistant messages: type "text" -> "output_text"
+   * - Images: type "image_url" -> "input_image"
+   * - System messages are filtered out (go to instructions field)
+   */
+  private convertMessagesToResponsesAPI(messages: any[]): any[] {
+    return messages
+      .filter((msg) => msg.role !== "system") // System messages go to instructions
+      .map((msg) => {
+        // Handle tool role messages
+        if (msg.role === "tool") {
+          return {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `[Tool Result for ${msg.tool_call_id}]: ${typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content)}`,
+              },
+            ],
+          };
+        }
+
+        // Handle assistant messages with tool_calls
+        if (msg.role === "assistant" && msg.tool_calls) {
+          const content: any[] = [];
+
+          // Add any text content first
+          if (msg.content) {
+            const textContent =
+              typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+            if (textContent) {
+              content.push({ type: "output_text", text: textContent });
+            }
+          }
+
+          // Add function calls
+          for (const toolCall of msg.tool_calls) {
+            if (toolCall.type === "function") {
+              content.push({
+                type: "function_call",
+                id: toolCall.id,
+                name: toolCall.function.name,
+                arguments: toolCall.function.arguments,
+              });
+            }
+          }
+
+          return { role: "assistant", content };
+        }
+
+        // Handle string content (simple messages)
+        if (typeof msg.content === "string") {
+          return {
+            role: msg.role,
+            content: [
+              {
+                type: msg.role === "user" ? "input_text" : "output_text",
+                text: msg.content,
+              },
+            ],
+          };
+        }
+
+        // Handle array content (structured messages)
+        if (Array.isArray(msg.content)) {
+          const convertedContent = msg.content.map((block: any) => {
+            // Convert text blocks
+            if (block.type === "text") {
+              return {
+                type: msg.role === "user" ? "input_text" : "output_text",
+                text: block.text,
+              };
+            }
+
+            // Convert image blocks
+            if (block.type === "image_url") {
+              return {
+                type: "input_image",
+                image_url: block.image_url,
+              };
+            }
+
+            // Keep other types as-is
+            return block;
+          });
+
+          return {
+            role: msg.role,
+            content: convertedContent,
+          };
+        }
+
+        // Fallback for any other format
+        return msg;
+      });
+  }
+
+  /**
    * Build the OpenAI Responses API payload for Codex models
-   * Responses API uses 'input' instead of 'messages'
+   * Responses API uses 'input' instead of 'messages' and different content types
    */
   private buildResponsesPayload(claudeRequest: any, messages: any[], tools: any[]): any {
-    // Convert messages array to input format
-    // The Responses API accepts messages in a compatible format
+    // Convert messages to Responses API format (input_text, output_text, etc.)
+    const convertedMessages = this.convertMessagesToResponsesAPI(messages);
+
     const payload: any = {
       model: this.modelName,
-      input: messages, // Responses API accepts messages array as input
+      input: convertedMessages,
       stream: true,
     };
 

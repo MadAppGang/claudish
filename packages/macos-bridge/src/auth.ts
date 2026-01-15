@@ -62,8 +62,10 @@ export class AuthManager {
 		return async (c: Context, next: Next) => {
 			const path = c.req.path;
 
-			// Health endpoint is public (needed for Swift app to check if bridge is running)
-			if (path === '/health') {
+			// Public endpoints (no auth required)
+			// - /health: Swift app checks if bridge is running
+			// - /proxy.pac: Browsers need to fetch PAC file without auth
+			if (path === '/health' || path === '/proxy.pac') {
 				return next();
 			}
 
