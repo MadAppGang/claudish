@@ -479,6 +479,11 @@ export class OpenAIHandler implements ModelHandler {
               try {
                 const event = JSON.parse(data);
 
+                // Log event types for debugging (only in debug mode)
+                if (getLogLevel() === "debug" && event.type) {
+                  log(`[OpenAIHandler] Responses event: ${event.type}`);
+                }
+
                 // Handle different Responses API events
                 if (event.type === "response.output_text.delta") {
                   // Convert to Claude content_block_delta
@@ -576,11 +581,24 @@ export class OpenAIHandler implements ModelHandler {
                       );
                     }
                   }
-                } else if (event.type === "response.completed") {
-                  // Extract usage from completed event
+                } else if (
+                  event.type === "response.completed" ||
+                  event.type === "response.done"
+                ) {
+                  // Extract usage from completed/done event
                   if (event.response?.usage) {
                     inputTokens = event.response.usage.input_tokens || 0;
                     outputTokens = event.response.usage.output_tokens || 0;
+                    log(
+                      `[OpenAIHandler] Responses API usage: input=${inputTokens}, output=${outputTokens}`
+                    );
+                  } else if (event.usage) {
+                    // Alternative location for usage data
+                    inputTokens = event.usage.input_tokens || 0;
+                    outputTokens = event.usage.output_tokens || 0;
+                    log(
+                      `[OpenAIHandler] Responses API usage (alt): input=${inputTokens}, output=${outputTokens}`
+                    );
                   }
                 }
               } catch (parseError) {
