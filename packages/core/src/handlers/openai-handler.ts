@@ -441,6 +441,9 @@ export class OpenAIHandler implements ModelHandler {
     let outputTokens = 0;
     let hasTextContent = false;
     let hasToolUse = false;
+    let lastActivity = Date.now();
+    let pingInterval: ReturnType<typeof setInterval> | null = null;
+    let isClosed = false;
 
     // Track function calls being streamed
     const functionCalls: Map<string, { name: string; arguments: string; index: number }> =
@@ -448,10 +451,16 @@ export class OpenAIHandler implements ModelHandler {
 
     const stream = new ReadableStream({
       start: async (controller) => {
+        const send = (event: string, data: any) => {
+          if (!isClosed) {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          }
+        };
+
         // Send initial message_start event
         // Use placeholder for input_tokens since Responses API only reports usage at the end
         log(`[OpenAIHandler] Sending message_start with placeholder tokens`);
-        const messageStart = {
+        send("message_start", {
           type: "message_start",
           message: {
             id: `msg_${Date.now()}`,
@@ -463,18 +472,23 @@ export class OpenAIHandler implements ModelHandler {
             stop_sequence: null,
             usage: { input_tokens: 100, output_tokens: 1 },
           },
-        };
-        controller.enqueue(
-          encoder.encode(`event: message_start\ndata: ${JSON.stringify(messageStart)}\n\n`)
-        );
+        });
 
-        // Send ping after message_start (like shared handler does)
-        controller.enqueue(encoder.encode(`event: ping\ndata: {"type":"ping"}\n\n`));
+        // Send ping after message_start
+        send("ping", { type: "ping" });
+
+        // Set up periodic ping to keep connection alive (like OpenRouter handler)
+        pingInterval = setInterval(() => {
+          if (!isClosed && Date.now() - lastActivity > 1000) {
+            send("ping", { type: "ping" });
+          }
+        }, 1000);
 
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            lastActivity = Date.now();
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n");
@@ -511,27 +525,19 @@ export class OpenAIHandler implements ModelHandler {
                   // Convert to Claude content_block_delta
                   if (!hasTextContent) {
                     // Send content_block_start first
-                    const blockStart = {
+                    send("content_block_start", {
                       type: "content_block_start",
                       index: blockIndex,
                       content_block: { type: "text", text: "" },
-                    };
-                    controller.enqueue(
-                      encoder.encode(
-                        `event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`
-                      )
-                    );
+                    });
                     hasTextContent = true;
                   }
 
-                  const delta = {
+                  send("content_block_delta", {
                     type: "content_block_delta",
                     index: blockIndex,
                     delta: { type: "text_delta", text: event.delta || "" },
-                  };
-                  controller.enqueue(
-                    encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
-                  );
+                  });
                 } else if (event.type === "response.output_item.added") {
                   // New item added - could be function_call
                   if (event.item?.type === "function_call") {
@@ -545,17 +551,12 @@ export class OpenAIHandler implements ModelHandler {
 
                     // Close text block if open
                     if (hasTextContent && !hasToolUse) {
-                      const blockStop = { type: "content_block_stop", index: blockIndex };
-                      controller.enqueue(
-                        encoder.encode(
-                          `event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`
-                        )
-                      );
+                      send("content_block_stop", { type: "content_block_stop", index: blockIndex });
                       blockIndex++;
                     }
 
                     // Send tool_use block start
-                    const toolStart = {
+                    send("content_block_start", {
                       type: "content_block_start",
                       index: fnIndex,
                       content_block: {
@@ -564,12 +565,7 @@ export class OpenAIHandler implements ModelHandler {
                         name: event.item.name || "",
                         input: {},
                       },
-                    };
-                    controller.enqueue(
-                      encoder.encode(
-                        `event: content_block_start\ndata: ${JSON.stringify(toolStart)}\n\n`
-                      )
-                    );
+                    });
                     hasToolUse = true;
                   }
                 } else if (event.type === "response.function_call_arguments.delta") {
@@ -580,14 +576,11 @@ export class OpenAIHandler implements ModelHandler {
                     fnCall.arguments += event.delta || "";
 
                     // Send input_json_delta
-                    const delta = {
+                    send("content_block_delta", {
                       type: "content_block_delta",
                       index: fnCall.index,
                       delta: { type: "input_json_delta", partial_json: event.delta || "" },
-                    };
-                    controller.enqueue(
-                      encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
-                    );
+                    });
                   }
                 } else if (event.type === "response.output_item.done") {
                   // Item complete - close the tool_use block
@@ -595,12 +588,7 @@ export class OpenAIHandler implements ModelHandler {
                     const callId = event.item.call_id || event.item.id;
                     const fnCall = functionCalls.get(callId);
                     if (fnCall) {
-                      const blockStop = { type: "content_block_stop", index: fnCall.index };
-                      controller.enqueue(
-                        encoder.encode(
-                          `event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`
-                        )
-                      );
+                      send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
                     }
                   }
                 } else if (
@@ -629,38 +617,42 @@ export class OpenAIHandler implements ModelHandler {
             }
           }
 
+          // Clear ping interval before closing
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+          isClosed = true;
+
           // Send content_block_stop for text if not already closed
           if (hasTextContent && !hasToolUse) {
-            const blockStop = { type: "content_block_stop", index: blockIndex };
-            controller.enqueue(
-              encoder.encode(`event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`)
-            );
+            send("content_block_stop", { type: "content_block_stop", index: blockIndex });
           }
 
           // Determine stop reason
           const stopReason = hasToolUse ? "tool_use" : "end_turn";
 
-          // Send message_delta with usage (include input_tokens for clients that read it here)
-          const messageDelta = {
+          // Send message_delta with usage
+          send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: stopReason, stop_sequence: null },
             usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-          };
-          controller.enqueue(
-            encoder.encode(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`)
-          );
+          });
 
           // Send message_stop
-          const messageStop = { type: "message_stop" };
-          controller.enqueue(
-            encoder.encode(`event: message_stop\ndata: ${JSON.stringify(messageStop)}\n\n`)
-          );
+          send("message_stop", { type: "message_stop" });
 
           // Update token tracking
           this.updateTokenTracking(inputTokens, outputTokens);
 
           controller.close();
         } catch (error) {
+          // Clean up ping interval on error
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+          isClosed = true;
           log(`[OpenAIHandler] Responses streaming error: ${error}`);
           controller.error(error);
         }

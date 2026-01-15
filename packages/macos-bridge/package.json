@@ -1,6 +1,6 @@
 {
   "name": "@claudish/macos-bridge",
-  "version": "3.3.10",
+  "version": "3.3.11",
   "description": "HTTP bridge for macOS desktop app integration with Claudish proxy",
   "type": "module",
   "main": "./dist/index.js",
