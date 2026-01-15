@@ -37,10 +37,9 @@
   },
   "files": [
     "dist/",
-    "../../scripts/",
-    "../../skills/",
-    "../../AI_AGENT_GUIDE.md",
-    "../../recommended-models.json"
+    "AI_AGENT_GUIDE.md",
+    "recommended-models.json",
+    "skills/"
   ],
   "engines": {
     "node": ">=18.0.0",

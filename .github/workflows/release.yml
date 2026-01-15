@@ -41,7 +41,12 @@ jobs:
         run: bun install
 
       - name: Build binary
-        run: bun build src/index.ts --compile --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
+        run: |
+          cd packages/cli
+          # Inject version from tag into fallback (for compiled binaries)
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          sed -i.bak "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" src/cli.ts
+          bun build src/index.ts --compile --target=${{ matrix.target }} --outfile ../../${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -123,11 +128,28 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build
-        run: bun run build:ci
+      - name: Build core package
+        run: cd packages/core && bun run build
+
+      - name: Build CLI package
+        run: cd packages/cli && bun run build:ci
+
+      - name: Prepare for npm publish
+        run: |
+          cd packages/cli
+          # Remove workspace dependency (bundled in dist) and fix files array
+          node -e "
+            const pkg = require('./package.json');
+            delete pkg.dependencies['@claudish/core'];
+            // Use local files, not relative paths to root
+            pkg.files = ['dist/', 'AI_AGENT_GUIDE.md', 'recommended-models.json', 'skills/'];
+            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
+          "
+          echo 'Modified package.json:'
+          cat package.json
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: cd packages/cli && npm publish --access public --provenance
 
   update-homebrew:
     needs: release

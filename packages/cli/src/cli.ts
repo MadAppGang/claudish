@@ -7,11 +7,17 @@ import { dirname, join } from "node:path";
 import { fuzzyScore } from "./utils.js";
 import { getModelMapping } from "./profile-config.js";
 
-// Read version from package.json
+// Read version from package.json (with fallback for compiled binaries)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
-const VERSION = packageJson.version;
+
+let VERSION = "3.2.3"; // Fallback version for compiled binaries
+try {
+  const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
+  VERSION = packageJson.version;
+} catch {
+  // Running as compiled binary - use fallback version
+}
 
 /**
  * Get current version
