@@ -102,7 +102,7 @@ export class OpenAIHandler implements ModelHandler {
   /**
    * Write token tracking file
    */
-  private writeTokenFile(input: number, output: number): void {
+  private writeTokenFile(input: number, output: number, isEstimate?: boolean): void {
     try {
       const total = input + output;
       const leftPct =
@@ -113,7 +113,7 @@ export class OpenAIHandler implements ModelHandler {
             )
           : 100;
 
-      const data = {
+      const data: Record<string, any> = {
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
@@ -122,6 +122,11 @@ export class OpenAIHandler implements ModelHandler {
         context_left_percent: leftPct,
         updated_at: Date.now(),
       };
+
+      // Add cost_is_estimate flag if pricing is estimated
+      if (isEstimate) {
+        data.cost_is_estimate = true;
+      }
 
       const claudishDir = join(homedir(), ".claudish");
       mkdirSync(claudishDir, { recursive: true });
@@ -135,23 +140,54 @@ export class OpenAIHandler implements ModelHandler {
    * Update token tracking
    * Note: inputTokens is the FULL context each request (not incremental)
    * We only charge for the DELTA (new tokens) to avoid overcounting
+   *
+   * RACE CONDITION HANDLING:
+   * When multiple concurrent conversations share this handler, they can corrupt
+   * the sessionInputTokens state. We detect this by checking if input tokens
+   * decreased significantly (sign of a different conversation). In that case,
+   * we only update sessionInputTokens if the new value is higher (to track the
+   * main conversation with the largest context).
    */
   private updateTokenTracking(inputTokens: number, outputTokens: number): void {
-    // Calculate incremental input tokens (delta from previous request)
-    const incrementalInputTokens = Math.max(0, inputTokens - this.sessionInputTokens);
+    // Calculate incremental input tokens with race condition detection
+    let incrementalInputTokens: number;
+
+    if (inputTokens >= this.sessionInputTokens) {
+      // Normal case: context grew or stayed same (continuation of conversation)
+      incrementalInputTokens = inputTokens - this.sessionInputTokens;
+      this.sessionInputTokens = inputTokens;
+    } else if (inputTokens < this.sessionInputTokens * 0.5) {
+      // Different conversation with much smaller context - charge full amount for it
+      // but DON'T update sessionInputTokens (keep tracking the larger conversation)
+      incrementalInputTokens = inputTokens;
+      log(
+        `[OpenAIHandler] Token tracking: detected concurrent conversation (${inputTokens} < ${this.sessionInputTokens}), charging full input`
+      );
+    } else {
+      // Ambiguous case: tokens decreased but not by much - could be noise or small conversation
+      // Use conservative approach: charge full amount and update tracking
+      incrementalInputTokens = inputTokens;
+      this.sessionInputTokens = inputTokens;
+      log(
+        `[OpenAIHandler] Token tracking: ambiguous token decrease (${inputTokens} vs ${this.sessionInputTokens}), charging full input`
+      );
+    }
 
     // Update session totals
-    this.sessionInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
 
-    // Calculate cost for INCREMENTAL tokens only
+    // Calculate cost
     const pricing = this.getPricing();
     const cost =
       (incrementalInputTokens / 1_000_000) * pricing.inputCostPer1M +
       (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
-    this.writeTokenFile(inputTokens, this.sessionOutputTokens);
+    this.writeTokenFile(
+      Math.max(inputTokens, this.sessionInputTokens),
+      this.sessionOutputTokens,
+      pricing.isEstimate
+    );
   }
 
   /**
@@ -393,9 +429,9 @@ export class OpenAIHandler implements ModelHandler {
       payload.instructions = claudeRequest.system;
     }
 
-    // Add max_output_tokens for Responses API
+    // Add max_output_tokens for Responses API (minimum 16 required)
     if (claudeRequest.max_tokens) {
-      payload.max_output_tokens = claudeRequest.max_tokens;
+      payload.max_output_tokens = Math.max(16, claudeRequest.max_tokens);
     }
 
     // Convert tools to Responses API format (flatter structure)
@@ -446,7 +482,7 @@ export class OpenAIHandler implements ModelHandler {
     let isClosed = false;
 
     // Track function calls being streamed
-    const functionCalls: Map<string, { name: string; arguments: string; index: number }> =
+    const functionCalls: Map<string, { name: string; arguments: string; index: number; claudeId?: string }> =
       new Map();
 
     const stream = new ReadableStream({
@@ -539,15 +575,39 @@ export class OpenAIHandler implements ModelHandler {
                     delta: { type: "text_delta", text: event.delta || "" },
                   });
                 } else if (event.type === "response.output_item.added") {
-                  // New item added - could be function_call
+                  // Log the item type for debugging
+                  if (getLogLevel() === "debug" && event.item?.type) {
+                    log(`[OpenAIHandler] Output item added: type=${event.item.type}, id=${event.item.id || event.item.call_id || "unknown"}`);
+                  }
+
+                  // Handle function_call items
                   if (event.item?.type === "function_call") {
-                    const callId = event.item.call_id || event.item.id;
+                    // OpenAI uses two IDs:
+                    // - item.id: the fc_... ID used in argument deltas (item_id)
+                    // - item.call_id: the call_... ID used in tool results
+                    const itemId = event.item.id; // fc_...
+                    const openaiCallId = event.item.call_id || itemId;
+                    // Transform to Claude-style ID (toolu_...) for compatibility
+                    const callId = openaiCallId.startsWith("toolu_") ? openaiCallId : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
+                    const fnName = event.item.name || "";
                     const fnIndex = blockIndex + functionCalls.size + (hasTextContent ? 1 : 0);
-                    functionCalls.set(callId, {
-                      name: event.item.name || "",
+
+                    log(`[OpenAIHandler] Function call: itemId=${itemId}, openaiCallId=${openaiCallId}, claudeId=${callId}, name=${fnName}, index=${fnIndex}`);
+
+                    // Create the function call data
+                    const fnCallData = {
+                      name: fnName,
                       arguments: "",
                       index: fnIndex,
-                    });
+                      claudeId: callId,
+                    };
+
+                    // Store with BOTH IDs for lookup during argument streaming
+                    // Argument deltas use item_id (fc_...), while tool results use call_id (call_...)
+                    functionCalls.set(openaiCallId, fnCallData);
+                    if (itemId && itemId !== openaiCallId) {
+                      functionCalls.set(itemId, fnCallData);
+                    }
 
                     // Close text block if open
                     if (hasTextContent && !hasToolUse) {
@@ -555,22 +615,53 @@ export class OpenAIHandler implements ModelHandler {
                       blockIndex++;
                     }
 
-                    // Send tool_use block start
+                    // Send tool_use block start with Claude-style ID
                     send("content_block_start", {
                       type: "content_block_start",
                       index: fnIndex,
                       content_block: {
                         type: "tool_use",
                         id: callId,
-                        name: event.item.name || "",
+                        name: fnName,
                         input: {},
                       },
                     });
                     hasToolUse = true;
                   }
+                  // Handle reasoning items (Codex thinking/exploration)
+                  // These are displayed as thinking blocks in Claude format
+                  else if (event.item?.type === "reasoning") {
+                    // Reasoning items contain the model's thinking process
+                    // We'll capture this via response.reasoning_summary_text.delta events
+                    log(`[OpenAIHandler] Reasoning block started`);
+                  }
+                } else if (event.type === "response.reasoning_summary_text.delta") {
+                  // Codex reasoning/thinking text - display as regular text
+                  // (Claude Code doesn't display "thinking" blocks from non-Claude models)
+                  if (!hasTextContent) {
+                    send("content_block_start", {
+                      type: "content_block_start",
+                      index: blockIndex,
+                      content_block: { type: "text", text: "" },
+                    });
+                    hasTextContent = true;
+                  }
+
+                  send("content_block_delta", {
+                    type: "content_block_delta",
+                    index: blockIndex,
+                    delta: { type: "text_delta", text: event.delta || "" },
+                  });
                 } else if (event.type === "response.function_call_arguments.delta") {
                   // Streaming function call arguments
+                  // OpenAI uses item_id (fc_...) to identify which function call this belongs to
                   const callId = event.call_id || event.item_id;
+
+                  // Debug: log the lookup
+                  if (getLogLevel() === "debug" && !functionCalls.has(callId)) {
+                    log(`[OpenAIHandler] Argument delta lookup failed: callId=${callId}, stored keys=[${Array.from(functionCalls.keys()).join(", ")}]`);
+                  }
+
                   const fnCall = functionCalls.get(callId);
                   if (fnCall) {
                     fnCall.arguments += event.delta || "";
@@ -585,11 +676,23 @@ export class OpenAIHandler implements ModelHandler {
                 } else if (event.type === "response.output_item.done") {
                   // Item complete - close the tool_use block
                   if (event.item?.type === "function_call") {
+                    // Try both IDs since we stored with both
                     const callId = event.item.call_id || event.item.id;
-                    const fnCall = functionCalls.get(callId);
+                    const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                     if (fnCall) {
                       send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
                     }
+                  }
+                } else if (event.type === "response.incomplete") {
+                  // Response was cut off (token limit, content filter, etc.)
+                  // Log the reason and continue - we'll still send proper termination events
+                  log(
+                    `[OpenAIHandler] Response incomplete: ${event.reason || "unknown reason"}`
+                  );
+                  // Extract any available usage data
+                  if (event.response?.usage) {
+                    inputTokens = event.response.usage.input_tokens || inputTokens;
+                    outputTokens = event.response.usage.output_tokens || outputTokens;
                   }
                 } else if (
                   event.type === "response.completed" ||
@@ -622,10 +725,12 @@ export class OpenAIHandler implements ModelHandler {
             clearInterval(pingInterval);
             pingInterval = null;
           }
-          isClosed = true;
 
-          // Send content_block_stop for text if not already closed
-          if (hasTextContent && !hasToolUse) {
+          // CRITICAL: Send all final events BEFORE setting isClosed
+          // The send() function checks isClosed and returns early if true
+
+          // Send content_block_stop for text if we have text content
+          if (hasTextContent) {
             send("content_block_stop", { type: "content_block_stop", index: blockIndex });
           }
 
@@ -641,6 +746,9 @@ export class OpenAIHandler implements ModelHandler {
 
           // Send message_stop
           send("message_stop", { type: "message_stop" });
+
+          // NOW set isClosed after all events are sent
+          isClosed = true;
 
           // Update token tracking
           this.updateTokenTracking(inputTokens, outputTokens);

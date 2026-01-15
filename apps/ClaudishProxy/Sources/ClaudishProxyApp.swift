@@ -15,15 +15,11 @@ import SwiftUI
 @main
 struct ClaudishProxyApp: App {
     @StateObject private var bridgeManager = BridgeManager()
-    @State private var showSettings = false
 
     var body: some Scene {
         // Menu bar extra (status bar icon)
         MenuBarExtra {
-            MenuBarContent(
-                bridgeManager: bridgeManager,
-                showSettings: $showSettings
-            )
+            MenuBarContent(bridgeManager: bridgeManager)
         } label: {
             // Status bar icon
             if bridgeManager.isProxyEnabled {
@@ -34,10 +30,12 @@ struct ClaudishProxyApp: App {
         }
         .menuBarExtraStyle(.menu)
 
-        // Settings window
-        Settings {
+        // Settings window (using Window instead of Settings for menu bar apps)
+        Window("Claudish Proxy Settings", id: "settings") {
             SettingsView(bridgeManager: bridgeManager)
         }
+        .defaultSize(width: 550, height: 450)
+        .windowResizability(.contentSize)
 
         // Logs window
         Window("Request Logs", id: "logs") {
@@ -50,7 +48,7 @@ struct ClaudishProxyApp: App {
 /// Menu bar dropdown content
 struct MenuBarContent: View {
     @ObservedObject var bridgeManager: BridgeManager
-    @Binding var showSettings: Bool
+    @Environment(\.openWindow) private var openWindow
     @State private var showErrorAlert = false
     @State private var showCleanupAlert = false
 
@@ -146,14 +144,16 @@ struct MenuBarContent: View {
 
             // Actions
             Button("Settings...") {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "settings")
+                NSApp.activate(ignoringOtherApps: true)
             }
             .keyboardShortcut(",", modifiers: .command)
 
             Button("View Logs...") {
-                if let url = URL(string: "claudishproxy://logs") {
-                    NSWorkspace.shared.open(url)
-                }
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "logs")
+                NSApp.activate(ignoringOtherApps: true)
             }
 
             Divider()
