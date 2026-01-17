@@ -553,6 +553,96 @@ Format your tool calls as valid JSON with all required fields populated.
 }
 
 /**
+ * Coerce argument types to match the schema
+ * Handles cases where models output strings instead of arrays/objects
+ */
+export function coerceArgumentTypes(
+  args: Record<string, any>,
+  schema: ToolSchema
+): { args: Record<string, any>; coerced: boolean } {
+  if (!schema?.input_schema?.properties) {
+    return { args, coerced: false };
+  }
+
+  const properties = schema.input_schema.properties;
+  const coercedArgs = { ...args };
+  let wasCoerced = false;
+
+  for (const [paramName, paramSchema] of Object.entries(properties) as [string, any][]) {
+    const value = coercedArgs[paramName];
+    if (value === undefined || value === null) continue;
+
+    const expectedType = paramSchema.type;
+
+    // Case 1: Expected array but got string - try to parse as JSON
+    if (expectedType === "array" && typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+          coercedArgs[paramName] = parsed;
+          wasCoerced = true;
+          log(`[TypeCoercion] Coerced ${paramName} from string to array`);
+        }
+      } catch (e) {
+        log(`[TypeCoercion] Failed to parse ${paramName} as array: ${e}`);
+      }
+    }
+
+    // Case 2: Expected object but got string - try to parse as JSON
+    if (expectedType === "object" && typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed === "object" && !Array.isArray(parsed)) {
+          coercedArgs[paramName] = parsed;
+          wasCoerced = true;
+          log(`[TypeCoercion] Coerced ${paramName} from string to object`);
+        }
+      } catch (e) {
+        log(`[TypeCoercion] Failed to parse ${paramName} as object: ${e}`);
+      }
+    }
+
+    // Case 3: Expected array of objects but got array of strings (TodoWrite specific)
+    if (expectedType === "array" && Array.isArray(value) && paramSchema.items?.type === "object") {
+      const itemProperties = paramSchema.items.properties;
+
+      // Check if array contains strings instead of objects
+      if (value.length > 0 && typeof value[0] === "string") {
+        log(`[TypeCoercion] Array ${paramName} contains strings but expects objects`);
+
+        const convertedItems = value.map((item: any) => {
+          if (typeof item === "string") {
+            // Try to parse as JSON first
+            try {
+              const parsed = JSON.parse(item);
+              if (typeof parsed === "object") return parsed;
+            } catch (e) {}
+
+            // For TodoWrite specifically, create object with content from string
+            if (paramName === "todos" && itemProperties) {
+              const obj: Record<string, any> = {};
+              if (itemProperties.content) obj.content = item;
+              if (itemProperties.status) obj.status = "pending";
+              if (itemProperties.activeForm) obj.activeForm = `Working on: ${item}`;
+              log(`[TypeCoercion] Converted todo string "${item}" to object`);
+              return obj;
+            }
+
+            return item;
+          }
+          return item;
+        });
+
+        coercedArgs[paramName] = convertedItems;
+        wasCoerced = true;
+      }
+    }
+  }
+
+  return { args: coercedArgs, coerced: wasCoerced };
+}
+
+/**
  * Validate and potentially repair a tool call
  * Returns the repaired arguments if successful, null if repair failed
  */
@@ -587,6 +677,11 @@ export function validateAndRepairToolCall(
     }
   }
 
+  // Coerce argument types to match schema (e.g., string -> array for TodoWrite)
+  const coercionResult = coerceArgumentTypes(parsedArgs, schema);
+  parsedArgs = coercionResult.args;
+  const wasCoerced = coercionResult.coerced;
+
   const required = schema.input_schema.required || [];
   const missingParams = required.filter(
     (param) =>
@@ -594,7 +689,7 @@ export function validateAndRepairToolCall(
   );
 
   if (missingParams.length === 0) {
-    return { valid: true, args: parsedArgs, repaired: false, missingParams: [] };
+    return { valid: true, args: parsedArgs, repaired: wasCoerced, missingParams: [] };
   }
 
   // Try to infer missing parameters
