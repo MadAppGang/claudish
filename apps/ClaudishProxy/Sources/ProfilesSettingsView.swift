@@ -1,200 +1,113 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Profiles tab in Settings window
+/// Wrapper for sheet binding - nil means new profile, non-nil means edit
+struct ProfileEditorBinding: Identifiable {
+    let id = UUID()
+    let profile: ModelProfile?
+}
+
+/// Profiles tab in Settings window - ultra compact design
 struct ProfilesSettingsView: View {
     @ObservedObject var profileManager: ProfileManager
-    @State private var selectedProfile: ModelProfile?
-    @State private var showingProfileEditor = false
+    @State private var editorBinding: ProfileEditorBinding?
     @State private var showingImportDialog = false
     @State private var showingExportDialog = false
-    @State private var errorMessage: String?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // Header with actions
-                HStack {
-                    Text("Model Profiles")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(.themeText)
+            VStack(alignment: .leading, spacing: 16) {
+                ThemeCard {
+                    VStack(spacing: 0) {
+                        // Compact header
+                        HStack {
+                            Text("PROFILES")
+                                .font(.system(size: 10, weight: .semibold))
+                                .tracking(0.5)
+                                .foregroundColor(.themeTextMuted)
 
-                    Spacer()
+                            Spacer()
 
-                    HStack(spacing: 12) {
-                        Button(action: {
-                            showingImportDialog = true
-                        }) {
                             HStack(spacing: 6) {
-                                Image(systemName: "square.and.arrow.down")
-                                Text("Import")
-                            }
-                            .font(.system(size: 13))
-                        }
-
-                        Button(action: {
-                            showingExportDialog = true
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "square.and.arrow.up")
-                                Text("Export")
-                            }
-                            .font(.system(size: 13))
-                        }
-
-                        Button(action: {
-                            selectedProfile = nil
-                            showingProfileEditor = true
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "plus.circle.fill")
-                                Text("New Profile")
-                            }
-                            .font(.system(size: 13, weight: .medium))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.themeAccent)
-                        .cornerRadius(6)
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 24)
-
-                // Error message
-                if let error = errorMessage {
-                    ThemeCard {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.themeAccent)
-                            Text(error)
-                                .font(.system(size: 13))
-                                .foregroundColor(.themeText)
-                        }
-                    }
-                    .padding(.horizontal, 24)
-                }
-
-                // Preset profiles
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("PRESET PROFILES")
-                        .font(.system(size: 11, weight: .semibold))
-                        .textCase(.uppercase)
-                        .tracking(1.0)
-                        .foregroundColor(.themeTextMuted)
-                        .padding(.horizontal, 24)
-
-                    ForEach(profileManager.profiles.filter { $0.isPreset }) { profile in
-                        ProfileRow(
-                            profile: profile,
-                            isSelected: profileManager.selectedProfileId == profile.id,
-                            onSelect: {
-                                profileManager.selectProfile(id: profile.id)
-                            },
-                            onEdit: nil,
-                            onDuplicate: {
-                                if let duplicate = profileManager.duplicateProfile(id: profile.id) {
-                                    selectedProfile = duplicate
-                                    showingProfileEditor = true
+                                Button(action: { showingImportDialog = true }) {
+                                    Image(systemName: "square.and.arrow.down")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.themeTextMuted)
                                 }
-                            },
-                            onDelete: nil
-                        )
-                        .padding(.horizontal, 24)
-                    }
-                }
+                                .buttonStyle(.plain)
 
-                // Custom profiles
-                let customProfiles = profileManager.profiles.filter { !$0.isPreset }
-                if !customProfiles.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("CUSTOM PROFILES")
-                            .font(.system(size: 11, weight: .semibold))
-                            .textCase(.uppercase)
-                            .tracking(1.0)
-                            .foregroundColor(.themeTextMuted)
-                            .padding(.horizontal, 24)
+                                Button(action: { showingExportDialog = true }) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.themeTextMuted)
+                                }
+                                .buttonStyle(.plain)
 
-                        ForEach(customProfiles) { profile in
-                            ProfileRow(
+                                Button(action: {
+                                    editorBinding = ProfileEditorBinding(profile: nil)
+                                }) {
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.themeAccent)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+
+                        Divider().background(Color.themeBorder)
+
+                        // Ultra-compact profile list
+                        ForEach(profileManager.profiles) { profile in
+                            UltraCompactProfileRow(
                                 profile: profile,
                                 isSelected: profileManager.selectedProfileId == profile.id,
-                                onSelect: {
-                                    profileManager.selectProfile(id: profile.id)
-                                },
-                                onEdit: {
-                                    selectedProfile = profile
-                                    showingProfileEditor = true
+                                onSelect: { profileManager.selectProfile(id: profile.id) },
+                                onEdit: profile.isPreset ? nil : {
+                                    editorBinding = ProfileEditorBinding(profile: profile)
                                 },
                                 onDuplicate: {
                                     if let duplicate = profileManager.duplicateProfile(id: profile.id) {
-                                        selectedProfile = duplicate
-                                        showingProfileEditor = true
+                                        editorBinding = ProfileEditorBinding(profile: duplicate)
                                     }
                                 },
-                                onDelete: {
+                                onDelete: profile.isPreset ? nil : {
                                     profileManager.deleteProfile(id: profile.id)
                                 }
                             )
-                            .padding(.horizontal, 24)
+
+                            if profile.id != profileManager.profiles.last?.id {
+                                Divider().background(Color.themeBorder.opacity(0.5))
+                                    .padding(.leading, 36)
+                            }
                         }
                     }
-                    .padding(.top, 12)
                 }
+
+                // Slot legend (compact)
+                HStack(spacing: 16) {
+                    SlotLegendItem(letter: "O", label: "Opus", color: .purple)
+                    SlotLegendItem(letter: "S", label: "Sonnet", color: .blue)
+                    SlotLegendItem(letter: "H", label: "Haiku", color: .green)
+                }
+                .padding(.horizontal, 4)
             }
-            .padding(.bottom, 24)
+            .padding(20)
         }
         .background(Color.themeBg)
-        .sheet(isPresented: $showingProfileEditor) {
-            ProfileEditorSheet(
-                profileManager: profileManager,
-                profile: selectedProfile
-            )
+        .sheet(item: $editorBinding) { binding in
+            CompactProfileEditor(profileManager: profileManager, profile: binding.profile)
         }
-        .fileImporter(
-            isPresented: $showingImportDialog,
-            allowedContentTypes: [.json]
-        ) { result in
-            handleImport(result)
+        .fileImporter(isPresented: $showingImportDialog, allowedContentTypes: [.json]) { result in
+            if case .success(let url) = result { try? profileManager.importProfiles(from: url) }
         }
-        .fileExporter(
-            isPresented: $showingExportDialog,
-            document: ProfilesDocument(profiles: profileManager.profiles),
-            contentType: .json,
-            defaultFilename: "claudish-profiles.json"
-        ) { result in
-            handleExport(result)
-        }
-    }
-
-    private func handleImport(_ result: Result<URL, Error>) {
-        switch result {
-        case .success(let url):
-            do {
-                try profileManager.importProfiles(from: url)
-                errorMessage = nil
-            } catch {
-                errorMessage = "Import failed: \(error.localizedDescription)"
-            }
-        case .failure(let error):
-            errorMessage = "Import failed: \(error.localizedDescription)"
-        }
-    }
-
-    private func handleExport(_ result: Result<URL, Error>) {
-        switch result {
-        case .success:
-            errorMessage = nil
-        case .failure(let error):
-            errorMessage = "Export failed: \(error.localizedDescription)"
-        }
+        .fileExporter(isPresented: $showingExportDialog, document: ProfilesDocument(profiles: profileManager.profiles), contentType: .json, defaultFilename: "claudish-profiles.json") { _ in }
     }
 }
 
-/// Individual profile row
-struct ProfileRow: View {
+/// Ultra compact single-line profile row
+struct UltraCompactProfileRow: View {
     let profile: ModelProfile
     let isSelected: Bool
     let onSelect: () -> Void
@@ -202,119 +115,154 @@ struct ProfileRow: View {
     let onDuplicate: () -> Void
     let onDelete: (() -> Void)?
 
+    @State private var isHovered = false
+
     var body: some View {
-        ThemeCard {
-            HStack(spacing: 16) {
-                // Selection indicator
-                Button(action: onSelect) {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 20))
-                        .foregroundColor(isSelected ? .themeAccent : .themeTextMuted)
-                }
-                .buttonStyle(.plain)
+        HStack(spacing: 8) {
+            // Radio button
+            Button(action: onSelect) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14))
+                    .foregroundColor(isSelected ? .themeAccent : .themeTextMuted.opacity(0.5))
+            }
+            .buttonStyle(.plain)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(profile.name)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.themeText)
+            // Name + badge
+            Text(profile.name)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                .foregroundColor(isSelected ? .themeText : .themeText.opacity(0.8))
 
-                        if profile.isPreset {
-                            Text("PRESET")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.themeAccent)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.themeAccent.opacity(0.2))
-                                .cornerRadius(4)
-                        }
-                    }
+            if profile.isPreset {
+                Text("•")
+                    .font(.system(size: 8))
+                    .foregroundColor(.themeTextMuted)
+            }
 
-                    if let description = profile.description {
-                        Text(description)
-                            .font(.system(size: 12))
-                            .foregroundColor(.themeTextMuted)
-                    }
+            Spacer()
 
-                    // Show slot mappings
-                    HStack(spacing: 16) {
-                        SlotBadge(label: "Opus", model: profile.slots.opus)
-                        SlotBadge(label: "Sonnet", model: profile.slots.sonnet)
-                        SlotBadge(label: "Haiku", model: profile.slots.haiku)
-                        SlotBadge(label: "Subagent", model: profile.slots.subagent)
-                    }
-                    .padding(.top, 4)
-                }
+            // Colored slot dots (O S H)
+            HStack(spacing: 4) {
+                SlotDot(model: profile.slots.opus, letter: "O", color: .purple)
+                SlotDot(model: profile.slots.sonnet, letter: "S", color: .blue)
+                SlotDot(model: profile.slots.haiku, letter: "H", color: .green)
+            }
 
-                Spacer()
-
-                // Actions
-                HStack(spacing: 8) {
+            // Actions on hover
+            if isHovered || isSelected {
+                HStack(spacing: 2) {
                     if let onEdit = onEdit {
-                        Button(action: onEdit) {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 14))
-                                .foregroundColor(.themeTextMuted)
-                        }
-                        .buttonStyle(.plain)
+                        IconButton(icon: "pencil", action: onEdit)
                     }
-
-                    Button(action: onDuplicate) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 14))
-                            .foregroundColor(.themeTextMuted)
-                    }
-                    .buttonStyle(.plain)
-
+                    IconButton(icon: "doc.on.doc", action: onDuplicate)
                     if let onDelete = onDelete {
-                        Button(action: onDelete) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 14))
-                                .foregroundColor(.themeDestructive)
-                        }
-                        .buttonStyle(.plain)
+                        IconButton(icon: "trash", color: .themeDestructive, action: onDelete)
                     }
                 }
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(isSelected ? Color.themeAccent.opacity(0.1) : (isHovered ? Color.themeHover.opacity(0.5) : Color.clear))
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(.easeOut(duration: 0.15), value: isSelected)
     }
 }
 
-/// Small badge showing a slot mapping
-struct SlotBadge: View {
-    let label: String
+/// Colored dot showing model type
+struct SlotDot: View {
     let model: String
+    let letter: String
+    let color: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.uppercased())
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundColor(.themeTextMuted)
-            Text(modelDisplayName(model))
-                .font(.system(size: 10))
-                .foregroundColor(.themeText)
-                .lineLimit(1)
+        Text(letter)
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .foregroundColor(modelColor)
+            .frame(width: 14, height: 14)
+            .background(modelColor.opacity(0.15))
+            .cornerRadius(3)
+            .help("\(slotName): \(shortModel)")
+    }
+
+    private var slotName: String {
+        switch letter {
+        case "O": return "Opus"
+        case "S": return "Sonnet"
+        case "H": return "Haiku"
+        default: return letter
         }
     }
 
-    private func modelDisplayName(_ modelId: String) -> String {
-        // Extract short name from model ID
-        if let lastComponent = modelId.split(separator: "/").last {
-            return String(lastComponent)
-        }
-        return modelId
+    private var shortModel: String {
+        if model.contains("claude") { return "Claude" }
+        if model.contains("gemini") { return "Gemini" }
+        if model.contains("gpt") { return "GPT" }
+        if model.contains("grok") { return "Grok" }
+        if model.contains("minimax") || model.contains("mm/") { return "MiniMax" }
+        if model.contains("glm") { return "GLM" }
+        if let last = model.split(separator: "/").last { return String(last) }
+        return model
+    }
+
+    private var modelColor: Color {
+        if model.contains("claude") { return .purple }
+        if model.contains("gemini") { return .blue }
+        if model.contains("gpt") { return .green }
+        if model.contains("grok") { return .orange }
+        if model.contains("minimax") || model.contains("mm/") { return .pink }
+        if model.contains("glm") { return .cyan }
+        return color
     }
 }
 
-/// Sheet for creating or editing a profile
-struct ProfileEditorSheet: View {
+/// Small icon button
+struct IconButton: View {
+    let icon: String
+    var color: Color = .themeTextMuted
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .foregroundColor(color)
+                .frame(width: 20, height: 20)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Slot legend item
+struct SlotLegendItem: View {
+    let letter: String
+    let label: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(letter)
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .foregroundColor(color)
+                .frame(width: 12, height: 12)
+                .background(color.opacity(0.15))
+                .cornerRadius(2)
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(.themeTextMuted)
+        }
+    }
+}
+
+/// Profile editor sheet with searchable model pickers
+struct CompactProfileEditor: View {
     @ObservedObject var profileManager: ProfileManager
     let profile: ModelProfile?
-
     @Environment(\.dismiss) private var dismiss
 
     @State private var name: String
-    @State private var description: String
     @State private var opusSlot: String
     @State private var sonnetSlot: String
     @State private var haikuSlot: String
@@ -323,249 +271,510 @@ struct ProfileEditorSheet: View {
     init(profileManager: ProfileManager, profile: ModelProfile?) {
         self.profileManager = profileManager
         self.profile = profile
-
-        // Initialize state from profile or defaults
-        if let profile = profile {
-            _name = State(initialValue: profile.name)
-            _description = State(initialValue: profile.description ?? "")
-            _opusSlot = State(initialValue: profile.slots.opus)
-            _sonnetSlot = State(initialValue: profile.slots.sonnet)
-            _haikuSlot = State(initialValue: profile.slots.haiku)
-            _subagentSlot = State(initialValue: profile.slots.subagent)
-        } else {
-            _name = State(initialValue: "New Profile")
-            _description = State(initialValue: "")
-            // Default to Gemini 2.5 Flash for new profiles (good balance)
-            _opusSlot = State(initialValue: "g/gemini-2.5-flash")
-            _sonnetSlot = State(initialValue: "g/gemini-2.5-flash")
-            _haikuSlot = State(initialValue: "g/gemini-2.5-flash-lite")
-            _subagentSlot = State(initialValue: "g/gemini-2.5-flash-lite")
-        }
-    }
-
-    var isEditing: Bool {
-        profile != nil
-    }
-
-    var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
+        _name = State(initialValue: profile?.name ?? "New Profile")
+        _opusSlot = State(initialValue: profile?.slots.opus ?? "g/gemini-2.5-flash")
+        _sonnetSlot = State(initialValue: profile?.slots.sonnet ?? "g/gemini-2.5-flash")
+        _haikuSlot = State(initialValue: profile?.slots.haiku ?? "g/gemini-2.5-flash-lite")
+        _subagentSlot = State(initialValue: profile?.slots.subagent ?? "g/gemini-2.5-flash-lite")
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text(isEditing ? "Edit Profile" : "New Profile")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.themeText)
-
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(profile == nil ? "New Profile" : "Edit Profile")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.themeText)
+                    Text("Configure model routing for each slot")
+                        .font(.system(size: 11))
+                        .foregroundColor(.themeTextMuted)
+                }
                 Spacer()
-
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: 18))
                         .foregroundColor(.themeTextMuted)
                 }
                 .buttonStyle(.plain)
             }
-            .padding(20)
+            .padding(16)
             .background(Color.themeCard)
 
-            Divider()
+            Divider().background(Color.themeBorder)
 
-            // Form
+            // Form content
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    // Basic info
-                    ThemeCard {
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("BASIC INFORMATION")
-                                .font(.system(size: 11, weight: .semibold))
-                                .textCase(.uppercase)
-                                .tracking(1.0)
-                                .foregroundColor(.themeTextMuted)
+                VStack(alignment: .leading, spacing: 16) {
+                    // Name field
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Profile Name", systemImage: "tag")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.themeTextMuted)
 
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Name")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.themeText)
-                                TextField("Profile name", text: $name)
-                                    .textFieldStyle(.plain)
-                                    .padding(10)
-                                    .background(Color.themeHover)
-                                    .cornerRadius(6)
-                            }
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Description (optional)")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.themeText)
-                                TextField("Profile description", text: $description)
-                                    .textFieldStyle(.plain)
-                                    .padding(10)
-                                    .background(Color.themeHover)
-                                    .cornerRadius(6)
-                            }
-                        }
+                        TextField("Enter profile name", text: $name)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .padding(10)
+                            .background(Color.themeHover)
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.themeBorder, lineWidth: 1)
+                            )
                     }
 
-                    // Model slots
-                    ThemeCard {
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("MODEL SLOTS")
-                                .font(.system(size: 11, weight: .semibold))
-                                .textCase(.uppercase)
-                                .tracking(1.0)
-                                .foregroundColor(.themeTextMuted)
+                    Divider().background(Color.themeBorder)
 
-                            SlotPicker(label: "Opus", selection: $opusSlot)
-                            SlotPicker(label: "Sonnet", selection: $sonnetSlot)
-                            SlotPicker(label: "Haiku", selection: $haikuSlot)
-                            SlotPicker(label: "Subagent", selection: $subagentSlot)
+                    // Model slots section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Model Slots", systemImage: "cpu")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.themeTextMuted)
+
+                        Text("Search and select which model handles each Claude tier")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeTextMuted.opacity(0.7))
+
+                        // 2x2 grid of slot pickers
+                        VStack(spacing: 12) {
+                            HStack(spacing: 12) {
+                                SearchableSlotPicker(label: "Opus", icon: "o.circle.fill", color: .purple, selection: $opusSlot)
+                                SearchableSlotPicker(label: "Sonnet", icon: "s.circle.fill", color: .blue, selection: $sonnetSlot)
+                            }
+                            HStack(spacing: 12) {
+                                SearchableSlotPicker(label: "Haiku", icon: "h.circle.fill", color: .green, selection: $haikuSlot)
+                                SearchableSlotPicker(label: "Subagent", icon: "a.circle.fill", color: .orange, selection: $subagentSlot)
+                            }
                         }
                     }
                 }
-                .padding(20)
+                .padding(16)
             }
 
-            Divider()
+            Divider().background(Color.themeBorder)
 
-            // Footer actions
-            HStack(spacing: 12) {
-                Button("Cancel") {
-                    dismiss()
+            // Footer
+            HStack {
+                Button(action: { dismiss() }) {
+                    Text("Cancel")
+                        .font(.system(size: 12))
+                        .foregroundColor(.themeTextMuted)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(.themeTextMuted)
 
                 Spacer()
 
-                Button(isEditing ? "Save Changes" : "Create Profile") {
-                    saveProfile()
-                    dismiss()
+                Button(action: { save(); dismiss() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: profile == nil ? "plus.circle" : "checkmark.circle")
+                            .font(.system(size: 11))
+                        Text(profile == nil ? "Create Profile" : "Save Changes")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .background(name.isEmpty ? Color.themeTextMuted : Color.themeAccent)
+                    .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(isValid ? Color.themeAccent : Color.themeTextMuted)
-                .cornerRadius(6)
-                .disabled(!isValid)
+                .disabled(name.isEmpty)
             }
-            .padding(20)
+            .padding(16)
             .background(Color.themeCard)
         }
-        .frame(width: 500, height: 600)
+        .frame(width: 480, height: 520)
         .background(Color.themeBg)
     }
 
-    private func saveProfile() {
-        let slots = ProfileSlots(
-            opus: opusSlot,
-            sonnet: sonnetSlot,
-            haiku: haikuSlot,
-            subagent: subagentSlot
-        )
-
+    private func save() {
+        let slots = ProfileSlots(opus: opusSlot, sonnet: sonnetSlot, haiku: haikuSlot, subagent: subagentSlot)
         if let profile = profile {
-            // Update existing
-            profileManager.updateProfile(
-                id: profile.id,
-                name: name,
-                description: description.isEmpty ? nil : description,
-                slots: slots
-            )
+            profileManager.updateProfile(id: profile.id, name: name, description: nil, slots: slots)
         } else {
-            // Create new
-            profileManager.createProfile(
-                name: name,
-                description: description.isEmpty ? nil : description,
-                slots: slots
-            )
+            profileManager.createProfile(name: name, description: nil, slots: slots)
         }
     }
 }
 
-/// Picker for a model slot using ModelProvider
-struct SlotPicker: View {
+/// Searchable slot picker with inline dropdown
+struct SearchableSlotPicker: View {
     let label: String
+    let icon: String
+    let color: Color
     @Binding var selection: String
     @StateObject private var modelProvider = ModelProvider.shared
+    @State private var isExpanded = false
+    @State private var searchText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.themeText)
+        VStack(alignment: .leading, spacing: 4) {
+            // Label with icon
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundColor(color)
+                Text(label.uppercased())
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.themeTextMuted)
+            }
 
-            Menu {
-                // Group models by provider
-                ForEach(modelProvider.modelsByProvider, id: \.provider) { group in
-                    Section(group.provider.rawValue) {
-                        ForEach(group.models) { model in
-                            Button(action: { selection = model.id }) {
-                                HStack {
-                                    Text(model.displayName)
-                                    if selection == model.id {
-                                        Image(systemName: "checkmark")
+            // Picker button
+            Button(action: {
+                withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle(); searchText = "" }
+            }) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(modelColor)
+                        .frame(width: 6, height: 6)
+
+                    Text(displayName)
+                        .font(.system(size: 11))
+                        .foregroundColor(.themeText)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    if modelProvider.isLoading {
+                        ProgressView()
+                            .scaleEffect(0.5)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundColor(.themeTextMuted)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.themeHover)
+                .cornerRadius(5)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(isExpanded ? color.opacity(0.5) : Color.themeBorder, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+
+            // Expanded dropdown
+            if isExpanded {
+                VStack(spacing: 0) {
+                    // Search bar
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 11))
+                            .foregroundColor(.themeTextMuted)
+                        TextField("Search models...", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11))
+                        if !searchText.isEmpty {
+                            Button(action: { searchText = "" }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.themeTextMuted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(8)
+                    .background(Color.themeBg)
+
+                    Divider().background(Color.themeBorder)
+
+                    // Loading indicator
+                    if modelProvider.isLoading && filteredGroups.isEmpty {
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 8) {
+                                ProgressView()
+                                Text("Loading models...")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.themeTextMuted)
+                            }
+                            .padding(20)
+                            Spacer()
+                        }
+                        .frame(height: 140)
+                    } else {
+                        // Results list
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(filteredGroups, id: \.provider) { group in
+                                    // Provider header
+                                    HStack(spacing: 4) {
+                                        Image(systemName: group.provider.icon)
+                                            .font(.system(size: 8))
+                                            .foregroundColor(.themeTextMuted)
+                                        Text(group.provider.rawValue)
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.themeTextMuted)
+                                        Text("(\(group.models.count))")
+                                            .font(.system(size: 8))
+                                            .foregroundColor(.themeTextMuted.opacity(0.6))
+                                        Rectangle()
+                                            .fill(Color.themeBorder)
+                                            .frame(height: 1)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .background(Color.themeBg.opacity(0.5))
+
+                                    // Models in group
+                                    ForEach(group.models) { model in
+                                        Button(action: {
+                                            selection = model.id
+                                            isExpanded = false
+                                            searchText = ""
+                                        }) {
+                                            HStack(spacing: 8) {
+                                                Circle()
+                                                    .fill(colorFor(model.id))
+                                                    .frame(width: 6, height: 6)
+                                                VStack(alignment: .leading, spacing: 1) {
+                                                    Text(model.displayName)
+                                                        .font(.system(size: 11))
+                                                        .foregroundColor(.themeText)
+                                                    if let desc = model.description, !desc.isEmpty {
+                                                        Text(desc)
+                                                            .font(.system(size: 9))
+                                                            .foregroundColor(.themeTextMuted)
+                                                            .lineLimit(1)
+                                                    }
+                                                }
+                                                Spacer()
+                                                if selection == model.id {
+                                                    Image(systemName: "checkmark")
+                                                        .font(.system(size: 10, weight: .semibold))
+                                                        .foregroundColor(.themeAccent)
+                                                }
+                                            }
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 5)
+                                            .background(selection == model.id ? Color.themeAccent.opacity(0.1) : Color.clear)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+
+                                if filteredGroups.isEmpty && !modelProvider.isLoading {
+                                    HStack {
+                                        Spacer()
+                                        VStack(spacing: 4) {
+                                            Image(systemName: "magnifyingglass")
+                                                .font(.system(size: 16))
+                                                .foregroundColor(.themeTextMuted)
+                                            Text("No models found")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.themeTextMuted)
+                                        }
+                                        .padding(16)
+                                        Spacer()
                                     }
                                 }
                             }
                         }
+                        .frame(height: 160)
                     }
                 }
-            } label: {
-                HStack {
-                    Text(modelDisplayName(selection))
-                        .font(.system(size: 13))
-                        .foregroundColor(.themeText)
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10))
-                        .foregroundColor(.themeTextMuted)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.themeHover)
+                .background(Color.themeCard)
                 .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
+                .zIndex(100)
             }
-            .menuStyle(BorderlessButtonMenuStyle())
         }
     }
 
-    private func modelDisplayName(_ modelId: String) -> String {
-        if let model = modelProvider.allModels.first(where: { $0.id == modelId }) {
-            return model.displayName
+    private var displayName: String {
+        modelProvider.allModels.first { $0.id == selection }?.displayName
+            ?? selection.split(separator: "/").last.map(String.init)
+            ?? selection
+    }
+
+    private var modelColor: Color {
+        colorFor(selection)
+    }
+
+    private func colorFor(_ modelId: String) -> Color {
+        if modelId.contains("claude") { return .purple }
+        if modelId.contains("gemini") { return .blue }
+        if modelId.contains("gpt") { return .green }
+        if modelId.contains("grok") { return .orange }
+        if modelId.contains("minimax") || modelId.contains("mm/") { return .pink }
+        if modelId.contains("glm") { return .cyan }
+        return .gray
+    }
+
+    private var filteredGroups: [(provider: ModelProviderType, models: [AvailableModel])] {
+        if searchText.isEmpty {
+            return modelProvider.modelsByProvider
         }
-        // Fallback: extract name from ID
-        if let lastComponent = modelId.split(separator: "/").last {
-            return String(lastComponent)
+        let query = searchText.lowercased()
+        return modelProvider.modelsByProvider.compactMap { group in
+            let filtered = group.models.filter {
+                $0.displayName.lowercased().contains(query) ||
+                $0.id.lowercased().contains(query) ||
+                ($0.description?.lowercased().contains(query) ?? false)
+            }
+            return filtered.isEmpty ? nil : (group.provider, filtered)
         }
-        return modelId
     }
 }
 
-/// Document type for exporting profiles
-struct ProfilesDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json] }
+/// Searchable slot picker with dropdown
+struct MiniSlotPicker: View {
+    let label: String
+    @Binding var selection: String
+    @StateObject private var modelProvider = ModelProvider.shared
+    @State private var isExpanded = false
+    @State private var searchText = ""
 
-    let profiles: [ModelProfile]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(.themeTextMuted)
 
-    init(profiles: [ModelProfile]) {
-        self.profiles = profiles
+            // Trigger button
+            Button(action: { withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() } }) {
+                HStack {
+                    Text(displayName)
+                        .font(.system(size: 11))
+                        .foregroundColor(.themeText)
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundColor(.themeTextMuted)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(Color.themeHover)
+                .cornerRadius(3)
+            }
+            .buttonStyle(.plain)
+
+            // Expanded search dropdown
+            if isExpanded {
+                VStack(spacing: 0) {
+                    // Search field
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeTextMuted)
+                        TextField("Search models...", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11))
+                    }
+                    .padding(6)
+                    .background(Color.themeBg)
+
+                    Divider().background(Color.themeBorder)
+
+                    // Filtered results
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(filteredGroups, id: \.provider) { group in
+                                // Provider header
+                                Text(group.provider.rawValue)
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(.themeTextMuted)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.themeBg.opacity(0.5))
+
+                                // Models
+                                ForEach(group.models) { model in
+                                    Button(action: {
+                                        selection = model.id
+                                        isExpanded = false
+                                        searchText = ""
+                                    }) {
+                                        HStack {
+                                            Text(model.displayName)
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.themeText)
+                                            Spacer()
+                                            if selection == model.id {
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.themeAccent)
+                                            }
+                                        }
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 4)
+                                        .background(selection == model.id ? Color.themeAccent.opacity(0.1) : Color.clear)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            if filteredGroups.isEmpty {
+                                Text("No models found")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.themeTextMuted)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 150)
+                }
+                .background(Color.themeCard)
+                .cornerRadius(4)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 
-    init(configuration: ReadConfiguration) throws {
-        guard let data = configuration.file.regularFileContents else {
-            throw CocoaError(.fileReadCorruptFile)
+    private var displayName: String {
+        modelProvider.allModels.first { $0.id == selection }?.displayName
+            ?? selection.split(separator: "/").last.map(String.init)
+            ?? selection
+    }
+
+    private var filteredGroups: [(provider: ModelProviderType, models: [AvailableModel])] {
+        if searchText.isEmpty {
+            return modelProvider.modelsByProvider
         }
-        self.profiles = try JSONDecoder().decode([ModelProfile].self, from: data)
+        let query = searchText.lowercased()
+        return modelProvider.modelsByProvider.compactMap { group in
+            let filtered = group.models.filter {
+                $0.displayName.lowercased().contains(query) ||
+                $0.id.lowercased().contains(query)
+            }
+            return filtered.isEmpty ? nil : (group.provider, filtered)
+        }
+    }
+}
+
+/// Document for export
+struct ProfilesDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let profiles: [ModelProfile]
+
+    init(profiles: [ModelProfile]) { self.profiles = profiles }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else { throw CocoaError(.fileReadCorruptFile) }
+        profiles = try JSONDecoder().decode([ModelProfile].self, from: data)
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(profiles)
-        return FileWrapper(regularFileWithContents: data)
+        encoder.outputFormatting = [.prettyPrinted]
+        return FileWrapper(regularFileWithContents: try encoder.encode(profiles))
     }
 }

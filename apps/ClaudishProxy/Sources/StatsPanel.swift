@@ -3,19 +3,19 @@ import SwiftUI
 // MARK: - Components
 
 struct DropdownSelector: View {
-    @Binding var selection: String
-    let options: [String]
+    @Binding var selection: StatsManager.StatsPeriod
+    let options: [StatsManager.StatsPeriod]
 
     var body: some View {
         Menu {
             ForEach(options, id: \.self) { option in
-                Button(option) {
+                Button(option.rawValue) {
                     selection = option
                 }
             }
         } label: {
             HStack(spacing: 8) {
-                Text(selection)
+                Text(selection.rawValue)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.themeText)
 
@@ -35,67 +35,67 @@ struct DropdownSelector: View {
 struct DataTableRow: View {
     let date: String
     let model: String
-    let credits: String
+    let tokens: String
     let cost: String
 
     var body: some View {
         HStack(spacing: 16) {
             Text(date)
-                .font(.system(size: 14))
+                .font(.system(size: 13))
                 .foregroundColor(.themeTextMuted)
-                .frame(width: 100, alignment: .leading)
+                .frame(width: 80, alignment: .leading)
 
             Text(model)
-                .font(.system(size: 14))
+                .font(.system(size: 13))
                 .foregroundColor(.themeText)
+                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(credits)
-                .font(.system(size: 14).monospacedDigit())
+            Text(tokens)
+                .font(.system(size: 13).monospacedDigit())
                 .foregroundColor(.themeText)
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 70, alignment: .trailing)
 
             Text(cost)
-                .font(.system(size: 14).monospacedDigit())
+                .font(.system(size: 13).monospacedDigit())
                 .foregroundColor(.themeText)
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 70, alignment: .trailing)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
-}
-
-// MARK: - Models
-
-struct Activity: Identifiable {
-    let id = UUID()
-    let date: String
-    let model: String
-    let credits: String
-    let cost: String
 }
 
 // MARK: - Main View
 
 struct StatsPanel: View {
-    @State private var usagePercentage: Double = 0.564
-    @State private var creditsUsed: Int = 564_000
-    @State private var creditsTotal: Int = 1_000_000
-    @State private var timeRange = "30 Days"
+    @ObservedObject var statsManager: StatsManager
 
-    // Mock data
-    let recentActivity = [
-        Activity(date: "Jan 15, 2026", model: "claude-3-opus", credits: "14,500", cost: "$0.22"),
-        Activity(date: "Jan 14, 2026", model: "claude-3-sonnet", credits: "8,200", cost: "$0.03"),
-        Activity(date: "Jan 14, 2026", model: "gpt-4", credits: "2,100", cost: "$0.06"),
-        Activity(date: "Jan 13, 2026", model: "claude-3-haiku", credits: "45,000", cost: "$0.01")
-    ]
+    private var totalTokens: Int {
+        statsManager.periodStats.inputTokens + statsManager.periodStats.outputTokens
+    }
+
+    private var formattedActivity: [(id: UUID, date: String, model: String, tokens: String, cost: String)] {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "MMM d"
+
+        return statsManager.recentActivity.map { stat in
+            let tokens = stat.inputTokens + stat.outputTokens
+            return (
+                id: stat.id,
+                date: dateFormatter.string(from: stat.timestamp),
+                model: formatModelName(stat.targetModel),
+                tokens: formatNumber(tokens),
+                cost: "$0.00" // Cost calculation would need pricing data
+            )
+        }
+    }
 
     var body: some View {
         ThemeCard {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 // Header with time range
                 HStack {
-                    Text("CREDITS USED")
+                    Text("USAGE STATS")
                         .font(.system(size: 11, weight: .semibold))
                         .textCase(.uppercase)
                         .tracking(1.0)
@@ -104,26 +104,34 @@ struct StatsPanel: View {
                     Spacer()
 
                     DropdownSelector(
-                        selection: $timeRange,
-                        options: ["7 Days", "30 Days", "90 Days", "All Time"]
+                        selection: Binding(
+                            get: { statsManager.selectedPeriod },
+                            set: { statsManager.setPeriod($0) }
+                        ),
+                        options: StatsManager.StatsPeriod.allCases
                     )
                 }
 
-                // Big percentage
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(String(format: "%.1f%%", usagePercentage * 100))
-                        .font(.system(size: 48, weight: .bold))
-                        .foregroundColor(.themeText)
-                        .monospacedDigit()
+                // Stats summary
+                HStack(spacing: 24) {
+                    StatBox(
+                        label: "Requests",
+                        value: "\(statsManager.periodStats.requests)",
+                        icon: "arrow.up.arrow.down"
+                    )
 
-                    Text("\(creditsUsed.formatted()) / \(creditsTotal.formatted())")
-                        .font(.system(size: 14))
-                        .foregroundColor(.themeTextMuted)
+                    StatBox(
+                        label: "Tokens",
+                        value: formatNumber(totalTokens),
+                        icon: "textformat.123"
+                    )
+
+                    StatBox(
+                        label: "Today",
+                        value: "\(statsManager.todayStats.requests)",
+                        icon: "calendar"
+                    )
                 }
-
-                // Progress bar
-                SegmentedProgressBar(progress: usagePercentage)
-                    .frame(height: 8)
 
                 // Dashed divider
                 Rectangle()
@@ -132,70 +140,125 @@ struct StatsPanel: View {
                     .frame(height: 1)
 
                 // Recent activity table
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text("RECENT ACTIVITY")
                         .font(.system(size: 11, weight: .semibold))
                         .textCase(.uppercase)
                         .tracking(1.0)
                         .foregroundColor(.themeTextMuted)
 
-                    // Table header
-                    HStack(spacing: 16) {
-                        Text("DATE")
-                            .frame(width: 100, alignment: .leading)
-                        Text("MODEL")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("CREDITS")
-                            .frame(width: 80, alignment: .trailing)
-                        Text("COST")
-                            .frame(width: 80, alignment: .trailing)
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.themeTextMuted)
+                    if formattedActivity.isEmpty {
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 8) {
+                                Image(systemName: "tray")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.themeTextMuted)
+                                Text("No activity yet")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.themeTextMuted)
+                            }
+                            .padding(.vertical, 20)
+                            Spacer()
+                        }
+                    } else {
+                        // Table header
+                        HStack(spacing: 16) {
+                            Text("DATE")
+                                .frame(width: 80, alignment: .leading)
+                            Text("MODEL")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("TOKENS")
+                                .frame(width: 70, alignment: .trailing)
+                            Text("COST")
+                                .frame(width: 70, alignment: .trailing)
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.themeTextMuted)
 
-                    // Table rows
-                    ForEach(recentActivity) { activity in
-                        DataTableRow(
-                            date: activity.date,
-                            model: activity.model,
-                            credits: activity.credits,
-                            cost: activity.cost
-                        )
+                        // Table rows
+                        ForEach(formattedActivity, id: \.id) { activity in
+                            DataTableRow(
+                                date: activity.date,
+                                model: activity.model,
+                                tokens: activity.tokens,
+                                cost: activity.cost
+                            )
+                        }
                     }
                 }
 
                 // Footer
                 HStack {
-                    HStack(spacing: 12) {
-                        Button(action: refreshData) {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14))
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                    Button(action: { statsManager.refreshStats() }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13))
                     }
+                    .buttonStyle(PlainButtonStyle())
                     .foregroundColor(.themeTextMuted)
+
+                    Text(statsManager.getDatabaseSize())
+                        .font(.system(size: 11))
+                        .foregroundColor(.themeTextSubtle)
 
                     Spacer()
 
-                    // Using PillButton as per design review recommendation
-                    PillButton(title: "View all") {
-                        viewAllActivity()
+                    Button(action: { statsManager.clearStats() }) {
+                        Text("Clear")
+                            .font(.system(size: 12))
+                            .foregroundColor(.themeDestructive)
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
             }
         }
         .frame(maxWidth: 600)
     }
 
-    // MARK: - Actions
+    // MARK: - Helpers
 
-    private func refreshData() {
-        // Mock refresh action
-        print("Refreshing data...")
+    private func formatNumber(_ num: Int) -> String {
+        if num >= 1_000_000 {
+            return String(format: "%.1fM", Double(num) / 1_000_000)
+        } else if num >= 1_000 {
+            return String(format: "%.1fK", Double(num) / 1_000)
+        }
+        return "\(num)"
     }
 
-    private func viewAllActivity() {
-        // Mock view all action
-        print("View all activity...")
+    private func formatModelName(_ model: String) -> String {
+        // Shorten common model names
+        if model.contains("/") {
+            return model.components(separatedBy: "/").last ?? model
+        }
+        if model.hasPrefix("claude-") {
+            return model.replacingOccurrences(of: "claude-", with: "")
+        }
+        return model
+    }
+}
+
+// MARK: - Stat Box Component
+
+struct StatBox: View {
+    let label: String
+    let value: String
+    let icon: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                Text(label.uppercased())
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(.themeTextMuted)
+
+            Text(value)
+                .font(.system(size: 20, weight: .bold).monospacedDigit())
+                .foregroundColor(.themeText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

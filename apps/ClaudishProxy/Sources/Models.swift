@@ -55,6 +55,28 @@ struct LogResponse: Codable {
     let nextOffset: Int?
 }
 
+/// Raw traffic entry for all intercepted requests
+struct RawTrafficEntry: Codable, Identifiable {
+    let timestamp: String
+    let method: String
+    let host: String
+    let path: String
+    let userAgent: String
+    let origin: String?
+    let contentType: String?
+    let contentLength: Int?
+    let detectedApp: String
+    let confidence: Double
+
+    var id: String { timestamp + path }
+}
+
+/// Traffic response
+struct TrafficResponse: Codable {
+    let traffic: [RawTrafficEntry]
+    let total: Int
+}
+
 /// Generic API response
 struct ApiResponse: Codable {
     let success: Bool
@@ -115,28 +137,26 @@ enum ClaudeModel: String, CaseIterable {
 
 /// Common target models for mapping
 enum TargetModel: String, CaseIterable, Identifiable {
-    // OpenRouter models
-    case gpt4o = "openai/gpt-4o"
-    case gpt4oMini = "openai/gpt-4o-mini"
-    case geminiPro = "google/gemini-pro-1.5"
+    // Passthrough (no routing)
+    case passthrough = "internal"
 
     // Direct API models
-    case geminiFlash = "g/gemini-2.0-flash-exp"
-    case openaiGpt5 = "oai/gpt-5.2"
     case minimaxM2 = "mm/minimax-m2.1"
-    case kimiK2 = "kimi/kimi-k2-0711-preview"
+    case glm47 = "z-ai/glm-4.7"
+    case gemini3Pro = "g/gemini-3-pro-preview"
+    case gpt52Codex = "oai/gpt-5.2-codex"
+    case grokCodeFast = "x-ai/grok-code-fast-1"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .gpt4o: return "GPT-4o"
-        case .gpt4oMini: return "GPT-4o Mini"
-        case .geminiPro: return "Gemini Pro 1.5"
-        case .geminiFlash: return "Gemini 2.0 Flash"
-        case .openaiGpt5: return "GPT-5.2"
+        case .passthrough: return "Passthrough (Claude)"
         case .minimaxM2: return "MiniMax M2.1"
-        case .kimiK2: return "Kimi K2"
+        case .glm47: return "GLM-4.7"
+        case .gemini3Pro: return "Gemini 3 Pro"
+        case .gpt52Codex: return "GPT-5.2 Codex"
+        case .grokCodeFast: return "Grok Code Fast"
         }
     }
 }
@@ -163,10 +183,10 @@ struct ProfileSlots: Codable, Equatable {
     /// Create cost-optimized slots
     static var costSaver: ProfileSlots {
         ProfileSlots(
-            opus: "openai/gpt-4o",
-            sonnet: "openai/gpt-4o-mini",
-            haiku: "openai/gpt-4o-mini",
-            subagent: "openai/gpt-4o-mini"
+            opus: "g/gemini-3-pro-preview",
+            sonnet: "mm/minimax-m2.1",
+            haiku: "mm/minimax-m2.1",
+            subagent: "mm/minimax-m2.1"
         )
     }
 
@@ -286,4 +306,179 @@ extension ModelProfile {
             slots: .balanced
         )
     ]
+}
+
+// MARK: - Statistics Types
+
+/// A recorded request statistic
+struct RequestStat: Codable, Identifiable {
+    let id: UUID
+    let timestamp: Date
+    let sourceModel: String  // e.g., "claude-opus-4-5"
+    let targetModel: String  // e.g., "g/gemini-3-pro-preview" or "internal"
+    let inputTokens: Int
+    let outputTokens: Int
+    let durationMs: Int
+    let success: Bool
+
+    init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        sourceModel: String,
+        targetModel: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        durationMs: Int,
+        success: Bool
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.sourceModel = sourceModel
+        self.targetModel = targetModel
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.durationMs = durationMs
+        self.success = success
+    }
+}
+
+/// Manages request statistics with SQLite persistence
+@MainActor
+class StatsManager: ObservableObject {
+    @Published var recentRequests: [RequestStat] = []
+    @Published var todayStats: (requests: Int, inputTokens: Int, outputTokens: Int, cost: Double) = (0, 0, 0, 0)
+    @Published var periodStats: (requests: Int, inputTokens: Int, outputTokens: Int, cost: Double) = (0, 0, 0, 0)
+    @Published var selectedPeriod: StatsPeriod = .thirtyDays
+
+    private let db = StatsDatabase.shared
+
+    enum StatsPeriod: String, CaseIterable {
+        case sevenDays = "7 Days"
+        case thirtyDays = "30 Days"
+        case ninetyDays = "90 Days"
+        case allTime = "All Time"
+
+        var days: Int? {
+            switch self {
+            case .sevenDays: return 7
+            case .thirtyDays: return 30
+            case .ninetyDays: return 90
+            case .allTime: return nil
+            }
+        }
+    }
+
+    init() {
+        refreshStats()
+    }
+
+    // MARK: - Computed Properties
+
+    /// Recent activity (last 10 requests)
+    var recentActivity: [RequestStat] {
+        Array(recentRequests.prefix(10))
+    }
+
+    /// Requests today (convenience accessor)
+    var requestsToday: Int {
+        todayStats.requests
+    }
+
+    /// Total input tokens for selected period
+    var totalInputTokens: Int {
+        periodStats.inputTokens
+    }
+
+    /// Total output tokens for selected period
+    var totalOutputTokens: Int {
+        periodStats.outputTokens
+    }
+
+    /// Total tokens for selected period
+    var totalTokens: Int {
+        periodStats.inputTokens + periodStats.outputTokens
+    }
+
+    /// Total cost for selected period
+    var totalCost: Double {
+        periodStats.cost
+    }
+
+    // MARK: - Recording
+
+    /// Record a new request stat
+    func recordRequest(_ stat: RequestStat, appName: String? = nil, cost: Double = 0) {
+        // Save to SQLite
+        db.recordRequest(stat, appName: appName, cost: cost)
+
+        // Refresh UI
+        refreshStats()
+    }
+
+    /// Record a request from log entry
+    func recordFromLogEntry(_ entry: LogEntry) {
+        let stat = RequestStat(
+            timestamp: parseTimestamp(entry.timestamp),
+            sourceModel: entry.requestedModel,
+            targetModel: entry.targetModel,
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
+            durationMs: entry.latency,
+            success: entry.status >= 200 && entry.status < 300
+        )
+        recordRequest(stat, appName: entry.app, cost: entry.cost)
+    }
+
+    // MARK: - Data Refresh
+
+    /// Refresh all stats from database
+    func refreshStats() {
+        // Load recent requests
+        recentRequests = db.getRecentRequests(limit: 100)
+
+        // Load today's stats
+        todayStats = db.getTodayStats()
+
+        // Load period stats based on selection
+        if let days = selectedPeriod.days {
+            periodStats = db.getStatsForLastDays(days)
+        } else {
+            periodStats = db.getAllTimeStats()
+        }
+    }
+
+    /// Change the selected time period
+    func setPeriod(_ period: StatsPeriod) {
+        selectedPeriod = period
+        refreshStats()
+    }
+
+    /// Get model usage breakdown
+    func getModelUsage() -> [(model: String, count: Int, tokens: Int)] {
+        db.getModelUsage(days: selectedPeriod.days)
+    }
+
+    // MARK: - Maintenance
+
+    /// Clear all statistics
+    func clearStats() {
+        db.clearAllStats()
+        refreshStats()
+    }
+
+    /// Get database size
+    func getDatabaseSize() -> String {
+        let bytes = db.getDatabaseSize()
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    // MARK: - Helpers
+
+    private func parseTimestamp(_ timestamp: String) -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: timestamp) ?? Date()
+    }
 }

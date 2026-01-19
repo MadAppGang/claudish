@@ -25,7 +25,7 @@
     },
     "packages/cli": {
       "name": "claudish",
-      "version": "3.2.3",
+      "version": "3.4.0",
       "bin": {
         "claudish": "dist/index.js",
       },
@@ -45,7 +45,7 @@
     },
     "packages/core": {
       "name": "@claudish/core",
-      "version": "3.2.3",
+      "version": "3.3.11",
       "dependencies": {
         "@hono/node-server": "^1.19.6",
         "hono": "^4.10.6",
@@ -60,7 +60,7 @@
     },
     "packages/macos-bridge": {
       "name": "@claudish/macos-bridge",
-      "version": "3.2.3",
+      "version": "3.3.11",
       "bin": {
         "claudish-bridge": "dist/index.js",
       },
@@ -68,11 +68,13 @@
         "@claudish/core": "workspace:*",
         "@hono/node-server": "^1.19.6",
         "hono": "^4.10.6",
+        "node-forge": "^1.3.1",
       },
       "devDependencies": {
         "@biomejs/biome": "^1.9.4",
         "@types/bun": "latest",
         "@types/node": "^25.0.8",
+        "@types/node-forge": "^1.3.11",
         "typescript": "^5.9.3",
       },
     },
@@ -297,6 +299,8 @@
     "@types/jest": ["@types/jest@30.0.0", "", { "dependencies": { "expect": "^30.0.0", "pretty-format": "^30.0.0" } }, "sha512-XTYugzhuwqWjws0CVz8QpM36+T+Dz5mTEBKhNs/esGLnCIlGdRy+Dq78NRjd7ls7r8BC8ZRMOrKlkO1hU0JOwA=="],
 
     "@types/node": ["@types/node@25.0.8", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-powIePYMmC3ibL0UJ2i2s0WIbq6cg6UyVFQxSCpaPxxzAaziRfimGivjdF943sSGV6RADVbk0Nvlm5P/FB44Zg=="],
+
+    "@types/node-forge": ["@types/node-forge@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-mhVF2BnD4BO+jtOp7z1CdzaK4mbuK0LLQYAvdOLqHTavxFNq4zA1EmYkpnFjP8HOUzedfQkRnp0E2ulSAYSzAw=="],
 
     "@types/react": ["@types/react@19.2.2", "", { "dependencies": { "csstype": "^3.0.2" } }, "sha512-6mDvHUFSjyT2B2yeNx2nUgMxh9LtOWvkhIU3uePn2I2oyNymUAX1NIsdgviM4CH+JSrp2D2hsMvJOkxY+0wNRA=="],
 
@@ -703,6 +707,8 @@
     "natural-compare": ["natural-compare@1.4.0", "", {}, "sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw=="],
 
     "negotiator": ["negotiator@1.0.0", "", {}, "sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg=="],
+
+    "node-forge": ["node-forge@1.3.3", "", {}, "sha512-rLvcdSyRCyouf6jcOIPe/BgwG/d7hKjzMKOas33/pHEr6gbq18IK9zV7DiPvzsz0oBJPme6qr6H6kGZuI9/DZg=="],
 
     "node-int64": ["node-int64@0.4.0", "", {}, "sha512-O5lz91xSOeoXP6DulyHfllpq+Eg00MWitZIbtPfoSEvqIHdl5gfcY6hYzDWnj0qD5tz52PI08u9qUvSVeUBeHw=="],
 

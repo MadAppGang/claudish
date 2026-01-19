@@ -93,6 +93,11 @@ class ModelProvider: ObservableObject {
         self.openRouterApiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"]
         // Initialize with static models immediately
         self.allModels = Self.directApiModels
+
+        // Auto-fetch OpenRouter models at startup
+        Task {
+            await fetchOpenRouterModels()
+        }
     }
 
     // MARK: - Static Direct API Models

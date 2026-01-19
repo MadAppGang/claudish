@@ -33,6 +33,9 @@ class BridgeManager: ObservableObject {
     @Published var config: BridgeConfig?
     @Published var errorMessage: String?
 
+    // Statistics manager
+    let statsManager: StatsManager
+
     // MARK: - Private State
 
     private var bridgeProcess: Process?
@@ -44,9 +47,15 @@ class BridgeManager: ObservableObject {
     // TODO: Bundle this with the app or locate via npm
     private let bridgePath: String
 
+    // API key manager for secure key storage
+    private let apiKeyManager: ApiKeyManager
+
     // MARK: - Initialization
 
-    init() {
+    init(apiKeyManager: ApiKeyManager) {
+        self.apiKeyManager = apiKeyManager
+        self.statsManager = StatsManager()
+
         // Try to find claudish-bridge in common locations
         let possiblePaths = [
             "/usr/local/bin/claudish-bridge",
@@ -56,20 +65,21 @@ class BridgeManager: ObservableObject {
                 .appendingPathComponent("mag/claudish/packages/macos-bridge/dist/index.js").path
         ]
 
-        bridgePath = possiblePaths.first { FileManager.default.fileExists(atPath: $0) }
+        self.bridgePath = possiblePaths.first { FileManager.default.fileExists(atPath: $0) }
             ?? possiblePaths.last!
 
-        Task {
-            await startBridge()
+        Task { [weak self] in
+            guard let self = self else { return }
+            await self.startBridge()
 
             // Poll bridge connection state with timeout (max 3 seconds)
             var attempts = 0
-            while !bridgeConnected && attempts < 30 {
+            while !self.bridgeConnected && attempts < 30 {
                 try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
                 attempts += 1
             }
 
-            await checkAutoStartPreference()
+            await self.checkAutoStartPreference()
         }
     }
 
@@ -321,13 +331,23 @@ class BridgeManager: ObservableObject {
         }
     }
 
-    /// Fetch the last target model from logs
+    /// Fetch the last target model from logs and update stats
     private func fetchLastTargetModel() async {
         do {
             let logResponse: LogResponse = try await apiRequest(method: "GET", path: "/logs?limit=1")
             await MainActor.run {
                 if let lastLog = logResponse.logs.first {
                     self.lastTargetModel = lastLog.targetModel
+
+                    // Record this request in stats if it's new
+                    // Check if we already have this request by comparing timestamp
+                    let exists = self.statsManager.recentRequests.contains { stat in
+                        abs(stat.timestamp.timeIntervalSince(self.parseTimestamp(lastLog.timestamp))) < 1.0
+                    }
+
+                    if !exists {
+                        self.statsManager.recordFromLogEntry(lastLog)
+                    }
                 }
             }
         } catch {
@@ -335,16 +355,23 @@ class BridgeManager: ObservableObject {
         }
     }
 
+    /// Helper to parse ISO8601 timestamp
+    private func parseTimestamp(_ timestamp: String) -> Date {
+        let formatter = ISO8601DateFormatter()
+        return formatter.date(from: timestamp) ?? Date()
+    }
+
     /// Enable the proxy
     private func enableProxy() async {
-        // Get API keys from environment/keychain
+        // Get API keys from ApiKeyManager (respects mode and fallback logic)
         let apiKeys = ApiKeys(
-            openrouter: ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"],
-            openai: ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
-            gemini: ProcessInfo.processInfo.environment["GEMINI_API_KEY"],
-            minimax: ProcessInfo.processInfo.environment["MINIMAX_API_KEY"],
-            kimi: ProcessInfo.processInfo.environment["MOONSHOT_API_KEY"],
-            glm: ProcessInfo.processInfo.environment["ZHIPU_API_KEY"]
+            openrouter: apiKeyManager.getApiKey(for: .openrouter),
+            openai: apiKeyManager.getApiKey(for: .openai),
+            gemini: apiKeyManager.getApiKey(for: .gemini),
+            anthropic: apiKeyManager.getApiKey(for: .anthropic),
+            minimax: apiKeyManager.getApiKey(for: .minimax),
+            kimi: apiKeyManager.getApiKey(for: .kimi),
+            glm: apiKeyManager.getApiKey(for: .glm)
         )
 
         let options = BridgeStartOptions(apiKeys: apiKeys)
@@ -427,7 +454,18 @@ class BridgeManager: ObservableObject {
     // MARK: - System Proxy Configuration
 
     /// Get the active network service (Wi-Fi, Ethernet, etc.)
+    /// Uses the default route to determine which interface is actually routing traffic
     private func getActiveNetworkService() async -> String? {
+        // First, find the active interface using route
+        let activeInterface = await getActiveInterface()
+        guard let interface = activeInterface else {
+            print("[BridgeManager] Could not determine active interface")
+            return nil
+        }
+
+        print("[BridgeManager] Active interface: \(interface)")
+
+        // Then find the network service that uses this interface
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         process.arguments = ["-listnetworkserviceorder"]
@@ -442,25 +480,74 @@ class BridgeManager: ObservableObject {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             guard let output = String(data: data, encoding: .utf8) else { return nil }
 
-            // Parse the output to find the first active service
-            // Format: (1) Ethernet\n(Hardware Port: Ethernet, Device: en0)
+            // Parse the output to find the service that matches the active interface
+            // Format: (1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)
             let lines = output.components(separatedBy: "\n")
-            for i in 0..<lines.count {
-                let line = lines[i].trimmingCharacters(in: .whitespaces)
-                if line.hasPrefix("(") && line.contains(")") {
-                    // Extract service name between () and newline
-                    if let startIndex = line.firstIndex(of: ")"),
-                       startIndex < line.endIndex {
-                        let serviceName = String(line[line.index(after: startIndex)...])
+            var currentServiceName: String? = nil
+
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+                // Check for service name line like "(1) Wi-Fi"
+                if trimmed.hasPrefix("(") && !trimmed.contains("Hardware Port") {
+                    if let closeParenIndex = trimmed.firstIndex(of: ")"),
+                       closeParenIndex < trimmed.endIndex {
+                        let name = String(trimmed[trimmed.index(after: closeParenIndex)...])
                             .trimmingCharacters(in: .whitespaces)
-                        if !serviceName.isEmpty && serviceName != "*" {
-                            return serviceName
+                        if !name.isEmpty && !name.hasPrefix("*") {
+                            currentServiceName = name
                         }
                     }
+                }
+                // Check for device line like "(Hardware Port: Wi-Fi, Device: en0)"
+                else if trimmed.contains("Device:") && currentServiceName != nil {
+                    // Extract device name
+                    if let deviceRange = trimmed.range(of: "Device: ") {
+                        let afterDevice = trimmed[deviceRange.upperBound...]
+                        let deviceName = afterDevice.replacingOccurrences(of: ")", with: "").trimmingCharacters(in: .whitespaces)
+
+                        if deviceName == interface {
+                            print("[BridgeManager] Found network service '\(currentServiceName!)' for interface \(interface)")
+                            return currentServiceName
+                        }
+                    }
+                    currentServiceName = nil
                 }
             }
         } catch {
             print("[BridgeManager] Failed to get network services: \(error)")
+        }
+
+        return nil
+    }
+
+    /// Get the active network interface using route command
+    private func getActiveInterface() async -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/route")
+        process.arguments = ["get", "default"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return nil }
+
+            // Parse output for "interface: en0"
+            for line in output.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("interface:") {
+                    let interface = trimmed.replacingOccurrences(of: "interface:", with: "").trimmingCharacters(in: .whitespaces)
+                    return interface
+                }
+            }
+        } catch {
+            print("[BridgeManager] Failed to get active interface: \(error)")
         }
 
         return nil
@@ -482,7 +569,7 @@ class BridgeManager: ObservableObject {
         }
 
         // Validate network service name to prevent command injection
-        guard networkService.range(of: "^[a-zA-Z0-9 -]+$", options: .regularExpression) != nil else {
+        guard networkService.range(of: "^[a-zA-Z0-9 /\\-]+$", options: .regularExpression) != nil else {
             print("[BridgeManager] Invalid network service name: \(networkService)")
             await MainActor.run {
                 errorMessage = "Invalid network service name detected"
@@ -534,7 +621,7 @@ class BridgeManager: ObservableObject {
         }
 
         // Validate network service name to prevent command injection
-        guard networkService.range(of: "^[a-zA-Z0-9 -]+$", options: .regularExpression) != nil else {
+        guard networkService.range(of: "^[a-zA-Z0-9 /\\-]+$", options: .regularExpression) != nil else {
             print("[BridgeManager] Invalid network service name: \(networkService)")
             await MainActor.run {
                 errorMessage = "Invalid network service name detected during cleanup"
