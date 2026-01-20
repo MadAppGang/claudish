@@ -49,7 +49,10 @@ struct GeneralSettingsView: View {
     @ObservedObject var certificateManager: CertificateManager
     @AppStorage("enableProxyOnLaunch") private var enableProxyOnLaunch = false
     @AppStorage("launchAtLogin") private var launchAtLogin = false
+    @AppStorage("debugMode") private var debugMode = false
     @State private var selectedDefaultModel = TargetModel.passthrough.rawValue
+    @State private var showCopiedToast = false
+    @State private var currentLogPath: String? = nil
 
     var body: some View {
         ScrollView {
@@ -202,6 +205,51 @@ struct GeneralSettingsView: View {
                             }
                         }
                         .padding(.vertical, 12)
+
+                        Divider().background(Color.themeBorder)
+
+                        // Debug Mode Row
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Debug mode")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.themeText)
+                                Text("Save all traffic to log file")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.themeTextMuted)
+                            }
+                            Spacer()
+                            if debugMode, currentLogPath != nil {
+                                Button(action: {
+                                    copyLogPath()
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: showCopiedToast ? "checkmark" : "doc.on.doc")
+                                            .font(.system(size: 10))
+                                        Text(showCopiedToast ? "Copied!" : "Copy Path")
+                                            .font(.system(size: 11))
+                                    }
+                                    .foregroundColor(.themeAccent)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .background(Color.themeAccent.opacity(0.1))
+                                .cornerRadius(4)
+                            }
+                            Toggle("", isOn: $debugMode)
+                                .toggleStyle(.switch)
+                                .tint(.themeAccent)
+                                .onChange(of: debugMode) { _, newValue in
+                                    Task {
+                                        let logPath = await bridgeManager.setDebugMode(newValue)
+                                        await MainActor.run {
+                                            currentLogPath = logPath
+                                        }
+                                    }
+                                }
+                        }
+                        .padding(.vertical, 12)
                     }
                     .padding(.horizontal, 16)
                 }
@@ -209,6 +257,21 @@ struct GeneralSettingsView: View {
             .padding(24)
         }
         .background(Color.themeBg)
+    }
+
+    private func copyLogPath() {
+        guard let logPath = currentLogPath else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(logPath, forType: .string)
+
+        withAnimation {
+            showCopiedToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation {
+                showCopiedToast = false
+            }
+        }
     }
 
     private func updateDefaultModel(_ model: String) async {
@@ -688,31 +751,22 @@ struct AboutLinkButton: View {
 /// Logs viewer window
 struct LogsView: View {
     @ObservedObject var bridgeManager: BridgeManager
-    @State private var logs: [LogEntry] = []
     @State private var traffic: [RawTrafficEntry] = []
     @State private var isLoading = false
     @State private var autoRefresh = true
-    @State private var selectedTab = 0  // 0 = Raw Traffic, 1 = API Logs
 
     var body: some View {
         VStack(spacing: 0) {
             // Header with controls
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(selectedTab == 0 ? "Raw Traffic" : "API Logs")
+                    Text("Raw Traffic")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundColor(.themeText)
-                    Text("\(selectedTab == 0 ? traffic.count : logs.count) entries")
+                    Text("\(traffic.count) entries")
                         .font(.system(size: 12))
                         .foregroundColor(.themeTextMuted)
                 }
-
-                Picker("", selection: $selectedTab) {
-                    Text("Raw Traffic").tag(0)
-                    Text("API Logs").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 200)
 
                 Spacer()
 
@@ -723,7 +777,7 @@ struct LogsView: View {
 
                 Button(action: {
                     Task {
-                        await fetchLogs()
+                        await fetchData()
                     }
                 }) {
                     HStack(spacing: 6) {
@@ -766,9 +820,7 @@ struct LogsView: View {
             Divider()
                 .background(Color.themeBorder)
 
-            // Content based on selected tab
-            if selectedTab == 0 {
-                // Raw Traffic table
+            // Raw Traffic table
                 if traffic.isEmpty {
                     VStack(spacing: 16) {
                         Image(systemName: "network")
@@ -840,90 +892,6 @@ struct LogsView: View {
                     }
                     .background(Color.themeBg)
                 }
-            } else {
-                // API Logs table
-                if logs.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 48))
-                        .foregroundColor(.themeTextMuted)
-                    Text("No logs yet")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.themeText)
-                    Text("Logs will appear here when the proxy handles requests")
-                        .font(.system(size: 13))
-                        .foregroundColor(.themeTextMuted)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.themeBg)
-            } else {
-                Table(logs) {
-                    TableColumn("Time") { log in
-                        Text(formatTimestamp(log.timestamp))
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.themeTextMuted)
-                    }
-                    .width(80)
-
-                    TableColumn("App") { log in
-                        HStack(spacing: 4) {
-                            Text(log.app)
-                                .foregroundColor(.themeText)
-                            if log.confidence < 0.8 {
-                                Image(systemName: "questionmark.circle")
-                                    .foregroundColor(.themeAccent)
-                                    .help("Low confidence: \(String(format: "%.0f%%", log.confidence * 100))")
-                            }
-                        }
-                    }
-                    .width(120)
-
-                    TableColumn("Requested") { log in
-                        Text(log.requestedModel)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.themeText)
-                            .lineLimit(1)
-                    }
-                    .width(150)
-
-                    TableColumn("Target") { log in
-                        Text(log.targetModel)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.themeAccent)
-                            .lineLimit(1)
-                    }
-                    .width(150)
-
-                    TableColumn("Status") { log in
-                        Text("\(log.status)")
-                            .foregroundColor(log.status == 200 ? .themeSuccess : .themeDestructive)
-                    }
-                    .width(60)
-
-                    TableColumn("Latency") { log in
-                        Text("\(log.latency)ms")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.themeText)
-                    }
-                    .width(70)
-
-                    TableColumn("Tokens") { log in
-                        Text("\(log.inputTokens) → \(log.outputTokens)")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.themeText)
-                    }
-                    .width(100)
-
-                    TableColumn("Cost") { log in
-                        Text(String(format: "$%.4f", log.cost))
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.themeText)
-                    }
-                    .width(70)
-                }
-                .background(Color.themeBg)
-                }
-            }
         }
         .background(Color.themeBg)
         .frame(minWidth: 800, minHeight: 400)
@@ -944,11 +912,7 @@ struct LogsView: View {
     }
 
     private func fetchData() async {
-        if selectedTab == 0 {
-            await fetchTraffic()
-        } else {
-            await fetchLogs()
-        }
+        await fetchTraffic()
     }
 
     private func fetchTraffic() async {
@@ -968,23 +932,6 @@ struct LogsView: View {
         }
     }
 
-    private func fetchLogs() async {
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            let logResponse: LogResponse = try await bridgeManager.apiRequest(
-                method: "GET",
-                path: "/logs?limit=100"
-            )
-            await MainActor.run {
-                logs = logResponse.logs
-            }
-        } catch {
-            print("[LogsView] Failed to fetch logs: \(error)")
-        }
-    }
-
     private func formatTimestamp(_ timestamp: String) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1000,18 +947,9 @@ struct LogsView: View {
 
     private func clearServerData() async {
         do {
-            if selectedTab == 0 {
-                // Clear traffic on server
-                let _: ApiResponse = try await bridgeManager.apiRequest(method: "DELETE", path: "/traffic")
-                await MainActor.run {
-                    traffic = []
-                }
-            } else {
-                // Clear logs on server
-                let _: ApiResponse = try await bridgeManager.apiRequest(method: "DELETE", path: "/logs")
-                await MainActor.run {
-                    logs = []
-                }
+            let _: ApiResponse = try await bridgeManager.apiRequest(method: "DELETE", path: "/traffic")
+            await MainActor.run {
+                traffic = []
             }
         } catch {
             print("[LogsView] Failed to clear data: \(error)")

@@ -1,9 +1,31 @@
 import SwiftUI
+import AppKit
 
 /// App version and metadata
 enum AppInfo {
     static let version = "1.0.0"
     static let build = "1"
+}
+
+/// App delegate to handle termination cleanup (Layer 3 defense)
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var bridgeManager: BridgeManager?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        print("[AppDelegate] App terminating, cleaning up...")
+        // Synchronously clean up - we can't use async here as the app is terminating
+        // Use a semaphore to wait for the async cleanup
+        let semaphore = DispatchSemaphore(value: 0)
+
+        Task {
+            await bridgeManager?.shutdown()
+            semaphore.signal()
+        }
+
+        // Wait up to 2 seconds for cleanup
+        _ = semaphore.wait(timeout: .now() + 2)
+        print("[AppDelegate] Cleanup complete")
+    }
 }
 
 /// Claudish Proxy - macOS Menu Bar Application
@@ -20,6 +42,7 @@ enum AppInfo {
 
 @main
 struct ClaudishProxyApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var apiKeyManager = ApiKeyManager()
     @StateObject private var bridgeManager: BridgeManager
     @StateObject private var profileManager = ProfileManager()
@@ -43,6 +66,9 @@ struct ClaudishProxyApp: App {
         MenuBarExtra {
             MenuBarContent(bridgeManager: bridgeManager, profileManager: profileManager, certificateManager: certificateManager)
                 .onAppear {
+                    // Connect app delegate to bridge manager for termination cleanup (Layer 3)
+                    appDelegate.bridgeManager = bridgeManager
+
                     // Connect profile manager to bridge manager
                     profileManager.setBridgeManager(bridgeManager)
                     // Apply profile when bridge connects
@@ -172,9 +198,15 @@ struct MenuBarContent: View {
             VStack(spacing: 16) {
                 // Icon based on state
                 if !bridgeManager.bridgeConnected {
-                    Image(systemName: "bolt.slash.circle.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.themeDestructive)
+                    if bridgeManager.isAttemptingRecovery {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                            .frame(width: 48, height: 48)
+                    } else {
+                        Image(systemName: "bolt.slash.circle.fill")
+                            .font(.system(size: 48))
+                            .foregroundColor(.themeDestructive)
+                    }
                 } else {
                     Image(systemName: "shield.lefthalf.filled.badge.checkmark")
                         .font(.system(size: 48))
@@ -182,22 +214,36 @@ struct MenuBarContent: View {
                 }
 
                 // Title
-                Text(!bridgeManager.bridgeConnected ? "Bridge Disconnected" : "Setup Required")
+                Text(!bridgeManager.bridgeConnected
+                    ? (bridgeManager.isAttemptingRecovery ? "Reconnecting..." : "Bridge Disconnected")
+                    : "Setup Required")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundColor(.themeText)
 
                 // Description based on state
                 VStack(spacing: 6) {
                     if !bridgeManager.bridgeConnected {
-                        Text("Proxy Service Unavailable")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.themeText)
+                        if bridgeManager.isAttemptingRecovery {
+                            Text("Attempting to Reconnect")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.themeText)
 
-                        Text("The background bridge process is not running. Try restarting the app.")
-                            .font(.system(size: 12))
-                            .foregroundColor(.themeTextMuted)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
+                            Text("Please wait while the bridge service restarts...")
+                                .font(.system(size: 12))
+                                .foregroundColor(.themeTextMuted)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Proxy Service Unavailable")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.themeText)
+
+                            Text("The background bridge process is not running. Try restarting the app.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.themeTextMuted)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     } else if !certificateManager.isCAInstalled {
                         Text("HTTPS Certificate Not Installed")
                             .font(.system(size: 13, weight: .semibold))
@@ -267,9 +313,13 @@ struct MenuBarContent: View {
                 // Connection status indicator
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(bridgeManager.bridgeConnected ? Color.themeSuccess : Color.themeDestructive)
+                        .fill(bridgeManager.bridgeConnected
+                            ? Color.themeSuccess
+                            : (bridgeManager.isAttemptingRecovery ? Color.themeAccent : Color.themeDestructive))
                         .frame(width: 6, height: 6)
-                    Text(bridgeManager.bridgeConnected ? "Bridge Connected" : "Bridge Disconnected")
+                    Text(bridgeManager.bridgeConnected
+                        ? "Bridge Connected"
+                        : (bridgeManager.isAttemptingRecovery ? "Reconnecting..." : "Bridge Disconnected"))
                         .font(.system(size: 11))
                         .foregroundColor(.themeTextMuted)
                 }

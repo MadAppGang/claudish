@@ -83,6 +83,19 @@ struct ApiResponse: Codable {
     let error: String?
 }
 
+/// Debug mode response
+struct DebugResponse: Codable {
+    let success: Bool
+    let data: DebugData?
+    let error: String?
+
+    struct DebugData: Codable {
+        let enabled: Bool
+        let logPath: String?
+        let logDir: String?
+    }
+}
+
 // MARK: - Configuration Types
 
 /// Bridge configuration

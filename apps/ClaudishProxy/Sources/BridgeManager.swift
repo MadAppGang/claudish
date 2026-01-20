@@ -13,6 +13,7 @@ class BridgeManager: ObservableObject {
     // MARK: - Published State
 
     @Published var bridgeConnected = false
+    @Published var isAttemptingRecovery = false
     @Published var isProxyEnabled = false {
         didSet {
             if oldValue != isProxyEnabled {
@@ -50,6 +51,12 @@ class BridgeManager: ObservableObject {
     // API key manager for secure key storage
     private let apiKeyManager: ApiKeyManager
 
+    // Auto-recovery state
+    private var recoveryAttempts = 0
+    private let maxRecoveryAttempts = 3
+    private var isRecovering = false
+    private var isShuttingDown = false
+
     // MARK: - Initialization
 
     init(apiKeyManager: ApiKeyManager) {
@@ -70,6 +77,10 @@ class BridgeManager: ObservableObject {
 
         Task { [weak self] in
             guard let self = self else { return }
+
+            // Layer 1: Clean up any stale proxy configuration from previous crash
+            await self.cleanupStaleProxyOnStartup()
+
             await self.startBridge()
 
             // Poll bridge connection state with timeout (max 3 seconds)
@@ -105,6 +116,22 @@ class BridgeManager: ObservableObject {
         print("[BridgeManager] Starting bridge from: \(bridgePath)")
 
         let process = Process()
+
+        // Set up environment with common node paths (NVM, Homebrew, etc.)
+        // GUI apps don't inherit shell PATH, so we need to include node locations
+        var env = ProcessInfo.processInfo.environment
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        let additionalPaths = [
+            "\(homePath)/.nvm/versions/node/v24.11.0/bin",  // NVM
+            "\(homePath)/.nvm/versions/node/v22.0.0/bin",   // NVM fallback
+            "\(homePath)/.nvm/versions/node/v20.0.0/bin",   // NVM fallback
+            "/opt/homebrew/bin",                             // Homebrew ARM
+            "/usr/local/bin",                                // Homebrew Intel
+            "/usr/bin"
+        ]
+        let currentPath = env["PATH"] ?? "/usr/bin:/bin"
+        env["PATH"] = additionalPaths.joined(separator: ":") + ":" + currentPath
+        process.environment = env
 
         // Determine how to run the bridge
         if bridgePath.hasSuffix(".js") {
@@ -146,11 +173,17 @@ class BridgeManager: ObservableObject {
         // Handle process termination
         process.terminationHandler = { [weak self] process in
             Task { @MainActor in
-                self?.bridgeConnected = false
-                self?.bridgeProcess = nil
-                self?.bridgePort = nil
-                self?.bridgeToken = nil
+                guard let self = self else { return }
+                self.bridgeConnected = false
+                self.bridgeProcess = nil
+                self.bridgePort = nil
+                self.bridgeToken = nil
                 print("[BridgeManager] Bridge process terminated with code: \(process.terminationStatus)")
+
+                // Attempt auto-recovery if not intentionally shutting down
+                if !self.isShuttingDown {
+                    await self.attemptRecovery()
+                }
             }
         }
 
@@ -167,6 +200,71 @@ class BridgeManager: ObservableObject {
             print("[BridgeManager] Failed to start bridge: \(error)")
             await MainActor.run {
                 errorMessage = "Failed to start bridge: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Attempt to recover from bridge disconnection
+    private func attemptRecovery() async {
+        guard !isRecovering else {
+            print("[BridgeManager] Recovery already in progress")
+            return
+        }
+
+        // Layer 2: IMMEDIATELY clean up system proxy to prevent stale state
+        // This ensures traffic goes direct while we attempt recovery
+        print("[BridgeManager] Cleaning up system proxy before recovery attempt...")
+        await unconfigureSystemProxy()
+
+        guard recoveryAttempts < maxRecoveryAttempts else {
+            print("[BridgeManager] Max recovery attempts (\(maxRecoveryAttempts)) reached, giving up")
+            isAttemptingRecovery = false
+            errorMessage = "Bridge disconnected. Please restart the app."
+            return
+        }
+
+        isRecovering = true
+        isAttemptingRecovery = true
+        recoveryAttempts += 1
+
+        // Exponential backoff: 1s, 2s, 4s
+        let delay = pow(2.0, Double(recoveryAttempts - 1))
+        print("[BridgeManager] Attempting recovery in \(delay)s (attempt \(recoveryAttempts)/\(maxRecoveryAttempts))")
+
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+
+        // Check if shutdown was requested during the delay
+        guard !isShuttingDown else {
+            print("[BridgeManager] Shutdown requested, aborting recovery")
+            isRecovering = false
+            isAttemptingRecovery = false
+            return
+        }
+
+        print("[BridgeManager] Starting recovery attempt \(recoveryAttempts)")
+        await startBridge()
+
+        // Wait for connection with timeout
+        var attempts = 0
+        while !bridgeConnected && attempts < 30 && !isShuttingDown {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            attempts += 1
+        }
+
+        if bridgeConnected {
+            print("[BridgeManager] Recovery successful!")
+            isRecovering = false
+            isAttemptingRecovery = false
+            // Re-enable proxy if it was enabled before
+            await checkAutoStartPreference()
+        } else if !isShuttingDown {
+            print("[BridgeManager] Recovery attempt \(recoveryAttempts) failed")
+            isRecovering = false
+            // Will retry on next termination or try again now
+            if recoveryAttempts < maxRecoveryAttempts {
+                await attemptRecovery()
+            } else {
+                isAttemptingRecovery = false
             }
         }
     }
@@ -208,6 +306,9 @@ class BridgeManager: ObservableObject {
                     errorMessage = "Failed to connect to bridge. Check that the bridge process is running."
                 } else {
                     errorMessage = nil
+                    // Reset recovery state on successful connection
+                    recoveryAttempts = 0
+                    isRecovering = false
                 }
             }
 
@@ -245,6 +346,9 @@ class BridgeManager: ObservableObject {
     /// Returns true if cleanup was successful, false if manual intervention is needed
     @discardableResult
     func shutdown() async -> Bool {
+        // Prevent auto-recovery during intentional shutdown
+        isShuttingDown = true
+
         stopStatusPolling()
 
         if isProxyEnabled {
@@ -324,10 +428,44 @@ class BridgeManager: ObservableObject {
                 }
             }
 
+            // Layer 4: Periodic verification - if proxy is OFF, ensure system proxy isn't stale
+            if !status.running {
+                await verifySystemProxyCleanedUp()
+            }
+
             // Fetch last log entry to get last target model
             await fetchLastTargetModel()
         } catch {
             print("[BridgeManager] Failed to fetch status: \(error)")
+        }
+    }
+
+    /// Layer 4: Verify system proxy is cleaned up when proxy is disabled
+    private func verifySystemProxyCleanedUp() async {
+        guard let networkService = await getActiveNetworkService() else { return }
+
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        checkProcess.arguments = ["-getautoproxyurl", networkService]
+
+        let pipe = Pipe()
+        checkProcess.standardOutput = pipe
+        checkProcess.standardError = pipe
+
+        do {
+            try checkProcess.run()
+            checkProcess.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+
+            // If PAC URL points to localhost but proxy is OFF, clean it up
+            if output.contains("127.0.0.1") && output.contains("Enabled: Yes") {
+                print("[BridgeManager] Layer 4: Found stale proxy config while proxy is OFF, cleaning up...")
+                await unconfigureSystemProxy()
+            }
+        } catch {
+            // Ignore errors - this is just a safety check
         }
     }
 
@@ -431,6 +569,25 @@ class BridgeManager: ObservableObject {
             }
         } catch {
             print("[BridgeManager] Failed to update config: \(error)")
+        }
+    }
+
+    /// Set debug mode (enable/disable traffic logging to file)
+    /// Returns the current log file path when enabled, nil otherwise
+    @discardableResult
+    func setDebugMode(_ enabled: Bool) async -> String? {
+        do {
+            let body = try JSONEncoder().encode(["enabled": enabled])
+            let response: DebugResponse = try await apiRequest(
+                method: "POST",
+                path: "/debug",
+                body: body
+            )
+            print("[BridgeManager] Debug mode \(enabled ? "enabled" : "disabled")")
+            return response.data?.logPath
+        } catch {
+            print("[BridgeManager] Failed to set debug mode: \(error)")
+            return nil
         }
     }
 
@@ -608,6 +765,40 @@ class BridgeManager: ObservableObject {
             await MainActor.run {
                 errorMessage = "Error configuring system proxy: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Clean up stale proxy configuration on startup (Layer 1 defense)
+    /// This handles crash recovery scenarios where the app terminated without cleanup
+    private func cleanupStaleProxyOnStartup() async {
+        guard let networkService = await getActiveNetworkService() else {
+            return
+        }
+
+        // Check if there's a PAC URL configured pointing to localhost
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        checkProcess.arguments = ["-getautoproxyurl", networkService]
+
+        let pipe = Pipe()
+        checkProcess.standardOutput = pipe
+        checkProcess.standardError = pipe
+
+        do {
+            try checkProcess.run()
+            checkProcess.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+
+            // Check if PAC URL points to localhost (our proxy)
+            if output.contains("127.0.0.1") && output.contains("Enabled: Yes") {
+                print("[BridgeManager] Found stale proxy configuration from previous session, cleaning up...")
+                await unconfigureSystemProxy()
+                print("[BridgeManager] Stale proxy configuration removed")
+            }
+        } catch {
+            print("[BridgeManager] Error checking for stale proxy: \(error)")
         }
     }
 
