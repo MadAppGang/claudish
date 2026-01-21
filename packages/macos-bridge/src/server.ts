@@ -157,7 +157,6 @@ export class BridgeServer {
      * GET /status - Proxy status
      */
     this.app.get("/status", (c) => {
-      console.error(`[DEBUG] Status check - routingMiddleware exists: ${this.routingMiddleware !== null}`);
       const status: ProxyStatus = {
         running: this.routingMiddleware !== null,
         port: this.proxyPort,
