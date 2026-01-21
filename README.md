@@ -6,8 +6,9 @@
 
 ## Features
 
-- ✅ **Multi-provider support** - OpenRouter, Gemini, OpenAI, and local models via prefix routing
-- ✅ **Direct API access** - Use `g/gemini-2.0-flash` or `oai/gpt-4o` for direct API calls
+- ✅ **Multi-provider support** - OpenRouter, Gemini, Vertex AI, OpenAI, and local models via prefix routing
+- ✅ **Direct API access** - Use `g/gemini-2.0-flash`, `v/gemini-2.5-flash`, or `oai/gpt-4o` for direct API calls
+- ✅ **Vertex AI Model Garden** - Access Google + partner models (MiniMax, Mistral, DeepSeek, Qwen, OpenAI OSS)
 - ✅ **Local model support** - Ollama, LM Studio, vLLM, MLX with `ollama/`, `lmstudio/` prefixes
 - ✅ **Cross-platform** - Works with both Node.js and Bun (v1.3.0+)
 - ✅ **Universal compatibility** - Use with `npx` or `bunx` - no installation required
@@ -239,6 +240,9 @@ claudish [OPTIONS] <claude-args...>
 |----------|-------------|----------|
 | `OPENROUTER_API_KEY` | OpenRouter API key | Default backend (100+ models) |
 | `GEMINI_API_KEY` | Google Gemini API key | Direct Gemini access (`g/` prefix) |
+| `VERTEX_API_KEY` | Vertex AI Express API key | Vertex AI Express mode (`v/` prefix) |
+| `VERTEX_PROJECT` | GCP Project ID | Vertex AI OAuth mode (`v/` prefix) |
+| `VERTEX_LOCATION` | GCP Region (default: us-central1) | Vertex AI regional endpoint |
 | `OPENAI_API_KEY` | OpenAI API key | Direct OpenAI access (`oai/` prefix) |
 | `ANTHROPIC_API_KEY` | Placeholder (any value) | Prevents Claude Code dialog |
 
@@ -274,6 +278,7 @@ Claudish uses **prefix-based routing** to determine which API backend to use:
 | _(none)_ | OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-5.2` |
 | `or/` | OpenRouter | `OPENROUTER_API_KEY` | `or/anthropic/claude-3.5-sonnet` |
 | `g/` `gemini/` `google/` | Google Gemini | `GEMINI_API_KEY` | `g/gemini-2.0-flash` |
+| `v/` `vertex/` | Vertex AI | `VERTEX_API_KEY` or `VERTEX_PROJECT` | `v/gemini-2.5-flash` |
 | `oai/` `openai/` | OpenAI | `OPENAI_API_KEY` | `oai/gpt-4o` |
 | `ollama/` | Ollama | _(none)_ | `ollama/llama3.2` |
 | `lmstudio/` | LM Studio | _(none)_ | `lmstudio/qwen2.5-coder` |
@@ -296,6 +301,16 @@ claudish --model gemini/gemini-2.5-pro "complex analysis"
 claudish --model oai/gpt-4o "implement feature"
 claudish --model openai/o1 "complex reasoning"
 
+# Vertex AI - Google Cloud, supports partner models
+# Express mode (API key):
+VERTEX_API_KEY=... claudish --model v/gemini-2.5-flash "task"
+# OAuth mode (gcloud auth):
+VERTEX_PROJECT=my-project claudish --model v/gemini-2.5-flash "task"
+# Partner models (MaaS):
+claudish --model vertex/minimax/minimax-m2-maas "fast task"
+claudish --model vertex/mistralai/codestral-2 "write code"
+claudish --model vertex/deepseek/deepseek-v3-2-maas "deep analysis"
+
 # Local models - free, private, no API key needed
 claudish --model ollama/llama3.2 "code review"
 claudish --model lmstudio/qwen2.5-coder "refactor"
@@ -314,6 +329,16 @@ Top recommended models for development (v3.1.1):
 | `moonshotai/kimi-k2-thinking` | MoonShot | Extended reasoning |
 | `deepseek/deepseek-v3.2` | DeepSeek | Code specialist |
 | `qwen/qwen3-vl-235b-a22b-thinking` | Alibaba | Vision + reasoning |
+
+**Vertex AI Partner Models (MaaS - Google Cloud billing):**
+
+| Model | Provider | Best For |
+|-------|----------|----------|
+| `vertex/minimax/minimax-m2-maas` | MiniMax | Fast, budget-friendly |
+| `vertex/mistralai/codestral-2` | Mistral | Code specialist |
+| `vertex/deepseek/deepseek-v3-2-maas` | DeepSeek | Deep reasoning |
+| `vertex/qwen/qwen3-coder-480b-a35b-instruct-maas` | Qwen | Agentic coding |
+| `vertex/openai/gpt-oss-120b-maas` | OpenAI | Open-weight reasoning |
 
 List all models:
 

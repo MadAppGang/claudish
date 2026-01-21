@@ -1,8 +1,8 @@
 # Claudish AI Agent Usage Guide
 
-**Version:** 2.0.0
+**Version:** 2.2.0
 **Target Audience:** AI Agents running within Claude Code
-**Purpose:** Quick reference for using Claudish CLI in agentic workflows
+**Purpose:** Quick reference for using Claudish CLI and MCP server in agentic workflows
 
 ---
 
@@ -32,6 +32,7 @@ Claudish = Claude Code + Any AI Model
 - ✅ Run Claude Code with **any AI model** via prefix-based routing
 - ✅ Supports OpenRouter (100+ models), direct Gemini API, direct OpenAI API
 - ✅ Supports local models (Ollama, LM Studio, vLLM, MLX)
+- ✅ **MCP Server mode** - expose models as tools for Claude Code
 - ✅ 100% Claude Code feature compatibility
 - ✅ Local proxy server (no data sent to Claudish servers)
 - ✅ Cost tracking and model selection
@@ -42,10 +43,27 @@ Claudish = Claude Code + Any AI Model
 |--------|---------|---------|
 | _(none)_ | OpenRouter | `openai/gpt-5.2` |
 | `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
+| `v/` `vertex/` | Vertex AI | `v/gemini-2.5-flash` |
 | `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
 | `ollama/` | Ollama | `ollama/llama3.2` |
 | `lmstudio/` | LM Studio | `lmstudio/model` |
 | `http://...` | Custom | `http://localhost:8000/model` |
+
+### Vertex AI Partner Models
+
+Vertex AI supports Google + partner models (MaaS):
+
+```bash
+# Google Gemini on Vertex
+claudish --model v/gemini-2.5-flash "task"
+
+# Partner models (MiniMax, Mistral, DeepSeek, Qwen, OpenAI OSS)
+claudish --model vertex/minimax/minimax-m2-maas "task"
+claudish --model vertex/mistralai/codestral-2 "write code"
+claudish --model vertex/deepseek/deepseek-v3-2-maas "analyze"
+claudish --model vertex/qwen/qwen3-coder-480b-a35b-instruct-maas "implement"
+claudish --model vertex/openai/gpt-oss-120b-maas "reason"
+```
 
 ## Prerequisites
 
@@ -54,9 +72,19 @@ Claudish = Claude Code + Any AI Model
    npm install -g claudish
    ```
 
-2. **Set OpenRouter API Key:**
+2. **Set API Key (at least one):**
    ```bash
+   # OpenRouter (100+ models)
    export OPENROUTER_API_KEY='sk-or-v1-...'
+
+   # OR Gemini direct
+   export GEMINI_API_KEY='...'
+
+   # OR Vertex AI (Express mode)
+   export VERTEX_API_KEY='...'
+
+   # OR Vertex AI (OAuth mode - uses gcloud ADC)
+   export VERTEX_PROJECT='your-gcp-project-id'
    ```
 
 3. **Optional but recommended:**
@@ -81,8 +109,19 @@ Claudish = Claude Code + Any AI Model
 | Model ID | Backend | Best For |
 |----------|---------|----------|
 | `g/gemini-2.0-flash` | Gemini | Fast tasks, large context |
+| `v/gemini-2.5-flash` | Vertex AI | Enterprise, GCP billing |
 | `oai/gpt-4o` | OpenAI | General purpose |
 | `ollama/llama3.2` | Local | Free, private |
+
+**Vertex AI Partner Models (MaaS):**
+
+| Model ID | Provider | Best For |
+|----------|----------|----------|
+| `vertex/minimax/minimax-m2-maas` | MiniMax | Fast, budget-friendly |
+| `vertex/mistralai/codestral-2` | Mistral | Code specialist |
+| `vertex/deepseek/deepseek-v3-2-maas` | DeepSeek | Deep reasoning |
+| `vertex/qwen/qwen3-coder-480b-a35b-instruct-maas` | Qwen | Agentic coding |
+| `vertex/openai/gpt-oss-120b-maas` | OpenAI | Open-weight reasoning |
 
 **Update models:**
 ```bash
@@ -245,6 +284,120 @@ git diff | claudish --stdin --model google/gemini-2.5-flash "review for bugs"
 ```bash
 # Vision model for visual tasks
 claudish --model qwen/qwen3-vl-235b-a22b-instruct "implement dashboard from design"
+```
+
+## MCP Server Mode
+
+Claudish can run as an MCP (Model Context Protocol) server, exposing OpenRouter models as tools that Claude Code can call mid-conversation. This is useful when you want to:
+
+- Query external models without spawning a subprocess
+- Compare responses from multiple models
+- Use specific models for specific subtasks
+
+### Starting MCP Server
+
+```bash
+# Start MCP server (stdio transport)
+claudish --mcp
+```
+
+### Claude Code Configuration
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "claudish": {
+      "command": "claudish",
+      "args": ["--mcp"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-v1-..."
+      }
+    }
+  }
+}
+```
+
+Or use npx (no installation needed):
+
+```json
+{
+  "mcpServers": {
+    "claudish": {
+      "command": "npx",
+      "args": ["claudish@latest", "--mcp"]
+    }
+  }
+}
+```
+
+### Available MCP Tools
+
+| Tool | Description | Example Use |
+|------|-------------|-------------|
+| `run_prompt` | Execute prompt on any model | Get a second opinion from Grok |
+| `list_models` | Show recommended models | Find models with tool support |
+| `search_models` | Fuzzy search all models | Find vision-capable models |
+| `compare_models` | Run same prompt on multiple models | Compare reasoning approaches |
+
+### Using MCP Tools from Claude Code
+
+Once configured, Claude Code can use these tools directly:
+
+```
+User: "Use Grok to review this code"
+Claude: [calls run_prompt tool with model="x-ai/grok-code-fast-1"]
+
+User: "What models support vision?"
+Claude: [calls search_models tool with query="vision"]
+
+User: "Compare how GPT-5 and Gemini explain this concept"
+Claude: [calls compare_models tool with models=["openai/gpt-5.2", "google/gemini-3-pro-preview"]]
+```
+
+### MCP vs CLI Mode
+
+| Feature | CLI Mode | MCP Mode |
+|---------|----------|----------|
+| Use case | Replace Claude Code model | Call models as tools |
+| Context | Full Claude Code session | Single prompt/response |
+| Streaming | Full streaming | Buffered response |
+| Best for | Primary model replacement | Second opinions, comparisons |
+
+### MCP Tool Details
+
+**run_prompt**
+```typescript
+{
+  model: string,        // e.g., "x-ai/grok-code-fast-1"
+  prompt: string,       // The prompt to send
+  system_prompt?: string,  // Optional system prompt
+  max_tokens?: number   // Default: 4096
+}
+```
+
+**list_models**
+```typescript
+// No parameters - returns curated list of recommended models
+{}
+```
+
+**search_models**
+```typescript
+{
+  query: string,   // e.g., "grok", "vision", "free"
+  limit?: number   // Default: 10
+}
+```
+
+**compare_models**
+```typescript
+{
+  models: string[],      // e.g., ["openai/gpt-5.2", "x-ai/grok-code-fast-1"]
+  prompt: string,        // Prompt to send to all models
+  system_prompt?: string // Optional system prompt
+}
 ```
 
 ## Getting Model List
@@ -558,6 +711,6 @@ claudish --help-ai > claudish-agent-guide.md
 
 ---
 
-**Version:** 2.0.0
-**Last Updated:** January 5, 2026
+**Version:** 2.2.0
+**Last Updated:** January 22, 2026
 **Maintained by:** MadAppGang
