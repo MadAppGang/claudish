@@ -203,9 +203,10 @@ export class CONNECTHandler {
    */
   setRoutingConfig(config: RoutingConfig): void {
     this.routingConfig = config;
-    console.log(
-      `[CONNECTHandler] Routing ${config.enabled ? "enabled" : "disabled"}, ${Object.keys(config.modelMap).length} mappings`
-    );
+    const msg = `[CONNECTHandler] Routing ${config.enabled ? "enabled" : "disabled"}, ${Object.keys(config.modelMap).length} mappings: ${JSON.stringify(config.modelMap)}`;
+    console.log(msg);
+    // Debug: write to file
+    fs.appendFileSync("/tmp/claudish-routing.log", `${new Date().toISOString()} ${msg}\n`);
   }
 
   /**
@@ -733,12 +734,26 @@ export class CONNECTHandler {
       sourceModel = this.modelTracker.currentModel;
     }
 
-    if (!sourceModel) {
-      return { shouldRoute: false, sourceModel: null, targetModel: null };
-    }
-
     // Check if there's a routing target for this model
-    const targetModel = this.routingConfig.modelMap[sourceModel] || null;
+    let targetModel = sourceModel ? (this.routingConfig.modelMap[sourceModel] || null) : null;
+
+    // FALLBACK: If we don't know the source model but routing is enabled,
+    // check if all targets are the same (common case: route everything to one model)
+    if (!targetModel && !sourceModel) {
+      const targets = Object.values(this.routingConfig.modelMap);
+      const uniqueTargets = [...new Set(targets)];
+      if (uniqueTargets.length === 1) {
+        // All models route to the same target, use it as fallback
+        targetModel = uniqueTargets[0];
+        sourceModel = "unknown";
+        console.log(`[CONNECTHandler] 🎯 Model unknown but all routes go to ${targetModel}, using fallback`);
+      } else if (targets.length > 0) {
+        // Multiple targets, use the first one as best guess
+        targetModel = targets[0];
+        sourceModel = "unknown";
+        console.log(`[CONNECTHandler] 🎯 Model unknown, using first target as fallback: ${targetModel}`);
+      }
+    }
 
     return {
       shouldRoute: targetModel !== null,
@@ -1664,28 +1679,10 @@ export class CONNECTHandler {
       // Transform and stream response back to client, passing conversation ID for sync support
       await this.streamTransformedResponse(tlsSocket, response, targetModel, claudeDesktopRequest, conversationId);
     } catch (err) {
-      console.error("[CONNECTHandler] Interception failed, falling back to Claude:", err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error("[CONNECTHandler] Interception failed:", errorMsg);
 
-      // Fallback: forward original request to Claude
-      const serverConn = tls.connect({
-        host: "claude.ai",
-        port: 443,
-        servername: "claude.ai",
-      });
-
-      serverConn.on("connect", () => {
-        serverConn.write(parsedRequest.raw);
-        serverConn.pipe(tlsSocket);
-      });
-
-      serverConn.on("error", (fallbackErr) => {
-        console.error("[CONNECTHandler] Fallback failed:", fallbackErr);
-        if (!tlsSocket.destroyed) {
-          this.writeErrorResponse(tlsSocket, err);
-        }
-      });
-
-      // Log fallback
+      // Log error
       const logFilename = `/tmp/fallback_${Date.now()}.json`;
       fs.writeFileSync(
         logFilename,
@@ -1693,14 +1690,114 @@ export class CONNECTHandler {
           {
             timestamp: new Date().toISOString(),
             targetModel,
-            error: err instanceof Error ? err.message : String(err),
+            error: errorMsg,
             conversationId,
           },
           null,
           2
         )
       );
+
+      // Show error in UI instead of falling back to Claude
+      this.streamErrorAsResponse(tlsSocket, targetModel, errorMsg);
     }
+  }
+
+  /**
+   * Stream an error message as a Claude-compatible response so it shows in the UI
+   */
+  private streamErrorAsResponse(
+    tlsSocket: tls.TLSSocket,
+    targetModel: string,
+    errorMsg: string
+  ): void {
+    // Write HTTP response headers
+    tlsSocket.write(
+      "HTTP/1.1 200 OK\r\n" +
+        "Content-Type: text/event-stream; charset=utf-8\r\n" +
+        "Cache-Control: no-cache\r\n" +
+        "Connection: keep-alive\r\n" +
+        "Transfer-Encoding: chunked\r\n" +
+        `request-id: req_error_${Date.now().toString(36)}\r\n` +
+        "\r\n"
+    );
+
+    const msgId = `error_${Date.now().toString(36)}`;
+    const msgUuid = crypto.randomUUID();
+    const traceId = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join("");
+
+    // Helper to write SSE event
+    const writeEvent = (event: string, data: unknown) => {
+      const chunk = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      const chunkSize = Buffer.byteLength(chunk, "utf8").toString(16);
+      tlsSocket.write(`${chunkSize}\r\n${chunk}\r\n`);
+    };
+
+    // Format error message for display
+    const errorText = `⚠️ **Claudish Proxy Error**\n\n` +
+      `Failed to route request to **${targetModel}**:\n\n` +
+      `\`\`\`\n${errorMsg}\n\`\`\`\n\n` +
+      `_Check your API key and model configuration in ClaudishProxy settings._`;
+
+    // Send message_start
+    writeEvent("message_start", {
+      type: "message_start",
+      message: {
+        id: msgId,
+        type: "message",
+        role: "assistant",
+        model: "",
+        uuid: msgUuid,
+        content: [],
+        stop_reason: null,
+        trace_id: traceId,
+      },
+    });
+
+    // Send ping
+    writeEvent("ping", { type: "ping" });
+
+    // Send content block start
+    writeEvent("content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "text",
+        text: "",
+        citations: [],
+        start_timestamp: new Date().toISOString(),
+      },
+    });
+
+    // Send error text as delta
+    writeEvent("content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: errorText, citations: [] },
+    });
+
+    // Send content block stop
+    writeEvent("content_block_stop", { type: "content_block_stop", index: 0 });
+
+    // Send message_delta
+    writeEvent("message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+    });
+
+    // Send message_limit
+    writeEvent("message_limit", {
+      type: "message_limit",
+      message_limit: { type: "within_limit" },
+    });
+
+    // Send message_stop
+    writeEvent("message_stop", { type: "message_stop" });
+
+    // End chunked transfer
+    tlsSocket.write("0\r\n\r\n");
+
+    console.log(`[CONNECTHandler] Streamed error response to UI: ${errorMsg.slice(0, 100)}`);
   }
 
   /**
@@ -1730,9 +1827,24 @@ export class CONNECTHandler {
     let apiUrl: string;
     let apiKey: string | undefined;
     let headers: Record<string, string>;
+    let actualModel = targetModel;
 
-    // OpenRouter (default for most models)
-    if (targetModel.includes("/")) {
+    // Native OpenAI API (oai/ prefix)
+    if (targetModel.startsWith("oai/")) {
+      apiUrl = "https://api.openai.com/v1/chat/completions";
+      apiKey = this.apiKeys.openai;
+      actualModel = targetModel.slice(4); // Remove "oai/" prefix
+      if (!apiKey) {
+        throw new Error("OpenAI API key not configured");
+      }
+      headers = {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      };
+      console.log(`[CONNECTHandler] Using native OpenAI API with model: ${actualModel}`);
+    }
+    // OpenRouter (default for other models with /)
+    else if (targetModel.includes("/")) {
       apiUrl = "https://openrouter.ai/api/v1/chat/completions";
       apiKey = this.apiKeys.openrouter;
       if (!apiKey) {
@@ -1757,10 +1869,11 @@ export class CONNECTHandler {
       stream: boolean;
     };
 
-    const openaiPayload = {
-      model: targetModel,
+    // Build payload - OpenAI uses max_completion_tokens for newer models
+    const isNativeOpenAI = targetModel.startsWith("oai/");
+    const openaiPayload: Record<string, unknown> = {
+      model: actualModel,
       messages: req.messages,
-      max_tokens: req.max_tokens,
       stream: true,
       tools: req.tools?.map((t) => ({
         type: "function",
@@ -1772,7 +1885,14 @@ export class CONNECTHandler {
       })),
     };
 
-    console.log(`[CONNECTHandler] Calling ${apiUrl} with model ${targetModel}`);
+    // Use max_completion_tokens for native OpenAI, max_tokens for OpenRouter
+    if (isNativeOpenAI) {
+      openaiPayload.max_completion_tokens = req.max_tokens;
+    } else {
+      openaiPayload.max_tokens = req.max_tokens;
+    }
+
+    console.log(`[CONNECTHandler] Calling ${apiUrl} with model ${actualModel}`);
 
     const response = await fetch(apiUrl, {
       method: "POST",
@@ -2125,6 +2245,22 @@ export class CONNECTHandler {
       console.log(
         `[CONNECTHandler] ✅ Interception complete. Tokens: in=${usage?.prompt_tokens || 0}, out=${usage?.completion_tokens || 0}`
       );
+
+      // Write success log for debugging
+      const successFilename = `/tmp/success_${conversationId?.slice(0, 8) || "unknown"}_${Date.now()}.json`;
+      fs.writeFileSync(
+        successFilename,
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          targetModel,
+          conversationId,
+          responseLength: fullResponseText.length,
+          promptTokens: usage?.prompt_tokens || 0,
+          completionTokens: usage?.completion_tokens || 0,
+          responsePreview: fullResponseText.slice(0, 200),
+        }, null, 2)
+      );
+      console.log(`[CONNECTHandler] 📝 Success logged to ${successFilename}`);
     } catch (err) {
       console.error("[CONNECTHandler] Error streaming response:", err);
       writeEvent("error", { type: "error", error: { type: "api_error", message: String(err) } });

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 /// Manager for model profiles with storage and bridge integration
 @MainActor
@@ -15,6 +16,8 @@ class ProfileManager: ObservableObject {
     private let profilesKey = "modelProfiles"
     private let selectedProfileKey = "selectedProfileId"
     private weak var bridgeManager: BridgeManager?
+    private var cancellables = Set<AnyCancellable>()
+    private var hasAppliedInitialProfile = false
 
     // MARK: - Initialization
 
@@ -23,8 +26,42 @@ class ProfileManager: ObservableObject {
     }
 
     /// Set bridge manager reference for applying profiles
+    /// Also sets up observers to apply profile when bridge connects
     func setBridgeManager(_ manager: BridgeManager) {
         self.bridgeManager = manager
+        hasAppliedInitialProfile = false
+        cancellables.removeAll()
+
+        // Observe bridge connection state and config changes
+        manager.$bridgeConnected
+            .combineLatest(manager.$config)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] (connected, config) in
+                guard let self = self else { return }
+                // Apply profile when bridge connects and config is available
+                if connected && config != nil && !self.hasAppliedInitialProfile {
+                    print("[ProfileManager] Bridge connected with config, applying initial profile")
+                    self.hasAppliedInitialProfile = true
+                    self.applySelectedProfile()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Also re-apply profile when proxy is enabled (connectHandler is created at that point)
+        manager.$isProxyEnabled
+            .dropFirst() // Skip initial value
+            .filter { $0 } // Only when enabled (true)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                print("[ProfileManager] Proxy enabled, re-applying profile for routing")
+                // Small delay to ensure connectHandler is fully initialized
+                Task {
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                    await self.applySelectedProfile()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Profile Loading

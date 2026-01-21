@@ -135,6 +135,20 @@ export class BridgeServer {
       return c.text(pacContent);
     });
 
+    /**
+     * GET /debug/state - Debug endpoint to show config and routing state (public)
+     */
+    this.app.get("/debug/state", (c) => {
+      const config = this.configManager.getConfig();
+      const routingConfig = this.connectHandler?.getRoutingConfig() || { enabled: false, modelMap: {} };
+      return c.json({
+        config,
+        routingConfig,
+        proxyEnabled: this.routingMiddleware !== null,
+        connectHandlerExists: this.connectHandler !== null,
+      });
+    });
+
     // ============================================
     // PROTECTED ENDPOINTS (require Bearer token)
     // ============================================
@@ -170,6 +184,40 @@ export class BridgeServer {
       try {
         const body = (await c.req.json()) as Partial<BridgeConfig>;
         const result = this.configManager.updateConfig(body);
+
+        // SYNC: Also update connectHandler routing config if model mappings changed
+        if (this.connectHandler && body.apps) {
+          // Merge all app modelMaps into a single routing config
+          const mergedModelMap: Record<string, string> = {};
+          for (const appConfig of Object.values(body.apps)) {
+            if (appConfig.modelMap) {
+              Object.assign(mergedModelMap, appConfig.modelMap);
+            }
+          }
+
+          // Check if any models are being routed (not "internal")
+          const hasRouting = Object.values(mergedModelMap).some(
+            (target) => target && target !== "internal"
+          );
+
+          // Filter out "internal" mappings (passthrough)
+          const filteredModelMap: Record<string, string> = {};
+          for (const [source, target] of Object.entries(mergedModelMap)) {
+            if (target && target !== "internal") {
+              filteredModelMap[source] = target;
+            }
+          }
+
+          this.connectHandler.setRoutingConfig({
+            enabled: hasRouting,
+            modelMap: filteredModelMap,
+          });
+
+          console.log(
+            `[Server] Synced routing config from /config: enabled=${hasRouting}, models=${Object.keys(filteredModelMap).join(", ")}`
+          );
+        }
+
         const response: ApiResponse<BridgeConfig> = {
           success: true,
           data: result,
@@ -355,6 +403,37 @@ export class BridgeServer {
 
         // Set API keys for alternative providers
         this.connectHandler.setApiKeys(body.apiKeys);
+
+        // SYNC: Apply existing routing config from configManager to new connectHandler
+        const currentConfig = this.configManager.getConfig();
+        if (currentConfig.apps) {
+          const mergedModelMap: Record<string, string> = {};
+          for (const appConfig of Object.values(currentConfig.apps)) {
+            if (appConfig.modelMap) {
+              Object.assign(mergedModelMap, appConfig.modelMap);
+            }
+          }
+
+          const hasRouting = Object.values(mergedModelMap).some(
+            (target) => target && target !== "internal"
+          );
+
+          const filteredModelMap: Record<string, string> = {};
+          for (const [source, target] of Object.entries(mergedModelMap)) {
+            if (target && target !== "internal") {
+              filteredModelMap[source] = target;
+            }
+          }
+
+          this.connectHandler.setRoutingConfig({
+            enabled: hasRouting,
+            modelMap: filteredModelMap,
+          });
+
+          console.log(
+            `[Server] Applied routing config on proxy enable: enabled=${hasRouting}, models=${Object.keys(filteredModelMap).join(", ")}`
+          );
+        }
 
         // Attach CONNECT handler to HTTP server
         if (this.server) {

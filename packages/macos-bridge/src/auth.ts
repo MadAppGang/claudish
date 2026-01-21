@@ -65,7 +65,8 @@ export class AuthManager {
       // Public endpoints (no auth required)
       // - /health: Swift app checks if bridge is running
       // - /proxy.pac: Browsers need to fetch PAC file without auth
-      if (path === "/health" || path === "/proxy.pac") {
+      // - /debug/*: Debug endpoints for troubleshooting
+      if (path === "/health" || path === "/proxy.pac" || path.startsWith("/debug")) {
         return next();
       }
 
