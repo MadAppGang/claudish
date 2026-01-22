@@ -973,6 +973,7 @@ MODEL ROUTING (prefix-based):
   mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
   kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
   glm/, zhipu/     GLM Direct API         claudish --model glm/glm-4.7 "task"
+  oc/              OllamaCloud            claudish --model oc/gpt-oss:20b "task"
   ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
   lmstudio/        LM Studio (local)      claudish --model lmstudio/qwen "task"
   vllm/            vLLM (local)           claudish --model vllm/model "task"
@@ -1054,6 +1055,7 @@ ENVIRONMENT VARIABLES:
   KIMI_API_KEY                    Alias for MOONSHOT_API_KEY
   ZHIPU_API_KEY                   GLM/Zhipu API key (for glm/, zhipu/ prefix)
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
+  OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
 
   Custom endpoints:
@@ -1064,6 +1066,7 @@ ENVIRONMENT VARIABLES:
   KIMI_BASE_URL                   Alias for MOONSHOT_BASE_URL
   ZHIPU_BASE_URL                  Custom GLM/Zhipu endpoint
   GLM_BASE_URL                    Alias for ZHIPU_BASE_URL
+  OLLAMACLOUD_BASE_URL            Custom OllamaCloud endpoint (default: https://ollama.com)
 
   Local providers:
   OLLAMA_BASE_URL                 Ollama server (default: http://localhost:11434)
