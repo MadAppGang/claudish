@@ -1,0 +1,255 @@
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to triage'
+        required: true
+        type: number
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    # Skip if comment is from the bot itself (claudish-bot app)
+    if: github.event_name != 'issue_comment' || github.event.comment.user.login != 'claudish-bot[bot]'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Generate Claudish Bot token
+        id: claudish-bot
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.CLAUDISH_BOT_APP_ID }}
+          private_key: ${{ secrets.CLAUDISH_BOT_PRIVATE_KEY }}
+
+      - name: Determine trigger type
+        id: trigger
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            echo "type=comment" >> $GITHUB_OUTPUT
+            echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.issue.number }}" ]; then
+            echo "type=new_issue" >> $GITHUB_OUTPUT
+            echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "type=manual" >> $GITHUB_OUTPUT
+            echo "issue_number=${{ inputs.issue_number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get issue details
+        id: issue
+        env:
+          GH_TOKEN: ${{ steps.claudish-bot.outputs.token }}
+        run: |
+          mkdir -p .triage
+          ISSUE_NUM="${{ steps.trigger.outputs.issue_number }}"
+          echo "number=$ISSUE_NUM" >> $GITHUB_OUTPUT
+
+          # Fetch issue details
+          gh api repos/${{ github.repository }}/issues/$ISSUE_NUM > .triage/issue_data.json
+          echo "title=$(jq -r '.title' .triage/issue_data.json)" >> $GITHUB_OUTPUT
+          echo "author=$(jq -r '.user.login' .triage/issue_data.json)" >> $GITHUB_OUTPUT
+
+          # Fetch all comments
+          gh api repos/${{ github.repository }}/issues/$ISSUE_NUM/comments > .triage/comments.json
+
+          # Check if bot has participated in this conversation
+          BOT_PARTICIPATED=$(jq '[.[] | select(.user.login == "claudish-bot[bot]")] | length > 0' .triage/comments.json)
+          echo "bot_participated=$BOT_PARTICIPATED" >> $GITHUB_OUTPUT
+
+      - name: Write issue to file
+        if: steps.trigger.outputs.type == 'new_issue' || steps.trigger.outputs.type == 'manual'
+        run: |
+          BODY=$(jq -r '.body // "No description provided"' .triage/issue_data.json)
+          cat > .triage/issue.md << ISSUE_EOF
+          # Issue #${{ steps.issue.outputs.number }}
+
+          **Title:** ${{ steps.issue.outputs.title }}
+
+          **Author:** @${{ steps.issue.outputs.author }}
+
+          **Body:**
+          $BODY
+          ISSUE_EOF
+
+      - name: Write conversation to file
+        if: steps.trigger.outputs.type == 'comment'
+        run: |
+          # Build full conversation markdown
+          ISSUE_BODY=$(jq -r '.body // "No description provided"' .triage/issue_data.json)
+          ISSUE_AUTHOR=$(jq -r '.user.login' .triage/issue_data.json)
+
+          cat > .triage/conversation.md << 'CONV_HEADER'
+          # Issue Conversation
+
+          CONV_HEADER
+
+          echo "## Original Issue" >> .triage/conversation.md
+          echo "**Author:** @$ISSUE_AUTHOR" >> .triage/conversation.md
+          echo "**Title:** ${{ steps.issue.outputs.title }}" >> .triage/conversation.md
+          echo "" >> .triage/conversation.md
+          echo "$ISSUE_BODY" >> .triage/conversation.md
+          echo "" >> .triage/conversation.md
+          echo "---" >> .triage/conversation.md
+          echo "" >> .triage/conversation.md
+          echo "## Comments" >> .triage/conversation.md
+          echo "" >> .triage/conversation.md
+
+          # Add each comment
+          jq -r '.[] | "### @\(.user.login)\n\(.body)\n\n---\n"' .triage/comments.json >> .triage/conversation.md
+
+          echo "" >> .triage/conversation.md
+          echo "## Latest Comment (trigger)" >> .triage/conversation.md
+          echo "**From:** @${{ github.event.comment.user.login }}" >> .triage/conversation.md
+          echo "" >> .triage/conversation.md
+
+      - name: Skip comment if bot not in conversation
+        id: should_process
+        if: steps.trigger.outputs.type == 'comment'
+        run: |
+          if [ "${{ steps.issue.outputs.bot_participated }}" = "false" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Bot has not participated in this conversation, skipping..."
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Bot previously commented, will analyze for reply..."
+          fi
+
+      - name: Triage new issue with Claude Code
+        id: triage
+        if: steps.trigger.outputs.type == 'new_issue' || steps.trigger.outputs.type == 'manual'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Run Claude Code in print mode with Opus 4.5
+          claude --model opus -p --dangerously-skip-permissions \
+            --system-prompt "$(cat .github/prompts/issue-triage-system.md)" \
+            "Triage the GitHub issue in .triage/issue.md. Read it, explore the codebase for context, then write your triage result to .triage/result.json"
+
+          echo "Claude Code completed"
+
+          # Read the result file
+          if [ -f .triage/result.json ]; then
+            CLEAN_JSON=$(cat .triage/result.json)
+          else
+            echo "Error: result.json not created"
+            exit 1
+          fi
+
+          # Extract fields
+          echo "category=$(echo "$CLEAN_JSON" | jq -r '.category // "question"')" >> $GITHUB_OUTPUT
+          echo "labels=$(echo "$CLEAN_JSON" | jq -r '.labels | join(",")')" >> $GITHUB_OUTPUT
+          echo "priority=$(echo "$CLEAN_JSON" | jq -r '.priority // empty')" >> $GITHUB_OUTPUT
+          echo "assign_jack=$(echo "$CLEAN_JSON" | jq -r '.assign_to_jack // false')" >> $GITHUB_OUTPUT
+          echo "convert_discussion=$(echo "$CLEAN_JSON" | jq -r '.convert_to_discussion // false')" >> $GITHUB_OUTPUT
+
+          RESPONSE_TEXT=$(echo "$CLEAN_JSON" | jq -r '.response // empty')
+          echo "response<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESPONSE_TEXT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Show related files for debugging
+          echo "Related files:"
+          echo "$CLEAN_JSON" | jq -r '.related_files[]?' || true
+
+      - name: Reply to comment with Claude Code
+        id: reply
+        if: steps.trigger.outputs.type == 'comment' && steps.should_process.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Run Claude Code to analyze conversation and decide if reply needed
+          claude --model opus -p --dangerously-skip-permissions \
+            --system-prompt "$(cat .github/prompts/issue-comment-system.md)" \
+            "Analyze the conversation in .triage/conversation.md. Decide if you should reply. Write result to .triage/result.json"
+
+          echo "Claude Code completed"
+
+          if [ -f .triage/result.json ]; then
+            CLEAN_JSON=$(cat .triage/result.json)
+          else
+            echo "Error: result.json not created"
+            exit 1
+          fi
+
+          # Extract fields
+          SHOULD_REPLY=$(echo "$CLEAN_JSON" | jq -r '.should_reply // false')
+          echo "should_reply=$SHOULD_REPLY" >> $GITHUB_OUTPUT
+
+          RESPONSE_TEXT=$(echo "$CLEAN_JSON" | jq -r '.response // empty')
+          echo "response<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESPONSE_TEXT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          REASON=$(echo "$CLEAN_JSON" | jq -r '.reason // empty')
+          echo "Reason: $REASON"
+
+      - name: Add labels
+        if: steps.triage.outputs.labels != ''
+        env:
+          GH_TOKEN: ${{ steps.claudish-bot.outputs.token }}
+        run: |
+          IFS=',' read -ra LABEL_ARRAY <<< "${{ steps.triage.outputs.labels }}"
+          for label in "${LABEL_ARRAY[@]}"; do
+            # Only add if label exists
+            if gh label list | grep -q "^$label"; then
+              gh issue edit ${{ steps.issue.outputs.number }} --add-label "$label" || true
+            fi
+          done
+
+      - name: Assign to Jack
+        if: steps.triage.outputs.assign_jack == 'true'
+        env:
+          GH_TOKEN: ${{ steps.claudish-bot.outputs.token }}
+        run: |
+          gh issue edit ${{ steps.issue.outputs.number }} --add-assignee jackrudenko || true
+
+      - name: Post triage response
+        if: steps.triage.outputs.response != ''
+        env:
+          GH_TOKEN: ${{ steps.claudish-bot.outputs.token }}
+          RESPONSE_TEXT: ${{ steps.triage.outputs.response }}
+        run: |
+          echo "$RESPONSE_TEXT" > .triage/comment.md
+          gh issue comment ${{ steps.issue.outputs.number }} --body-file .triage/comment.md
+
+      - name: Post comment reply
+        if: steps.reply.outputs.should_reply == 'true' && steps.reply.outputs.response != ''
+        env:
+          GH_TOKEN: ${{ steps.claudish-bot.outputs.token }}
+          RESPONSE_TEXT: ${{ steps.reply.outputs.response }}
+        run: |
+          echo "$RESPONSE_TEXT" > .triage/comment.md
+          gh issue comment ${{ steps.issue.outputs.number }} --body-file .triage/comment.md
+
+      - name: Convert to discussion (if needed)
+        if: steps.triage.outputs.convert_discussion == 'true'
+        env:
+          GH_TOKEN: ${{ steps.claudish-bot.outputs.token }}
+        run: |
+          echo "Note: Issue marked for discussion conversion."
+          gh issue edit ${{ steps.issue.outputs.number }} --add-label "discussion" || true
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .triage
