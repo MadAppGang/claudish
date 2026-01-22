@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, basename } from "node:path";
+import { join } from "node:path";
 import { ENV } from "@claudish/core";
 import type { ClaudishConfig } from "@claudish/core";
 
@@ -33,6 +33,7 @@ const CYAN = "\\x1b[96m";
 const YELLOW = "\\x1b[93m";
 const GREEN = "\\x1b[92m";
 const MAGENTA = "\\x1b[95m";
+const BLUE = "\\x1b[94m";
 const DIM = "\\x1b[2m";
 const RESET = "\\x1b[0m";
 const BOLD = "\\x1b[1m";
@@ -45,8 +46,7 @@ process.stdin.on('end', () => {
     let dir = path.basename(process.cwd());
     if (dir.length > 15) dir = dir.substring(0, 12) + '...';
 
-    let ctx = 100, cost = 0;
-    const model = process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
+    let ctx = 100, cost = 0, providerName = '', model = 'unknown';
     const isLocal = process.env.CLAUDISH_IS_LOCAL === 'true';
 
     let isFree = false, isEstimated = false;
@@ -56,7 +56,15 @@ process.stdin.on('end', () => {
       ctx = tokens.context_left_percent || 100;
       isFree = tokens.is_free || false;
       isEstimated = tokens.is_estimated || false;
+      providerName = tokens.provider_name || '';
+      // Read model_name from token file, fallback to env var
+      model = tokens.model_name || process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
+      // Strip provider prefix if not already stripped in token file
+      model = model.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\\/:]/, '');
     } catch (e) {
+      // Fallback to env var if token file not available
+      const rawModel = process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
+      model = rawModel.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\\/:]/, '');
       try {
         const json = JSON.parse(input);
         cost = json.total_cost_usd || 0;
@@ -73,7 +81,13 @@ process.stdin.on('end', () => {
     } else {
       costDisplay = '$' + cost.toFixed(3);
     }
-    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${model}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
+
+    // Build status line with provider name
+    if (providerName) {
+      console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${BLUE}\${providerName}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${model}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
+    } else {
+      console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${model}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
+    }
   } catch (e) {
     console.log('claudish');
   }
@@ -92,7 +106,7 @@ process.stdin.on('end', () => {
  * Note: We use ~/.claudish/ instead of system temp directory to avoid Claude Code's
  * file watcher trying to watch socket files in /tmp (which causes UNKNOWN errors)
  */
-function createTempSettingsFile(modelDisplay: string, port: string): string {
+function createTempSettingsFile(port: string): string {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
 
@@ -122,12 +136,13 @@ function createTempSettingsFile(modelDisplay: string, port: string): string {
     const YELLOW = "\\033[93m";
     const GREEN = "\\033[92m";
     const MAGENTA = "\\033[95m";
+    const BLUE = "\\033[94m";
     const DIM = "\\033[2m";
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";
 
     // Both cost and context percentage come from our token file
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && IS_FREE="false" && IS_EST="false" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$CLAUDISH_ACTIVE_MODEL_NAME" "$COST_DISPLAY" "$CTX"`;
+    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && IS_FREE="false" && IS_EST="false" && PROVIDER="" && MODEL="unknown" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d: -f2 | tr -d '"') && MODEL=$(echo "$TOKENS" | grep -o '"model_name":"[^"]*"' | cut -d: -f2 | tr -d '"'); fi && if [ -z "$MODEL" ] || [ "$MODEL" = "unknown" ]; then RAW_MODEL="$CLAUDISH_ACTIVE_MODEL_NAME" && MODEL=$(echo "$RAW_MODEL" | sed -E 's/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\\/:]//'); fi && MODEL=$(echo "$MODEL" | sed -E 's/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\\/:]//') && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && if [ ! -z "$PROVIDER" ]; then printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${BLUE}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$PROVIDER" "$MODEL" "$COST_DISPLAY" "$CTX"; else printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$MODEL" "$COST_DISPLAY" "$CTX"; fi`;
   }
 
   const settings = {
@@ -158,7 +173,7 @@ export async function runClaudeWithProxy(
   const port = portMatch ? portMatch[1] : "unknown";
 
   // Create temporary settings file with custom status line for this instance
-  const tempSettingsPath = createTempSettingsFile(modelId, port);
+  const tempSettingsPath = createTempSettingsFile(port);
 
   // Build claude arguments
   const claudeArgs: string[] = [];

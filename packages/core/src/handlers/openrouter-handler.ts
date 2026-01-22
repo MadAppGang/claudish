@@ -58,6 +58,9 @@ export class OpenRouterHandler implements ModelHandler {
       const limit = this.contextWindowCache.get(this.targetModel) || 200000;
       const leftPct =
         limit > 0 ? Math.max(0, Math.min(100, Math.round(((limit - total) / limit) * 100))) : 100;
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.targetModel.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -65,6 +68,8 @@ export class OpenRouterHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: limit,
         context_left_percent: leftPct,
+        provider_name: "OpenRouter",
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
       // Write to ~/.claudish/ directory (same location status line reads from)

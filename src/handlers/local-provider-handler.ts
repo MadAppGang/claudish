@@ -279,6 +279,15 @@ export class LocalProviderHandler implements ModelHandler {
             )
           : 100;
 
+      // Map provider name to display name
+      const providerNameMap: Record<string, string> = {
+        ollama: "Ollama",
+        lmstudio: "LM Studio",
+        vllm: "vLLM",
+        mlx: "MLX",
+        custom: "Custom",
+      };
+
       const data = {
         input_tokens: this.sessionInputTokens,
         output_tokens: this.sessionOutputTokens,
@@ -286,6 +295,7 @@ export class LocalProviderHandler implements ModelHandler {
         total_cost: 0, // Local models are free
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        provider_name: providerNameMap[this.provider.name] || "Local",
         updated_at: Date.now(),
       };
 

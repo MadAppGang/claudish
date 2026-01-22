@@ -65,6 +65,7 @@ export class OpenRouterHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: limit,
         context_left_percent: leftPct,
+        provider_name: "OpenRouter",
         updated_at: Date.now(),
       };
       // Write to ~/.claudish/ directory (same location status line reads from)

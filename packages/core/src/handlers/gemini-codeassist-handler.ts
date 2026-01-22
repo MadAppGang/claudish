@@ -89,6 +89,10 @@ export class GeminiCodeAssistHandler implements ModelHandler {
           : 100;
 
       const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -98,6 +102,8 @@ export class GeminiCodeAssistHandler implements ModelHandler {
         context_left_percent: leftPct,
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
+        provider_name: "Gemini Free",
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 

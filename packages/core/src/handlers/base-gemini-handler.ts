@@ -73,6 +73,12 @@ export abstract class BaseGeminiHandler implements ModelHandler {
   protected abstract getAuthHeaders(): Promise<Record<string, string>>;
 
   /**
+   * Abstract: Get provider display name for status line
+   * Subclasses implement this to return their specific provider name
+   */
+  protected abstract getProviderName(): string;
+
+  /**
    * Get pricing for the current model
    */
   protected getPricing(): ModelPricing {
@@ -93,6 +99,11 @@ export abstract class BaseGeminiHandler implements ModelHandler {
             )
           : 100;
 
+      const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -100,6 +111,10 @@ export abstract class BaseGeminiHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        is_free: pricing.isFree || false,
+        is_estimated: pricing.isEstimate || false,
+        provider_name: this.getProviderName(),
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 

@@ -113,6 +113,9 @@ export class OllamaCloudHandler implements ModelHandler {
         this.sessionOutputTokens
       );
 
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: this.sessionInputTokens,
         output_tokens: this.sessionOutputTokens,
@@ -120,6 +123,8 @@ export class OllamaCloudHandler implements ModelHandler {
         total_cost: cost,
         context_window: 0,
         context_left_percent: 100,
+        provider_name: "OllamaCloud",
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 

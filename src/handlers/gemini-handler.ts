@@ -45,4 +45,11 @@ export class GeminiHandler extends BaseGeminiHandler {
       "x-goog-api-key": this.apiKey,
     };
   }
+
+  /**
+   * Get provider display name
+   */
+  protected getProviderName(): string {
+    return "Gemini API";
+  }
 }

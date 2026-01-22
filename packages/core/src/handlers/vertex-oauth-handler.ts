@@ -107,6 +107,11 @@ export class VertexOAuthHandler implements ModelHandler {
           ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100)))
           : 100;
 
+      const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -114,6 +119,10 @@ export class VertexOAuthHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        is_free: pricing.isFree || false,
+        is_estimated: pricing.isEstimate || false,
+        provider_name: "Vertex AI",
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 

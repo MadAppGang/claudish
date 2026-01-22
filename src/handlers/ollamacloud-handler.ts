@@ -120,6 +120,7 @@ export class OllamaCloudHandler implements ModelHandler {
         total_cost: cost,
         context_window: 0,
         context_left_percent: 100,
+        provider_name: "OllamaCloud",
         updated_at: Date.now(),
       };
 

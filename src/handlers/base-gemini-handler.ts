@@ -19,6 +19,7 @@ import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { sanitizeSchemaForGemini, convertToolsToGemini } from "./shared/gemini-schema.js";
+import { fetchWithRetry } from "./shared/gemini-retry.js";
 import { getModelPricing, type ModelPricing } from "./shared/remote-provider-types.js";
 
 /**
@@ -72,6 +73,12 @@ export abstract class BaseGeminiHandler implements ModelHandler {
   protected abstract getAuthHeaders(): Promise<Record<string, string>>;
 
   /**
+   * Abstract: Get provider display name for status line
+   * Subclasses implement this to return their specific provider name
+   */
+  protected abstract getProviderName(): string;
+
+  /**
    * Get pricing for the current model
    */
   protected getPricing(): ModelPricing {
@@ -92,6 +99,7 @@ export abstract class BaseGeminiHandler implements ModelHandler {
             )
           : 100;
 
+      const pricing = this.getPricing();
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -99,6 +107,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        is_free: pricing.isFree || false,
+        is_estimated: pricing.isEstimate || false,
+        provider_name: this.getProviderName(),
         updated_at: Date.now(),
       };
 
@@ -641,25 +652,30 @@ export abstract class BaseGeminiHandler implements ModelHandler {
 
     log(`[BaseGeminiHandler] Calling API: ${endpoint}`);
 
-    // Use AbortController for timeout (30 seconds for connection + response)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
     let response: Response;
+    let lastErrorText: string | undefined;
+    let attempts = 1;
+
     try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          ...authHeaders,
+      const result = await fetchWithRetry(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders,
+          },
+          body: JSON.stringify(geminiPayload),
         },
-        body: JSON.stringify(geminiPayload),
-        signal: controller.signal,
-      });
+        { maxRetries: 5, baseDelayMs: 2000, maxDelayMs: 30000 },
+        "[BaseGeminiHandler]"
+      );
+      response = result.response;
+      lastErrorText = result.lastErrorText;
+      attempts = result.attempts;
     } catch (fetchError: any) {
-      clearTimeout(timeoutId);
       // Provide helpful error message for common issues
       if (fetchError.name === "AbortError") {
-        log(`[BaseGeminiHandler] Request timed out after 30s`);
+        log(`[BaseGeminiHandler] Request timed out`);
         return c.json(
           {
             error: {
@@ -693,16 +709,18 @@ export abstract class BaseGeminiHandler implements ModelHandler {
         },
         503
       );
-    } finally {
-      clearTimeout(timeoutId);
     }
 
     log(`[BaseGeminiHandler] Response status: ${response.status}`);
 
     if (!response.ok) {
-      const errorText = await response.text();
-      log(`[BaseGeminiHandler] Error: ${errorText}`);
+      const errorText = response.status === 429 ? lastErrorText : await response.text();
+      log(`[BaseGeminiHandler] API error ${response.status} after ${attempts} attempt(s): ${errorText}`);
       return c.json({ error: errorText }, response.status as any);
+    }
+
+    if (attempts > 1) {
+      log(`[BaseGeminiHandler] Request succeeded after ${attempts} attempts`);
     }
 
     if (droppedParams.length > 0) {

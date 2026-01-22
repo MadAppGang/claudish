@@ -113,6 +113,9 @@ export class OpenAIHandler implements ModelHandler {
             )
           : 100;
 
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data: Record<string, any> = {
         input_tokens: input,
         output_tokens: output,
@@ -120,6 +123,8 @@ export class OpenAIHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        provider_name: "OpenAI",
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 

@@ -90,6 +90,22 @@ export class AnthropicCompatHandler implements ModelHandler {
             )
           : 100;
 
+      // Map provider name to display name
+      const providerNameMap: Record<string, string> = {
+        minimax: "MiniMax",
+        kimi: "Kimi",
+        moonshot: "Kimi",
+        glm: "GLM",
+        zhipu: "GLM",
+      };
+      const providerKey = this.provider.name.toLowerCase();
+      const providerDisplayName = providerNameMap[providerKey] || this.provider.name;
+
+      const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -97,6 +113,10 @@ export class AnthropicCompatHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        is_free: pricing.isFree || false,
+        is_estimated: pricing.isEstimate || false,
+        provider_name: providerDisplayName,
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 

@@ -34,6 +34,7 @@ import { log, logStructured } from "../logger.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { getModelPricing, type ModelPricing } from "./shared/remote-provider-types.js";
 import { convertToolsToGemini } from "./shared/gemini-schema.js";
+import { fetchWithRetry } from "./shared/gemini-retry.js";
 import { getValidAccessToken, setupGeminiUser } from "../auth/gemini-oauth.js";
 
 const CODE_ASSIST_ENDPOINT =
@@ -97,6 +98,7 @@ export class GeminiCodeAssistHandler implements ModelHandler {
         context_left_percent: leftPct,
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
+        provider_name: "Gemini Free",
         updated_at: Date.now(),
       };
 
@@ -551,21 +553,26 @@ export class GeminiCodeAssistHandler implements ModelHandler {
         stream: true,
       });
 
-      // 4. Send Request
+      // 4. Send Request with retry logic for rate limits
       log(`[GeminiCodeAssist] Calling API: ${CODE_ASSIST_ENDPOINT} (Project: ${projectId})`);
 
-      const response = await fetch(CODE_ASSIST_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
+      const { response, attempts, lastErrorText } = await fetchWithRetry(
+        CODE_ASSIST_ENDPOINT,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(requestBody),
         },
-        body: JSON.stringify(requestBody),
-      });
+        { maxRetries: 5, baseDelayMs: 2000, maxDelayMs: 30000 },
+        "[GeminiCodeAssist]"
+      );
 
       if (!response.ok) {
-        const errorText = await response.text();
-        log(`[GeminiCodeAssist] API error ${response.status}: ${errorText}`);
+        const errorText = response.status === 429 ? lastErrorText : await response.text();
+        log(`[GeminiCodeAssist] API error ${response.status} after ${attempts} attempt(s): ${errorText}`);
         return c.json(
           {
             error: {
@@ -575,6 +582,10 @@ export class GeminiCodeAssistHandler implements ModelHandler {
           },
           response.status as any
         );
+      }
+
+      if (attempts > 1) {
+        log(`[GeminiCodeAssist] Request succeeded after ${attempts} attempts`);
       }
 
       return this.handleStreamingResponse(c, response, claudeRequest);

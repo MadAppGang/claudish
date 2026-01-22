@@ -73,6 +73,11 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   protected abstract getPricing(): ModelPricing;
 
   /**
+   * Get provider display name for status line
+   */
+  protected abstract getProviderName(): string;
+
+  /**
    * Build the API request payload
    * @param claudeRequest - Transformed Claude request
    * @param messages - Converted messages
@@ -116,6 +121,11 @@ export abstract class RemoteProviderHandler implements ModelHandler {
             )
           : 100;
 
+      const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -123,6 +133,10 @@ export abstract class RemoteProviderHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        is_free: pricing.isFree || false,
+        is_estimated: pricing.isEstimate || false,
+        provider_name: this.getProviderName(),
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 
