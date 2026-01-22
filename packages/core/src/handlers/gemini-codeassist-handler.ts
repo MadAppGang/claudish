@@ -69,7 +69,12 @@ export class GeminiCodeAssistHandler implements ModelHandler {
   }
 
   private getPricing(): ModelPricing {
-    return getModelPricing("gemini", this.modelName);
+    // Code Assist OAuth sessions are FREE - return zero cost with isFree flag
+    return {
+      inputCostPer1M: 0,
+      outputCostPer1M: 0,
+      isFree: true,
+    };
   }
 
   private writeTokenFile(input: number, output: number): void {
@@ -83,6 +88,7 @@ export class GeminiCodeAssistHandler implements ModelHandler {
             )
           : 100;
 
+      const pricing = this.getPricing();
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -90,6 +96,8 @@ export class GeminiCodeAssistHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
+        is_free: pricing.isFree || false,
+        is_estimated: pricing.isEstimate || false,
         updated_at: Date.now(),
       };
 

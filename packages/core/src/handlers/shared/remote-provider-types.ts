@@ -31,6 +31,8 @@ export interface ModelPricing {
   outputCostPer1M: number;
   /** Whether this pricing is an estimate (not from official sources) */
   isEstimate?: boolean;
+  /** Whether this model is free (e.g., OAuth-based Code Assist sessions) */
+  isFree?: boolean;
 }
 
 /**
