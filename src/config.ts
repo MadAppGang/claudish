@@ -17,6 +17,12 @@ export const MODEL_INFO: Record<
     priority: 1,
     provider: "xAI",
   },
+  "x-ai/grok-4.1-fast": {
+    name: "Fast agentic tool calling",
+    description: "Fast agentic tool calling, 2M context",
+    priority: 2,
+    provider: "xAI",
+  },
   "minimax/minimax-m2.1": {
     name: "Compact high-efficiency v2.1",
     description: "Compact high-efficiency v2.1",

@@ -140,21 +140,28 @@ export class OpenRouterHandler implements ModelHandler {
 
     await this.middlewareManager.beforeRequest({ modelId: target, messages, tools, stream: true });
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...OPENROUTER_HEADERS,
-      },
-      body: JSON.stringify(openRouterPayload),
-    });
+    let response: Response;
+    try {
+      response = await fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          ...OPENROUTER_HEADERS,
+        },
+        body: JSON.stringify(openRouterPayload),
+      });
+    } catch (fetchError: any) {
+      // Network error (connection closed, timeout, DNS failure, etc.)
+      log(`[OpenRouter] Fetch error: ${fetchError.message || fetchError}`);
+      return this.createStreamingErrorResponse(c, target, `Network error: ${fetchError.message || 'Connection failed'}`);
+    }
 
     log(`[OpenRouter] Response status: ${response.status}`);
     if (!response.ok) {
-      const errorText = await response.text();
-      log(`[OpenRouter] Error: ${errorText}`);
-      return c.json({ error: errorText }, response.status as any);
+      const errorText = await response.text().catch(() => 'Unknown error');
+      log(`[OpenRouter] API error ${response.status}: ${errorText}`);
+      return this.createStreamingErrorResponse(c, target, `OpenRouter API error (${response.status}): ${errorText}`);
     }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
 
@@ -627,6 +634,73 @@ export class OpenRouterHandler implements ModelHandler {
         },
       }
     );
+  }
+
+  /**
+   * Create a properly formatted streaming error response that Claude Code can understand
+   */
+  private createStreamingErrorResponse(c: Context, model: string, errorMessage: string): Response {
+    const encoder = new TextEncoder();
+    const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+    return c.body(new ReadableStream({
+      start(controller) {
+        const send = (event: string, data: any) => {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        };
+
+        // Send message_start
+        send("message_start", {
+          type: "message_start",
+          message: {
+            id: msgId,
+            type: "message",
+            role: "assistant",
+            content: [],
+            model,
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 0, output_tokens: 0 }
+          }
+        });
+
+        // Send content block with error message
+        send("content_block_start", {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" }
+        });
+
+        send("content_block_delta", {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: `[Claudish Error] ${errorMessage}` }
+        });
+
+        send("content_block_stop", {
+          type: "content_block_stop",
+          index: 0
+        });
+
+        // Send message_delta with stop reason
+        send("message_delta", {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 1 }
+        });
+
+        send("message_stop", { type: "message_stop" });
+
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      }
+    }), {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive"
+      }
+    });
   }
 
   async shutdown() {}
