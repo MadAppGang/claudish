@@ -9,6 +9,7 @@ import { transformOpenAIToClaude, removeUriFormat } from "../transform.js";
 import { log, logStructured, isLoggingEnabled, getLogLevel, truncateContent } from "../logger.js";
 import { fetchModelContextWindow, doesModelSupportReasoning } from "../model-loader.js";
 import { validateToolArguments } from "./shared/openai-compat.js";
+import { OpenRouterRequestQueue } from "./shared/openrouter-queue.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_HEADERS = {
@@ -25,6 +26,7 @@ export class OpenRouterHandler implements ModelHandler {
   private port: number;
   private sessionTotalCost = 0;
   private CLAUDE_INTERNAL_CONTEXT_MAX = 200000;
+  private queue: OpenRouterRequestQueue;
 
   constructor(targetModel: string, apiKey: string | undefined, port: number) {
     this.targetModel = targetModel;
@@ -37,6 +39,7 @@ export class OpenRouterHandler implements ModelHandler {
       .initialize()
       .catch((err) => log(`[Handler:${targetModel}] Middleware init error: ${err}`));
     this.fetchContextWindow(targetModel);
+    this.queue = OpenRouterRequestQueue.getInstance();
   }
 
   private async fetchContextWindow(model: string) {
@@ -59,7 +62,10 @@ export class OpenRouterHandler implements ModelHandler {
       const leftPct =
         limit > 0 ? Math.max(0, Math.min(100, Math.round(((limit - total) / limit) * 100))) : 100;
       // Strip provider prefix from model name for cleaner display
-      const displayModelName = this.targetModel.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+      const displayModelName = this.targetModel.replace(
+        /^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/,
+        ""
+      );
 
       const data = {
         input_tokens: input,
@@ -147,26 +153,48 @@ export class OpenRouterHandler implements ModelHandler {
 
     let response: Response;
     try {
-      response = await fetch(OPENROUTER_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-          ...OPENROUTER_HEADERS,
-        },
-        body: JSON.stringify(openRouterPayload),
-      });
+      response = await this.queue.enqueue(() =>
+        fetch(OPENROUTER_API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+            ...OPENROUTER_HEADERS,
+          },
+          body: JSON.stringify(openRouterPayload),
+        })
+      );
     } catch (fetchError: any) {
       // Network error (connection closed, timeout, DNS failure, etc.)
       log(`[OpenRouter] Fetch error: ${fetchError.message || fetchError}`);
-      return this.createStreamingErrorResponse(c, target, `Network error: ${fetchError.message || 'Connection failed'}`);
+      return this.createStreamingErrorResponse(
+        c,
+        target,
+        `Network error: ${fetchError.message || "Connection failed"}`
+      );
     }
 
     log(`[OpenRouter] Response status: ${response.status}`);
+
+    // Log rate limit headers in debug mode
+    if (getLogLevel() === "debug") {
+      const rateLimitHeaders = {
+        remaining: response.headers.get("X-RateLimit-Remaining-Requests"),
+        limit: response.headers.get("X-RateLimit-Limit-Requests"),
+        reset: response.headers.get("X-RateLimit-Reset-Requests"),
+        remainingTokens: response.headers.get("X-RateLimit-Remaining-Tokens"),
+      };
+      log(`[OpenRouter] Rate limit headers: ${JSON.stringify(rateLimitHeaders)}`);
+    }
+
     if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
+      const errorText = await response.text().catch(() => "Unknown error");
       log(`[OpenRouter] API error ${response.status}: ${errorText}`);
-      return this.createStreamingErrorResponse(c, target, `OpenRouter API error (${response.status}): ${errorText}`);
+      return this.createStreamingErrorResponse(
+        c,
+        target,
+        `OpenRouter API error (${response.status}): ${errorText}`
+      );
     }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
 
@@ -648,64 +676,69 @@ export class OpenRouterHandler implements ModelHandler {
     const encoder = new TextEncoder();
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-    return c.body(new ReadableStream({
-      start(controller) {
-        const send = (event: string, data: any) => {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        };
+    return c.body(
+      new ReadableStream({
+        start(controller) {
+          const send = (event: string, data: any) => {
+            controller.enqueue(
+              encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+            );
+          };
 
-        // Send message_start
-        send("message_start", {
-          type: "message_start",
-          message: {
-            id: msgId,
-            type: "message",
-            role: "assistant",
-            content: [],
-            model,
-            stop_reason: null,
-            stop_sequence: null,
-            usage: { input_tokens: 0, output_tokens: 0 }
-          }
-        });
+          // Send message_start
+          send("message_start", {
+            type: "message_start",
+            message: {
+              id: msgId,
+              type: "message",
+              role: "assistant",
+              content: [],
+              model,
+              stop_reason: null,
+              stop_sequence: null,
+              usage: { input_tokens: 0, output_tokens: 0 },
+            },
+          });
 
-        // Send content block with error message
-        send("content_block_start", {
-          type: "content_block_start",
-          index: 0,
-          content_block: { type: "text", text: "" }
-        });
+          // Send content block with error message
+          send("content_block_start", {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          });
 
-        send("content_block_delta", {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: `[Claudish Error] ${errorMessage}` }
-        });
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: `[Claudish Error] ${errorMessage}` },
+          });
 
-        send("content_block_stop", {
-          type: "content_block_stop",
-          index: 0
-        });
+          send("content_block_stop", {
+            type: "content_block_stop",
+            index: 0,
+          });
 
-        // Send message_delta with stop reason
-        send("message_delta", {
-          type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null },
-          usage: { output_tokens: 1 }
-        });
+          // Send message_delta with stop reason
+          send("message_delta", {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 1 },
+          });
 
-        send("message_stop", { type: "message_stop" });
+          send("message_stop", { type: "message_stop" });
 
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
       }
-    }), {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive"
-      }
-    });
+    );
   }
 
   async shutdown() {}
