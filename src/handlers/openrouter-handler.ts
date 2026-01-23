@@ -187,11 +187,10 @@ export class OpenRouterHandler implements ModelHandler {
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error");
       log(`[OpenRouter] API error ${response.status}: ${errorText}`);
-      return this.createStreamingErrorResponse(
-        c,
-        target,
-        `OpenRouter API error (${response.status}): ${errorText}`
-      );
+
+      // Format error message more gracefully
+      const friendlyMessage = this.formatErrorMessage(response.status, errorText, target);
+      return this.createStreamingErrorResponse(c, target, friendlyMessage);
     }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
 
@@ -664,6 +663,53 @@ export class OpenRouterHandler implements ModelHandler {
         },
       }
     );
+  }
+
+  /**
+   * Format error message for user-friendly display
+   */
+  private formatErrorMessage(status: number, errorText: string, model: string): string {
+    try {
+      const error = JSON.parse(errorText);
+      const msg = error?.error?.message || "";
+      const metadata = error?.error?.metadata || {};
+
+      // Handle 429 rate limit errors
+      if (status === 429) {
+        const provider = metadata.provider_name || "Provider";
+        if (msg.includes("rate-limited")) {
+          return `⏳ Rate limited by ${provider}. The model "${model}" is temporarily unavailable. Please wait a moment and try again, or try a different model.`;
+        }
+        return `⏳ Rate limit exceeded. Please wait and try again.`;
+      }
+
+      // Handle 404 errors (model not found, no tool support, etc.)
+      if (status === 404) {
+        if (msg.includes("tool use")) {
+          return `❌ Model "${model}" does not support tool calling, which is required by Claude Code. Try a different model with tool support.`;
+        }
+        return `❌ Model not found or unavailable: ${model}`;
+      }
+
+      // Handle 401/403 auth errors
+      if (status === 401 || status === 403) {
+        return `🔑 Authentication error. Please check your OPENROUTER_API_KEY.`;
+      }
+
+      // Handle 500+ server errors
+      if (status >= 500) {
+        return `⚠️ OpenRouter server error (${status}). Please try again later.`;
+      }
+
+      // Default: show the message if available, or the raw error
+      if (msg) {
+        return `OpenRouter error (${status}): ${msg}`;
+      }
+    } catch {
+      // JSON parsing failed, use raw text
+    }
+
+    return `OpenRouter API error (${status}): ${errorText}`;
   }
 
   /**
