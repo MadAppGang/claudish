@@ -356,7 +356,8 @@ function setupSignalHandlers(proc: ChildProcess, tempSettingsPath: string, quiet
  * Find Claude Code binary in priority order:
  * 1. CLAUDE_PATH env var
  * 2. Local installation (~/.claude/local/claude)
- * 3. Global PATH
+ * 3. Common global installation paths (npm, Homebrew, etc.)
+ * 4. Global PATH (using which/where with shell)
  */
 async function findClaudeBinary(): Promise<string | null> {
   const isWindows = process.platform === "win32";
@@ -378,13 +379,31 @@ async function findClaudeBinary(): Promise<string | null> {
     return localPath;
   }
 
-  // 3. Check global PATH using which/where
+  // 3. Check common global installation paths (Mac/Linux only)
+  if (!isWindows) {
+    const commonPaths = [
+      "/usr/local/bin/claude",           // Homebrew (Intel), npm global
+      "/opt/homebrew/bin/claude",        // Homebrew (Apple Silicon)
+      join(home, ".npm-global/bin/claude"), // Custom npm global prefix
+      join(home, ".local/bin/claude"),   // User-local installations
+      join(home, "node_modules/.bin/claude"), // Local node_modules
+    ];
+
+    for (const path of commonPaths) {
+      if (existsSync(path)) {
+        return path;
+      }
+    }
+  }
+
+  // 4. Check global PATH using which/where
+  // Use shell: true to inherit user's PATH from .zshrc/.bashrc (fixes Mac detection)
   try {
     const command = isWindows ? "where" : "which";
 
     const proc = spawn(command, ["claude"], {
       stdio: "pipe",
-      shell: isWindows,
+      shell: true,  // Always use shell to inherit user's PATH
     });
 
     let output = "";
