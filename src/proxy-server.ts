@@ -150,7 +150,8 @@ export async function createProxyServer(
       throw new Error(apiKeyError);
     }
 
-    const apiKey = process.env[resolved.provider.apiKeyEnvVar]!;
+    // Get API key - empty string for providers that don't require auth (like zen/ free models)
+    const apiKey = resolved.provider.apiKeyEnvVar ? process.env[resolved.provider.apiKeyEnvVar] || "" : "";
 
     let handler: ModelHandler;
     if (resolved.provider.name === "gemini") {

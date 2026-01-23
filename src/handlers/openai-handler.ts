@@ -851,7 +851,7 @@ export class OpenAIHandler implements ModelHandler {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
         body: JSON.stringify(apiPayload),
         signal: controller.signal,

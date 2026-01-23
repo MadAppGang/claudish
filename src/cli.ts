@@ -1,19 +1,17 @@
-import { ENV } from "./config.js";
-import type { ClaudishConfig } from "./types.js";
+import { ENV } from "@claudish/core";
+import type { ClaudishConfig } from "@claudish/core";
 import { loadModelInfo, getAvailableModels } from "./model-loader.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { fuzzyScore } from "./utils.js";
-import { getProfile, getDefaultProfile, getModelMapping } from "./profile-config.js";
-import { GeminiOAuth } from "./auth/gemini-oauth.js";
+import { getModelMapping } from "./profile-config.js";
 
 // Read version from package.json (with fallback for compiled binaries)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Fallback version - updated during release process
-let VERSION = "3.8.0";
+let VERSION = "3.8.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -202,27 +200,6 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--init") {
       await initializeClaudishSkill();
       process.exit(0);
-    } else if (arg === "--gemini-login") {
-      const oauth = GeminiOAuth.getInstance();
-      try {
-        await oauth.login();
-        console.log("✓ Successfully logged in to Gemini Code Assist API");
-        console.log('\nYou can now use: claudish --model go/gemini-2.5-flash "your task"');
-      } catch (e: any) {
-        console.error(`✗ Login failed: ${e.message}`);
-        process.exit(1);
-      }
-      process.exit(0);
-    } else if (arg === "--gemini-logout") {
-      const oauth = GeminiOAuth.getInstance();
-      try {
-        await oauth.logout();
-        console.log("✓ Successfully logged out from Gemini Code Assist API");
-      } catch (e: any) {
-        console.error(`✗ Logout failed: ${e.message}`);
-        process.exit(1);
-      }
-      process.exit(0);
     } else if (arg === "--top-models") {
       // Show recommended/top models (curated list)
       const hasJsonFlag = args.includes("--json");
@@ -396,7 +373,7 @@ async function fetchOllamaModels(): Promise<any[]> {
 
     if (!response.ok) return [];
 
-    const data = await response.json();
+    const data = (await response.json()) as { models?: any[] };
     const models = data.models || [];
 
     // Fetch capabilities for each model in parallel
@@ -411,7 +388,7 @@ async function fetchOllamaModels(): Promise<any[]> {
             signal: AbortSignal.timeout(2000),
           });
           if (showResponse.ok) {
-            const showData = await showResponse.json();
+            const showData = (await showResponse.json()) as { capabilities?: string[] };
             capabilities = showData.capabilities || [];
           }
         } catch {
@@ -478,7 +455,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       const response = await fetch("https://openrouter.ai/api/v1/models");
       if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-      const data = await response.json();
+      const data = (await response.json()) as { data: any[] };
       models = data.data;
 
       // Cache result
@@ -599,8 +576,11 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
 async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promise<void> {
   let models: any[] = [];
 
-  // Fetch local Ollama models first
-  const ollamaModels = await fetchOllamaModels();
+  // Fetch local Ollama models and OpenCode Zen models in parallel
+  const [ollamaModels, zenModels] = await Promise.all([
+    fetchOllamaModels(),
+    fetchZenModels(),
+  ]);
 
   // Check cache for all models
   if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
@@ -630,7 +610,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       const response = await fetch("https://openrouter.ai/api/v1/models");
       if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-      const data = await response.json();
+      const data = (await response.json()) as { data: any[] };
       models = data.data;
 
       // Cache result
@@ -652,12 +632,13 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 
   // JSON output
   if (jsonOutput) {
-    const allModels = [...ollamaModels, ...models];
+    const allModels = [...ollamaModels, ...zenModels, ...models];
     console.log(
       JSON.stringify(
         {
           count: allModels.length,
           localCount: ollamaModels.length,
+          zenCount: zenModels.length,
           lastUpdated: new Date().toISOString().split("T")[0],
           models: allModels.map((m) => ({
             id: m.id,
@@ -665,6 +646,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
             context: m.context_length || m.top_provider?.context_length,
             pricing: m.pricing,
             isLocal: m.isLocal || false,
+            isZen: m.isZen || false,
           })),
         },
         null,
@@ -716,6 +698,37 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     console.log("\n🏠 LOCAL OLLAMA: Not running or no models installed");
     console.log("   Start Ollama: ollama serve");
     console.log("   Pull a model: ollama pull llama3.2");
+  }
+
+  // Print OpenCode Zen models (free ones don't need API key)
+  if (zenModels.length > 0) {
+    const freeCount = zenModels.filter((m: any) => m.isFree).length;
+    console.log(`\n🔮 OPENCODE ZEN (${zenModels.length} models, ${freeCount} FREE - no API key needed):\n`);
+    console.log("    Model                          Context    Pricing      Tools");
+    console.log("  " + "─".repeat(68));
+
+    // Sort: free models first, then by context size
+    const sortedModels = [...zenModels].sort((a, b) => {
+      if (a.isFree && !b.isFree) return -1;
+      if (!a.isFree && b.isFree) return 1;
+      return (b.context_length || 0) - (a.context_length || 0);
+    });
+
+    for (const model of sortedModels) {
+      const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+      const modelIdPadded = modelId.padEnd(32);
+      const contextLen = model.context_length || 0;
+      const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
+      const contextPadded = context.padEnd(10);
+      const pricing = model.isFree ? `${GREEN}FREE${RESET}` : `$${(parseFloat(model.pricing?.prompt || "0") + parseFloat(model.pricing?.completion || "0")).toFixed(1)}/M`;
+      const pricingPadded = model.isFree ? "FREE        " : pricing.padEnd(12);
+      const tools = model.supportsTools ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+
+      console.log(`    ${modelIdPadded} ${contextPadded} ${pricingPadded} ${tools}`);
+    }
+    console.log("");
+    console.log(`  ${DIM}FREE models work without API key!${RESET}`);
+    console.log("  Use: claudish --model zen/<model-id>");
   }
 
   // Group by provider
@@ -850,7 +863,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       throw new Error(`OpenRouter API returned ${apiResponse.status}`);
     }
 
-    const openrouterData = await apiResponse.json();
+    const openrouterData = (await apiResponse.json()) as { data: any[] };
     const allModels = openrouterData.data;
 
     // Build a map for quick lookup
@@ -1024,12 +1037,13 @@ USAGE:
 MODEL ROUTING (prefix-based):
   (no prefix)      OpenRouter (default)   claudish --model openai/gpt-5.2 "task"
   g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
-  go/              Gemini Code Assist     claudish --model go/gemini-2.5-flash "task" (requires OAuth)
+  v/, vertex/      Vertex AI (OAuth)      claudish --model v/gemini-2.5-flash "task"
   oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
   mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
   kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
   glm/, zhipu/     GLM Direct API         claudish --model glm/glm-4.7 "task"
   oc/              OllamaCloud            claudish --model oc/gpt-oss:20b "task"
+  zen/             OpenCode Zen (free)    claudish --model zen/grok-code "task"
   ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
   lmstudio/        LM Studio (local)      claudish --model lmstudio/qwen "task"
   vllm/            vLLM (local)           claudish --model vllm/model "task"
@@ -1054,20 +1068,15 @@ OPTIONS:
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
   --reset-costs            Reset accumulated cost statistics
-  --models                 List ALL OpenRouter models grouped by provider
+  --models                 List ALL models (OpenRouter + OpenCode Zen + Ollama)
   --models <query>         Fuzzy search all models by name, ID, or description
   --top-models             List recommended/top programming models (curated)
   --json                   Output in JSON format (use with --models or --top-models)
   --force-update           Force refresh model cache from OpenRouter API
-  --mcp                    Start as MCP server (stdio transport for Claude Code)
   --version                Show version information
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
   --init                   Install Claudish skill in current project (.claude/skills/)
-
-GEMINI OAUTH COMMANDS:
-  --gemini-login           Login to Gemini Code Assist API via OAuth (opens browser)
-  --gemini-logout          Logout and remove stored OAuth credentials
 
 PROFILE MANAGEMENT:
   claudish init            Setup wizard - create config and first profile
@@ -1077,6 +1086,9 @@ PROFILE MANAGEMENT:
   claudish profile use     Set default profile (interactive or claudish profile use <name>)
   claudish profile show    Show profile details (default profile or claudish profile show <name>)
   claudish profile edit    Edit a profile (interactive or claudish profile edit <name>)
+
+UPDATE:
+  claudish update          Check for updates and install latest version
 
 MODEL MAPPING (per-role override):
   --model-opus <model>     Model for Opus role (planning, complex tasks)
@@ -1092,40 +1104,6 @@ MODES:
   • Interactive mode (default): Shows model selector, starts persistent session
   • Single-shot mode: Runs one task in headless mode and exits (requires --model)
 
-MCP SERVER:
-  Claudish can run as an MCP (Model Context Protocol) server, exposing OpenRouter
-  models as tools that Claude Code can call mid-conversation.
-
-  Start MCP server:
-    claudish --mcp
-
-  Configure in Claude Code (~/.claude/settings.json):
-    {
-      "mcpServers": {
-        "claudish": {
-          "command": "claudish",
-          "args": ["--mcp"],
-          "env": { "OPENROUTER_API_KEY": "your-key" }
-        }
-      }
-    }
-
-  Or use npx (no installation needed):
-    {
-      "mcpServers": {
-        "claudish": {
-          "command": "npx",
-          "args": ["claudish@latest", "--mcp"]
-        }
-      }
-    }
-
-  Available MCP tools:
-    • run_prompt      - Execute a prompt on any OpenRouter model
-    • list_models     - Show recommended models with pricing/capabilities
-    • search_models   - Fuzzy search all OpenRouter models
-    • compare_models  - Run same prompt across multiple models
-
 NOTES:
   • Permission prompts are SKIPPED by default (--dangerously-skip-permissions)
   • Use --no-auto-approve to enable permission prompts
@@ -1135,9 +1113,19 @@ NOTES:
 ENVIRONMENT VARIABLES:
   Claudish automatically loads .env file from current directory.
 
+  Claude Code installation:
+  CLAUDE_PATH                     Custom path to Claude Code binary (optional)
+                                  Default search order:
+                                  1. CLAUDE_PATH env var
+                                  2. ~/.claude/local/claude (local install)
+                                  3. Global PATH (npm -g install)
+
   API Keys (at least one required for cloud models):
   OPENROUTER_API_KEY              OpenRouter API key (default backend)
   GEMINI_API_KEY                  Google Gemini API key (for g/ prefix)
+  VERTEX_API_KEY                  Vertex AI Express API key (for v/ prefix)
+  VERTEX_PROJECT                  Vertex AI project ID (OAuth mode, for v/ prefix)
+  VERTEX_LOCATION                 Vertex AI region (default: us-central1)
   OPENAI_API_KEY                  OpenAI API key (for oai/ prefix)
   MINIMAX_API_KEY                 MiniMax API key (for mmax/, mm/ prefix)
   MOONSHOT_API_KEY                Kimi/Moonshot API key (for kimi/, moonshot/ prefix)
@@ -1145,6 +1133,7 @@ ENVIRONMENT VARIABLES:
   ZHIPU_API_KEY                   GLM/Zhipu API key (for glm/, zhipu/ prefix)
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
   OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
+  OPENCODE_API_KEY                OpenCode Zen API key (optional - free models work without it)
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
   ANTHROPIC_AUTH_TOKEN            Placeholder (prevents Claude Code login screen)
 
@@ -1156,7 +1145,8 @@ ENVIRONMENT VARIABLES:
   KIMI_BASE_URL                   Alias for MOONSHOT_BASE_URL
   ZHIPU_BASE_URL                  Custom GLM/Zhipu endpoint
   GLM_BASE_URL                    Alias for ZHIPU_BASE_URL
-  OLLAMACLOUD_BASE_URL            Custom OllamaCloud endpoint
+  OLLAMACLOUD_BASE_URL            Custom OllamaCloud endpoint (default: https://ollama.com)
+  OPENCODE_BASE_URL               Custom OpenCode Zen endpoint (default: https://opencode.ai/zen)
 
   Local providers:
   OLLAMA_BASE_URL                 Ollama server (default: http://localhost:11434)
@@ -1192,6 +1182,15 @@ EXAMPLES:
   claudish --model g/gemini-2.0-flash "quick fix"
   claudish --model gemini/gemini-2.5-pro "complex analysis"
 
+  # Vertex AI (Google Cloud - supports Google + partner models)
+  # Express mode (API key):
+  VERTEX_API_KEY=... claudish --model v/gemini-2.5-flash "task"
+  # OAuth mode (gcloud auth):
+  VERTEX_PROJECT=my-project claudish --model v/gemini-2.5-flash "task"
+  # Partner models (MiniMax, Mistral on Vertex):
+  claudish --model vertex/minimaxai/minimax-m2-maas "task"
+  claudish --model vertex/mistralai/codestral-2 "write code"
+
   # Direct OpenAI API
   claudish --model oai/gpt-4o "implement feature"
   claudish --model oai/o1 "complex reasoning"
@@ -1207,6 +1206,11 @@ EXAMPLES:
   # Direct GLM API
   claudish --model glm/glm-4.7 "code generation"
   claudish --model zhipu/glm-4-plus "complex task"
+
+  # OpenCode Zen (free models)
+  claudish --model zen/grok-code "implement feature"
+  claudish --model zen/glm-4.7-free "code review"
+  claudish --model zen/minimax-m2.1-free "complex task"
 
   # Local models (free, private)
   claudish --model ollama/llama3.2 "code review"
@@ -1260,10 +1264,11 @@ LOCAL MODELS (Ollama, LM Studio, vLLM):
   OLLAMA_HOST=http://192.168.1.50:11434 claudish --model ollama/llama3.2 "task"
 
 AVAILABLE MODELS:
-  List all models:     claudish --models
+  List all models:     claudish --models  (includes OpenRouter, OpenCode Zen, Ollama)
   Search models:       claudish --models <query>
   Top recommended:     claudish --top-models
-  JSON output:         claudish --models --json  |  claudish --top-models --json
+  Free models only:    claudish --free  (interactive selector with free models)
+  JSON output:         claudish --models --json
   Force cache update:  claudish --models --force-update
   (Cache auto-updates every 2 days)
 
@@ -1487,5 +1492,44 @@ function printAvailableModelsJSON(): void {
     };
 
     console.log(JSON.stringify(output, null, 2));
+  }
+}
+
+/**
+ * Fetch ALL OpenCode Zen models from models.dev API
+ * Returns all models with full metadata, marks free ones
+ */
+async function fetchZenModels(): Promise<any[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const opencode = data.opencode;
+    if (!opencode?.models) return [];
+
+    // Get all models with metadata
+    return Object.entries(opencode.models)
+      .map(([id, m]: [string, any]) => {
+        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
+        return {
+          id: `zen/${id}`,
+          name: m.name || id,
+          context_length: m.limit?.context || 128000,
+          max_output: m.limit?.output || 32000,
+          pricing: isFree ? { prompt: "0", completion: "0" } : { prompt: String(m.cost?.input || 0), completion: String(m.cost?.output || 0) },
+          isZen: true,
+          isFree,
+          supportsTools: m.tool_call || false,
+          supportsReasoning: m.reasoning || false,
+        };
+      });
+  } catch {
+    return [];
   }
 }
