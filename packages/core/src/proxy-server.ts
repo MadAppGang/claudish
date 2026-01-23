@@ -133,7 +133,7 @@ export async function createProxyServer(
       return remoteProviderHandlers.get(targetModel)!;
     }
 
-    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, oc/, or/)
+    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, oc/, zen/, or/)
     const resolved = resolveRemoteProvider(targetModel);
     if (!resolved) {
       return null;
@@ -170,6 +170,16 @@ export async function createProxyServer(
       // GLM uses OpenAI-compatible API
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "opencode-zen") {
+      // OpenCode Zen uses OpenAI-compatible API for most models
+      // MiniMax models on Zen use Anthropic-compatible API
+      if (resolved.modelName.toLowerCase().includes("minimax")) {
+        handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created OpenCode Zen (Anthropic) handler: ${resolved.modelName}`);
+      } else {
+        handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created OpenCode Zen (OpenAI) handler: ${resolved.modelName}`);
+      }
     } else if (resolved.provider.name === "ollamacloud") {
       // OllamaCloud uses Ollama native API (NOT OpenAI-compatible)
       handler = new OllamaCloudHandler(resolved.provider, resolved.modelName, apiKey, port);
@@ -234,7 +244,7 @@ export async function createProxyServer(
       }
     }
 
-    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
+    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, zen/)
     const remoteHandler = getRemoteProviderHandler(target);
     if (remoteHandler) return remoteHandler;
 

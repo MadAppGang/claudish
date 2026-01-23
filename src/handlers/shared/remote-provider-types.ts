@@ -154,6 +154,18 @@ export const OLLAMACLOUD_PRICING: Record<string, ModelPricing> = {
   default: { inputCostPer1M: 1.0, outputCostPer1M: 4.0 },
 };
 
+export const OPENCODE_ZEN_PRICING: Record<string, ModelPricing> = {
+  // Free models from OpenCode Zen
+  "grok-code": { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+  "grok-code-fast-1": { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+  "glm-4.7-free": { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+  "minimax-m2.1-free": { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+  "big-pickle": { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+  "gpt-5-nano": { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+  // Default for unknown OpenCode Zen models (assume free)
+  default: { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true },
+};
+
 /**
  * Get pricing for a model
  */
@@ -184,6 +196,10 @@ export function getModelPricing(provider: string, modelName: string): ModelPrici
     case "ollamacloud":
     case "oc":
       pricingTable = OLLAMACLOUD_PRICING;
+      break;
+    case "opencode-zen":
+    case "zen":
+      pricingTable = OPENCODE_ZEN_PRICING;
       break;
     default:
       // Return default pricing for unknown providers

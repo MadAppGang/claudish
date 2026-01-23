@@ -1,7 +1,7 @@
 /**
  * Remote Provider Registry
  *
- * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud)
+ * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud, OpenCode Zen)
  * based on model ID prefixes.
  *
  * Prefix patterns:
@@ -12,6 +12,7 @@
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
  * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
  * - oc/ -> OllamaCloud API (OpenAI-compatible)
+ * - zen/ -> OpenCode Zen API (OpenAI-compatible + Anthropic for MiniMax)
  * - or/, no prefix with "/" -> OpenRouter (existing handler)
  */
 
@@ -141,6 +142,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsReasoning: false,
     },
   },
+  {
+    name: "opencode-zen",
+    baseUrl: process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen",
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "", // Empty - free models don't require API key
+    prefixes: ["zen/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: false,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: false,
+    },
+  },
 ];
 
 /**
@@ -206,6 +221,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
       ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
       OLLAMA_API_KEY:
         "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
+      OPENCODE_API_KEY:
+        "export OPENCODE_API_KEY='your-key' (get from https://opencode.ai/)",
     };
 
     const example = examples[provider.apiKeyEnvVar] || `export ${provider.apiKeyEnvVar}='your-key'`;

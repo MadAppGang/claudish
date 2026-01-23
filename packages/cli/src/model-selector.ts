@@ -54,7 +54,52 @@ const TRUSTED_FREE_PROVIDERS = [
   "mistralai",
   "nvidia",
   "cohere",
+  "zen", // OpenCode Zen free models
 ];
+
+/**
+ * Fetch OpenCode Zen models from models.dev API
+ * Dynamically fetches all models with metadata
+ */
+async function fetchZenModels(): Promise<ModelInfo[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    const opencode = data.opencode;
+    if (!opencode?.models) return [];
+
+    return Object.entries(opencode.models)
+      .map(([id, m]: [string, any]) => {
+        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
+        return {
+          id: `zen/${id}`,
+          name: m.name || id,
+          description: isFree ? "OpenCode Zen - FREE (no API key needed)" : `OpenCode Zen - $${((m.cost?.input || 0) + (m.cost?.output || 0)).toFixed(1)}/M`,
+          provider: "zen",
+          pricing: { input: String(m.cost?.input || 0), output: String(m.cost?.output || 0), average: isFree ? "FREE" : `$${((m.cost?.input || 0) + (m.cost?.output || 0)).toFixed(1)}/M` },
+          context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
+          contextLength: m.limit?.context || 128000,
+          supportsTools: m.tool_call || false,
+          supportsReasoning: m.reasoning || false,
+          isFree,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch only FREE OpenCode Zen models
+ */
+async function fetchZenFreeModels(): Promise<ModelInfo[]> {
+  const allZen = await fetchZenModels();
+  return allZen.filter(m => m.isFree);
+}
 
 /**
  * Load recommended models from JSON
@@ -162,12 +207,16 @@ function toModelInfo(model: any): ModelInfo {
 }
 
 /**
- * Get free models from cache/API
+ * Get free models from cache/API (includes OpenCode Zen)
  */
 async function getFreeModels(): Promise<ModelInfo[]> {
-  const allModels = await fetchAllModels();
+  // Fetch OpenRouter models and Zen models in parallel
+  const [allModels, zenModels] = await Promise.all([
+    fetchAllModels(),
+    fetchZenFreeModels(),
+  ]);
 
-  // Filter for FREE models from TRUSTED providers
+  // Filter for FREE models from TRUSTED providers (OpenRouter)
   const freeModels = allModels.filter((model) => {
     const promptPrice = parseFloat(model.pricing?.prompt || "0");
     const completionPrice = parseFloat(model.pricing?.completion || "0");
@@ -195,7 +244,9 @@ async function getFreeModels(): Promise<ModelInfo[]> {
     return true;
   });
 
-  return dedupedModels.slice(0, 20).map(toModelInfo);
+  // Combine: Zen free models first (they don't need API key!), then OpenRouter free
+  const openRouterFree = dedupedModels.slice(0, 15).map(toModelInfo);
+  return [...zenModels, ...openRouterFree];
 }
 
 /**

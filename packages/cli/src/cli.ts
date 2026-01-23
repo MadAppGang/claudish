@@ -11,7 +11,7 @@ import { getModelMapping } from "./profile-config.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "3.7.9"; // Fallback version for compiled binaries
+let VERSION = "3.8.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -576,8 +576,11 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
 async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promise<void> {
   let models: any[] = [];
 
-  // Fetch local Ollama models first
-  const ollamaModels = await fetchOllamaModels();
+  // Fetch local Ollama models and OpenCode Zen models in parallel
+  const [ollamaModels, zenModels] = await Promise.all([
+    fetchOllamaModels(),
+    fetchZenModels(),
+  ]);
 
   // Check cache for all models
   if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
@@ -629,12 +632,13 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 
   // JSON output
   if (jsonOutput) {
-    const allModels = [...ollamaModels, ...models];
+    const allModels = [...ollamaModels, ...zenModels, ...models];
     console.log(
       JSON.stringify(
         {
           count: allModels.length,
           localCount: ollamaModels.length,
+          zenCount: zenModels.length,
           lastUpdated: new Date().toISOString().split("T")[0],
           models: allModels.map((m) => ({
             id: m.id,
@@ -642,6 +646,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
             context: m.context_length || m.top_provider?.context_length,
             pricing: m.pricing,
             isLocal: m.isLocal || false,
+            isZen: m.isZen || false,
           })),
         },
         null,
@@ -693,6 +698,37 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     console.log("\n🏠 LOCAL OLLAMA: Not running or no models installed");
     console.log("   Start Ollama: ollama serve");
     console.log("   Pull a model: ollama pull llama3.2");
+  }
+
+  // Print OpenCode Zen models (free ones don't need API key)
+  if (zenModels.length > 0) {
+    const freeCount = zenModels.filter((m: any) => m.isFree).length;
+    console.log(`\n🔮 OPENCODE ZEN (${zenModels.length} models, ${freeCount} FREE - no API key needed):\n`);
+    console.log("    Model                          Context    Pricing      Tools");
+    console.log("  " + "─".repeat(68));
+
+    // Sort: free models first, then by context size
+    const sortedModels = [...zenModels].sort((a, b) => {
+      if (a.isFree && !b.isFree) return -1;
+      if (!a.isFree && b.isFree) return 1;
+      return (b.context_length || 0) - (a.context_length || 0);
+    });
+
+    for (const model of sortedModels) {
+      const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+      const modelIdPadded = modelId.padEnd(32);
+      const contextLen = model.context_length || 0;
+      const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
+      const contextPadded = context.padEnd(10);
+      const pricing = model.isFree ? `${GREEN}FREE${RESET}` : `$${(parseFloat(model.pricing?.prompt || "0") + parseFloat(model.pricing?.completion || "0")).toFixed(1)}/M`;
+      const pricingPadded = model.isFree ? "FREE        " : pricing.padEnd(12);
+      const tools = model.supportsTools ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+
+      console.log(`    ${modelIdPadded} ${contextPadded} ${pricingPadded} ${tools}`);
+    }
+    console.log("");
+    console.log(`  ${DIM}FREE models work without API key!${RESET}`);
+    console.log("  Use: claudish --model zen/<model-id>");
   }
 
   // Group by provider
@@ -1007,6 +1043,7 @@ MODEL ROUTING (prefix-based):
   kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
   glm/, zhipu/     GLM Direct API         claudish --model glm/glm-4.7 "task"
   oc/              OllamaCloud            claudish --model oc/gpt-oss:20b "task"
+  zen/             OpenCode Zen (free)    claudish --model zen/grok-code "task"
   ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
   lmstudio/        LM Studio (local)      claudish --model lmstudio/qwen "task"
   vllm/            vLLM (local)           claudish --model vllm/model "task"
@@ -1031,7 +1068,7 @@ OPTIONS:
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
   --reset-costs            Reset accumulated cost statistics
-  --models                 List ALL OpenRouter models grouped by provider
+  --models                 List ALL models (OpenRouter + OpenCode Zen + Ollama)
   --models <query>         Fuzzy search all models by name, ID, or description
   --top-models             List recommended/top programming models (curated)
   --json                   Output in JSON format (use with --models or --top-models)
@@ -1096,6 +1133,7 @@ ENVIRONMENT VARIABLES:
   ZHIPU_API_KEY                   GLM/Zhipu API key (for glm/, zhipu/ prefix)
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
   OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
+  OPENCODE_API_KEY                OpenCode Zen API key (optional - free models work without it)
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
   ANTHROPIC_AUTH_TOKEN            Placeholder (prevents Claude Code login screen)
 
@@ -1108,6 +1146,7 @@ ENVIRONMENT VARIABLES:
   ZHIPU_BASE_URL                  Custom GLM/Zhipu endpoint
   GLM_BASE_URL                    Alias for ZHIPU_BASE_URL
   OLLAMACLOUD_BASE_URL            Custom OllamaCloud endpoint (default: https://ollama.com)
+  OPENCODE_BASE_URL               Custom OpenCode Zen endpoint (default: https://opencode.ai/zen)
 
   Local providers:
   OLLAMA_BASE_URL                 Ollama server (default: http://localhost:11434)
@@ -1168,6 +1207,11 @@ EXAMPLES:
   claudish --model glm/glm-4.7 "code generation"
   claudish --model zhipu/glm-4-plus "complex task"
 
+  # OpenCode Zen (free models)
+  claudish --model zen/grok-code "implement feature"
+  claudish --model zen/glm-4.7-free "code review"
+  claudish --model zen/minimax-m2.1-free "complex task"
+
   # Local models (free, private)
   claudish --model ollama/llama3.2 "code review"
   claudish --model lmstudio/qwen2.5-coder "refactor"
@@ -1220,10 +1264,11 @@ LOCAL MODELS (Ollama, LM Studio, vLLM):
   OLLAMA_HOST=http://192.168.1.50:11434 claudish --model ollama/llama3.2 "task"
 
 AVAILABLE MODELS:
-  List all models:     claudish --models
+  List all models:     claudish --models  (includes OpenRouter, OpenCode Zen, Ollama)
   Search models:       claudish --models <query>
   Top recommended:     claudish --top-models
-  JSON output:         claudish --models --json  |  claudish --top-models --json
+  Free models only:    claudish --free  (interactive selector with free models)
+  JSON output:         claudish --models --json
   Force cache update:  claudish --models --force-update
   (Cache auto-updates every 2 days)
 
@@ -1447,5 +1492,44 @@ function printAvailableModelsJSON(): void {
     };
 
     console.log(JSON.stringify(output, null, 2));
+  }
+}
+
+/**
+ * Fetch ALL OpenCode Zen models from models.dev API
+ * Returns all models with full metadata, marks free ones
+ */
+async function fetchZenModels(): Promise<any[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const opencode = data.opencode;
+    if (!opencode?.models) return [];
+
+    // Get all models with metadata
+    return Object.entries(opencode.models)
+      .map(([id, m]: [string, any]) => {
+        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
+        return {
+          id: `zen/${id}`,
+          name: m.name || id,
+          context_length: m.limit?.context || 128000,
+          max_output: m.limit?.output || 32000,
+          pricing: isFree ? { prompt: "0", completion: "0" } : { prompt: String(m.cost?.input || 0), completion: String(m.cost?.output || 0) },
+          isZen: true,
+          isFree,
+          supportsTools: m.tool_call || false,
+          supportsReasoning: m.reasoning || false,
+        };
+      });
+  } catch {
+    return [];
   }
 }
