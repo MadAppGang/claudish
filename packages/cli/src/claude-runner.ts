@@ -254,12 +254,19 @@ export async function runClaudeWithProxy(
     // This allows Claude Code to use its native authentication
     // Delete any placeholder keys from environment
     delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
   } else {
     // OpenRouter mode: Use placeholder to prevent Claude Code dialog
     // The proxy will handle authentication with OPENROUTER_API_KEY
     env.ANTHROPIC_API_KEY =
       process.env.ANTHROPIC_API_KEY ||
       "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
+
+    // Also set ANTHROPIC_AUTH_TOKEN to bypass login screen
+    // Claude Code checks both API_KEY and AUTH_TOKEN for authentication
+    env.ANTHROPIC_AUTH_TOKEN =
+      process.env.ANTHROPIC_AUTH_TOKEN ||
+      "placeholder-token-not-used-proxy-handles-auth";
   }
 
   // Helper function to log messages (respects quiet flag)

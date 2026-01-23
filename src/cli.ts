@@ -1106,6 +1106,7 @@ ENVIRONMENT VARIABLES:
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
   OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
+  ANTHROPIC_AUTH_TOKEN            Placeholder (prevents Claude Code login screen)
 
   Custom endpoints:
   GEMINI_BASE_URL                 Custom Gemini endpoint
