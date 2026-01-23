@@ -1,5 +1,5 @@
-import { ENV } from "@claudish/core";
-import type { ClaudishConfig } from "@claudish/core";
+import { ENV } from "./config.js";
+import type { ClaudishConfig } from "./types.js";
 import { loadModelInfo, getAvailableModels } from "./model-loader.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
