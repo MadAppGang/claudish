@@ -120,6 +120,10 @@ export class OpenAIHandler implements ModelHandler {
         return name.charAt(0).toUpperCase() + name.slice(1);
       };
 
+      // Check if this is a free model
+      const pricing = this.getPricing();
+      const isFreeModel = pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
+
       const data: Record<string, any> = {
         input_tokens: input,
         output_tokens: output,
@@ -129,12 +133,9 @@ export class OpenAIHandler implements ModelHandler {
         context_left_percent: leftPct,
         provider_name: formatProviderName(this.provider.name),
         updated_at: Date.now(),
+        is_free: isFreeModel,
+        is_estimated: isEstimate || false,
       };
-
-      // Add cost_is_estimate flag if pricing is estimated
-      if (isEstimate) {
-        data.cost_is_estimate = true;
-      }
 
       const claudishDir = join(homedir(), ".claudish");
       mkdirSync(claudishDir, { recursive: true });
