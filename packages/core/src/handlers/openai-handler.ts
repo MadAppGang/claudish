@@ -114,7 +114,14 @@ export class OpenAIHandler implements ModelHandler {
           : 100;
 
       // Strip provider prefix from model name for cleaner display
-      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|zen|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
+      // Format provider name for display (opencode-zen -> Zen, openai -> OpenAI, glm -> GLM)
+      const formatProviderName = (name: string): string => {
+        if (name === "opencode-zen") return "Zen";
+        if (name === "glm") return "GLM";
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      };
 
       const data: Record<string, any> = {
         input_tokens: input,
@@ -123,7 +130,7 @@ export class OpenAIHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
-        provider_name: "OpenAI",
+        provider_name: formatProviderName(this.provider.name),
         model_name: displayModelName,
         updated_at: Date.now(),
       };

@@ -113,6 +113,13 @@ export class OpenAIHandler implements ModelHandler {
             )
           : 100;
 
+      // Format provider name for display (opencode-zen -> Zen, openai -> OpenAI, glm -> GLM)
+      const formatProviderName = (name: string): string => {
+        if (name === "opencode-zen") return "Zen";
+        if (name === "glm") return "GLM";
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      };
+
       const data: Record<string, any> = {
         input_tokens: input,
         output_tokens: output,
@@ -120,7 +127,7 @@ export class OpenAIHandler implements ModelHandler {
         total_cost: this.sessionTotalCost,
         context_window: this.contextWindow,
         context_left_percent: leftPct,
-        provider_name: "OpenAI",
+        provider_name: formatProviderName(this.provider.name),
         updated_at: Date.now(),
       };
 
