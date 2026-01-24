@@ -30,6 +30,7 @@ import {
   getVertexConfig,
   validateVertexOAuthConfig,
 } from "./auth/vertex-auth.js";
+import { resolveModelProvider } from "./providers/provider-resolver.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -128,93 +129,101 @@ export async function createProxyServer(
   };
 
   // Helper to get or create remote provider handler (Gemini, OpenAI)
+  // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
   const getRemoteProviderHandler = (targetModel: string): ModelHandler | null => {
     if (remoteProviderHandlers.has(targetModel)) {
       return remoteProviderHandlers.get(targetModel)!;
     }
 
-    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, oc/, zen/, or/)
-    const resolved = resolveRemoteProvider(targetModel);
-    if (!resolved) {
+    // Use centralized resolver with fallback logic
+    const resolution = resolveModelProvider(targetModel);
+
+    // If resolver says use OpenRouter (including fallback cases), return null
+    // to let the OpenRouter handler take over
+    if (resolution.category === "openrouter") {
       return null;
     }
 
-    // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
-    if (resolved.provider.name === "openrouter") {
-      return null; // Will fall through to OpenRouterHandler
-    }
+    // If resolver says use direct-api and key is available, create handler
+    if (resolution.category === "direct-api" && resolution.apiKeyAvailable) {
+      const resolved = resolveRemoteProvider(targetModel);
+      if (!resolved) return null;
 
-    // Validate API key
-    const apiKeyError = validateRemoteProviderApiKey(resolved.provider);
-    if (apiKeyError) {
-      throw new Error(apiKeyError);
-    }
-
-    // Get API key - empty string for providers that don't require auth (like zen/ free models)
-    const apiKey = resolved.provider.apiKeyEnvVar ? process.env[resolved.provider.apiKeyEnvVar] || "" : "";
-
-    let handler: ModelHandler;
-    if (resolved.provider.name === "gemini") {
-      handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
-    } else if (resolved.provider.name === "gemini-codeassist") {
-      handler = new GeminiCodeAssistHandler(resolved.modelName, port);
-      log(`[Proxy] Created Gemini Code Assist handler: ${resolved.modelName}`);
-    } else if (resolved.provider.name === "openai") {
-      handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
-    } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi") {
-      // MiniMax and Kimi use Anthropic-compatible APIs
-      handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
-    } else if (resolved.provider.name === "glm") {
-      // GLM uses OpenAI-compatible API
-      handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
-    } else if (resolved.provider.name === "opencode-zen") {
-      // OpenCode Zen uses OpenAI-compatible API for most models
-      // MiniMax models on Zen use Anthropic-compatible API
-      if (resolved.modelName.toLowerCase().includes("minimax")) {
-        handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
-        log(`[Proxy] Created OpenCode Zen (Anthropic) handler: ${resolved.modelName}`);
-      } else {
-        handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
-        log(`[Proxy] Created OpenCode Zen (OpenAI) handler: ${resolved.modelName}`);
+      // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
+      if (resolved.provider.name === "openrouter") {
+        return null; // Will fall through to OpenRouterHandler
       }
-    } else if (resolved.provider.name === "ollamacloud") {
-      // OllamaCloud uses Ollama native API (NOT OpenAI-compatible)
-      handler = new OllamaCloudHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created OllamaCloud handler: ${resolved.modelName}`);
-    } else if (resolved.provider.name === "vertex") {
-      // Vertex AI supports two modes:
-      // 1. Express Mode (API key) - for Gemini models
-      // 2. OAuth Mode (project/service account) - for all models including partners
-      const hasApiKey = !!process.env.VERTEX_API_KEY;
-      const vertexConfig = getVertexConfig();
 
-      if (hasApiKey) {
-        // Express Mode - use GeminiHandler with API key
+      // Get API key - empty string for providers that don't require auth (like zen/ free models)
+      const apiKey = resolved.provider.apiKeyEnvVar ? process.env[resolved.provider.apiKeyEnvVar] || "" : "";
+
+      let handler: ModelHandler;
+      if (resolved.provider.name === "gemini") {
         handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
-        log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
-      } else if (vertexConfig) {
-        // OAuth Mode - use VertexOAuthHandler
-        const oauthError = validateVertexOAuthConfig();
-        if (oauthError) {
-          log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
+        log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "gemini-codeassist") {
+        handler = new GeminiCodeAssistHandler(resolved.modelName, port);
+        log(`[Proxy] Created Gemini Code Assist handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "openai") {
+        handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi") {
+        // MiniMax and Kimi use Anthropic-compatible APIs
+        handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "glm") {
+        // GLM uses OpenAI-compatible API
+        handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "opencode-zen") {
+        // OpenCode Zen uses OpenAI-compatible API for most models
+        // MiniMax models on Zen use Anthropic-compatible API
+        if (resolved.modelName.toLowerCase().includes("minimax")) {
+          handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
+          log(`[Proxy] Created OpenCode Zen (Anthropic) handler: ${resolved.modelName}`);
+        } else {
+          handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+          log(`[Proxy] Created OpenCode Zen (OpenAI) handler: ${resolved.modelName}`);
+        }
+      } else if (resolved.provider.name === "ollamacloud") {
+        // OllamaCloud uses Ollama native API (NOT OpenAI-compatible)
+        handler = new OllamaCloudHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created OllamaCloud handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "vertex") {
+        // Vertex AI supports two modes:
+        // 1. Express Mode (API key) - for Gemini models
+        // 2. OAuth Mode (project/service account) - for all models including partners
+        const hasApiKey = !!process.env.VERTEX_API_KEY;
+        const vertexConfig = getVertexConfig();
+
+        if (hasApiKey) {
+          // Express Mode - use GeminiHandler with API key
+          handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+          log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
+        } else if (vertexConfig) {
+          // OAuth Mode - use VertexOAuthHandler
+          const oauthError = validateVertexOAuthConfig();
+          if (oauthError) {
+            log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
+            return null;
+          }
+          handler = new VertexOAuthHandler(resolved.modelName, port);
+          log(`[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`);
+        } else {
+          log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
           return null;
         }
-        handler = new VertexOAuthHandler(resolved.modelName, port);
-        log(`[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`);
       } else {
-        log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
-        return null;
+        return null; // Unknown provider
       }
-    } else {
-      return null; // Unknown provider
+
+      remoteProviderHandlers.set(targetModel, handler);
+      return handler;
     }
 
-    remoteProviderHandlers.set(targetModel, handler);
-    return handler;
+    // If we get here, either category is not direct-api or key is not available
+    // Both cases should fall through to OpenRouter or return null
+    return null;
   };
 
   // Handlers are created lazily on first request - no pre-warming needed

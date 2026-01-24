@@ -30,7 +30,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     baseUrl: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com",
     apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "GEMINI_API_KEY",
-    prefixes: ["g/", "gemini/"],
+    prefixes: ["g/", "gemini/", "google/"], // Per README: google/ routes to Gemini if GEMINI_API_KEY available
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -58,7 +58,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENAI_API_KEY",
-    prefixes: ["oai/"], // Removed openai/ to prevent collision with OpenRouter models
+    prefixes: ["oai/", "openai/"], // Per README: openai/ routes to OpenAI if OPENAI_API_KEY available
     capabilities: {
       supportsTools: true,
       supportsVision: true,

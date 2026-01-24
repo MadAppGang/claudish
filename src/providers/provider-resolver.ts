@@ -134,6 +134,22 @@ const LOCAL_PREFIXES = [
 ];
 
 /**
+ * Display names for providers (for proper capitalization)
+ */
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  gemini: "Gemini",
+  "gemini-codeassist": "Gemini Code Assist",
+  vertex: "Vertex AI",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  minimax: "MiniMax",
+  kimi: "Kimi",
+  glm: "GLM",
+  ollamacloud: "OllamaCloud",
+  "opencode-zen": "OpenCode Zen",
+};
+
+/**
  * Check if any of the API keys (including aliases) are available
  */
 function isApiKeyAvailable(info: ApiKeyInfo): boolean {
@@ -162,6 +178,11 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
  *
  * This is THE single source of truth for provider resolution.
  * All code paths should call this function instead of implementing their own logic.
+ *
+ * Per README Model Routing table:
+ * 1. Try provider-specific API (if key available)
+ * 2. Fall back to OpenRouter (if OPENROUTER_API_KEY available)
+ * 3. Fall back to Vertex AI (if VERTEX_API_KEY or VERTEX_PROJECT available)
  *
  * @param modelId - The model ID to resolve (can be undefined for default behavior)
  * @returns Complete provider resolution including API key requirements
@@ -212,12 +233,12 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     };
   }
 
-  // 2. Check for direct API providers (g/, gemini/, v/, vertex/, oai/, mmax/, etc.)
+  // 2. Check for direct API providers with explicit routing prefixes
   const remoteResolved = resolveRemoteProvider(modelId);
   if (remoteResolved) {
     const provider = remoteResolved.provider;
 
-    // Special case: OpenRouter models with or/ prefix still go through OpenRouter
+    // Explicit OpenRouter prefix (or/) - always use OpenRouter
     if (provider.name === "openrouter") {
       const info = API_KEY_INFO.openrouter;
       return {
@@ -232,22 +253,71 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       };
     }
 
-    // Direct API provider
+    // Provider-specific prefix found - check if provider's API key is available
     const info = API_KEY_INFO[provider.name] || {
       envVar: provider.apiKeyEnvVar,
       description: `${provider.name} API Key`,
       url: "",
     };
 
-    const providerDisplayName = provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
+    // If provider's key is available, use it directly
+    if (isApiKeyAvailable(info)) {
+      const providerDisplayName =
+        PROVIDER_DISPLAY_NAMES[provider.name] ||
+        provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
+      return {
+        category: "direct-api",
+        providerName: providerDisplayName,
+        modelName: remoteResolved.modelName,
+        fullModelId: modelId,
+        requiredApiKeyEnvVar: info.envVar || null,
+        apiKeyAvailable: isApiKeyAvailable(info),
+        apiKeyDescription: info.envVar ? info.description : null,
+        apiKeyUrl: info.envVar ? info.url : null,
+      };
+    }
 
+    // Provider key NOT available - fall back to OpenRouter if available
+    if (isApiKeyAvailable(API_KEY_INFO.openrouter)) {
+      const orInfo = API_KEY_INFO.openrouter;
+      return {
+        category: "openrouter",
+        providerName: "OpenRouter (fallback)",
+        modelName: modelId,
+        fullModelId: modelId,
+        requiredApiKeyEnvVar: orInfo.envVar,
+        apiKeyAvailable: true,
+        apiKeyDescription: orInfo.description,
+        apiKeyUrl: orInfo.url,
+      };
+    }
+
+    // Neither provider key nor OpenRouter available - fall back to Vertex if available
+    if (isApiKeyAvailable(API_KEY_INFO.vertex)) {
+      const vertexInfo = API_KEY_INFO.vertex;
+      return {
+        category: "direct-api",
+        providerName: "Vertex AI (fallback)",
+        modelName: modelId,
+        fullModelId: modelId,
+        requiredApiKeyEnvVar: vertexInfo.envVar,
+        apiKeyAvailable: true,
+        apiKeyDescription: vertexInfo.description,
+        apiKeyUrl: vertexInfo.url,
+      };
+    }
+
+    // No fallback available - require the provider's key
+    const providerDisplayName =
+      PROVIDER_DISPLAY_NAMES[provider.name] ||
+      provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
     return {
       category: "direct-api",
       providerName: providerDisplayName,
       modelName: remoteResolved.modelName,
       fullModelId: modelId,
       requiredApiKeyEnvVar: info.envVar || null,
-      apiKeyAvailable: isApiKeyAvailable(info),
+      apiKeyAvailable: false,
       apiKeyDescription: info.envVar ? info.description : null,
       apiKeyUrl: info.envVar ? info.url : null,
     };
@@ -267,10 +337,9 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     };
   }
 
-  // 4. Default: OpenRouter (model with "/" that doesn't match any prefix)
+  // 4. Default: Try OpenRouter for any model with "/"
+  // This handles cases like "google/gemini-3-pro-preview" when google/ prefix didn't match
   const info = API_KEY_INFO.openrouter;
-  const [providerPart, ...rest] = modelId.split("/");
-  const modelName = rest.join("/");
 
   return {
     category: "openrouter",
