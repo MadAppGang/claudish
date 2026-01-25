@@ -11,6 +11,7 @@
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
  * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
+ * - zai/ -> Z.AI API (Anthropic-compatible)
  * - oc/ -> OllamaCloud API (OpenAI-compatible)
  * - zen/ -> OpenCode Zen API (OpenAI-compatible + Anthropic for MiniMax)
  * - or/, no prefix with "/" -> OpenRouter (existing handler)
@@ -125,7 +126,21 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsVision: true,
       supportsStreaming: true,
       supportsJsonMode: true,
-      supportsReasoning: false,
+      supportsReasoning: true,
+    },
+  },
+  {
+    name: "zai",
+    baseUrl: process.env.ZAI_BASE_URL || "https://api.z.ai",
+    apiPath: "/api/anthropic/v1/messages",
+    apiKeyEnvVar: "ZAI_API_KEY",
+    prefixes: ["zai/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: true,
     },
   },
   {

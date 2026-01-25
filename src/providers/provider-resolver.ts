@@ -112,6 +112,11 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     description: "OpenCode Zen (Free)",
     url: "https://opencode.ai/",
   },
+  zai: {
+    envVar: "ZAI_API_KEY",
+    description: "Z.AI API Key",
+    url: "https://z.ai/",
+  },
 };
 
 /**
@@ -144,6 +149,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   minimax: "MiniMax",
   kimi: "Kimi",
   glm: "GLM",
+  zai: "Z.AI",
   ollamacloud: "OllamaCloud",
   "opencode-zen": "OpenCode Zen",
 };
