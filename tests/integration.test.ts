@@ -1,6 +1,8 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { OPENROUTER_MODELS } from "../src/types.js";
+import { getAvailableModels } from "../src/model-loader.js";
 import type { AnthropicRequest, AnthropicResponse, OpenRouterModel } from "../src/types.js";
+
+const OPENROUTER_MODELS = getAvailableModels();
 import { createProxyServer } from "../src/proxy-server.js";
 import type { ProxyServer } from "../src/types.js";
 

@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenRouterModel } from "./types.js";
@@ -6,25 +6,6 @@ import type { OpenRouterModel } from "./types.js";
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// User preferences cache
-let _cachedUserModels: UserModelPreferences | null = null;
-
-interface UserModelData {
-  id: string;
-  name: string;
-  description: string;
-  provider: string;
-  category?: string;
-  priority: number;
-  custom: boolean;
-}
-
-interface UserModelPreferences {
-  customModels: UserModelData[];
-  lastUpdated: string;
-  version: string;
-}
 
 interface ModelMetadata {
   name: string;
@@ -57,91 +38,89 @@ interface RecommendedModelsJSON {
 // Cache loaded data to avoid reading file multiple times
 let _cachedModelInfo: Record<string, ModelMetadata> | null = null;
 let _cachedModelIds: string[] | null = null;
+let _cachedRecommendedModels: RecommendedModelsJSON | null = null;
 
 /**
- * Load model metadata from recommended-models.json if available,
- * otherwise fall back to build-time generated config
+ * Get the path to recommended-models.json
+ */
+function getRecommendedModelsPath(): string {
+  return join(__dirname, "../recommended-models.json");
+}
+
+/**
+ * Load the raw recommended-models.json data
+ */
+function loadRecommendedModelsJSON(): RecommendedModelsJSON {
+  if (_cachedRecommendedModels) {
+    return _cachedRecommendedModels;
+  }
+
+  const jsonPath = getRecommendedModelsPath();
+
+  if (!existsSync(jsonPath)) {
+    throw new Error(
+      `recommended-models.json not found at ${jsonPath}. ` +
+      `Run 'claudish --update-models' to fetch the latest model list.`
+    );
+  }
+
+  try {
+    const jsonContent = readFileSync(jsonPath, "utf-8");
+    _cachedRecommendedModels = JSON.parse(jsonContent);
+    return _cachedRecommendedModels!;
+  } catch (error) {
+    throw new Error(`Failed to parse recommended-models.json: ${error}`);
+  }
+}
+
+/**
+ * Load model metadata from recommended-models.json
  */
 export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
-  // Return cached data if available
   if (_cachedModelInfo) {
     return _cachedModelInfo as Record<OpenRouterModel, ModelMetadata>;
   }
 
-  const jsonPath = join(__dirname, "../recommended-models.json");
+  const data = loadRecommendedModelsJSON();
+  const modelInfo: Record<string, ModelMetadata> = {};
 
-  // Try to load from JSON first (runtime, latest)
-  if (existsSync(jsonPath)) {
-    try {
-      const jsonContent = readFileSync(jsonPath, "utf-8");
-      const data: RecommendedModelsJSON = JSON.parse(jsonContent);
-
-      const modelInfo: Record<string, ModelMetadata> = {};
-
-      // Convert JSON models to MODEL_INFO format
-      for (const model of data.models) {
-        modelInfo[model.id] = {
-          name: model.name,
-          description: model.description,
-          priority: model.priority,
-          provider: model.provider,
-        };
-      }
-
-      // Add custom option
-      modelInfo.custom = {
-        name: "Custom Model",
-        description: "Enter any OpenRouter model ID manually",
-        priority: 999,
-        provider: "Custom",
-      };
-
-      _cachedModelInfo = modelInfo;
-      return modelInfo as Record<OpenRouterModel, ModelMetadata>;
-    } catch (error) {
-      console.warn("⚠️  Failed to load recommended-models.json, falling back to build-time config");
-      console.warn(`   Error: ${error}`);
-    }
+  for (const model of data.models) {
+    modelInfo[model.id] = {
+      name: model.name,
+      description: model.description,
+      priority: model.priority,
+      provider: model.provider,
+    };
   }
 
-  // Fallback to build-time generated config
-  const { MODEL_INFO } = require("./config.js");
-  _cachedModelInfo = MODEL_INFO;
-  return MODEL_INFO;
+  // Add custom option
+  modelInfo.custom = {
+    name: "Custom Model",
+    description: "Enter any OpenRouter model ID manually",
+    priority: 999,
+    provider: "Custom",
+  };
+
+  _cachedModelInfo = modelInfo;
+  return modelInfo as Record<OpenRouterModel, ModelMetadata>;
 }
 
 /**
- * Get list of available model IDs from recommended-models.json if available
+ * Get list of available model IDs from recommended-models.json
  */
 export function getAvailableModels(): OpenRouterModel[] {
-  // Return cached data if available
   if (_cachedModelIds) {
     return _cachedModelIds as OpenRouterModel[];
   }
 
-  const jsonPath = join(__dirname, "../recommended-models.json");
+  const data = loadRecommendedModelsJSON();
+  const modelIds = data.models
+    .sort((a, b) => a.priority - b.priority)
+    .map((m) => m.id);
 
-  // Try to load from JSON first
-  if (existsSync(jsonPath)) {
-    try {
-      const jsonContent = readFileSync(jsonPath, "utf-8");
-      const data: RecommendedModelsJSON = JSON.parse(jsonContent);
-
-      // Extract model IDs sorted by priority
-      const modelIds = data.models.sort((a, b) => a.priority - b.priority).map((m) => m.id);
-
-      const result = [...modelIds, "custom"];
-      _cachedModelIds = result;
-      return result as OpenRouterModel[];
-    } catch (error) {
-      console.warn("⚠️  Failed to load model list from JSON, falling back to build-time config");
-    }
-  }
-
-  // Fallback to build-time generated config
-  const { OPENROUTER_MODELS } = require("./types.js");
-  _cachedModelIds = [...OPENROUTER_MODELS];
-  return [...OPENROUTER_MODELS];
+  const result = [...modelIds, "custom"];
+  _cachedModelIds = result;
+  return result as OpenRouterModel[];
 }
 
 // Cache for OpenRouter API response
@@ -150,14 +129,14 @@ let _cachedOpenRouterModels: any[] | null = null;
 /**
  * Fetch exact context window size from OpenRouter API
  * @param modelId The full OpenRouter model ID (e.g. "anthropic/claude-3-sonnet")
- * @returns Context window size in tokens (default: 128000)
+ * @returns Context window size in tokens (default: 200000)
  */
 export async function fetchModelContextWindow(modelId: string): Promise<number> {
   // 1. Use cached API data if available
   if (_cachedOpenRouterModels) {
     const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
     if (model) {
-      return model.context_length || model.top_provider?.context_length || 128000;
+      return model.context_length || model.top_provider?.context_length || 200000;
     }
   }
 
@@ -170,44 +149,35 @@ export async function fetchModelContextWindow(modelId: string): Promise<number> 
 
       const model = _cachedOpenRouterModels?.find((m: any) => m.id === modelId);
       if (model) {
-        return model.context_length || model.top_provider?.context_length || 128000;
+        return model.context_length || model.top_provider?.context_length || 200000;
       }
     }
   } catch (error) {
-    // Silent fail on network error - will assume default
+    // Silent fail on network error - will use fallback
   }
 
-  // 3. Fallback to recommended-models.json cache
+  // 3. Fallback to recommended-models.json
   try {
-    const modelMetadata = loadModelInfo();
-    // modelMetadata uses our internal structure, logic ...
-    // Wait, recommended-models.json doesn't store context as number but as string "200K"
-    // We need to parse it if we rely on it.
-    // But loadModelInfo returns ModelMetadata which might not have context field (it has name, description, etc).
-    // Let's check RecommendedModelsJSON interface.
-  } catch (e) {}
-
-  // Let's re-read the file to parse context string
-  const jsonPath = join(__dirname, "../recommended-models.json");
-  if (existsSync(jsonPath)) {
-    try {
-      const jsonContent = readFileSync(jsonPath, "utf-8");
-      const data: RecommendedModelsJSON = JSON.parse(jsonContent);
-      const model = data.models.find((m) => m.id === modelId);
-      if (model && model.context) {
-        // Parse "200K" -> 200000, "1M" -> 1000000
-        const ctxStr = model.context.toUpperCase();
-        if (ctxStr.includes("K")) return parseFloat(ctxStr.replace("K", "")) * 1024; // Usually 1K=1000 or 1024? OpenRouter uses 1000 often but binary is standard. Let's use 1000 for simplicity or 1024.
-        // Actually, standard is usually 1000 for LLM context "200k" = 200,000.
-        if (ctxStr.includes("M")) return parseFloat(ctxStr.replace("M", "")) * 1000000;
-        const val = parseInt(ctxStr);
-        if (!isNaN(val)) return val;
+    const data = loadRecommendedModelsJSON();
+    const model = data.models.find((m) => m.id === modelId);
+    if (model && model.context) {
+      // Parse "200K" -> 200000, "1M" -> 1000000
+      const ctxStr = model.context.toUpperCase();
+      if (ctxStr.includes("K")) {
+        return parseFloat(ctxStr.replace("K", "")) * 1000;
       }
-    } catch (e) {}
+      if (ctxStr.includes("M")) {
+        return parseFloat(ctxStr.replace("M", "")) * 1000000;
+      }
+      const val = parseInt(ctxStr);
+      if (!isNaN(val)) return val;
+    }
+  } catch (e) {
+    // Ignore errors, use default
   }
 
-  // 4. Absolute fallback
-  return 200000; // 200k is a reasonable modern default (Claude Sonnet/Opus)
+  // 4. Default fallback
+  return 200000;
 }
 
 /**

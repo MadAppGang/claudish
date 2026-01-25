@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { MODEL_INFO } from "../src/config.js";
 import { createProxyServer } from "../src/proxy-server.js";
+import { loadModelInfo, getAvailableModels } from "../src/model-loader.js";
 import type {
   AnthropicRequest,
   AnthropicResponse,
   OpenRouterModel,
   ProxyServer,
 } from "../src/types.js";
-import { OPENROUTER_MODELS } from "../src/types.js";
+
+const MODEL_INFO = loadModelInfo();
+const OPENROUTER_MODELS = getAvailableModels();
 
 // Load .env file
 import { join } from "node:path";

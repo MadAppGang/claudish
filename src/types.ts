@@ -1,21 +1,7 @@
-// Model types for Claudish
-// To regenerate: bun run extract-models (requires recommended-models.md)
+// Claudish type definitions
 
-// OpenRouter Models - Top Recommended for Development (Priority Order)
-export const OPENROUTER_MODELS = [
-  "x-ai/grok-code-fast-1",
-  "x-ai/grok-4.1-fast",
-  "minimax/minimax-m2.1",
-  "z-ai/glm-4.7",
-  "google/gemini-3-pro-preview",
-  "openai/gpt-5.2",
-  "moonshotai/kimi-k2-thinking",
-  "deepseek/deepseek-v3.2",
-  "qwen/qwen3-vl-235b-a22b-thinking",
-  "custom",
-] as const;
-
-export type OpenRouterModel = (typeof OPENROUTER_MODELS)[number];
+// Model ID type - any valid OpenRouter model string
+export type OpenRouterModel = string;
 
 // CLI Configuration
 export interface ClaudishConfig {
@@ -128,4 +114,59 @@ export interface ProxyServer {
   port: number;
   url: string;
   shutdown: () => Promise<void>;
+}
+
+// Model Handler interface
+export interface ModelHandler {
+  handleRequest(request: Request): Promise<Response>;
+}
+
+// Middleware types
+export interface RequestContext {
+  request: Request;
+  body: any;
+  modelId: string;
+}
+
+export interface StreamChunkContext {
+  chunk: string;
+  modelId: string;
+  isFirst: boolean;
+  isLast: boolean;
+}
+
+export interface NonStreamingResponseContext {
+  response: any;
+  modelId: string;
+}
+
+export interface ModelMiddleware {
+  name: string;
+  priority?: number;
+
+  // Transform request before sending to provider
+  transformRequest?(ctx: RequestContext): Promise<RequestContext> | RequestContext;
+
+  // Transform streaming chunks
+  transformStreamChunk?(ctx: StreamChunkContext): Promise<string> | string;
+
+  // Transform non-streaming response
+  transformResponse?(ctx: NonStreamingResponseContext): Promise<any> | any;
+}
+
+// Validation types
+export type IssueSeverity = "error" | "warning" | "info";
+
+export interface ValidationIssue {
+  code: string;
+  message: string;
+  severity: IssueSeverity;
+  location?: string;
+  suggestion?: string;
+}
+
+export interface ValidationReport {
+  valid: boolean;
+  issues: ValidationIssue[];
+  timestamp: string;
 }
