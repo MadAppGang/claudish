@@ -134,6 +134,22 @@ async function runCli() {
       console.log(""); // Empty line after selection
     }
 
+    // Clean up stdin after interactive prompts to prevent hanging
+    // @inquirer/prompts leaves stdin watchers active which can cause EINTR errors
+    // when spawning Claude Code with inherited stdio (see issue #19)
+    if (cliConfig.interactive && !cliConfig.monitor) {
+      if (process.stdin.isTTY) {
+        if (typeof process.stdin.setRawMode === "function") {
+          process.stdin.setRawMode(false);
+        }
+        process.stdin.pause();
+        process.stdin.removeAllListeners("data");
+        process.stdin.removeAllListeners("keypress");
+        // Small delay to ensure cleanup completes before spawning Claude
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
     // In non-interactive mode, model must be specified (via --model flag or CLAUDISH_MODEL env var)
     if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
       console.error("Error: Model must be specified in non-interactive mode");
