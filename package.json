@@ -16,7 +16,7 @@
     "dev:bridge": "bun --cwd packages/macos-bridge run dev",
     "build": "bun run build:core && bun run build:cli && bun run build:bridge",
     "build:core": "cd packages/core && bun run build",
-    "build:cli": "cd packages/cli && bun run build:ci",
+    "build:cli": "cd packages/cli && bun run build",
     "build:bridge": "cd packages/macos-bridge && bun run build",
     "typecheck": "bun --cwd packages/core run typecheck && bun run --cwd packages/cli typecheck && bun --cwd packages/macos-bridge run typecheck",
     "lint": "bun --cwd packages/core run lint && bun run --cwd packages/cli lint && bun --cwd packages/macos-bridge run lint",
