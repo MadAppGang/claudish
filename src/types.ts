@@ -1,5 +1,5 @@
-// AUTO-GENERATED from shared/recommended-models.md
-// DO NOT EDIT MANUALLY - Run 'bun run extract-models' to regenerate
+// Model types for Claudish
+// To regenerate: bun run extract-models (requires recommended-models.md)
 
 // OpenRouter Models - Top Recommended for Development (Priority Order)
 export const OPENROUTER_MODELS = [

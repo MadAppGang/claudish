@@ -1,5 +1,5 @@
-// AUTO-GENERATED from shared/recommended-models.md
-// DO NOT EDIT MANUALLY - Run 'bun run extract-models' to regenerate
+// Model configuration for Claudish
+// To regenerate: bun run extract-models (requires recommended-models.md)
 
 import type { OpenRouterModel } from "./types.js";
 

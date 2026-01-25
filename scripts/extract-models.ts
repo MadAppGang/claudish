@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 
 /**
- * Extract model information from shared/recommended-models.md
+ * Extract model information from recommended-models.md
  * and generate TypeScript types for use in Claudish
+ *
+ * Usage: bun run scripts/extract-models.ts [path-to-markdown]
+ * Default: looks for recommended-models.md in the scripts directory
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 interface ModelInfo {
@@ -94,8 +97,8 @@ function generateTypeScript(models: ExtractedModels): string {
     })
     .join(",\n");
 
-  return `// AUTO-GENERATED from shared/recommended-models.md
-// DO NOT EDIT MANUALLY - Run 'bun run extract-models' to regenerate
+  return `// Model configuration for Claudish
+// To regenerate: bun run extract-models (requires recommended-models.md)
 
 import type { OpenRouterModel } from "./types.js";
 
@@ -145,8 +148,8 @@ function generateTypes(models: ExtractedModels): string {
     .map((id) => `  "${id}"`)
     .join(",\n");
 
-  return `// AUTO-GENERATED from shared/recommended-models.md
-// DO NOT EDIT MANUALLY - Run 'bun run extract-models' to regenerate
+  return `// Model types for Claudish
+// To regenerate: bun run extract-models (requires recommended-models.md)
 
 // OpenRouter Models - Top Recommended for Development (Priority Order)
 export const OPENROUTER_MODELS = [
@@ -160,12 +163,23 @@ export type OpenRouterModel = (typeof OPENROUTER_MODELS)[number];
 
 // Main execution
 try {
-  const sharedModelsPath = join(import.meta.dir, "../../../shared/recommended-models.md");
+  // Accept path as argument or use default location
+  const inputPath = process.argv[2] || join(import.meta.dir, "recommended-models.md");
   const configPath = join(import.meta.dir, "../src/config.ts");
   const typesPath = join(import.meta.dir, "../src/types.ts");
 
-  console.log("📖 Reading shared/recommended-models.md...");
-  const markdownContent = readFileSync(sharedModelsPath, "utf-8");
+  if (!existsSync(inputPath)) {
+    console.error(`❌ Error: recommended-models.md not found at: ${inputPath}`);
+    console.error("");
+    console.error("This script is for maintainers only. The generated files");
+    console.error("(src/config.ts and src/types.ts) are already committed to the repo.");
+    console.error("");
+    console.error("Usage: bun run scripts/extract-models.ts [path-to-markdown]");
+    process.exit(1);
+  }
+
+  console.log(`📖 Reading ${inputPath}...`);
+  const markdownContent = readFileSync(inputPath, "utf-8");
 
   console.log("🔍 Extracting model information...");
   const models = extractModels(markdownContent);
@@ -184,14 +198,13 @@ try {
   // Handle both auto-generated and manual versions
   let updatedTypes = existingTypes;
 
-  // Try to replace auto-generated section first
-  if (existingTypes.includes("// AUTO-GENERATED")) {
+  // Try to replace the model types section
+  if (existingTypes.includes("// Model types for Claudish")) {
     updatedTypes = existingTypes.replace(
-      /\/\/ AUTO-GENERATED[\s\S]*?export type OpenRouterModel = \(typeof OPENROUTER_MODELS\)\[number\];/,
+      /\/\/ Model types for Claudish[\s\S]*?export type OpenRouterModel = \(typeof OPENROUTER_MODELS\)\[number\];/,
       typesCode.trim()
     );
-  } else {
-    // First time - replace manual OPENROUTER_MODELS section
+  } else if (existingTypes.includes("// OpenRouter Models")) {
     updatedTypes = existingTypes.replace(
       /\/\/ OpenRouter Models[\s\S]*?export type OpenRouterModel = \(typeof OPENROUTER_MODELS\)\[number\];/,
       typesCode.trim()
