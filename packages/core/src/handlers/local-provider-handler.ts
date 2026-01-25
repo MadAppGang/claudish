@@ -23,6 +23,7 @@ import {
   createStreamingResponseHandler,
   estimateTokens,
 } from "./shared/openai-compat.js";
+import { LocalModelQueue } from "./shared/local-queue.js";
 
 // Create a custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
@@ -581,16 +582,23 @@ If you cannot use structured tool_calls, format as JSON:
         controller.abort();
       }, 600000); // 10 minutes - local models can be slow
 
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(openAIPayload),
-        signal: controller.signal,
-        // @ts-ignore - Use custom undici agent with long timeouts for local LLM inference
-        dispatcher: localProviderAgent,
-      });
+      // Create the fetch function for queue processing
+      const doFetch = () =>
+        fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(openAIPayload),
+          signal: controller.signal,
+          // @ts-ignore - Use custom undici agent with long timeouts for local LLM inference
+          dispatcher: localProviderAgent,
+        });
+
+      // Use queue for concurrency control if enabled, otherwise direct fetch
+      const response = LocalModelQueue.isEnabled()
+        ? await LocalModelQueue.getInstance().enqueue(doFetch, this.provider.name)
+        : await doFetch();
 
       clearTimeout(timeoutId);
 

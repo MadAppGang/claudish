@@ -1,6 +1,6 @@
 {
   "name": "claudish",
-  "version": "3.10.0",
+  "version": "3.11.0",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
