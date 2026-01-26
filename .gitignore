@@ -48,6 +48,7 @@ logs/
 
 # AI session files
 ai-docs/
+ai_docs/
 
 # Build artifacts
 *.tsbuildinfo
