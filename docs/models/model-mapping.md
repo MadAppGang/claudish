@@ -25,16 +25,23 @@ With model mapping, you can route each tier to a different model.
 ## Basic Mapping
 
 ```bash
+# Using new @ syntax (recommended)
 claudish \
-  --model-opus google/gemini-3-pro-preview \
-  --model-sonnet x-ai/grok-code-fast-1 \
-  --model-haiku minimax/minimax-m2
+  --model-opus google@gemini-3-pro \
+  --model-sonnet gpt-4o \
+  --model-haiku mm@MiniMax-M2
+
+# Or with auto-detected models
+claudish \
+  --model-opus gemini-2.5-pro \
+  --model-sonnet gpt-4o \
+  --model-haiku llama-3.1-8b
 ```
 
 This routes:
-- Architecture/planning (Opus) → Gemini 3 Pro
-- Normal coding (Sonnet) → Grok Code Fast
-- Quick tasks (Haiku) → MiniMax M2
+- Architecture/planning (Opus) → Google Gemini
+- Normal coding (Sonnet) → OpenAI GPT-4o
+- Quick tasks (Haiku) → MiniMax M2 or OllamaCloud
 
 ---
 
@@ -43,17 +50,20 @@ This routes:
 Set defaults so you don't type flags every time:
 
 ```bash
-# Claudish-specific (takes priority)
-export CLAUDISH_MODEL_OPUS='google/gemini-3-pro-preview'
-export CLAUDISH_MODEL_SONNET='x-ai/grok-code-fast-1'
-export CLAUDISH_MODEL_HAIKU='minimax/minimax-m2'
-export CLAUDISH_MODEL_SUBAGENT='minimax/minimax-m2'
+# Claudish-specific (takes priority) - use new @ syntax or auto-detected
+export CLAUDISH_MODEL_OPUS='google@gemini-2.5-pro'      # Explicit provider
+export CLAUDISH_MODEL_SONNET='gpt-4o'                    # Auto-detected → OpenAI
+export CLAUDISH_MODEL_HAIKU='llama-3.1-8b'               # Auto-detected → OllamaCloud
+export CLAUDISH_MODEL_SUBAGENT='llama-3.1-8b'
+
+# For OpenRouter models, use explicit routing
+export CLAUDISH_MODEL_OPUS='openrouter@anthropic/claude-3.5-sonnet'
 
 # Or use Claude Code standard format (fallback)
-export ANTHROPIC_DEFAULT_OPUS_MODEL='google/gemini-3-pro-preview'
-export ANTHROPIC_DEFAULT_SONNET_MODEL='x-ai/grok-code-fast-1'
-export ANTHROPIC_DEFAULT_HAIKU_MODEL='minimax/minimax-m2'
-export CLAUDE_CODE_SUBAGENT_MODEL='minimax/minimax-m2'
+export ANTHROPIC_DEFAULT_OPUS_MODEL='gemini-2.5-pro'
+export ANTHROPIC_DEFAULT_SONNET_MODEL='gpt-4o'
+export ANTHROPIC_DEFAULT_HAIKU_MODEL='llama-3.1-8b'
+export CLAUDE_CODE_SUBAGENT_MODEL='llama-3.1-8b'
 ```
 
 Now just run:
@@ -152,17 +162,27 @@ env | grep -E "(CLAUDISH|ANTHROPIC)" | grep MODEL
 ## Common Patterns
 
 **Budget maximizer:**
-All tasks → MiniMax M2. Cheapest option that works.
+All tasks → MiniMax or OllamaCloud. Cheapest options that work.
 
 ```bash
-claudish --model minimax/minimax-m2 "prompt"
+claudish --model mm@MiniMax-M2 "prompt"        # MiniMax direct
+claudish --model llama-3.1-8b "prompt"          # OllamaCloud (auto-detected)
 ```
 
 **Quality maximizer:**
-All tasks → Gemini 3 Pro. Best context and reasoning.
+All tasks → Google or OpenAI direct API.
 
 ```bash
-claudish --model google/gemini-3-pro-preview "prompt"
+claudish --model gemini-2.5-pro "prompt"        # Google (auto-detected)
+claudish --model gpt-4o "prompt"                # OpenAI (auto-detected)
+```
+
+**OpenRouter for variety:**
+Use explicit routing for models not available via direct API.
+
+```bash
+claudish --model openrouter@deepseek/deepseek-r1 "prompt"
+claudish --model or@mistralai/mistral-large "prompt"
 ```
 
 **Balanced approach:**

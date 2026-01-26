@@ -95,15 +95,19 @@ export async function createProxyServer(
     // Check for prefix-based local provider (ollama/, lmstudio/, etc.)
     const resolved = resolveProvider(targetModel);
     if (resolved) {
+      const handlerOptions: LocalProviderOptions = {
+        ...localProviderOptions,
+        concurrency: resolved.concurrency,
+      };
       const handler = new LocalProviderHandler(
         resolved.provider,
         resolved.modelName,
         port,
-        localProviderOptions
+        handlerOptions
       );
       localProviderHandlers.set(targetModel, handler);
       log(
-        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}`
+        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ''}`
       );
       return handler;
     }
@@ -254,7 +258,7 @@ export async function createProxyServer(
       }
     }
 
-    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, zen/)
+    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
     const remoteHandler = getRemoteProviderHandler(target);
     if (remoteHandler) return remoteHandler;
 

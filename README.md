@@ -6,10 +6,12 @@
 
 ## Features
 
-- ✅ **Multi-provider support** - OpenRouter, Gemini, Vertex AI, OpenAI, and local models via prefix routing
-- ✅ **Direct API access** - Use `g/gemini-2.0-flash`, `v/gemini-2.5-flash`, or `oai/gpt-4o` for direct API calls
+- ✅ **Multi-provider support** - OpenRouter, Gemini, Vertex AI, OpenAI, OllamaCloud, and local models
+- ✅ **New routing syntax** - Use `provider@model[:concurrency]` for explicit routing (e.g., `google@gemini-2.0-flash`)
+- ✅ **Native auto-detection** - Models like `gpt-4o`, `gemini-2.0-flash`, `llama-3.1-70b` route to their native APIs automatically
+- ✅ **Direct API access** - Google, OpenAI, MiniMax, Kimi, GLM, Z.AI, OllamaCloud, Poe with direct billing
 - ✅ **Vertex AI Model Garden** - Access Google + partner models (MiniMax, Mistral, DeepSeek, Qwen, OpenAI OSS)
-- ✅ **Local model support** - Ollama, LM Studio, vLLM, MLX with `ollama/`, `lmstudio/` prefixes
+- ✅ **Local model support** - Ollama, LM Studio, vLLM, MLX with `ollama@`, `lmstudio@` syntax and concurrency control
 - ✅ **Cross-platform** - Works with both Node.js and Bun (v1.3.0+)
 - ✅ **Universal compatibility** - Use with `npx` or `bunx` - no installation required
 - ✅ **Interactive setup** - Prompts for API key and model if not provided (zero config!)
@@ -109,14 +111,17 @@ claudish
 
 ```bash
 # Set up environment
-export OPENROUTER_API_KEY=sk-or-v1-...
-export ANTHROPIC_API_KEY=sk-ant-api03-placeholder
+export OPENROUTER_API_KEY=sk-or-v1-...     # For OpenRouter models
+export GEMINI_API_KEY=...                   # For direct Google API
+export OPENAI_API_KEY=sk-...                # For direct OpenAI API
+export ANTHROPIC_API_KEY=sk-ant-api03-placeholder  # Required placeholder
 
-# Run with specific task
-claudish "implement user authentication"
+# Run with auto-detected model
+claudish --model gpt-4o "implement user authentication"     # → OpenAI
+claudish --model gemini-2.0-flash "add tests"               # → Google
 
-# Or with specific model
-claudish --model openai/gpt-5-codex "add tests"
+# Or with explicit provider
+claudish --model openrouter@anthropic/claude-3.5-sonnet "review code"
 ```
 
 **Note:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it. This makes first-time usage super simple!
@@ -272,57 +277,97 @@ claudish [OPTIONS] <claude-args...>
 - You MUST set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value). Without it, Claude Code will show a dialog
 - In interactive mode, if no API key is set, you'll be prompted to enter one
 
-## Model Routing (v3.1.0+)
+## Model Routing (v4.0.0+)
 
-Claudish uses **prefix-based routing** to determine which API backend to use:
+Claudish uses **`provider@model[:concurrency]`** syntax for explicit routing, plus **smart auto-detection** for native providers:
 
-| Prefix | Backend | API Key | Example |
-|--------|---------|---------|---------|
-| _(none)_ | OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-5.2` |
-| `or/` | OpenRouter | `OPENROUTER_API_KEY` | `or/anthropic/claude-3.5-sonnet` |
-| `g/` `gemini/` `google/` | Google Gemini | `GEMINI_API_KEY` | `g/gemini-2.0-flash` |
-| `v/` `vertex/` | Vertex AI | `VERTEX_API_KEY` or `VERTEX_PROJECT` | `v/gemini-2.5-flash` |
-| `oai/` `openai/` | OpenAI | `OPENAI_API_KEY` | `oai/gpt-4o` |
-| `oc/` | OllamaCloud | `OLLAMA_API_KEY` | `oc/gpt-oss:20b` |
-| `ollama/` | Ollama | _(none)_ | `ollama/llama3.2` |
-| `lmstudio/` | LM Studio | _(none)_ | `lmstudio/qwen2.5-coder` |
-| `vllm/` | vLLM | _(none)_ | `vllm/mistral-7b` |
-| `mlx/` | MLX | _(none)_ | `mlx/llama-3.2-3b` |
-| `http://...` | Custom | _(none)_ | `http://localhost:8000/model` |
+### New Syntax: `provider@model[:concurrency]`
+
+```bash
+# Explicit provider routing
+claudish --model google@gemini-2.0-flash "quick task"
+claudish --model openrouter@deepseek/deepseek-r1 "analysis"
+claudish --model oai@gpt-4o "implement feature"
+claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
+```
+
+### Provider Shortcuts
+
+| Shortcut | Provider | API Key | Example |
+|----------|----------|---------|---------|
+| `g@`, `google@` | Google Gemini | `GEMINI_API_KEY` | `g@gemini-2.0-flash` |
+| `oai@` | OpenAI Direct | `OPENAI_API_KEY` | `oai@gpt-4o` |
+| `or@`, `openrouter@` | OpenRouter | `OPENROUTER_API_KEY` | `or@deepseek/deepseek-r1` |
+| `mm@`, `mmax@` | MiniMax Direct | `MINIMAX_API_KEY` | `mm@MiniMax-M2.1` |
+| `kimi@`, `moon@` | Kimi Direct | `MOONSHOT_API_KEY` | `kimi@kimi-k2` |
+| `glm@`, `zhipu@` | GLM Direct | `ZHIPU_API_KEY` | `glm@glm-4` |
+| `zai@` | Z.AI Direct | `ZAI_API_KEY` | `zai@glm-4` |
+| `llama@`, `lc@`, `meta@` | OllamaCloud | `OLLAMA_API_KEY` | `llama@llama-3.1-70b` |
+| `oc@` | OllamaCloud | `OLLAMA_API_KEY` | `oc@llama-3.1-70b` |
+| `zen@` | OpenCode Zen | _(free)_ | `zen@grok-code` |
+| `v@`, `vertex@` | Vertex AI | `VERTEX_API_KEY` | `v@gemini-2.5-flash` |
+| `go@` | Gemini CodeAssist | _(OAuth)_ | `go@gemini-2.5-flash` |
+| `poe@` | Poe | `POE_API_KEY` | `poe@GPT-4o` |
+| `ollama@` | Ollama (local) | _(none)_ | `ollama@llama3.2` |
+| `lms@`, `lmstudio@` | LM Studio (local) | _(none)_ | `lms@qwen2.5-coder` |
+| `vllm@` | vLLM (local) | _(none)_ | `vllm@mistral-7b` |
+| `mlx@` | MLX (local) | _(none)_ | `mlx@llama-3.2-3b` |
+
+### Native Model Auto-Detection
+
+When no provider is specified, Claudish auto-detects from model name:
+
+| Model Pattern | Routes To | Example |
+|---------------|-----------|---------|
+| `gemini-*`, `google/*` | Google Gemini | `gemini-2.0-flash` |
+| `gpt-*`, `o1-*`, `o3-*` | OpenAI Direct | `gpt-4o` |
+| `llama-*`, `meta-llama/*` | OllamaCloud | `llama-3.1-70b` |
+| `abab-*`, `minimax/*` | MiniMax Direct | `abab-6.5` |
+| `kimi-*`, `moonshot-*` | Kimi Direct | `kimi-k2` |
+| `glm-*`, `zhipu/*` | GLM Direct | `glm-4` |
+| `poe:*` | Poe | `poe:GPT-4o` |
+| `claude-*`, `anthropic/*` | Native Anthropic | `claude-sonnet-4` |
+| **Unknown `vendor/model`** | **Error** | Use `openrouter@vendor/model` |
 
 ### Examples
 
 ```bash
-# OpenRouter (default) - 100+ models via unified API
-claudish --model openai/gpt-5.2 "implement feature"
-claudish --model anthropic/claude-3.5-sonnet "review code"
+# Auto-detected native routing (no prefix needed!)
+claudish --model gemini-2.0-flash "quick task"      # → Google API
+claudish --model gpt-4o "implement feature"          # → OpenAI API
+claudish --model llama-3.1-70b "code review"         # → OllamaCloud
 
-# Direct Gemini API - lower latency, direct billing
-claudish --model g/gemini-2.0-flash "quick task"
-claudish --model gemini/gemini-2.5-pro "complex analysis"
+# Explicit provider routing
+claudish --model google@gemini-2.5-pro "complex analysis"
+claudish --model oai@o1 "complex reasoning"
+claudish --model openrouter@deepseek/deepseek-r1 "deep analysis"
 
-# Direct OpenAI API - lower latency, direct billing
-claudish --model oai/gpt-4o "implement feature"
-claudish --model openai/o1 "complex reasoning"
+# OllamaCloud - cloud-hosted Llama models
+claudish --model llama@llama-3.1-70b "code review"
+claudish --model oc@llama-3.2-vision "analyze image"
 
-# OllamaCloud - cloud-hosted open models
-claudish --model oc/gpt-oss:20b "quick task"
-claudish --model oc/deepseek-v3.2 "complex analysis"
-claudish --model oc/qwen3-coder:480b "write code"
+# Vertex AI - Google Cloud
+VERTEX_API_KEY=... claudish --model v@gemini-2.5-flash "task"
+VERTEX_PROJECT=my-project claudish --model vertex@gemini-2.5-flash "OAuth mode"
 
-# Vertex AI - Google Cloud, supports partner models
-# Express mode (API key):
-VERTEX_API_KEY=... claudish --model v/gemini-2.5-flash "task"
-# OAuth mode (gcloud auth):
-VERTEX_PROJECT=my-project claudish --model v/gemini-2.5-flash "task"
-# Partner models (MaaS):
-claudish --model vertex/minimax/minimax-m2-maas "fast task"
-claudish --model vertex/mistralai/codestral-2 "write code"
-claudish --model vertex/deepseek/deepseek-v3-2-maas "deep analysis"
+# Local models with concurrency control
+claudish --model ollama@llama3.2:3 "review"     # 3 concurrent requests
+claudish --model ollama@llama3.2:0 "fast"       # No limit (bypass queue)
 
-# Local models - free, private, no API key needed
-claudish --model ollama/llama3.2 "code review"
-claudish --model lmstudio/qwen2.5-coder "refactor"
+# Unknown vendors require explicit OpenRouter
+claudish --model openrouter@qwen/qwen-2.5 "task"
+claudish --model or@mistralai/mistral-large "analysis"
+```
+
+### Legacy Syntax (Deprecated)
+
+The old `prefix/model` syntax still works but shows deprecation warnings:
+
+```bash
+# Old (deprecated)          →  New (recommended)
+claudish --model g/gemini-pro     →  claudish --model g@gemini-pro
+claudish --model oai/gpt-4o       →  claudish --model oai@gpt-4o
+claudish --model ollama/llama3.2  →  claudish --model ollama@llama3.2
 ```
 
 ## Curated Models
@@ -450,19 +495,20 @@ claudish "implement user authentication with JWT tokens"
 ### With Specific Model
 
 ```bash
-# Use OpenRouter models (default)
-claudish --model openai/gpt-5.2 "refactor entire API layer"
-claudish --model deepseek/deepseek-v3.2 "add error handling"
+# Auto-detected native routing (model name determines provider)
+claudish --model gpt-4o "refactor entire API layer"           # → OpenAI
+claudish --model gemini-2.0-flash "quick fix"                 # → Google
+claudish --model llama-3.1-70b "code review"                  # → OllamaCloud
 
-# Use direct Gemini API (faster, direct billing)
-claudish --model g/gemini-2.0-flash "quick fix"
+# Explicit provider routing (new @ syntax)
+claudish --model google@gemini-2.5-pro "complex analysis"
+claudish --model oai@o1 "deep reasoning task"
+claudish --model openrouter@deepseek/deepseek-r1 "analysis"   # Unknown vendors need explicit OR
 
-# Use direct OpenAI API
-claudish --model oai/gpt-4o "implement feature"
-
-# Use local models (free, private)
-claudish --model ollama/llama3.2 "code review"
-claudish --model lmstudio/qwen2.5-coder "implement dashboard UI"
+# Local models with concurrency control
+claudish --model ollama@llama3.2 "code review"
+claudish --model ollama@llama3.2:3 "parallel processing"      # 3 concurrent
+claudish --model lmstudio@qwen2.5-coder "implement dashboard UI"
 ```
 
 ### Autonomous Mode

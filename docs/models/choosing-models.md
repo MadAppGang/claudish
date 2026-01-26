@@ -157,14 +157,41 @@ For most tasks, we're talking cents. Don't obsess over pricing unless you're doi
 
 ## Custom Models
 
-See a model on OpenRouter that's not in our list? Use it anyway:
+### Native Providers (Auto-Detected)
+
+Models from these providers route automatically to their native APIs:
 
 ```bash
-claudish --model anthropic/claude-sonnet-4.5 "your prompt"
-claudish --model mistralai/mistral-large-2411 "your prompt"
+# Auto-detected from model name (no prefix needed)
+claudish --model gpt-4o "your prompt"              # → OpenAI
+claudish --model gemini-2.0-flash "your prompt"    # → Google
+claudish --model llama-3.1-70b "your prompt"       # → OllamaCloud
+claudish --model glm-4 "your prompt"               # → GLM/Zhipu
 ```
 
-Any valid OpenRouter model ID works.
+### Explicit Provider Routing
+
+Use `provider@model` syntax for explicit control:
+
+```bash
+# Explicit provider routing
+claudish --model google@gemini-2.5-pro "your prompt"
+claudish --model oai@o1 "your prompt"
+claudish --model mm@MiniMax-M2.1 "your prompt"
+```
+
+### OpenRouter Models
+
+For models not available via direct API, use explicit OpenRouter routing:
+
+```bash
+# Unknown vendors require explicit openrouter@
+claudish --model openrouter@mistralai/mistral-large-2411 "your prompt"
+claudish --model or@deepseek/deepseek-r1 "your prompt"
+claudish --model openrouter@qwen/qwen-2.5 "your prompt"
+```
+
+Any valid OpenRouter model ID works with the `openrouter@` or `or@` prefix.
 
 ---
 

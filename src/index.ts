@@ -157,6 +157,24 @@ async function runCli() {
       }
     }
 
+    // Show deprecation warnings for legacy syntax
+    if (!cliConfig.quiet) {
+      const modelsToCheck = [
+        cliConfig.model,
+        cliConfig.modelOpus,
+        cliConfig.modelSonnet,
+        cliConfig.modelHaiku,
+        cliConfig.modelSubagent,
+      ].filter((m): m is string => typeof m === "string");
+
+      for (const modelId of modelsToCheck) {
+        const resolution = resolveModelProvider(modelId);
+        if (resolution.deprecationWarning) {
+          console.warn(`[claudish] ${resolution.deprecationWarning}`);
+        }
+      }
+    }
+
     // Read prompt from stdin if --stdin flag is set
     if (cliConfig.stdin) {
       const stdinInput = await readStdin();

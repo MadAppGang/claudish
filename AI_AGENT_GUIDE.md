@@ -12,42 +12,66 @@
 # 1. Get available models
 claudish --models --json
 
-# 2. Run task with specific model (OpenRouter)
-claudish --model openai/gpt-5.2 "your task here"
+# 2. Auto-detected routing (model name determines provider)
+claudish --model gpt-4o "your task here"               # → OpenAI
+claudish --model gemini-2.0-flash "your task here"     # → Google
+claudish --model llama-3.1-70b "your task here"        # → OllamaCloud
 
-# 3. Run with direct Gemini API
-claudish --model g/gemini-2.0-flash "your task here"
+# 3. Explicit provider routing (new @ syntax)
+claudish --model google@gemini-2.5-pro "your task here"
+claudish --model oai@o1 "deep reasoning task"
+claudish --model openrouter@deepseek/deepseek-r1 "analysis"  # Unknown vendors need OR@
 
-# 4. Run with local model
-claudish --model ollama/llama3.2 "your task here"
+# 4. Run with local model (with concurrency control)
+claudish --model ollama@llama3.2 "your task here"
+claudish --model ollama@llama3.2:3 "parallel task"     # 3 concurrent requests
 
 # 5. For large prompts, use stdin
-echo "your task" | claudish --stdin --model openai/gpt-5.2
+echo "your task" | claudish --stdin --model gpt-4o
 ```
 
 ## What is Claudish?
 
 Claudish = Claude Code + Any AI Model
 
-- ✅ Run Claude Code with **any AI model** via prefix-based routing
-- ✅ Supports OpenRouter (100+ models), direct Gemini API, direct OpenAI API
-- ✅ Supports local models (Ollama, LM Studio, vLLM, MLX)
+- ✅ Run Claude Code with **any AI model** via `provider@model` routing
+- ✅ **Native auto-detection** - `gpt-4o` → OpenAI, `gemini-*` → Google, `llama-*` → OllamaCloud
+- ✅ Supports direct APIs: Google, OpenAI, MiniMax, Kimi, GLM, Z.AI, OllamaCloud, Poe
+- ✅ Supports local models (Ollama, LM Studio, vLLM, MLX) with concurrency control
 - ✅ **MCP Server mode** - expose models as tools for Claude Code
 - ✅ 100% Claude Code feature compatibility
 - ✅ Local proxy server (no data sent to Claudish servers)
 - ✅ Cost tracking and model selection
 
-## Model Routing
+## Model Routing (v4.0+)
 
-| Prefix | Backend | Example |
-|--------|---------|---------|
-| _(none)_ | OpenRouter | `openai/gpt-5.2` |
-| `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
-| `v/` `vertex/` | Vertex AI | `v/gemini-2.5-flash` |
-| `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
-| `ollama/` | Ollama | `ollama/llama3.2` |
-| `lmstudio/` | LM Studio | `lmstudio/model` |
-| `http://...` | Custom | `http://localhost:8000/model` |
+### New Syntax: `provider@model[:concurrency]`
+
+| Shortcut | Provider | Example |
+|----------|----------|---------|
+| `google@`, `g@` | Google Gemini | `g@gemini-2.0-flash` |
+| `oai@` | OpenAI Direct | `oai@gpt-4o` |
+| `or@`, `openrouter@` | OpenRouter | `or@deepseek/deepseek-r1` |
+| `mm@`, `mmax@` | MiniMax Direct | `mm@MiniMax-M2` |
+| `kimi@`, `moon@` | Kimi Direct | `kimi@kimi-k2` |
+| `glm@`, `zhipu@` | GLM Direct | `glm@glm-4` |
+| `llama@`, `oc@` | OllamaCloud | `llama@llama-3.1-70b` |
+| `v@`, `vertex@` | Vertex AI | `v@gemini-2.5-flash` |
+| `poe@` | Poe | `poe@GPT-4o` |
+| `ollama@` | Ollama (local) | `ollama@llama3.2:3` |
+| `lmstudio@` | LM Studio | `lmstudio@qwen` |
+
+### Native Model Auto-Detection
+
+| Model Pattern | Routes To |
+|---------------|-----------|
+| `gemini-*`, `google/*` | Google API |
+| `gpt-*`, `o1-*`, `o3-*` | OpenAI API |
+| `llama-*`, `meta-llama/*` | OllamaCloud |
+| `kimi-*`, `moonshot-*` | Kimi API |
+| `glm-*`, `zhipu/*` | GLM API |
+| `claude-*` | Native Anthropic |
+| **Unknown vendors** | Error (use `openrouter@`) |
 
 ### Vertex AI Partner Models
 

@@ -2,9 +2,15 @@
  * Remote Provider Registry
  *
  * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud, OpenCode Zen)
- * based on model ID prefixes.
+ * based on model ID specifications.
  *
- * Prefix patterns:
+ * New syntax: provider@model
+ * Examples:
+ *   google@gemini-3-pro-preview          - Direct Google API
+ *   openrouter@google/gemini-3-pro       - Explicit OpenRouter
+ *   oai@gpt-5.2                          - Direct OpenAI API (shortcut)
+ *
+ * Legacy prefix patterns (deprecated, still supported):
  * - g/, gemini/ -> Google Gemini API (direct)
  * - go/ -> Google Gemini Code Assist (OAuth)
  * - oai/ -> OpenAI API (openai/ routes to OpenRouter)
@@ -21,6 +27,7 @@ import type {
   RemoteProvider,
   ResolvedRemoteProvider,
 } from "../handlers/shared/remote-provider-types.js";
+import { parseModelSpec, isLocalProviderName } from "./model-parser.js";
 
 /**
  * Remote provider configurations
@@ -174,18 +181,62 @@ const getRemoteProviders = (): RemoteProvider[] => [
 ];
 
 /**
- * Resolve a model ID to a remote provider if it matches any prefix
- * Returns null if no prefix matches (falls through to OpenRouter default)
+ * Resolve a model ID to a remote provider
+ *
+ * Supports both new syntax (provider@model) and legacy syntax (prefix/model)
+ * Returns null if no provider matches (falls through to OpenRouter default)
  */
 export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider | null {
   const providers = getRemoteProviders();
 
+  // Try new model parser first
+  const parsed = parseModelSpec(modelId);
+
+  // Skip local providers - they're handled by provider-registry.ts
+  if (isLocalProviderName(parsed.provider)) {
+    return null;
+  }
+
+  // Skip custom URL providers
+  if (parsed.provider === "custom-url") {
+    return null;
+  }
+
+  // Map parsed provider name to remote provider config
+  const providerNameMap: Record<string, string> = {
+    google: "gemini",
+    openai: "openai",
+    openrouter: "openrouter",
+    minimax: "minimax",
+    kimi: "kimi",
+    glm: "glm",
+    zai: "zai",
+    ollamacloud: "ollamacloud",
+    "opencode-zen": "opencode-zen",
+    vertex: "vertex", // Note: vertex might need special handling
+    "gemini-codeassist": "gemini-codeassist",
+  };
+
+  const mappedProviderName = providerNameMap[parsed.provider];
+  if (mappedProviderName) {
+    const provider = providers.find((p) => p.name === mappedProviderName);
+    if (provider) {
+      return {
+        provider,
+        modelName: parsed.model,
+        isLegacySyntax: parsed.isLegacySyntax,
+      };
+    }
+  }
+
+  // Legacy: check prefix patterns for backwards compatibility
   for (const provider of providers) {
     for (const prefix of provider.prefixes) {
       if (modelId.startsWith(prefix)) {
         return {
           provider,
           modelName: modelId.slice(prefix.length),
+          isLegacySyntax: true,
         };
       }
     }

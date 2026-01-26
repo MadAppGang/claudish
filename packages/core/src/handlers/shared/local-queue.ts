@@ -14,6 +14,10 @@
  * - Automatic queue size management (max 100 requests)
  * - Minimal delay between dispatches (100ms)
  *
+ * New: Concurrency can be specified per-model using the model syntax:
+ *   ollama@llama3.2:3    - Allow 3 concurrent requests
+ *   ollama@llama3.2:0    - Unlimited concurrency (bypass queue)
+ *
  * Environment variables:
  * - CLAUDISH_LOCAL_MAX_PARALLEL: Max concurrent requests (1-8, default: 1)
  * - CLAUDISH_LOCAL_QUEUE_ENABLED: Enable/disable queue (default: true)
@@ -49,10 +53,17 @@ export interface QueueStats {
  * Implements concurrency control to prevent GPU overload by limiting
  * the number of simultaneous requests to local models.
  *
+ * Concurrency can be overridden per-model using the :N suffix in model spec:
+ * - :0 = bypass queue entirely (unlimited)
+ * - :N = override max parallel to N for this model
+ *
  * @example
  * ```typescript
  * const queue = LocalModelQueue.getInstance();
  * const response = await queue.enqueue(() => fetch(url, options), "ollama");
+ *
+ * // With custom concurrency (bypasses default)
+ * const response = await queue.enqueue(() => fetch(url, options), "ollama", 3);
  * ```
  */
 export class LocalModelQueue {
@@ -61,7 +72,8 @@ export class LocalModelQueue {
   private activeRequests = 0;
 
   // Configuration
-  private readonly maxParallel: number; // From CLAUDISH_LOCAL_MAX_PARALLEL
+  private readonly defaultMaxParallel: number; // From CLAUDISH_LOCAL_MAX_PARALLEL
+  private maxParallel: number; // Current effective max (can be overridden)
   private readonly maxQueueSize = 100;
   private readonly requestDelay = 100; // Small delay between dispatches (ms)
 
@@ -71,7 +83,8 @@ export class LocalModelQueue {
   private totalOOMErrors = 0;
 
   private constructor() {
-    this.maxParallel = this.getMaxParallelFromEnv();
+    this.defaultMaxParallel = this.getMaxParallelFromEnv();
+    this.maxParallel = this.defaultMaxParallel;
     if (getLogLevel() === "debug") {
       log(
         `[LocalQueue] Queue initialized with maxParallel=${this.maxParallel}, maxQueueSize=${this.maxQueueSize}`
@@ -103,10 +116,38 @@ export class LocalModelQueue {
    *
    * @param fetchFn - Function that performs the fetch request
    * @param providerId - Provider identifier for debugging (e.g., "ollama", "lmstudio")
+   * @param concurrencyOverride - Optional concurrency override from model spec
+   *   - undefined: use default max parallel
+   *   - 0: bypass queue entirely (direct execution)
+   *   - N: use N as max parallel for this request
    * @returns Promise that resolves with the response
    * @throws Error if queue is full
    */
-  async enqueue(fetchFn: () => Promise<Response>, providerId: string): Promise<Response> {
+  async enqueue(
+    fetchFn: () => Promise<Response>,
+    providerId: string,
+    concurrencyOverride?: number
+  ): Promise<Response> {
+    // Handle concurrency override
+    if (concurrencyOverride !== undefined) {
+      if (concurrencyOverride === 0) {
+        // :0 means bypass queue entirely - execute directly
+        if (getLogLevel() === "debug") {
+          log(`[LocalQueue] Bypassing queue for ${providerId} (concurrency=0)`);
+        }
+        return fetchFn();
+      }
+
+      // Override max parallel for this session
+      if (concurrencyOverride !== this.maxParallel && concurrencyOverride > 0) {
+        const newMax = Math.min(concurrencyOverride, 8); // Cap at 8
+        if (getLogLevel() === "debug") {
+          log(`[LocalQueue] Overriding maxParallel: ${this.maxParallel} -> ${newMax} for ${providerId}`);
+        }
+        this.maxParallel = newMax;
+      }
+    }
+
     // Check queue size limit
     if (this.queue.length >= this.maxQueueSize) {
       if (getLogLevel() === "debug") {

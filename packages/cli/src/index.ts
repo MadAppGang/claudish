@@ -14,42 +14,12 @@ const firstArg = args[0];
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
   import("./mcp-server.js").then((mcp) => mcp.startMcpServer());
-} else if (firstArg === "--gemini-login" || args.includes("--gemini-login")) {
-  // Gemini OAuth login
-  import("@claudish/core").then(async ({ GeminiOAuth }) => {
-    const oauth = GeminiOAuth.getInstance();
-    try {
-      await oauth.login();
-      console.log("✓ Successfully logged in to Gemini Code Assist API");
-      console.log('\nYou can now use: claudish --model go/gemini-2.5-flash "your task"');
-      process.exit(0);
-    } catch (e: any) {
-      console.error(`✗ Login failed: ${e.message}`);
-      process.exit(1);
-    }
-  });
-} else if (firstArg === "--gemini-logout" || args.includes("--gemini-logout")) {
-  // Gemini OAuth logout
-  import("@claudish/core").then(async ({ GeminiOAuth }) => {
-    const oauth = GeminiOAuth.getInstance();
-    try {
-      await oauth.logout();
-      console.log("✓ Successfully logged out from Gemini Code Assist API");
-      process.exit(0);
-    } catch (e: any) {
-      console.error(`✗ Logout failed: ${e.message}`);
-      process.exit(1);
-    }
-  });
 } else if (firstArg === "init") {
   // Profile setup wizard
   import("./profile-commands.js").then((pc) => pc.initCommand());
 } else if (firstArg === "profile") {
   // Profile management commands
   import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(1)));
-} else if (firstArg === "update") {
-  // Update command
-  import("./update-command.js").then((uc) => uc.updateCommand());
 } else {
   // CLI mode
   runCli();
@@ -61,17 +31,17 @@ if (isMcpMode) {
 async function runCli() {
   const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
-  const { DEFAULT_PORT_RANGE } = await import("@claudish/core");
+  const { DEFAULT_PORT_RANGE } = await import("./config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
   const {
     resolveModelProvider,
     validateApiKeysForModels,
     getMissingKeyResolutions,
     getMissingKeysError,
-  } = await import("@claudish/core");
-  const { initLogger, getLogFilePath } = await import("@claudish/core");
+  } = await import("./providers/provider-resolver.js");
+  const { initLogger, getLogFilePath } = await import("./logger.js");
   const { findAvailablePort } = await import("./port-manager.js");
-  const { createProxyServer } = await import("@claudish/core");
+  const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdates } = await import("./update-checker.js");
 
   /**
@@ -187,32 +157,20 @@ async function runCli() {
       }
     }
 
-    // Check if go/ model requires OAuth login
-    if (
-      cliConfig.model &&
-      typeof cliConfig.model === "string" &&
-      cliConfig.model.startsWith("go/")
-    ) {
-      const { GeminiOAuth } = await import("@claudish/core");
-      const oauth = GeminiOAuth.getInstance();
+    // Show deprecation warnings for legacy syntax
+    if (!cliConfig.quiet) {
+      const modelsToCheck = [
+        cliConfig.model,
+        cliConfig.modelOpus,
+        cliConfig.modelSonnet,
+        cliConfig.modelHaiku,
+        cliConfig.modelSubagent,
+      ].filter((m): m is string => typeof m === "string");
 
-      if (!oauth.hasCredentials()) {
-        if (cliConfig.interactive) {
-          // Interactive mode: auto-login then continue
-          console.log("[claudish] Gemini OAuth login required for go/ models...\n");
-          try {
-            await oauth.login();
-            console.log("\n✓ Successfully logged in to Gemini Code Assist API\n");
-          } catch (e: any) {
-            console.error(`\n✗ Login failed: ${e.message}`);
-            process.exit(1);
-          }
-        } else {
-          // Non-interactive mode: show error with instructions
-          console.error("Error: Gemini OAuth login required for go/ models");
-          console.error("Please run: claudish --gemini-login");
-          console.error("Or use API key mode with g/ prefix: --model g/gemini-2.5-flash");
-          process.exit(1);
+      for (const modelId of modelsToCheck) {
+        const resolution = resolveModelProvider(modelId);
+        if (resolution.deprecationWarning) {
+          console.warn(`[claudish] ${resolution.deprecationWarning}`);
         }
       }
     }

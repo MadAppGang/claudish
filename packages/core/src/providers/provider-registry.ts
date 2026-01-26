@@ -3,7 +3,12 @@
  *
  * Supports Ollama and other OpenAI-compatible local providers.
  * Extensible via configuration - no code changes needed to add new providers.
+ *
+ * New syntax: provider@model[:concurrency]
+ * Legacy syntax: prefix/model or prefix:model (with deprecation warnings)
  */
+
+import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
 
 export interface ProviderCapabilities {
   supportsTools: boolean;
@@ -17,13 +22,15 @@ export interface LocalProvider {
   baseUrl: string;
   apiPath: string;
   envVar: string;
-  prefixes: string[];
+  prefixes: string[]; // Legacy prefixes for backwards compatibility
   capabilities: ProviderCapabilities;
 }
 
 export interface ResolvedProvider {
   provider: LocalProvider;
   modelName: string;
+  concurrency?: number; // Concurrency limit from model spec
+  isLegacySyntax?: boolean; // For deprecation warnings
 }
 
 export interface UrlParsedModel {
@@ -95,17 +102,51 @@ export function getRegisteredProviders(): LocalProvider[] {
 }
 
 /**
- * Resolve a model ID to a local provider if it matches any prefix
+ * Resolve a model ID to a local provider
+ *
+ * Supports both new syntax (provider@model) and legacy syntax (prefix/model)
  */
 export function resolveProvider(modelId: string): ResolvedProvider | null {
   const providers = getProviders();
 
+  // Try new model parser first
+  const parsed = parseModelSpec(modelId);
+
+  // Check if parsed provider is a local provider
+  if (isLocalProviderName(parsed.provider)) {
+    const provider = providers.find(
+      (p) => p.name.toLowerCase() === parsed.provider.toLowerCase()
+    );
+
+    if (provider) {
+      return {
+        provider,
+        modelName: parsed.model,
+        concurrency: parsed.concurrency,
+        isLegacySyntax: parsed.isLegacySyntax,
+      };
+    }
+  }
+
+  // Legacy: check prefix patterns for backwards compatibility
   for (const provider of providers) {
     for (const prefix of provider.prefixes) {
       if (modelId.startsWith(prefix)) {
+        // Check for concurrency suffix
+        let modelName = modelId.slice(prefix.length);
+        let concurrency: number | undefined;
+
+        const concurrencyMatch = modelName.match(/^(.+):(\d+)$/);
+        if (concurrencyMatch) {
+          modelName = concurrencyMatch[1];
+          concurrency = parseInt(concurrencyMatch[2], 10);
+        }
+
         return {
           provider,
-          modelName: modelId.slice(prefix.length),
+          modelName,
+          concurrency,
+          isLegacySyntax: true,
         };
       }
     }
@@ -118,7 +159,13 @@ export function resolveProvider(modelId: string): ResolvedProvider | null {
  * Check if a model ID matches any local provider pattern
  */
 export function isLocalProvider(modelId: string): boolean {
-  // Check prefix patterns
+  // Try model parser first
+  const parsed = parseModelSpec(modelId);
+  if (isLocalProviderName(parsed.provider)) {
+    return true;
+  }
+
+  // Check legacy prefix patterns
   if (resolveProvider(modelId) !== null) {
     return true;
   }

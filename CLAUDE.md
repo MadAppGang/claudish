@@ -16,11 +16,46 @@
 - `bun run build:ci` - CI build (bundles only, no model extraction)
 - `bun run dev` - Development mode
 
+## Model Routing (v4.0+)
+
+### New Syntax: `provider@model[:concurrency]`
+
+```bash
+# Explicit provider routing
+claudish --model google@gemini-2.0-flash "task"
+claudish --model openrouter@deepseek/deepseek-r1 "task"
+
+# Native auto-detection (no prefix needed)
+claudish --model gpt-4o "task"          # → OpenAI
+claudish --model gemini-2.0-flash "task" # → Google
+claudish --model llama-3.1-70b "task"   # → OllamaCloud
+
+# Local models with concurrency
+claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
+```
+
+### Provider Shortcuts
+- `g@`, `google@` → Google Gemini
+- `oai@` → OpenAI Direct
+- `or@`, `openrouter@` → OpenRouter
+- `mm@`, `mmax@` → MiniMax
+- `kimi@`, `moon@` → Kimi
+- `glm@`, `zhipu@` → GLM
+- `llama@`, `oc@` → OllamaCloud
+- `ollama@` → Ollama (local)
+- `lmstudio@` → LM Studio (local)
+
+### Unknown Vendors
+Models like `deepseek/`, `qwen/`, `mistralai/` require explicit routing:
+```bash
+claudish --model openrouter@deepseek/deepseek-r1 "task"
+```
+
 ## Local Model Support
 
 Claudish supports local models via:
-- **Ollama**: `claudish --model ollama/llama3.2`
-- **LM Studio**: `claudish --model lmstudio/model-name`
+- **Ollama**: `claudish --model ollama@llama3.2` (or `ollama@llama3.2:3` for concurrency)
+- **LM Studio**: `claudish --model lmstudio@model-name`
 - **Custom URLs**: `claudish --model http://localhost:11434/model`
 
 ### Context Tracking for Local Models

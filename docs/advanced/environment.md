@@ -25,7 +25,14 @@ export OPENROUTER_API_KEY='sk-or-v1-abc123...'
 Default model when `--model` flag isn't provided.
 
 ```bash
-export CLAUDISH_MODEL='x-ai/grok-code-fast-1'
+# Auto-detected routing (model name determines provider)
+export CLAUDISH_MODEL='gpt-4o'              # → OpenAI
+export CLAUDISH_MODEL='gemini-2.0-flash'    # → Google
+export CLAUDISH_MODEL='llama-3.1-70b'       # → OllamaCloud
+
+# Explicit provider routing (new @ syntax)
+export CLAUDISH_MODEL='google@gemini-2.5-pro'
+export CLAUDISH_MODEL='openrouter@deepseek/deepseek-r1'
 ```
 
 Takes priority over `ANTHROPIC_MODEL`.
@@ -35,7 +42,7 @@ Takes priority over `ANTHROPIC_MODEL`.
 Claude Code standard. Fallback if `CLAUDISH_MODEL` isn't set.
 
 ```bash
-export ANTHROPIC_MODEL='openai/gpt-5.1-codex'
+export ANTHROPIC_MODEL='gpt-4o'  # Auto-detected → OpenAI
 ```
 
 ---
@@ -47,25 +54,27 @@ Map different models to different Claude Code tiers.
 ### `CLAUDISH_MODEL_OPUS`
 Model for Opus-tier requests (complex planning, architecture).
 ```bash
-export CLAUDISH_MODEL_OPUS='google/gemini-3-pro-preview'
+export CLAUDISH_MODEL_OPUS='gemini-2.5-pro'           # Auto-detected → Google
+export CLAUDISH_MODEL_OPUS='google@gemini-2.5-pro'    # Explicit
 ```
 
 ### `CLAUDISH_MODEL_SONNET`
 Model for Sonnet-tier requests (default coding tasks).
 ```bash
-export CLAUDISH_MODEL_SONNET='x-ai/grok-code-fast-1'
+export CLAUDISH_MODEL_SONNET='gpt-4o'                 # Auto-detected → OpenAI
 ```
 
 ### `CLAUDISH_MODEL_HAIKU`
 Model for Haiku-tier requests (fast, simple tasks).
 ```bash
-export CLAUDISH_MODEL_HAIKU='minimax/minimax-m2'
+export CLAUDISH_MODEL_HAIKU='llama-3.1-8b'            # Auto-detected → OllamaCloud
+export CLAUDISH_MODEL_HAIKU='mm@MiniMax-M2'           # MiniMax direct
 ```
 
 ### `CLAUDISH_MODEL_SUBAGENT`
 Model for sub-agents spawned via Task tool.
 ```bash
-export CLAUDISH_MODEL_SUBAGENT='minimax/minimax-m2'
+export CLAUDISH_MODEL_SUBAGENT='llama-3.1-8b'         # OllamaCloud
 ```
 
 ### Fallback Variables

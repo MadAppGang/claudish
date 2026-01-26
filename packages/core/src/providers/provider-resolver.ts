@@ -7,20 +7,37 @@
  * 3. Whether that API key is available
  * 4. User-friendly error messages for missing keys
  *
+ * New syntax: provider@model[:concurrency]
+ * Examples:
+ *   openrouter@google/gemini-3-pro  - Explicit OpenRouter routing
+ *   google@gemini-3-pro             - Direct Google API
+ *   g@gemini-3-pro                  - Direct Google API (shortcut)
+ *   ollama@llama3.2:3               - Local Ollama with concurrency 3
+ *
  * Provider Categories:
- * - local: ollama/, lmstudio/, vllm/, mlx/, http://... - No API key needed
- * - direct-api: g/, gemini/, v/, vertex/, oai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, oc/, zen/, go/ - Provider-specific key
- * - openrouter: or/ prefix OR any model with "/" not matching other prefixes - OPENROUTER_API_KEY
+ * - local: ollama@, lmstudio@, vllm@, mlx@, http://... - No API key needed
+ * - direct-api: google@, openai@, minimax@, kimi@, glm@, zai@, zen@ - Provider-specific key
+ * - openrouter: openrouter@ or unspecified provider for models with "/" - OPENROUTER_API_KEY
  * - native-anthropic: No "/" in model ID (e.g., claude-3-opus-20240229) - Claude Code native auth
+ *
+ * Legacy syntax (deprecated but supported):
+ * - g/, gemini/, oai/, mmax/, etc. prefixes still work with deprecation warnings
  */
 
 import { resolveProvider, parseUrlModel } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
+import {
+  parseModelSpec,
+  isLocalProviderName,
+  isDirectApiProvider,
+  getLegacySyntaxWarning,
+  type ParsedModel,
+} from "./model-parser.js";
 
 /**
  * Provider category types
  */
-export type ProviderCategory = "local" | "direct-api" | "openrouter" | "native-anthropic";
+export type ProviderCategory = "local" | "direct-api" | "openrouter" | "native-anthropic" | "unknown";
 
 /**
  * Complete resolution result for a model ID
@@ -42,6 +59,14 @@ export interface ProviderResolution {
   apiKeyDescription: string | null;
   /** URL where user can get the API key */
   apiKeyUrl: string | null;
+  /** Concurrency limit for local providers (from model spec) */
+  concurrency?: number;
+  /** Whether legacy syntax was used (for deprecation warning) */
+  isLegacySyntax?: boolean;
+  /** Deprecation warning message (if legacy syntax used) */
+  deprecationWarning?: string;
+  /** Parsed model specification */
+  parsed?: ParsedModel;
 }
 
 /**
@@ -184,10 +209,15 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
  * This is THE single source of truth for provider resolution.
  * All code paths should call this function instead of implementing their own logic.
  *
- * Per README Model Routing table:
- * 1. Try provider-specific API (if key available)
- * 2. Fall back to OpenRouter (if OPENROUTER_API_KEY available)
- * 3. Fall back to Vertex AI (if VERTEX_API_KEY or VERTEX_PROJECT available)
+ * New syntax: provider@model[:concurrency]
+ * Legacy syntax: prefix/model (with deprecation warnings)
+ *
+ * Resolution order:
+ * 1. Parse model spec using new unified parser
+ * 2. Check for local providers (no API key needed)
+ * 3. Check for explicit provider routing
+ * 4. Try native provider detection for models without explicit provider
+ * 5. Fall back chain: provider API -> OpenRouter -> Vertex
  *
  * @param modelId - The model ID to resolve (can be undefined for default behavior)
  * @returns Complete provider resolution including API key requirements
@@ -208,15 +238,26 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     };
   }
 
-  const lowerModelId = modelId.toLowerCase();
+  // Parse model spec using the unified parser
+  const parsed = parseModelSpec(modelId);
+  const deprecationWarning = getLegacySyntaxWarning(parsed);
+
+  // Helper to add common fields to resolution
+  const addCommonFields = (resolution: ProviderResolution): ProviderResolution => ({
+    ...resolution,
+    parsed,
+    isLegacySyntax: parsed.isLegacySyntax,
+    deprecationWarning: deprecationWarning || undefined,
+    concurrency: parsed.concurrency,
+  });
 
   // 1. Check for local providers (no API key needed)
-  if (LOCAL_PREFIXES.some((prefix) => lowerModelId.startsWith(prefix))) {
+  if (isLocalProviderName(parsed.provider)) {
     const resolved = resolveProvider(modelId);
     const urlParsed = parseUrlModel(modelId);
 
     let providerName = "Local";
-    let modelName = modelId;
+    let modelName = parsed.model;
 
     if (resolved) {
       providerName = resolved.provider.name.charAt(0).toUpperCase() + resolved.provider.name.slice(1);
@@ -226,7 +267,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       modelName = urlParsed.modelName;
     }
 
-    return {
+    return addCommonFields({
       category: "local",
       providerName,
       modelName,
@@ -235,28 +276,57 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       apiKeyAvailable: true,
       apiKeyDescription: null,
       apiKeyUrl: null,
-    };
+    });
   }
 
-  // 2. Check for direct API providers with explicit routing prefixes
+  // 2. Check for custom URL providers
+  if (parsed.provider === "custom-url") {
+    const urlParsed = parseUrlModel(modelId);
+    return addCommonFields({
+      category: "local",
+      providerName: "Custom URL",
+      modelName: urlParsed?.modelName || modelId,
+      fullModelId: modelId,
+      requiredApiKeyEnvVar: null,
+      apiKeyAvailable: true,
+      apiKeyDescription: null,
+      apiKeyUrl: null,
+    });
+  }
+
+  // 3. Check for native Anthropic models
+  if (parsed.provider === "native-anthropic") {
+    return addCommonFields({
+      category: "native-anthropic",
+      providerName: "Anthropic (Native)",
+      modelName: parsed.model,
+      fullModelId: modelId,
+      requiredApiKeyEnvVar: null, // Claude Code handles its own auth
+      apiKeyAvailable: true,
+      apiKeyDescription: null,
+      apiKeyUrl: null,
+    });
+  }
+
+  // 4. Check for explicit OpenRouter routing
+  if (parsed.provider === "openrouter") {
+    const info = API_KEY_INFO.openrouter;
+    return addCommonFields({
+      category: "openrouter",
+      providerName: "OpenRouter",
+      modelName: parsed.model,
+      fullModelId: modelId,
+      requiredApiKeyEnvVar: info.envVar,
+      apiKeyAvailable: isApiKeyAvailable(info),
+      apiKeyDescription: info.description,
+      apiKeyUrl: info.url,
+    });
+  }
+
+  // 5. Try to resolve as direct API provider
   const remoteResolved = resolveRemoteProvider(modelId);
   if (remoteResolved) {
     const provider = remoteResolved.provider;
-
-    // Explicit OpenRouter prefix (or/) - always use OpenRouter
-    if (provider.name === "openrouter") {
-      const info = API_KEY_INFO.openrouter;
-      return {
-        category: "openrouter",
-        providerName: "OpenRouter",
-        modelName: remoteResolved.modelName,
-        fullModelId: modelId,
-        requiredApiKeyEnvVar: info.envVar,
-        apiKeyAvailable: isApiKeyAvailable(info),
-        apiKeyDescription: info.description,
-        apiKeyUrl: info.url,
-      };
-    }
 
     // Provider-specific prefix found - check if provider's API key is available
     const info = API_KEY_INFO[provider.name] || {
@@ -270,7 +340,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       const providerDisplayName =
         PROVIDER_DISPLAY_NAMES[provider.name] ||
         provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
-      return {
+      return addCommonFields({
         category: "direct-api",
         providerName: providerDisplayName,
         modelName: remoteResolved.modelName,
@@ -279,13 +349,13 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
         apiKeyAvailable: isApiKeyAvailable(info),
         apiKeyDescription: info.envVar ? info.description : null,
         apiKeyUrl: info.envVar ? info.url : null,
-      };
+      });
     }
 
     // Provider key NOT available - fall back to OpenRouter if available
     if (isApiKeyAvailable(API_KEY_INFO.openrouter)) {
       const orInfo = API_KEY_INFO.openrouter;
-      return {
+      return addCommonFields({
         category: "openrouter",
         providerName: "OpenRouter (fallback)",
         modelName: modelId,
@@ -294,13 +364,13 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
         apiKeyAvailable: true,
         apiKeyDescription: orInfo.description,
         apiKeyUrl: orInfo.url,
-      };
+      });
     }
 
     // Neither provider key nor OpenRouter available - fall back to Vertex if available
     if (isApiKeyAvailable(API_KEY_INFO.vertex)) {
       const vertexInfo = API_KEY_INFO.vertex;
-      return {
+      return addCommonFields({
         category: "direct-api",
         providerName: "Vertex AI (fallback)",
         modelName: modelId,
@@ -309,14 +379,14 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
         apiKeyAvailable: true,
         apiKeyDescription: vertexInfo.description,
         apiKeyUrl: vertexInfo.url,
-      };
+      });
     }
 
     // No fallback available - require the provider's key
     const providerDisplayName =
       PROVIDER_DISPLAY_NAMES[provider.name] ||
       provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
-    return {
+    return addCommonFields({
       category: "direct-api",
       providerName: providerDisplayName,
       modelName: remoteResolved.modelName,
@@ -325,37 +395,35 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       apiKeyAvailable: false,
       apiKeyDescription: info.envVar ? info.description : null,
       apiKeyUrl: info.envVar ? info.url : null,
-    };
+    });
   }
 
-  // 3. Check for native Anthropic models (no "/" in model ID)
-  if (!modelId.includes("/")) {
-    return {
-      category: "native-anthropic",
-      providerName: "Anthropic (Native)",
-      modelName: modelId,
+  // 6. Handle unknown providers (vendor/model format without known provider)
+  // Require explicit provider specification: openrouter@vendor/model
+  if (parsed.provider === "unknown") {
+    return addCommonFields({
+      category: "unknown",
+      providerName: "Unknown",
+      modelName: parsed.model,
       fullModelId: modelId,
-      requiredApiKeyEnvVar: null, // Claude Code handles its own auth
-      apiKeyAvailable: true,
+      requiredApiKeyEnvVar: null,
+      apiKeyAvailable: false,
       apiKeyDescription: null,
       apiKeyUrl: null,
-    };
+    });
   }
 
-  // 4. Default: Try OpenRouter for any model with "/"
-  // This handles cases like "google/gemini-3-pro-preview" when google/ prefix didn't match
-  const info = API_KEY_INFO.openrouter;
-
-  return {
-    category: "openrouter",
-    providerName: "OpenRouter",
-    modelName: modelId,
+  // 7. Fallback for any remaining cases (shouldn't normally reach here)
+  return addCommonFields({
+    category: "unknown",
+    providerName: "Unknown",
+    modelName: parsed.model,
     fullModelId: modelId,
-    requiredApiKeyEnvVar: info.envVar,
-    apiKeyAvailable: isApiKeyAvailable(info),
-    apiKeyDescription: info.description,
-    apiKeyUrl: info.url,
-  };
+    requiredApiKeyEnvVar: null,
+    apiKeyAvailable: false,
+    apiKeyDescription: null,
+    apiKeyUrl: null,
+  });
 }
 
 /**
@@ -389,6 +457,25 @@ export function getMissingKeyResolutions(resolutions: ProviderResolution[]): Pro
  * @returns Formatted error message
  */
 export function getMissingKeyError(resolution: ProviderResolution): string {
+  // Handle unknown provider
+  if (resolution.category === "unknown") {
+    const vendor = resolution.fullModelId.split("/")[0];
+    return [
+      `Error: Unknown provider for model "${resolution.fullModelId}"`,
+      "",
+      "Claudish doesn't recognize this model format. You have two options:",
+      "",
+      "1. Route through OpenRouter (requires OPENROUTER_API_KEY):",
+      `   claudish --model openrouter@${resolution.fullModelId} "task"`,
+      `   claudish --model or@${resolution.fullModelId} "task"`,
+      "",
+      "2. Use a provider with direct API support:",
+      "   google@gemini-2.0-flash, oai@gpt-4o, etc.",
+      "",
+      "See 'claudish --help' for full list of supported providers.",
+    ].join("\n");
+  }
+
   if (!resolution.requiredApiKeyEnvVar || resolution.apiKeyAvailable) {
     return ""; // No error needed
   }

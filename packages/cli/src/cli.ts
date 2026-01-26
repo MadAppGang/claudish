@@ -1,5 +1,5 @@
-import { ENV } from "@claudish/core";
-import type { ClaudishConfig } from "@claudish/core";
+import { ENV } from "./config.js";
+import type { ClaudishConfig } from "./types.js";
 import { loadModelInfo, getAvailableModels } from "./model-loader.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,13 +17,13 @@ export {
   isLocalModel,
   type ProviderCategory,
   type ProviderResolution,
-} from "@claudish/core";
+} from "./providers/provider-resolver.js";
 
 // Read version from package.json (with fallback for compiled binaries)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "3.11.0"; // Fallback version for compiled binaries
+let VERSION = "4.0.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -994,22 +994,51 @@ USAGE:
   claudish                                # Interactive mode (default, shows model selector)
   claudish [OPTIONS] <claude-args...>     # Single-shot mode (requires --model)
 
-MODEL ROUTING (prefix-based):
-  (no prefix)      OpenRouter (default)   claudish --model openai/gpt-5.2 "task"
-  g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
-  v/, vertex/      Vertex AI (OAuth)      claudish --model v/gemini-2.5-flash "task"
-  oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
-  mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
-  kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
-  glm/, zhipu/     GLM Direct API         claudish --model glm/glm-4.7 "task"
-  zai/             Z.AI Direct API        claudish --model zai/glm-4.7 "task"
-  oc/              OllamaCloud            claudish --model oc/gpt-oss:20b "task"
-  zen/             OpenCode Zen (free)    claudish --model zen/grok-code "task"
-  ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
-  lmstudio/        LM Studio (local)      claudish --model lmstudio/qwen "task"
-  vllm/            vLLM (local)           claudish --model vllm/model "task"
-  mlx/             MLX (local)            claudish --model mlx/model "task"
-  http://...       Custom endpoint        claudish --model http://localhost:8000/model "task"
+MODEL ROUTING:
+  New syntax: provider@model[:concurrency]
+    google@gemini-3-pro              Direct Google API (explicit)
+    openrouter@google/gemini-3-pro   OpenRouter (explicit)
+    oai@gpt-5.2                      Direct OpenAI API (shortcut)
+    ollama@llama3.2:3                Local Ollama with 3 concurrent requests
+    ollama@llama3.2:0                Local Ollama with no limits
+
+  Provider shortcuts:
+    g, gemini    -> Google Gemini     google@gemini-3-pro
+    oai          -> OpenAI Direct     oai@gpt-5.2
+    or           -> OpenRouter        or@openai/gpt-5.2
+    mm, mmax     -> MiniMax Direct    mm@MiniMax-M2.1
+    kimi, moon   -> Kimi Direct       kimi@kimi-k2-thinking-turbo
+    glm, zhipu   -> GLM Direct        glm@glm-4.7
+    zai          -> Z.AI Direct       zai@glm-4.7
+    oc           -> OllamaCloud       oc@llama-3.1
+    llama,lc,meta-> OllamaCloud       llama@llama-3.1
+    zen          -> OpenCode Zen      zen@grok-code
+    v, vertex    -> Vertex AI         v@gemini-2.5-flash
+    go           -> Gemini CodeAssist go@gemini-2.5-flash
+    poe          -> Poe               poe@GPT-4o
+    ollama       -> Ollama (local)    ollama@llama3.2
+    lms,lmstudio -> LM Studio (local) lms@qwen
+    vllm         -> vLLM (local)      vllm@model
+    mlx          -> MLX (local)       mlx@model
+
+  Native model auto-detection (when no provider specified):
+    google/*, gemini-*      -> Google API
+    openai/*, gpt-*, o1-*   -> OpenAI API
+    meta-llama/*, llama-*   -> OllamaCloud
+    minimax/*, abab-*       -> MiniMax API
+    moonshot/*, kimi-*      -> Kimi API
+    zhipu/*, glm-*          -> GLM API
+    poe:*                   -> Poe
+    anthropic/*, claude-*   -> Native Anthropic
+    (unknown vendor/)       -> Error (use openrouter@vendor/model)
+
+  Legacy syntax (deprecated, still works):
+    g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
+    oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
+    mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
+    kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
+    ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
+    http://...       Custom endpoint        claudish --model http://localhost:8000/model "task"
 
 OPTIONS:
   -i, --interactive        Run in interactive mode (default when no prompt given)
@@ -1135,56 +1164,56 @@ EXAMPLES:
   # Interactive mode with only FREE models
   claudish --free
 
-  # OpenRouter models (default)
-  claudish --model openai/gpt-5.2 "implement user authentication"
-  claudish --model deepseek/deepseek-v3.2 "add tests for login"
+  # New @ syntax - explicit provider routing
+  claudish --model google@gemini-3-pro "implement user authentication"
+  claudish --model openrouter@openai/gpt-5.2 "add tests for login"
+  claudish --model oai@gpt-5.2 "direct to OpenAI"
 
-  # Direct Gemini API (lower latency)
-  claudish --model g/gemini-2.0-flash "quick fix"
-  claudish --model gemini/gemini-2.5-pro "complex analysis"
+  # Native model auto-detection (provider detected from model name)
+  claudish --model gpt-4o "routes to OpenAI API (detected from model name)"
+  claudish --model llama-3.1-70b "routes to OllamaCloud (detected)"
+  claudish --model openrouter@deepseek/deepseek-r1 "explicit OpenRouter for unknown vendors"
+
+  # Direct Gemini API (multiple ways)
+  claudish --model google@gemini-2.0-flash "explicit Google"
+  claudish --model g@gemini-2.0-flash "shortcut"
+  claudish --model gemini-2.5-pro "auto-detected from model name"
 
   # Vertex AI (Google Cloud - supports Google + partner models)
-  # Express mode (API key):
-  VERTEX_API_KEY=... claudish --model v/gemini-2.5-flash "task"
-  # OAuth mode (gcloud auth):
-  VERTEX_PROJECT=my-project claudish --model v/gemini-2.5-flash "task"
-  # Partner models (MiniMax, Mistral on Vertex):
-  claudish --model vertex/minimaxai/minimax-m2-maas "task"
-  claudish --model vertex/mistralai/codestral-2 "write code"
+  VERTEX_API_KEY=... claudish --model v@gemini-2.5-flash "Express mode"
+  VERTEX_PROJECT=my-project claudish --model vertex@gemini-2.5-flash "OAuth mode"
 
   # Direct OpenAI API
-  claudish --model oai/gpt-4o "implement feature"
-  claudish --model oai/o1 "complex reasoning"
+  claudish --model oai@gpt-4o "implement feature"
+  claudish --model oai@o1 "complex reasoning"
 
   # Direct MiniMax API
-  claudish --model mmax/MiniMax-M2.1 "implement feature"
-  claudish --model mm/MiniMax-M2 "code review"
+  claudish --model mm@MiniMax-M2.1 "implement feature"
+  claudish --model mmax@MiniMax-M2 "code review"
 
   # Direct Kimi API (with reasoning support)
-  claudish --model kimi/kimi-k2-thinking-turbo "complex analysis"
-  claudish --model moonshot/kimi-k2-turbo-preview "implement feature"
+  claudish --model kimi@kimi-k2-thinking-turbo "complex analysis"
 
   # Direct GLM API
-  claudish --model glm/glm-4.7 "code generation"
-  claudish --model zhipu/glm-4-plus "complex task"
+  claudish --model glm@glm-4.7 "code generation"
 
   # OpenCode Zen (free models)
-  claudish --model zen/grok-code "implement feature"
-  claudish --model zen/glm-4.7-free "code review"
-  claudish --model zen/minimax-m2.1-free "complex task"
+  claudish --model zen@grok-code "implement feature"
 
-  # Local models (free, private)
-  claudish --model ollama/llama3.2 "code review"
-  claudish --model lmstudio/qwen2.5-coder "refactor"
+  # Local models with concurrency control
+  claudish --model ollama@llama3.2 "default sequential (1 at a time)"
+  claudish --model ollama@llama3.2:3 "allow 3 concurrent requests"
+  claudish --model ollama@llama3.2:0 "no limits (bypass queue)"
+  claudish --model lms@qwen2.5-coder "LM Studio shortcut"
 
-  # Per-role model mapping
-  claudish --model-opus openai/gpt-5.2 --model-sonnet deepseek/deepseek-v3.2 --model-haiku mmax/MiniMax-M2.1
+  # Per-role model mapping (works with all syntaxes)
+  claudish --model-opus oai@gpt-5.2 --model-sonnet google@gemini-3-pro --model-haiku mm@MiniMax-M2.1
 
   # Use stdin for large prompts (e.g., git diffs, code review)
-  echo "Review this code..." | claudish --stdin --model g/gemini-2.0-flash
+  echo "Review this code..." | claudish --stdin --model g@gemini-2.0-flash
   git diff | claudish --stdin --model openai/gpt-5.2 "Review these changes"
 
-  # Monitor mode - understand how Claude Code works (requires real Anthropic API key)
+  # Monitor mode - understand how Claude Code works
   claudish --monitor --debug "analyze code structure"
 
   # Disable auto-approve (require manual confirmation)

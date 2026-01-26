@@ -56,7 +56,12 @@ Shows model selector. Pick one, start a full session with that model.
 
 **Single-shot:**
 ```bash
-npx claudish@latest --model x-ai/grok-code-fast-1 "add error handling to api.ts"
+# Auto-detected routing (model name determines provider)
+npx claudish@latest --model gpt-4o "add error handling to api.ts"         # → OpenAI
+npx claudish@latest --model gemini-2.0-flash "quick review"               # → Google
+
+# Explicit provider routing (new @ syntax)
+npx claudish@latest --model openrouter@x-ai/grok-3-fast "complex task"    # → OpenRouter
 ```
 One task, result printed, exit. Perfect for scripts.
 
@@ -127,10 +132,14 @@ Now just run `claudish` directly.
 
 Quick test:
 ```bash
-claudish --model minimax/minimax-m2 "print hello world in python"
+# Auto-detected: gemini-* routes to Google API
+claudish --model gemini-2.0-flash "print hello world in python"
+
+# Or explicit provider routing
+claudish --model mm@MiniMax-M2 "print hello world in python"
 ```
 
-You should see MiniMax M2 write a Python hello world through Claude Code's interface.
+You should see the model write a Python hello world through Claude Code's interface.
 
 ---
 

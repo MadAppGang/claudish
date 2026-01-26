@@ -36,6 +36,7 @@ const localProviderAgent = new Agent({
 
 export interface LocalProviderOptions {
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size
+  concurrency?: number; // Concurrency limit (from model spec :N suffix, 0 = unlimited)
 }
 
 export class LocalProviderHandler implements ModelHandler {
@@ -50,6 +51,7 @@ export class LocalProviderHandler implements ModelHandler {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private options: LocalProviderOptions;
+  private concurrency?: number; // Concurrency limit from model spec (:N suffix)
 
   constructor(
     provider: LocalProvider,
@@ -61,6 +63,7 @@ export class LocalProviderHandler implements ModelHandler {
     this.modelName = modelName;
     this.port = port;
     this.options = options;
+    this.concurrency = options.concurrency;
     this.adapterManager = new AdapterManager(modelName);
     this.middlewareManager = new MiddlewareManager();
     this.middlewareManager.initialize().catch((err) => {
@@ -81,6 +84,9 @@ export class LocalProviderHandler implements ModelHandler {
     this.writeTokenFile(0, 0);
     if (options.summarizeTools) {
       log(`[LocalProvider:${provider.name}] Tool summarization enabled`);
+    }
+    if (this.concurrency !== undefined) {
+      log(`[LocalProvider:${provider.name}] Concurrency override: ${this.concurrency === 0 ? 'unlimited' : this.concurrency}`);
     }
   }
 
@@ -289,9 +295,6 @@ export class LocalProviderHandler implements ModelHandler {
         custom: "Custom",
       };
 
-      // Strip provider prefix from model name for cleaner display
-      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
-
       const data = {
         input_tokens: this.sessionInputTokens,
         output_tokens: this.sessionOutputTokens,
@@ -300,7 +303,6 @@ export class LocalProviderHandler implements ModelHandler {
         context_window: this.contextWindow,
         context_left_percent: leftPct,
         provider_name: providerNameMap[this.provider.name] || "Local",
-        model_name: displayModelName,
         updated_at: Date.now(),
       };
 
@@ -596,8 +598,9 @@ If you cannot use structured tool_calls, format as JSON:
         });
 
       // Use queue for concurrency control if enabled, otherwise direct fetch
+      // Pass concurrency override from model spec (:N suffix)
       const response = LocalModelQueue.isEnabled()
-        ? await LocalModelQueue.getInstance().enqueue(doFetch, this.provider.name)
+        ? await LocalModelQueue.getInstance().enqueue(doFetch, this.provider.name, this.concurrency)
         : await doFetch();
 
       clearTimeout(timeoutId);
