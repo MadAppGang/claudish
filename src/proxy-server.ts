@@ -242,10 +242,12 @@ export async function createProxyServer(
     if (monitorMode) return nativeHandler;
 
     // 2. Resolve target model based on mappings or defaults
-    let target = model || requestedModel; // Start with global default or request
+    // Priority: role mappings > requested model > default model
+    let target = requestedModel || model; // Respect request, fallback to default
 
     const req = requestedModel.toLowerCase();
     if (modelMap) {
+      // Role mappings take highest priority
       if (req.includes("opus") && modelMap.opus) target = modelMap.opus;
       else if (req.includes("sonnet") && modelMap.sonnet) target = modelMap.sonnet;
       else if (req.includes("haiku") && modelMap.haiku) target = modelMap.haiku;

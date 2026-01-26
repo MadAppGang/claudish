@@ -189,17 +189,16 @@ async function runCli() {
       cliConfig.port || (await findAvailablePort(DEFAULT_PORT_RANGE.start, DEFAULT_PORT_RANGE.end));
 
     // Start proxy server
-    // When --model is specified, use it for all requests (skip profile mappings)
-    // Profile mappings only apply when no explicit model is set
+    // explicitModel is the default/fallback model
+    // modelMap provides per-role overrides (opus/sonnet/haiku) that take priority
     const explicitModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
-    const modelMap = explicitModel
-      ? undefined
-      : {
-          opus: cliConfig.modelOpus,
-          sonnet: cliConfig.modelSonnet,
-          haiku: cliConfig.modelHaiku,
-          subagent: cliConfig.modelSubagent,
-        };
+    // Always pass modelMap - role mappings should work even when a default model is set
+    const modelMap = {
+      opus: cliConfig.modelOpus,
+      sonnet: cliConfig.modelSonnet,
+      haiku: cliConfig.modelHaiku,
+      subagent: cliConfig.modelSubagent,
+    };
 
     const proxy = await createProxyServer(
       port,
