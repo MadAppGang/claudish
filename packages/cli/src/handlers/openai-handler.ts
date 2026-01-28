@@ -122,7 +122,8 @@ export class OpenAIHandler implements ModelHandler {
 
       // Check if this is a free model
       const pricing = this.getPricing();
-      const isFreeModel = pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
+      const isFreeModel =
+        pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
 
       const data: Record<string, any> = {
         input_tokens: input,
@@ -205,7 +206,12 @@ export class OpenAIHandler implements ModelHandler {
   private convertMessages(claudeRequest: any): any[] {
     // OllamaCloud expects string content, not arrays
     const useSimpleFormat = this.provider.name === "ollamacloud";
-    return convertMessagesToOpenAI(claudeRequest, `openai/${this.modelName}`, filterIdentity, useSimpleFormat);
+    return convertMessagesToOpenAI(
+      claudeRequest,
+      `openai/${this.modelName}`,
+      filterIdentity,
+      useSimpleFormat
+    );
   }
 
   /**
@@ -321,8 +327,7 @@ export class OpenAIHandler implements ModelHandler {
         result.push({
           type: "function_call_output",
           call_id: msg.tool_call_id,
-          output:
-            typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          output: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
         });
         continue;
       }
@@ -493,14 +498,18 @@ export class OpenAIHandler implements ModelHandler {
     let isClosed = false;
 
     // Track function calls being streamed
-    const functionCalls: Map<string, { name: string; arguments: string; index: number; claudeId?: string }> =
-      new Map();
+    const functionCalls: Map<
+      string,
+      { name: string; arguments: string; index: number; claudeId?: string }
+    > = new Map();
 
     const stream = new ReadableStream({
       start: async (controller) => {
         const send = (event: string, data: any) => {
           if (!isClosed) {
-            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+            controller.enqueue(
+              encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+            );
           }
         };
 
@@ -588,7 +597,9 @@ export class OpenAIHandler implements ModelHandler {
                 } else if (event.type === "response.output_item.added") {
                   // Log the item type for debugging
                   if (getLogLevel() === "debug" && event.item?.type) {
-                    log(`[OpenAIHandler] Output item added: type=${event.item.type}, id=${event.item.id || event.item.call_id || "unknown"}`);
+                    log(
+                      `[OpenAIHandler] Output item added: type=${event.item.type}, id=${event.item.id || event.item.call_id || "unknown"}`
+                    );
                   }
 
                   // Handle function_call items
@@ -599,11 +610,15 @@ export class OpenAIHandler implements ModelHandler {
                     const itemId = event.item.id; // fc_...
                     const openaiCallId = event.item.call_id || itemId;
                     // Transform to Claude-style ID (toolu_...) for compatibility
-                    const callId = openaiCallId.startsWith("toolu_") ? openaiCallId : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
+                    const callId = openaiCallId.startsWith("toolu_")
+                      ? openaiCallId
+                      : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
                     const fnName = event.item.name || "";
                     const fnIndex = blockIndex + functionCalls.size + (hasTextContent ? 1 : 0);
 
-                    log(`[OpenAIHandler] Function call: itemId=${itemId}, openaiCallId=${openaiCallId}, claudeId=${callId}, name=${fnName}, index=${fnIndex}`);
+                    log(
+                      `[OpenAIHandler] Function call: itemId=${itemId}, openaiCallId=${openaiCallId}, claudeId=${callId}, name=${fnName}, index=${fnIndex}`
+                    );
 
                     // Create the function call data
                     const fnCallData = {
@@ -670,7 +685,9 @@ export class OpenAIHandler implements ModelHandler {
 
                   // Debug: log the lookup
                   if (getLogLevel() === "debug" && !functionCalls.has(callId)) {
-                    log(`[OpenAIHandler] Argument delta lookup failed: callId=${callId}, stored keys=[${Array.from(functionCalls.keys()).join(", ")}]`);
+                    log(
+                      `[OpenAIHandler] Argument delta lookup failed: callId=${callId}, stored keys=[${Array.from(functionCalls.keys()).join(", ")}]`
+                    );
                   }
 
                   const fnCall = functionCalls.get(callId);
@@ -691,24 +708,22 @@ export class OpenAIHandler implements ModelHandler {
                     const callId = event.item.call_id || event.item.id;
                     const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                     if (fnCall) {
-                      send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
+                      send("content_block_stop", {
+                        type: "content_block_stop",
+                        index: fnCall.index,
+                      });
                     }
                   }
                 } else if (event.type === "response.incomplete") {
                   // Response was cut off (token limit, content filter, etc.)
                   // Log the reason and continue - we'll still send proper termination events
-                  log(
-                    `[OpenAIHandler] Response incomplete: ${event.reason || "unknown reason"}`
-                  );
+                  log(`[OpenAIHandler] Response incomplete: ${event.reason || "unknown reason"}`);
                   // Extract any available usage data
                   if (event.response?.usage) {
                     inputTokens = event.response.usage.input_tokens || inputTokens;
                     outputTokens = event.response.usage.output_tokens || outputTokens;
                   }
-                } else if (
-                  event.type === "response.completed" ||
-                  event.type === "response.done"
-                ) {
+                } else if (event.type === "response.completed" || event.type === "response.done") {
                   // Extract usage from completed/done event
                   if (event.response?.usage) {
                     inputTokens = event.response.usage.input_tokens || 0;
@@ -723,6 +738,58 @@ export class OpenAIHandler implements ModelHandler {
                     log(
                       `[OpenAIHandler] Responses API usage (alt): input=${inputTokens}, output=${outputTokens}`
                     );
+                  }
+                } else if (event.type === "error") {
+                  // OpenAI Responses API error event
+                  const errMsg = event.error?.message || event.message || "Unknown API error";
+                  const errCode = event.error?.code || event.code || "";
+                  log(`[OpenAIHandler] Responses API error: ${errCode} - ${errMsg}`);
+
+                  // Close any open content blocks
+                  if (hasTextContent) {
+                    send("content_block_stop", { type: "content_block_stop", index: blockIndex });
+                    hasTextContent = false;
+                  }
+                  for (const [, fnCall] of functionCalls) {
+                    send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
+                  }
+
+                  // Send error as text so the user sees it
+                  const errorIdx = blockIndex + functionCalls.size + (hasToolUse ? 1 : 0);
+                  send("content_block_start", {
+                    type: "content_block_start",
+                    index: errorIdx,
+                    content_block: { type: "text", text: "" },
+                  });
+                  send("content_block_delta", {
+                    type: "content_block_delta",
+                    index: errorIdx,
+                    delta: { type: "text_delta", text: `\n\n[API Error: ${errCode} ${errMsg}]` },
+                  });
+                  send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+
+                  // Properly terminate the stream
+                  send("message_delta", {
+                    type: "message_delta",
+                    delta: { stop_reason: "end_turn", stop_sequence: null },
+                    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+                  });
+                  send("message_stop", { type: "message_stop" });
+                  isClosed = true;
+                  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+                  this.updateTokenTracking(inputTokens, outputTokens);
+                  controller.close();
+                  return;
+                } else if (event.type === "response.failed") {
+                  // Extract error details from failed response
+                  const failErr = event.response?.error;
+                  const failMsg = failErr?.message || "Response failed";
+                  const failCode = failErr?.code || "";
+                  log(`[OpenAIHandler] Response failed: ${failCode} - ${failMsg}`);
+                  // Extract any available usage
+                  if (event.response?.usage) {
+                    inputTokens = event.response.usage.input_tokens || inputTokens;
+                    outputTokens = event.response.usage.output_tokens || outputTokens;
                   }
                 }
               } catch (parseError) {
@@ -771,9 +838,47 @@ export class OpenAIHandler implements ModelHandler {
             clearInterval(pingInterval);
             pingInterval = null;
           }
-          isClosed = true;
           log(`[OpenAIHandler] Responses streaming error: ${error}`);
-          controller.error(error);
+
+          // Send proper termination events so Claude Code doesn't get stuck
+          if (!isClosed) {
+            try {
+              // Close any open content blocks
+              if (hasTextContent) {
+                send("content_block_stop", { type: "content_block_stop", index: blockIndex });
+              }
+              for (const [, fnCall] of functionCalls) {
+                send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
+              }
+
+              // Send error as visible text
+              const errorIdx = blockIndex + functionCalls.size + (hasToolUse ? 1 : 0);
+              send("content_block_start", {
+                type: "content_block_start",
+                index: errorIdx,
+                content_block: { type: "text", text: "" },
+              });
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: errorIdx,
+                delta: { type: "text_delta", text: `\n\n[Stream error: ${error}]` },
+              });
+              send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+
+              send("message_delta", {
+                type: "message_delta",
+                delta: { stop_reason: "end_turn", stop_sequence: null },
+                usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+              });
+              send("message_stop", { type: "message_stop" });
+            } catch (sendErr) {
+              log(`[OpenAIHandler] Error sending termination events: ${sendErr}`);
+            }
+
+            isClosed = true;
+            this.updateTokenTracking(inputTokens, outputTokens);
+            try { controller.close(); } catch { /* already closed */ }
+          }
         }
       },
     });
@@ -873,7 +978,8 @@ export class OpenAIHandler implements ModelHandler {
           {
             error: {
               type: "timeout_error",
-              message: "Request to OpenAI API timed out. Check your network connection to api.openai.com",
+              message:
+                "Request to OpenAI API timed out. Check your network connection to api.openai.com",
             },
           },
           504

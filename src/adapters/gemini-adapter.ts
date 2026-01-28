@@ -23,6 +23,7 @@
  */
 
 import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
+import { truncateToolName } from "./tool-name-utils";
 import { log } from "../logger";
 
 /**
@@ -208,7 +209,16 @@ export class GeminiAdapter extends BaseModelAdapter {
   }
 
   /**
-   * Handle request preparation - specifically for mapping reasoning parameters
+   * Gemini enforces a 64-character limit on function declaration names.
+   */
+  override getToolNameLimit(): number | null {
+    return 64;
+  }
+
+  /**
+   * Handle request preparation:
+   * - Map reasoning parameters (thinking budget -> thinking_config/thinking_level)
+   * - Truncate tool names that exceed Gemini's 64-char limit
    */
   override prepareRequest(request: any, originalRequest: any): any {
     if (originalRequest.thinking) {
@@ -237,7 +247,65 @@ export class GeminiAdapter extends BaseModelAdapter {
       // Cleanup: Remove raw thinking object
       delete request.thinking;
     }
+
+    // Truncate tool names in Gemini format
+    this.truncateGeminiToolNames(request);
+
+    // Truncate tool names in message history (contents array)
+    if (request.contents) {
+      this.truncateGeminiToolNamesInContents(request.contents);
+    }
+
     return request;
+  }
+
+  /**
+   * Truncate tool names in Gemini's functionDeclarations format.
+   * Gemini tools are structured as: { tools: [{ functionDeclarations: [{ name, ... }] }] }
+   */
+  private truncateGeminiToolNames(request: any): void {
+    const limit = this.getToolNameLimit();
+    if (!limit || !request.tools) return;
+
+    for (const toolGroup of request.tools) {
+      if (!toolGroup.functionDeclarations) continue;
+      for (const fn of toolGroup.functionDeclarations) {
+        if (fn.name && fn.name.length > limit) {
+          const truncated = truncateToolName(fn.name, limit);
+          this.toolNameMap.set(truncated, fn.name);
+          fn.name = truncated;
+        }
+      }
+    }
+  }
+
+  /**
+   * Truncate tool names in Gemini message history (contents array).
+   * Handles functionCall.name and functionResponse.name in message parts.
+   */
+  private truncateGeminiToolNamesInContents(contents: any[]): void {
+    const limit = this.getToolNameLimit();
+    if (!limit) return;
+
+    for (const msg of contents) {
+      if (!msg.parts) continue;
+      for (const part of msg.parts) {
+        if (part.functionCall?.name && part.functionCall.name.length > limit) {
+          const truncated = truncateToolName(part.functionCall.name, limit);
+          if (!this.toolNameMap.has(truncated)) {
+            this.toolNameMap.set(truncated, part.functionCall.name);
+          }
+          part.functionCall.name = truncated;
+        }
+        if (part.functionResponse?.name && part.functionResponse.name.length > limit) {
+          const truncated = truncateToolName(part.functionResponse.name, limit);
+          if (!this.toolNameMap.has(truncated)) {
+            this.toolNameMap.set(truncated, part.functionResponse.name);
+          }
+          part.functionResponse.name = truncated;
+        }
+      }
+    }
   }
 
   /**
@@ -288,6 +356,7 @@ export class GeminiAdapter extends BaseModelAdapter {
    * Clear stored signatures and reasoning state (call between requests)
    */
   reset(): void {
+    super.reset();
     this.thoughtSignatures.clear();
     this.resetReasoningState();
   }

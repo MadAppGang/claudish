@@ -142,6 +142,7 @@ export class GrokAdapter extends BaseModelAdapter {
    * Reset internal state (useful between requests)
    */
   reset(): void {
+    super.reset();
     this.xmlBuffer = "";
   }
 }

@@ -109,11 +109,24 @@ const getRemoteProviders = (): RemoteProvider[] => [
   },
   {
     name: "kimi",
-    baseUrl:
-      process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "https://api.moonshot.ai",
+    baseUrl: process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "https://api.moonshot.ai",
     apiPath: "/anthropic/v1/messages",
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     prefixes: ["kimi/", "moonshot/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: true,
+    },
+  },
+  {
+    name: "kimi-coding",
+    baseUrl: "https://api.kimi.com/coding/v1",
+    apiPath: "/messages",
+    apiKeyEnvVar: "",  // OAuth-only, no API key env var
+    prefixes: ["kc/"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -209,6 +222,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     openrouter: "openrouter",
     minimax: "minimax",
     kimi: "kimi",
+    "kimi-coding": "kimi-coding",
     glm: "glm",
     zai: "zai",
     ollamacloud: "ollamacloud",

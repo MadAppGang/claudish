@@ -60,7 +60,7 @@ function loadRecommendedModelsJSON(): RecommendedModelsJSON {
   if (!existsSync(jsonPath)) {
     throw new Error(
       `recommended-models.json not found at ${jsonPath}. ` +
-      `Run 'claudish --update-models' to fetch the latest model list.`
+        `Run 'claudish --update-models' to fetch the latest model list.`
     );
   }
 
@@ -114,9 +114,7 @@ export function getAvailableModels(): OpenRouterModel[] {
   }
 
   const data = loadRecommendedModelsJSON();
-  const modelIds = data.models
-    .sort((a, b) => a.priority - b.priority)
-    .map((m) => m.id);
+  const modelIds = data.models.sort((a, b) => a.priority - b.priority).map((m) => m.id);
 
   const result = [...modelIds, "custom"];
   _cachedModelIds = result;
@@ -125,6 +123,33 @@ export function getAvailableModels(): OpenRouterModel[] {
 
 // Cache for OpenRouter API response
 let _cachedOpenRouterModels: any[] | null = null;
+
+/**
+ * Get the cached OpenRouter models list (if already fetched)
+ * Returns null if not yet fetched
+ */
+export function getCachedOpenRouterModels(): any[] | null {
+  return _cachedOpenRouterModels;
+}
+
+/**
+ * Ensure the OpenRouter models list is loaded (fetches if not cached)
+ * Returns the models array or empty array on failure
+ */
+export async function ensureOpenRouterModelsLoaded(): Promise<any[]> {
+  if (_cachedOpenRouterModels) return _cachedOpenRouterModels;
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/models");
+    if (response.ok) {
+      const data: any = await response.json();
+      _cachedOpenRouterModels = data.data || [];
+      return _cachedOpenRouterModels!;
+    }
+  } catch {
+    // Silent fail — caller handles null/empty
+  }
+  return [];
+}
 
 /**
  * Fetch exact context window size from OpenRouter API

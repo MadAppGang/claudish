@@ -261,13 +261,12 @@ export class GeminiCodeAssistHandler implements ModelHandler {
   // Streaming Response Handler
   // ============================================================================
 
-  private handleStreamingResponse(c: Context, response: Response, _claudeRequest: any): Response {
+  private handleStreamingResponse(c: Context, response: Response, _claudeRequest: any, toolNameMap?: Map<string, string>): Response {
     let isClosed = false;
     let ping: NodeJS.Timeout | null = null;
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const adapter = this.adapterManager.getAdapter();
-    if (typeof adapter.reset === "function") adapter.reset();
 
     return c.body(
       new ReadableStream({
@@ -447,10 +446,13 @@ export class GeminiCodeAssistHandler implements ModelHandler {
 
                         const toolIdx = curIdx++;
                         const toolId = `toolu_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                        // Restore truncated tool name to original if needed
+                        const rawFnName = part.functionCall.name;
+                        const fnName = toolNameMap?.get(rawFnName) || rawFnName;
 
                         tools.set(toolIdx, {
                           id: toolId,
-                          name: part.functionCall.name,
+                          name: fnName,
                           args: part.functionCall.args || {},
                         });
 
@@ -460,7 +462,7 @@ export class GeminiCodeAssistHandler implements ModelHandler {
                           content_block: {
                             type: "tool_use",
                             id: toolId,
-                            name: part.functionCall.name,
+                            name: fnName,
                             input: {},
                           },
                         });
@@ -539,6 +541,15 @@ export class GeminiCodeAssistHandler implements ModelHandler {
 
       // 3. Build Payload
       const vertexPayload = this.buildVertexPayload(claudeRequest);
+
+      // Get adapter and prepare request (adapter truncates tool names if needed)
+      const adapter = this.adapterManager.getAdapter();
+      if (typeof adapter.reset === "function") adapter.reset();
+      adapter.prepareRequest(vertexPayload, claudeRequest);
+
+      // Get tool name map from adapter (populated during prepareRequest)
+      const toolNameMap = adapter.getToolNameMap();
+
       const requestBody = {
         model: this.modelName,
         project: projectId,
@@ -588,7 +599,7 @@ export class GeminiCodeAssistHandler implements ModelHandler {
         log(`[GeminiCodeAssist] Request succeeded after ${attempts} attempts`);
       }
 
-      return this.handleStreamingResponse(c, response, claudeRequest);
+      return this.handleStreamingResponse(c, response, claudeRequest, toolNameMap);
     } catch (e: any) {
       log(`[GeminiCodeAssist] Error: ${e.message}`);
 

@@ -86,7 +86,9 @@ export class LocalProviderHandler implements ModelHandler {
       log(`[LocalProvider:${provider.name}] Tool summarization enabled`);
     }
     if (this.concurrency !== undefined) {
-      log(`[LocalProvider:${provider.name}] Concurrency override: ${this.concurrency === 0 ? 'unlimited' : this.concurrency}`);
+      log(
+        `[LocalProvider:${provider.name}] Concurrency override: ${this.concurrency === 0 ? "unlimited" : this.concurrency}`
+      );
     }
   }
 

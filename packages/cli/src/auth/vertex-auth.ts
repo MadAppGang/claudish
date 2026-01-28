@@ -97,7 +97,9 @@ export class VertexAuthManager {
     const saToken = await this.tryServiceAccount();
     if (saToken) {
       this.cachedToken = saToken;
-      log(`[VertexAuth] Service account token valid until ${new Date(saToken.expiresAt).toISOString()}`);
+      log(
+        `[VertexAuth] Service account token valid until ${new Date(saToken.expiresAt).toISOString()}`
+      );
       return saToken.token;
     }
 

@@ -229,7 +229,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
           // See: https://ai.google.dev/gemini-api/docs/thought-signatures
           if (!thoughtSignature) {
             thoughtSignature = "skip_thought_signature_validator";
-            log(`[BaseGeminiHandler:${this.modelName}] Using dummy thoughtSignature for tool ${block.name} (${block.id})`);
+            log(
+              `[BaseGeminiHandler:${this.modelName}] Using dummy thoughtSignature for tool ${block.name} (${block.id})`
+            );
           }
 
           // Build the function call part
@@ -553,7 +555,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
                         // This is REQUIRED when thinking is enabled - Gemini validates signatures on subsequent requests
                         const thoughtSignature = part.thoughtSignature;
                         if (thoughtSignature) {
-                          log(`[BaseGeminiHandler:${modelName}] Captured thoughtSignature for tool ${t.name} (${t.id})`);
+                          log(
+                            `[BaseGeminiHandler:${modelName}] Captured thoughtSignature for tool ${t.name} (${t.id})`
+                          );
                         }
                         toolCallMap.set(t.id, {
                           name: t.name,
@@ -715,7 +719,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
 
     if (!response.ok) {
       const errorText = response.status === 429 ? lastErrorText : await response.text();
-      log(`[BaseGeminiHandler] API error ${response.status} after ${attempts} attempt(s): ${errorText}`);
+      log(
+        `[BaseGeminiHandler] API error ${response.status} after ${attempts} attempt(s): ${errorText}`
+      );
       return c.json({ error: errorText }, response.status as any);
     }
 

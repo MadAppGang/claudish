@@ -49,13 +49,15 @@ process.stdin.on('end', () => {
     const model = process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
     const isLocal = process.env.CLAUDISH_IS_LOCAL === 'true';
 
-    let isFree = false, isEstimated = false;
+    let isFree = false, isSubscription = false, isEstimated = false, providerName = '';
     try {
       const tokens = JSON.parse(fs.readFileSync('${escapedTokenPath}', 'utf-8'));
       cost = tokens.total_cost || 0;
       ctx = tokens.context_left_percent || 100;
       isFree = tokens.is_free || false;
+      isSubscription = tokens.is_subscription || false;
       isEstimated = tokens.is_estimated || false;
+      providerName = tokens.provider_name || '';
     } catch (e) {
       try {
         const json = JSON.parse(input);
@@ -66,6 +68,8 @@ process.stdin.on('end', () => {
     let costDisplay;
     if (isLocal) {
       costDisplay = 'LOCAL';
+    } else if (isSubscription) {
+      costDisplay = 'SUB';
     } else if (isFree) {
       costDisplay = 'FREE';
     } else if (isEstimated) {
@@ -73,7 +77,8 @@ process.stdin.on('end', () => {
     } else {
       costDisplay = '$' + cost.toFixed(3);
     }
-    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${model}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
+    const modelDisplay = providerName ? providerName + ' ' + model : model;
+    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
   } catch (e) {
     console.log('claudish');
   }
@@ -127,7 +132,7 @@ function createTempSettingsFile(modelDisplay: string, port: string): string {
     const BOLD = "\\033[1m";
 
     // Both cost and context percentage come from our token file
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && IS_FREE="false" && IS_EST="false" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$CLAUDISH_ACTIVE_MODEL_NAME" "$COST_DISPLAY" "$CTX"`;
+    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && IS_FREE="false" && IS_SUB="false" && IS_EST="false" && PROVIDER="" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_SUB=$(echo "$TOKENS" | grep -o '"is_subscription":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d'"' -f4); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_SUB" = "true" ]; then COST_DISPLAY="SUB"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && MODEL_DISPLAY="$CLAUDISH_ACTIVE_MODEL_NAME" && if [ ! -z "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX"`;
   }
 
   const settings = {

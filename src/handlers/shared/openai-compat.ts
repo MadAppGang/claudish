@@ -188,7 +188,10 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
           toolCalls.push({
             id: block.id,
             type: "function",
-            function: { name: block.name, arguments: JSON.stringify(block.input) },
+            function: {
+              name: block.name, // No truncation here - adapter handles it in prepareRequest()
+              arguments: JSON.stringify(block.input),
+            },
           });
         }
       }
@@ -212,14 +215,16 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
 }
 
 /**
- * Convert Claude tools to OpenAI function format
+ * Convert Claude tools to OpenAI function format.
+ * Returns the converted tools array. Tool name truncation is handled
+ * by the model adapter in prepareRequest(), not here.
  */
 export function convertToolsToOpenAI(req: any, summarize = false): any[] {
   return (
     req.tools?.map((tool: any) => ({
       type: "function",
       function: {
-        name: tool.name,
+        name: tool.name, // No truncation here - adapter handles it
         description: summarize
           ? summarizeToolDescription(tool.name, tool.description)
           : tool.description,
@@ -333,7 +338,8 @@ export function createStreamingResponseHandler(
   target: string,
   middlewareManager: any,
   onTokenUpdate?: (input: number, output: number) => void,
-  toolSchemas?: any[] // Tool schemas for validation
+  toolSchemas?: any[], // Tool schemas for validation
+  toolNameMap?: Map<string, string> // Map from truncated tool names back to originals
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -611,7 +617,7 @@ export function createStreamingResponseHandler(
                           }
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
-                            name: tc.function.name,
+                            name: toolNameMap?.get(tc.function.name) || tc.function.name,
                             blockIndex: state.curIdx++,
                             started: false,
                             closed: false,

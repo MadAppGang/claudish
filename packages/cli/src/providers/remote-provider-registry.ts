@@ -285,10 +285,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
       MOONSHOT_API_KEY:
         "export MOONSHOT_API_KEY='your-key' (get from https://platform.moonshot.cn/)",
       ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
-      OLLAMA_API_KEY:
-        "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
-      OPENCODE_API_KEY:
-        "export OPENCODE_API_KEY='your-key' (get from https://opencode.ai/)",
+      OLLAMA_API_KEY: "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
+      OPENCODE_API_KEY: "export OPENCODE_API_KEY='your-key' (get from https://opencode.ai/)",
     };
 
     const example = examples[provider.apiKeyEnvVar] || `export ${provider.apiKeyEnvVar}='your-key'`;

@@ -363,10 +363,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   }
 
   const promptMessage =
-    message ||
-    (freeOnly
-      ? "Select a FREE model:"
-      : "Select a model (type to search):");
+    message || (freeOnly ? "Select a FREE model:" : "Select a model (type to search):");
 
   const selected = await search<string>({
     message: promptMessage,

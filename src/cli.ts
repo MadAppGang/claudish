@@ -23,7 +23,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.0.6"; // Fallback version for compiled binaries
+let VERSION = "4.1.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -1115,6 +1115,8 @@ UPDATE:
 AUTHENTICATION:
   --gemini-login           Login to Gemini Code Assist via OAuth (for go@ prefix)
   --gemini-logout          Clear Gemini OAuth credentials
+  --kimi-login             Login to Kimi/Moonshot AI via OAuth (for kimi@ prefix)
+  --kimi-logout            Clear Kimi OAuth credentials
 
 MODEL MAPPING (per-role override):
   --model-opus <model>     Model for Opus role (planning, complex tasks)

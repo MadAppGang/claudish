@@ -163,7 +163,9 @@ export async function fetchWithRetry(
 
       // Check if this is a terminal quota limit (daily limit)
       if (isTerminalQuotaLimit(lastErrorText)) {
-        log(`${logPrefix} Terminal quota limit detected (daily quota exhausted). Failing immediately.`);
+        log(
+          `${logPrefix} Terminal quota limit detected (daily quota exhausted). Failing immediately.`
+        );
         break; // Exit retry loop, return 429 to caller
       }
 

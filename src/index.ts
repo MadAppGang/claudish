@@ -14,6 +14,8 @@ const firstArg = args[0];
 // Auth commands (--gemini-login, --gemini-logout)
 const isGeminiLogin = args.includes("--gemini-login");
 const isGeminiLogout = args.includes("--gemini-logout");
+const isKimiLogin = args.includes("--kimi-login");
+const isKimiLogout = args.includes("--kimi-logout");
 
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
@@ -42,6 +44,33 @@ if (isMcpMode) {
       process.exit(0);
     } catch (error) {
       console.error("❌ Gemini OAuth logout failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+} else if (isKimiLogin) {
+  // Kimi OAuth login (Device Authorization Grant)
+  import("./auth/kimi-oauth.js").then(async ({ KimiOAuth }) => {
+    try {
+      const oauth = KimiOAuth.getInstance();
+      await oauth.login();
+      console.log("\n✅ Kimi OAuth login successful!");
+      console.log("You can now use Kimi with: claudish --model kimi@kimi-k2-thinking-turbo");
+      process.exit(0);
+    } catch (error) {
+      console.error("\n❌ Kimi OAuth login failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+} else if (isKimiLogout) {
+  // Kimi OAuth logout
+  import("./auth/kimi-oauth.js").then(async ({ KimiOAuth }) => {
+    try {
+      const oauth = KimiOAuth.getInstance();
+      await oauth.logout();
+      console.log("✅ Kimi OAuth credentials cleared.");
+      process.exit(0);
+    } catch (error) {
+      console.error("❌ Kimi OAuth logout failed:", error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
@@ -134,6 +163,42 @@ async function runCli() {
       console.error("Use --model <model> flag or set CLAUDISH_MODEL environment variable");
       console.error("Try: claudish --list-models");
       process.exit(1);
+    }
+
+    // === Kimi Coding OAuth Auto-Login ===
+    // If any model routes to kimi-coding, ensure OAuth credentials exist
+    if (!cliConfig.monitor) {
+      const { parseModelSpec } = await import("./providers/model-parser.js");
+      const allModels = [
+        cliConfig.model,
+        cliConfig.modelOpus,
+        cliConfig.modelSonnet,
+        cliConfig.modelHaiku,
+        cliConfig.modelSubagent,
+      ].filter((m): m is string => typeof m === "string");
+
+      const needsKimiCoding = allModels.some(
+        (m) => parseModelSpec(m).provider === "kimi-coding"
+      );
+
+      if (needsKimiCoding) {
+        const { KimiOAuth } = await import("./auth/kimi-oauth.js");
+        const oauth = KimiOAuth.getInstance();
+        if (!oauth.hasCredentials()) {
+          if (!cliConfig.quiet) {
+            console.log("[claudish] Kimi Coding requires OAuth login. Starting login flow...\n");
+          }
+          try {
+            await oauth.login();
+            if (!cliConfig.quiet) {
+              console.log("\n[claudish] Kimi OAuth login successful!\n");
+            }
+          } catch (error) {
+            console.error("\nKimi OAuth login failed:", error instanceof Error ? error.message : error);
+            process.exit(1);
+          }
+        }
+      }
     }
 
     // === API Key Validation ===

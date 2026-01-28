@@ -1,6 +1,6 @@
 {
   "name": "claudish",
-  "version": "4.0.6",
+  "version": "4.1.0",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,12 +33,7 @@
     "bun-types": "^1.3.6",
     "typescript": "^5.9.3"
   },
-  "files": [
-    "dist/",
-    "AI_AGENT_GUIDE.md",
-    "recommended-models.json",
-    "skills/"
-  ],
+  "files": ["dist/", "AI_AGENT_GUIDE.md", "recommended-models.json", "skills/"],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

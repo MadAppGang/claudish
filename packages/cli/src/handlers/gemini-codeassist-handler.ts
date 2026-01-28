@@ -572,7 +572,9 @@ export class GeminiCodeAssistHandler implements ModelHandler {
 
       if (!response.ok) {
         const errorText = response.status === 429 ? lastErrorText : await response.text();
-        log(`[GeminiCodeAssist] API error ${response.status} after ${attempts} attempt(s): ${errorText}`);
+        log(
+          `[GeminiCodeAssist] API error ${response.status} after ${attempts} attempt(s): ${errorText}`
+        );
         return c.json(
           {
             error: {

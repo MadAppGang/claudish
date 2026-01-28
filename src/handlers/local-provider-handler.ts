@@ -86,7 +86,9 @@ export class LocalProviderHandler implements ModelHandler {
       log(`[LocalProvider:${provider.name}] Tool summarization enabled`);
     }
     if (this.concurrency !== undefined) {
-      log(`[LocalProvider:${provider.name}] Concurrency override: ${this.concurrency === 0 ? 'unlimited' : this.concurrency}`);
+      log(
+        `[LocalProvider:${provider.name}] Concurrency override: ${this.concurrency === 0 ? "unlimited" : this.concurrency}`
+      );
     }
   }
 
@@ -545,10 +547,13 @@ If you cannot use structured tool_calls, format as JSON:
       }
     }
 
-    // Apply adapter transformations
+    // Apply adapter transformations (adapter truncates tool names if needed)
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(openAIPayload, claudeRequest);
+
+    // Get tool name map from adapter (populated during prepareRequest)
+    const toolNameMap = adapter.getToolNameMap();
 
     // Strip parameters that local providers don't support
     // These are cloud-API-specific (e.g., Qwen API's enable_thinking, thinking_budget)
@@ -627,7 +632,8 @@ If you cannot use structured tool_calls, format as JSON:
           target,
           this.middlewareManager,
           (input, output) => this.writeTokenFile(input, output),
-          claudeRequest.tools // Pass tool schemas for validation
+          claudeRequest.tools, // Pass tool schemas for validation
+          toolNameMap
         );
       }
 

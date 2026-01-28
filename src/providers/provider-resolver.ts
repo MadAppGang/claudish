@@ -121,6 +121,11 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     url: "https://platform.moonshot.cn/",
     aliases: ["KIMI_API_KEY"],
   },
+  "kimi-coding": {
+    envVar: "",  // OAuth-based, no env var
+    description: "Kimi Coding (OAuth)",
+    url: "https://kimi.com/code — run: claudish --kimi-login",
+  },
   glm: {
     envVar: "ZHIPU_API_KEY",
     description: "GLM/Zhipu API Key",
@@ -173,6 +178,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openrouter: "OpenRouter",
   minimax: "MiniMax",
   kimi: "Kimi",
+  "kimi-coding": "Kimi Coding",
   glm: "GLM",
   zai: "Z.AI",
   ollamacloud: "OllamaCloud",

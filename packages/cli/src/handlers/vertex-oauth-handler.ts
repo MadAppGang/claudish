@@ -14,17 +14,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelHandler } from "./types.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
-import {
-  MiddlewareManager,
-  GeminiThoughtSignatureMiddleware,
-} from "../middleware/index.js";
+import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
 import { filterIdentity } from "./shared/openai-compat.js";
-import {
-  getModelPricing,
-  type ModelPricing,
-} from "./shared/remote-provider-types.js";
+import { getModelPricing, type ModelPricing } from "./shared/remote-provider-types.js";
 import {
   getVertexAuthManager,
   getVertexConfig,
@@ -104,7 +98,10 @@ export class VertexOAuthHandler implements ModelHandler {
       const total = input + output;
       const leftPct =
         this.contextWindow > 0
-          ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100)))
+          ? Math.max(
+              0,
+              Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100))
+            )
           : 100;
 
       const pricing = this.getPricing();
@@ -261,9 +258,10 @@ export class VertexOAuthHandler implements ModelHandler {
     }
 
     // Mistral rawPredict uses just model name; others use publisher/model
-    const modelId = this.parsed.publisher === "mistralai"
-      ? this.parsed.model
-      : `${this.parsed.publisher}/${this.parsed.model}`;
+    const modelId =
+      this.parsed.publisher === "mistralai"
+        ? this.parsed.model
+        : `${this.parsed.publisher}/${this.parsed.model}`;
 
     const payload: any = {
       model: modelId,
@@ -351,7 +349,10 @@ export class VertexOAuthHandler implements ModelHandler {
               functionResponse: {
                 name: toolInfo.name,
                 response: {
-                  content: typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                  content:
+                    typeof block.content === "string"
+                      ? block.content
+                      : JSON.stringify(block.content),
                 },
               },
             });
@@ -499,8 +500,10 @@ export class VertexOAuthHandler implements ModelHandler {
             if (finalized) return;
             finalized = true;
 
-            if (thinkingStarted) send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
-            if (textStarted) send("content_block_stop", { type: "content_block_stop", index: textIdx });
+            if (thinkingStarted)
+              send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+            if (textStarted)
+              send("content_block_stop", { type: "content_block_stop", index: textIdx });
 
             for (const t of Array.from(tools.values())) {
               if (t.started && !t.closed) {
@@ -510,7 +513,10 @@ export class VertexOAuthHandler implements ModelHandler {
             }
 
             if (usage) {
-              this.updateTokenTracking(usage.promptTokenCount || 0, usage.candidatesTokenCount || 0);
+              this.updateTokenTracking(
+                usage.promptTokenCount || 0,
+                usage.candidatesTokenCount || 0
+              );
             }
 
             if (reason === "error") {
@@ -584,7 +590,10 @@ export class VertexOAuthHandler implements ModelHandler {
 
                       if (part.text) {
                         if (thinkingStarted) {
-                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: thinkingIdx,
+                          });
                           thinkingStarted = false;
                         }
 
@@ -606,11 +615,17 @@ export class VertexOAuthHandler implements ModelHandler {
 
                       if (part.functionCall) {
                         if (thinkingStarted) {
-                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: thinkingIdx,
+                          });
                           thinkingStarted = false;
                         }
                         if (textStarted) {
-                          send("content_block_stop", { type: "content_block_stop", index: textIdx });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: textIdx,
+                          });
                           textStarted = false;
                         }
 
@@ -639,13 +654,19 @@ export class VertexOAuthHandler implements ModelHandler {
                           index: t.blockIndex,
                           delta: { type: "input_json_delta", partial_json: t.arguments },
                         });
-                        send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+                        send("content_block_stop", {
+                          type: "content_block_stop",
+                          index: t.blockIndex,
+                        });
                         t.closed = true;
                       }
                     }
                   }
 
-                  if (candidate?.finishReason === "STOP" || candidate?.finishReason === "MAX_TOKENS") {
+                  if (
+                    candidate?.finishReason === "STOP" ||
+                    candidate?.finishReason === "MAX_TOKENS"
+                  ) {
                     await finalize("done");
                     return;
                   }

@@ -142,7 +142,9 @@ export class LocalModelQueue {
       if (concurrencyOverride !== this.maxParallel && concurrencyOverride > 0) {
         const newMax = Math.min(concurrencyOverride, 8); // Cap at 8
         if (getLogLevel() === "debug") {
-          log(`[LocalQueue] Overriding maxParallel: ${this.maxParallel} -> ${newMax} for ${providerId}`);
+          log(
+            `[LocalQueue] Overriding maxParallel: ${this.maxParallel} -> ${newMax} for ${providerId}`
+          );
         }
         this.maxParallel = newMax;
       }
@@ -302,9 +304,7 @@ export class LocalModelQueue {
 
     const parsed = Number.parseInt(envValue, 10);
     if (Number.isNaN(parsed) || parsed < 1) {
-      log(
-        `[LocalQueue] Invalid CLAUDISH_LOCAL_MAX_PARALLEL: ${envValue}, using default: 1`
-      );
+      log(`[LocalQueue] Invalid CLAUDISH_LOCAL_MAX_PARALLEL: ${envValue}, using default: 1`);
       return 1;
     }
 

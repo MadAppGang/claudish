@@ -114,9 +114,7 @@ export function resolveProvider(modelId: string): ResolvedProvider | null {
 
   // Check if parsed provider is a local provider
   if (isLocalProviderName(parsed.provider)) {
-    const provider = providers.find(
-      (p) => p.name.toLowerCase() === parsed.provider.toLowerCase()
-    );
+    const provider = providers.find((p) => p.name.toLowerCase() === parsed.provider.toLowerCase());
 
     if (provider) {
       return {

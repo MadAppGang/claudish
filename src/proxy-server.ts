@@ -32,6 +32,7 @@ import {
   validateVertexOAuthConfig,
 } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
+import { warmPricingCache } from "./services/pricing-cache.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -176,7 +177,7 @@ export async function createProxyServer(
       } else if (resolved.provider.name === "openai") {
         handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
-      } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi" || resolved.provider.name === "zai") {
+      } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi" || resolved.provider.name === "kimi-coding" || resolved.provider.name === "zai") {
         // MiniMax, Kimi, and Z.AI use Anthropic-compatible APIs
         handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
@@ -347,6 +348,9 @@ export async function createProxyServer(
   if (actualPort !== port) port = actualPort;
 
   log(`[Proxy] Server started on port ${port}`);
+
+  // Warm pricing cache in background (non-blocking)
+  warmPricingCache().catch(() => {});
 
   return {
     port,

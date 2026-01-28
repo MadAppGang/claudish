@@ -3,6 +3,7 @@
  *
  * Handles:
  * - Mapping 'thinking.budget_tokens' to 'reasoning_effort' for o1/o3 models
+ * - Tool name truncation (OpenAI enforces 64-char limit on function names)
  */
 
 import { BaseModelAdapter, AdapterResult } from "./base-adapter.js";
@@ -20,7 +21,16 @@ export class OpenAIAdapter extends BaseModelAdapter {
   }
 
   /**
-   * Handle request preparation - specifically for mapping reasoning parameters
+   * OpenAI enforces a 64-character limit on tool/function names.
+   */
+  override getToolNameLimit(): number | null {
+    return 64;
+  }
+
+  /**
+   * Handle request preparation:
+   * - Map reasoning parameters (thinking budget -> reasoning_effort)
+   * - Truncate tool names that exceed OpenAI's 64-char limit
    */
   override prepareRequest(request: any, originalRequest: any): any {
     // Handle mapping of 'thinking' parameter from Claude (budget_tokens) to reasoning_effort
@@ -41,25 +51,48 @@ export class OpenAIAdapter extends BaseModelAdapter {
       // Special case: GPT-5-codex might not support minimal (per notes), but we'll try to follow budget
       // The API should degrade gracefully if minimal isn't supported, or we could add a model check here
 
-      request.reasoning_effort = effort;
+      // Responses API uses { reasoning: { effort } }, Chat Completions uses { reasoning_effort }
+      if (request.input) {
+        // Responses API format (detected by presence of 'input' instead of 'messages')
+        request.reasoning = { effort };
+        log(`[OpenAIAdapter] Mapped budget ${budget_tokens} -> reasoning.effort: ${effort} (Responses API)`);
+      } else {
+        // Chat Completions API format
+        request.reasoning_effort = effort;
+        log(`[OpenAIAdapter] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
+      }
 
       // Cleanup: Remove raw thinking object as we've translated it
-      // This prevents OpenRouter from having both params if it decides to pass thinking through
       delete request.thinking;
+    }
 
-      log(`[OpenAIAdapter] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
+    // Truncate tool names that exceed OpenAI's 64-char limit
+    this.truncateToolNames(request);
+
+    // Also truncate in message history (assistant tool_calls)
+    if (request.messages) {
+      this.truncateToolNamesInMessages(request.messages);
+    }
+    // For Responses API format, messages are in request.input
+    if (request.input) {
+      this.truncateToolNamesInMessages(request.input);
     }
 
     return request;
   }
 
   shouldHandle(modelId: string): boolean {
-    // Handle explicit OpenAI models or OpenRouter prefixes for OpenAI reasoning models
-    // Checking for o1/o3 specifically as they are the current reasoning models
+    const lower = modelId.toLowerCase();
     return (
-      modelId.startsWith("oai/") || // Only match oai/ prefix for Direct API
-      modelId.includes("o1") || // Keep o1 detection for OpenRouter's openai/o1 models
-      modelId.includes("o3") // Keep o3 detection for OpenRouter's openai/o3 models
+      lower.startsWith("oai/") ||
+      lower.startsWith("openai/") ||
+      lower.includes("gpt-") ||
+      lower.includes("gpt4") ||
+      lower.includes("o1") ||
+      lower.includes("o3") ||
+      lower.includes("o4") ||
+      lower.includes("codex") ||
+      lower.includes("chatgpt")
     );
   }
 

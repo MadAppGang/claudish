@@ -37,7 +37,12 @@ import {
 /**
  * Provider category types
  */
-export type ProviderCategory = "local" | "direct-api" | "openrouter" | "native-anthropic" | "unknown";
+export type ProviderCategory =
+  | "local"
+  | "direct-api"
+  | "openrouter"
+  | "native-anthropic"
+  | "unknown";
 
 /**
  * Complete resolution result for a model ID
@@ -260,7 +265,8 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     let modelName = parsed.model;
 
     if (resolved) {
-      providerName = resolved.provider.name.charAt(0).toUpperCase() + resolved.provider.name.slice(1);
+      providerName =
+        resolved.provider.name.charAt(0).toUpperCase() + resolved.provider.name.slice(1);
       modelName = resolved.modelName;
     } else if (urlParsed) {
       providerName = "Custom URL";
@@ -435,9 +441,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
  * @returns Array of resolutions for models that are defined
  */
 export function validateApiKeysForModels(models: (string | undefined)[]): ProviderResolution[] {
-  return models
-    .filter((m): m is string => m !== undefined)
-    .map((m) => resolveModelProvider(m));
+  return models.filter((m): m is string => m !== undefined).map((m) => resolveModelProvider(m));
 }
 
 /**
@@ -483,7 +487,9 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
   const lines: string[] = [];
 
   // Main error
-  lines.push(`Error: ${resolution.apiKeyDescription} is required for model "${resolution.fullModelId}"`);
+  lines.push(
+    `Error: ${resolution.apiKeyDescription} is required for model "${resolution.fullModelId}"`
+  );
   lines.push("");
 
   // How to fix
@@ -507,11 +513,11 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
     if (provider === "google") {
       lines.push("");
       lines.push("     For direct Gemini API (no OpenRouter), use prefix 'g/' or 'gemini/':");
-      lines.push("       claudish --model g/gemini-2.0-flash \"task\"");
+      lines.push('       claudish --model g/gemini-2.0-flash "task"');
     } else if (provider === "openai") {
       lines.push("");
       lines.push("     For direct OpenAI API (no OpenRouter), use prefix 'oai/':");
-      lines.push("       claudish --model oai/gpt-4o \"task\"");
+      lines.push('       claudish --model oai/gpt-4o "task"');
     }
   }
 

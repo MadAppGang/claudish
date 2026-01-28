@@ -323,14 +323,13 @@ export abstract class BaseGeminiHandler implements ModelHandler {
   /**
    * Handle the streaming response from Gemini
    */
-  protected handleStreamingResponse(c: Context, response: Response, _claudeRequest: any): Response {
+  protected handleStreamingResponse(c: Context, response: Response, _claudeRequest: any, toolNameMap?: Map<string, string>): Response {
     let isClosed = false;
     let ping: NodeJS.Timeout | null = null;
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const streamMetadata = new Map<string, any>();
     const adapter = this.adapterManager.getAdapter();
-    if (typeof adapter.reset === "function") adapter.reset();
 
     // Capture reference to toolCallMap for use in the streaming closure
     const toolCallMap = this.toolCallMap;
@@ -539,9 +538,12 @@ export abstract class BaseGeminiHandler implements ModelHandler {
 
                         const toolIdx = tools.size;
                         const toolId = `tool_${Date.now()}_${toolIdx}`;
+                        // Restore truncated tool name to original if needed
+                        const rawFnName = part.functionCall.name;
+                        const fnName = toolNameMap?.get(rawFnName) || rawFnName;
                         const t = {
                           id: toolId,
-                          name: part.functionCall.name,
+                          name: fnName,
                           blockIndex: curIdx++,
                           started: true,
                           closed: false,
@@ -638,6 +640,14 @@ export abstract class BaseGeminiHandler implements ModelHandler {
     // Build Gemini request
     const geminiPayload = this.buildGeminiPayload(claudeRequest);
 
+    // Get adapter and prepare request (adapter truncates tool names if needed)
+    const adapter = this.adapterManager.getAdapter();
+    if (typeof adapter.reset === "function") adapter.reset();
+    adapter.prepareRequest(geminiPayload, claudeRequest);
+
+    // Get tool name map from adapter (populated during prepareRequest)
+    const toolNameMap = adapter.getToolNameMap();
+
     // Call middleware
     await this.middlewareManager.beforeRequest({
       modelId: `gemini/${this.modelName}`,
@@ -727,7 +737,7 @@ export abstract class BaseGeminiHandler implements ModelHandler {
       c.header("X-Dropped-Params", droppedParams.join(", "));
     }
 
-    return this.handleStreamingResponse(c, response, claudeRequest);
+    return this.handleStreamingResponse(c, response, claudeRequest, toolNameMap);
   }
 
   async shutdown(): Promise<void> {

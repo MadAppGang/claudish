@@ -61,7 +61,7 @@ class SSEParser {
     }
 
     const events: string[] = [];
-    const lines = this.buffer.split('\n');
+    const lines = this.buffer.split("\n");
 
     // Keep the last incomplete line in buffer
     this.buffer = lines.pop() || "";
@@ -69,11 +69,11 @@ class SSEParser {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
 
-      if (line.startsWith('data: ')) {
+      if (line.startsWith("data: ")) {
         const data = line.slice(6).trim();
 
-        if (data === '[DONE]') {
-          events.push('[DONE]');
+        if (data === "[DONE]") {
+          events.push("[DONE]");
         } else if (data) {
           events.push(data);
         }
@@ -95,12 +95,12 @@ class SSEParser {
  * Elegant XML tool call parser for Poe models
  */
 export class XMLToolCallParser {
-  private static readonly FUNCTION_CALLS_START = '<function_calls>';
-  private static readonly FUNCTION_CALLS_END = '</function_calls>';
+  private static readonly FUNCTION_CALLS_START = "<function_calls>";
+  private static readonly FUNCTION_CALLS_END = "</function_calls>";
   private static readonly INVOKE_START = '<invoke name="';
-  private static readonly INVOKE_END = '</invoke>';
+  private static readonly INVOKE_END = "</invoke>";
   private static readonly PARAMETER_START = '<parameter name="';
-  private static readonly PARAMETER_END = '</parameter>';
+  private static readonly PARAMETER_END = "</parameter>";
 
   /**
    * Detect if text contains XML tool calls
@@ -127,10 +127,7 @@ export class XMLToolCallParser {
       return null;
     }
 
-    const functionCallsBlock = text.substring(
-      startIdx + this.FUNCTION_CALLS_START.length,
-      endIdx
-    );
+    const functionCallsBlock = text.substring(startIdx + this.FUNCTION_CALLS_START.length, endIdx);
 
     // Find all invoke blocks
     const invokeBlocks = this.extractInvokeBlocks(functionCallsBlock);
@@ -177,10 +174,7 @@ export class XMLToolCallParser {
     const nameEnd = invokeBlock.indexOf('"', nameStart + this.INVOKE_START.length);
     if (nameEnd === -1) return null;
 
-    const functionName = invokeBlock.substring(
-      nameStart + this.INVOKE_START.length,
-      nameEnd
-    );
+    const functionName = invokeBlock.substring(nameStart + this.INVOKE_START.length, nameEnd);
 
     // Extract all parameters
     const parameters: Record<string, string> = {};
@@ -198,7 +192,7 @@ export class XMLToolCallParser {
         paramNameEnd
       );
 
-      const paramValueStart = invokeBlock.indexOf('>', paramNameEnd);
+      const paramValueStart = invokeBlock.indexOf(">", paramNameEnd);
       if (paramValueStart === -1) break;
 
       const paramEndTag = invokeBlock.indexOf(this.PARAMETER_END, paramValueStart);
@@ -218,8 +212,8 @@ export class XMLToolCallParser {
       id: toolId,
       function: {
         name: functionName,
-        arguments: JSON.stringify(parameters)
-      }
+        arguments: JSON.stringify(parameters),
+      },
     };
   }
 
@@ -259,7 +253,7 @@ class ContentBlockTracker {
     this.blocks.set(index, {
       type: "text",
       started: true,
-      stopped: false
+      stopped: false,
     });
     return index;
   }
@@ -275,7 +269,7 @@ class ContentBlockTracker {
       name,
       arguments: "",
       started: true,
-      stopped: false
+      stopped: false,
     };
     this.tools.set(blockIndex, toolBlock);
     this.toolIndexToBlockIndex.set(toolIndex, blockIndex);
@@ -363,25 +357,25 @@ class ErrorHandler {
    */
   handle(error: any, context: any): void {
     const errorInfo = {
-      name: error?.name || 'UnknownError',
+      name: error?.name || "UnknownError",
       message: error?.message || String(error),
       stack: error?.stack,
       model: this.model,
       timestamp: new Date().toISOString(),
-      ...context
+      ...context,
     };
 
     // Categorize errors for appropriate handling
     if (error instanceof SyntaxError) {
       // JSON parsing errors are common and not critical
-      logStructured('POE_SSE_PARSE_ERROR', errorInfo);
+      logStructured("POE_SSE_PARSE_ERROR", errorInfo);
     } else if (error instanceof TypeError) {
       // Type errors might indicate data structure issues
-      logStructured('POE_SSE_TYPE_ERROR', errorInfo);
+      logStructured("POE_SSE_TYPE_ERROR", errorInfo);
     } else {
       // Other errors are more serious
-      console.error('❌ [POE] HANDLER_ERROR', errorInfo.message);
-      logStructured('POE_STREAM_ERROR', errorInfo);
+      console.error("❌ [POE] HANDLER_ERROR", errorInfo.message);
+      logStructured("POE_STREAM_ERROR", errorInfo);
     }
   }
 }
@@ -405,10 +399,10 @@ export class PoeHandler implements ModelHandler {
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
-    this.apiKeySha = createHash('sha256').update(apiKey).digest('hex').substring(0, 16);
+    this.apiKeySha = createHash("sha256").update(apiKey).digest("hex").substring(0, 16);
     this.headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
     };
   }
 
@@ -418,13 +412,13 @@ export class PoeHandler implements ModelHandler {
 
       // Debug level: detailed request lifecycle (like log.debug())
       if (isLoggingEnabled()) {
-        logStructured('POE_HANDLER_REQUEST_STARTED', {
+        logStructured("POE_HANDLER_REQUEST_STARTED", {
           model: payload.model,
           transformedModel: model,
           hasApiKey: !!this.apiKey,
           apiKeySha256: this.apiKeySha,
           stream: true,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         });
       }
 
@@ -432,14 +426,14 @@ export class PoeHandler implements ModelHandler {
 
       // Debug level: API request details (like log.debug())
       if (isLoggingEnabled()) {
-        logStructured('POE_API_REQUEST', {
+        logStructured("POE_API_REQUEST", {
           url: this.apiUrl,
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': this.headers['Content-Type'],
-            'Authorization': `Bearer ${maskCredential(this.apiKey)}`
+            "Content-Type": this.headers["Content-Type"],
+            Authorization: `Bearer ${maskCredential(this.apiKey)}`,
           },
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         });
       }
 
@@ -457,19 +451,19 @@ export class PoeHandler implements ModelHandler {
         console.error(`API Key SHA256 (first 16 hex): ${this.apiKeySha}`);
 
         // Debug level: API error context (like log.debug())
-        logStructured('POE_API_ERROR', {
+        logStructured("POE_API_ERROR", {
           status: response.status,
-          errorText: errorText.substring(0, 500) + (errorText.length > 500 ? '...' : ''),
+          errorText: errorText.substring(0, 500) + (errorText.length > 500 ? "..." : ""),
           apiKeySha256: this.apiKeySha,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         });
 
         return c.json(
           {
             error: {
               message: `Poe API error: ${response.status} (API Key SHA256: ${this.apiKeySha})`,
-              type: "api_error"
-            }
+              type: "api_error",
+            },
           },
           { status: response.status }
         );
@@ -477,10 +471,10 @@ export class PoeHandler implements ModelHandler {
 
       // Debug level: API response details (like log.debug())
       if (isLoggingEnabled()) {
-        logStructured('POE_API_RESPONSE', {
+        logStructured("POE_API_RESPONSE", {
           status: response.status,
           statusText: response.statusText,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         });
       }
 
@@ -491,8 +485,8 @@ export class PoeHandler implements ModelHandler {
         {
           error: {
             message: error instanceof Error ? error.message : "Unknown error",
-            type: "handler_error"
-          }
+            type: "handler_error",
+          },
         },
         { status: 500 }
       );
@@ -531,7 +525,7 @@ export class PoeHandler implements ModelHandler {
     // Add extra_body parameters for Poe-specific options
     // These allow custom bot parameters like aspect ratios, reasoning effort, etc.
     // Example: { "extra_body": { "aspect": "1280x720" } } for image generation
-    if (payload.extra_body && typeof payload.extra_body === 'object') {
+    if (payload.extra_body && typeof payload.extra_body === "object") {
       Object.assign(openAIRequest, payload.extra_body);
     }
 
@@ -565,7 +559,7 @@ export class PoeHandler implements ModelHandler {
    * Claude supports rich content objects, OpenAI expects simple strings
    */
   private transformMessages(messages: any[]): any[] {
-    return messages.map(msg => {
+    return messages.map((msg) => {
       // Handle message content transformations
       if (msg.content && Array.isArray(msg.content)) {
         // Claude format with rich content (text, image, etc.)
@@ -576,13 +570,13 @@ export class PoeHandler implements ModelHandler {
 
         return {
           role: msg.role,
-          content: textContent
+          content: textContent,
         };
       } else if (typeof msg.content === "object" && msg.content?.text) {
         // Handle Claude text objects
         return {
           role: msg.role,
-          content: msg.content.text
+          content: msg.content.text,
         };
       }
       return msg;
@@ -596,7 +590,7 @@ export class PoeHandler implements ModelHandler {
    */
   private transformChunk(chunk: OpenAIChunk): any {
     // Validate chunk structure more leniently
-    if (!chunk || typeof chunk !== 'object') {
+    if (!chunk || typeof chunk !== "object") {
       return null;
     }
 
@@ -618,12 +612,12 @@ export class PoeHandler implements ModelHandler {
       if (delta.tool_calls) {
         return {
           type: "tool_calls",
-          tool_calls: delta.tool_calls
+          tool_calls: delta.tool_calls,
         };
       }
 
       // Handle content deltas (the main text content)
-      if (delta.content && typeof delta.content === 'string' && delta.content.length > 0) {
+      if (delta.content && typeof delta.content === "string" && delta.content.length > 0) {
         // Check if content contains XML tool calls (Poe format)
         if (XMLToolCallParser.containsToolCalls(delta.content)) {
           const toolCalls = XMLToolCallParser.parseToolCalls(delta.content);
@@ -638,13 +632,13 @@ export class PoeHandler implements ModelHandler {
             // Return tool calls first, text will be processed in next iteration
             return {
               type: "tool_calls",
-              tool_calls: toolCalls
+              tool_calls: toolCalls,
             };
           } else if (toolCalls && toolCalls.length > 0) {
             // Only tool calls, no text
             return {
               type: "tool_calls",
-              tool_calls: toolCalls
+              tool_calls: toolCalls,
             };
           }
         }
@@ -654,8 +648,8 @@ export class PoeHandler implements ModelHandler {
           index: 0,
           delta: {
             type: "text_delta",
-            text: XMLToolCallParser.removeToolCalls(delta.content)
-          }
+            text: XMLToolCallParser.removeToolCalls(delta.content),
+          },
         };
       }
 
@@ -675,7 +669,7 @@ export class PoeHandler implements ModelHandler {
       if (choice.finish_reason) {
         return {
           type: "content_block_stop",
-          index: 0
+          index: 0,
         };
       }
 
@@ -729,14 +723,14 @@ export class PoeHandler implements ModelHandler {
 
               // Debug level: SSE event details (like log.debug())
               if (isLoggingEnabled()) {
-                logStructured('POE_SSE_SENDING_EVENT', {
+                logStructured("POE_SSE_SENDING_EVENT", {
                   eventType: e,
                   eventData: d,
-                  eventDataRaw: eventData.substring(0, 100) + (eventData.length > 100 ? '...' : ''),
+                  eventDataRaw: eventData.substring(0, 100) + (eventData.length > 100 ? "..." : ""),
                   timestamp: new Date().toISOString(),
                   messageStarted,
                   currentBlockIndex,
-                  isClosed
+                  isClosed,
                 });
               }
 
@@ -765,9 +759,9 @@ export class PoeHandler implements ModelHandler {
               stop_sequence: null,
               usage: {
                 input_tokens: 0,
-                output_tokens: 0
-              }
-            }
+                output_tokens: 0,
+              },
+            },
           });
           send("ping", { type: "ping" });
           messageStarted = true;
@@ -784,19 +778,19 @@ export class PoeHandler implements ModelHandler {
               const events = sseParser.parse(chunk);
 
               for (const data of events) {
-                if (data === '[DONE]') {
+                if (data === "[DONE]") {
                   // Ensure all content blocks are properly stopped
                   const stoppedBlocks = blockTracker.ensureAllBlocksStopped();
                   for (const blockIndex of stoppedBlocks) {
                     send("content_block_stop", {
                       type: "content_block_stop",
-                      index: blockIndex
+                      index: blockIndex,
                     });
                   }
 
                   // Send message_stop event
                   send("message_stop", {
-                    type: "message_stop"
+                    type: "message_stop",
                   });
 
                   // Send final [DONE] marker with proper SSE format (triple newlines)
@@ -817,17 +811,19 @@ export class PoeHandler implements ModelHandler {
                   const claudeChunk = this.transformChunk(openaiChunk);
 
                   // Check if we need to start a text block (but NOT if we have tool calls)
-                  if (currentBlockIndex === null &&
-                      openaiChunk.choices?.[0]?.delta?.content &&
-                      claudeChunk?.type !== "tool_calls") {
+                  if (
+                    currentBlockIndex === null &&
+                    openaiChunk.choices?.[0]?.delta?.content &&
+                    claudeChunk?.type !== "tool_calls"
+                  ) {
                     currentBlockIndex = blockTracker.startTextBlock();
                     send("content_block_start", {
                       type: "content_block_start",
                       index: currentBlockIndex,
                       content_block: {
                         type: "text",
-                        text: ""
-                      }
+                        text: "",
+                      },
                     });
                   }
 
@@ -836,13 +832,16 @@ export class PoeHandler implements ModelHandler {
                       blockTracker.addTextDelta(currentBlockIndex, claudeChunk.delta.text);
                       send("content_block_delta", {
                         ...claudeChunk,
-                        index: currentBlockIndex
+                        index: currentBlockIndex,
                       });
-                    } else if (claudeChunk.type === "content_block_stop" && currentBlockIndex !== null) {
+                    } else if (
+                      claudeChunk.type === "content_block_stop" &&
+                      currentBlockIndex !== null
+                    ) {
                       blockTracker.stopBlock(currentBlockIndex);
                       send("content_block_stop", {
                         type: "content_block_stop",
-                        index: currentBlockIndex
+                        index: currentBlockIndex,
                       });
                       currentBlockIndex = null;
                     } else if (claudeChunk.type === "tool_calls" && claudeChunk.tool_calls) {
@@ -859,7 +858,7 @@ export class PoeHandler implements ModelHandler {
                             if (currentBlockIndex !== null) {
                               send("content_block_stop", {
                                 type: "content_block_stop",
-                                index: currentBlockIndex
+                                index: currentBlockIndex,
                               });
                               blockTracker.stopBlock(currentBlockIndex);
                               currentBlockIndex = null;
@@ -879,8 +878,8 @@ export class PoeHandler implements ModelHandler {
                               content_block: {
                                 type: "tool_use",
                                 id: toolId,
-                                name: toolCall.function.name
-                              }
+                                name: toolCall.function.name,
+                              },
                             });
                           }
                         }
@@ -896,8 +895,8 @@ export class PoeHandler implements ModelHandler {
                               index: toolBlockIndex,
                               delta: {
                                 type: "input_json_delta",
-                                partial_json: toolCall.function.arguments
-                              }
+                                partial_json: toolCall.function.arguments,
+                              },
                             });
                           }
                         }
@@ -915,8 +914,8 @@ export class PoeHandler implements ModelHandler {
                           index: currentBlockIndex,
                           content_block: {
                             type: "text",
-                            text: ""
-                          }
+                            text: "",
+                          },
                         });
                       }
 
@@ -926,8 +925,8 @@ export class PoeHandler implements ModelHandler {
                         index: currentBlockIndex,
                         delta: {
                           type: "text_delta",
-                          text: chunkDelta._cachedCleanText
-                        }
+                          text: chunkDelta._cachedCleanText,
+                        },
                       });
 
                       // Clear the cached text to avoid duplicate processing
@@ -943,7 +942,7 @@ export class PoeHandler implements ModelHandler {
                       try {
                         send("content_block_stop", {
                           type: "content_block_stop",
-                          index: blockIndex
+                          index: blockIndex,
                         });
                       } catch (e) {
                         // Ignore errors during tool block cleanup
@@ -953,9 +952,9 @@ export class PoeHandler implements ModelHandler {
                 } catch (e) {
                   // Use enhanced error handling
                   errorHandler.handle(e, {
-                    data: data.substring(0, 200) + (data.length > 200 ? '...' : ''),
+                    data: data.substring(0, 200) + (data.length > 200 ? "..." : ""),
                     eventCount: events.length,
-                    currentBlockIndex
+                    currentBlockIndex,
                   });
                 }
               }
@@ -965,7 +964,7 @@ export class PoeHandler implements ModelHandler {
             errorHandler.handle(error, {
               messageStarted,
               currentBlockIndex,
-              isClosed
+              isClosed,
             });
 
             controller.error(error);
@@ -983,7 +982,7 @@ export class PoeHandler implements ModelHandler {
                 try {
                   send("content_block_stop", {
                     type: "content_block_stop",
-                    index: blockIndex
+                    index: blockIndex,
                   });
                 } catch (e) {
                   // Ignore errors during cleanup
@@ -993,12 +992,11 @@ export class PoeHandler implements ModelHandler {
 
             controller.close();
           }
-        }
+        },
       })
     );
   }
 
-  
   /**
    * No cleanup needed - we're HTTP-only
    */

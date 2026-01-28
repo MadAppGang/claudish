@@ -56,7 +56,9 @@ export class PoeMiddlewareManager {
           await middleware.beforeRequest(context);
         }
       } catch (error) {
-        log(`[PoeMiddlewareManager] Error in beforeRequest for ${middleware.constructor.name}: ${error}`);
+        log(
+          `[PoeMiddlewareManager] Error in beforeRequest for ${middleware.constructor.name}: ${error}`
+        );
       }
     }
   }
@@ -71,7 +73,9 @@ export class PoeMiddlewareManager {
           await middleware.afterResponse(context);
         }
       } catch (error) {
-        log(`[PoeMiddlewareManager] Error in afterResponse for ${middleware.constructor.name}: ${error}`);
+        log(
+          `[PoeMiddlewareManager] Error in afterResponse for ${middleware.constructor.name}: ${error}`
+        );
       }
     }
   }
@@ -86,7 +90,9 @@ export class PoeMiddlewareManager {
           await middleware.afterStreamChunk(context);
         }
       } catch (error) {
-        log(`[PoeMiddlewareManager] Error in afterStreamChunk for ${middleware.constructor.name}: ${error}`);
+        log(
+          `[PoeMiddlewareManager] Error in afterStreamChunk for ${middleware.constructor.name}: ${error}`
+        );
       }
     }
   }
@@ -101,7 +107,9 @@ export class PoeMiddlewareManager {
           await middleware.afterStreamComplete(metadata);
         }
       } catch (error) {
-        log(`[PoeMiddlewareManager] Error in afterStreamComplete for ${middleware.constructor.name}: ${error}`);
+        log(
+          `[PoeMiddlewareManager] Error in afterStreamComplete for ${middleware.constructor.name}: ${error}`
+        );
       }
     }
   }
@@ -116,11 +124,15 @@ export class PoeMiddlewareManager {
           await middleware.onInit();
         }
       } catch (error) {
-        log(`[PoeMiddlewareManager] Error in initialization for ${middleware.constructor.name}: ${error}`);
+        log(
+          `[PoeMiddlewareManager] Error in initialization for ${middleware.constructor.name}: ${error}`
+        );
       }
     }
 
-    log(`[PoeMiddlewareManager] Initialized ${this.middlewares.length} middlewares for ${this.modelId}`);
+    log(
+      `[PoeMiddlewareManager] Initialized ${this.middlewares.length} middlewares for ${this.modelId}`
+    );
   }
 
   /**

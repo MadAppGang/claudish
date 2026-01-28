@@ -23,7 +23,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.0.6"; // Fallback version for compiled binaries
+let VERSION = "4.1.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -552,10 +552,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   let models: any[] = [];
 
   // Fetch local Ollama models and OpenCode Zen models in parallel
-  const [ollamaModels, zenModels] = await Promise.all([
-    fetchOllamaModels(),
-    fetchZenModels(),
-  ]);
+  const [ollamaModels, zenModels] = await Promise.all([fetchOllamaModels(), fetchZenModels()]);
 
   // Check cache for all models
   if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
@@ -690,7 +687,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   // Print OpenCode Zen models (free ones don't need API key)
   if (zenModels.length > 0) {
     const freeCount = zenModels.filter((m: any) => m.isFree).length;
-    console.log(`\n🔮 OPENCODE ZEN (${zenModels.length} models, ${freeCount} FREE - no API key needed):\n`);
+    console.log(
+      `\n🔮 OPENCODE ZEN (${zenModels.length} models, ${freeCount} FREE - no API key needed):\n`
+    );
     console.log("    Model                          Context    Pricing      Tools");
     console.log("  " + "─".repeat(68));
 
@@ -709,7 +708,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       const contextLen = model.context_length || 0;
       const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
       const contextPadded = context.padEnd(10);
-      const pricing = model.isFree ? `${GREEN}FREE${RESET}` : `$${(parseFloat(model.pricing?.prompt || "0") + parseFloat(model.pricing?.completion || "0")).toFixed(1)}/M`;
+      const pricing = model.isFree
+        ? `${GREEN}FREE${RESET}`
+        : `$${(parseFloat(model.pricing?.prompt || "0") + parseFloat(model.pricing?.completion || "0")).toFixed(1)}/M`;
       const pricingPadded = model.isFree ? "FREE        " : pricing.padEnd(12);
       const tools = model.supportsTools ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
 
@@ -771,7 +772,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 
   console.log("\n");
   console.log("Use OpenRouter model:  claudish --model openrouter@<provider/model-id>");
-  console.log("  Example:             claudish --model openrouter@google/gemini-2.0-flash-exp:free");
+  console.log(
+    "  Example:             claudish --model openrouter@google/gemini-2.0-flash-exp:free"
+  );
   console.log("Local Ollama model:    claudish --model ollama@<model-name>");
   console.log("OpenCode Zen model:    claudish --model zen@<model-id>");
   console.log("Search:                claudish --search <query>");
@@ -1554,21 +1557,22 @@ async function fetchZenModels(): Promise<any[]> {
     if (!opencode?.models) return [];
 
     // Get all models with metadata
-    return Object.entries(opencode.models)
-      .map(([id, m]: [string, any]) => {
-        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
-        return {
-          id: `zen/${id}`,
-          name: m.name || id,
-          context_length: m.limit?.context || 128000,
-          max_output: m.limit?.output || 32000,
-          pricing: isFree ? { prompt: "0", completion: "0" } : { prompt: String(m.cost?.input || 0), completion: String(m.cost?.output || 0) },
-          isZen: true,
-          isFree,
-          supportsTools: m.tool_call || false,
-          supportsReasoning: m.reasoning || false,
-        };
-      });
+    return Object.entries(opencode.models).map(([id, m]: [string, any]) => {
+      const isFree = m.cost?.input === 0 && m.cost?.output === 0;
+      return {
+        id: `zen/${id}`,
+        name: m.name || id,
+        context_length: m.limit?.context || 128000,
+        max_output: m.limit?.output || 32000,
+        pricing: isFree
+          ? { prompt: "0", completion: "0" }
+          : { prompt: String(m.cost?.input || 0), completion: String(m.cost?.output || 0) },
+        isZen: true,
+        isFree,
+        supportsTools: m.tool_call || false,
+        supportsReasoning: m.reasoning || false,
+      };
+    });
   } catch {
     return [];
   }

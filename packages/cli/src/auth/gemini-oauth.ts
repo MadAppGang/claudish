@@ -48,7 +48,13 @@ interface TokenResponse {
  */
 const getDefaultClientId = (): string => {
   // Public client ID from gemini-cli, split to avoid detection
-  const parts = ["681255809395", "oo8ft2oprdrnp9e3aqf6av3hmdib135j", "apps", "googleusercontent", "com"];
+  const parts = [
+    "681255809395",
+    "oo8ft2oprdrnp9e3aqf6av3hmdib135j",
+    "apps",
+    "googleusercontent",
+    "com",
+  ];
   return `${parts[0]}-${parts[1]}.${parts[2]}.${parts[3]}.${parts[4]}`;
 };
 const getDefaultClientSecret = (): string => {
@@ -133,7 +139,10 @@ export class GeminiOAuth {
     this.oauthState = randomBytes(32).toString("base64url");
 
     // Start local callback server (uses random port) and wait for auth code
-    const { authCode, redirectUri } = await this.startCallbackServer(codeChallenge, this.oauthState);
+    const { authCode, redirectUri } = await this.startCallbackServer(
+      codeChallenge,
+      this.oauthState
+    );
 
     // Exchange auth code for tokens
     const tokens = await this.exchangeCodeForTokens(authCode, codeVerifier, redirectUri);
@@ -474,10 +483,13 @@ export class GeminiOAuth {
       });
 
       // Timeout after 5 minutes
-      setTimeout(() => {
-        server.close();
-        reject(new Error("OAuth login timed out after 5 minutes"));
-      }, 5 * 60 * 1000);
+      setTimeout(
+        () => {
+          server.close();
+          reject(new Error("OAuth login timed out after 5 minutes"));
+        },
+        5 * 60 * 1000
+      );
     });
   }
 

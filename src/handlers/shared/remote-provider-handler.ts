@@ -17,10 +17,10 @@ import { log, logStructured, getLogLevel, truncateContent } from "../../logger.j
 import {
   convertMessagesToOpenAI,
   convertToolsToOpenAI,
-  filterIdentity,
   createStreamingResponseHandler,
+  filterIdentity,
 } from "./openai-compat.js";
-import { type RemoteProviderConfig, type ModelPricing } from "./remote-provider-types.js";
+import type { RemoteProviderConfig, ModelPricing } from "./remote-provider-types.js";
 
 /**
  * Abstract base class for remote API providers
@@ -181,7 +181,8 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     c: Context,
     response: Response,
     adapter: any,
-    claudeRequest: any
+    claudeRequest: any,
+    toolNameMap?: Map<string, string>
   ): Response {
     return createStreamingResponseHandler(
       c,
@@ -190,7 +191,8 @@ export abstract class RemoteProviderHandler implements ModelHandler {
       this.targetModel,
       this.middlewareManager,
       (input, output) => this.updateTokenTracking(input, output),
-      claudeRequest.tools
+      claudeRequest.tools,
+      toolNameMap
     );
   }
 
@@ -238,10 +240,13 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     // Build request payload
     const requestPayload = this.buildRequestPayload(claudeRequest, messages, tools);
 
-    // Get adapter and prepare request
+    // Get adapter and prepare request (adapter truncates tool names if needed)
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(requestPayload, claudeRequest);
+
+    // Get tool name map from adapter (populated during prepareRequest)
+    const toolNameMap = adapter.getToolNameMap();
 
     // Call middleware
     await this.middlewareManager.beforeRequest({
@@ -278,7 +283,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     }
 
     // Handle streaming response
-    return this.handleStreamingResponse(c, response, adapter, claudeRequest);
+    return this.handleStreamingResponse(c, response, adapter, claudeRequest, toolNameMap);
   }
 
   /**

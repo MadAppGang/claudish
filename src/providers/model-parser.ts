@@ -75,6 +75,7 @@ export const PROVIDER_SHORTCUTS: Record<string, string> = {
   kimi: "kimi",
   moon: "kimi",
   moonshot: "kimi",
+  kc: "kimi-coding",
   glm: "glm",
   zhipu: "glm",
   zai: "zai",
@@ -106,6 +107,7 @@ export const DIRECT_API_PROVIDERS = new Set([
   "openai",
   "minimax",
   "kimi",
+  "kimi-coding",
   "glm",
   "zai",
   "ollamacloud",
@@ -145,6 +147,9 @@ export const NATIVE_MODEL_PATTERNS: Array<{
   { pattern: /^minimax\//i, provider: "minimax" },
   { pattern: /^minimax-/i, provider: "minimax" },
   { pattern: /^abab-/i, provider: "minimax" },
+
+  // Kimi Coding models (must be before general kimi-* pattern)
+  { pattern: /^kimi-for-coding$/i, provider: "kimi-coding" },
 
   // Kimi/Moonshot models
   { pattern: /^moonshot(ai)?\//i, provider: "kimi" },
@@ -192,6 +197,7 @@ export const LEGACY_PREFIX_PATTERNS: Array<{
   { prefix: "mm/", provider: "minimax", stripPrefix: true },
   { prefix: "kimi/", provider: "kimi", stripPrefix: true },
   { prefix: "moonshot/", provider: "kimi", stripPrefix: true },
+  { prefix: "kc/", provider: "kimi-coding", stripPrefix: true },
   { prefix: "glm/", provider: "glm", stripPrefix: true },
   { prefix: "zhipu/", provider: "glm", stripPrefix: true },
   { prefix: "zai/", provider: "zai", stripPrefix: true },

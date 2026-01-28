@@ -355,18 +355,16 @@ export function getLegacySyntaxWarning(parsed: ParsedModel): string | null {
   }
 
   const newSyntax = `${parsed.provider}@${parsed.model}`;
-  return `Deprecation warning: "${parsed.original}" uses legacy prefix syntax.\n` +
-    `  Consider using: ${newSyntax}`;
+  return (
+    `Deprecation warning: "${parsed.original}" uses legacy prefix syntax.\n` +
+    `  Consider using: ${newSyntax}`
+  );
 }
 
 /**
  * Format a model spec in the new syntax
  */
-export function formatModelSpec(
-  provider: string,
-  model: string,
-  concurrency?: number
-): string {
+export function formatModelSpec(provider: string, model: string, concurrency?: number): string {
   let spec = `${provider}@${model}`;
   if (concurrency !== undefined) {
     spec += `:${concurrency}`;

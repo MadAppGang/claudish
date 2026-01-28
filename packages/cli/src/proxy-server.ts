@@ -27,11 +27,9 @@ import {
   resolveRemoteProvider,
   validateRemoteProviderApiKey,
 } from "./providers/remote-provider-registry.js";
-import {
-  getVertexConfig,
-  validateVertexOAuthConfig,
-} from "./auth/vertex-auth.js";
+import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
+import { warmPricingCache } from "./services/pricing-cache.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -60,10 +58,7 @@ export async function createProxyServer(
     const modelId = parsed.provider === "openrouter" ? parsed.model : targetModel;
 
     if (!openRouterHandlers.has(modelId)) {
-      openRouterHandlers.set(
-        modelId,
-        new OpenRouterHandler(modelId, openrouterApiKey, port)
-      );
+      openRouterHandlers.set(modelId, new OpenRouterHandler(modelId, openrouterApiKey, port));
     }
     return openRouterHandlers.get(modelId)!;
   };
@@ -112,7 +107,7 @@ export async function createProxyServer(
       );
       localProviderHandlers.set(targetModel, handler);
       log(
-        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ''}`
+        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ""}`
       );
       return handler;
     }
@@ -164,7 +159,9 @@ export async function createProxyServer(
       }
 
       // Get API key - empty string for providers that don't require auth (like zen/ free models)
-      const apiKey = resolved.provider.apiKeyEnvVar ? process.env[resolved.provider.apiKeyEnvVar] || "" : "";
+      const apiKey = resolved.provider.apiKeyEnvVar
+        ? process.env[resolved.provider.apiKeyEnvVar] || ""
+        : "";
 
       let handler: ModelHandler;
       if (resolved.provider.name === "gemini") {
@@ -176,7 +173,11 @@ export async function createProxyServer(
       } else if (resolved.provider.name === "openai") {
         handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
-      } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi" || resolved.provider.name === "zai") {
+      } else if (
+        resolved.provider.name === "minimax" ||
+        resolved.provider.name === "kimi" ||
+        resolved.provider.name === "zai"
+      ) {
         // MiniMax, Kimi, and Z.AI use Anthropic-compatible APIs
         handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
@@ -217,7 +218,9 @@ export async function createProxyServer(
             return null;
           }
           handler = new VertexOAuthHandler(resolved.modelName, port);
-          log(`[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`);
+          log(
+            `[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`
+          );
         } else {
           log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
           return null;
@@ -347,6 +350,9 @@ export async function createProxyServer(
   if (actualPort !== port) port = actualPort;
 
   log(`[Proxy] Server started on port ${port}`);
+
+  // Warm pricing cache in background (non-blocking)
+  warmPricingCache().catch(() => {});
 
   return {
     port,

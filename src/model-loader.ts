@@ -127,6 +127,33 @@ export function getAvailableModels(): OpenRouterModel[] {
 let _cachedOpenRouterModels: any[] | null = null;
 
 /**
+ * Get the cached OpenRouter models list (if already fetched)
+ * Returns null if not yet fetched
+ */
+export function getCachedOpenRouterModels(): any[] | null {
+  return _cachedOpenRouterModels;
+}
+
+/**
+ * Ensure the OpenRouter models list is loaded (fetches if not cached)
+ * Returns the models array or empty array on failure
+ */
+export async function ensureOpenRouterModelsLoaded(): Promise<any[]> {
+  if (_cachedOpenRouterModels) return _cachedOpenRouterModels;
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/models");
+    if (response.ok) {
+      const data: any = await response.json();
+      _cachedOpenRouterModels = data.data || [];
+      return _cachedOpenRouterModels!;
+    }
+  } catch {
+    // Silent fail — caller handles null/empty
+  }
+  return [];
+}
+
+/**
  * Fetch exact context window size from OpenRouter API
  * @param modelId The full OpenRouter model ID (e.g. "anthropic/claude-3-sonnet")
  * @returns Context window size in tokens (default: 200000)

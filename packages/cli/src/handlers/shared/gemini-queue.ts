@@ -85,7 +85,9 @@ export class GeminiRequestQueue {
   async enqueue(fetchFn: () => Promise<Response>): Promise<Response> {
     // Check queue size limit
     if (this.queue.length >= this.maxQueueSize) {
-      log(`[GeminiQueue] Queue full (${this.queue.length}/${this.maxQueueSize}), rejecting request`);
+      log(
+        `[GeminiQueue] Queue full (${this.queue.length}/${this.maxQueueSize}), rejecting request`
+      );
       throw new Error("Gemini request queue full. Please retry later.");
     }
 
@@ -203,18 +205,14 @@ export class GeminiRequestQueue {
           const suggestedDelayMs = Math.ceil(delaySeconds * 1000);
 
           // Use the larger of suggested delay or current delay
-          this.minDelayMs = Math.max(
-            suggestedDelayMs,
-            this.minDelayMs,
-            this.baseDelayMs
-          );
+          this.minDelayMs = Math.max(suggestedDelayMs, this.minDelayMs, this.baseDelayMs);
 
           // Cap at maxDelayMs
           this.minDelayMs = Math.min(this.minDelayMs, this.maxDelayMs);
 
           log(
             `[GeminiQueue] Parsed quotaResetDelay: ${delayStr} (${suggestedDelayMs}ms), ` +
-            `new minDelay: ${this.minDelayMs}ms`
+              `new minDelay: ${this.minDelayMs}ms`
           );
         }
       }
@@ -225,10 +223,7 @@ export class GeminiRequestQueue {
 
     // Apply exponential backoff
     const backoffMultiplier = 1 + this.consecutiveErrors * 0.5;
-    this.minDelayMs = Math.min(
-      this.baseDelayMs * backoffMultiplier,
-      this.maxDelayMs
-    );
+    this.minDelayMs = Math.min(this.baseDelayMs * backoffMultiplier, this.maxDelayMs);
   }
 
   /**
