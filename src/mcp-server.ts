@@ -11,8 +11,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { config } from "dotenv";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 // Load environment variables
@@ -24,7 +25,9 @@ const __dirname = dirname(__filename);
 
 // Paths
 const RECOMMENDED_MODELS_PATH = join(__dirname, "../recommended-models.json");
-const ALL_MODELS_CACHE_PATH = join(__dirname, "../all-models.json");
+// Use ~/.claudish/ for writable cache (binaries can't write to __dirname)
+const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
+const ALL_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 
 // Types
@@ -102,7 +105,8 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     const data = await response.json();
     const models = data.data || [];
 
-    // Cache result
+    // Cache result - ensure directory exists
+    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
     writeFileSync(
       ALL_MODELS_CACHE_PATH,
       JSON.stringify({

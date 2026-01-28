@@ -5,8 +5,9 @@
  */
 
 import { search, select, input, confirm } from "@inquirer/prompts";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { OpenRouterModel } from "./types.js";
 import { getAvailableModels } from "./model-loader.js";
@@ -15,8 +16,9 @@ import { getAvailableModels } from "./model-loader.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Cache paths
-const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
+// Cache paths - use ~/.claudish/ for writable cache (binaries can't write to __dirname)
+const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
+const ALL_MODELS_JSON_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
 const RECOMMENDED_MODELS_JSON_PATH = join(__dirname, "../recommended-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 const FREE_MODELS_CACHE_MAX_AGE_HOURS = 3; // Free models change frequently, refresh every 3 hours
@@ -96,7 +98,8 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
     const data = await response.json();
     const models = data.data;
 
-    // Cache result
+    // Cache result - ensure directory exists
+    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
     writeFileSync(
       ALL_MODELS_JSON_PATH,
       JSON.stringify({

@@ -4,6 +4,7 @@ import { loadModelInfo, getAvailableModels } from "./model-loader.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fuzzyScore } from "./utils.js";
 import { getModelMapping } from "./profile-config.js";
 // Re-export from centralized provider-resolver for backwards compatibility
@@ -318,7 +319,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
  */
 const CACHE_MAX_AGE_DAYS = 2;
 const MODELS_JSON_PATH = join(__dirname, "../recommended-models.json");
-const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
+// Use ~/.claudish/ for writable cache (binaries can't write to __dirname)
+const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
+const ALL_MODELS_JSON_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
 
 /**
  * Fetch locally available Ollama models
@@ -420,7 +423,8 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       const data = (await response.json()) as { data: any[] };
       models = data.data;
 
-      // Cache result
+      // Cache result - ensure directory exists
+      mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
       writeFileSync(
         ALL_MODELS_JSON_PATH,
         JSON.stringify({
@@ -588,7 +592,8 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       const data = (await response.json()) as { data: any[] };
       models = data.data;
 
-      // Cache result
+      // Cache result - ensure directory exists
+      mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
       writeFileSync(
         ALL_MODELS_JSON_PATH,
         JSON.stringify({
