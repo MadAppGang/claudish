@@ -1,5 +1,285 @@
 # Changelog
 
+## [4.6.6] - 2026-02-14
+
+### Fixed
+
+- use Promise.allSettled for provider fetches
+
+
+## [4.6.5] - 2026-02-13
+
+### Added
+
+- interactive provider filter in model selector
+
+
+## [4.6.4] - 2026-02-13
+
+### Added
+
+- add @provider filter to interactive model search
+
+
+## [4.6.3] - 2026-02-13
+
+### Fixed
+
+- remove silent provider fallback, fix LiteLLM endpoint
+
+
+## [4.6.2] - 2026-02-13
+
+### Fixed
+
+- sync LiteLLM model discovery to packages/cli for npm publish
+
+
+## [4.6.1] - 2026-02-13
+
+### Fixed
+
+- model routing and self-update fixes
+
+
+## [4.6.0] - 2026-02-13
+
+### Added
+
+- LiteLLM provider support
+
+
+## [4.5.3] - 2026-02-12
+
+### Added
+
+- OllamaCloud/GLM model discovery, fuzzy search improvements
+
+
+## [4.5.2] - 2026-02-12
+
+### Added
+
+- GLM Coding Plan provider, local/global profiles, landing page updates
+
+
+## [4.5.1] - 2026-02-09
+
+### Added
+
+- Kimi Coding provider sync and model updates
+
+
+## [4.5.0] - 2026-02-06
+
+### Added
+
+- Profile-based model routing and dynamic status line
+
+
+## [4.4.5] - 2026-02-04
+
+### Added
+
+- Progress bar for context display, Vertex routing fix
+
+
+## [4.4.4] - 2026-02-03
+
+### Fixed
+
+- Use models.dev API for accurate OpenAI context windows
+
+
+## [4.4.3] - 2026-01-30
+
+### Fixed
+
+- Add missing getToolNameMap method and tool-name-utils
+
+
+## [4.4.2] - 2026-01-30
+
+### Fixed
+
+- Fix update command with -y flag alias
+
+
+## [4.4.1] - 2026-01-30
+
+### Added
+
+- Add claudish update command
+
+
+## [4.4.0] - 2026-01-30
+
+### Added
+
+- Interactive model selector improvements
+
+
+## [4.3.1] - 2026-01-30
+
+### Added
+
+- SEO improvements and multi-provider documentation
+
+
+## [4.3.0] - 2026-01-30
+
+### Added
+
+- Add --stream flag for NDJSON streaming output
+
+
+## [4.2.0] - 2026-01-30
+
+### Added
+
+- Add direct xAI/Grok API support and multi-provider model selector
+
+
+## [4.1.0] - 2026-01-28
+
+### Added
+
+- Dynamic pricing and status line improvements
+
+
+## [4.0.0] - 2026-01-26
+
+### Added
+
+- New provider@model routing syntax
+
+
+## [3.11.0] - 2026-01-25
+
+### Added
+
+- local model concurrency queue
+
+
+## [3.10.0] - 2026-01-25
+
+### Added
+
+- add Z.AI direct provider and fix GLM reasoning
+
+
+## [3.9.0] - 2026-01-24
+
+### Added
+
+- rate limiting queue and improved error handling
+
+
+## [3.8.0] - 2026-01-23
+
+### Added
+
+- add OpenCode Zen provider (zen/ prefix)
+
+
+## [3.7.9] - 2026-01-23
+
+### Fixed
+
+- check all model slots for API key requirement
+
+
+## [3.7.8] - 2026-01-23
+
+### Added
+
+- skip OpenRouter API key for local models
+
+
+## [3.7.7] - 2026-01-23
+
+### Fixed
+
+- fix package.json not found in compiled binaries
+
+
+## [3.7.6] - 2026-01-23
+
+### Fixed
+
+- improve Claude Code detection on Mac
+
+
+## [3.7.5] - 2026-01-23
+
+### Fixed
+
+- bypass Claude Code login screen in interactive mode
+
+
+## [3.7.4] - 2026-01-23
+
+### Fixed
+
+- support local Claude Code installations
+
+
+## [3.7.3] - 2026-01-23
+
+### Added
+
+- dynamic provider and model name in status line
+
+
+## [3.7.2] - 2026-01-23
+
+### Fixed
+
+- show FREE for OAuth sessions, ~$ for estimated pricing
+
+
+## [3.7.1] - 2026-01-23
+
+### Fixed
+
+- type coercion for local model tool arguments
+
+
+## [3.7.0] - 2026-01-23
+
+### Added
+
+- Gemini Code Assist OAuth support with rate limiting
+
+
+## [3.6.1] - 2026-01-22
+
+### Fixed
+
+- network error handling with SSE response format
+
+
+## [3.6.0] - 2026-01-22
+
+### Added
+
+- OllamaCloud provider support
+
+
+## [3.4.0] - 2026-01-16
+
+### Added
+
+- add claudish update command
+
+
+## [3.0.0] - 2025-12-15
+
+### Added
+
+- Full local model support (Ollama, LM Studio)
+
+
 ## [2.3.1] - 2025-11-25
 
 ### Fixed
