@@ -250,17 +250,53 @@ export class OpenAIHandler implements ModelHandler {
   }
 
   /**
+   * Check if the current model supports vision/image input
+   * Provider-level flag is checked first, then model-level detection for GLM
+   * (GLM only supports images on "V" variants like glm-4.6v, glm-4.5v)
+   */
+  private supportsVision(): boolean {
+    // Provider-level: if provider says no vision, respect it
+    if (this.provider.capabilities && !this.provider.capabilities.supportsVision) {
+      return false;
+    }
+
+    // Model-level: GLM models only support vision on "V" variants
+    const model = this.modelName.toLowerCase();
+    if (model.startsWith("glm-") && !/\d+\.?\d*v/.test(model)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Convert Claude messages to OpenAI format
    */
   private convertMessages(claudeRequest: any): any[] {
     // OllamaCloud expects string content, not arrays
     const useSimpleFormat = this.provider.name === "ollamacloud";
-    return convertMessagesToOpenAI(
+    const messages = convertMessagesToOpenAI(
       claudeRequest,
       `openai/${this.modelName}`,
       filterIdentity,
       useSimpleFormat
     );
+
+    // Strip image content for models/providers that don't support vision
+    if (!this.supportsVision()) {
+      for (const msg of messages) {
+        if (Array.isArray(msg.content)) {
+          msg.content = msg.content.filter((part: any) => part.type !== "image_url");
+          if (msg.content.length === 1 && msg.content[0].type === "text") {
+            msg.content = msg.content[0].text;
+          } else if (msg.content.length === 0) {
+            msg.content = "";
+          }
+        }
+      }
+    }
+
+    return messages;
   }
 
   /**

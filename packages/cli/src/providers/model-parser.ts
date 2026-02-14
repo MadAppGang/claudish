@@ -89,6 +89,8 @@ export const PROVIDER_SHORTCUTS: Record<string, string> = {
   lc: "ollamacloud",
   meta: "ollamacloud",
   poe: "poe",
+  litellm: "litellm",
+  ll: "litellm",
 
   // Local providers
   ollama: "ollama",
@@ -117,6 +119,7 @@ export const DIRECT_API_PROVIDERS = new Set([
   "vertex",
   "gemini-codeassist",
   "poe",
+  "litellm",
 ]);
 
 /**

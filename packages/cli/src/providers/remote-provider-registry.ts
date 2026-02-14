@@ -159,7 +159,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     prefixes: ["gc/"],
     capabilities: {
       supportsTools: true,
-      supportsVision: true,
+      supportsVision: false, // Z.AI coding plan endpoint doesn't support image_url content
       supportsStreaming: true,
       supportsJsonMode: true,
       supportsReasoning: true,
@@ -221,6 +221,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsReasoning: true,
     },
   },
+  {
+    name: "litellm",
+    baseUrl: process.env.LITELLM_BASE_URL || "",
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "LITELLM_API_KEY",
+    prefixes: ["litellm/", "ll/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: true,
+    },
+  },
 ];
 
 /**
@@ -260,6 +274,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     "opencode-zen": "opencode-zen",
     vertex: "vertex", // Note: vertex might need special handling
     "gemini-codeassist": "gemini-codeassist",
+    litellm: "litellm",
   };
 
   const mappedProviderName = providerNameMap[parsed.provider];

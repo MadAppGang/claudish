@@ -378,64 +378,18 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       url: "",
     };
 
-    // If provider's key is available, use it directly
-    if (isApiKeyAvailable(info)) {
-      const providerDisplayName =
-        PROVIDER_DISPLAY_NAMES[provider.name] ||
-        provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
-      return addCommonFields({
-        category: "direct-api",
-        providerName: providerDisplayName,
-        modelName: remoteResolved.modelName,
-        fullModelId: modelId,
-        requiredApiKeyEnvVar: info.envVar || null,
-        apiKeyAvailable: isApiKeyAvailable(info),
-        apiKeyDescription: info.envVar ? info.description : null,
-        apiKeyUrl: info.envVar ? info.url : null,
-      });
-    }
-
-    // Provider key NOT available - fall back to OpenRouter if available
-    if (isApiKeyAvailable(API_KEY_INFO.openrouter)) {
-      const orInfo = API_KEY_INFO.openrouter;
-      return addCommonFields({
-        category: "openrouter",
-        providerName: "OpenRouter (fallback)",
-        modelName: modelId,
-        fullModelId: modelId,
-        requiredApiKeyEnvVar: orInfo.envVar,
-        apiKeyAvailable: true,
-        apiKeyDescription: orInfo.description,
-        apiKeyUrl: orInfo.url,
-      });
-    }
-
-    // Neither provider key nor OpenRouter available - fall back to Vertex if available
-    if (isApiKeyAvailable(API_KEY_INFO.vertex)) {
-      const vertexInfo = API_KEY_INFO.vertex;
-      return addCommonFields({
-        category: "direct-api",
-        providerName: "Vertex AI (fallback)",
-        modelName: modelId,
-        fullModelId: modelId,
-        requiredApiKeyEnvVar: vertexInfo.envVar,
-        apiKeyAvailable: true,
-        apiKeyDescription: vertexInfo.description,
-        apiKeyUrl: vertexInfo.url,
-      });
-    }
-
-    // No fallback available - require the provider's key
     const providerDisplayName =
       PROVIDER_DISPLAY_NAMES[provider.name] ||
       provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
+
+    // Return direct-api resolution — report missing key instead of silent fallback
     return addCommonFields({
       category: "direct-api",
       providerName: providerDisplayName,
       modelName: remoteResolved.modelName,
       fullModelId: modelId,
       requiredApiKeyEnvVar: info.envVar || null,
-      apiKeyAvailable: false,
+      apiKeyAvailable: isApiKeyAvailable(info),
       apiKeyDescription: info.envVar ? info.description : null,
       apiKeyUrl: info.envVar ? info.url : null,
     });

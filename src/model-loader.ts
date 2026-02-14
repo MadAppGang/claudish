@@ -294,7 +294,7 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string): Promi
 
   // Fetch from LiteLLM API
   try {
-    const url = `${baseUrl.replace(/\/$/, '')}/public/model_hub`;
+    const url = `${baseUrl.replace(/\/$/, '')}/model_group/info`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -316,7 +316,8 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string): Promi
       return [];
     }
 
-    const rawModels: LiteLLMModel[] = await response.json();
+    const responseData = await response.json();
+    const rawModels: LiteLLMModel[] = responseData.data || responseData;
 
     // Transform to model selector format
     const transformedModels = rawModels

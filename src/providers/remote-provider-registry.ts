@@ -172,7 +172,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     prefixes: ["gc/"],
     capabilities: {
       supportsTools: true,
-      supportsVision: true,
+      supportsVision: false, // Z.AI coding plan endpoint doesn't support image_url content
       supportsStreaming: true,
       supportsJsonMode: true,
       supportsReasoning: true,

@@ -16,6 +16,7 @@ import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
 import { VertexOAuthHandler } from "./handlers/vertex-oauth-handler.js";
 import { PoeHandler } from "./handlers/poe-handler.js";
 import { OllamaCloudHandler } from "./handlers/ollamacloud-handler.js";
+import { LiteLLMHandler } from "./handlers/litellm-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import {
   resolveProvider,
@@ -200,6 +201,16 @@ export async function createProxyServer(
         // OllamaCloud uses Ollama native API (NOT OpenAI-compatible)
         handler = new OllamaCloudHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created OllamaCloud handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "litellm") {
+        // LiteLLM uses OpenAI-compatible API format
+        if (!resolved.provider.baseUrl) {
+          console.error("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
+          console.error("Set it with: export LITELLM_BASE_URL='https://your-litellm-instance.com'");
+          console.error("Or use: claudish --litellm-url https://your-instance.com --model litellm@model 'task'");
+          return null;
+        }
+        handler = new LiteLLMHandler(targetModel, resolved.modelName, apiKey, port, resolved.provider.baseUrl);
+        log(`[Proxy] Created LiteLLM handler: ${resolved.modelName} (${resolved.provider.baseUrl})`);
       } else if (resolved.provider.name === "vertex") {
         // Vertex AI supports two modes:
         // 1. Express Mode (API key) - for Gemini models

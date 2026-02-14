@@ -675,31 +675,47 @@ async function getAllModelsForSearch(): Promise<ModelInfo[]> {
   const litellmBaseUrl = process.env.LITELLM_BASE_URL;
   const litellmApiKey = process.env.LITELLM_API_KEY;
 
-  // Fetch from all providers in parallel (including Zen for free models)
-  const fetchPromises = [
-    fetchAllModels().then((models) => models.map(toModelInfo)),
-    fetchXAIModels(),
-    fetchGeminiModels(),
-    fetchOpenAIModels(),
-    fetchGLMDirectModels(),
-    fetchGLMCodingModels(),
-    fetchOllamaCloudModels(),
-    fetchZenFreeModels(),
+  // Build named fetch entries for robust error handling
+  const fetchEntries: Array<{ name: string; promise: Promise<ModelInfo[]> }> = [
+    { name: "OpenRouter", promise: fetchAllModels().then((models) => models.map(toModelInfo)) },
+    { name: "xAI", promise: fetchXAIModels() },
+    { name: "Gemini", promise: fetchGeminiModels() },
+    { name: "OpenAI", promise: fetchOpenAIModels() },
+    { name: "GLM", promise: fetchGLMDirectModels() },
+    { name: "GLM Coding", promise: fetchGLMCodingModels() },
+    { name: "OllamaCloud", promise: fetchOllamaCloudModels() },
+    { name: "Zen", promise: fetchZenFreeModels() },
   ];
 
   // Add LiteLLM fetch if configured
   if (litellmBaseUrl && litellmApiKey) {
-    fetchPromises.push(fetchLiteLLMModels(litellmBaseUrl, litellmApiKey));
+    fetchEntries.push({ name: "LiteLLM", promise: fetchLiteLLMModels(litellmBaseUrl, litellmApiKey) });
   }
 
-  const results = await Promise.all(fetchPromises);
+  // Use allSettled so one failing provider can't break the whole list
+  const settled = await Promise.allSettled(fetchEntries.map((e) => e.promise));
 
-  // Unpack results
-  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmDirectModels, glmCodingModels, ollamaCloudModels, zenModels, litellmModels = []] = results;
+  const fetchResults: Record<string, ModelInfo[]> = {};
+  for (let i = 0; i < settled.length; i++) {
+    const result = settled[i];
+    fetchResults[fetchEntries[i].name] = result.status === "fulfilled" ? result.value : [];
+  }
 
   // Combine results: Zen first (free), then OllamaCloud, then direct providers, then LiteLLM, then OpenRouter
-  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels, ...glmDirectModels, ...glmCodingModels];
-  const allModels = [...zenModels, ...ollamaCloudModels, ...directApiModels, ...litellmModels, ...openRouterModels];
+  const directApiModels = [
+    ...fetchResults["xAI"],
+    ...fetchResults["Gemini"],
+    ...fetchResults["OpenAI"],
+    ...fetchResults["GLM"],
+    ...fetchResults["GLM Coding"],
+  ];
+  const allModels = [
+    ...fetchResults["Zen"],
+    ...fetchResults["OllamaCloud"],
+    ...directApiModels,
+    ...(fetchResults["LiteLLM"] || []),
+    ...fetchResults["OpenRouter"],
+  ];
 
   return allModels;
 }
@@ -738,6 +754,75 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
   }
 
   return `${model.id} (${model.provider}, ${priceStr}, ${ctxStr}${capsStr})`;
+}
+
+/**
+ * Provider filter aliases for @prefix search syntax
+ * Maps user-typed aliases to the ModelInfo.source value
+ */
+const PROVIDER_FILTER_ALIASES: Record<string, string> = {
+  // Full names
+  zen: "Zen",
+  openrouter: "OpenRouter",
+  or: "OpenRouter",
+  xai: "xAI",
+  gemini: "Gemini",
+  gem: "Gemini",
+  google: "Gemini",
+  openai: "OpenAI",
+  oai: "OpenAI",
+  glm: "GLM",
+  "glm-coding": "GLM Coding",
+  gc: "GLM Coding",
+  ollamacloud: "OllamaCloud",
+  oc: "OllamaCloud",
+  litellm: "LiteLLM",
+  ll: "LiteLLM",
+};
+
+/**
+ * Parse search term for @provider filter prefix
+ * Returns { provider: source string or null, searchTerm: remaining text }
+ *
+ * Examples:
+ *   "@xai"        → { provider: "xAI", searchTerm: "" }
+ *   "@xai grok"   → { provider: "xAI", searchTerm: "grok" }
+ *   "@ll gemini"  → { provider: "LiteLLM", searchTerm: "gemini" }
+ *   "grok"        → { provider: null, searchTerm: "grok" }
+ */
+function parseProviderFilter(term: string): { provider: string | null; searchTerm: string } {
+  if (!term.startsWith("@")) {
+    return { provider: null, searchTerm: term };
+  }
+
+  const withoutAt = term.slice(1);
+  const spaceIdx = withoutAt.indexOf(" ");
+
+  let prefix: string;
+  let rest: string;
+  if (spaceIdx === -1) {
+    prefix = withoutAt;
+    rest = "";
+  } else {
+    prefix = withoutAt.slice(0, spaceIdx);
+    rest = withoutAt.slice(spaceIdx + 1).trim();
+  }
+
+  const source = PROVIDER_FILTER_ALIASES[prefix.toLowerCase()];
+  if (source) {
+    return { provider: source, searchTerm: rest };
+  }
+
+  // Partial match: find aliases that start with the typed prefix
+  const partialMatch = Object.entries(PROVIDER_FILTER_ALIASES).find(([alias]) =>
+    alias.startsWith(prefix.toLowerCase())
+  );
+  if (partialMatch) {
+    return { provider: partialMatch[1], searchTerm: rest };
+  }
+
+  // No match — treat the whole thing as a regular search term
+  return { provider: null, searchTerm: term };
 }
 
 /**
@@ -837,6 +922,37 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
   }
 
+  // Build provider filter choices from actually loaded models
+  const providerCounts = new Map<string, number>();
+  for (const m of models) {
+    if (m.source) {
+      providerCounts.set(m.source, (providerCounts.get(m.source) || 0) + 1);
+    }
+  }
+
+  // Provider selection step (skip if freeOnly or custom message — those are special flows)
+  let filteredModels = models;
+  if (!freeOnly && !message && providerCounts.size > 1) {
+    const providerChoices = [
+      { name: `All providers (${models.length} models)`, value: "__all__" },
+      ...Array.from(providerCounts.entries())
+        .sort((a, b) => b[1] - a[1]) // Sort by model count descending
+        .map(([source, count]) => ({
+          name: `${source} (${count})`,
+          value: source,
+        })),
+    ];
+
+    const selectedProvider = await select({
+      message: "Filter by provider:",
+      choices: providerChoices,
+    });
+
+    if (selectedProvider !== "__all__") {
+      filteredModels = models.filter((m) => m.source === selectedProvider);
+    }
+  }
+
   const promptMessage =
     message ||
     (freeOnly
@@ -849,21 +965,37 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     source: async (term) => {
       if (!term) {
         // Show all/top models when no search term (up to 30)
-        return models.slice(0, 30).map((m) => ({
+        return filteredModels.slice(0, 30).map((m) => ({
           name: formatModelChoice(m, true), // Always show source
           value: m.id,
           description: m.description?.slice(0, 80),
         }));
       }
 
-      // Fuzzy search
-      const results = models
+      // Also support @provider prefix as power-user shortcut
+      const { provider: filterProvider, searchTerm } = parseProviderFilter(term);
+
+      let pool = filteredModels;
+      if (filterProvider) {
+        pool = models.filter((m) => m.source === filterProvider);
+      }
+
+      if (!searchTerm) {
+        return pool.slice(0, 30).map((m) => ({
+          name: formatModelChoice(m, true),
+          value: m.id,
+          description: m.description?.slice(0, 80),
+        }));
+      }
+
+      // Fuzzy search within the (possibly filtered) pool
+      const results = pool
         .map((m) => ({
           model: m,
           score: Math.max(
-            fuzzyMatch(m.id, term),
-            fuzzyMatch(m.name, term),
-            fuzzyMatch(m.provider, term) * 0.5
+            fuzzyMatch(m.id, searchTerm),
+            fuzzyMatch(m.name, searchTerm),
+            fuzzyMatch(m.provider, searchTerm) * 0.5
           ),
         }))
         .filter((r) => r.score > 0.1)
