@@ -161,10 +161,35 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   }
 
   /**
+   * Check if the current model supports vision/image input.
+   * Subclasses can override for model-specific checks.
+   */
+  protected supportsVision(): boolean {
+    return true; // Default: assume vision is supported
+  }
+
+  /**
    * Convert Claude messages to provider format (default: OpenAI format)
+   * Strips image content for models that don't support vision.
    */
   protected convertMessages(claudeRequest: any): any[] {
-    return convertMessagesToOpenAI(claudeRequest, this.targetModel, filterIdentity);
+    const messages = convertMessagesToOpenAI(claudeRequest, this.targetModel, filterIdentity);
+
+    // Strip image content for models that don't support vision
+    if (!this.supportsVision()) {
+      for (const msg of messages) {
+        if (Array.isArray(msg.content)) {
+          msg.content = msg.content.filter((part: any) => part.type !== "image_url");
+          if (msg.content.length === 1 && msg.content[0].type === "text") {
+            msg.content = msg.content[0].text;
+          } else if (msg.content.length === 0) {
+            msg.content = "";
+          }
+        }
+      }
+    }
+
+    return messages;
   }
 
   /**

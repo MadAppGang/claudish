@@ -1,6 +1,6 @@
 {
   "name": "claudish-monorepo",
-  "version": "4.6.8",
+  "version": "4.6.9",
   "private": true,
   "description": "Monorepo for Claudish - Run Claude Code with any model",
   "type": "module",

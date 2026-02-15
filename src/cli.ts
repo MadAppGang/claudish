@@ -1,7 +1,7 @@
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 import { loadModelInfo, getAvailableModels } from "./model-loader.js";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.6.8"; // Fallback version for compiled binaries
+let VERSION = "4.6.9"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -37,6 +37,33 @@ try {
  */
 export function getVersion(): string {
   return VERSION;
+}
+
+/**
+ * Clear all model caches (OpenRouter, LiteLLM, pricing)
+ * Called when --force-update flag is used
+ */
+function clearAllModelCaches(): void {
+  const cacheDir = join(homedir(), ".claudish");
+  if (!existsSync(cacheDir)) return;
+
+  const cachePatterns = ["all-models.json", "pricing-cache.json"];
+  let cleared = 0;
+
+  try {
+    const files = readdirSync(cacheDir);
+    for (const file of files) {
+      if (cachePatterns.includes(file) || file.startsWith("litellm-models-")) {
+        unlinkSync(join(cacheDir, file));
+        cleared++;
+      }
+    }
+    if (cleared > 0) {
+      console.error(`🗑️  Cleared ${cleared} cache file(s)`);
+    }
+  } catch (error) {
+    console.error(`Warning: Could not clear caches: ${error}`);
+  }
 }
 
 /**
@@ -207,6 +234,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
+      if (forceUpdate) clearAllModelCaches();
+
       // Auto-update if cache is stale (>2 days) or if --force-update is specified
       await checkAndUpdateModelsCache(forceUpdate);
 
@@ -216,7 +245,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         printAvailableModels();
       }
       process.exit(0);
-    } else if (arg === "--models" || arg === "-s" || arg === "--search") {
+    } else if (arg === "--models" || arg === "--list-models" || arg === "-s" || arg === "--search") {
       // Check for optional search query (next arg that doesn't start with --)
       const nextArg = args[i + 1];
       const hasQuery = nextArg && !nextArg.startsWith("--");
@@ -224,6 +253,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
+
+      if (forceUpdate) clearAllModelCaches();
 
       if (query) {
         // Search mode: fuzzy search all models

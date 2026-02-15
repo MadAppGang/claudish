@@ -670,14 +670,14 @@ async function getFreeModels(): Promise<ModelInfo[]> {
  * Get all models for search
  * Fetches from all available providers in parallel
  */
-async function getAllModelsForSearch(): Promise<ModelInfo[]> {
+async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> {
   // Check for LiteLLM configuration
   const litellmBaseUrl = process.env.LITELLM_BASE_URL;
   const litellmApiKey = process.env.LITELLM_API_KEY;
 
   // Build named fetch entries for robust error handling
   const fetchEntries: Array<{ name: string; promise: Promise<ModelInfo[]> }> = [
-    { name: "OpenRouter", promise: fetchAllModels().then((models) => models.map(toModelInfo)) },
+    { name: "OpenRouter", promise: fetchAllModels(forceUpdate).then((models) => models.map(toModelInfo)) },
     { name: "xAI", promise: fetchXAIModels() },
     { name: "Gemini", promise: fetchGeminiModels() },
     { name: "OpenAI", promise: fetchOpenAIModels() },
@@ -689,7 +689,7 @@ async function getAllModelsForSearch(): Promise<ModelInfo[]> {
 
   // Add LiteLLM fetch if configured
   if (litellmBaseUrl && litellmApiKey) {
-    fetchEntries.push({ name: "LiteLLM", promise: fetchLiteLLMModels(litellmBaseUrl, litellmApiKey) });
+    fetchEntries.push({ name: "LiteLLM", promise: fetchLiteLLMModels(litellmBaseUrl, litellmApiKey, forceUpdate) });
   }
 
   // Use allSettled so one failing provider can't break the whole list
@@ -863,13 +863,14 @@ export interface ModelSelectorOptions {
   freeOnly?: boolean;
   recommended?: boolean;
   message?: string;
+  forceUpdate?: boolean;
 }
 
 /**
  * Select a model interactively with fuzzy search
  */
 export async function selectModel(options: ModelSelectorOptions = {}): Promise<string> {
-  const { freeOnly = false, recommended = true, message } = options;
+  const { freeOnly = false, recommended = true, message, forceUpdate = false } = options;
 
   let models: ModelInfo[];
 
@@ -881,7 +882,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   } else {
     // Fetch all models from all providers (Zen, xAI, Gemini, OpenAI, OpenRouter)
     const [allModels, recommendedModels] = await Promise.all([
-      getAllModelsForSearch(),
+      getAllModelsForSearch(forceUpdate),
       Promise.resolve(recommended ? loadRecommendedModels() : []),
     ]);
 

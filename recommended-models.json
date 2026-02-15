@@ -1,33 +1,33 @@
 {
   "version": "1.2.0",
-  "lastUpdated": "2026-02-12",
+  "lastUpdated": "2026-02-14",
   "source": "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
   "models": [
     {
-      "id": "x-ai/grok-4.1-fast",
-      "name": "xAI: Grok 4.1 Fast",
-      "description": "Grok 4.1 Fast is xAI's best agentic tool calling model with a 2M context window. Excels at real-world use cases like customer support and deep research. Reasoning can be enabled or disabled via API parameters.",
+      "id": "x-ai/grok-code-fast-1",
+      "name": "xAI: Grok Code Fast 1",
+      "description": "Grok Code Fast 1 is a speedy and economical reasoning model that excels at agentic coding. With reasoning traces visible in the response, developers can steer Grok Code for high-quality work flows.",
       "provider": "X-ai",
       "category": "reasoning",
       "priority": 1,
       "pricing": {
         "input": "$0.20/1M",
-        "output": "$0.50/1M",
-        "average": "$0.35/1M"
+        "output": "$1.50/1M",
+        "average": "$0.85/1M"
       },
-      "context": "2M",
-      "maxOutputTokens": 30000,
-      "modality": "text+image->text",
+      "context": "256K",
+      "maxOutputTokens": 10000,
+      "modality": "text->text",
       "supportsTools": true,
       "supportsReasoning": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "isModerated": false,
       "recommended": true
     },
     {
       "id": "minimax/minimax-m2.1",
       "name": "MiniMax: MiniMax M2.1",
-      "description": "MiniMax-M2.1 is a lightweight, state-of-the-art model optimized for coding and agentic workflows. With only 10B activated parameters, it delivers exceptional latency and cost efficiency with leading multilingual coding performance.",
+      "description": "MiniMax-M2.1 is a lightweight, state-of-the-art large language model optimized for coding, agentic workflows, and modern application development. With only 10 billion activated parameters, it delivers a major jump in real-world capability while maintaining exceptional latency, scalability, and cost efficiency.\n\nCompared to its predecessor, M2.1 delivers cleaner, more concise outputs and faster perceived response times. It shows leading multilingual coding performance across major systems and application languages, achieving 49.4% on Multi-SWE-Bench and 72.5% on SWE-Bench Multilingual, and serves as a versatile agent “brain” for IDEs, coding tools, and general-purpose assistance.\n\nTo avoid degrading this model's performance, MiniMax highly recommends preserving reasoning between turns. Learn more about using reasoning_details to pass back reasoning in our [docs](https://openrouter.ai/docs/use-cases/reasoning-tokens#preserving-reasoning-blocks).",
       "provider": "Minimax",
       "category": "reasoning",
       "priority": 2,
@@ -46,19 +46,19 @@
       "recommended": true
     },
     {
-      "id": "z-ai/glm-5",
-      "name": "Z.ai: GLM 5",
-      "description": "GLM-5 is Z.ai's flagship open-source foundation model engineered for complex systems design and long-horizon agent workflows. Delivers production-grade performance on large-scale programming tasks with advanced agentic planning, deep backend reasoning, and iterative self-correction.",
+      "id": "z-ai/glm-4.7",
+      "name": "Z.ai: GLM 4.7",
+      "description": "GLM-4.7 is Z.ai’s latest flagship model, featuring upgrades in two key areas: enhanced programming capabilities and more stable multi-step reasoning/execution. It demonstrates significant improvements in executing complex agent tasks while delivering more natural conversational experiences and superior front-end aesthetics.",
       "provider": "Z-ai",
       "category": "reasoning",
       "priority": 3,
       "pricing": {
-        "input": "$1.00/1M",
-        "output": "$3.20/1M",
-        "average": "$2.10/1M"
+        "input": "$0.40/1M",
+        "output": "$1.50/1M",
+        "average": "$0.95/1M"
       },
-      "context": "203K",
-      "maxOutputTokens": 202752,
+      "context": "202K",
+      "maxOutputTokens": 65535,
       "modality": "text->text",
       "supportsTools": true,
       "supportsReasoning": true,
@@ -69,7 +69,7 @@
     {
       "id": "google/gemini-3-pro-preview",
       "name": "Google: Gemini 3 Pro Preview",
-      "description": "Gemini 3 Pro is Google's flagship frontier model for high-precision multimodal reasoning. Combines strong performance across text, image, video, audio, and code with a 1M-token context window. State-of-the-art benchmark results in reasoning, STEM, and multimodal understanding.",
+      "description": "Gemini 3 Pro is Google’s flagship frontier model for high-precision multimodal reasoning, combining strong performance across text, image, video, audio, and code with a 1M-token context window. Reasoning Details must be preserved when using multi-turn tool calling, see our docs here: https://openrouter.ai/docs/use-cases/reasoning-tokens#preserving-reasoning-blocks. It delivers state-of-the-art benchmark results in general reasoning, STEM problem solving, factual QA, and multimodal understanding, including leading scores on LMArena, GPQA Diamond, MathArena Apex, MMMU-Pro, and Video-MMMU. Interactions emphasize depth and interpretability: the model is designed to infer intent with minimal prompting and produce direct, insight-focused responses.\n\nBuilt for advanced development and agentic workflows, Gemini 3 Pro provides robust tool-calling, long-horizon planning stability, and strong zero-shot generation for complex UI, visualization, and coding tasks. It excels at agentic coding (SWE-Bench Verified, Terminal-Bench 2.0), multimodal analysis, and structured long-form tasks such as research synthesis, planning, and interactive learning experiences. Suitable applications include autonomous agents, coding assistants, multimodal analytics, scientific reasoning, and high-context information processing.",
       "provider": "Google",
       "category": "vision",
       "priority": 4,
@@ -80,7 +80,7 @@
       },
       "context": "1048K",
       "maxOutputTokens": 65536,
-      "modality": "text+image->text",
+      "modality": "text+image+file+audio+video->text",
       "supportsTools": true,
       "supportsReasoning": true,
       "supportsVision": true,
@@ -88,54 +88,33 @@
       "recommended": true
     },
     {
-      "id": "openai/gpt-5.3-codex",
-      "name": "OpenAI: GPT-5.3-Codex",
-      "description": "GPT-5.3-Codex is the latest in the Codex series, optimized for software engineering and coding workflows. Designed for interactive development sessions and long, independent execution of complex engineering tasks.",
-      "provider": "Openai",
+      "id": "moonshotai/kimi-k2-thinking",
+      "name": "MoonshotAI: Kimi K2 Thinking",
+      "description": "Kimi K2 Thinking is Moonshot AI’s most advanced open reasoning model to date, extending the K2 series into agentic, long-horizon reasoning. Built on the trillion-parameter Mixture-of-Experts (MoE) architecture introduced in Kimi K2, it activates 32 billion parameters per forward pass and supports 256 k-token context windows. The model is optimized for persistent step-by-step thought, dynamic tool invocation, and complex reasoning workflows that span hundreds of turns. It interleaves step-by-step reasoning with tool use, enabling autonomous research, coding, and writing that can persist for hundreds of sequential actions without drift.\n\nIt sets new open-source benchmarks on HLE, BrowseComp, SWE-Multilingual, and LiveCodeBench, while maintaining stable multi-agent behavior through 200–300 tool calls. Built on a large-scale MoE architecture with MuonClip optimization, it combines strong reasoning depth with high inference efficiency for demanding agentic and analytical tasks.",
+      "provider": "Moonshotai",
       "category": "reasoning",
       "priority": 5,
       "pricing": {
-        "input": "$1.75/1M",
-        "output": "$14.00/1M",
-        "average": "$7.88/1M"
-      },
-      "context": "400K",
-      "maxOutputTokens": 128000,
-      "modality": "text+image->text",
-      "supportsTools": true,
-      "supportsReasoning": true,
-      "supportsVision": true,
-      "isModerated": false,
-      "recommended": true
-    },
-    {
-      "id": "moonshotai/kimi-k2.5",
-      "name": "MoonshotAI: Kimi K2.5",
-      "description": "Kimi K2.5 is Moonshot AI's native multimodal model with state-of-the-art visual coding capability and a self-directed agent swarm paradigm. Built on Kimi K2 with continued pretraining over approximately 15T mixed visual and text tokens.",
-      "provider": "Moonshotai",
-      "category": "reasoning",
-      "priority": 6,
-      "pricing": {
-        "input": "$0.45/1M",
-        "output": "$2.25/1M",
-        "average": "$1.35/1M"
+        "input": "$0.40/1M",
+        "output": "$1.75/1M",
+        "average": "$1.07/1M"
       },
       "context": "262K",
       "maxOutputTokens": 65535,
-      "modality": "text+image->text",
+      "modality": "text->text",
       "supportsTools": true,
       "supportsReasoning": true,
-      "supportsVision": true,
+      "supportsVision": false,
       "isModerated": false,
       "recommended": true
     },
     {
       "id": "deepseek/deepseek-v3.2",
       "name": "DeepSeek: DeepSeek V3.2",
-      "description": "DeepSeek-V3.2 harmonizes high computational efficiency with strong reasoning and agentic tool-use. Uses DeepSeek Sparse Attention for cost-effective long-context scenarios. GPT-5 class performance with gold-medal results on 2025 IMO and IOI.",
+      "description": "DeepSeek-V3.2 is a large language model designed to harmonize high computational efficiency with strong reasoning and agentic tool-use performance. It introduces DeepSeek Sparse Attention (DSA), a fine-grained sparse attention mechanism that reduces training and inference cost while preserving quality in long-context scenarios. A scalable reinforcement learning post-training framework further improves reasoning, with reported performance in the GPT-5 class, and the model has demonstrated gold-medal results on the 2025 IMO and IOI. V3.2 also uses a large-scale agentic task synthesis pipeline to better integrate reasoning into tool-use settings, boosting compliance and generalization in interactive environments.\n\nUsers can control the reasoning behaviour with the `reasoning` `enabled` boolean. [Learn more in our docs](https://openrouter.ai/docs/use-cases/reasoning-tokens#enable-reasoning-with-default-config)",
       "provider": "Deepseek",
       "category": "reasoning",
-      "priority": 7,
+      "priority": 6,
       "pricing": {
         "input": "$0.25/1M",
         "output": "$0.38/1M",
@@ -151,40 +130,19 @@
       "recommended": true
     },
     {
-      "id": "qwen/qwen3-coder-next",
-      "name": "Qwen: Qwen3 Coder Next",
-      "description": "Qwen3-Coder-Next is an open-weight model optimized for coding agents. Sparse MoE design with 80B total parameters and only 3B activated per token, delivering performance comparable to 10-20x larger models. Ideal for cost-sensitive, always-on agent deployment.",
+      "id": "qwen/qwen3-vl-235b-a22b-thinking",
+      "name": "Qwen: Qwen3 VL 235B A22B Thinking",
+      "description": "Qwen3-VL-235B-A22B Thinking is a multimodal model that unifies strong text generation with visual understanding across images and video. The Thinking model is optimized for multimodal reasoning in STEM and math. The series emphasizes robust perception (recognition of diverse real-world and synthetic categories), spatial understanding (2D/3D grounding), and long-form visual comprehension, with competitive results on public multimodal benchmarks for both perception and reasoning.\n\nBeyond analysis, Qwen3-VL supports agentic interaction and tool use: it can follow complex instructions over multi-image, multi-turn dialogues; align text to video timelines for precise temporal queries; and operate GUI elements for automation tasks. The models also enable visual coding workflows, turning sketches or mockups into code and assisting with UI debugging, while maintaining strong text-only performance comparable to the flagship Qwen3 language models. This makes Qwen3-VL suitable for production scenarios spanning document AI, multilingual OCR, software/UI assistance, spatial/embodied tasks, and research on vision-language agents.",
       "provider": "Qwen",
-      "category": "coding",
-      "priority": 8,
-      "pricing": {
-        "input": "$0.07/1M",
-        "output": "$0.30/1M",
-        "average": "$0.18/1M"
-      },
-      "context": "262K",
-      "maxOutputTokens": 65536,
-      "modality": "text->text",
-      "supportsTools": true,
-      "supportsReasoning": false,
-      "supportsVision": false,
-      "isModerated": false,
-      "recommended": true
-    },
-    {
-      "id": "google/gemini-3-flash-preview",
-      "name": "Google: Gemini 3 Flash Preview",
-      "description": "Gemini 3 Flash is a high-speed thinking model designed for agentic workflows, multi-turn chat, and coding assistance. Delivers near-Pro level reasoning with substantially lower latency. 1M context window.",
-      "provider": "Google",
       "category": "vision",
-      "priority": 9,
+      "priority": 7,
       "pricing": {
-        "input": "$0.50/1M",
-        "output": "$3.00/1M",
-        "average": "$1.75/1M"
+        "input": "FREE",
+        "output": "FREE",
+        "average": "FREE"
       },
-      "context": "1048K",
-      "maxOutputTokens": 65535,
+      "context": "131K",
+      "maxOutputTokens": 32768,
       "modality": "text+image->text",
       "supportsTools": true,
       "supportsReasoning": true,
