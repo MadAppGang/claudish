@@ -10,6 +10,8 @@ import { log, logStructured, isLoggingEnabled, getLogLevel, truncateContent } fr
 import { fetchModelContextWindow, doesModelSupportReasoning } from "../model-loader.js";
 import { validateToolArguments } from "./shared/openai-compat.js";
 import { OpenRouterRequestQueue } from "./shared/openrouter-queue.js";
+import { getModelPricing } from "./shared/remote-provider-types.js";
+import { KeyPool } from "./shared/key-pool.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_HEADERS = {
@@ -19,7 +21,7 @@ const OPENROUTER_HEADERS = {
 
 export class OpenRouterHandler implements ModelHandler {
   private targetModel: string;
-  private apiKey?: string;
+  private keyPool: KeyPool;
   private adapterManager: AdapterManager;
   private middlewareManager: MiddlewareManager;
   private contextWindowCache = new Map<string, number>();
@@ -30,7 +32,7 @@ export class OpenRouterHandler implements ModelHandler {
 
   constructor(targetModel: string, apiKey: string | undefined, port: number) {
     this.targetModel = targetModel;
-    this.apiKey = apiKey;
+    this.keyPool = new KeyPool(apiKey || "", "OpenRouter");
     this.port = port;
     this.adapterManager = new AdapterManager(targetModel);
     this.middlewareManager = new MiddlewareManager();
@@ -61,12 +63,6 @@ export class OpenRouterHandler implements ModelHandler {
       const limit = this.contextWindowCache.get(this.targetModel) || 200000;
       const leftPct =
         limit > 0 ? Math.max(0, Math.min(100, Math.round(((limit - total) / limit) * 100))) : 100;
-      // Strip provider prefix from model name for cleaner display
-      const displayModelName = this.targetModel.replace(
-        /^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/,
-        ""
-      );
-
       // Check if this is a free model (ends with :free or cost is 0)
       const isFreeModel = this.targetModel.endsWith(":free") || this.sessionTotalCost === 0;
 
@@ -78,7 +74,6 @@ export class OpenRouterHandler implements ModelHandler {
         context_window: limit,
         context_left_percent: leftPct,
         provider_name: "OpenRouter",
-        model_name: displayModelName,
         updated_at: Date.now(),
         is_free: isFreeModel,
       };
@@ -157,17 +152,37 @@ export class OpenRouterHandler implements ModelHandler {
 
     let response: Response;
     try {
-      response = await this.queue.enqueue(() =>
-        fetch(OPENROUTER_API_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.apiKey}`,
-            ...OPENROUTER_HEADERS,
-          },
-          body: JSON.stringify(openRouterPayload),
-        })
-      );
+      // Check if we have multiple keys - use key rotation
+      if (this.keyPool.hasKeys() && this.keyPool.keyCount() > 1) {
+        log(`[OpenRouter] Using key pool with ${this.keyPool.keyCount()} keys`);
+
+        response = await this.keyPool.executeWithFailover(async (key) => {
+          return this.queue.enqueue(() =>
+            fetch(OPENROUTER_API_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${key}`,
+                ...OPENROUTER_HEADERS,
+              },
+              body: JSON.stringify(openRouterPayload),
+            })
+          );
+        });
+      } else {
+        // Single key mode - use existing behavior
+        response = await this.queue.enqueue(() =>
+          fetch(OPENROUTER_API_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.keyPool.getCurrentKey()}`,
+              ...OPENROUTER_HEADERS,
+            },
+            body: JSON.stringify(openRouterPayload),
+          })
+        );
+      }
     } catch (fetchError: any) {
       // Network error (connection closed, timeout, DNS failure, etc.)
       log(`[OpenRouter] Fetch error: ${fetchError.message || fetchError}`);
@@ -343,6 +358,9 @@ export class OpenRouterHandler implements ModelHandler {
 
     // Capture references for use in closure
     const middlewareManager = this.middlewareManager;
+    const updateCost = (cost: number) => {
+      this.sessionTotalCost += cost;
+    };
     const writeTokens = (input: number, output: number) => this.writeTokenFile(input, output);
     // Shared metadata for middleware across all chunks in this stream
     const streamMetadata = new Map<string, any>();
@@ -419,6 +437,20 @@ export class OpenRouterHandler implements ModelHandler {
               log(
                 `[OpenRouter] Usage: prompt=${usage.prompt_tokens || 0}, completion=${usage.completion_tokens || 0}, total=${usage.total_tokens || 0}`
               );
+
+              // Use actual cost from OpenRouter response if available,
+              // otherwise calculate from dynamic pricing tables
+              if (typeof usage.cost === "number" && usage.cost > 0) {
+                updateCost(usage.cost);
+                log(`[OpenRouter] Actual cost from API: $${usage.cost.toFixed(6)}`);
+              } else {
+                const pricing = getModelPricing("openrouter", target);
+                const inputCost = ((usage.prompt_tokens || 0) / 1_000_000) * pricing.inputCostPer1M;
+                const outputCost =
+                  ((usage.completion_tokens || 0) / 1_000_000) * pricing.outputCostPer1M;
+                updateCost(inputCost + outputCost);
+              }
+
               writeTokens(usage.prompt_tokens || 0, usage.completion_tokens || 0);
             } else {
               log(`[OpenRouter] Warning: No usage data received from model`);

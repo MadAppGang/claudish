@@ -19,17 +19,19 @@ import {
   getModelPricing,
 } from "./shared/remote-provider-types.js";
 import type { ModelHandler } from "./types.js";
+import { KeyPool } from "./shared/key-pool.js";
 
 /**
  * Handler for Anthropic-compatible APIs
  *
  * Uses the native Anthropic message format, so requests are passed through
  * with minimal modification (just updating the endpoint and API key).
+ * Supports multiple API keys with round-robin rotation and automatic failover.
  */
 export class AnthropicCompatHandler implements ModelHandler {
   private provider: RemoteProvider;
   private modelName: string;
-  private apiKey: string;
+  private keyPool: KeyPool;
   private port: number;
   private sessionTotalCost = 0;
   private sessionInputTokens = 0;
@@ -39,7 +41,7 @@ export class AnthropicCompatHandler implements ModelHandler {
   constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
     this.provider = provider;
     this.modelName = modelName;
-    this.apiKey = apiKey;
+    this.keyPool = new KeyPool(apiKey, provider.name || "AnthropicCompat");
     this.port = port;
 
     // Set context window based on provider
@@ -53,7 +55,7 @@ export class AnthropicCompatHandler implements ModelHandler {
     const provider = this.provider.name.toLowerCase();
     const model = this.modelName.toLowerCase();
 
-    if (provider === "kimi" || provider === "moonshot") {
+    if (provider === "kimi" || provider === "kimi-coding" || provider === "moonshot") {
       this.contextWindow = 128000; // Kimi has 128k context
     } else if (provider === "minimax") {
       this.contextWindow = 100000; // MiniMax context window
@@ -111,7 +113,6 @@ export class AnthropicCompatHandler implements ModelHandler {
         context_window: this.contextWindow,
         context_left_percent: leftPct,
         is_free: pricing.isFree || false,
-        is_subscription: pricing.isSubscription || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: providerDisplayName,
         updated_at: Date.now(),
@@ -162,58 +163,83 @@ export class AnthropicCompatHandler implements ModelHandler {
       model: this.modelName,
     };
 
-    // Build headers
-    const headers: Record<string, string> = {
+    // Build base headers (without API key)
+    const baseHeaders: Record<string, string> = {
       "Content-Type": "application/json",
-      "x-api-key": this.apiKey,
       "anthropic-version": "2023-06-01",
     };
 
     // Add any provider-specific headers
     if (this.provider.headers) {
-      Object.assign(headers, this.provider.headers);
+      Object.assign(baseHeaders, this.provider.headers);
     }
 
-    // Kimi Coding: prefer API key auth, fall back to OAuth if no key provided
-    if (this.provider.name === "kimi-coding" && !this.apiKey) {
-      try {
-        const { existsSync, readFileSync } = await import("node:fs");
-        const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-
-        const credPath = join(homedir(), ".claudish", "kimi-oauth.json");
-        if (existsSync(credPath)) {
-          const data = JSON.parse(readFileSync(credPath, "utf-8"));
-          if (data.access_token && data.refresh_token) {
-            // Get fresh access token (handles auto-refresh)
-            const { KimiOAuth } = await import("../auth/kimi-oauth.js");
-            const oauth = KimiOAuth.getInstance();
-            const accessToken = await oauth.getAccessToken();
-
-            // Replace API key auth with Bearer token
-            delete headers["x-api-key"];
-            headers["Authorization"] = `Bearer ${accessToken}`;
-
-            // Add platform headers
-            const platformHeaders = oauth.getPlatformHeaders();
-            Object.assign(headers, platformHeaders);
-          }
-        }
-      } catch (e: any) {
-        // If OAuth fails, no auth available
-        log(`[KimiCoding] OAuth fallback failed: ${e.message}`);
-      }
-    }
-
-    // Make API call
     const endpoint = this.getApiEndpoint();
     log(`[${this.provider.name}] Calling API: ${endpoint}`);
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestPayload),
-    });
+    let response: Response;
+
+    // Check if we have multiple keys - use key rotation
+    if (this.keyPool.hasKeys() && this.keyPool.keyCount() > 1) {
+      log(`[${this.provider.name}] Using key pool with ${this.keyPool.keyCount()} keys`);
+
+      response = await this.keyPool.executeWithFailover(async (key) => {
+        const headers: Record<string, string> = {
+          ...baseHeaders,
+          "x-api-key": key,
+        };
+
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestPayload),
+        });
+        return resp;
+      });
+    } else {
+      // Single key mode - use existing behavior
+      const headers: Record<string, string> = {
+        ...baseHeaders,
+        "x-api-key": this.keyPool.getCurrentKey(),
+      };
+
+      // Kimi Coding: prefer API key auth, fall back to OAuth if no key provided
+      if (this.provider.name === "kimi-coding" && !this.keyPool.getCurrentKey()) {
+        try {
+          const { existsSync, readFileSync } = await import("node:fs");
+          const { join } = await import("node:path");
+          const { homedir } = await import("node:os");
+
+          const credPath = join(homedir(), ".claudish", "kimi-oauth.json");
+          if (existsSync(credPath)) {
+            const data = JSON.parse(readFileSync(credPath, "utf-8"));
+            if (data.access_token && data.refresh_token) {
+              // Get fresh access token (handles auto-refresh)
+              const { KimiOAuth } = await import("../auth/kimi-oauth.js");
+              const oauth = KimiOAuth.getInstance();
+              const accessToken = await oauth.getAccessToken();
+
+              // Replace API key auth with Bearer token
+              delete headers["x-api-key"];
+              headers["Authorization"] = `Bearer ${accessToken}`;
+
+              // Add Kimi-specific platform headers
+              const platformHeaders = oauth.getPlatformHeaders();
+              Object.assign(headers, platformHeaders);
+            }
+          }
+        } catch (e: any) {
+          // If OAuth fails, no auth available
+          log(`[KimiCoding] OAuth fallback failed: ${e.message}`);
+        }
+      }
+
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestPayload),
+      });
+    }
 
     log(`[${this.provider.name}] Response status: ${response.status}`);
 

@@ -21,6 +21,7 @@ import {
   filterIdentity,
 } from "./openai-compat.js";
 import type { RemoteProviderConfig, ModelPricing } from "./remote-provider-types.js";
+import { KeyPool } from "./key-pool.js";
 
 /**
  * Abstract base class for remote API providers
@@ -39,7 +40,7 @@ import type { RemoteProviderConfig, ModelPricing } from "./remote-provider-types
 export abstract class RemoteProviderHandler implements ModelHandler {
   protected targetModel: string;
   protected modelName: string;
-  protected apiKey: string;
+  protected keyPool: KeyPool;
   protected adapterManager: AdapterManager;
   protected middlewareManager: MiddlewareManager;
   protected port: number;
@@ -49,10 +50,11 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   protected contextWindow = 200000; // Default, can be updated by subclass
   protected CLAUDE_INTERNAL_CONTEXT_MAX = 200000;
 
-  constructor(targetModel: string, modelName: string, apiKey: string, port: number) {
+  constructor(targetModel: string, modelName: string, apiKey: string, port: number, providerName?: string) {
     this.targetModel = targetModel;
     this.modelName = modelName;
-    this.apiKey = apiKey;
+    // Use providerName if provided, otherwise use a default (subclasses can override getKeyPoolProviderName)
+    this.keyPool = new KeyPool(apiKey, providerName || "RemoteProvider");
     this.port = port;
     this.adapterManager = new AdapterManager(targetModel);
     this.middlewareManager = new MiddlewareManager();
@@ -284,18 +286,43 @@ export abstract class RemoteProviderHandler implements ModelHandler {
 
     // Make API call
     const endpoint = this.getApiEndpoint();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${this.apiKey}`,
-      ...this.getAdditionalHeaders(),
-    };
 
     log(`[${config.name}] Calling API: ${endpoint}`);
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestPayload),
-    });
+
+    let response: Response;
+
+    // Check if we have multiple keys - use key rotation
+    if (this.keyPool.hasKeys() && this.keyPool.keyCount() > 1) {
+      log(`[${config.name}] Using key pool with ${this.keyPool.keyCount()} keys`);
+
+      response = await this.keyPool.executeWithFailover(async (key) => {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+          ...this.getAdditionalHeaders(),
+        };
+
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestPayload),
+        });
+        return resp;
+      });
+    } else {
+      // Single key mode
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.keyPool.getCurrentKey()}`,
+        ...this.getAdditionalHeaders(),
+      };
+
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestPayload),
+      });
+    }
 
     log(`[${config.name}] Response status: ${response.status}`);
     if (!response.ok) {

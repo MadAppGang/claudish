@@ -16,6 +16,12 @@ export interface RetryConfig {
   maxRetries?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
+  /**
+   * When true, 429 responses are returned immediately without retry.
+   * Used when key rotation (executeWithFailover) handles 429s by trying the next key,
+   * making it faster to rotate than to wait and retry the same key.
+   */
+  skipRetryOn429?: boolean;
 }
 
 export interface RetryResult {
@@ -137,7 +143,7 @@ export async function fetchWithRetry(
   config: RetryConfig = {},
   logPrefix = "[GeminiRetry]"
 ): Promise<RetryResult> {
-  const { maxRetries = 5, baseDelayMs = 2000, maxDelayMs = 30000 } = config;
+  const { maxRetries = 5, baseDelayMs = 2000, maxDelayMs = 30000, skipRetryOn429 = false } = config;
 
   // Get queue instance - only used for first attempt
   const queue = GeminiRequestQueue.getInstance();
@@ -160,6 +166,13 @@ export async function fetchWithRetry(
     if (response.status === 429) {
       lastErrorText = await response.text();
       log(`${logPrefix} Rate limit hit (attempt ${attempt + 1}): ${lastErrorText}`);
+
+      // When key rotation is active, return the 429 immediately so
+      // executeWithFailover can try the next key (much faster than waiting)
+      if (skipRetryOn429) {
+        log(`${logPrefix} Key rotation active, returning 429 for key failover`);
+        break;
+      }
 
       // Check if this is a terminal quota limit (daily limit)
       if (isTerminalQuotaLimit(lastErrorText)) {

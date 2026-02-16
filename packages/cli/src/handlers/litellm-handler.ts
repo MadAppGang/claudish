@@ -58,7 +58,7 @@ export class LiteLLMHandler extends RemoteProviderHandler {
     port: number,
     baseUrl: string
   ) {
-    super(targetModel, modelName, apiKey, port);
+    super(targetModel, modelName, apiKey, port, "LiteLLM");
     this.baseUrl = baseUrl;
     this.modelVisionSupported = this.checkVisionSupport();
     this.needsInlineImages = INLINE_IMAGE_MODEL_PATTERNS.some((p) =>

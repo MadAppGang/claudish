@@ -18,9 +18,10 @@ import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middlewa
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
 import { filterIdentity } from "./shared/openai-compat.js";
-import { sanitizeSchemaForGemini, convertToolsToGemini } from "./shared/gemini-schema.js";
+import { convertToolsToGemini } from "./shared/gemini-schema.js";
 import { fetchWithRetry } from "./shared/gemini-retry.js";
 import { getModelPricing, type ModelPricing } from "./shared/remote-provider-types.js";
+import type { KeyPool } from "./shared/key-pool.js";
 
 /**
  * Abstract base class for Gemini handlers
@@ -79,6 +80,13 @@ export abstract class BaseGeminiHandler implements ModelHandler {
   protected abstract getProviderName(): string;
 
   /**
+   * Get key pool for rotation (optional - subclasses override if they support multiple keys)
+   */
+  protected getKeyPool(): KeyPool | undefined {
+    return undefined;
+  }
+
+  /**
    * Get pricing for the current model
    */
   protected getPricing(): ModelPricing {
@@ -100,10 +108,6 @@ export abstract class BaseGeminiHandler implements ModelHandler {
           : 100;
 
       const pricing = this.getPricing();
-
-      // Strip provider prefix from model name for cleaner display
-      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
-
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -114,7 +118,6 @@ export abstract class BaseGeminiHandler implements ModelHandler {
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: this.getProviderName(),
-        model_name: displayModelName,
         updated_at: Date.now(),
       };
 
@@ -234,7 +237,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
           // See: https://ai.google.dev/gemini-api/docs/thought-signatures
           if (!thoughtSignature) {
             thoughtSignature = "skip_thought_signature_validator";
-            log(`[BaseGeminiHandler:${this.modelName}] Using dummy thoughtSignature for tool ${block.name} (${block.id})`);
+            log(
+              `[BaseGeminiHandler:${this.modelName}] Using dummy thoughtSignature for tool ${block.name} (${block.id})`
+            );
           }
 
           // Build the function call part
@@ -558,7 +563,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
                         // This is REQUIRED when thinking is enabled - Gemini validates signatures on subsequent requests
                         const thoughtSignature = part.thoughtSignature;
                         if (thoughtSignature) {
-                          log(`[BaseGeminiHandler:${modelName}] Captured thoughtSignature for tool ${t.name} (${t.id})`);
+                          log(
+                            `[BaseGeminiHandler:${modelName}] Captured thoughtSignature for tool ${t.name} (${t.id})`
+                          );
                         }
                         toolCallMap.set(t.id, {
                           name: t.name,
@@ -651,9 +658,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
       stream: true,
     });
 
-    // Get endpoint and auth headers from subclass
+    // Get endpoint from subclass
     const endpoint = this.getApiEndpoint();
-    const authHeaders = await this.getAuthHeaders();
+    const keyPool = this.getKeyPool();
 
     log(`[BaseGeminiHandler] Calling API: ${endpoint}`);
 
@@ -661,22 +668,67 @@ export abstract class BaseGeminiHandler implements ModelHandler {
     let lastErrorText: string | undefined;
     let attempts = 1;
 
+    // Get fresh auth headers - needed for each key rotation attempt
+    const getAuthHeadersForKey = async (): Promise<Record<string, string>> => {
+      return this.getAuthHeaders();
+    };
+
     try {
-      const result = await fetchWithRetry(
-        endpoint,
-        {
-          method: "POST",
-          headers: {
-            ...authHeaders,
+      // If we have a key pool with multiple keys, use key rotation
+      if (keyPool && keyPool.keyCount() > 1) {
+        log(`[BaseGeminiHandler] Using key pool with ${keyPool.keyCount()} keys`);
+
+        // Use executeWithFailover to handle key rotation around fetchWithRetry
+        const makeRequest = async (key: string): Promise<Response> => {
+          // Build auth headers directly with the provided key
+          const authHeaders = await this.getAuthHeaders();
+          // Override the auth key with the one from the pool
+          // (getAuthHeaders uses getCurrentKey, but executeWithFailover provides the correct key)
+          if (authHeaders["x-goog-api-key"]) {
+            authHeaders["x-goog-api-key"] = key;
+          }
+
+          const result = await fetchWithRetry(
+            endpoint,
+            {
+              method: "POST",
+              headers: {
+                ...authHeaders,
+              },
+              body: JSON.stringify(geminiPayload),
+            },
+            { maxRetries: 1, skipRetryOn429: true }, // Don't retry 429s — let key rotation handle it
+            "[BaseGeminiHandler]"
+          );
+
+          lastErrorText = result.lastErrorText;
+          // Return the response directly - executeWithFailover will handle
+          // retryable status codes (429, 500, etc.) and rotate keys automatically
+          return result.response;
+        };
+
+        const result = await keyPool.executeWithFailover(makeRequest);
+        response = result;
+      } else {
+        // Single key mode - use existing behavior
+        const authHeaders = await getAuthHeadersForKey();
+
+        const result = await fetchWithRetry(
+          endpoint,
+          {
+            method: "POST",
+            headers: {
+              ...authHeaders,
+            },
+            body: JSON.stringify(geminiPayload),
           },
-          body: JSON.stringify(geminiPayload),
-        },
-        { maxRetries: 5, baseDelayMs: 2000, maxDelayMs: 30000 },
-        "[BaseGeminiHandler]"
-      );
-      response = result.response;
-      lastErrorText = result.lastErrorText;
-      attempts = result.attempts;
+          { maxRetries: 5, baseDelayMs: 2000, maxDelayMs: 30000 },
+          "[BaseGeminiHandler]"
+        );
+        response = result.response;
+        lastErrorText = result.lastErrorText;
+        attempts = result.attempts;
+      }
     } catch (fetchError: any) {
       // Provide helpful error message for common issues
       if (fetchError.name === "AbortError") {
@@ -720,7 +772,9 @@ export abstract class BaseGeminiHandler implements ModelHandler {
 
     if (!response.ok) {
       const errorText = response.status === 429 ? lastErrorText : await response.text();
-      log(`[BaseGeminiHandler] API error ${response.status} after ${attempts} attempt(s): ${errorText}`);
+      log(
+        `[BaseGeminiHandler] API error ${response.status} after ${attempts} attempt(s): ${errorText}`
+      );
 
       // Parse Google API errors for better user experience
       if (response.status === 429) {

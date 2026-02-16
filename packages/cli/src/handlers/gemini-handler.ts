@@ -8,23 +8,25 @@
  */
 
 import { BaseGeminiHandler } from "./base-gemini-handler.js";
+import { KeyPool } from "./shared/key-pool.js";
 import type { RemoteProvider } from "./shared/remote-provider-types.js";
 
 /**
  * Gemini API Handler with API Key Authentication
  *
  * Provides API key-based authentication for Gemini API.
+ * Supports multiple API keys with round-robin rotation and automatic failover on 429.
  * All message conversion, tool handling, and streaming logic
  * is inherited from BaseGeminiHandler.
  */
 export class GeminiHandler extends BaseGeminiHandler {
   private provider: RemoteProvider;
-  private apiKey: string;
+  private keyPool: KeyPool;
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
     super(modelName, port);
     this.provider = provider;
-    this.apiKey = apiKey;
+    this.keyPool = new KeyPool(apiKey, "Gemini");
   }
 
   /**
@@ -42,8 +44,15 @@ export class GeminiHandler extends BaseGeminiHandler {
   protected async getAuthHeaders(): Promise<Record<string, string>> {
     return {
       "Content-Type": "application/json",
-      "x-goog-api-key": this.apiKey,
+      "x-goog-api-key": this.keyPool.getCurrentKey(),
     };
+  }
+
+  /**
+   * Get the key pool for rotation
+   */
+  protected getKeyPool(): KeyPool {
+    return this.keyPool;
   }
 
   /**

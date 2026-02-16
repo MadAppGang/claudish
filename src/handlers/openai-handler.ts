@@ -28,17 +28,19 @@ import {
   type ModelPricing,
   type RemoteProvider,
 } from "./shared/remote-provider-types.js";
+import { KeyPool } from "./shared/key-pool.js";
 
 /**
  * OpenAI API Handler
  *
  * Uses OpenAI's native API format which is the same as what OpenRouter uses.
  * This allows us to reuse the shared streaming handler.
+ * Supports multiple API keys with round-robin rotation and automatic failover.
  */
 export class OpenAIHandler implements ModelHandler {
   private provider: RemoteProvider;
   private modelName: string;
-  private apiKey: string;
+  private keyPool: KeyPool;
   private port: number;
   private adapterManager: AdapterManager;
   private middlewareManager: MiddlewareManager;
@@ -50,7 +52,7 @@ export class OpenAIHandler implements ModelHandler {
   constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
     this.provider = provider;
     this.modelName = modelName;
-    this.apiKey = apiKey;
+    this.keyPool = new KeyPool(apiKey, provider.name || "OpenAI");
     this.port = port;
     this.adapterManager = new AdapterManager(`openai/${modelName}`);
     this.middlewareManager = new MiddlewareManager();
@@ -1044,23 +1046,54 @@ export class OpenAIHandler implements ModelHandler {
     const endpoint = this.getApiEndpoint();
     log(`[OpenAIHandler] Calling API: ${endpoint}`);
 
-    // Use AbortController for timeout (30 seconds for connection + response)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
     let response: Response;
+    let lastTimeoutId: NodeJS.Timeout | null = null;
+
     try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
-        body: JSON.stringify(apiPayload),
-        signal: controller.signal,
-      });
+      // Check if we have multiple keys - use key rotation
+      if (this.keyPool.hasKeys() && this.keyPool.keyCount() > 1) {
+        log(`[OpenAIHandler] Using key pool with ${this.keyPool.keyCount()} keys`);
+
+        response = await this.keyPool.executeWithFailover(async (key) => {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+          try {
+            const resp = await fetch(endpoint, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${key}`,
+              },
+              body: JSON.stringify(apiPayload),
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+            return resp;
+          } catch (err) {
+            clearTimeout(timeoutId);
+            throw err;
+          }
+        });
+      } else {
+        // Single key mode - use existing behavior
+        // Use AbortController for timeout (30 seconds for connection + response)
+        const controller = new AbortController();
+        lastTimeoutId = setTimeout(() => controller.abort(), 30000);
+
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(this.keyPool.getCurrentKey() ? { Authorization: `Bearer ${this.keyPool.getCurrentKey()}` } : {}),
+          },
+          body: JSON.stringify(apiPayload),
+          signal: controller.signal,
+        });
+        clearTimeout(lastTimeoutId);
+      }
     } catch (fetchError: any) {
-      clearTimeout(timeoutId);
+      if (lastTimeoutId) clearTimeout(lastTimeoutId);
       // Provide helpful error message for common issues
       if (fetchError.name === "AbortError") {
         log(`[OpenAIHandler] Request timed out after 30s`);
@@ -1098,7 +1131,7 @@ export class OpenAIHandler implements ModelHandler {
         503
       );
     } finally {
-      clearTimeout(timeoutId);
+      if (lastTimeoutId) clearTimeout(lastTimeoutId);
     }
 
     log(`[OpenAIHandler] Response status: ${response.status}`);

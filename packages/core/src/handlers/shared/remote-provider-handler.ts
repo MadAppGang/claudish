@@ -17,10 +17,11 @@ import { log, logStructured, getLogLevel, truncateContent } from "../../logger.j
 import {
   convertMessagesToOpenAI,
   convertToolsToOpenAI,
-  filterIdentity,
   createStreamingResponseHandler,
+  filterIdentity,
 } from "./openai-compat.js";
-import { type RemoteProviderConfig, type ModelPricing } from "./remote-provider-types.js";
+import type { RemoteProviderConfig, ModelPricing } from "./remote-provider-types.js";
+import { KeyPool } from "./key-pool.js";
 
 /**
  * Abstract base class for remote API providers
@@ -39,7 +40,7 @@ import { type RemoteProviderConfig, type ModelPricing } from "./remote-provider-
 export abstract class RemoteProviderHandler implements ModelHandler {
   protected targetModel: string;
   protected modelName: string;
-  protected apiKey: string;
+  protected keyPool: KeyPool;
   protected adapterManager: AdapterManager;
   protected middlewareManager: MiddlewareManager;
   protected port: number;
@@ -49,10 +50,11 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   protected contextWindow = 200000; // Default, can be updated by subclass
   protected CLAUDE_INTERNAL_CONTEXT_MAX = 200000;
 
-  constructor(targetModel: string, modelName: string, apiKey: string, port: number) {
+  constructor(targetModel: string, modelName: string, apiKey: string, port: number, providerName?: string) {
     this.targetModel = targetModel;
     this.modelName = modelName;
-    this.apiKey = apiKey;
+    // Use providerName if provided, otherwise use a default (subclasses can override getKeyPoolProviderName)
+    this.keyPool = new KeyPool(apiKey, providerName || "RemoteProvider");
     this.port = port;
     this.adapterManager = new AdapterManager(targetModel);
     this.middlewareManager = new MiddlewareManager();
@@ -122,10 +124,6 @@ export abstract class RemoteProviderHandler implements ModelHandler {
           : 100;
 
       const pricing = this.getPricing();
-
-      // Strip provider prefix from model name for cleaner display
-      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
-
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -136,7 +134,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: this.getProviderName(),
-        model_name: displayModelName,
+        model_name: this.modelName,
         updated_at: Date.now(),
       };
 
@@ -165,10 +163,35 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   }
 
   /**
+   * Check if the current model supports vision/image input.
+   * Subclasses can override for model-specific checks.
+   */
+  protected supportsVision(): boolean {
+    return true; // Default: assume vision is supported
+  }
+
+  /**
    * Convert Claude messages to provider format (default: OpenAI format)
+   * Strips image content for models that don't support vision.
    */
   protected convertMessages(claudeRequest: any): any[] {
-    return convertMessagesToOpenAI(claudeRequest, this.targetModel, filterIdentity);
+    const messages = convertMessagesToOpenAI(claudeRequest, this.targetModel, filterIdentity);
+
+    // Strip image content for models that don't support vision
+    if (!this.supportsVision()) {
+      for (const msg of messages) {
+        if (Array.isArray(msg.content)) {
+          msg.content = msg.content.filter((part: any) => part.type !== "image_url");
+          if (msg.content.length === 1 && msg.content[0].type === "text") {
+            msg.content = msg.content[0].text;
+          } else if (msg.content.length === 0) {
+            msg.content = "";
+          }
+        }
+      }
+    }
+
+    return messages;
   }
 
   /**
@@ -186,7 +209,8 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     c: Context,
     response: Response,
     adapter: any,
-    claudeRequest: any
+    claudeRequest: any,
+    toolNameMap?: Map<string, string>
   ): Response {
     return createStreamingResponseHandler(
       c,
@@ -195,7 +219,8 @@ export abstract class RemoteProviderHandler implements ModelHandler {
       this.targetModel,
       this.middlewareManager,
       (input, output) => this.updateTokenTracking(input, output),
-      claudeRequest.tools
+      claudeRequest.tools,
+      toolNameMap
     );
   }
 
@@ -243,10 +268,13 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     // Build request payload
     const requestPayload = this.buildRequestPayload(claudeRequest, messages, tools);
 
-    // Get adapter and prepare request
+    // Get adapter and prepare request (adapter truncates tool names if needed)
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(requestPayload, claudeRequest);
+
+    // Get tool name map from adapter (populated during prepareRequest)
+    const toolNameMap = adapter.getToolNameMap();
 
     // Call middleware
     await this.middlewareManager.beforeRequest({
@@ -258,18 +286,43 @@ export abstract class RemoteProviderHandler implements ModelHandler {
 
     // Make API call
     const endpoint = this.getApiEndpoint();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${this.apiKey}`,
-      ...this.getAdditionalHeaders(),
-    };
 
     log(`[${config.name}] Calling API: ${endpoint}`);
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestPayload),
-    });
+
+    let response: Response;
+
+    // Check if we have multiple keys - use key rotation
+    if (this.keyPool.hasKeys() && this.keyPool.keyCount() > 1) {
+      log(`[${config.name}] Using key pool with ${this.keyPool.keyCount()} keys`);
+
+      response = await this.keyPool.executeWithFailover(async (key) => {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+          ...this.getAdditionalHeaders(),
+        };
+
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestPayload),
+        });
+        return resp;
+      });
+    } else {
+      // Single key mode
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.keyPool.getCurrentKey()}`,
+        ...this.getAdditionalHeaders(),
+      };
+
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestPayload),
+      });
+    }
 
     log(`[${config.name}] Response status: ${response.status}`);
     if (!response.ok) {
@@ -283,7 +336,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     }
 
     // Handle streaming response
-    return this.handleStreamingResponse(c, response, adapter, claudeRequest);
+    return this.handleStreamingResponse(c, response, adapter, claudeRequest, toolNameMap);
   }
 
   /**

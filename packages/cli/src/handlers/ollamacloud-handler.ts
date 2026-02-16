@@ -17,11 +17,12 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { calculateCost } from "./shared/remote-provider-types.js";
+import { KeyPool } from "./shared/key-pool.js";
 
 export class OllamaCloudHandler implements ModelHandler {
   private provider: RemoteProvider;
   private modelName: string;
-  private apiKey: string;
+  private keyPool: KeyPool;
   private port: number;
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
@@ -29,7 +30,7 @@ export class OllamaCloudHandler implements ModelHandler {
   constructor(provider: RemoteProvider, modelName: string, apiKey: string, port: number) {
     this.provider = provider;
     this.modelName = modelName;
-    this.apiKey = apiKey;
+    this.keyPool = new KeyPool(apiKey, "OllamaCloud");
     this.port = port;
     this.writeTokenFile(0, 0);
   }
@@ -156,15 +157,34 @@ export class OllamaCloudHandler implements ModelHandler {
     log(`[OllamaCloud] Request: ${messages.length} messages`);
     log(`[OllamaCloud] Endpoint: ${apiUrl}`);
 
+    let response: Response;
     try {
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(ollamaPayload),
-      });
+      // Check if we have multiple keys - use key rotation
+      if (this.keyPool.hasKeys() && this.keyPool.keyCount() > 1) {
+        log(`[OllamaCloud] Using key pool with ${this.keyPool.keyCount()} keys`);
+
+        response = await this.keyPool.executeWithFailover(async (key) => {
+          const resp = await fetch(apiUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${key}`,
+            },
+            body: JSON.stringify(ollamaPayload),
+          });
+          return resp;
+        });
+      } else {
+        // Single key mode
+        response = await fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.keyPool.getCurrentKey()}`,
+          },
+          body: JSON.stringify(ollamaPayload),
+        });
+      }
 
       log(`[OllamaCloud] Response status: ${response.status}`);
       if (!response.ok) {
