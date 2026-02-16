@@ -26,7 +26,7 @@ import { KeyPool } from "./shared/key-pool.js";
  *
  * Uses the native Anthropic message format, so requests are passed through
  * with minimal modification (just updating the endpoint and API key).
- * Supports multiple API keys with round-robin rotation and automatic failover.
+ * Supports multiple API keys with automatic failover.
  */
 export class AnthropicCompatHandler implements ModelHandler {
   private provider: RemoteProvider;
@@ -55,7 +55,7 @@ export class AnthropicCompatHandler implements ModelHandler {
     const provider = this.provider.name.toLowerCase();
     const model = this.modelName.toLowerCase();
 
-    if (provider === "kimi" || provider === "kimi-coding" || provider === "moonshot") {
+    if (provider === "kimi" || provider === "moonshot") {
       this.contextWindow = 128000; // Kimi has 128k context
     } else if (provider === "minimax") {
       this.contextWindow = 100000; // MiniMax context window
@@ -113,6 +113,7 @@ export class AnthropicCompatHandler implements ModelHandler {
         context_window: this.contextWindow,
         context_left_percent: leftPct,
         is_free: pricing.isFree || false,
+        is_subscription: pricing.isSubscription || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: providerDisplayName,
         updated_at: Date.now(),
@@ -189,12 +190,11 @@ export class AnthropicCompatHandler implements ModelHandler {
           "x-api-key": key,
         };
 
-        const resp = await fetch(endpoint, {
+        return await fetch(endpoint, {
           method: "POST",
           headers,
           body: JSON.stringify(requestPayload),
         });
-        return resp;
       });
     } else {
       // Single key mode - use existing behavior
@@ -223,7 +223,7 @@ export class AnthropicCompatHandler implements ModelHandler {
               delete headers["x-api-key"];
               headers["Authorization"] = `Bearer ${accessToken}`;
 
-              // Add Kimi-specific platform headers
+              // Add platform headers
               const platformHeaders = oauth.getPlatformHeaders();
               Object.assign(headers, platformHeaders);
             }

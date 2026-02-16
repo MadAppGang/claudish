@@ -70,55 +70,7 @@ export class OpenAIHandler implements ModelHandler {
    */
   private setContextWindow(): void {
     const model = this.modelName.toLowerCase();
-
-    // xAI Grok models (context windows from xAI docs/OpenRouter)
-    if (model.includes("grok-4.1-fast") || model.includes("grok-4-1-fast")) {
-      this.contextWindow = 2000000; // 2M context
-    } else if (model.includes("grok-4-fast")) {
-      this.contextWindow = 2000000; // 2M context
-    } else if (model.includes("grok-code-fast")) {
-      this.contextWindow = 256000; // 256K context
-    } else if (model.includes("grok-4")) {
-      this.contextWindow = 256000; // 256K context
-    } else if (model.includes("grok-3")) {
-      this.contextWindow = 131072; // 131K context
-    } else if (model.includes("grok-2")) {
-      this.contextWindow = 131072; // 131K context
-    } else if (model.includes("grok")) {
-      this.contextWindow = 131072; // Default for other grok models
-    }
-    // Kimi models (from OpenCode Zen / models.dev)
-    else if (model.includes("kimi-k2.5") || model.includes("kimi-k2-5")) {
-      this.contextWindow = 262144; // 256K context (from models.dev)
-    } else if (model.includes("kimi-k2")) {
-      this.contextWindow = 262144; // 256K context
-    } else if (model.includes("kimi")) {
-      this.contextWindow = 131072; // 128K default for older kimi
-    }
-    // GLM/Zhipu models (context windows from models.dev)
-    else if (model.includes("glm-5")) {
-      this.contextWindow = 204800; // 200K context
-    } else if (model.includes("glm-4.7-flash")) {
-      this.contextWindow = 200000; // ~195K context
-    } else if (model.includes("glm-4.7")) {
-      this.contextWindow = 204800; // 200K context
-    } else if (model.includes("glm-4.6v")) {
-      this.contextWindow = 128000; // 128K context
-    } else if (model.includes("glm-4.6")) {
-      this.contextWindow = 204800; // 200K context
-    } else if (model.includes("glm-4.5v")) {
-      this.contextWindow = 64000; // 64K context
-    } else if (model.includes("glm-4.5-flash")) {
-      this.contextWindow = 131072; // 128K context
-    } else if (model.includes("glm-4.5-air")) {
-      this.contextWindow = 131072; // 128K context
-    } else if (model.includes("glm-4.5")) {
-      this.contextWindow = 131072; // 128K context
-    } else if (model.includes("glm-")) {
-      this.contextWindow = 131072; // Default for other GLM models
-    }
-    // OpenAI models
-    else if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
+    if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
       this.contextWindow = 128000;
     } else if (model.includes("gpt-5")) {
       this.contextWindow = 256000; // GPT-5 has larger context
@@ -163,18 +115,19 @@ export class OpenAIHandler implements ModelHandler {
             )
           : 100;
 
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|zen|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       // Format provider name for display (opencode-zen -> Zen, openai -> OpenAI, glm -> GLM)
       const formatProviderName = (name: string): string => {
         if (name === "opencode-zen") return "Zen";
         if (name === "glm") return "GLM";
-        if (name === "openai") return "OpenAI";
         return name.charAt(0).toUpperCase() + name.slice(1);
       };
 
       // Check if this is a free model
       const pricing = this.getPricing();
-      const isFreeModel =
-        pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
+      const isFreeModel = pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
 
       const data: Record<string, any> = {
         input_tokens: input,
@@ -184,6 +137,7 @@ export class OpenAIHandler implements ModelHandler {
         context_window: this.contextWindow,
         context_left_percent: leftPct,
         provider_name: formatProviderName(this.provider.name),
+        model_name: displayModelName,
         updated_at: Date.now(),
         is_free: isFreeModel,
         is_estimated: isEstimate || false,
@@ -252,53 +206,12 @@ export class OpenAIHandler implements ModelHandler {
   }
 
   /**
-   * Check if the current model supports vision/image input
-   * Provider-level flag is checked first, then model-level detection for GLM
-   * (GLM only supports images on "V" variants like glm-4.6v, glm-4.5v)
-   */
-  private supportsVision(): boolean {
-    // Provider-level: if provider says no vision, respect it
-    if (this.provider.capabilities && !this.provider.capabilities.supportsVision) {
-      return false;
-    }
-
-    // Model-level: GLM models only support vision on "V" variants
-    const model = this.modelName.toLowerCase();
-    if (model.startsWith("glm-") && !/\d+\.?\d*v/.test(model)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
    * Convert Claude messages to OpenAI format
    */
   private convertMessages(claudeRequest: any): any[] {
     // OllamaCloud expects string content, not arrays
     const useSimpleFormat = this.provider.name === "ollamacloud";
-    const messages = convertMessagesToOpenAI(
-      claudeRequest,
-      `openai/${this.modelName}`,
-      filterIdentity,
-      useSimpleFormat
-    );
-
-    // Strip image content for models/providers that don't support vision
-    if (!this.supportsVision()) {
-      for (const msg of messages) {
-        if (Array.isArray(msg.content)) {
-          msg.content = msg.content.filter((part: any) => part.type !== "image_url");
-          if (msg.content.length === 1 && msg.content[0].type === "text") {
-            msg.content = msg.content[0].text;
-          } else if (msg.content.length === 0) {
-            msg.content = "";
-          }
-        }
-      }
-    }
-
-    return messages;
+    return convertMessagesToOpenAI(claudeRequest, `openai/${this.modelName}`, filterIdentity, useSimpleFormat);
   }
 
   /**
@@ -414,7 +327,8 @@ export class OpenAIHandler implements ModelHandler {
         result.push({
           type: "function_call_output",
           call_id: msg.tool_call_id,
-          output: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          output:
+            typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
         });
         continue;
       }
@@ -564,8 +478,7 @@ export class OpenAIHandler implements ModelHandler {
     c: Context,
     response: Response,
     _adapter: any,
-    _claudeRequest: any,
-    toolNameMap?: Map<string, string>
+    _claudeRequest: any
   ): Promise<Response> {
     const reader = response.body?.getReader();
     if (!reader) {
@@ -586,18 +499,14 @@ export class OpenAIHandler implements ModelHandler {
     let isClosed = false;
 
     // Track function calls being streamed
-    const functionCalls: Map<
-      string,
-      { name: string; arguments: string; index: number; claudeId?: string }
-    > = new Map();
+    const functionCalls: Map<string, { name: string; arguments: string; index: number; claudeId?: string }> =
+      new Map();
 
     const stream = new ReadableStream({
       start: async (controller) => {
         const send = (event: string, data: any) => {
           if (!isClosed) {
-            controller.enqueue(
-              encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-            );
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
           }
         };
 
@@ -685,9 +594,7 @@ export class OpenAIHandler implements ModelHandler {
                 } else if (event.type === "response.output_item.added") {
                   // Log the item type for debugging
                   if (getLogLevel() === "debug" && event.item?.type) {
-                    log(
-                      `[OpenAIHandler] Output item added: type=${event.item.type}, id=${event.item.id || event.item.call_id || "unknown"}`
-                    );
+                    log(`[OpenAIHandler] Output item added: type=${event.item.type}, id=${event.item.id || event.item.call_id || "unknown"}`);
                   }
 
                   // Handle function_call items
@@ -698,16 +605,11 @@ export class OpenAIHandler implements ModelHandler {
                     const itemId = event.item.id; // fc_...
                     const openaiCallId = event.item.call_id || itemId;
                     // Transform to Claude-style ID (toolu_...) for compatibility
-                    const callId = openaiCallId.startsWith("toolu_")
-                      ? openaiCallId
-                      : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
-                    const rawFnName = event.item.name || "";
-                    const fnName = toolNameMap?.get(rawFnName) || rawFnName;
+                    const callId = openaiCallId.startsWith("toolu_") ? openaiCallId : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
+                    const fnName = event.item.name || "";
                     const fnIndex = blockIndex + functionCalls.size + (hasTextContent ? 1 : 0);
 
-                    log(
-                      `[OpenAIHandler] Function call: itemId=${itemId}, openaiCallId=${openaiCallId}, claudeId=${callId}, name=${fnName}, index=${fnIndex}`
-                    );
+                    log(`[OpenAIHandler] Function call: itemId=${itemId}, openaiCallId=${openaiCallId}, claudeId=${callId}, name=${fnName}, index=${fnIndex}`);
 
                     // Create the function call data
                     const fnCallData = {
@@ -774,9 +676,7 @@ export class OpenAIHandler implements ModelHandler {
 
                   // Debug: log the lookup
                   if (getLogLevel() === "debug" && !functionCalls.has(callId)) {
-                    log(
-                      `[OpenAIHandler] Argument delta lookup failed: callId=${callId}, stored keys=[${Array.from(functionCalls.keys()).join(", ")}]`
-                    );
+                    log(`[OpenAIHandler] Argument delta lookup failed: callId=${callId}, stored keys=[${Array.from(functionCalls.keys()).join(", ")}]`);
                   }
 
                   const fnCall = functionCalls.get(callId);
@@ -797,22 +697,24 @@ export class OpenAIHandler implements ModelHandler {
                     const callId = event.item.call_id || event.item.id;
                     const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                     if (fnCall) {
-                      send("content_block_stop", {
-                        type: "content_block_stop",
-                        index: fnCall.index,
-                      });
+                      send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
                     }
                   }
                 } else if (event.type === "response.incomplete") {
                   // Response was cut off (token limit, content filter, etc.)
                   // Log the reason and continue - we'll still send proper termination events
-                  log(`[OpenAIHandler] Response incomplete: ${event.reason || "unknown reason"}`);
+                  log(
+                    `[OpenAIHandler] Response incomplete: ${event.reason || "unknown reason"}`
+                  );
                   // Extract any available usage data
                   if (event.response?.usage) {
                     inputTokens = event.response.usage.input_tokens || inputTokens;
                     outputTokens = event.response.usage.output_tokens || outputTokens;
                   }
-                } else if (event.type === "response.completed" || event.type === "response.done") {
+                } else if (
+                  event.type === "response.completed" ||
+                  event.type === "response.done"
+                ) {
                   // Extract usage from completed/done event
                   if (event.response?.usage) {
                     inputTokens = event.response.usage.input_tokens || 0;
@@ -827,58 +729,6 @@ export class OpenAIHandler implements ModelHandler {
                     log(
                       `[OpenAIHandler] Responses API usage (alt): input=${inputTokens}, output=${outputTokens}`
                     );
-                  }
-                } else if (event.type === "error") {
-                  // OpenAI Responses API error event
-                  const errMsg = event.error?.message || event.message || "Unknown API error";
-                  const errCode = event.error?.code || event.code || "";
-                  log(`[OpenAIHandler] Responses API error: ${errCode} - ${errMsg}`);
-
-                  // Close any open content blocks
-                  if (hasTextContent) {
-                    send("content_block_stop", { type: "content_block_stop", index: blockIndex });
-                    hasTextContent = false;
-                  }
-                  for (const [, fnCall] of functionCalls) {
-                    send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
-                  }
-
-                  // Send error as text so the user sees it
-                  const errorIdx = blockIndex + functionCalls.size + (hasToolUse ? 1 : 0);
-                  send("content_block_start", {
-                    type: "content_block_start",
-                    index: errorIdx,
-                    content_block: { type: "text", text: "" },
-                  });
-                  send("content_block_delta", {
-                    type: "content_block_delta",
-                    index: errorIdx,
-                    delta: { type: "text_delta", text: `\n\n[API Error: ${errCode} ${errMsg}]` },
-                  });
-                  send("content_block_stop", { type: "content_block_stop", index: errorIdx });
-
-                  // Properly terminate the stream
-                  send("message_delta", {
-                    type: "message_delta",
-                    delta: { stop_reason: "end_turn", stop_sequence: null },
-                    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-                  });
-                  send("message_stop", { type: "message_stop" });
-                  isClosed = true;
-                  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-                  this.updateTokenTracking(inputTokens, outputTokens);
-                  controller.close();
-                  return;
-                } else if (event.type === "response.failed") {
-                  // Extract error details from failed response
-                  const failErr = event.response?.error;
-                  const failMsg = failErr?.message || "Response failed";
-                  const failCode = failErr?.code || "";
-                  log(`[OpenAIHandler] Response failed: ${failCode} - ${failMsg}`);
-                  // Extract any available usage
-                  if (event.response?.usage) {
-                    inputTokens = event.response.usage.input_tokens || inputTokens;
-                    outputTokens = event.response.usage.output_tokens || outputTokens;
                   }
                 }
               } catch (parseError) {
@@ -927,47 +777,9 @@ export class OpenAIHandler implements ModelHandler {
             clearInterval(pingInterval);
             pingInterval = null;
           }
+          isClosed = true;
           log(`[OpenAIHandler] Responses streaming error: ${error}`);
-
-          // Send proper termination events so Claude Code doesn't get stuck
-          if (!isClosed) {
-            try {
-              // Close any open content blocks
-              if (hasTextContent) {
-                send("content_block_stop", { type: "content_block_stop", index: blockIndex });
-              }
-              for (const [, fnCall] of functionCalls) {
-                send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
-              }
-
-              // Send error as visible text
-              const errorIdx = blockIndex + functionCalls.size + (hasToolUse ? 1 : 0);
-              send("content_block_start", {
-                type: "content_block_start",
-                index: errorIdx,
-                content_block: { type: "text", text: "" },
-              });
-              send("content_block_delta", {
-                type: "content_block_delta",
-                index: errorIdx,
-                delta: { type: "text_delta", text: `\n\n[Stream error: ${error}]` },
-              });
-              send("content_block_stop", { type: "content_block_stop", index: errorIdx });
-
-              send("message_delta", {
-                type: "message_delta",
-                delta: { stop_reason: "end_turn", stop_sequence: null },
-                usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-              });
-              send("message_stop", { type: "message_stop" });
-            } catch (sendErr) {
-              log(`[OpenAIHandler] Error sending termination events: ${sendErr}`);
-            }
-
-            isClosed = true;
-            this.updateTokenTracking(inputTokens, outputTokens);
-            try { controller.close(); } catch { /* already closed */ }
-          }
+          controller.error(error);
         }
       },
     });
@@ -1026,13 +838,10 @@ export class OpenAIHandler implements ModelHandler {
       ? this.buildResponsesPayload(claudeRequest, messages, tools)
       : this.buildOpenAIPayload(claudeRequest, messages, tools);
 
-    // Get adapter and prepare request (adapter truncates tool names if needed)
+    // Get adapter and prepare request
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(apiPayload, claudeRequest);
-
-    // Get tool name map from adapter (populated during prepareRequest)
-    const toolNameMap = adapter.getToolNameMap();
 
     // Call middleware
     await this.middlewareManager.beforeRequest({
@@ -1101,8 +910,7 @@ export class OpenAIHandler implements ModelHandler {
           {
             error: {
               type: "timeout_error",
-              message:
-                "Request to OpenAI API timed out. Check your network connection to api.openai.com",
+              message: "Request to OpenAI API timed out. Check your network connection to api.openai.com",
             },
           },
           504
@@ -1149,7 +957,7 @@ export class OpenAIHandler implements ModelHandler {
     // Use different streaming handler for Codex (Responses API) vs Chat Completions
     if (isCodex) {
       log(`[OpenAIHandler] Using Responses API streaming handler for Codex model`);
-      return this.handleResponsesStreaming(c, response, adapter, claudeRequest, toolNameMap);
+      return this.handleResponsesStreaming(c, response, adapter, claudeRequest);
     }
 
     // Use the shared streaming handler for Chat Completions API
@@ -1160,8 +968,7 @@ export class OpenAIHandler implements ModelHandler {
       `openai/${this.modelName}`,
       this.middlewareManager,
       (input, output) => this.updateTokenTracking(input, output),
-      claudeRequest.tools,
-      toolNameMap
+      claudeRequest.tools
     );
   }
 

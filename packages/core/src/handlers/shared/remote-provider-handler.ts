@@ -17,10 +17,10 @@ import { log, logStructured, getLogLevel, truncateContent } from "../../logger.j
 import {
   convertMessagesToOpenAI,
   convertToolsToOpenAI,
-  createStreamingResponseHandler,
   filterIdentity,
+  createStreamingResponseHandler,
 } from "./openai-compat.js";
-import type { RemoteProviderConfig, ModelPricing } from "./remote-provider-types.js";
+import { type RemoteProviderConfig, type ModelPricing } from "./remote-provider-types.js";
 import { KeyPool } from "./key-pool.js";
 
 /**
@@ -50,11 +50,10 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   protected contextWindow = 200000; // Default, can be updated by subclass
   protected CLAUDE_INTERNAL_CONTEXT_MAX = 200000;
 
-  constructor(targetModel: string, modelName: string, apiKey: string, port: number, providerName?: string) {
+  constructor(targetModel: string, modelName: string, apiKey: string, port: number) {
     this.targetModel = targetModel;
     this.modelName = modelName;
-    // Use providerName if provided, otherwise use a default (subclasses can override getKeyPoolProviderName)
-    this.keyPool = new KeyPool(apiKey, providerName || "RemoteProvider");
+    this.keyPool = new KeyPool(apiKey, "RemoteProvider");
     this.port = port;
     this.adapterManager = new AdapterManager(targetModel);
     this.middlewareManager = new MiddlewareManager();
@@ -124,6 +123,10 @@ export abstract class RemoteProviderHandler implements ModelHandler {
           : 100;
 
       const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -134,7 +137,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: this.getProviderName(),
-        model_name: this.modelName,
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 
@@ -163,35 +166,10 @@ export abstract class RemoteProviderHandler implements ModelHandler {
   }
 
   /**
-   * Check if the current model supports vision/image input.
-   * Subclasses can override for model-specific checks.
-   */
-  protected supportsVision(): boolean {
-    return true; // Default: assume vision is supported
-  }
-
-  /**
    * Convert Claude messages to provider format (default: OpenAI format)
-   * Strips image content for models that don't support vision.
    */
   protected convertMessages(claudeRequest: any): any[] {
-    const messages = convertMessagesToOpenAI(claudeRequest, this.targetModel, filterIdentity);
-
-    // Strip image content for models that don't support vision
-    if (!this.supportsVision()) {
-      for (const msg of messages) {
-        if (Array.isArray(msg.content)) {
-          msg.content = msg.content.filter((part: any) => part.type !== "image_url");
-          if (msg.content.length === 1 && msg.content[0].type === "text") {
-            msg.content = msg.content[0].text;
-          } else if (msg.content.length === 0) {
-            msg.content = "";
-          }
-        }
-      }
-    }
-
-    return messages;
+    return convertMessagesToOpenAI(claudeRequest, this.targetModel, filterIdentity);
   }
 
   /**
@@ -209,8 +187,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     c: Context,
     response: Response,
     adapter: any,
-    claudeRequest: any,
-    toolNameMap?: Map<string, string>
+    claudeRequest: any
   ): Response {
     return createStreamingResponseHandler(
       c,
@@ -219,8 +196,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
       this.targetModel,
       this.middlewareManager,
       (input, output) => this.updateTokenTracking(input, output),
-      claudeRequest.tools,
-      toolNameMap
+      claudeRequest.tools
     );
   }
 
@@ -268,13 +244,10 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     // Build request payload
     const requestPayload = this.buildRequestPayload(claudeRequest, messages, tools);
 
-    // Get adapter and prepare request (adapter truncates tool names if needed)
+    // Get adapter and prepare request
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(requestPayload, claudeRequest);
-
-    // Get tool name map from adapter (populated during prepareRequest)
-    const toolNameMap = adapter.getToolNameMap();
 
     // Call middleware
     await this.middlewareManager.beforeRequest({
@@ -336,7 +309,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
     }
 
     // Handle streaming response
-    return this.handleStreamingResponse(c, response, adapter, claudeRequest, toolNameMap);
+    return this.handleStreamingResponse(c, response, adapter, claudeRequest);
   }
 
   /**

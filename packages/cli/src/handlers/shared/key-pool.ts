@@ -183,11 +183,10 @@ export class KeyPool {
           return response;
         }
 
-        // Success! Advance index for next request
+        // Success! Keep current index — reuse this key until it fails.
         if (this.keys.length > 1) {
           log(`[KeyPool:${this.providerName}] ${keyLabel} succeeded`);
         }
-        this.advanceIndex();
         return response;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));

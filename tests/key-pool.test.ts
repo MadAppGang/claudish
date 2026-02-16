@@ -3,7 +3,7 @@
  *
  * Tests cover:
  * - Constructor parsing (single key, multi-key, whitespace, empty)
- * - Round-robin rotation across executeWithFailover calls
+ * - Sticky key behavior (reuse same key until it fails)
  * - Failover on rotatable status codes (401, 402, 403, 408, 429, 500, 502, 503, 504)
  * - Non-rotatable errors returned immediately (400, 404, 422, 501)
  * - Network error handling (thrown exceptions)
@@ -114,12 +114,14 @@ describe("KeyPool - getCurrentKey & peekNextKey", () => {
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe("KeyPool - reset()", () => {
-  test("should reset to first key after rotation", async () => {
+  test("should reset to first key after failover rotation", async () => {
     const pool = new KeyPool("key1,key2,key3", "Test");
 
-    // Advance by making a successful call (which advances index)
-    await pool.executeWithFailover(async (_key) => mockResponse(200));
-    // After 1 success, index should have advanced
+    // Advance by failover: key1 fails, key2 succeeds → index stays at key2
+    await pool.executeWithFailover(async (key) => {
+      if (key === "key1") return mockResponse(429);
+      return mockResponse(200);
+    });
     expect(pool.getCurrentKey()).toBe("key2");
 
     pool.reset();
@@ -143,32 +145,22 @@ describe("KeyPool - executeWithFailover (Success)", () => {
     expect(response.status).toBe(200);
   });
 
-  test("should pass the correct key to fetchFn", async () => {
+  test("should reuse the same key across successive successful calls", async () => {
     const pool = new KeyPool("alpha,bravo,charlie", "Test");
     const keysUsed: string[] = [];
 
-    // First call uses first key
-    await pool.executeWithFailover(async (key) => {
-      keysUsed.push(key);
-      return mockResponse(200);
-    });
+    // All three calls should use the same key — no advancement on success
+    for (let i = 0; i < 3; i++) {
+      await pool.executeWithFailover(async (key) => {
+        keysUsed.push(key);
+        return mockResponse(200);
+      });
+    }
 
-    // Second call uses second key (round-robin)
-    await pool.executeWithFailover(async (key) => {
-      keysUsed.push(key);
-      return mockResponse(200);
-    });
-
-    // Third call uses third key
-    await pool.executeWithFailover(async (key) => {
-      keysUsed.push(key);
-      return mockResponse(200);
-    });
-
-    expect(keysUsed).toEqual(["alpha", "bravo", "charlie"]);
+    expect(keysUsed).toEqual(["alpha", "alpha", "alpha"]);
   });
 
-  test("should wrap around after all keys used (round-robin)", async () => {
+  test("should stick with working key until it fails", async () => {
     const pool = new KeyPool("key1,key2", "Test");
     const keysUsed: string[] = [];
 
@@ -179,7 +171,8 @@ describe("KeyPool - executeWithFailover (Success)", () => {
       });
     }
 
-    expect(keysUsed).toEqual(["key1", "key2", "key1", "key2", "key1"]);
+    // Same key every time — no rotation on success
+    expect(keysUsed).toEqual(["key1", "key1", "key1", "key1", "key1"]);
   });
 
   test("should throw when no keys configured", async () => {
@@ -495,41 +488,38 @@ describe("KeyPool - executeWithFailover (Network Errors)", () => {
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe("KeyPool - Index Advancement", () => {
-  test("should advance index after successful response", async () => {
+  test("should NOT advance index after successful response", async () => {
     const pool = new KeyPool("key1,key2,key3", "Test");
 
     await pool.executeWithFailover(async () => mockResponse(200));
-    expect(pool.getCurrentKey()).toBe("key2");
+    expect(pool.getCurrentKey()).toBe("key1"); // stays on same key
 
     await pool.executeWithFailover(async () => mockResponse(200));
-    expect(pool.getCurrentKey()).toBe("key3");
-
-    await pool.executeWithFailover(async () => mockResponse(200));
-    expect(pool.getCurrentKey()).toBe("key1"); // wrapped around
+    expect(pool.getCurrentKey()).toBe("key1"); // still the same
   });
 
-  test("should advance index after failover rotations", async () => {
+  test("should advance index only on failure, then stick on new working key", async () => {
     const pool = new KeyPool("key1,key2,key3", "Test");
 
-    // key1 fails (429), key2 succeeds → index should now be at key3
+    // key1 fails (429), key2 succeeds → index stays at key2
     await pool.executeWithFailover(async (key) => {
       if (key === "key1") return mockResponse(429);
       return mockResponse(200);
     });
 
-    // Next call should start with key3
+    // Next call should start with key2 (sticky)
     const keysUsed: string[] = [];
     await pool.executeWithFailover(async (key) => {
       keysUsed.push(key);
       return mockResponse(200);
     });
-    expect(keysUsed).toEqual(["key3"]);
+    expect(keysUsed).toEqual(["key2"]);
   });
 
   test("index state after all keys fail with HTTP errors", async () => {
     const pool = new KeyPool("key1,key2", "Test");
 
-    // All keys fail with retryable HTTP status - returns Response (no throw)
+    // All keys fail with rotatable HTTP status - returns Response (no throw)
     const response = await pool.executeWithFailover(async () => mockResponse(429));
     expect(response.status).toBe(429);
 
@@ -686,7 +676,7 @@ describe("KeyPool - Real-world Scenarios", () => {
     });
     expect(resp1.status).toBe(200);
 
-    // Next request should start with key3 (key1 failed → key2 succeeded → advanced to key3)
+    // Next request should start with key2 (sticky — key2 succeeded, stays on key2)
     const resp2 = await pool.executeWithFailover(async (key) => {
       callLog.push({ key, result: 200 });
       return mockResponse(200);
@@ -696,7 +686,7 @@ describe("KeyPool - Real-world Scenarios", () => {
     expect(callLog).toEqual([
       { key: "key1", result: 429 },
       { key: "key2", result: 200 },
-      { key: "key3", result: 200 },
+      { key: "key2", result: 200 },
     ]);
   });
 
@@ -1071,11 +1061,11 @@ describe("KeyPool - Provider Auth Header Patterns", () => {
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe("KeyPool - Concurrent & Stress Tests", () => {
-  test("concurrent executeWithFailover calls distribute across keys", async () => {
+  test("concurrent executeWithFailover calls all use the same key", async () => {
     const pool = new KeyPool("key1,key2,key3,key4", "Test");
     const keysUsed: string[] = [];
 
-    // Fire 4 calls concurrently
+    // Fire 4 calls concurrently — all should use key1 (sticky)
     const promises = Array.from({ length: 4 }, () =>
       pool.executeWithFailover(async (key) => {
         keysUsed.push(key);
@@ -1087,18 +1077,19 @@ describe("KeyPool - Concurrent & Stress Tests", () => {
 
     const results = await Promise.all(promises);
     results.forEach((r) => expect(r.status).toBe(200));
-    // All 4 calls should have completed
     expect(keysUsed.length).toBe(4);
+    // All concurrent calls use the same key since none failed
+    expect(keysUsed.every((k) => k === "key1")).toBe(true);
   });
 
-  test("large key pool (10 keys): rotation works correctly", async () => {
+  test("large key pool (10 keys): sticks with working key", async () => {
     const keys = Array.from({ length: 10 }, (_, i) => `key-${i}`);
     const pool = new KeyPool(keys.join(","), "Test");
     expect(pool.keyCount()).toBe(10);
 
     const keysUsed: string[] = [];
 
-    // Make 15 successful calls — should wrap around
+    // Make 15 successful calls — should always use key-0 (sticky)
     for (let i = 0; i < 15; i++) {
       await pool.executeWithFailover(async (key) => {
         keysUsed.push(key);
@@ -1106,9 +1097,9 @@ describe("KeyPool - Concurrent & Stress Tests", () => {
       });
     }
 
-    // First 10 should be key-0 through key-9, then wrap to key-0..key-4
-    expect(keysUsed.slice(0, 10)).toEqual(keys);
-    expect(keysUsed.slice(10)).toEqual(keys.slice(0, 5));
+    // All calls should use key-0 — no rotation on success
+    expect(keysUsed.every((k) => k === "key-0")).toBe(true);
+    expect(keysUsed.length).toBe(15);
   });
 
   test("large key pool: all 10 keys fail exhaustively", async () => {
@@ -1284,15 +1275,21 @@ describe("KeyPool - Additional Edge Cases", () => {
     ).rejects.toThrow("connection reset");
   });
 
-  test("reset mid-sequence restores original rotation order", async () => {
+  test("reset mid-sequence restores original key after failover", async () => {
     const pool = new KeyPool("a,b,c", "Test");
 
-    // Use key a
-    await pool.executeWithFailover(async () => mockResponse(200));
+    // key a fails, key b succeeds → index sticks at b
+    await pool.executeWithFailover(async (key) => {
+      if (key === "a") return mockResponse(429);
+      return mockResponse(200);
+    });
     expect(pool.getCurrentKey()).toBe("b");
 
-    // Use key b
-    await pool.executeWithFailover(async () => mockResponse(200));
+    // key b fails, key c succeeds → index sticks at c
+    await pool.executeWithFailover(async (key) => {
+      if (key === "b") return mockResponse(429);
+      return mockResponse(200);
+    });
     expect(pool.getCurrentKey()).toBe("c");
 
     // Reset and verify back to start
@@ -1310,12 +1307,14 @@ describe("KeyPool - Additional Edge Cases", () => {
   test("wrap-around starting from middle of pool", async () => {
     const pool = new KeyPool("a,b,c,d,e", "Test");
 
-    // Advance to key c
-    await pool.executeWithFailover(async () => mockResponse(200)); // uses a
-    await pool.executeWithFailover(async () => mockResponse(200)); // uses b
+    // Advance to key c via failovers: a→429, b→429, c succeeds
+    await pool.executeWithFailover(async (key) => {
+      if (key === "a" || key === "b") return mockResponse(429);
+      return mockResponse(200);
+    });
     expect(pool.getCurrentKey()).toBe("c");
 
-    // Now all keys fail: should try c→d→e→a→b
+    // Now all keys fail starting from c: should try c→d→e→a→b
     const keysUsed: string[] = [];
     const response = await pool.executeWithFailover(async (key) => {
       keysUsed.push(key);
@@ -1590,13 +1589,13 @@ describe("KeyPool - All-Keys-Exhausted Behavior", () => {
     await pool.executeWithFailover(async () => mockResponse(429));
     expect(pool.getCurrentKey()).toBe("a");
 
-    // Next call succeeds on first try
+    // Next call succeeds on first try — sticks on a
     const keysUsed: string[] = [];
     await pool.executeWithFailover(async (key) => {
       keysUsed.push(key);
       return mockResponse(200);
     });
     expect(keysUsed).toEqual(["a"]);
-    expect(pool.getCurrentKey()).toBe("b"); // Advanced past a
+    expect(pool.getCurrentKey()).toBe("a"); // Sticky — stays on a
   });
 });

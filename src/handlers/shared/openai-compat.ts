@@ -174,10 +174,17 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
     const strings: string[] = [];
     const toolCalls: any[] = [];
     const seen = new Set<string>();
+    let reasoningContent = "";
 
     for (const block of msg.content) {
       if (block.type === "text") {
         strings.push(block.text);
+      } else if (block.type === "thinking") {
+        // Accumulate thinking content to send back as reasoning_content
+        // Skip in simpleFormat (same as tool calls)
+        if (!simpleFormat && block.thinking) {
+          reasoningContent += block.thinking;
+        }
       } else if (block.type === "tool_use") {
         if (seen.has(block.id)) continue;
         seen.add(block.id);
@@ -207,6 +214,7 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
       if (strings.length) m.content = strings.join(" ");
       else if (toolCalls.length) m.content = null;
       if (toolCalls.length) m.tool_calls = toolCalls;
+      if (reasoningContent) m.reasoning_content = reasoningContent;
       if (m.content !== undefined || m.tool_calls) messages.push(m);
     }
   } else {
@@ -533,6 +541,25 @@ export function createStreamingResponseHandler(
                     });
                   }
 
+                  // Handle reasoning_content (Kimi, DeepSeek thinking models via LiteLLM)
+                  if (delta.reasoning_content) {
+                    state.lastActivity = Date.now();
+                    if (!state.reasoningStarted) {
+                      state.reasoningIdx = state.curIdx++;
+                      send("content_block_start", {
+                        type: "content_block_start",
+                        index: state.reasoningIdx,
+                        content_block: { type: "thinking", thinking: "" },
+                      });
+                      state.reasoningStarted = true;
+                    }
+                    send("content_block_delta", {
+                      type: "content_block_delta",
+                      index: state.reasoningIdx,
+                      delta: { type: "thinking_delta", thinking: delta.reasoning_content },
+                    });
+                  }
+
                   // Handle text content
                   const txt = delta.content || "";
                   log(
@@ -540,6 +567,14 @@ export function createStreamingResponseHandler(
                   );
                   if (txt) {
                     state.lastActivity = Date.now();
+                    // Close thinking block before starting text
+                    if (state.reasoningStarted) {
+                      send("content_block_stop", {
+                        type: "content_block_stop",
+                        index: state.reasoningIdx,
+                      });
+                      state.reasoningStarted = false;
+                    }
                     const res = adapter.processTextContent(txt, "");
                     log(
                       `[Streaming] After adapter: "${res.cleanedText.substring(0, 30).replace(/\n/g, "\\n")}" (${res.cleanedText.length} chars, transformed=${res.wasTransformed})`
@@ -608,6 +643,14 @@ export function createStreamingResponseHandler(
                       let t = state.tools.get(idx);
                       if (tc.function?.name) {
                         if (!t) {
+                          // Close thinking and text blocks before starting tool
+                          if (state.reasoningStarted) {
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: state.reasoningIdx,
+                            });
+                            state.reasoningStarted = false;
+                          }
                           if (state.textStarted) {
                             send("content_block_stop", {
                               type: "content_block_stop",

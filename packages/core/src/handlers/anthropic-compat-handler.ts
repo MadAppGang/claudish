@@ -55,7 +55,7 @@ export class AnthropicCompatHandler implements ModelHandler {
     const provider = this.provider.name.toLowerCase();
     const model = this.modelName.toLowerCase();
 
-    if (provider === "kimi" || provider === "kimi-coding" || provider === "moonshot") {
+    if (provider === "kimi" || provider === "moonshot") {
       this.contextWindow = 128000; // Kimi has 128k context
     } else if (provider === "minimax") {
       this.contextWindow = 100000; // MiniMax context window
@@ -96,7 +96,6 @@ export class AnthropicCompatHandler implements ModelHandler {
       const providerNameMap: Record<string, string> = {
         minimax: "MiniMax",
         kimi: "Kimi",
-        "kimi-coding": "Kimi Coding",
         moonshot: "Kimi",
         glm: "GLM",
         zhipu: "GLM",
@@ -105,6 +104,10 @@ export class AnthropicCompatHandler implements ModelHandler {
       const providerDisplayName = providerNameMap[providerKey] || this.provider.name;
 
       const pricing = this.getPricing();
+
+      // Strip provider prefix from model name for cleaner display
+      const displayModelName = this.modelName.replace(/^(go|g|gemini|v|vertex|oai|mmax|mm|kimi|moonshot|glm|zhipu|oc|ollama|lmstudio|vllm|mlx)[\/:]/, '');
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -115,6 +118,7 @@ export class AnthropicCompatHandler implements ModelHandler {
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: providerDisplayName,
+        model_name: displayModelName,
         updated_at: Date.now(),
       };
 
@@ -202,37 +206,6 @@ export class AnthropicCompatHandler implements ModelHandler {
         ...baseHeaders,
         "x-api-key": this.keyPool.getCurrentKey(),
       };
-
-      // Kimi Coding: prefer API key auth, fall back to OAuth if no key provided
-      if (this.provider.name === "kimi-coding" && !this.keyPool.getCurrentKey()) {
-        try {
-          const { existsSync, readFileSync } = await import("node:fs");
-          const { join } = await import("node:path");
-          const { homedir } = await import("node:os");
-
-          const credPath = join(homedir(), ".claudish", "kimi-oauth.json");
-          if (existsSync(credPath)) {
-            const data = JSON.parse(readFileSync(credPath, "utf-8"));
-            if (data.access_token && data.refresh_token) {
-              // Get fresh access token (handles auto-refresh)
-              const { KimiOAuth } = await import("../auth/kimi-oauth.js");
-              const oauth = KimiOAuth.getInstance();
-              const accessToken = await oauth.getAccessToken();
-
-              // Replace API key auth with Bearer token
-              delete headers["x-api-key"];
-              headers["Authorization"] = `Bearer ${accessToken}`;
-
-              // Add Kimi-specific platform headers
-              const platformHeaders = oauth.getPlatformHeaders();
-              Object.assign(headers, platformHeaders);
-            }
-          }
-        } catch (e: any) {
-          // If OAuth fails, no auth available
-          log(`[KimiCoding] OAuth fallback failed: ${e.message}`);
-        }
-      }
 
       response = await fetch(endpoint, {
         method: "POST",
