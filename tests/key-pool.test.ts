@@ -1599,3 +1599,392 @@ describe("KeyPool - All-Keys-Exhausted Behavior", () => {
     expect(pool.getCurrentKey()).toBe("a"); // Sticky — stays on a
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Invalid API Key Detection
+//
+// Tests for the isInvalidApiKeyResponse() logic that detects invalid API keys
+// from response bodies, enabling rotation even when the HTTP status code alone
+// wouldn't trigger it (e.g., Gemini returns 400 for invalid keys).
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe("KeyPool - Invalid API Key Detection", () => {
+  test("Gemini 400 with API_KEY_INVALID reason triggers rotation", async () => {
+    const pool = new KeyPool("bad-key,good-key", "Gemini");
+    const keysUsed: string[] = [];
+
+    const response = await pool.executeWithFailover(async (key) => {
+      keysUsed.push(key);
+      if (key === "bad-key") {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              message: "API key not valid. Please pass a valid API key.",
+              status: "INVALID_ARGUMENT",
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason: "API_KEY_INVALID",
+                  domain: "googleapis.com",
+                  metadata: { service: "generativelanguage.googleapis.com" },
+                },
+              ],
+            },
+          }),
+          { status: 400, statusText: "Bad Request" }
+        );
+      }
+      return mockResponse(200, "success");
+    });
+
+    expect(response.status).toBe(200);
+    expect(keysUsed).toEqual(["bad-key", "good-key"]);
+  });
+
+  test("generic 'API key not valid' message in error body triggers rotation", async () => {
+    const pool = new KeyPool("invalid,valid", "GenericProvider");
+    const keysUsed: string[] = [];
+
+    const response = await pool.executeWithFailover(async (key) => {
+      keysUsed.push(key);
+      if (key === "invalid") {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "API key not valid. Please pass a valid API key.",
+            },
+          }),
+          { status: 400 }
+        );
+      }
+      return mockResponse(200);
+    });
+
+    expect(response.status).toBe(200);
+    expect(keysUsed).toEqual(["invalid", "valid"]);
+  });
+
+  test("400 without invalid key indicator does NOT trigger rotation", async () => {
+    const pool = new KeyPool("key1,key2", "Test");
+    const keysUsed: string[] = [];
+
+    const response = await pool.executeWithFailover(async (key) => {
+      keysUsed.push(key);
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 400,
+            message: "Invalid request: missing required field 'model'",
+          },
+        }),
+        { status: 400 }
+      );
+    });
+
+    // Should NOT rotate — just a normal bad request
+    expect(response.status).toBe(400);
+    expect(keysUsed).toEqual(["key1"]);
+  });
+
+  test("non-JSON body on 400 does NOT trigger rotation", async () => {
+    const pool = new KeyPool("key1,key2", "Test");
+    const keysUsed: string[] = [];
+
+    const response = await pool.executeWithFailover(async (key) => {
+      keysUsed.push(key);
+      return new Response("Bad Request: syntax error in body", { status: 400 });
+    });
+
+    expect(response.status).toBe(400);
+    expect(keysUsed).toEqual(["key1"]);
+  });
+
+  test("response body is preserved after invalid-key detection (clone works)", async () => {
+    const pool = new KeyPool("bad-key,good-key", "Test");
+
+    // When all keys return invalid key errors, the last response body
+    // should still be readable by the caller (clone doesn't consume it)
+    const pool2 = new KeyPool("bad-key-only", "Test");
+    const response = await pool2.executeWithFailover(async () => {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 400,
+            message: "API key not valid. Please pass a valid API key.",
+            status: "INVALID_ARGUMENT",
+            details: [
+              { reason: "API_KEY_INVALID", "@type": "type.googleapis.com/google.rpc.ErrorInfo" },
+            ],
+          },
+        }),
+        { status: 400 }
+      );
+    });
+
+    // Single key pool — tried and failed, returns the response
+    expect(response.status).toBe(400);
+    // Body should still be readable because isInvalidApiKeyResponse clones
+    const body = await response.json();
+    expect(body.error.message).toContain("API key not valid");
+    expect(body.error.details[0].reason).toBe("API_KEY_INVALID");
+  });
+
+  test("OpenAI error.code 'invalid_api_key' detected by isInvalidApiKeyResponse", async () => {
+    const pool = new KeyPool("test-key", "Test");
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          message: "Incorrect API key provided: sk-inval...lid.",
+          type: "invalid_request_error",
+          param: null,
+          code: "invalid_api_key",
+        },
+      }),
+      { status: 401 }
+    );
+    expect(await pool.isInvalidApiKeyResponse(response)).toBe(true);
+  });
+
+  test("Anthropic error.type 'authentication_error' detected by isInvalidApiKeyResponse", async () => {
+    const pool = new KeyPool("test-key", "Test");
+    const response = new Response(
+      JSON.stringify({
+        type: "error",
+        error: {
+          type: "authentication_error",
+          message: "invalid x-api-key",
+        },
+      }),
+      { status: 401 }
+    );
+    expect(await pool.isInvalidApiKeyResponse(response)).toBe(true);
+  });
+
+  test("message 'invalid credentials' detected by isInvalidApiKeyResponse", async () => {
+    const pool = new KeyPool("test-key", "Test");
+    const response = new Response(
+      JSON.stringify({ error: { code: 401, message: "Invalid credentials" } }),
+      { status: 401 }
+    );
+    expect(await pool.isInvalidApiKeyResponse(response)).toBe(true);
+  });
+
+  test("message 'incorrect api key' detected by isInvalidApiKeyResponse", async () => {
+    const pool = new KeyPool("test-key", "Test");
+    const response = new Response(
+      JSON.stringify({
+        error: { message: "Incorrect API key provided: sk-xxx" },
+      }),
+      { status: 401 }
+    );
+    expect(await pool.isInvalidApiKeyResponse(response)).toBe(true);
+  });
+
+  test("message 'invalid api key' detected by isInvalidApiKeyResponse", async () => {
+    const pool = new KeyPool("test-key", "Test");
+    const response = new Response(
+      JSON.stringify({ message: "Invalid API key" }),
+      { status: 403 }
+    );
+    expect(await pool.isInvalidApiKeyResponse(response)).toBe(true);
+  });
+
+  test("all keys with invalid body (400 API_KEY_INVALID) exhaust pool and return last response", async () => {
+    const pool = new KeyPool("bad1,bad2,bad3", "Gemini");
+    const keysUsed: string[] = [];
+
+    const geminiInvalidKeyBody = JSON.stringify({
+      error: {
+        code: 400,
+        message: "API key not valid. Please pass a valid API key.",
+        status: "INVALID_ARGUMENT",
+        details: [{ reason: "API_KEY_INVALID" }],
+      },
+    });
+
+    const response = await pool.executeWithFailover(async (key) => {
+      keysUsed.push(key);
+      return new Response(geminiInvalidKeyBody, {
+        status: 400,
+        statusText: "Bad Request",
+      });
+    });
+
+    // All 3 keys should be tried
+    expect(keysUsed).toEqual(["bad1", "bad2", "bad3"]);
+    // Returns the last failed response
+    expect(response.status).toBe(400);
+    // Body should still be readable
+    const body = await response.json();
+    expect(body.error.details[0].reason).toBe("API_KEY_INVALID");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Provider Invalid Key Canary Tests (LIVE API CALLS)
+//
+// These tests make REAL HTTP requests to provider APIs with deliberately
+// invalid API keys, then feed the actual responses through
+// pool.isInvalidApiKeyResponse() to verify our detection logic matches
+// what the providers actually return.
+//
+// If a provider changes their error format, BOTH the detection code and
+// these tests will break — no logic duplication between code and tests.
+//
+// NOTE: Require network access. Will fail in fully offline CI.
+// NOTE: LiteLLM is self-hosted and has no public endpoint to test.
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe("KeyPool - Provider Invalid Key Canary Tests (LIVE)", () => {
+  const INVALID_KEY = "invalid-key-000-canary-test";
+  const TIMEOUT = 15_000;
+
+  // Shared KeyPool instance for calling isInvalidApiKeyResponse()
+  const pool = new KeyPool("test-key", "CanaryTest");
+
+  /**
+   * Gemini: returns HTTP 400 with API_KEY_INVALID in the body.
+   * This is the CRITICAL one — 400 is NOT in ROTATABLE_STATUS_CODES,
+   * so isInvalidApiKeyResponse() is the ONLY mechanism that catches it.
+   */
+  test("Gemini: real 400 response detected by isInvalidApiKeyResponse", async () => {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${INVALID_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "test" }] }],
+        }),
+      }
+    );
+
+    // Status code: 400 (NOT rotatable by status alone)
+    expect(response.status).toBe(400);
+
+    // Our detection method must catch this from the body
+    const detected = await pool.isInvalidApiKeyResponse(response);
+    expect(detected).toBe(true);
+  }, TIMEOUT);
+
+  /**
+   * OpenAI: returns HTTP 401 with error.code "invalid_api_key".
+   * 401 already triggers rotation, but isInvalidApiKeyResponse() also
+   * detects it as defense-in-depth.
+   */
+  test("OpenAI: real 401 response detected by isInvalidApiKeyResponse", async () => {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${INVALID_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+
+    expect(response.status).toBe(401);
+
+    const detected = await pool.isInvalidApiKeyResponse(response);
+    expect(detected).toBe(true);
+  }, TIMEOUT);
+
+  /**
+   * Anthropic: returns HTTP 401 with error.type "authentication_error".
+   * 401 already triggers rotation, but isInvalidApiKeyResponse() also
+   * detects it as defense-in-depth.
+   */
+  test("Anthropic: real 401 response detected by isInvalidApiKeyResponse", async () => {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": INVALID_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+
+    expect(response.status).toBe(401);
+
+    const detected = await pool.isInvalidApiKeyResponse(response);
+    expect(detected).toBe(true);
+  }, TIMEOUT);
+
+  /**
+   * OpenRouter: returns HTTP 401 or 502 for invalid credentials.
+   * Both are in ROTATABLE_STATUS_CODES. isInvalidApiKeyResponse() detects
+   * via error message when a JSON body is available.
+   */
+  test("OpenRouter: real error response detected by isInvalidApiKeyResponse", async () => {
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${INVALID_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      }
+    );
+
+    // OpenRouter may return 401 or 502 — both are rotatable
+    expect([401, 502]).toContain(response.status);
+
+    const detected = await pool.isInvalidApiKeyResponse(response);
+    // May be false if 502 returns non-JSON gateway error — that's OK,
+    // status code rotation handles it. But if it's JSON with an error
+    // message, our detection should catch it.
+    if (response.status === 401) {
+      expect(detected).toBe(true);
+    }
+    // For 502, we don't require body detection — status code is sufficient
+  }, TIMEOUT);
+
+  /**
+   * OllamaCloud: returns HTTP 401 with plain-text "Unauthorized" body.
+   * 401 triggers rotation via status code. Body detection returns false
+   * because the body is not JSON — this is expected and documented.
+   */
+  test("OllamaCloud: real 401 response (plain text, status-based rotation)", async () => {
+    const response = await fetch("https://api.ollama.com/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${INVALID_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "llama3.2",
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+
+    // Status code 401 — handled by ROTATABLE_STATUS_CODES
+    expect(response.status).toBe(401);
+
+    // OllamaCloud returns plain text, not JSON — body detection returns false.
+    // This is expected: rotation is handled by the 401 status code.
+    const detected = await pool.isInvalidApiKeyResponse(response);
+    expect(detected).toBe(false);
+  }, TIMEOUT);
+
+  /**
+   * LiteLLM is self-hosted — no public endpoint to test.
+   */
+  test.skip("LiteLLM: self-hosted, cannot test live (expected: 401 with proxied error)", () => {
+    // LiteLLM proxies the upstream provider's error with HTTP 401.
+    // Expected: isInvalidApiKeyResponse() returns true via message matching.
+  });
+});
+

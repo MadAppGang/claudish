@@ -115,6 +115,67 @@ export class KeyPool {
   }
 
   /**
+   * Check if a response body indicates an invalid API key.
+   *
+   * Some providers (notably Gemini) return non-rotatable status codes (e.g., 400)
+   * for invalid API keys. This method inspects the response body for known
+   * invalid-key patterns, enabling rotation even when the status code alone
+   * wouldn't trigger it.
+   *
+   * The response is cloned before reading, so the original body remains
+   * unconsumed for the caller.
+   *
+   * Public for testing — canary tests feed real provider responses through
+   * this method to detect API contract changes.
+   */
+  async isInvalidApiKeyResponse(response: Response): Promise<boolean> {
+    try {
+      const cloned = response.clone();
+      const text = await cloned.text();
+      const body = JSON.parse(text);
+
+      // Gemini: 400 with details[].reason === "API_KEY_INVALID"
+      if (body?.error?.details && Array.isArray(body.error.details)) {
+        for (const detail of body.error.details) {
+          if (detail.reason === "API_KEY_INVALID") {
+            return true;
+          }
+        }
+      }
+
+      // OpenAI: error.code === "invalid_api_key"
+      if (body?.error?.code === "invalid_api_key") {
+        return true;
+      }
+
+      // Anthropic: error.type === "authentication_error"
+      if (body?.error?.type === "authentication_error") {
+        return true;
+      }
+
+      // Generic: message contains "API key not valid" or "invalid api key"
+      // or "invalid credentials" or "incorrect api key"
+      const message = body?.error?.message || body?.message || "";
+      if (typeof message === "string") {
+        const lower = message.toLowerCase();
+        if (
+          lower.includes("api key not valid") ||
+          lower.includes("invalid api key") ||
+          lower.includes("invalid credentials") ||
+          lower.includes("incorrect api key")
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch {
+      // Non-JSON body or clone failed — not an invalid key response
+      return false;
+    }
+  }
+
+  /**
    * Execute a fetch request with automatic key failover
    *
    * On retryable errors (429, 500, etc.), automatically rotates to the next key
@@ -170,6 +231,18 @@ export class KeyPool {
           if (this.shouldRotateOnStatus(response.status)) {
             log(
               `[KeyPool:${this.providerName}] Got ${response.status} ${response.statusText} with ${keyLabel}, rotating to next key`
+            );
+            lastResponse = response;
+            this.advanceIndex();
+            continue;
+          }
+
+          // Check if this is an invalid API key response (e.g., Gemini 400 with API_KEY_INVALID)
+          // before giving up — the body may indicate a key-specific error even if the status
+          // code alone wouldn't trigger rotation.
+          if (await this.isInvalidApiKeyResponse(response)) {
+            log(
+              `[KeyPool:${this.providerName}] Got ${response.status} with invalid API key indicator from ${keyLabel}, rotating to next key`
             );
             lastResponse = response;
             this.advanceIndex();
