@@ -179,6 +179,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
     "Glob",
     "WebFetch",
     "WebSearch",
+    "ToolSearch",
   ];
   const nlPatterns = [
     // "I'll use the X tool with param=value" - ends with period, colon, newline, or end
@@ -474,6 +475,21 @@ export function inferMissingParameters(
     }
   }
 
+  // ToolSearch inference
+  // max_results has a schema default of 5; query must be extracted from context
+  if (toolName === "ToolSearch") {
+    if (missingParams.includes("max_results") && inferred.max_results === undefined) {
+      inferred.max_results = 5;
+      log(`[ToolRecovery] Inferred max_results: 5 (default)`);
+    }
+    if (missingParams.includes("query") && !inferred.query) {
+      inferred.query = inferred.search || inferred.keyword || inferred.tool || "";
+      if (inferred.query) {
+        log(`[ToolRecovery] Inferred ToolSearch query: "${inferred.query}"`);
+      }
+    }
+  }
+
   return inferred;
 }
 
@@ -547,6 +563,10 @@ For the Bash tool, you MUST always provide:
 - description: A brief description of what the command does
 
 For file tools (Read, Write, Edit), always provide the full file_path.
+
+For the ToolSearch tool, you MUST always provide:
+- query: The search query string (keywords or "select:tool_name")
+- max_results: Maximum number of results (default: 5)
 
 Format your tool calls as valid JSON with all required fields populated.
 `;
