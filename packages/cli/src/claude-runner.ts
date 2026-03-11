@@ -381,11 +381,14 @@ export async function runClaudeWithProxy(
   }
 
   // Spawn claude CLI process using Node.js child_process (works on both Node.js and Bun)
-  // Use the found binary path directly
-  const proc = spawn(claudeBinary, claudeArgs, {
+  // On Windows, .cmd files require shell:true — spawn() throws EINVAL without it.
+  // When using shell mode, quote the binary path to handle spaces (e.g. "C:\Program Files\...")
+  const needsShell = isWindows() && claudeBinary.endsWith(".cmd");
+  const spawnCommand = needsShell ? `"${claudeBinary}"` : claudeBinary;
+  const proc = spawn(spawnCommand, claudeArgs, {
     env,
     stdio: "inherit", // Stream stdin/stdout/stderr to parent
-    shell: false, // No shell needed when using direct path
+    shell: needsShell,
   });
 
   // Handle process termination signals (includes cleanup)
