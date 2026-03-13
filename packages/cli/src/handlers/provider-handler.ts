@@ -24,7 +24,6 @@ import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { FormatAdapter } from "../adapters/format-adapter.js";
 import type { ModelAdapter } from "../adapters/model-adapter.js";
-import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -48,6 +47,8 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
 export interface ProviderHandlerOptions {
   /** Wire format adapter for the target API */
   formatAdapter: FormatAdapter;
+  /** Model-specific quirk adapter (reasoning filters, param mapping, etc.) */
+  modelAdapter: ModelAdapter;
   /** Token tracking strategy */
   tokenStrategy?: "standard" | "accumulate-both" | "delta-aware" | "actual-cost" | "local";
   /** Summarize tool descriptions (for models with small context) */
@@ -79,12 +80,8 @@ export class ProviderHandler implements ModelHandler {
     this.targetModel = targetModel;
     this.options = options;
     this.formatAdapter = options.formatAdapter;
+    this.modelAdapter = options.modelAdapter;
     this.isInteractive = options.isInteractive ?? false;
-
-    // Resolve model-specific adapter (GLM, Grok, DeepSeek, Gemini, etc.)
-    // Handles model quirks independent of provider transport
-    const adapterManager = new AdapterManager(targetModel);
-    this.modelAdapter = adapterManager.getAdapter();
 
     // Initialize middleware
     this.middlewareManager = new MiddlewareManager();

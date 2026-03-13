@@ -1,19 +1,23 @@
 /**
- * LocalModelAdapter: format adapter for local OpenAI-compatible providers.
+ * LocalFormatAdapter: format adapter for local OpenAI-compatible providers.
  *
  * Wire format: OpenAI Chat Completions (the base FormatAdapter default),
  * with local-specific additions:
  * - System prompt guidance (tool calling, conversation handling)
- * - Model-family sampling parameters (Qwen, DeepSeek, Llama, Mistral)
+ * - Model-family sampling parameters (via subclass override)
  * - max_tokens floor (8192) for meaningful responses
  * - Capability-based tool stripping (non-tool models)
- * - Qwen /no_think toggle
  * - Strip cloud-only thinking params
  * - MLX simple format for message conversion
  *
+ * Subclassed per model family for sampling and prompt quirks:
+ *   LocalQwenFormatAdapter  — sampling, /no_think toggle, Qwen tool guidance
+ *   LocalDeepSeekFormatAdapter — sampling
+ *   LocalLlamaFormatAdapter — sampling
+ *   LocalMistralFormatAdapter — sampling
+ *
  * Model-family-specific behavior that applies to ALL providers (response
  * processing, thinking param mapping) is handled by ModelAdapters.
- * Sampling params and local-only system prompt injections stay here.
  */
 
 import { FormatAdapter } from "./format-adapter.js";
@@ -21,7 +25,7 @@ import type { ProviderCapabilities } from "../handlers/shared/remote-provider-ty
 import { log } from "../logger.js";
 
 /** Sampling parameters for local models */
-interface SamplingParams {
+export interface SamplingParams {
   temperature: number;
   top_p: number;
   top_k: number;
@@ -29,9 +33,9 @@ interface SamplingParams {
   repetition_penalty: number;
 }
 
-export class LocalModelAdapter extends FormatAdapter {
-  private capabilities: ProviderCapabilities;
-  private providerName: string;
+export class LocalFormatAdapter extends FormatAdapter {
+  protected capabilities: ProviderCapabilities;
+  protected providerName: string;
 
   constructor(modelId: string, providerName: string, capabilities: ProviderCapabilities) {
     super(modelId);
@@ -40,7 +44,7 @@ export class LocalModelAdapter extends FormatAdapter {
   }
 
   getName(): string {
-    return `LocalModelAdapter`;
+    return `LocalFormatAdapter`;
   }
 
   override supportsVision(): boolean {
@@ -68,16 +72,8 @@ export class LocalModelAdapter extends FormatAdapter {
       );
     }
 
-    // Qwen /no_think toggle
-    if (
-      this.modelId.toLowerCase().includes("qwen") &&
-      process.env.CLAUDISH_QWEN_NO_THINK === "1"
-    ) {
-      if (messages.length > 0 && messages[0].role === "system") {
-        messages[0].content = "/no_think\n\n" + messages[0].content;
-        log(`[${this.getName()}] Added /no_think to disable Qwen thinking mode`);
-      }
-    }
+    // Hook for subclass message modification (e.g. Qwen /no_think)
+    this.modifyMessages(messages);
 
     return messages;
   }
@@ -152,25 +148,26 @@ export class LocalModelAdapter extends FormatAdapter {
     return 32768; // Default, overridden by provider's dynamic context window fetch
   }
 
-  // ─── Model-family sampling parameters ───────────────────────────────
+  // ─── Overridable hooks for subclasses ───────────────────────────────
 
-  private getSamplingParams(): SamplingParams {
-    const id = this.modelId.toLowerCase();
+  /** Whether this adapter should handle the given model. Override in subclass. */
+  shouldHandle(_modelId: string): boolean {
+    return false;
+  }
 
-    if (id.includes("qwen")) {
-      return { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, repetition_penalty: 1.05 };
-    }
-    if (id.includes("deepseek")) {
-      return { temperature: 0.6, top_p: 0.95, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
-    }
-    if (id.includes("llama")) {
-      return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.05, repetition_penalty: 1.1 };
-    }
-    if (id.includes("mistral") || id.includes("codestral")) {
-      return { temperature: 0.7, top_p: 0.9, top_k: 50, min_p: 0.0, repetition_penalty: 1.0 };
-    }
-    // Generic defaults
+  /** Sampling parameters. Override in subclass for model-family tuning. */
+  protected getSamplingParams(): SamplingParams {
     return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
+  }
+
+  /** Hook for subclass message modification (called after system guidance). */
+  protected modifyMessages(_messages: any[]): void {
+    // no-op by default
+  }
+
+  /** Extra tool guidance text injected before parameter requirements. Override for model-specific guidance. */
+  protected getToolGuidance(): string {
+    return "";
   }
 
   // ─── System prompt guidance ─────────────────────────────────────────
@@ -200,19 +197,9 @@ IMPORTANT INSTRUCTIONS FOR THIS MODEL:
 - If you called a Glob/Search and got files, READ important files next, then ANALYZE, then SUGGEST improvements.`;
 
     if (toolCount > 0) {
-      const isQwen = this.modelId.toLowerCase().includes("qwen");
-      if (isQwen) {
-        guidance += `
-
-4. TOOL CALLING FORMAT (CRITICAL FOR QWEN):
-You MUST use proper OpenAI-style function calling. Do NOT output tool calls as XML text.
-When you want to call a tool, use the API's tool_calls mechanism, NOT text like <function=...>.
-The tool calls must be structured JSON in the API response, not XML in your text output.
-
-If you cannot use structured tool_calls, format as JSON:
-{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
-
-5. TOOL PARAMETER REQUIREMENTS:`;
+      const extraGuidance = this.getToolGuidance();
+      if (extraGuidance) {
+        guidance += extraGuidance;
       } else {
         guidance += `
 

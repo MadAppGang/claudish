@@ -36,9 +36,8 @@ import {
   getProviderByName,
   isLocalTransport,
 } from "./providers/provider-definitions.js";
-import { createTransportForProvider } from "./providers/provider-factory.js";
+import { createTransportForProvider, selectModelAdapter, selectLocalFormatAdapter } from "./providers/provider-factory.js";
 import { LocalTransport } from "./providers/transport/local.js";
-import { LocalModelAdapter } from "./adapters/local-adapter.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -76,7 +75,7 @@ export async function createProxyServer(
       const orAdapter = new OpenRouterAdapter(modelId);
       openRouterHandlers.set(
         modelId,
-        new ProviderHandler(orProvider, modelId, modelId, port, { formatAdapter: orAdapter, isInteractive: options.isInteractive })
+        new ProviderHandler(orProvider, modelId, modelId, port, { formatAdapter: orAdapter, modelAdapter: selectModelAdapter(modelId), isInteractive: options.isInteractive })
       );
     }
     return openRouterHandlers.get(modelId)!;
@@ -98,6 +97,7 @@ export async function createProxyServer(
         modelId,
         new ProviderHandler(poeTransport, modelId, modelId, port, {
           formatAdapter: new OpenAIFormatAdapter(modelId, poeDef?.capabilities || { supportsTools: true, supportsVision: true, supportsStreaming: true, supportsJsonMode: false, supportsReasoning: false }),
+          modelAdapter: selectModelAdapter(modelId),
           isInteractive: options.isInteractive,
         })
       );
@@ -128,6 +128,7 @@ export async function createProxyServer(
         if (result) {
           const handler = new ProviderHandler(result.transport, parsed.model, parsed.model, port, {
             formatAdapter: result.formatAdapter,
+            modelAdapter: result.modelAdapter,
             tokenStrategy: result.tokenStrategy,
             summarizeTools: result.summarizeTools,
             isInteractive: options.isInteractive,
@@ -144,13 +145,14 @@ export async function createProxyServer(
     if (urlParsed) {
       const providerConfig = createUrlProvider(urlParsed);
       const provider = new LocalTransport(providerConfig);
-      const formatAdapter = new LocalModelAdapter(
+      const formatAdapter = selectLocalFormatAdapter(
         urlParsed.modelName,
         providerConfig.name,
         URL_PROVIDER_CAPABILITIES
       );
       const handler = new ProviderHandler(provider, urlParsed.modelName, urlParsed.modelName, port, {
         formatAdapter,
+        modelAdapter: selectModelAdapter(urlParsed.modelName),
         tokenStrategy: "local",
         summarizeTools: options.summarizeTools,
         isInteractive: options.isInteractive,
@@ -233,6 +235,7 @@ export async function createProxyServer(
           }
           handler = new ProviderHandler(expressResult.transport, targetModel, resolved.modelName, port, {
             formatAdapter: expressResult.formatAdapter,
+            modelAdapter: expressResult.modelAdapter,
             isInteractive: options.isInteractive,
           });
           log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
@@ -260,6 +263,7 @@ export async function createProxyServer(
 
           handler = new ProviderHandler(vxProvider, targetModel, resolved.modelName, port, {
             formatAdapter: vxAdapter,
+            modelAdapter: selectModelAdapter(resolved.modelName),
             isInteractive: options.isInteractive,
           });
           log(
@@ -286,6 +290,7 @@ export async function createProxyServer(
 
         handler = new ProviderHandler(result.transport, targetModel, resolved.modelName, port, {
           formatAdapter: result.formatAdapter,
+          modelAdapter: result.modelAdapter,
           tokenStrategy: result.tokenStrategy,
           unwrapGeminiResponse: result.unwrapGeminiResponse,
           isInteractive: options.isInteractive,
