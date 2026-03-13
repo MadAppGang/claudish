@@ -5,11 +5,11 @@
  * Caches the check result to avoid checking on every run (once per day).
  */
 
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 
 const isWindows = platform() === "win32";
 
@@ -42,7 +42,7 @@ interface UpdateCache {
  * - Windows: %LOCALAPPDATA%\claudish or %USERPROFILE%\AppData\Local\claudish
  * - Unix/macOS: ~/.cache/claudish
  */
-function getCacheFilePath(): string {
+async function getCacheFilePath(): Promise<string> {
   let cacheDir: string;
 
   if (isWindows) {
@@ -55,9 +55,7 @@ function getCacheFilePath(): string {
   }
 
   try {
-    if (!existsSync(cacheDir)) {
-      mkdirSync(cacheDir, { recursive: true });
-    }
+    await mkdir(cacheDir, { recursive: true });
     return join(cacheDir, "update-check.json");
   } catch {
     // Fall back to temp directory if home cache fails
@@ -68,13 +66,10 @@ function getCacheFilePath(): string {
 /**
  * Read cached update check result
  */
-function readCache(): UpdateCache | null {
+async function readCache(): Promise<UpdateCache | null> {
   try {
-    const cachePath = getCacheFilePath();
-    if (!existsSync(cachePath)) {
-      return null;
-    }
-    const data = JSON.parse(readFileSync(cachePath, "utf-8"));
+    const cachePath = await getCacheFilePath();
+    const data = JSON.parse(await readFile(cachePath, "utf-8"));
     return data as UpdateCache;
   } catch {
     return null;
@@ -84,14 +79,14 @@ function readCache(): UpdateCache | null {
 /**
  * Write update check result to cache
  */
-function writeCache(latestVersion: string | null): void {
+async function writeCache(latestVersion: string | null): Promise<void> {
   try {
-    const cachePath = getCacheFilePath();
+    const cachePath = await getCacheFilePath();
     const data: UpdateCache = {
       lastCheck: Date.now(),
       latestVersion,
     };
-    writeFileSync(cachePath, JSON.stringify(data), "utf-8");
+    await writeFile(cachePath, JSON.stringify(data), "utf-8");
   } catch {
     // Silently fail - caching is optional
   }
@@ -108,12 +103,10 @@ function isCacheValid(cache: UpdateCache): boolean {
 /**
  * Clear the update cache (called after successful update)
  */
-export function clearCache(): void {
+export async function clearCache(): Promise<void> {
   try {
-    const cachePath = getCacheFilePath();
-    if (existsSync(cachePath)) {
-      unlinkSync(cachePath);
-    }
+    const cachePath = await getCacheFilePath();
+    await unlink(cachePath);
   } catch {
     // Silently fail
   }
@@ -184,15 +177,17 @@ function promptUser(question: string): Promise<boolean> {
 /**
  * Run update command (auto-detects npm vs bun)
  */
-function runUpdate(): boolean {
+async function runUpdate(): Promise<boolean> {
   const command = getUpdateCommand();
   try {
     console.error("\n[claudish] Updating...\n");
 
-    // Use execSync with shell for cross-platform compatibility
+    const { exec } = await import("node:child_process");
+    const execAsync = promisify(exec);
+
+    // Use exec with shell for cross-platform compatibility
     // Windows needs shell to find npm.cmd
-    execSync(command, {
-      stdio: "inherit",
+    await execAsync(command, {
       shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
     });
 
@@ -226,7 +221,7 @@ export async function checkForUpdates(
   let latestVersion: string | null = null;
 
   // Check cache first
-  const cache = readCache();
+  const cache = await readCache();
   if (cache && isCacheValid(cache)) {
     // Use cached version
     latestVersion = cache.latestVersion;
@@ -234,7 +229,7 @@ export async function checkForUpdates(
     // Cache is stale or doesn't exist - fetch from npm
     latestVersion = await fetchLatestVersion();
     // Update cache (even if null - to avoid repeated failed requests)
-    writeCache(latestVersion);
+    await writeCache(latestVersion);
   }
 
   if (!latestVersion) {
@@ -276,11 +271,11 @@ export async function checkForUpdates(
   }
 
   // Run update
-  const success = runUpdate();
+  const success = await runUpdate();
 
   if (success) {
     // Clear cache so next run checks fresh
-    clearCache();
+    await clearCache();
     // Exit after successful update so user can restart with new version
     return true;
   }

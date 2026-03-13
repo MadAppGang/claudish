@@ -154,12 +154,12 @@ async function runCli() {
     const cliConfig = await parseArgs(process.argv.slice(2));
 
     // Initialize logger if debug mode with specified log level
-    initLogger(cliConfig.debug, cliConfig.logLevel);
+    await initLogger(cliConfig.debug, cliConfig.logLevel);
 
     // Initialize telemetry (reads consent, generates session_id)
     // Must come after parseArgs() so cliConfig.interactive is known
     const { initTelemetry } = await import("./telemetry.js");
-    initTelemetry(cliConfig);
+    await initTelemetry(cliConfig);
 
     // Show debug log location if enabled
     if (cliConfig.debug && !cliConfig.quiet) {
@@ -227,7 +227,7 @@ async function runCli() {
           ];
 
       // Validate API keys for all models
-      const resolutions = validateApiKeysForModels(modelsToValidate);
+      const resolutions = await validateApiKeysForModels(modelsToValidate);
       const missingKeys = getMissingKeyResolutions(resolutions);
 
       if (missingKeys.length > 0) {
@@ -243,7 +243,7 @@ async function runCli() {
           }
 
           // Check if there are still missing keys (non-OpenRouter providers)
-          const stillMissing = getMissingKeyResolutions(validateApiKeysForModels(modelsToValidate));
+          const stillMissing = getMissingKeyResolutions(await validateApiKeysForModels(modelsToValidate));
           const nonOpenRouterMissing = stillMissing.filter((r) => r.category !== "openrouter");
 
           if (nonOpenRouterMissing.length > 0) {
@@ -270,7 +270,7 @@ async function runCli() {
       ].filter((m): m is string => typeof m === "string");
 
       for (const modelId of modelsToCheck) {
-        const resolution = resolveModelProvider(modelId);
+        const resolution = await resolveModelProvider(modelId);
         if (resolution.deprecationWarning) {
           console.warn(`[claudish] ${resolution.deprecationWarning}`);
         }

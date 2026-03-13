@@ -11,7 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { config } from "dotenv";
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -19,8 +19,6 @@ import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName, getApiKeyInfo } from "./providers/provider-definitions.js";
 
 import { createTransportForProvider } from "./providers/provider-factory.js";
-import { OpenRouterTransport } from "./providers/transport/openrouter.js";
-import { OpenAIFormatAdapter } from "./adapters/openai-format-adapter.js";
 import type { FormatAdapter } from "./adapters/format-adapter.js";
 import type { ProviderTransport, StreamFormat } from "./providers/transport/types.js";
 
@@ -57,16 +55,13 @@ interface ModelInfo {
 /**
  * Load recommended models from JSON
  */
-function loadRecommendedModels(): ModelInfo[] {
-  if (existsSync(RECOMMENDED_MODELS_PATH)) {
-    try {
-      const data = JSON.parse(readFileSync(RECOMMENDED_MODELS_PATH, "utf-8"));
-      return data.models || [];
-    } catch {
-      return [];
-    }
+async function loadRecommendedModels(): Promise<ModelInfo[]> {
+  try {
+    const data = JSON.parse(await readFile(RECOMMENDED_MODELS_PATH, "utf-8"));
+    return data.models || [];
+  } catch {
+    return [];
   }
-  return [];
 }
 
 /**
@@ -74,9 +69,9 @@ function loadRecommendedModels(): ModelInfo[] {
  */
 async function loadAllModels(forceRefresh = false): Promise<any[]> {
   // Check cache
-  if (!forceRefresh && existsSync(ALL_MODELS_CACHE_PATH)) {
+  if (!forceRefresh) {
     try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_CACHE_PATH, "utf-8"));
+      const cacheData = JSON.parse(await readFile(ALL_MODELS_CACHE_PATH, "utf-8"));
       const lastUpdated = new Date(cacheData.lastUpdated);
       const ageInDays = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
 
@@ -84,7 +79,7 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
         return cacheData.models || [];
       }
     } catch {
-      // Cache invalid, fetch fresh
+      // Cache missing or invalid, fetch fresh
     }
   }
 
@@ -97,8 +92,8 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     const models = data.data || [];
 
     // Cache result - ensure directory exists
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-    writeFileSync(
+    await mkdir(CLAUDISH_CACHE_DIR, { recursive: true });
+    await writeFile(
       ALL_MODELS_CACHE_PATH,
       JSON.stringify({
         lastUpdated: new Date().toISOString(),
@@ -110,11 +105,12 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     return models;
   } catch (error) {
     // Return cached data if available, even if stale
-    if (existsSync(ALL_MODELS_CACHE_PATH)) {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_CACHE_PATH, "utf-8"));
+    try {
+      const cacheData = JSON.parse(await readFile(ALL_MODELS_CACHE_PATH, "utf-8"));
       return cacheData.models || [];
+    } catch {
+      return [];
     }
-    return [];
   }
 }
 
@@ -140,8 +136,8 @@ function createComponentsForModel(model: string): {
 
     // Only use direct provider if we have a key (or it's free).
     // Missing key with explicit provider@ syntax is an error;
-    // otherwise fall through to OpenRouter like main branch did.
-    if (!apiKey && def.apiKeyEnvVar && def.transport !== "openrouter") {
+    // otherwise fall through to OpenRouter.
+    if (!apiKey && def.apiKeyEnvVar) {
       if (parsed.isExplicitProvider) {
         throw new Error(`${def.apiKeyEnvVar} environment variable not set for ${def.displayName}`);
       }
@@ -158,15 +154,22 @@ function createComponentsForModel(model: string): {
     }
   }
 
-  // Fall back to OpenRouter
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
+  // Fall back to OpenRouter via factory
+  const orApiKey = process.env.OPENROUTER_API_KEY;
+  if (!orApiKey) {
     throw new Error("OPENROUTER_API_KEY environment variable not set");
   }
-
+  const orDef = getProviderByName("openrouter");
+  if (!orDef) {
+    throw new Error("OpenRouter provider definition not found");
+  }
+  const orComponents = createTransportForProvider(orDef, parsed.model, orApiKey);
+  if (!orComponents) {
+    throw new Error("Failed to create OpenRouter transport");
+  }
   return {
-    transport: new OpenRouterTransport(apiKey),
-    adapter: new OpenAIFormatAdapter(parsed.model),
+    transport: orComponents.transport,
+    adapter: orComponents.formatAdapter,
     modelName: parsed.model,
   };
 }
@@ -200,7 +203,7 @@ async function runPrompt(
 
   // Non-streaming: Gemini uses a different endpoint URL, others use stream:false
   let endpoint = transport.getEndpoint(modelName);
-  if (transport.streamFormat === "gemini-sse") {
+  if (transport.streamFormat === "gemini-sse" || transport.streamFormat === "gemini-codeassist-sse") {
     endpoint = endpoint.replace(":streamGenerateContent?alt=sse", ":generateContent");
   } else {
     payload.stream = false;
@@ -236,12 +239,14 @@ function parseResponse(
   data: any,
 ): { content: string; usage?: { input: number; output: number } } {
   switch (format) {
+    case "gemini-codeassist-sse":
     case "gemini-sse": {
-      const text = data.candidates?.[0]?.content?.parts
+      const responseData = format === "gemini-codeassist-sse" ? (data.response || data) : data;
+      const text = responseData.candidates?.[0]?.content?.parts
         ?.map((p: any) => p.text || "")
         .join("") || "";
-      const usage = data.usageMetadata
-        ? { input: data.usageMetadata.promptTokenCount, output: data.usageMetadata.candidatesTokenCount }
+      const usage = responseData.usageMetadata
+        ? { input: responseData.usageMetadata.promptTokenCount, output: responseData.usageMetadata.candidatesTokenCount }
         : undefined;
       return { content: text, usage };
     }
@@ -348,7 +353,7 @@ async function main() {
     "List recommended models for coding tasks",
     {},
     async () => {
-      const models = loadRecommendedModels();
+      const models = await loadRecommendedModels();
 
       if (models.length === 0) {
         return {

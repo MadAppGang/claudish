@@ -512,12 +512,12 @@ async function sendReport(report: TelemetryReport): Promise<void> {
  * Show the consent prompt in the background.
  * Uses a module-level flag to prevent multiple simultaneous prompts.
  */
-function showConsentPromptAsync(ctx: ErrorContext): void {
+async function showConsentPromptAsync(ctx: ErrorContext): Promise<void> {
   if (consentPromptActive) return;
 
   // Check config: if askedAt is already set, never prompt again
   try {
-    const profileConfig = loadConfig();
+    const profileConfig = await loadConfig();
     if (profileConfig.telemetry?.askedAt !== undefined) return;
   } catch {
     return; // Config read failure — skip prompt
@@ -561,13 +561,13 @@ export async function runConsentPrompt(ctx: ErrorContext): Promise<void> {
 
   // Save consent decision to config
   try {
-    const profileConfig = loadConfig();
+    const profileConfig = await loadConfig();
     profileConfig.telemetry = {
       enabled: accepted,
       askedAt: new Date().toISOString(),
       promptedVersion: claudishVersion,
     };
-    saveConfig(profileConfig);
+    await saveConfig(profileConfig);
     consentEnabled = accepted;
   } catch {
     // Config write failure — do not crash
@@ -604,7 +604,7 @@ export async function runConsentPrompt(ctx: ErrorContext): Promise<void> {
  *
  * @param config - The parsed CLI config. Used to read the interactive flag.
  */
-export function initTelemetry(config: ClaudishConfig): void {
+export async function initTelemetry(config: ClaudishConfig): Promise<void> {
   if (initialized) return;
   initialized = true;
 
@@ -617,7 +617,7 @@ export function initTelemetry(config: ClaudishConfig): void {
 
   // Read consent from ~/.claudish/config.json
   try {
-    const profileConfig = loadConfig();
+    const profileConfig = await loadConfig();
     consentEnabled = profileConfig.telemetry?.enabled ?? false;
   } catch {
     // Config read failure — default to disabled, do not throw
@@ -685,32 +685,32 @@ export function reportError(ctx: ErrorContext): void {
 export async function handleTelemetryCommand(subcommand: string): Promise<void> {
   switch (subcommand) {
     case "on": {
-      const cfg = loadConfig();
+      const cfg = await loadConfig();
       cfg.telemetry = {
         ...(cfg.telemetry ?? {}),
         enabled: true,
         askedAt: cfg.telemetry?.askedAt ?? new Date().toISOString(),
         promptedVersion: claudishVersion || getVersion(),
       };
-      saveConfig(cfg);
+      await saveConfig(cfg);
       process.stderr.write("[claudish] Telemetry enabled. Anonymous error reports will be sent.\n");
       process.exit(0);
     }
 
     case "off": {
-      const cfg = loadConfig();
+      const cfg = await loadConfig();
       cfg.telemetry = {
         ...(cfg.telemetry ?? {}),
         enabled: false,
         askedAt: cfg.telemetry?.askedAt ?? new Date().toISOString(),
       };
-      saveConfig(cfg);
+      await saveConfig(cfg);
       process.stderr.write("[claudish] Telemetry disabled. No error reports will be sent.\n");
       process.exit(0);
     }
 
     case "status": {
-      const cfg = loadConfig();
+      const cfg = await loadConfig();
       const t = cfg.telemetry;
       const envOverride = process.env.CLAUDISH_TELEMETRY;
       const envDisabled = envOverride === "0" || envOverride === "false" || envOverride === "off";
@@ -739,11 +739,11 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
     }
 
     case "reset": {
-      const cfg = loadConfig();
+      const cfg = await loadConfig();
       if (cfg.telemetry) {
         delete cfg.telemetry.askedAt;
         cfg.telemetry.enabled = false;
-        saveConfig(cfg);
+        await saveConfig(cfg);
       }
       process.stderr.write("[claudish] Telemetry consent reset. You will be asked again on the next error.\n");
       process.exit(0);

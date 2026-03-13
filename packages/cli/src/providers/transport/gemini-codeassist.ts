@@ -6,7 +6,7 @@
  * - Project ID via setupGeminiUser()
  * - Wraps payload in CodeAssist envelope: {model, project, user_prompt_id, request}
  * - GeminiRequestQueue for rate limiting
- * - gemini-sse stream format (with response wrapper)
+ * - gemini-codeassist-sse stream format (chunks wrapped in {response: {...}})
  */
 
 import { randomUUID } from "node:crypto";
@@ -16,7 +16,7 @@ import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log } from "../../logger.js";
 
 export class GeminiCodeAssistTransport extends OAuthTransport {
-  readonly streamFormat: StreamFormat = "gemini-sse";
+  readonly streamFormat: StreamFormat = "gemini-codeassist-sse";
 
   private projectId: string | null = null;
 

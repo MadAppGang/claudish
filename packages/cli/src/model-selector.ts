@@ -5,7 +5,7 @@
  */
 
 import { search, select, input, confirm } from "@inquirer/prompts";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -49,20 +49,17 @@ export interface ModelInfo {
  * Load recommended models from JSON
  * IDs are provider-agnostic — auto-routing decides the provider
  */
-function loadRecommendedModels(): ModelInfo[] {
-  if (existsSync(RECOMMENDED_MODELS_JSON_PATH)) {
-    try {
-      const content = readFileSync(RECOMMENDED_MODELS_JSON_PATH, "utf-8");
-      const data = JSON.parse(content);
-      return (data.models || []).map((model: ModelInfo) => ({
-        ...model,
-        source: "Recommended" as const,
-      }));
-    } catch {
-      return [];
-    }
+async function loadRecommendedModels(): Promise<ModelInfo[]> {
+  try {
+    const content = await readFile(RECOMMENDED_MODELS_JSON_PATH, "utf-8");
+    const data = JSON.parse(content);
+    return (data.models || []).map((model: ModelInfo) => ({
+      ...model,
+      source: "Recommended" as const,
+    }));
+  } catch {
+    return [];
   }
-  return [];
 }
 
 /**
@@ -70,9 +67,9 @@ function loadRecommendedModels(): ModelInfo[] {
  */
 async function fetchAllModels(forceUpdate = false): Promise<any[]> {
   // Check cache
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
+  if (!forceUpdate) {
     try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
+      const cacheData = JSON.parse(await readFile(ALL_MODELS_JSON_PATH, "utf-8"));
       const lastUpdated = new Date(cacheData.lastUpdated);
       const now = new Date();
       const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
@@ -81,7 +78,7 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
         return cacheData.models;
       }
     } catch {
-      // Cache error, will fetch
+      // Cache error (missing or corrupt), will fetch
     }
   }
 
@@ -95,8 +92,8 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
     const models = data.data;
 
     // Cache result - ensure directory exists
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-    writeFileSync(
+    await mkdir(CLAUDISH_CACHE_DIR, { recursive: true });
+    await writeFile(
       ALL_MODELS_JSON_PATH,
       JSON.stringify({
         lastUpdated: new Date().toISOString(),
@@ -745,12 +742,9 @@ async function fetchOllamaCloudModels(): Promise<ModelInfo[]> {
 /**
  * Check if cache needs refresh for free models (more frequent updates)
  */
-function shouldRefreshForFreeModels(): boolean {
-  if (!existsSync(ALL_MODELS_JSON_PATH)) {
-    return true;
-  }
+async function shouldRefreshForFreeModels(): Promise<boolean> {
   try {
-    const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
+    const cacheData = JSON.parse(await readFile(ALL_MODELS_JSON_PATH, "utf-8"));
     const lastUpdated = new Date(cacheData.lastUpdated);
     const now = new Date();
     const ageInHours = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60);
@@ -766,7 +760,7 @@ function shouldRefreshForFreeModels(): boolean {
  */
 async function getFreeModels(): Promise<ModelInfo[]> {
   // Fetch OpenRouter models and Zen models in parallel
-  const forceUpdate = shouldRefreshForFreeModels();
+  const forceUpdate = await shouldRefreshForFreeModels();
   const [allModels, zenModels] = await Promise.all([
     fetchAllModels(forceUpdate),
     fetchZenFreeModels(),
@@ -1031,7 +1025,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     // Fetch all models from all providers (Zen, xAI, Gemini, OpenAI, OpenRouter)
     const [allModels, recommendedModels] = await Promise.all([
       getAllModelsForSearch(forceUpdate),
-      Promise.resolve(recommended ? loadRecommendedModels() : []),
+      recommended ? loadRecommendedModels() : Promise.resolve([]),
     ]);
 
     // Build prioritized list: Zen (free) -> Recommended -> All others
@@ -1443,7 +1437,7 @@ export async function selectModelsForProfile(): Promise<{
   console.log("\nLoading available models...");
   const [fetchedModels, recommendedModels] = await Promise.all([
     getAllModelsForSearch(),
-    Promise.resolve(loadRecommendedModels()),
+    loadRecommendedModels(),
   ]);
 
   const tiers = [

@@ -12,7 +12,7 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileSync, existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../logger.js";
@@ -119,7 +119,9 @@ export class VertexAuthManager {
       // Check if ADC credentials file exists
       const adcPath = join(homedir(), ".config/gcloud/application_default_credentials.json");
 
-      if (!existsSync(adcPath)) {
+      try {
+        await access(adcPath);
+      } catch {
         log("[VertexAuth] ADC credentials file not found");
         return null;
       }
@@ -154,7 +156,9 @@ export class VertexAuthManager {
       return null;
     }
 
-    if (!existsSync(credPath)) {
+    try {
+      await access(credPath);
+    } catch {
       throw new Error(
         `Service account file not found: ${credPath}\n\nCheck GOOGLE_APPLICATION_CREDENTIALS path.`
       );
@@ -197,38 +201,6 @@ export function getVertexConfig(): VertexConfig | null {
     projectId,
     location: process.env.VERTEX_LOCATION || "us-central1",
   };
-}
-
-/**
- * Validate Vertex AI OAuth configuration
- * Returns error message if invalid, null if OK
- */
-export function validateVertexOAuthConfig(): string | null {
-  const config = getVertexConfig();
-  if (!config) {
-    return (
-      "Missing VERTEX_PROJECT environment variable.\n\n" +
-      "Set it with:\n" +
-      "  export VERTEX_PROJECT='your-gcp-project-id'\n" +
-      "  export VERTEX_LOCATION='us-central1'  # optional"
-    );
-  }
-
-  // Check for credentials
-  const adcPath = join(homedir(), ".config/gcloud/application_default_credentials.json");
-  const hasADC = existsSync(adcPath);
-  const hasServiceAccount = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
-
-  if (!hasADC && !hasServiceAccount) {
-    return (
-      "No Vertex AI credentials found.\n\n" +
-      "Options:\n" +
-      "1. Run: gcloud auth application-default login\n" +
-      "2. Set: export GOOGLE_APPLICATION_CREDENTIALS='/path/to/service-account.json'"
-    );
-  }
-
-  return null;
 }
 
 /**

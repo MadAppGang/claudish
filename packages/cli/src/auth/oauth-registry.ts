@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -58,16 +58,17 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
   },
 };
 
-function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean {
+async function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): Promise<boolean> {
   const credPath = join(homedir(), ".claudish", descriptor.credentialFile);
-  if (!existsSync(credPath)) return false;
-
-  if (descriptor.validationMode === "file-exists") {
-    return true;
-  }
 
   try {
-    const data = JSON.parse(readFileSync(credPath, "utf-8"));
+    const raw = await readFile(credPath, "utf-8");
+    const data = JSON.parse(raw);
+
+    if (descriptor.validationMode === "file-exists") {
+      return true;
+    }
+
     if (!data.access_token) return false;
 
     // If a refresh_token is present the handler can refresh at request time,
@@ -86,7 +87,7 @@ function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean 
   }
 }
 
-export function hasOAuthCredentials(providerName: string): boolean {
+export async function hasOAuthCredentials(providerName: string): Promise<boolean> {
   const descriptor = OAUTH_PROVIDERS[providerName];
   if (!descriptor) return false;
   return hasValidOAuthCredentials(descriptor);

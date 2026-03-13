@@ -13,7 +13,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes, createHash } from "node:crypto";
-import { readFileSync, existsSync, unlinkSync, openSync, writeSync, closeSync } from "node:fs";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { exec } from "node:child_process";
@@ -100,19 +100,30 @@ export class GeminiOAuth {
     return GeminiOAuth.instance;
   }
 
+  private credentialsLoaded = false;
+
   /**
    * Private constructor (singleton pattern)
    */
   private constructor() {
-    // Try to load existing credentials on startup
-    this.credentials = this.loadCredentials();
+    // Credentials loaded lazily via ensureCredentialsLoaded()
+  }
+
+  /**
+   * Ensure credentials are loaded from disk (lazy async init)
+   */
+  private async ensureCredentialsLoaded(): Promise<void> {
+    if (this.credentialsLoaded) return;
+    this.credentials = await this.loadCredentials();
+    this.credentialsLoaded = true;
   }
 
   /**
    * Check if credentials exist (without validating expiry)
    * Use this to determine if login is needed before making requests
    */
-  hasCredentials(): boolean {
+  async hasCredentials(): Promise<boolean> {
+    await this.ensureCredentialsLoaded();
     return this.credentials !== null && !!this.credentials.refresh_token;
   }
 
@@ -154,7 +165,7 @@ export class GeminiOAuth {
       expires_at: Date.now() + tokens.expires_in * 1000,
     };
 
-    this.saveCredentials(credentials);
+    await this.saveCredentials(credentials);
     this.credentials = credentials;
 
     // Clear state after successful login
@@ -169,9 +180,11 @@ export class GeminiOAuth {
   async logout(): Promise<void> {
     const credPath = this.getCredentialsPath();
 
-    if (existsSync(credPath)) {
-      unlinkSync(credPath);
+    try {
+      await unlink(credPath);
       log("[GeminiOAuth] Credentials deleted");
+    } catch {
+      // File doesn't exist, nothing to delete
     }
 
     this.credentials = null;
@@ -181,6 +194,8 @@ export class GeminiOAuth {
    * Get valid access token, refreshing if needed
    */
   async getAccessToken(): Promise<string> {
+    await this.ensureCredentialsLoaded();
+
     // If refresh already in progress, wait for it
     if (this.refreshPromise) {
       log("[GeminiOAuth] Waiting for in-progress refresh");
@@ -271,7 +286,7 @@ export class GeminiOAuth {
         expires_at: Date.now() + tokens.expires_in * 1000,
       };
 
-      this.saveCredentials(updatedCredentials);
+      await this.saveCredentials(updatedCredentials);
       this.credentials = updatedCredentials;
 
       log(
@@ -290,15 +305,11 @@ export class GeminiOAuth {
   /**
    * Load credentials from file
    */
-  private loadCredentials(): GeminiCredentials | null {
+  private async loadCredentials(): Promise<GeminiCredentials | null> {
     const credPath = this.getCredentialsPath();
 
-    if (!existsSync(credPath)) {
-      return null;
-    }
-
     try {
-      const data = readFileSync(credPath, "utf-8");
+      const data = await readFile(credPath, "utf-8");
       const credentials = JSON.parse(data) as GeminiCredentials;
 
       // Validate structure
@@ -310,6 +321,9 @@ export class GeminiOAuth {
       log("[GeminiOAuth] Loaded credentials from file");
       return credentials;
     } catch (e: any) {
+      if (e.code === "ENOENT") {
+        return null;
+      }
       log(`[GeminiOAuth] Failed to load credentials: ${e.message}`);
       return null;
     }
@@ -318,24 +332,16 @@ export class GeminiOAuth {
   /**
    * Save credentials to file with 0600 permissions
    */
-  private saveCredentials(credentials: GeminiCredentials): void {
+  private async saveCredentials(credentials: GeminiCredentials): Promise<void> {
     const credPath = this.getCredentialsPath();
     const claudishDir = join(homedir(), ".claudish");
 
     // Ensure directory exists
-    if (!existsSync(claudishDir)) {
-      const { mkdirSync } = require("node:fs");
-      mkdirSync(claudishDir, { recursive: true });
-    }
+    await mkdir(claudishDir, { recursive: true });
 
-    // Atomically create file with secure permissions (0600) to prevent race condition
-    const fd = openSync(credPath, "w", 0o600);
-    try {
-      const data = JSON.stringify(credentials, null, 2);
-      writeSync(fd, data, 0, "utf-8");
-    } finally {
-      closeSync(fd);
-    }
+    // Write file with secure permissions (0600)
+    const data = JSON.stringify(credentials, null, 2);
+    await writeFile(credPath, data, { mode: 0o600 });
 
     log(`[GeminiOAuth] Credentials saved to ${credPath}`);
   }

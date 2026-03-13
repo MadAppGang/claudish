@@ -1,9 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
-import { resolveModelNameSync } from "./model-catalog-resolver.js";
+import { resolveModelName } from "./model-catalog-resolver.js";
 
 export interface AutoRouteResult {
   provider: string;
@@ -41,14 +41,12 @@ const API_KEY_ENV_VARS: Record<string, { envVar: string; aliases?: string[] }> =
   poe: { envVar: "POE_API_KEY" },
 };
 
-function readLiteLLMCacheSync(baseUrl: string): Array<{ id: string; name: string }> | null {
+async function readLiteLLMCache(baseUrl: string): Promise<Array<{ id: string; name: string }> | null> {
   const hash = createHash("sha256").update(baseUrl).digest("hex").substring(0, 16);
   const cachePath = join(homedir(), ".claudish", `litellm-models-${hash}.json`);
 
-  if (!existsSync(cachePath)) return null;
-
   try {
-    const data = JSON.parse(readFileSync(cachePath, "utf-8"));
+    const data = JSON.parse(await readFile(cachePath, "utf-8"));
     if (!Array.isArray(data.models)) return null;
     return data.models as Array<{ id: string; name: string }>;
   } catch {
@@ -56,11 +54,11 @@ function readLiteLLMCacheSync(baseUrl: string): Array<{ id: string; name: string
   }
 }
 
-function checkOAuthForProvider(
+async function checkOAuthForProvider(
   nativeProvider: string,
   modelName: string
-): AutoRouteResult | null {
-  if (!hasOAuthCredentials(nativeProvider)) return null;
+): Promise<AutoRouteResult | null> {
+  if (!(await hasOAuthCredentials(nativeProvider))) return null;
 
   return {
     provider: nativeProvider,
@@ -204,11 +202,11 @@ export function getAutoRouteHint(modelName: string, nativeProvider: string): str
   return lines.join("\n");
 }
 
-export function autoRoute(modelName: string, nativeProvider: string): AutoRouteResult | null {
+export async function autoRoute(modelName: string, nativeProvider: string): Promise<AutoRouteResult | null> {
   // Step 1: LiteLLM cache check
   const litellmBaseUrl = process.env.LITELLM_BASE_URL;
   if (litellmBaseUrl) {
-    const models = readLiteLLMCacheSync(litellmBaseUrl);
+    const models = await readLiteLLMCache(litellmBaseUrl);
     if (models !== null) {
       const match = models.find(
         (m) => m.name === modelName || m.id === `litellm@${modelName}`
@@ -227,7 +225,7 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
 
   // Step 2: OAuth credential check
   if (nativeProvider !== "unknown") {
-    const oauthResult = checkOAuthForProvider(nativeProvider, modelName);
+    const oauthResult = await checkOAuthForProvider(nativeProvider, modelName);
     if (oauthResult) return oauthResult;
   }
 
@@ -239,7 +237,7 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
 
   // Step 4: OpenRouter fallback
   if (process.env.OPENROUTER_API_KEY) {
-    const resolution = resolveModelNameSync(modelName, "openrouter");
+    const resolution = await resolveModelName(modelName, "openrouter");
     const orModelId = resolution.resolvedId;
     return {
       provider: "openrouter",

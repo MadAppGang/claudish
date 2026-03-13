@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -31,8 +31,8 @@ function getCachePath(): string | null {
 export class LiteLLMCatalogResolver implements ModelCatalogResolver {
   readonly provider = "litellm";
 
-  resolveSync(userInput: string): string | null {
-    const ids = this._getModelIds();
+  async resolve(userInput: string): Promise<string | null> {
+    const ids = await this._getModelIds();
     if (!ids || ids.length === 0) return null;
 
     // Pass 1: exact match (user typed exactly what LiteLLM expects)
@@ -61,15 +61,15 @@ export class LiteLLMCatalogResolver implements ModelCatalogResolver {
     // LiteLLM cache is written by fetchLiteLLMModels() (in model-loader.ts).
     // We just need to read it into memory here.
     const path = getCachePath();
-    if (!path || !existsSync(path)) return;
+    if (!path) return;
     try {
-      const data = JSON.parse(readFileSync(path, "utf-8"));
+      const data = JSON.parse(await readFile(path, "utf-8"));
       if (Array.isArray(data.models)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         _memCache = data.models.map((m: any) => m.name ?? m.id?.replace("litellm@", "") ?? "");
       }
     } catch {
-      // Ignore
+      // File doesn't exist or parse error — ignore
     }
   }
 
@@ -77,21 +77,21 @@ export class LiteLLMCatalogResolver implements ModelCatalogResolver {
     return _memCache !== null && _memCache.length > 0;
   }
 
-  private _getModelIds(): string[] | null {
+  private async _getModelIds(): Promise<string[] | null> {
     if (_memCache) return _memCache;
 
     // Try disk (litellm-models-{hash}.json)
     const path = getCachePath();
-    if (!path || !existsSync(path)) return null;
+    if (!path) return null;
     try {
-      const data = JSON.parse(readFileSync(path, "utf-8"));
+      const data = JSON.parse(await readFile(path, "utf-8"));
       if (Array.isArray(data.models)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         _memCache = data.models.map((m: any) => m.name ?? m.id?.replace("litellm@", "") ?? "");
         return _memCache;
       }
     } catch {
-      // Ignore
+      // File doesn't exist or parse error — ignore
     }
     return null;
   }

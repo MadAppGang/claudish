@@ -5,7 +5,7 @@
  * that differ from what users type. This module resolves bare names to the correct
  * fully-qualified API ID before the handler is constructed.
  *
- * Resolution is synchronous (uses in-memory caches + readFileSync only).
+ * Resolution uses in-memory caches with async disk fallback.
  * Warming is async and called once at proxy startup (fire-and-forget).
  *
  * All failures degrade to passthrough — never crash, return userInput unchanged.
@@ -14,9 +14,7 @@
 /**
  * Contract that every per-provider resolver implements.
  *
- * resolveSync() is called from getHandlerForRequest() which must stay synchronous.
- * It uses only in-memory caches or readFileSync — never await/fetch.
- *
+ * resolve() checks in-memory cache first, falls back to async disk read.
  * warmCache() is async and is called once at proxy startup (or lazily).
  */
 export interface ModelCatalogResolver {
@@ -27,14 +25,16 @@ export interface ModelCatalogResolver {
   readonly provider: string;
 
   /**
-   * Synchronous resolution from in-memory cache.
+   * Resolve a user-typed model name to a fully-qualified API ID.
+   *
+   * Checks in-memory cache first; falls back to async disk read if needed.
    *
    * @param userInput - Bare name typed by user (e.g., "qwen3-coder-next", "gpt4")
    * @returns Resolved model ID ready to send to the API, or null if no match.
    *          For OpenRouter: returns "vendor/model".
    *          For LiteLLM: returns the resolved model_group name.
    */
-  resolveSync(userInput: string): string | null;
+  resolve(userInput: string): Promise<string | null>;
 
   /**
    * Async warm-up: fetch the provider's catalog and store in module-level memory.
@@ -77,7 +77,7 @@ export function getResolver(provider: string): ModelCatalogResolver | null {
 }
 
 /**
- * Main synchronous entry point.
+ * Resolve a model name to its fully-qualified API ID.
  *
  * Called from proxy-server.ts BEFORE constructing ProviderHandler. If the resolver
  * for this provider has no warm cache and no disk fallback, userInput is returned
@@ -87,10 +87,10 @@ export function getResolver(provider: string): ModelCatalogResolver | null {
  * @param targetProvider - The canonical provider name (e.g., "openrouter").
  * @returns Resolved name (may equal userInput if no match found).
  */
-export function resolveModelNameSync(
+export async function resolveModelName(
   userInput: string,
   targetProvider: string
-): ModelResolutionResult {
+): Promise<ModelResolutionResult> {
   // Already a fully-qualified name (e.g., "qwen/qwen3-coder-next") — no resolution needed.
   // Exception: OpenRouter always needs resolution because the vendor part may be wrong/missing.
   if (targetProvider !== "openrouter" && userInput.includes("/")) {
@@ -102,7 +102,7 @@ export function resolveModelNameSync(
     return { resolvedId: userInput, wasResolved: false, sourceLabel: "passthrough" };
   }
 
-  const resolved = resolver.resolveSync(userInput);
+  const resolved = await resolver.resolve(userInput);
   if (!resolved || resolved === userInput) {
     return { resolvedId: userInput, wasResolved: false, sourceLabel: "passthrough" };
   }
@@ -115,7 +115,7 @@ export function resolveModelNameSync(
 }
 
 /**
- * Emit a resolution notice to stderr (called after resolveModelNameSync returns wasResolved=true).
+ * Emit a resolution notice to stderr (called after resolveModelName returns wasResolved=true).
  */
 export function logResolution(
   userInput: string,

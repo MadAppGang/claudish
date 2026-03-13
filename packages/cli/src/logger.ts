@@ -1,4 +1,5 @@
-import { writeFileSync, appendFile, existsSync, mkdirSync } from "fs";
+import { writeFileSync, appendFile } from "fs";
+import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "path";
 
 let logFilePath: string | null = null;
@@ -52,7 +53,7 @@ function scheduleFlush(): void {
 /**
  * Initialize file logging for this session
  */
-export function initLogger(debugMode: boolean, level: "debug" | "info" | "minimal" = "info"): void {
+export async function initLogger(debugMode: boolean, level: "debug" | "info" | "minimal" = "info"): Promise<void> {
   if (!debugMode) {
     logFilePath = null;
     // Clear any existing timer
@@ -68,9 +69,7 @@ export function initLogger(debugMode: boolean, level: "debug" | "info" | "minima
 
   // Create logs directory if it doesn't exist
   const logsDir = join(process.cwd(), "logs");
-  if (!existsSync(logsDir)) {
-    mkdirSync(logsDir, { recursive: true });
-  }
+  await mkdir(logsDir, { recursive: true });
 
   // Create log file with timestamp
   const timestamp = new Date()
@@ -81,8 +80,8 @@ export function initLogger(debugMode: boolean, level: "debug" | "info" | "minima
     .slice(0, -5);
   logFilePath = join(logsDir, `claudish_${timestamp}.log`);
 
-  // Write header (sync on init is fine)
-  writeFileSync(
+  // Write header
+  await writeFile(
     logFilePath,
     `Claudish Debug Log - ${new Date().toISOString()}\nLog Level: ${level}\n${"=".repeat(80)}\n\n`
   );

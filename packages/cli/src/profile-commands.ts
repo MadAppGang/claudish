@@ -82,7 +82,7 @@ function parseScopeFlag(args: string[]): {
 async function resolveScope(scopeFlag: ProfileScope | undefined): Promise<ProfileScope> {
   if (scopeFlag) return scopeFlag;
 
-  const inProject = isProjectDirectory();
+  const inProject = await isProjectDirectory();
   const defaultScope = inProject ? "local" : "global";
 
   return select({
@@ -126,7 +126,7 @@ export async function initCommand(scopeFlag?: ProfileScope): Promise<void> {
   const scope = await resolveScope(scopeFlag);
   const configPath = getConfigPathForScope(scope);
 
-  if (configExistsForScope(scope)) {
+  if (await configExistsForScope(scope)) {
     const overwrite = await confirm({
       message: `${scope === "local" ? "Local" : "Global"} configuration already exists. Do you want to reconfigure?`,
       default: false,
@@ -153,10 +153,10 @@ export async function initCommand(scopeFlag?: ProfileScope): Promise<void> {
   const models = await selectModelsForProfile();
 
   // Create and save profile
-  const profile = createProfile(profileName, models, undefined, scope);
+  const profile = await createProfile(profileName, models, undefined, scope);
 
   // Set as default
-  setDefaultProfile(profileName, scope);
+  await setDefaultProfile(profileName, scope);
 
   console.log(`\n${GREEN}✓${RESET} Configuration saved to: ${CYAN}${configPath}${RESET}`);
   console.log(`\n${BOLD}Profile created:${RESET}`);
@@ -175,7 +175,7 @@ export async function initCommand(scopeFlag?: ProfileScope): Promise<void> {
  * List all profiles
  */
 export async function profileListCommand(scopeFilter?: ProfileScope): Promise<void> {
-  const allProfiles = listAllProfiles();
+  const allProfiles = await listAllProfiles();
 
   // Filter by scope if flag given
   const profiles = scopeFilter
@@ -195,7 +195,7 @@ export async function profileListCommand(scopeFilter?: ProfileScope): Promise<vo
 
   // Show config paths
   console.log(`${DIM}Global: ${getConfigPath()}${RESET}`);
-  if (localConfigExists()) {
+  if (await localConfigExists()) {
     console.log(`${DIM}Local:  ${getLocalConfigPath()}${RESET}`);
   }
   console.log("");
@@ -213,14 +213,14 @@ export async function profileAddCommand(scopeFlag?: ProfileScope): Promise<void>
   console.log(`\n${BOLD}${CYAN}Add New Profile${RESET}\n`);
 
   const scope = await resolveScope(scopeFlag);
-  const existingNames = getProfileNames(scope);
+  const existingNames = await getProfileNames(scope);
   const name = await promptForProfileName(existingNames);
   const description = await promptForProfileDescription();
 
   console.log(`\n${BOLD}Select models for this profile:${RESET}\n`);
   const models = await selectModelsForProfile();
 
-  const profile = createProfile(name, models, description, scope);
+  const profile = await createProfile(name, models, description, scope);
 
   console.log(`\n${GREEN}✓${RESET} Profile "${name}" created ${scopeBadge(scope)}.`);
   printProfile(profile, false, false, scope);
@@ -231,7 +231,7 @@ export async function profileAddCommand(scopeFlag?: ProfileScope): Promise<void>
   });
 
   if (setAsDefault) {
-    setDefaultProfile(name, scope);
+    await setDefaultProfile(name, scope);
     console.log(`${GREEN}✓${RESET} "${name}" is now the default ${scope} profile.`);
   }
 }
@@ -249,7 +249,7 @@ export async function profileRemoveCommand(
 
   if (!profileName) {
     // Interactive selection — show all profiles
-    const allProfiles = listAllProfiles();
+    const allProfiles = await listAllProfiles();
     const selectable = scope
       ? allProfiles.filter((p) => p.scope === scope)
       : allProfiles;
@@ -272,8 +272,8 @@ export async function profileRemoveCommand(
     profileName = nameParts.join(":");
   } else if (!scope) {
     // Name given but no scope — check where it exists
-    const localConfig = loadLocalConfig();
-    const globalConfig = loadConfig();
+    const localConfig = await loadLocalConfig();
+    const globalConfig = await loadConfig();
     const inLocal = localConfig?.profiles[profileName] !== undefined;
     const inGlobal = globalConfig.profiles[profileName] !== undefined;
 
@@ -297,14 +297,14 @@ export async function profileRemoveCommand(
 
   // Check constraints
   if (scope === "global") {
-    const globalNames = getProfileNames("global");
+    const globalNames = await getProfileNames("global");
     if (globalNames.length <= 1 && globalNames.includes(profileName)) {
       console.log("Cannot remove the last global profile. Create another one first.");
       return;
     }
   }
 
-  const profile = getProfile(profileName, scope);
+  const profile = await getProfile(profileName, scope);
   if (!profile) {
     console.log(`Profile "${profileName}" not found in ${scope} config.`);
     return;
@@ -320,7 +320,7 @@ export async function profileRemoveCommand(
   }
 
   try {
-    deleteProfile(profileName, scope);
+    await deleteProfile(profileName, scope);
     console.log(`${GREEN}✓${RESET} Profile "${profileName}" deleted from ${scope} config.`);
   } catch (error) {
     console.error(`Error: ${error}`);
@@ -339,7 +339,7 @@ export async function profileUseCommand(
 
   if (!profileName) {
     // Show all profiles for selection
-    const allProfiles = listAllProfiles();
+    const allProfiles = await listAllProfiles();
     const selectable = scope
       ? allProfiles.filter((p) => p.scope === scope)
       : allProfiles;
@@ -365,8 +365,8 @@ export async function profileUseCommand(
   // If no scope yet, resolve it
   if (!scope) {
     // The profile must be set as default in the config where it exists
-    const localConfig = loadLocalConfig();
-    const globalConfig = loadConfig();
+    const localConfig = await loadLocalConfig();
+    const globalConfig = await loadConfig();
     const inLocal = localConfig?.profiles[profileName] !== undefined;
     const inGlobal = globalConfig.profiles[profileName] !== undefined;
 
@@ -388,13 +388,13 @@ export async function profileUseCommand(
     }
   }
 
-  const profile = getProfile(profileName, scope);
+  const profile = await getProfile(profileName, scope);
   if (!profile) {
     console.log(`Profile "${profileName}" not found in ${scope} config.`);
     return;
   }
 
-  setDefaultProfile(profileName, scope);
+  await setDefaultProfile(profileName, scope);
   console.log(
     `${GREEN}✓${RESET} "${profileName}" is now the default ${scope} profile.`
   );
@@ -412,12 +412,12 @@ export async function profileShowCommand(
 
   if (!profileName) {
     // Show the effective default profile
-    const defaultProfile = scope ? getDefaultProfile(scope) : getDefaultProfile();
+    const defaultProfile = scope ? await getDefaultProfile(scope) : await getDefaultProfile();
     profileName = defaultProfile.name;
 
     // Determine which scope it came from
     if (!scope) {
-      const localConfig = loadLocalConfig();
+      const localConfig = await loadLocalConfig();
       if (localConfig?.profiles[profileName]) {
         scope = "local";
       } else {
@@ -428,7 +428,7 @@ export async function profileShowCommand(
 
   // If no scope, figure out where it lives (prefer local)
   if (!scope) {
-    const localConfig = loadLocalConfig();
+    const localConfig = await loadLocalConfig();
     if (localConfig?.profiles[profileName]) {
       scope = "local";
     } else {
@@ -436,7 +436,7 @@ export async function profileShowCommand(
     }
   }
 
-  const profile = getProfile(profileName, scope);
+  const profile = await getProfile(profileName, scope);
   if (!profile) {
     console.log(`Profile "${profileName}" not found.`);
     return;
@@ -445,10 +445,10 @@ export async function profileShowCommand(
   // Check if it's default in its scope
   let isDefault = false;
   if (scope === "local") {
-    const localConfig = loadLocalConfig();
+    const localConfig = await loadLocalConfig();
     isDefault = localConfig?.defaultProfile === profileName;
   } else {
-    const config = loadConfig();
+    const config = await loadConfig();
     isDefault = config.defaultProfile === profileName;
   }
 
@@ -468,7 +468,7 @@ export async function profileEditCommand(
 
   if (!profileName) {
     // Show all profiles for selection
-    const allProfiles = listAllProfiles();
+    const allProfiles = await listAllProfiles();
     const selectable = scope
       ? allProfiles.filter((p) => p.scope === scope)
       : allProfiles;
@@ -491,8 +491,8 @@ export async function profileEditCommand(
     profileName = nameParts.join(":");
   } else if (!scope) {
     // Name given but no scope — check where it exists (prefer local)
-    const localConfig = loadLocalConfig();
-    const globalConfig = loadConfig();
+    const localConfig = await loadLocalConfig();
+    const globalConfig = await loadConfig();
     const inLocal = localConfig?.profiles[profileName] !== undefined;
     const inGlobal = globalConfig.profiles[profileName] !== undefined;
 
@@ -514,7 +514,7 @@ export async function profileEditCommand(
     }
   }
 
-  const profile = getProfile(profileName, scope);
+  const profile = await getProfile(profileName, scope);
   if (!profile) {
     console.log(`Profile "${profileName}" not found in ${scope} config.`);
     return;
@@ -545,7 +545,7 @@ export async function profileEditCommand(
   if (whatToEdit === "description") {
     const newDescription = await promptForProfileDescription();
     profile.description = newDescription;
-    setProfile(profile, scope!);
+    await setProfile(profile, scope!);
     console.log(`${GREEN}✓${RESET} Description updated.`);
     return;
   }
@@ -553,7 +553,7 @@ export async function profileEditCommand(
   if (whatToEdit === "all") {
     const models = await selectModelsForProfile();
     profile.models = { ...profile.models, ...models };
-    setProfile(profile, scope!);
+    await setProfile(profile, scope!);
     console.log(`${GREEN}✓${RESET} All models updated.`);
     return;
   }
@@ -567,7 +567,7 @@ export async function profileEditCommand(
   });
 
   profile.models[tier] = newModel;
-  setProfile(profile, scope!);
+  await setProfile(profile, scope!);
   console.log(`${GREEN}✓${RESET} ${tierName} model updated to: ${newModel}`);
 }
 

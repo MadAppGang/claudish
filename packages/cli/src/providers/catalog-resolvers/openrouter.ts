@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ModelCatalogResolver } from "../model-catalog-resolver.js";
@@ -26,10 +26,10 @@ let _memCache: Array<{ id: string }> | null = null;
 export class OpenRouterCatalogResolver implements ModelCatalogResolver {
   readonly provider = "openrouter";
 
-  resolveSync(userInput: string): string | null {
+  async resolve(userInput: string): Promise<string | null> {
     // If already vendor-prefixed, check exact match first, then return as-is.
     if (userInput.includes("/")) {
-      const models = this._getModels();
+      const models = await this._getModels();
       if (models) {
         const exactMatch = models.find((m) => m.id === userInput);
         return exactMatch ? exactMatch.id : userInput;
@@ -37,7 +37,7 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
       return userInput;
     }
 
-    const models = this._getModels();
+    const models = await this._getModels();
     if (models) {
       // Exact match on the bare model name portion after the vendor prefix
       // e.g., userInput="qwen3-coder-next" matches catalog entry "qwen/qwen3-coder-next"
@@ -70,7 +70,7 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
         _memCache = models;
       }
     } catch {
-      // Silent — fall back to disk read in resolveSync
+      // Silent — fall back to disk read in resolve
     }
   }
 
@@ -78,22 +78,20 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
     return _memCache !== null && _memCache.length > 0;
   }
 
-  private _getModels(): Array<{ id: string }> | null {
+  private async _getModels(): Promise<Array<{ id: string }> | null> {
     // In-memory first
     if (_memCache) return _memCache;
 
     // Disk fallback: all-models.json
     const diskPath = join(homedir(), ".claudish", "all-models.json");
-    if (existsSync(diskPath)) {
-      try {
-        const data = JSON.parse(readFileSync(diskPath, "utf-8"));
-        if (Array.isArray(data.models) && data.models.length > 0) {
-          _memCache = data.models;
-          return _memCache;
-        }
-      } catch {
-        // Ignore
+    try {
+      const data = JSON.parse(await readFile(diskPath, "utf-8"));
+      if (Array.isArray(data.models) && data.models.length > 0) {
+        _memCache = data.models;
+        return _memCache;
       }
+    } catch {
+      // File doesn't exist or parse error — ignore
     }
 
     return null;

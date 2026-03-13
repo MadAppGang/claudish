@@ -16,7 +16,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { readFileSync, existsSync, unlinkSync, openSync, writeSync, closeSync } from "node:fs";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { homedir, hostname, platform, release } from "node:os";
 import { join } from "node:path";
 import { exec } from "node:child_process";
@@ -76,32 +76,51 @@ const OAUTH_CONFIG = {
  */
 export class KimiOAuth {
   private static instance: KimiOAuth | null = null;
+  private static initPromise: Promise<KimiOAuth> | null = null;
   private credentials: KimiCredentials | null = null;
   private refreshPromise: Promise<string> | null = null;
   private tokenRefreshMargin = 5 * 60 * 1000; // Refresh 5 minutes before expiry
-  private deviceId: string; // Persistent device ID (generated once)
+  private deviceId: string = ""; // Persistent device ID (generated once)
 
   /**
-   * Get singleton instance
+   * Get singleton instance (async due to file I/O initialization)
    */
-  static getInstance(): KimiOAuth {
-    if (!KimiOAuth.instance) {
-      KimiOAuth.instance = new KimiOAuth();
+  static async getInstance(): Promise<KimiOAuth> {
+    if (KimiOAuth.instance) {
+      return KimiOAuth.instance;
     }
-    return KimiOAuth.instance;
+    if (!KimiOAuth.initPromise) {
+      KimiOAuth.initPromise = KimiOAuth.createInstance();
+    }
+    return KimiOAuth.initPromise;
+  }
+
+  /**
+   * Create and initialize a new instance
+   */
+  private static async createInstance(): Promise<KimiOAuth> {
+    const instance = new KimiOAuth();
+    await instance.init();
+    KimiOAuth.instance = instance;
+    return instance;
   }
 
   /**
    * Private constructor (singleton pattern)
-   * FIX C3: Generate/load device ID in constructor (not per-request)
    */
-  private constructor() {
+  private constructor() {}
+
+  /**
+   * Async initialization
+   * FIX C3: Generate/load device ID on init (not per-request)
+   */
+  private async init(): Promise<void> {
     // Load or create device ID
-    this.deviceId = this.loadOrCreateDeviceId();
+    this.deviceId = await this.loadOrCreateDeviceId();
     log(`[KimiOAuth] Device ID loaded: ${this.deviceId}`);
 
     // Try to load existing credentials on startup
-    this.credentials = this.loadCredentials();
+    this.credentials = await this.loadCredentials();
   }
 
   /**
@@ -130,28 +149,23 @@ export class KimiOAuth {
 
   /**
    * Load or create persistent device ID
-   * FIX C3: Called once in constructor, cached in instance
+   * FIX C3: Called once on init, cached in instance
    */
-  private loadOrCreateDeviceId(): string {
+  private async loadOrCreateDeviceId(): Promise<string> {
     const deviceIdPath = this.getDeviceIdPath();
     const claudishDir = join(homedir(), ".claudish");
 
     // Ensure directory exists
-    if (!existsSync(claudishDir)) {
-      const { mkdirSync } = require("node:fs");
-      mkdirSync(claudishDir, { recursive: true });
-    }
+    await mkdir(claudishDir, { recursive: true });
 
     // Try to load existing device ID
-    if (existsSync(deviceIdPath)) {
-      try {
-        const deviceId = readFileSync(deviceIdPath, "utf-8").trim();
-        if (deviceId) {
-          return deviceId;
-        }
-      } catch (e: any) {
-        log(`[KimiOAuth] Failed to load device ID: ${e.message}`);
+    try {
+      const deviceId = (await readFile(deviceIdPath, "utf-8")).trim();
+      if (deviceId) {
+        return deviceId;
       }
+    } catch (e: any) {
+      log(`[KimiOAuth] Failed to load device ID: ${e.message}`);
     }
 
     // Generate new device ID (UUID v4)
@@ -159,14 +173,9 @@ export class KimiOAuth {
       .toString("hex")
       .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5");
 
-    // Save to file
+    // Save to file with secure permissions (0600)
     try {
-      const fd = openSync(deviceIdPath, "w", 0o600);
-      try {
-        writeSync(fd, deviceId, 0, "utf-8");
-      } finally {
-        closeSync(fd);
-      }
+      await writeFile(deviceIdPath, deviceId, { mode: 0o600 });
       log(`[KimiOAuth] New device ID created: ${deviceId}`);
     } catch (e: any) {
       log(`[KimiOAuth] Failed to save device ID: ${e.message}`);
@@ -178,9 +187,9 @@ export class KimiOAuth {
   /**
    * Get version from package.json
    */
-  private getVersion(): string {
+  private async getVersion(): Promise<string> {
     try {
-      const packageJson = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf-8"));
+      const packageJson = JSON.parse(await readFile(join(__dirname, "../../package.json"), "utf-8"));
       return packageJson.version;
     } catch {
       return "4.0.6"; // Fallback
@@ -191,10 +200,10 @@ export class KimiOAuth {
    * Get platform headers (X-Msh-*)
    * Uses cached device ID from constructor
    */
-  getPlatformHeaders(): Record<string, string> {
+  async getPlatformHeaders(): Promise<Record<string, string>> {
     return {
       "X-Msh-Platform": "claudish",
-      "X-Msh-Version": this.getVersion(),
+      "X-Msh-Version": await this.getVersion(),
       "X-Msh-Device-Name": hostname(),
       "X-Msh-Device-Model": `${platform()}-${process.arch}`,
       "X-Msh-Os-Version": release(),
@@ -237,7 +246,7 @@ export class KimiOAuth {
       token_type: tokens.token_type,
     };
 
-    this.saveCredentials(credentials);
+    await this.saveCredentials(credentials);
     this.credentials = credentials;
 
     log("[KimiOAuth] Login successful");
@@ -252,7 +261,7 @@ export class KimiOAuth {
     const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.deviceAuthPath}`;
     const headers = {
       "Content-Type": "application/x-www-form-urlencoded",
-      ...this.getPlatformHeaders(),
+      ...(await this.getPlatformHeaders()),
     };
 
     const body = new URLSearchParams({
@@ -358,7 +367,7 @@ export class KimiOAuth {
       const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
       const headers = {
         "Content-Type": "application/x-www-form-urlencoded",
-        ...this.getPlatformHeaders(),
+        ...(await this.getPlatformHeaders()),
       };
 
       const body = new URLSearchParams({
@@ -418,9 +427,11 @@ export class KimiOAuth {
   async logout(): Promise<void> {
     const credPath = this.getCredentialsPath();
 
-    if (existsSync(credPath)) {
-      unlinkSync(credPath);
+    try {
+      await unlink(credPath);
       log("[KimiOAuth] Credentials deleted");
+    } catch {
+      // File may not exist, ignore
     }
 
     this.credentials = null;
@@ -480,7 +491,7 @@ export class KimiOAuth {
       const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
       const headers = {
         "Content-Type": "application/x-www-form-urlencoded",
-        ...this.getPlatformHeaders(),
+        ...(await this.getPlatformHeaders()),
       };
 
       const body = new URLSearchParams({
@@ -511,7 +522,7 @@ export class KimiOAuth {
         token_type: tokens.token_type,
       };
 
-      this.saveCredentials(updatedCredentials);
+      await this.saveCredentials(updatedCredentials);
       this.credentials = updatedCredentials;
 
       log(
@@ -524,8 +535,10 @@ export class KimiOAuth {
 
       // Delete invalid credentials
       const credPath = this.getCredentialsPath();
-      if (existsSync(credPath)) {
-        unlinkSync(credPath);
+      try {
+        await unlink(credPath);
+      } catch {
+        // File may not exist, ignore
       }
       this.credentials = null;
 
@@ -550,15 +563,11 @@ export class KimiOAuth {
   /**
    * Load credentials from file
    */
-  private loadCredentials(): KimiCredentials | null {
+  private async loadCredentials(): Promise<KimiCredentials | null> {
     const credPath = this.getCredentialsPath();
 
-    if (!existsSync(credPath)) {
-      return null;
-    }
-
     try {
-      const data = readFileSync(credPath, "utf-8");
+      const data = await readFile(credPath, "utf-8");
       const credentials = JSON.parse(data) as KimiCredentials;
 
       // Validate structure
@@ -584,24 +593,16 @@ export class KimiOAuth {
   /**
    * Save credentials to file with 0600 permissions
    */
-  private saveCredentials(credentials: KimiCredentials): void {
+  private async saveCredentials(credentials: KimiCredentials): Promise<void> {
     const credPath = this.getCredentialsPath();
     const claudishDir = join(homedir(), ".claudish");
 
     // Ensure directory exists
-    if (!existsSync(claudishDir)) {
-      const { mkdirSync } = require("node:fs");
-      mkdirSync(claudishDir, { recursive: true });
-    }
+    await mkdir(claudishDir, { recursive: true });
 
-    // Atomically create file with secure permissions (0600) to prevent race condition
-    const fd = openSync(credPath, "w", 0o600);
-    try {
-      const data = JSON.stringify(credentials, null, 2);
-      writeSync(fd, data, 0, "utf-8");
-    } finally {
-      closeSync(fd);
-    }
+    // Write file with secure permissions (0600)
+    const data = JSON.stringify(credentials, null, 2);
+    await writeFile(credPath, data, { mode: 0o600 });
 
     log(`[KimiOAuth] Credentials saved to ${credPath}`);
   }
@@ -610,7 +611,7 @@ export class KimiOAuth {
 /**
  * Get the shared KimiOAuth instance
  */
-export function getKimiOAuth(): KimiOAuth {
+export async function getKimiOAuth(): Promise<KimiOAuth> {
   return KimiOAuth.getInstance();
 }
 
@@ -619,21 +620,19 @@ export function getKimiOAuth(): KimiOAuth {
  * Helper function for handlers to use
  */
 export async function getValidKimiAccessToken(): Promise<string> {
-  const oauth = KimiOAuth.getInstance();
+  const oauth = await KimiOAuth.getInstance();
   return oauth.getAccessToken();
 }
 
 /**
- * Check if Kimi OAuth credentials are available AND valid (sync check)
+ * Check if Kimi OAuth credentials are available AND valid (async check)
  * CRITICAL: Includes expiry check with 5-minute buffer
  * This is called by the provider resolver AFTER checking for API key env vars (FR5 priority)
  */
-export function hasKimiOAuthCredentials(): boolean {
+export async function hasKimiOAuthCredentials(): Promise<boolean> {
   try {
     const credPath = join(homedir(), ".claudish", "kimi-oauth.json");
-    if (!existsSync(credPath)) return false;
-
-    const data = JSON.parse(readFileSync(credPath, "utf-8"));
+    const data = JSON.parse(await readFile(credPath, "utf-8"));
     // Check if token exists and is not expired (with 5-minute buffer)
     const now = Date.now();
     const bufferMs = 5 * 60 * 1000; // 5 minutes

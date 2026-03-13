@@ -1,5 +1,5 @@
 import { parseModelSpec } from "./providers/model-parser.js";
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -53,25 +53,24 @@ function getRecommendedModelsPath(): string {
 /**
  * Load the raw recommended-models.json data
  */
-function loadRecommendedModelsJSON(): RecommendedModelsJSON {
+async function loadRecommendedModelsJSON(): Promise<RecommendedModelsJSON> {
   if (_cachedRecommendedModels) {
     return _cachedRecommendedModels;
   }
 
   const jsonPath = getRecommendedModelsPath();
 
-  if (!existsSync(jsonPath)) {
-    throw new Error(
-      `recommended-models.json not found at ${jsonPath}. ` +
-        `Run 'claudish --update-models' to fetch the latest model list.`
-    );
-  }
-
   try {
-    const jsonContent = readFileSync(jsonPath, "utf-8");
+    const jsonContent = await readFile(jsonPath, "utf-8");
     _cachedRecommendedModels = JSON.parse(jsonContent);
     return _cachedRecommendedModels!;
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      throw new Error(
+        `recommended-models.json not found at ${jsonPath}. ` +
+          `Run 'claudish --update-models' to fetch the latest model list.`
+      );
+    }
     throw new Error(`Failed to parse recommended-models.json: ${error}`);
   }
 }
@@ -79,12 +78,12 @@ function loadRecommendedModelsJSON(): RecommendedModelsJSON {
 /**
  * Load model metadata from recommended-models.json
  */
-export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
+export async function loadModelInfo(): Promise<Record<OpenRouterModel, ModelMetadata>> {
   if (_cachedModelInfo) {
     return _cachedModelInfo as Record<OpenRouterModel, ModelMetadata>;
   }
 
-  const data = loadRecommendedModelsJSON();
+  const data = await loadRecommendedModelsJSON();
   const modelInfo: Record<string, ModelMetadata> = {};
 
   for (const model of data.models) {
@@ -111,12 +110,12 @@ export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
 /**
  * Get list of available model IDs from recommended-models.json
  */
-export function getAvailableModels(): OpenRouterModel[] {
+export async function getAvailableModels(): Promise<OpenRouterModel[]> {
   if (_cachedModelIds) {
     return _cachedModelIds as OpenRouterModel[];
   }
 
-  const data = loadRecommendedModelsJSON();
+  const data = await loadRecommendedModelsJSON();
   const modelIds = data.models.sort((a, b) => a.priority - b.priority).map((m) => m.id);
 
   const result = [...modelIds, "custom"];
@@ -186,7 +185,7 @@ export async function fetchModelContextWindow(modelId: string): Promise<number> 
 
   // 3. Fallback to recommended-models.json
   try {
-    const data = loadRecommendedModelsJSON();
+    const data = await loadRecommendedModelsJSON();
     const model = data.models.find((m) => m.id === modelId);
     if (model && model.context) {
       // Parse "200K" -> 200000, "1M" -> 1000000
@@ -265,6 +264,18 @@ interface LiteLLMCache {
 const LITELLM_CACHE_MAX_AGE_HOURS = 24;
 
 /**
+ * Read and parse a JSON cache file, returning null on any error
+ */
+async function readCacheFile(cachePath: string): Promise<LiteLLMCache | null> {
+  try {
+    const content = await readFile(cachePath, "utf-8");
+    return JSON.parse(content) as LiteLLMCache;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch models from LiteLLM instance with caching
  * @param baseUrl LiteLLM instance base URL
  * @param apiKey LiteLLM API key
@@ -278,9 +289,9 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceU
   const cachePath = join(cacheDir, `litellm-models-${hash}.json`);
 
   // Check cache
-  if (!forceUpdate && existsSync(cachePath)) {
-    try {
-      const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
+  if (!forceUpdate) {
+    const cacheData = await readCacheFile(cachePath);
+    if (cacheData) {
       const timestamp = new Date(cacheData.timestamp);
       const now = new Date();
       const ageInHours = (now.getTime() - timestamp.getTime()) / (1000 * 60 * 60);
@@ -288,8 +299,6 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceU
       if (ageInHours < LITELLM_CACHE_MAX_AGE_HOURS) {
         return cacheData.models;
       }
-    } catch {
-      // Cache read error, will fetch fresh data
     }
   }
 
@@ -306,15 +315,8 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceU
     if (!response.ok) {
       console.error(`Failed to fetch LiteLLM models: ${response.status} ${response.statusText}`);
       // Return cached data if available, even if stale
-      if (existsSync(cachePath)) {
-        try {
-          const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
-          return cacheData.models;
-        } catch {
-          return [];
-        }
-      }
-      return [];
+      const cacheData = await readCacheFile(cachePath);
+      return cacheData?.models ?? [];
     }
 
     const responseData = await response.json();
@@ -356,25 +358,18 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceU
       });
 
     // Cache results - ensure directory exists
-    mkdirSync(cacheDir, { recursive: true });
+    await mkdir(cacheDir, { recursive: true });
     const cacheData: LiteLLMCache = {
       timestamp: new Date().toISOString(),
       models: transformedModels,
     };
-    writeFileSync(cachePath, JSON.stringify(cacheData, null, 2), "utf-8");
+    await writeFile(cachePath, JSON.stringify(cacheData, null, 2), "utf-8");
 
     return transformedModels;
   } catch (error) {
     console.error(`Failed to fetch LiteLLM models: ${error}`);
     // Return cached data if available, even if stale
-    if (existsSync(cachePath)) {
-      try {
-        const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
-        return cacheData.models;
-      } catch {
-        return [];
-      }
-    }
-    return [];
+    const cacheData = await readCacheFile(cachePath);
+    return cacheData?.models ?? [];
   }
 }

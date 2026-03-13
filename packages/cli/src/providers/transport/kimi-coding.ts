@@ -22,26 +22,32 @@ export class KimiCodingTransport extends AnthropicCompatTransport {
     };
 
     try {
-      const { existsSync, readFileSync } = await import("node:fs");
+      const { readFile } = await import("node:fs/promises");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
       const credPath = join(homedir(), ".claudish", "kimi-oauth.json");
-      if (existsSync(credPath)) {
-        const data = JSON.parse(readFileSync(credPath, "utf-8"));
-        if (data.access_token && data.refresh_token) {
-          const { KimiOAuth } = await import("../../auth/kimi-oauth.js");
-          const oauth = KimiOAuth.getInstance();
-          const accessToken = await oauth.getAccessToken();
+      let raw: string;
+      try {
+        raw = await readFile(credPath, "utf-8");
+      } catch {
+        // Credential file doesn't exist or isn't readable
+        return super.getHeaders();
+      }
 
-          headers["Authorization"] = `Bearer ${accessToken}`;
+      const data = JSON.parse(raw);
+      if (data.access_token && data.refresh_token) {
+        const { KimiOAuth } = await import("../../auth/kimi-oauth.js");
+        const oauth = KimiOAuth.getInstance();
+        const accessToken = await oauth.getAccessToken();
 
-          // Add Kimi-specific platform headers
-          const platformHeaders = oauth.getPlatformHeaders();
-          Object.assign(headers, platformHeaders);
+        headers["Authorization"] = `Bearer ${accessToken}`;
 
-          return headers;
-        }
+        // Add Kimi-specific platform headers
+        const platformHeaders = oauth.getPlatformHeaders();
+        Object.assign(headers, platformHeaders);
+
+        return headers;
       }
     } catch (e: any) {
       log(`[${this.displayName}] OAuth fallback failed: ${e.message}`);

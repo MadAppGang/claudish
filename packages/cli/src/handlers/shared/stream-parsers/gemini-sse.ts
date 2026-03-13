@@ -12,6 +12,8 @@ import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { log } from "../../../logger.js";
 
 export interface GeminiSseOptions {
+  /** Stream format — determines whether to unwrap CodeAssist envelope */
+  streamFormat: "gemini-sse" | "gemini-codeassist-sse";
   modelName: string;
   /** Model-specific adapter for text post-processing (reasoning filter, etc.) */
   modelAdapter?: ModelAdapter;
@@ -19,8 +21,6 @@ export interface GeminiSseOptions {
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
-  /** CodeAssist wraps chunks in {response: {...}} */
-  unwrapResponse?: boolean;
 }
 
 export function createGeminiSseStream(
@@ -149,7 +149,9 @@ export function createGeminiSseStream(
               const chunk = JSON.parse(dataStr);
 
               // CodeAssist wraps in {response: {...}}, standard Gemini doesn't
-              const responseData = opts.unwrapResponse ? (chunk.response || chunk) : chunk;
+              const responseData = opts.streamFormat === "gemini-codeassist-sse"
+                ? (chunk.response || chunk)
+                : chunk;
 
               if (responseData.usageMetadata) {
                 usage = responseData.usageMetadata;

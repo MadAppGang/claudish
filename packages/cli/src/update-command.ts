@@ -9,7 +9,8 @@
  * - Clears update cache after successful update
  */
 
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { createInterface } from "node:readline";
 import { getVersion } from "./cli.js";
 import { clearCache, compareVersions, fetchLatestVersion } from "./update-checker.js";
@@ -97,9 +98,9 @@ async function executeUpdate(command: string): Promise<boolean> {
   try {
     console.log(`\n${BOLD}Updating...${RESET}\n`);
 
-    // Use execSync with shell for cross-platform compatibility
-    execSync(command, {
-      stdio: "inherit",
+    // Use exec with shell for cross-platform compatibility
+    const execAsync = promisify(exec);
+    await execAsync(command, {
       shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
     });
 

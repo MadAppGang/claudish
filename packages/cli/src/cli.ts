@@ -1,15 +1,8 @@
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 import { loadModelInfo, getAvailableModels, fetchLiteLLMModels } from "./model-loader.js";
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-  copyFileSync,
-  readdirSync,
-  unlinkSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
+import { readFile, writeFile, mkdir, copyFile, readdir, unlink, access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -50,18 +43,22 @@ export function getVersion(): string {
  * Clear all model caches (OpenRouter, LiteLLM, pricing)
  * Called when --force-update flag is used
  */
-function clearAllModelCaches(): void {
+async function clearAllModelCaches(): Promise<void> {
   const cacheDir = join(homedir(), ".claudish");
-  if (!existsSync(cacheDir)) return;
+  try {
+    await access(cacheDir);
+  } catch {
+    return;
+  }
 
   const cachePatterns = ["all-models.json", "pricing-cache.json"];
   let cleared = 0;
 
   try {
-    const files = readdirSync(cacheDir);
+    const files = await readdir(cacheDir);
     for (const file of files) {
       if (cachePatterns.includes(file) || file.startsWith("litellm-models-")) {
-        unlinkSync(join(cacheDir, file));
+        await unlink(join(cacheDir, file));
         cleared++;
       }
     }
@@ -138,7 +135,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const modelArg = args[++i];
       if (!modelArg) {
         console.error("--model requires a value");
-        printAvailableModels();
+        await printAvailableModels();
         process.exit(1);
       }
       config.model = modelArg; // Accept any model ID
@@ -227,7 +224,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       printHelp();
       process.exit(0);
     } else if (arg === "--help-ai") {
-      printAIAgentGuide();
+      await printAIAgentGuide();
       process.exit(0);
     } else if (arg === "--init") {
       await initializeClaudishSkill();
@@ -237,15 +234,15 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
-      if (forceUpdate) clearAllModelCaches();
+      if (forceUpdate) await clearAllModelCaches();
 
       // Auto-update if cache is stale (>2 days) or if --force-update is specified
       await checkAndUpdateModelsCache(forceUpdate);
 
       if (hasJsonFlag) {
-        printAvailableModelsJSON();
+        await printAvailableModelsJSON();
       } else {
-        printAvailableModels();
+        await printAvailableModels();
       }
       process.exit(0);
     } else if (
@@ -262,7 +259,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
-      if (forceUpdate) clearAllModelCaches();
+      if (forceUpdate) await clearAllModelCaches();
 
       if (query) {
         // Search mode: fuzzy search all models
@@ -353,7 +350,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelHaiku ||
     !config.modelSubagent
   ) {
-    const profileModels = getModelMapping(config.profile);
+    const profileModels = await getModelMapping(config.profile);
 
     // Apply profile models only if not set by CLI flags
     if (!config.modelOpus && profileModels.opus) {
@@ -457,9 +454,10 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
   let models: any[] = [];
 
   // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
+  if (!forceUpdate) {
     try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
+      const cacheRaw = await readFile(ALL_MODELS_JSON_PATH, "utf-8");
+      const cacheData = JSON.parse(cacheRaw);
       const lastUpdated = new Date(cacheData.lastUpdated);
       const now = new Date();
       const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
@@ -467,8 +465,8 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       if (ageInDays <= CACHE_MAX_AGE_DAYS) {
         models = cacheData.models;
       }
-    } catch (e) {
-      // Ignore cache error
+    } catch {
+      // Ignore cache error (file missing or invalid)
     }
   }
 
@@ -483,8 +481,8 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       models = data.data;
 
       // Cache result - ensure directory exists
-      mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-      writeFileSync(
+      await mkdir(CLAUDISH_CACHE_DIR, { recursive: true });
+      await writeFile(
         ALL_MODELS_JSON_PATH,
         JSON.stringify({
           lastUpdated: new Date().toISOString(),
@@ -707,9 +705,10 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   const [ollamaModels, zenModels] = await Promise.all([fetchOllamaModels(), fetchZenModels()]);
 
   // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
+  if (!forceUpdate) {
     try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
+      const cacheRaw = await readFile(ALL_MODELS_JSON_PATH, "utf-8");
+      const cacheData = JSON.parse(cacheRaw);
       const lastUpdated = new Date(cacheData.lastUpdated);
       const now = new Date();
       const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
@@ -722,8 +721,8 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
           );
         }
       }
-    } catch (e) {
-      // Ignore cache error
+    } catch {
+      // Ignore cache error (file missing or invalid)
     }
   }
 
@@ -738,8 +737,8 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       models = data.data;
 
       // Cache result - ensure directory exists
-      mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-      writeFileSync(
+      await mkdir(CLAUDISH_CACHE_DIR, { recursive: true });
+      await writeFile(
         ALL_MODELS_JSON_PATH,
         JSON.stringify({
           lastUpdated: new Date().toISOString(),
@@ -973,13 +972,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 /**
  * Check if models cache is stale (older than CACHE_MAX_AGE_DAYS)
  */
-function isCacheStale(): boolean {
-  if (!existsSync(MODELS_JSON_PATH)) {
-    return true; // No cache file = stale
-  }
-
+async function isCacheStale(): Promise<boolean> {
   try {
-    const jsonContent = readFileSync(MODELS_JSON_PATH, "utf-8");
+    const jsonContent = await readFile(MODELS_JSON_PATH, "utf-8");
     const data = JSON.parse(jsonContent);
 
     if (!data.lastUpdated) {
@@ -991,8 +986,8 @@ function isCacheStale(): boolean {
     const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
 
     return ageInDays > CACHE_MAX_AGE_DAYS;
-  } catch (error) {
-    // If we can't read/parse, consider it stale
+  } catch {
+    // If we can't read/parse (or file missing), consider it stale
     return true;
   }
 }
@@ -1144,13 +1139,11 @@ async function updateModelsFromOpenRouter(): Promise<void> {
 
     // Read existing version if available
     let version = "1.1.5"; // default
-    if (existsSync(MODELS_JSON_PATH)) {
-      try {
-        const existing = JSON.parse(readFileSync(MODELS_JSON_PATH, "utf-8"));
-        version = existing.version || version;
-      } catch {
-        // Use default version
-      }
+    try {
+      const existing = JSON.parse(await readFile(MODELS_JSON_PATH, "utf-8"));
+      version = existing.version || version;
+    } catch {
+      // Use default version (file missing or invalid)
     }
 
     // Create new JSON structure
@@ -1162,7 +1155,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
     };
 
     // Write to file
-    writeFileSync(MODELS_JSON_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
+    await writeFile(MODELS_JSON_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
 
     console.error(
       `✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`
@@ -1185,13 +1178,13 @@ async function checkAndUpdateModelsCache(forceUpdate: boolean = false): Promise<
     return;
   }
 
-  if (isCacheStale()) {
+  if (await isCacheStale()) {
     console.error("⚠️  Model cache is stale (>2 days old), updating...");
     await updateModelsFromOpenRouter();
   } else {
     // Cache is fresh, show timestamp in stderr (won't affect JSON output)
     try {
-      const data = JSON.parse(readFileSync(MODELS_JSON_PATH, "utf-8"));
+      const data = JSON.parse(await readFile(MODELS_JSON_PATH, "utf-8"));
       console.error(`✓ Using cached models (last updated: ${data.lastUpdated})`);
     } catch {
       // Silently fallthrough if can't read
@@ -1520,10 +1513,10 @@ MORE INFO:
 /**
  * Print AI agent usage guide
  */
-function printAIAgentGuide(): void {
+async function printAIAgentGuide(): Promise<void> {
   try {
     const guidePath = join(__dirname, "../AI_AGENT_GUIDE.md");
-    const guideContent = readFileSync(guidePath, "utf-8");
+    const guideContent = await readFile(guidePath, "utf-8");
     console.log(guideContent);
   } catch (error) {
     console.error("Error reading AI Agent Guide:");
@@ -1551,17 +1544,22 @@ async function initializeClaudishSkill(): Promise<void> {
   const skillFile = join(claudishSkillDir, "SKILL.md");
 
   // Check if skill already exists
-  if (existsSync(skillFile)) {
+  try {
+    await access(skillFile);
     console.log("✅ Claudish skill already installed at:");
     console.log(`   ${skillFile}\n`);
     console.log("💡 To reinstall, delete the file and run 'claudish --init' again.");
     return;
+  } catch {
+    // File doesn't exist, proceed with installation
   }
 
   // Get source skill file from Claudish installation
   const sourceSkillPath = join(__dirname, "../skills/claudish-usage/SKILL.md");
 
-  if (!existsSync(sourceSkillPath)) {
+  try {
+    await access(sourceSkillPath);
+  } catch {
     console.error("❌ Error: Claudish skill file not found in installation.");
     console.error(`   Expected at: ${sourceSkillPath}`);
     console.error("\n💡 Try reinstalling Claudish:");
@@ -1570,24 +1568,11 @@ async function initializeClaudishSkill(): Promise<void> {
   }
 
   try {
-    // Create directories if they don't exist
-    if (!existsSync(claudeDir)) {
-      mkdirSync(claudeDir, { recursive: true });
-      console.log("📁 Created .claude/ directory");
-    }
-
-    if (!existsSync(skillsDir)) {
-      mkdirSync(skillsDir, { recursive: true });
-      console.log("📁 Created .claude/skills/ directory");
-    }
-
-    if (!existsSync(claudishSkillDir)) {
-      mkdirSync(claudishSkillDir, { recursive: true });
-      console.log("📁 Created .claude/skills/claudish-usage/ directory");
-    }
+    // Create directories (recursive: true is idempotent - creates only if needed)
+    await mkdir(claudishSkillDir, { recursive: true });
 
     // Copy skill file
-    copyFileSync(sourceSkillPath, skillFile);
+    await copyFile(sourceSkillPath, skillFile);
     console.log("✅ Installed Claudish skill at:");
     console.log(`   ${skillFile}\n`);
 
@@ -1618,21 +1603,19 @@ async function initializeClaudishSkill(): Promise<void> {
 /**
  * Print available models in enhanced table format
  */
-function printAvailableModels(): void {
+async function printAvailableModels(): Promise<void> {
   // Try to read enhanced model data from JSON file
   let lastUpdated = "unknown";
   let models: any[] = [];
 
   try {
-    if (existsSync(MODELS_JSON_PATH)) {
-      const data = JSON.parse(readFileSync(MODELS_JSON_PATH, "utf-8"));
-      lastUpdated = data.lastUpdated || "unknown";
-      models = data.models || [];
-    }
+    const data = JSON.parse(await readFile(MODELS_JSON_PATH, "utf-8"));
+    lastUpdated = data.lastUpdated || "unknown";
+    models = data.models || [];
   } catch {
     // Fallback to basic model list
-    const basicModels = getAvailableModels();
-    const modelInfo = loadModelInfo();
+    const basicModels = await getAvailableModels();
+    const modelInfo = await loadModelInfo();
     for (const model of basicModels) {
       const info = modelInfo[model];
       console.log(`  ${model}`);
@@ -1690,19 +1673,19 @@ function printAvailableModels(): void {
 /**
  * Print available models in JSON format
  */
-function printAvailableModelsJSON(): void {
+async function printAvailableModelsJSON(): Promise<void> {
   const jsonPath = join(__dirname, "../recommended-models.json");
 
   try {
-    const jsonContent = readFileSync(jsonPath, "utf-8");
+    const jsonContent = await readFile(jsonPath, "utf-8");
     const data = JSON.parse(jsonContent);
 
     // Output clean JSON to stdout — IDs are provider-agnostic
     console.log(JSON.stringify(data, null, 2));
   } catch (error) {
     // If JSON file doesn't exist, construct from model info
-    const models = getAvailableModels();
-    const modelInfo = loadModelInfo();
+    const models = await getAvailableModels();
+    const modelInfo = await loadModelInfo();
 
     const output = {
       version: VERSION,

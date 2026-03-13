@@ -10,7 +10,7 @@
  *   warmPricingCache() → background: disk cache → OpenRouter API → update both
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../logger.js";
@@ -54,7 +54,7 @@ const PROVIDER_TO_OR_PREFIX: Record<string, string[]> = {
  * Synchronous lookup of dynamic pricing for a provider + model.
  * Returns undefined if no dynamic pricing is available (caller should fall back).
  */
-export function getDynamicPricingSync(
+export function getDynamicPricing(
   provider: string,
   modelName: string
 ): ModelPricing | undefined {
@@ -104,11 +104,11 @@ export async function warmPricingCache(): Promise<void> {
   cacheWarmed = true;
 
   // Register lookup function so getModelPricing() can use dynamic pricing
-  registerDynamicPricingLookup(getDynamicPricingSync);
+  registerDynamicPricingLookup(getDynamicPricing);
 
   try {
     // 1. Try loading from disk
-    const diskFresh = loadDiskCache();
+    const diskFresh = await loadDiskCache();
 
     if (diskFresh) {
       log("[PricingCache] Loaded pricing from disk cache");
@@ -124,7 +124,7 @@ export async function warmPricingCache(): Promise<void> {
       const cached = getCachedOpenRouterModels();
       if (cached && cached.length > 0) {
         populateFromOpenRouterModels(cached);
-        saveDiskCache();
+        await saveDiskCache();
         log(
           `[PricingCache] Populated from existing model-loader cache (${pricingMap.size} models)`
         );
@@ -135,7 +135,7 @@ export async function warmPricingCache(): Promise<void> {
     }
 
     populateFromOpenRouterModels(models);
-    saveDiskCache();
+    await saveDiskCache();
     log(`[PricingCache] Fetched and cached pricing for ${pricingMap.size} models`);
   } catch (error) {
     log(`[PricingCache] Error warming cache: ${error}`);
@@ -145,15 +145,13 @@ export async function warmPricingCache(): Promise<void> {
 /**
  * Load disk cache into memory. Returns true if cache is fresh (within TTL).
  */
-function loadDiskCache(): boolean {
+async function loadDiskCache(): Promise<boolean> {
   try {
-    if (!existsSync(CACHE_FILE)) return false;
-
-    const stat = statSync(CACHE_FILE);
-    const age = Date.now() - stat.mtimeMs;
+    const fileStat = await stat(CACHE_FILE);
+    const age = Date.now() - fileStat.mtimeMs;
     const isFresh = age < CACHE_TTL_MS;
 
-    const raw = readFileSync(CACHE_FILE, "utf-8");
+    const raw = await readFile(CACHE_FILE, "utf-8");
     const data: Record<string, ModelPricing> = JSON.parse(raw);
 
     // Populate in-memory map
@@ -163,7 +161,7 @@ function loadDiskCache(): boolean {
 
     return isFresh;
   } catch {
-    // Cache corruption or read error — treat as miss
+    // File missing, cache corruption, or read error — treat as miss
     return false;
   }
 }
@@ -171,14 +169,14 @@ function loadDiskCache(): boolean {
 /**
  * Save in-memory pricing map to disk cache.
  */
-function saveDiskCache(): void {
+async function saveDiskCache(): Promise<void> {
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
+    await mkdir(CACHE_DIR, { recursive: true });
     const data: Record<string, ModelPricing> = {};
     for (const [key, pricing] of pricingMap) {
       data[key] = pricing;
     }
-    writeFileSync(CACHE_FILE, JSON.stringify(data), "utf-8");
+    await writeFile(CACHE_FILE, JSON.stringify(data), "utf-8");
   } catch (error) {
     log(`[PricingCache] Error saving disk cache: ${error}`);
   }

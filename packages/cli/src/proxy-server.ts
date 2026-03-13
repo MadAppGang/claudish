@@ -1,43 +1,34 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
-import { log, logStderr, isLoggingEnabled } from "./logger.js";
+import { log, logStderr } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 import { NativeHandler } from "./handlers/native-handler.js";
-import { OpenRouterTransport } from "./providers/transport/openrouter.js";
-import { OpenRouterAdapter } from "./adapters/openrouter-adapter.js";
-import { GeminiFormatAdapter } from "./adapters/gemini-format-adapter.js";
-import { VertexOAuthTransport, parseVertexModel } from "./providers/transport/vertex-oauth.js";
-import { FormatAdapter } from "./adapters/format-adapter.js";
-import { AnthropicPassthroughAdapter } from "./adapters/anthropic-passthrough-adapter.js";
-import { OpenAIFormatAdapter } from "./adapters/openai-format-adapter.js";
-import { PoeProvider } from "./providers/transport/poe.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { ProviderHandler } from "./handlers/provider-handler.js";
 import {
   parseUrlModel,
-  createUrlProvider,
   URL_PROVIDER_CAPABILITIES,
 } from "./providers/provider-registry.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
   resolveRemoteProvider,
 } from "./providers/remote-provider-registry.js";
-import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import { fetchLiteLLMModels } from "./model-loader.js";
 import {
-  resolveModelNameSync,
+  resolveModelName,
   logResolution,
   warmAllCatalogs,
 } from "./providers/model-catalog-resolver.js";
 import {
   getProviderByName,
   isLocalTransport,
+  warmProviderCache,
+  type ProviderDefinition,
 } from "./providers/provider-definitions.js";
-import { createTransportForProvider, selectModelAdapter, selectLocalFormatAdapter } from "./providers/provider-factory.js";
-import { LocalTransport } from "./providers/transport/local.js";
+import { createTransportForProvider } from "./providers/provider-factory.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -56,127 +47,64 @@ export async function createProxyServer(
 ): Promise<ProxyServer> {
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(anthropicApiKey);
-  const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
-  const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
-  const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
-  const poeHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Poe Handler
+  const handlerCache = new Map<string, ModelHandler>(); // Map from Target Model ID -> Handler
 
-  // Helper to get or create OpenRouter handler for a target model
-  const getOpenRouterHandler = (targetModel: string): ModelHandler => {
-    // For explicit @ syntax: strip provider prefix (openrouter@google/gemini → google/gemini)
-    // For already-resolved vendor/model IDs (qwen/qwen3.5-plus-02-15): use as-is to preserve
-    // the vendor prefix that OpenRouter requires. parseModelSpec() would otherwise strip it
-    // (e.g. "qwen/" is a native pattern match → model becomes "qwen3.5-plus-02-15").
-    const parsed = parseModelSpec(targetModel);
-    const modelId = targetModel.includes("@") ? parsed.model : targetModel;
-
-    if (!openRouterHandlers.has(modelId)) {
-      const orProvider = new OpenRouterTransport(openrouterApiKey || "");
-      const orAdapter = new OpenRouterAdapter(modelId);
-      openRouterHandlers.set(
-        modelId,
-        new ProviderHandler(orProvider, modelId, modelId, port, { formatAdapter: orAdapter, modelAdapter: selectModelAdapter(modelId), isInteractive: options.isInteractive })
-      );
-    }
-    return openRouterHandlers.get(modelId)!;
+  // Helper to get or create a handler via the factory for a given definition
+  const getFactoryHandler = (def: ProviderDefinition, modelName: string, targetModel: string, apiKey: string, concurrency?: number): ModelHandler | null => {
+    const result = createTransportForProvider(def, modelName, apiKey, concurrency, options.summarizeTools);
+    if (!result) return null;
+    const handler = new ProviderHandler(targetModel, modelName, port, options.isInteractive, result);
+    handlerCache.set(targetModel, handler);
+    log(`[Proxy] ${result.logMessage}${concurrency !== undefined ? ` (concurrency: ${concurrency})` : ""}`);
+    return handler;
   };
 
-  // Helper to get or create Poe handler for a target model
-  const getPoeHandler = (targetModel: string): ModelHandler | null => {
-    const poeApiKey = process.env.POE_API_KEY;
-    if (!poeApiKey) {
-      log(`[Proxy] POE_API_KEY not set, cannot use Poe model: ${targetModel}`);
-      return null;
-    }
-    // Strip "poe:" prefix to get the actual model name for the API
-    const modelId = targetModel.replace(/^poe:/, "");
-    if (!poeHandlers.has(modelId)) {
-      const poeTransport = new PoeProvider(poeApiKey);
-      const poeDef = getProviderByName("poe");
-      poeHandlers.set(
-        modelId,
-        new ProviderHandler(poeTransport, modelId, modelId, port, {
-          formatAdapter: new OpenAIFormatAdapter(modelId, poeDef?.capabilities || { supportsTools: true, supportsVision: true, supportsStreaming: true, supportsJsonMode: false, supportsReasoning: false }),
-          modelAdapter: selectModelAdapter(modelId),
-          isInteractive: options.isInteractive,
-        })
-      );
-    }
-    return poeHandlers.get(modelId)!;
-  };
-
-  // Check if model is a Poe model (has poe: prefix)
-  const isPoeModel = (model: string): boolean => {
-    return model.startsWith("poe:");
+  // Helper to get or create OpenRouter handler for a model ID (vendor/model format)
+  const getOpenRouterHandler = (modelId: string): ModelHandler => {
+    if (handlerCache.has(modelId)) return handlerCache.get(modelId)!;
+    const orDef = getProviderByName("openrouter")!;
+    const apiKey = openrouterApiKey || process.env.OPENROUTER_API_KEY || "";
+    const handler = getFactoryHandler(orDef, modelId, modelId, apiKey);
+    if (!handler) throw new Error("Failed to create OpenRouter handler");
+    return handler;
   };
 
   // Helper to get or create Local Provider handler for a target model
   const getLocalProviderHandler = (targetModel: string): ModelHandler | null => {
-    if (localProviderHandlers.has(targetModel)) {
-      return localProviderHandlers.get(targetModel)!;
-    }
+    if (handlerCache.has(targetModel)) return handlerCache.get(targetModel)!;
 
     // Check for definition-based local provider (ollama@, lmstudio@, etc.)
     const parsed = parseModelSpec(targetModel);
     if (isLocalTransport(parsed.provider)) {
       const def = getProviderByName(parsed.provider);
-      if (def) {
-        const result = createTransportForProvider(def, parsed.model, "", {
-          concurrency: parsed.concurrency,
-          summarizeTools: options.summarizeTools,
-        });
-        if (result) {
-          const handler = new ProviderHandler(result.transport, parsed.model, parsed.model, port, {
-            formatAdapter: result.formatAdapter,
-            modelAdapter: result.modelAdapter,
-            tokenStrategy: result.tokenStrategy,
-            summarizeTools: result.summarizeTools,
-            isInteractive: options.isInteractive,
-          });
-          localProviderHandlers.set(targetModel, handler);
-          log(`[Proxy] ${result.logMessage}${parsed.concurrency !== undefined ? ` (concurrency: ${parsed.concurrency})` : ""}`);
-          return handler;
-        }
-      }
+      if (def) return getFactoryHandler(def, parsed.model, targetModel, "", parsed.concurrency);
     }
 
     // Check for URL-based model (http://localhost:11434/llama3)
     const urlParsed = parseUrlModel(targetModel);
     if (urlParsed) {
-      const providerConfig = createUrlProvider(urlParsed);
-      const provider = new LocalTransport(providerConfig);
-      const formatAdapter = selectLocalFormatAdapter(
-        urlParsed.modelName,
-        providerConfig.name,
-        URL_PROVIDER_CAPABILITIES
-      );
-      const handler = new ProviderHandler(provider, urlParsed.modelName, urlParsed.modelName, port, {
-        formatAdapter,
-        modelAdapter: selectModelAdapter(urlParsed.modelName),
-        tokenStrategy: "local",
-        summarizeTools: options.summarizeTools,
-        isInteractive: options.isInteractive,
-      });
-      localProviderHandlers.set(targetModel, handler);
-      log(
-        `[Proxy] Created URL-based local provider handler: ${urlParsed.baseUrl}/${urlParsed.modelName}`
-      );
-      return handler;
+      const def: ProviderDefinition = {
+        name: "custom-url", displayName: "Custom URL",
+        transport: "local", tokenStrategy: "local",
+        baseUrl: urlParsed.baseUrl, apiPath: "/v1/chat/completions",
+        apiKeyEnvVar: "", authScheme: "none",
+        shortcuts: [], legacyPrefixes: [],
+        capabilities: URL_PROVIDER_CAPABILITIES,
+      };
+      return getFactoryHandler(def, urlParsed.modelName, targetModel, "");
     }
 
     return null;
   };
 
   // Helper to get or create remote provider handler
-  // Uses createTransportForProvider() factory for most transports,
-  // with special handling for vertex (express vs oauth mode selection).
-  const getRemoteProviderHandler = (targetModel: string): ModelHandler | null => {
-    if (remoteProviderHandlers.has(targetModel)) {
-      return remoteProviderHandlers.get(targetModel)!;
-    }
+  // Uses createTransportForProvider() factory for all transports.
+  // Vertex express mode uses the Gemini definition; Vertex OAuth uses the Vertex definition.
+  const getRemoteProviderHandler = async (targetModel: string): Promise<ModelHandler | null> => {
+    if (handlerCache.has(targetModel)) return handlerCache.get(targetModel)!;
 
     // Use centralized resolver with fallback logic
-    const resolution = resolveModelProvider(targetModel);
+    const resolution = await resolveModelProvider(targetModel);
 
     if (resolution.wasAutoRouted && resolution.autoRouteMessage) {
       if (!options.quiet) {
@@ -185,14 +113,9 @@ export async function createProxyServer(
       log(`[Auto-route] ${resolution.autoRouteMessage}`);
     }
 
-    // If resolver says use OpenRouter (including fallback cases), create the handler
-    // directly here so we can use the correctly-formatted fullModelId (e.g. "google/gemini-2.0-flash")
-    // rather than the raw targetModel string.
+    // OpenRouter routing (explicit or auto-routed fallback)
     if (resolution.category === "openrouter") {
-      if (resolution.wasAutoRouted && resolution.fullModelId) {
-        return getOpenRouterHandler(resolution.fullModelId);
-      }
-      return null;
+      return getOpenRouterHandler(resolution.modelName || targetModel);
     }
 
     // When auto-routed (e.g. to LiteLLM), use the resolved fullModelId so that
@@ -206,109 +129,33 @@ export async function createProxyServer(
       const resolved = resolveRemoteProvider(resolveTarget);
       if (!resolved) return null;
 
-      // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
-      if (resolved.provider.name === "openrouter") {
-        return null; // Will fall through to OpenRouterHandler
-      }
-
       // Get API key - empty string for providers that don't require auth (like zen/ free models)
       const apiKey = resolved.provider.apiKeyEnvVar
         ? process.env[resolved.provider.apiKeyEnvVar] || ""
         : "";
 
-      let handler: ModelHandler;
-
-      // Vertex has special express/OAuth mode selection
-      if (resolved.provider.name === "vertex") {
-        const hasApiKey = !!process.env.VERTEX_API_KEY;
-        const vertexConfig = getVertexConfig();
-
-        if (hasApiKey) {
-          // Express Mode - uses Gemini API endpoint with VERTEX_API_KEY
-          const geminiDef = getProviderByName("google");
-          const expressResult = geminiDef
-            ? createTransportForProvider(geminiDef, resolved.modelName, process.env.VERTEX_API_KEY!)
-            : null;
-          if (!expressResult) {
-            log(`[Proxy] Failed to create Vertex Express handler`);
-            return null;
-          }
-          handler = new ProviderHandler(expressResult.transport, targetModel, resolved.modelName, port, {
-            formatAdapter: expressResult.formatAdapter,
-            modelAdapter: expressResult.modelAdapter,
-            isInteractive: options.isInteractive,
-          });
-          log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
-        } else if (vertexConfig) {
-          // OAuth Mode - publisher-specific adapter
-          const oauthError = validateVertexOAuthConfig();
-          if (oauthError) {
-            log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
-            return null;
-          }
-          const parsed = parseVertexModel(resolved.modelName);
-          const vxProvider = new VertexOAuthTransport(vertexConfig, parsed);
-
-          let vxAdapter: FormatAdapter;
-          if (parsed.publisher === "google") {
-            vxAdapter = new GeminiFormatAdapter(resolved.modelName);
-          } else if (parsed.publisher === "anthropic") {
-            vxAdapter = new AnthropicPassthroughAdapter(parsed.model, "vertex");
-          } else {
-            const modelId = parsed.publisher === "mistralai"
-              ? parsed.model
-              : `${parsed.publisher}/${parsed.model}`;
-            vxAdapter = new OpenAIFormatAdapter(modelId, { supportsTools: true, supportsVision: true, supportsStreaming: true, supportsJsonMode: false, supportsReasoning: false });
-          }
-
-          handler = new ProviderHandler(vxProvider, targetModel, resolved.modelName, port, {
-            formatAdapter: vxAdapter,
-            modelAdapter: selectModelAdapter(resolved.modelName),
-            isInteractive: options.isInteractive,
-          });
-          log(
-            `[Proxy] Created Vertex AI OAuth handler (composed): ${resolved.modelName} [${parsed.publisher}] (project: ${vertexConfig.projectId})`
-          );
-        } else {
-          log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
-          return null;
-        }
+      // Vertex express mode uses Gemini definition; all others use their own definition
+      let def: ProviderDefinition | undefined;
+      let effectiveApiKey = apiKey;
+      if (resolved.provider.name === "vertex" && process.env.VERTEX_API_KEY) {
+        def = getProviderByName("google");
+        effectiveApiKey = process.env.VERTEX_API_KEY;
       } else {
-        // Use the transport factory for all other providers
-        const def = getProviderByName(resolved.provider.name);
-        if (!def) return null;
-
-        const result = createTransportForProvider(def, resolved.modelName, apiKey);
-        if (!result) {
-          if (def.transport === "litellm") {
-            logStderr("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
-            logStderr("Set it with: export LITELLM_BASE_URL='https://your-litellm-instance.com'");
-            logStderr("Or use: claudish --litellm-url https://your-instance.com --model litellm@model 'task'");
-          }
-          return null;
-        }
-
-        handler = new ProviderHandler(result.transport, targetModel, resolved.modelName, port, {
-          formatAdapter: result.formatAdapter,
-          modelAdapter: result.modelAdapter,
-          tokenStrategy: result.tokenStrategy,
-          unwrapGeminiResponse: result.unwrapGeminiResponse,
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] ${result.logMessage}`);
+        def = getProviderByName(resolved.provider.name);
       }
+      if (!def) return null;
 
-      // Cache under both the original targetModel and the resolveTarget (if different)
-      // so subsequent lookups with either key are served from cache.
-      remoteProviderHandlers.set(resolveTarget, handler);
+      const handler = getFactoryHandler(def, resolved.modelName, targetModel, effectiveApiKey);
+      if (!handler) return null;
+
+      // Cache under resolveTarget too (if different) so subsequent lookups are served from cache
       if (resolveTarget !== targetModel) {
-        remoteProviderHandlers.set(targetModel, handler);
+        handlerCache.set(resolveTarget, handler);
       }
       return handler;
     }
 
     // If we get here, either category is not direct-api or key is not available
-    // Both cases should fall through to OpenRouter or return null
     return null;
   };
 
@@ -324,7 +171,7 @@ export async function createProxyServer(
     });
   }
 
-  const getHandlerForRequest = (requestedModel: string): ModelHandler => {
+  const getHandlerForRequest = async (requestedModel: string): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
 
@@ -347,11 +194,10 @@ export async function createProxyServer(
 
     // 2b. Catalog resolution: resolve vendor prefix for OpenRouter and LiteLLM
     // This must happen after target is determined but before handler construction.
-    // resolveModelNameSync is synchronous (uses in-memory cache + readFileSync).
     {
       const parsedTarget = parseModelSpec(target);
       if (parsedTarget.provider === "openrouter" || parsedTarget.provider === "litellm") {
-        const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
+        const resolution = await resolveModelName(parsedTarget.model, parsedTarget.provider);
         logResolution(parsedTarget.model, resolution, options.quiet);
         if (resolution.wasResolved) {
           // Reconstruct target with resolved model name so handler construction
@@ -361,24 +207,15 @@ export async function createProxyServer(
       }
     }
 
-    // 3. Check for Poe Model (poe: prefix)
-    if (isPoeModel(target)) {
-      const poeHandler = getPoeHandler(target);
-      if (poeHandler) {
-        log(`[Proxy] Routing to Poe: ${target}`);
-        return poeHandler;
-      }
-    }
-
-    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
-    const remoteHandler = getRemoteProviderHandler(target);
+    // 3. Check for Remote Provider (includes Poe via poe: prefix, OpenRouter, Vertex, etc.)
+    const remoteHandler = await getRemoteProviderHandler(target);
     if (remoteHandler) return remoteHandler;
 
-    // 5. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
+    // 4. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
     const localHandler = getLocalProviderHandler(target);
     if (localHandler) return localHandler;
 
-    // 6. Native vs OpenRouter Decision
+    // 5. Native vs OpenRouter Decision
     // Models with explicit provider prefix (@) should never fall to native Anthropic handler.
     // They were explicitly routed to a provider - if the handler wasn't created above,
     // it's because the API key is missing, not because it's a native model.
@@ -390,7 +227,7 @@ export async function createProxyServer(
       return nativeHandler;
     }
 
-    // 7. Explicit provider@ that wasn't handled above means missing API key or
+    // 6. Explicit provider@ that wasn't handled above means missing API key or
     // unsupported provider -- warn instead of silently falling to OpenRouter.
     if (hasExplicitProvider) {
       const parsed = parseModelSpec(target);
@@ -402,7 +239,7 @@ export async function createProxyServer(
       }
     }
 
-    // 8. OpenRouter Handler (default for any model with "/" or unmatched explicit provider)
+    // 7. OpenRouter Handler (default for any model with "/" or unmatched explicit provider)
     return getOpenRouterHandler(target);
   };
 
@@ -423,7 +260,7 @@ export async function createProxyServer(
     try {
       const body = await c.req.json();
       const reqModel = body.model || "claude-3-opus-20240229";
-      const handler = getHandlerForRequest(reqModel);
+      const handler = await getHandlerForRequest(reqModel);
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
@@ -449,7 +286,7 @@ export async function createProxyServer(
   app.post("/v1/messages", async (c) => {
     try {
       const body = await c.req.json();
-      const handler = getHandlerForRequest(body.model);
+      const handler = await getHandlerForRequest(body.model);
 
       // Route
       return handler.handle(c, body);
@@ -467,6 +304,9 @@ export async function createProxyServer(
   if (actualPort !== port) port = actualPort;
 
   log(`[Proxy] Server started on port ${port}`);
+
+  // Warm user-defined providers in background (non-blocking)
+  warmProviderCache().catch(() => {});
 
   // Warm pricing cache in background (non-blocking)
   warmPricingCache().catch(() => {});
@@ -487,5 +327,3 @@ export async function createProxyServer(
     },
   };
 }
-
-// ─── Synchronous transport factory ───────────────────────

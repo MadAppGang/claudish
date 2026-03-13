@@ -24,7 +24,7 @@
  * - g/, gemini/, oai/, mmax/, etc. prefixes still work with deprecation warnings
  */
 
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseUrlModel } from "./provider-registry.js";
@@ -97,7 +97,7 @@ interface ApiKeyInfo {
 /**
  * Check if any of the API keys (including aliases) are available
  */
-function isApiKeyAvailable(info: ApiKeyInfo): boolean {
+async function isApiKeyAvailable(info: ApiKeyInfo): Promise<boolean> {
   if (!info.envVar) {
     return true; // No key required (OAuth or free tier)
   }
@@ -119,9 +119,8 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
   if (info.oauthFallback) {
     try {
       const credPath = join(homedir(), ".claudish", info.oauthFallback);
-      if (existsSync(credPath)) {
-        return true;
-      }
+      await access(credPath);
+      return true;
     } catch {
       // Ignore filesystem errors
     }
@@ -166,7 +165,7 @@ function getApiKeyInfoForProvider(providerName: string): ApiKeyInfo {
  * @param modelId - The model ID to resolve (can be undefined for default behavior)
  * @returns Complete provider resolution including API key requirements
  */
-export function resolveModelProvider(modelId: string | undefined): ProviderResolution {
+export async function resolveModelProvider(modelId: string | undefined): Promise<ProviderResolution> {
   // Default case: no model specified = OpenRouter with undefined model (will use default)
   if (!modelId) {
     const info = getApiKeyInfoForProvider("openrouter");
@@ -176,7 +175,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       modelName: "",
       fullModelId: "",
       requiredApiKeyEnvVar: info.envVar,
-      apiKeyAvailable: isApiKeyAvailable(info),
+      apiKeyAvailable: await isApiKeyAvailable(info),
       apiKeyDescription: info.description,
       apiKeyUrl: info.url,
     };
@@ -247,7 +246,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       modelName: parsed.model,
       fullModelId: modelId,
       requiredApiKeyEnvVar: info.envVar,
-      apiKeyAvailable: isApiKeyAvailable(info),
+      apiKeyAvailable: await isApiKeyAvailable(info),
       apiKeyDescription: info.description,
       apiKeyUrl: info.url,
     });
@@ -256,7 +255,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
   // 5. Auto-routing: when no explicit provider was given, use priority chain
   let pendingAutoRouteMessage: string | undefined;
   if (!parsed.isExplicitProvider && parsed.provider !== "native-anthropic") {
-    const autoResult = autoRoute(parsed.model, parsed.provider);
+    const autoResult = await autoRoute(parsed.model, parsed.provider);
 
     if (autoResult) {
       if (autoResult.provider === "litellm") {
@@ -267,7 +266,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
           modelName: autoResult.modelName,
           fullModelId: autoResult.resolvedModelId,
           requiredApiKeyEnvVar: info.envVar || null,
-          apiKeyAvailable: isApiKeyAvailable(info),
+          apiKeyAvailable: await isApiKeyAvailable(info),
           apiKeyDescription: info.description,
           apiKeyUrl: info.url,
           wasAutoRouted: true,
@@ -283,7 +282,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
           modelName: autoResult.modelName,
           fullModelId: autoResult.resolvedModelId,
           requiredApiKeyEnvVar: info.envVar,
-          apiKeyAvailable: isApiKeyAvailable(info),
+          apiKeyAvailable: await isApiKeyAvailable(info),
           apiKeyDescription: info.description,
           apiKeyUrl: info.url,
           wasAutoRouted: true,
@@ -319,7 +318,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       modelName: remoteResolved.modelName,
       fullModelId: modelId,
       requiredApiKeyEnvVar: effectiveInfo.envVar || null,
-      apiKeyAvailable: isApiKeyAvailable(effectiveInfo),
+      apiKeyAvailable: await isApiKeyAvailable(effectiveInfo),
       apiKeyDescription: effectiveInfo.envVar ? effectiveInfo.description : null,
       apiKeyUrl: effectiveInfo.envVar ? effectiveInfo.url : null,
       wasAutoRouted,
@@ -365,8 +364,9 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
  * @param models - Array of model IDs to validate (undefined entries are skipped)
  * @returns Array of resolutions for models that are defined
  */
-export function validateApiKeysForModels(models: (string | undefined)[]): ProviderResolution[] {
-  return models.filter((m): m is string => m !== undefined).map((m) => resolveModelProvider(m));
+export async function validateApiKeysForModels(models: (string | undefined)[]): Promise<ProviderResolution[]> {
+  const defined = models.filter((m): m is string => m !== undefined);
+  return Promise.all(defined.map((m) => resolveModelProvider(m)));
 }
 
 /**
@@ -519,8 +519,8 @@ export function getMissingKeysError(resolutions: ProviderResolution[]): string {
  * @param modelId - Model ID to check
  * @returns true if OpenRouter API key is required
  */
-export function requiresOpenRouterKey(modelId: string | undefined): boolean {
-  const resolution = resolveModelProvider(modelId);
+export async function requiresOpenRouterKey(modelId: string | undefined): Promise<boolean> {
+  const resolution = await resolveModelProvider(modelId);
   return resolution.category === "openrouter";
 }
 

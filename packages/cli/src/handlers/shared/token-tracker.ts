@@ -10,7 +10,7 @@
  *      for concurrent conversations sharing the same handler
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../../logger.js";
@@ -50,7 +50,7 @@ export class TokenTracker {
       (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
-    this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate);
+    this.flushTokenData(inputTokens, this.sessionOutputTokens, pricing.isEstimate);
   }
 
   /**
@@ -68,7 +68,7 @@ export class TokenTracker {
     // OllamaCloud recalculates total cost each time (not incremental)
     this.sessionTotalCost = cost;
 
-    this.writeFile(this.sessionInputTokens, this.sessionOutputTokens, pricing.isEstimate);
+    this.flushTokenData(this.sessionInputTokens, this.sessionOutputTokens, pricing.isEstimate);
   }
 
   /**
@@ -108,7 +108,7 @@ export class TokenTracker {
       (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
-    this.writeFile(
+    this.flushTokenData(
       Math.max(inputTokens, this.sessionInputTokens),
       this.sessionOutputTokens,
       pricing.isEstimate
@@ -137,7 +137,7 @@ export class TokenTracker {
       this.sessionTotalCost += inputCost + outputCost;
     }
 
-    this.writeFile(inputTokens, this.sessionOutputTokens);
+    this.flushTokenData(inputTokens, this.sessionOutputTokens);
   }
 
   /**
@@ -150,7 +150,7 @@ export class TokenTracker {
     }
     this.sessionOutputTokens += outputTokens;
     // Local models are free
-    this.writeFile(this.sessionInputTokens, this.sessionOutputTokens);
+    this.flushTokenData(this.sessionInputTokens, this.sessionOutputTokens);
   }
 
   /** Update just the context window (e.g., after fetching from model API) */
@@ -186,7 +186,7 @@ export class TokenTracker {
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 
-  private writeFile(inputTokens: number, outputTokens: number, isEstimate?: boolean): void {
+  private async flushTokenData(inputTokens: number, outputTokens: number, isEstimate?: boolean): Promise<void> {
     try {
       const total = inputTokens + outputTokens;
       const cw = this.config.contextWindow;
@@ -211,8 +211,8 @@ export class TokenTracker {
       };
 
       const claudishDir = join(homedir(), ".claudish");
-      mkdirSync(claudishDir, { recursive: true });
-      writeFileSync(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
+      await mkdir(claudishDir, { recursive: true });
+      await writeFile(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
     } catch (e) {
       log(`[TokenTracker] Error writing token file: ${e}`);
     }

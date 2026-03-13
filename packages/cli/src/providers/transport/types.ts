@@ -10,6 +10,7 @@ export type StreamFormat =
   | "openai-sse"
   | "openai-responses-sse"
   | "gemini-sse"
+  | "gemini-codeassist-sse"
   | "anthropic-sse"
   | "ollama-jsonl";
 

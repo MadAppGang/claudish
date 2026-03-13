@@ -9,7 +9,7 @@
  * Resolution order: local config takes priority over global config.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile, writeFile, mkdir, access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TransportType } from "./handlers/shared/remote-provider-types.js";
@@ -115,7 +115,7 @@ export interface UserProviderConfig {
   nativeModelPatterns?: string[];
   headers?: Record<string, string>;
   publicKeyFallback?: boolean;
-  tokenStrategy?: "delta-aware" | "accumulate-both";
+  tokenStrategy?: "delta-aware" | "accumulate-both" | "local";
   capabilities?: {
     supportsTools?: boolean;
     supportsVision?: boolean;
@@ -147,25 +147,19 @@ const DEFAULT_CONFIG: ClaudishProfileConfig = {
 /**
  * Ensure global config directory exists
  */
-function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-  }
+async function ensureConfigDir(): Promise<void> {
+  await mkdir(CONFIG_DIR, { recursive: true });
 }
 
 /**
  * Load global configuration from ~/.claudish/config.json
  * Returns default config if file doesn't exist
  */
-export function loadConfig(): ClaudishProfileConfig {
-  ensureConfigDir();
-
-  if (!existsSync(CONFIG_FILE)) {
-    return { ...DEFAULT_CONFIG };
-  }
+export async function loadConfig(): Promise<ClaudishProfileConfig> {
+  await ensureConfigDir();
 
   try {
-    const content = readFileSync(CONFIG_FILE, "utf-8");
+    const content = await readFile(CONFIG_FILE, "utf-8");
     const config = JSON.parse(content) as ClaudishProfileConfig;
 
     // Validate and merge with defaults
@@ -184,6 +178,10 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     return merged;
   } catch (error) {
+    // File doesn't exist or is invalid — return defaults
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ...DEFAULT_CONFIG };
+    }
     console.error(`Warning: Failed to load config, using defaults: ${error}`);
     return { ...DEFAULT_CONFIG };
   }
@@ -192,16 +190,21 @@ export function loadConfig(): ClaudishProfileConfig {
 /**
  * Save global configuration to file
  */
-export function saveConfig(config: ClaudishProfileConfig): void {
-  ensureConfigDir();
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
+export async function saveConfig(config: ClaudishProfileConfig): Promise<void> {
+  await ensureConfigDir();
+  await writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
 }
 
 /**
  * Check if global config file exists
  */
-export function configExists(): boolean {
-  return existsSync(CONFIG_FILE);
+export async function configExists(): Promise<boolean> {
+  try {
+    await access(CONFIG_FILE);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -223,33 +226,41 @@ export function getLocalConfigPath(): string {
 /**
  * Check if local config file exists
  */
-export function localConfigExists(): boolean {
-  return existsSync(getLocalConfigPath());
+export async function localConfigExists(): Promise<boolean> {
+  try {
+    await access(getLocalConfigPath());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Detect if CWD looks like a project directory
  */
-export function isProjectDirectory(): boolean {
+export async function isProjectDirectory(): Promise<boolean> {
   const cwd = process.cwd();
-  return [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".claudish.json"].some(
-    (f) => existsSync(join(cwd, f))
-  );
+  const markers = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".claudish.json"];
+  for (const f of markers) {
+    try {
+      await access(join(cwd, f));
+      return true;
+    } catch {
+      // continue checking
+    }
+  }
+  return false;
 }
 
 /**
  * Load local configuration from .claudish.json in CWD
  * Returns null if file doesn't exist
  */
-export function loadLocalConfig(): ClaudishProfileConfig | null {
+export async function loadLocalConfig(): Promise<ClaudishProfileConfig | null> {
   const localPath = getLocalConfigPath();
 
-  if (!existsSync(localPath)) {
-    return null;
-  }
-
   try {
-    const content = readFileSync(localPath, "utf-8");
+    const content = await readFile(localPath, "utf-8");
     const config = JSON.parse(content) as ClaudishProfileConfig;
 
     return {
@@ -258,6 +269,9 @@ export function loadLocalConfig(): ClaudishProfileConfig | null {
       profiles: config.profiles || {},
     };
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
     console.error(`Warning: Failed to load local config: ${error}`);
     return null;
   }
@@ -266,31 +280,31 @@ export function loadLocalConfig(): ClaudishProfileConfig | null {
 /**
  * Save local configuration to .claudish.json in CWD
  */
-export function saveLocalConfig(config: ClaudishProfileConfig): void {
-  writeFileSync(getLocalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+export async function saveLocalConfig(config: ClaudishProfileConfig): Promise<void> {
+  await writeFile(getLocalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
 }
 
 // ─── Scope-Aware Operations ─────────────────────────────
 
-function loadConfigForScope(scope: ProfileScope): ClaudishProfileConfig {
+async function loadConfigForScope(scope: ProfileScope): Promise<ClaudishProfileConfig> {
   if (scope === "local") {
-    return loadLocalConfig() || { version: "1.0.0", defaultProfile: "", profiles: {} };
+    return (await loadLocalConfig()) || { version: "1.0.0", defaultProfile: "", profiles: {} };
   }
   return loadConfig();
 }
 
-function saveConfigForScope(config: ClaudishProfileConfig, scope: ProfileScope): void {
+async function saveConfigForScope(config: ClaudishProfileConfig, scope: ProfileScope): Promise<void> {
   if (scope === "local") {
-    saveLocalConfig(config);
+    await saveLocalConfig(config);
   } else {
-    saveConfig(config);
+    await saveConfig(config);
   }
 }
 
 /**
  * Check if config exists for a given scope
  */
-export function configExistsForScope(scope: ProfileScope): boolean {
+export async function configExistsForScope(scope: ProfileScope): Promise<boolean> {
   if (scope === "local") {
     return localConfigExists();
   }
@@ -313,22 +327,22 @@ export function getConfigPathForScope(scope: ProfileScope): string {
  * - scope="global": only global config
  * - scope=undefined: local first, then global
  */
-export function getProfile(name: string, scope?: ProfileScope): Profile | undefined {
+export async function getProfile(name: string, scope?: ProfileScope): Promise<Profile | undefined> {
   if (scope === "local") {
-    const local = loadLocalConfig();
+    const local = await loadLocalConfig();
     return local?.profiles[name];
   }
   if (scope === "global") {
-    const config = loadConfig();
+    const config = await loadConfig();
     return config.profiles[name];
   }
 
   // No scope: local first, then global
-  const local = loadLocalConfig();
+  const local = await loadLocalConfig();
   if (local?.profiles[name]) {
     return local.profiles[name];
   }
-  const config = loadConfig();
+  const config = await loadConfig();
   return config.profiles[name];
 }
 
@@ -339,9 +353,9 @@ export function getProfile(name: string, scope?: ProfileScope): Profile | undefi
  * - scope=undefined: local default first (if local config exists and has a non-empty defaultProfile),
  *   otherwise fall through to global
  */
-export function getDefaultProfile(scope?: ProfileScope): Profile {
+export async function getDefaultProfile(scope?: ProfileScope): Promise<Profile> {
   if (scope === "local") {
-    const local = loadLocalConfig();
+    const local = await loadLocalConfig();
     if (local && local.defaultProfile && local.profiles[local.defaultProfile]) {
       return local.profiles[local.defaultProfile];
     }
@@ -350,7 +364,7 @@ export function getDefaultProfile(scope?: ProfileScope): Profile {
   }
 
   if (scope === "global") {
-    const config = loadConfig();
+    const config = await loadConfig();
     const profile = config.profiles[config.defaultProfile];
     if (profile) return profile;
     const firstProfile = Object.values(config.profiles)[0];
@@ -359,15 +373,15 @@ export function getDefaultProfile(scope?: ProfileScope): Profile {
   }
 
   // No scope: local-first resolution
-  const local = loadLocalConfig();
+  const local = await loadLocalConfig();
   if (local && local.defaultProfile) {
     // Resolve the name local-first, then global
-    const profile = getProfile(local.defaultProfile);
+    const profile = await getProfile(local.defaultProfile);
     if (profile) return profile;
   }
 
   // Fall through to global
-  const config = loadConfig();
+  const config = await loadConfig();
   const profile = config.profiles[config.defaultProfile];
   if (profile) return profile;
   const firstProfile = Object.values(config.profiles)[0];
@@ -380,19 +394,19 @@ export function getDefaultProfile(scope?: ProfileScope): Profile {
  * - scope="local"/"global": names from that scope only
  * - scope=undefined: merged set from both
  */
-export function getProfileNames(scope?: ProfileScope): string[] {
+export async function getProfileNames(scope?: ProfileScope): Promise<string[]> {
   if (scope === "local") {
-    const local = loadLocalConfig();
+    const local = await loadLocalConfig();
     return local ? Object.keys(local.profiles) : [];
   }
   if (scope === "global") {
-    const config = loadConfig();
+    const config = await loadConfig();
     return Object.keys(config.profiles);
   }
 
   // Merged set
-  const local = loadLocalConfig();
-  const config = loadConfig();
+  const local = await loadLocalConfig();
+  const config = await loadConfig();
   const names = new Set<string>([
     ...(local ? Object.keys(local.profiles) : []),
     ...Object.keys(config.profiles),
@@ -403,8 +417,8 @@ export function getProfileNames(scope?: ProfileScope): string[] {
 /**
  * Add or update a profile in the specified scope
  */
-export function setProfile(profile: Profile, scope: ProfileScope = "global"): void {
-  const config = loadConfigForScope(scope);
+export async function setProfile(profile: Profile, scope: ProfileScope = "global"): Promise<void> {
+  const config = await loadConfigForScope(scope);
 
   const existingProfile = config.profiles[profile.name];
   if (existingProfile) {
@@ -415,7 +429,7 @@ export function setProfile(profile: Profile, scope: ProfileScope = "global"): vo
   profile.updatedAt = new Date().toISOString();
 
   config.profiles[profile.name] = profile;
-  saveConfigForScope(config, scope);
+  await saveConfigForScope(config, scope);
 }
 
 /**
@@ -423,8 +437,8 @@ export function setProfile(profile: Profile, scope: ProfileScope = "global"): vo
  * For global scope: cannot delete the last profile
  * For local scope: can delete any profile (local config can be empty)
  */
-export function deleteProfile(name: string, scope: ProfileScope = "global"): boolean {
-  const config = loadConfigForScope(scope);
+export async function deleteProfile(name: string, scope: ProfileScope = "global"): Promise<boolean> {
+  const config = await loadConfigForScope(scope);
 
   if (!config.profiles[name]) {
     return false;
@@ -446,15 +460,15 @@ export function deleteProfile(name: string, scope: ProfileScope = "global"): boo
     config.defaultProfile = remaining.length > 0 ? remaining[0] : "";
   }
 
-  saveConfigForScope(config, scope);
+  await saveConfigForScope(config, scope);
   return true;
 }
 
 /**
  * Set the default profile in the specified scope
  */
-export function setDefaultProfile(name: string, scope: ProfileScope = "global"): void {
-  const config = loadConfigForScope(scope);
+export async function setDefaultProfile(name: string, scope: ProfileScope = "global"): Promise<void> {
+  const config = await loadConfigForScope(scope);
 
   if (!config.profiles[name]) {
     // For setting default, the profile must exist in the target scope
@@ -462,15 +476,15 @@ export function setDefaultProfile(name: string, scope: ProfileScope = "global"):
   }
 
   config.defaultProfile = name;
-  saveConfigForScope(config, scope);
+  await saveConfigForScope(config, scope);
 }
 
 /**
  * Get model mapping from a profile
  * Uses local-first resolution when no scope is given
  */
-export function getModelMapping(profileName?: string): ModelMapping {
-  const profile = profileName ? getProfile(profileName) : getDefaultProfile();
+export async function getModelMapping(profileName?: string): Promise<ModelMapping> {
+  const profile = profileName ? await getProfile(profileName) : await getDefaultProfile();
 
   if (!profile) {
     return {};
@@ -482,12 +496,12 @@ export function getModelMapping(profileName?: string): ModelMapping {
 /**
  * Create a new profile with the given models in the specified scope
  */
-export function createProfile(
+export async function createProfile(
   name: string,
   models: ModelMapping,
   description?: string,
   scope: ProfileScope = "global"
-): Profile {
+): Promise<Profile> {
   const now = new Date().toISOString();
   const profile: Profile = {
     name,
@@ -497,15 +511,15 @@ export function createProfile(
     updatedAt: now,
   };
 
-  setProfile(profile, scope);
+  await setProfile(profile, scope);
   return profile;
 }
 
 /**
  * List profiles from a single scope (legacy behavior for global)
  */
-export function listProfiles(): Profile[] {
-  const config = loadConfig();
+export async function listProfiles(): Promise<Profile[]> {
+  const config = await loadConfig();
   return Object.values(config.profiles).map((profile) => ({
     ...profile,
     isDefault: profile.name === config.defaultProfile,
@@ -515,9 +529,9 @@ export function listProfiles(): Profile[] {
 /**
  * List all profiles from both scopes with scope metadata
  */
-export function listAllProfiles(): ProfileWithScope[] {
-  const globalConfig = loadConfig();
-  const localConfig = loadLocalConfig();
+export async function listAllProfiles(): Promise<ProfileWithScope[]> {
+  const globalConfig = await loadConfig();
+  const localConfig = await loadLocalConfig();
   const result: ProfileWithScope[] = [];
 
   // Local profiles first

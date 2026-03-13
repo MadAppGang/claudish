@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
+import { readFile, writeFile, mkdir, unlink, access } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join, basename } from "node:path";
 import { ENV } from "./config.js";
@@ -18,7 +19,7 @@ function isWindows(): boolean {
  * Create a cross-platform Node.js script for status line
  * This replaces the bash script to work on Windows
  */
-function createStatusLineScript(tokenFilePath: string): string {
+async function createStatusLineScript(tokenFilePath: string): Promise<string> {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
   const timestamp = Date.now();
@@ -106,7 +107,7 @@ process.stdin.on('end', () => {
 });
 `;
 
-  writeFileSync(scriptPath, script, "utf-8");
+  await writeFile(scriptPath, script, "utf-8");
   return scriptPath;
 }
 
@@ -118,16 +119,16 @@ process.stdin.on('end', () => {
  * Note: We use ~/.claudish/ instead of system temp directory to avoid Claude Code's
  * file watcher trying to watch socket files in /tmp (which causes UNKNOWN errors)
  */
-function createTempSettingsFile(
+async function createTempSettingsFile(
   modelDisplay: string,
   port: string
-): { path: string; statusLine: { type: string; command: string; padding: number } } {
+): Promise<{ path: string; statusLine: { type: string; command: string; padding: number } }> {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
 
   // Ensure .claudish directory exists
   try {
-    mkdirSync(claudishDir, { recursive: true });
+    await mkdir(claudishDir, { recursive: true });
   } catch {
     // Directory may already exist
   }
@@ -142,7 +143,7 @@ function createTempSettingsFile(
 
   if (isWindows()) {
     // Windows: Use Node.js script for cross-platform compatibility
-    const scriptPath = createStatusLineScript(tokenFilePath);
+    const scriptPath = await createStatusLineScript(tokenFilePath);
     statusCommand = `node "${scriptPath}"`;
   } else {
     // Unix: Use optimized bash script
@@ -169,7 +170,7 @@ function createTempSettingsFile(
 
   const settings = { statusLine };
 
-  writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
+  await writeFile(tempPath, JSON.stringify(settings, null, 2), "utf-8");
   return { path: tempPath, statusLine };
 }
 
@@ -185,11 +186,11 @@ function createTempSettingsFile(
  * Mutates: config.claudeArgs (removes --settings and path if found)
  * Mutates: tempSettingsPath file content (replaces with merged JSON)
  */
-function mergeUserSettingsIfPresent(
+async function mergeUserSettingsIfPresent(
   config: ClaudishConfig,
   tempSettingsPath: string,
   statusLine: { type: string; command: string; padding: number }
-): void {
+): Promise<void> {
   const idx = config.claudeArgs.indexOf("--settings");
   if (idx === -1 || !config.claudeArgs[idx + 1]) {
     // No --settings in passthrough args; nothing to merge.
@@ -205,7 +206,7 @@ function mergeUserSettingsIfPresent(
     if (userSettingsValue.trimStart().startsWith("{")) {
       userSettings = JSON.parse(userSettingsValue);
     } else {
-      const rawUserSettings = readFileSync(userSettingsValue, "utf-8");
+      const rawUserSettings = await readFile(userSettingsValue, "utf-8");
       userSettings = JSON.parse(rawUserSettings);
     }
 
@@ -213,7 +214,7 @@ function mergeUserSettingsIfPresent(
     userSettings.statusLine = statusLine;
 
     // Overwrite the temp settings file with the merged result
-    writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");
+    await writeFile(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");
   } catch {
     // User settings unreadable or invalid JSON — claudish temp file keeps its own statusLine.
     if (!config.quiet) {
@@ -247,10 +248,10 @@ export async function runClaudeWithProxy(
   const port = portMatch ? portMatch[1] : "unknown";
 
   // Create temporary settings file with custom status line for this instance
-  const { path: tempSettingsPath, statusLine } = createTempSettingsFile(modelId, port);
+  const { path: tempSettingsPath, statusLine } = await createTempSettingsFile(modelId, port);
 
   // Merge user's --settings into our temp settings file if user provided one
-  mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine);
+  await mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine);
 
   // Build claude arguments
   const claudeArgs: string[] = [];
@@ -395,8 +396,8 @@ export async function runClaudeWithProxy(
 
   // Clean up temporary settings file
   try {
-    unlinkSync(tempSettingsPath);
-  } catch (error) {
+    await unlink(tempSettingsPath);
+  } catch {
     // Ignore cleanup errors
   }
 
@@ -441,8 +442,11 @@ async function findClaudeBinary(): Promise<string | null> {
 
   // 1. Check CLAUDE_PATH env var
   if (process.env.CLAUDE_PATH) {
-    if (existsSync(process.env.CLAUDE_PATH)) {
+    try {
+      await access(process.env.CLAUDE_PATH);
       return process.env.CLAUDE_PATH;
+    } catch {
+      // Path doesn't exist
     }
   }
 
@@ -452,8 +456,11 @@ async function findClaudeBinary(): Promise<string | null> {
     ? join(home, ".claude", "local", "claude.exe")
     : join(home, ".claude", "local", "claude");
 
-  if (existsSync(localPath)) {
+  try {
+    await access(localPath);
     return localPath;
+  } catch {
+    // Path doesn't exist
   }
 
   // 3. Check common global installation paths
@@ -466,8 +473,11 @@ async function findClaudeBinary(): Promise<string | null> {
     ];
 
     for (const path of windowsPaths) {
-      if (existsSync(path)) {
+      try {
+        await access(path);
         return path;
+      } catch {
+        // Path doesn't exist
       }
     }
   } else {
@@ -484,8 +494,11 @@ async function findClaudeBinary(): Promise<string | null> {
     ];
 
     for (const path of commonPaths) {
-      if (existsSync(path)) {
+      try {
+        await access(path);
         return path;
+      } catch {
+        // Path doesn't exist
       }
     }
   }

@@ -24,6 +24,7 @@ import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { FormatAdapter } from "../adapters/format-adapter.js";
 import type { ModelAdapter } from "../adapters/model-adapter.js";
+import type { ProviderComponents } from "../providers/provider-factory.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -44,21 +45,6 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   return auth;
 }
 
-export interface ProviderHandlerOptions {
-  /** Wire format adapter for the target API */
-  formatAdapter: FormatAdapter;
-  /** Model-specific quirk adapter (reasoning filters, param mapping, etc.) */
-  modelAdapter: ModelAdapter;
-  /** Token tracking strategy */
-  tokenStrategy?: "standard" | "accumulate-both" | "delta-aware" | "actual-cost" | "local";
-  /** Summarize tool descriptions (for models with small context) */
-  summarizeTools?: boolean;
-  /** Whether the Gemini SSE stream wraps chunks in {response: {...}} (CodeAssist) */
-  unwrapGeminiResponse?: boolean;
-  /** Whether the current session is interactive (gates consent prompt). */
-  isInteractive?: boolean;
-}
-
 export class ProviderHandler implements ModelHandler {
   private provider: ProviderTransport;
   private formatAdapter: FormatAdapter;
@@ -66,22 +52,24 @@ export class ProviderHandler implements ModelHandler {
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
   private targetModel: string;
-  private options: ProviderHandlerOptions;
+  private tokenStrategy?: "delta-aware" | "accumulate-both" | "local";
+  private summarizeTools?: boolean;
   private isInteractive: boolean;
 
   constructor(
-    provider: ProviderTransport,
     targetModel: string,
     modelName: string,
     port: number,
-    options: ProviderHandlerOptions
+    isInteractive: boolean,
+    components: ProviderComponents,
   ) {
-    this.provider = provider;
+    this.provider = components.transport;
     this.targetModel = targetModel;
-    this.options = options;
-    this.formatAdapter = options.formatAdapter;
-    this.modelAdapter = options.modelAdapter;
-    this.isInteractive = options.isInteractive ?? false;
+    this.formatAdapter = components.formatAdapter;
+    this.modelAdapter = components.modelAdapter;
+    this.tokenStrategy = components.tokenStrategy;
+    this.summarizeTools = components.summarizeTools;
+    this.isInteractive = isInteractive;
 
     // Initialize middleware
     this.middlewareManager = new MiddlewareManager();
@@ -95,9 +83,9 @@ export class ProviderHandler implements ModelHandler {
     // Initialize token tracker — model adapter overrides format adapter's context window
     this.tokenTracker = new TokenTracker(port, {
       contextWindow: this.getEffectiveContextWindow(),
-      providerName: provider.name,
+      providerName: this.provider.name,
       modelName,
-      providerDisplayName: provider.displayName,
+      providerDisplayName: this.provider.displayName,
     });
   }
 
@@ -121,7 +109,7 @@ export class ProviderHandler implements ModelHandler {
 
     // 3. Convert messages and tools (format adapter)
     const messages = this.formatAdapter.convertMessages(claudeRequest, filterIdentity);
-    const tools = this.formatAdapter.convertTools(claudeRequest, this.options.summarizeTools);
+    const tools = this.formatAdapter.convertTools(claudeRequest, this.summarizeTools);
 
     // Handle image content for models that don't support vision
     if (!this.getEffectiveSupportsVision()) {
@@ -407,8 +395,7 @@ export class ProviderHandler implements ModelHandler {
     toolNameMap?: Map<string, string>
   ): Response {
     const onTokenUpdate = (input: number, output: number) => {
-      const strategy = this.options.tokenStrategy || "standard";
-      switch (strategy) {
+      switch (this.tokenStrategy) {
         case "accumulate-both":
           this.tokenTracker.accumulateBoth(input, output);
           break;
@@ -418,8 +405,6 @@ export class ProviderHandler implements ModelHandler {
         case "local":
           this.tokenTracker.updateLocal(input, output);
           break;
-        // "actual-cost" is handled separately via updateWithActualCost
-        case "standard":
         default:
           this.tokenTracker.update(input, output);
           break;
@@ -452,6 +437,7 @@ export class ProviderHandler implements ModelHandler {
           onTokenUpdate,
         });
 
+      case "gemini-codeassist-sse":
       case "gemini-sse": {
         // Build onToolCall callback to register tool calls + thoughtSignatures on the format adapter
         const onToolCall = (toolId: string, name: string, thoughtSignature?: string) => {
@@ -460,12 +446,12 @@ export class ProviderHandler implements ModelHandler {
           }
         };
         return createGeminiSseStream(c, response, {
+          streamFormat: this.provider.streamFormat,
           modelName: this.targetModel,
           modelAdapter: this.modelAdapter,
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
           onToolCall,
-          unwrapResponse: this.options.unwrapGeminiResponse,
         });
       }
 

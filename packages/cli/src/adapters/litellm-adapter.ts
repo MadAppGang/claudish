@@ -6,7 +6,7 @@
  * - Vision support detection from cached model discovery data
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +24,10 @@ export class LiteLLMAdapter extends OpenAIFormatAdapter {
   constructor(modelId: string, baseUrl: string) {
     super(modelId);
     this.baseUrl = baseUrl;
-    this.visionSupported = this.checkVisionSupport();
+    this.visionSupported = true; // Safe default, updated by async check
+    this.checkVisionSupport().then((supported) => {
+      this.visionSupported = supported;
+    }).catch(() => {});
     this.needsInlineImages = INLINE_IMAGE_MODEL_PATTERNS.some((p) =>
       modelId.toLowerCase().includes(p)
     );
@@ -96,13 +99,12 @@ export class LiteLLMAdapter extends OpenAIFormatAdapter {
   /**
    * Look up vision support from cached LiteLLM model discovery data.
    */
-  private checkVisionSupport(): boolean {
+  private async checkVisionSupport(): Promise<boolean> {
     try {
       const hash = createHash("sha256").update(this.baseUrl).digest("hex").substring(0, 16);
       const cachePath = join(homedir(), ".claudish", `litellm-models-${hash}.json`);
-      if (!existsSync(cachePath)) return true;
 
-      const cacheData = JSON.parse(readFileSync(cachePath, "utf-8"));
+      const cacheData = JSON.parse(await readFile(cachePath, "utf-8"));
       const model = cacheData.models?.find((m: any) => m.name === this.modelId);
       if (model && model.supportsVision === false) {
         log(`[LiteLLMAdapter] Model ${this.modelId} does not support vision`);

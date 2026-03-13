@@ -80,14 +80,17 @@ Claudish supports local models via:
 
 Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. The `writeTokenFile` function uses assignment (`=`) not accumulation (`+=`) for input tokens to handle this correctly.
 
-## Two-Layer Adapter Architecture
+## Three-Layer Provider Architecture
 
-ProviderHandler maintains two adapter layers:
-- **Provider adapter** (explicit): LiteLLMAdapter, OpenRouterAdapter — handles transport format (messages, tools, payload)
-- **Model adapter** (via AdapterManager): GLMAdapter, GrokAdapter — handles model quirks (context window, vision, prepareRequest)
+The provider factory (`provider-factory.ts`) assembles three layers:
+- **Transport** (via `selectTransport`): Connection, auth, streaming — OpenAITransport, GeminiApiKeyTransport, OllamaTransport, etc.
+- **Format adapter** (via `selectFormatAdapter`): Wire format — GeminiFormatAdapter, OpenAIFormatAdapter, LocalFormatAdapter (with per-family subclasses for Qwen, DeepSeek, Llama, Mistral)
+- **Model adapter** (via `selectModelAdapter`): Model quirks — GLMAdapter, GrokAdapter, GeminiModelAdapter, etc.
 
-Model adapter overrides provider adapter for: `getContextWindow()`, `supportsVision()`, `prepareRequest()`.
-When adding new model support, create a model adapter — don't embed model knowledge in provider adapters.
+Metadata (`tokenStrategy`) is declared in `ProviderDefinition` and passed through. Transport-specific behavior (`unwrapResponse`) lives on the transport itself.
+
+Model adapter overrides format adapter for: `getContextWindow()`, `supportsVision()`, `prepareRequest()`.
+When adding new model support, create a model adapter — don't embed model knowledge in format adapters or transports.
 
 ## Debug Logging
 

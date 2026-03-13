@@ -8,6 +8,9 @@
  * To add a user-defined provider: add it to ~/.claudish/config.json under "providers".
  */
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import type { ProviderCapabilities, TransportType } from "../handlers/shared/remote-provider-types.js";
 import type { UserProviderConfig } from "../profile-config.js";
 
@@ -24,7 +27,7 @@ export interface ProviderDefinition {
   /** Which transport/handler to construct */
   transport: TransportType;
   /** Token counting strategy for ProviderHandler */
-  tokenStrategy?: "delta-aware" | "accumulate-both";
+  tokenStrategy?: "delta-aware" | "accumulate-both" | "local";
 
   /** Base URL for the API */
   baseUrl: string;
@@ -365,6 +368,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "opencode-zen",
     displayName: "OpenCode Zen",
     transport: "zen",
+    tokenStrategy: "delta-aware",
     baseUrl: "https://opencode.ai/zen",
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -389,6 +393,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "opencode-zen-go",
     displayName: "OpenCode Zen Go",
     transport: "zen",
+    tokenStrategy: "delta-aware",
     baseUrl: "https://opencode.ai/zen/go",
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -459,6 +464,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "poe",
     displayName: "Poe",
     transport: "openai",
+    tokenStrategy: "delta-aware",
     baseUrl: "https://api.poe.com",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "POE_API_KEY",
@@ -466,8 +472,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyUrl: "https://poe.com/api_key",
     authScheme: "bearer",
     shortcuts: ["poe"],
-    legacyPrefixes: [],
-    nativeModelPatterns: [/^poe:/i],
+    legacyPrefixes: ["poe:"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -482,6 +487,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "ollama",
     displayName: "Ollama",
     transport: "ollama",
+    tokenStrategy: "local",
     baseUrl: "http://localhost:11434",
     baseUrlEnvVars: ["OLLAMA_HOST", "OLLAMA_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -503,6 +509,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "lmstudio",
     displayName: "LM Studio",
     transport: "local",
+    tokenStrategy: "local",
     baseUrl: "http://localhost:1234",
     baseUrlEnvVars: ["LMSTUDIO_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -524,6 +531,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "vllm",
     displayName: "vLLM",
     transport: "local",
+    tokenStrategy: "local",
     baseUrl: "http://localhost:8000",
     baseUrlEnvVars: ["VLLM_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -545,6 +553,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "mlx",
     displayName: "MLX",
     transport: "local",
+    tokenStrategy: "local",
     baseUrl: "http://127.0.0.1:8080",
     baseUrlEnvVars: ["MLX_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -563,6 +572,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 ];
 
 // ─── Lazy-Cached Derived Accessors ───────────────────────
+//
+// All accessors are SYNCHRONOUS — they read from in-memory caches.
+// User-defined providers are loaded asynchronously at startup via warmProviderCache().
+// Before warmup completes, accessors return data from BUILTIN_PROVIDERS only.
 
 let _shortcutsCache: Record<string, string> | null = null;
 let _legacyPrefixCache: Array<{ prefix: string; provider: string; stripPrefix: boolean }> | null = null;
@@ -570,13 +583,34 @@ let _nativeModelCache: Array<{ pattern: RegExp; provider: string }> | null = nul
 let _byNameCache: Map<string, ProviderDefinition> | null = null;
 let _allProviders: ProviderDefinition[] | null = null;
 
+/** Invalidate derived caches (called after user providers are loaded). */
+function invalidateCaches(): void {
+  _shortcutsCache = null;
+  _legacyPrefixCache = null;
+  _nativeModelCache = null;
+  _byNameCache = null;
+}
+
 /**
- * All providers (builtin + user-defined). User providers loaded lazily.
+ * All providers (builtin + user-defined).
+ * Returns builtins only until warmProviderCache() completes.
  */
 export function getAllProviders(): ProviderDefinition[] {
   if (_allProviders) return _allProviders;
-  _allProviders = [...BUILTIN_PROVIDERS, ...loadUserProviders()];
-  return _allProviders;
+  // Before warmup, return builtins only (user providers not yet loaded)
+  return BUILTIN_PROVIDERS;
+}
+
+/**
+ * Async warmup: load user providers and populate the full provider list.
+ * Call once at startup (non-blocking). After this resolves, all accessors
+ * include user-defined providers.
+ */
+export async function warmProviderCache(): Promise<void> {
+  if (_allProviders) return;
+  const userProviders = await loadUserProviders();
+  _allProviders = [...BUILTIN_PROVIDERS, ...userProviders];
+  invalidateCaches();
 }
 
 /** Provider shortcut map: short name -> canonical provider name. */
@@ -716,19 +750,15 @@ let _userProviders: ProviderDefinition[] = [];
  * Load user-defined providers from ~/.claudish/config.json.
  * Returns empty array if none defined or file doesn't exist.
  */
-export function loadUserProviders(): ProviderDefinition[] {
+export async function loadUserProviders(): Promise<ProviderDefinition[]> {
   if (_userProvidersLoaded) return _userProviders;
   _userProvidersLoaded = true;
 
   try {
-    const { existsSync, readFileSync } = require("node:fs");
-    const { join } = require("node:path");
-    const { homedir } = require("node:os");
-
     const configPath = join(homedir(), ".claudish", "config.json");
-    if (!existsSync(configPath)) return _userProviders;
+    const raw = await readFile(configPath, "utf-8");
 
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = JSON.parse(raw);
     if (!config.providers || typeof config.providers !== "object") return _userProviders;
 
     for (const [name, rawCfg] of Object.entries(config.providers)) {
@@ -764,7 +794,7 @@ export function loadUserProviders(): ProviderDefinition[] {
       _userProviders.push(def);
     }
   } catch {
-    // Silently ignore config load errors
+    // Silently ignore config load errors (missing file, parse errors, etc.)
   }
 
   return _userProviders;
