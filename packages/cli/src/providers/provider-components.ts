@@ -1,13 +1,12 @@
 /**
- * Provider Factory — assembles ProviderComponents from a ProviderDefinition.
+ * Provider Component Selector: assembles ProviderComponents from a ProviderDefinition.
  *
  * Selection helpers:
- *   selectTransport()          — by transport type
- *   selectFormatAdapter()      — by transport type, with local model-family sub-selection
- *   selectModelAdapter()       — by model name (shouldHandle iteration)
- *   selectLocalFormatAdapter() — by model name (shouldHandle iteration, local only)
+ *   selectTransport()       by transport type
+ *   selectFormatAdapter()   by transport type
+ *   selectModelAdapter()    by model name (inline matching via parseModelSpec)
  *
- * Metadata (tokenStrategy) comes directly from the ProviderDefinition.
+ * Metadata (tokenStrategy) lives on the ProviderDefinition, not here.
  * Transport-specific behavior (unwrapResponse) lives on the transport.
  */
 
@@ -15,8 +14,8 @@ import type { ProviderDefinition } from "./provider-definitions.js";
 import type { ProviderTransport } from "./transport/types.js";
 import type { FormatAdapter } from "../adapters/format-adapter.js";
 import type { TransportConfig } from "./transport/base.js";
-import type { ProviderCapabilities } from "../handlers/shared/remote-provider-types.js";
-import { getEffectiveBaseUrl } from "./provider-definitions.js";
+import { getEffectiveBaseUrl, getProviderByName } from "./provider-definitions.js";
+import { parseModelSpec } from "./model-parser.js";
 import { logStderr } from "../logger.js";
 
 // Transport imports
@@ -61,24 +60,30 @@ export interface ProviderComponents {
   transport: ProviderTransport;
   formatAdapter: FormatAdapter;
   modelAdapter: ModelAdapter;
-  /** Token strategy override for ProviderHandler */
-  tokenStrategy?: "delta-aware" | "accumulate-both" | "local";
-  /** Summarize tool descriptions (for local models with small context) */
-  summarizeTools?: boolean;
-  /** Log message for debug output */
-  logMessage: string;
 }
 
 // ─── Transport selection ─────────────────────────────────
 
 function selectTransport(
   def: ProviderDefinition,
-  config: TransportConfig,
+  modelName: string,
+  apiKey: string,
   concurrency?: number,
 ): ProviderTransport | null {
+  const config: TransportConfig = {
+    name: def.name,
+    displayName: def.displayName,
+    baseUrl: getEffectiveBaseUrl(def),
+    apiPath: def.apiPath,
+    apiKey: apiKey || (def.publicKeyFallback ? "public" : ""),
+    modelName,
+    authScheme: def.authScheme,
+    headers: def.headers,
+  };
+
   switch (def.transport) {
     case "gemini":       return new GeminiApiKeyTransport(config);
-    case "gemini-oauth": return new GeminiCodeAssistTransport(config.modelName);
+    case "gemini-oauth": return new GeminiCodeAssistTransport(modelName);
     case "openai":       return new OpenAITransport(config);
     case "anthropic":    return new AnthropicCompatTransport(config);
     case "kimi-coding":  return new KimiCodingTransport(config);
@@ -96,33 +101,23 @@ function selectTransport(
         logStderr("Error: VERTEX_PROJECT is required for Vertex AI OAuth mode.");
         return null;
       }
-      const parsed = parseVertexModel(config.modelName);
+      const parsed = parseVertexModel(modelName);
       return new VertexOAuthTransport(vertexConfig, parsed);
     }
     case "ollama":       return new OllamaTransport(config, { concurrency });
     case "local":        return new LocalTransport(config, { concurrency });
-    case "zen":
-      return config.modelName.toLowerCase().includes("minimax")
-        ? new AnthropicCompatTransport(config)
-        : new OpenAITransport(config);
     default: return null;
   }
 }
 
 // ─── Format adapter selection ────────────────────────────
 
-const LOCAL_FORMAT_ADAPTERS = [
-  LocalQwenFormatAdapter,
-  LocalDeepSeekFormatAdapter,
-  LocalLlamaFormatAdapter,
-  LocalMistralFormatAdapter,
-];
-
 function selectFormatAdapter(
   def: ProviderDefinition,
   modelName: string,
-  baseUrl: string,
 ): FormatAdapter | null {
+  const model = parseModelSpec(modelName).model.toLowerCase();
+  const baseUrl = getEffectiveBaseUrl(def);
   switch (def.transport) {
     case "gemini":
     case "gemini-oauth":  return new GeminiFormatAdapter(modelName);
@@ -143,84 +138,62 @@ function selectFormatAdapter(
       });
     }
     case "ollama":
-    case "local":         return selectLocalFormatAdapter(modelName, def.name, def.capabilities);
-    case "zen":
-      return modelName.toLowerCase().includes("minimax")
-        ? new AnthropicPassthroughAdapter(modelName, def.name)
-        : new OpenAIFormatAdapter(modelName, def.capabilities);
+    case "local":
+      if (model.includes("qwen") || model.includes("alibaba")) return new LocalQwenFormatAdapter(modelName, def.name, def.capabilities);
+      if (model.includes("deepseek")) return new LocalDeepSeekFormatAdapter(modelName, def.name, def.capabilities);
+      if (model.includes("llama")) return new LocalLlamaFormatAdapter(modelName, def.name, def.capabilities);
+      if (model.includes("mistral") || model.includes("codestral")) return new LocalMistralFormatAdapter(modelName, def.name, def.capabilities);
+      return new LocalFormatAdapter(modelName, def.name, def.capabilities);
     default: return null;
   }
 }
 
-function selectLocalFormatAdapter(
-  modelName: string,
-  providerName: string,
-  capabilities: ProviderCapabilities,
-): LocalFormatAdapter {
-  for (const Adapter of LOCAL_FORMAT_ADAPTERS) {
-    const adapter = new Adapter(modelName, providerName, capabilities);
-    if (adapter.shouldHandle(modelName)) return adapter;
-  }
-  return new LocalFormatAdapter(modelName, providerName, capabilities);
-}
-
 // ─── Model adapter selection ─────────────────────────────
 
-const MODEL_ADAPTERS = [
-  GrokAdapter,
-  GeminiModelAdapter,
-  QwenAdapter,
-  MiniMaxAdapter,
-  DeepSeekAdapter,
-  GLMAdapter,
-];
-
 function selectModelAdapter(modelName: string): ModelAdapter {
-  for (const Adapter of MODEL_ADAPTERS) {
-    const adapter = new Adapter(modelName);
-    if (adapter.shouldHandle(modelName)) return adapter;
-  }
+  const model = parseModelSpec(modelName).model.toLowerCase();
+  if (model.includes("grok")) return new GrokAdapter(modelName);
+  if (model.includes("gemini")) return new GeminiModelAdapter(modelName);
+  if (model.includes("qwen") || model.includes("alibaba")) return new QwenAdapter(modelName);
+  if (model.includes("minimax")) return new MiniMaxAdapter(modelName);
+  if (model.includes("deepseek")) return new DeepSeekAdapter(modelName);
+  if (model.startsWith("glm-")) return new GLMAdapter(modelName);
   return new ModelAdapter(modelName);
 }
 
-// ─── Factory ─────────────────────────────────────────────
+// ─── Selector ────────────────────────────────────────────
 
 /**
- * Create transport + format adapter + model adapter for a provider definition.
+ * Select transport, format adapter, and model adapter for a provider definition.
  *
- * Returns null when:
- * - Required configuration is missing (litellm without base URL, vertex without OAuth config)
+ * Returns null when required configuration is missing
+ * (litellm without base URL, vertex without OAuth config).
  */
-export function createTransportForProvider(
+export function selectProviderComponents(
   def: ProviderDefinition,
   modelName: string,
   apiKey: string,
   concurrency?: number,
-  summarizeTools?: boolean,
 ): ProviderComponents | null {
-  const baseUrl = getEffectiveBaseUrl(def);
-  const config: TransportConfig = {
-    name: def.name,
-    displayName: def.displayName,
-    baseUrl,
-    apiPath: def.apiPath,
-    apiKey: apiKey || (def.publicKeyFallback ? "public" : ""),
-    modelName,
-    authScheme: def.authScheme,
-    headers: def.headers,
-  };
+  // Zen minimax models use anthropic transport; redirect to the matching definition
+  const model = parseModelSpec(modelName).model.toLowerCase();
+  if (model.includes("minimax")) {
+    if (def.name === "opencode-zen") {
+      def = getProviderByName("opencode-zen-minimax") ?? def;
+    } else if (def.name === "opencode-zen-go") {
+      def = getProviderByName("opencode-zen-go-minimax") ?? def;
+    }
+  }
 
-  const transport = selectTransport(def, config, concurrency);
+  const transport = selectTransport(def, modelName, apiKey, concurrency);
   if (!transport) return null;
 
-  const formatAdapter = selectFormatAdapter(def, modelName, baseUrl);
+  const formatAdapter = selectFormatAdapter(def, modelName);
   if (!formatAdapter) return null;
 
   const modelAdapter = selectModelAdapter(modelName);
-  const tokenStrategy = def.tokenStrategy;
-  const logMessage = `Created ${def.displayName} handler: ${modelName}`;
 
-  return { transport, formatAdapter, modelAdapter, tokenStrategy, summarizeTools, logMessage };
+  return { transport, formatAdapter, modelAdapter };
 }
 
 // Re-export for tests

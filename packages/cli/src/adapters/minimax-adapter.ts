@@ -19,9 +19,6 @@ export class MiniMaxAdapter extends ModelAdapter {
     return request;
   }
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.includes("minimax");
-  }
 
   getName(): string {
     return "MiniMaxAdapter";

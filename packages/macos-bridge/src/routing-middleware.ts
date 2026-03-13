@@ -16,7 +16,7 @@ import {
   getProviderByName,
   getApiKeyInfo,
 } from "../../cli/src/providers/provider-definitions.js";
-import { createTransportForProvider } from "../../cli/src/providers/provider-factory.js";
+import { selectProviderComponents } from "../../cli/src/providers/provider-components.js";
 import type { Context, Next } from "hono";
 import type { ConfigManager } from "./config-manager.js";
 import { detectFromHeaders } from "./detection.js";
@@ -69,10 +69,10 @@ export class RoutingMiddleware {
     // Use transport factory for all known providers (remote + local)
     if (def) {
       const apiKey = this.resolveApiKey(def.name);
-      const result = createTransportForProvider(def, parsed.model, apiKey);
-      if (result) {
-        return new ProviderHandler(result.transport, model, parsed.model, this.bridgePort, {
-          formatAdapter: result.formatAdapter, tokenStrategy: result.tokenStrategy,
+      const components = selectProviderComponents(def, parsed.model, apiKey);
+      if (components) {
+        return new ProviderHandler(model, parsed.model, this.bridgePort, false, components, {
+          tokenStrategy: def.tokenStrategy,
         }) as unknown as Handler;
       }
     }

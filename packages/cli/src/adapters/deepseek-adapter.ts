@@ -15,9 +15,6 @@ export class DeepSeekAdapter extends ModelAdapter {
     return request;
   }
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.includes("deepseek");
-  }
 
   getName(): string {
     return "DeepSeekAdapter";

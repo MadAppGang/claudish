@@ -64,10 +64,6 @@ export class QwenAdapter extends ModelAdapter {
     return request;
   }
 
-  shouldHandle(modelId: string): boolean {
-    const lower = modelId.toLowerCase();
-    return lower.includes("qwen") || lower.includes("alibaba");
-  }
 
   getName(): string {
     return "QwenAdapter";

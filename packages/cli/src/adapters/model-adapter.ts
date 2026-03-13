@@ -8,9 +8,9 @@
  * Does NOT own: wire format conversion (messages, tools, payload shape).
  *               Those belong to FormatAdapter.
  *
- * Resolved by selectModelAdapter() in the provider factory based on
- * shouldHandle() pattern matching. ProviderHandler calls ModelAdapter methods
- * after FormatAdapter methods, allowing model quirks to apply regardless of
+ * Resolved by selectModelAdapter() in the provider factory via inline
+ * model name matching. ProviderHandler calls ModelAdapter methods after
+ * FormatAdapter methods, allowing model quirks to apply regardless of
  * which provider/format is used.
  */
 
@@ -32,15 +32,6 @@ export interface AdapterResult {
 }
 
 export class ModelAdapter extends BaseAdapter {
-  /**
-   * Check if this adapter should be used for the given model.
-   * Called by selectModelAdapter() during model selection.
-   * Base returns false — override in subclasses.
-   */
-  shouldHandle(_modelId: string): boolean {
-    return false;
-  }
-
   getName(): string {
     return "ModelAdapter";
   }

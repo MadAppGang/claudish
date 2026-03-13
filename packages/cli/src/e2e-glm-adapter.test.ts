@@ -11,47 +11,41 @@
 
 import { describe, test, expect } from "bun:test";
 import { GLMAdapter } from "./adapters/glm-adapter.js";
-import { selectModelAdapter } from "./providers/provider-factory.js";
+import { selectModelAdapter } from "./providers/provider-components.js";
 import { LiteLLMAdapter } from "./adapters/litellm-adapter.js";
 
 // ─── Group 1: GLMAdapter unit tests ──────────────────────────────────────────
 
-describe("GLMAdapter — Model Detection", () => {
-  const adapter = new GLMAdapter("glm-5");
-
-  test("should handle glm-5", () => {
-    expect(adapter.shouldHandle("glm-5")).toBe(true);
+describe("GLMAdapter — Model Detection via selectModelAdapter", () => {
+  test("selects GLMAdapter for glm-5", () => {
+    expect(selectModelAdapter("glm-5").getName()).toBe("GLMAdapter");
   });
 
-  test("should handle glm-4-plus", () => {
-    expect(adapter.shouldHandle("glm-4-plus")).toBe(true);
+  test("selects GLMAdapter for glm-4-plus", () => {
+    expect(selectModelAdapter("glm-4-plus").getName()).toBe("GLMAdapter");
   });
 
-  test("should handle glm-4-flash", () => {
-    expect(adapter.shouldHandle("glm-4-flash")).toBe(true);
+  test("selects GLMAdapter for glm-4-flash", () => {
+    expect(selectModelAdapter("glm-4-flash").getName()).toBe("GLMAdapter");
   });
 
-  test("should handle glm-4-long", () => {
-    expect(adapter.shouldHandle("glm-4-long")).toBe(true);
+  test("selects GLMAdapter for glm-4-long", () => {
+    expect(selectModelAdapter("glm-4-long").getName()).toBe("GLMAdapter");
   });
 
-  test("should handle glm-3-turbo", () => {
-    expect(adapter.shouldHandle("glm-3-turbo")).toBe(true);
+  test("selects GLMAdapter for glm-3-turbo", () => {
+    expect(selectModelAdapter("glm-3-turbo").getName()).toBe("GLMAdapter");
   });
 
-  test("should handle zhipu/ prefixed models", () => {
-    expect(adapter.shouldHandle("zhipu/glm-5")).toBe(true);
+  test("selects GLMAdapter for zhipu/ prefixed models", () => {
+    expect(selectModelAdapter("zhipu/glm-5").getName()).toBe("GLMAdapter");
   });
 
-  test("should NOT handle non-GLM models", () => {
-    expect(adapter.shouldHandle("gpt-4o")).toBe(false);
-    expect(adapter.shouldHandle("gemini-2.0-flash")).toBe(false);
-    expect(adapter.shouldHandle("deepseek-r1")).toBe(false);
-    expect(adapter.shouldHandle("grok-3")).toBe(false);
-  });
-
-  test("should return correct adapter name", () => {
-    expect(adapter.getName()).toBe("GLMAdapter");
+  test("does NOT select GLMAdapter for non-GLM models", () => {
+    expect(selectModelAdapter("gpt-4o").getName()).not.toBe("GLMAdapter");
+    expect(selectModelAdapter("gemini-2.0-flash").getName()).not.toBe("GLMAdapter");
+    expect(selectModelAdapter("deepseek-r1").getName()).not.toBe("GLMAdapter");
+    expect(selectModelAdapter("grok-3").getName()).not.toBe("GLMAdapter");
   });
 });
 

@@ -54,9 +54,6 @@ export class GeminiModelAdapter extends ModelAdapter {
   private inReasoningBlock = false;
   private reasoningBlockDepth = 0;
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.includes("gemini") || modelId.includes("google/");
-  }
 
   getName(): string {
     return "GeminiModelAdapter";

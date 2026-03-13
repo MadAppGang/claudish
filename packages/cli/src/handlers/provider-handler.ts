@@ -24,7 +24,7 @@ import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { FormatAdapter } from "../adapters/format-adapter.js";
 import type { ModelAdapter } from "../adapters/model-adapter.js";
-import type { ProviderComponents } from "../providers/provider-factory.js";
+import type { ProviderComponents } from "../providers/provider-components.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -62,13 +62,14 @@ export class ProviderHandler implements ModelHandler {
     port: number,
     isInteractive: boolean,
     components: ProviderComponents,
+    options?: { tokenStrategy?: "delta-aware" | "accumulate-both" | "local"; summarizeTools?: boolean },
   ) {
     this.provider = components.transport;
     this.targetModel = targetModel;
     this.formatAdapter = components.formatAdapter;
     this.modelAdapter = components.modelAdapter;
-    this.tokenStrategy = components.tokenStrategy;
-    this.summarizeTools = components.summarizeTools;
+    this.tokenStrategy = options?.tokenStrategy;
+    this.summarizeTools = options?.summarizeTools;
     this.isInteractive = isInteractive;
 
     // Initialize middleware

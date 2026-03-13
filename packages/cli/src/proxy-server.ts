@@ -28,7 +28,7 @@ import {
   warmProviderCache,
   type ProviderDefinition,
 } from "./providers/provider-definitions.js";
-import { createTransportForProvider } from "./providers/provider-factory.js";
+import { selectProviderComponents } from "./providers/provider-components.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -51,11 +51,14 @@ export async function createProxyServer(
 
   // Helper to get or create a handler via the factory for a given definition
   const getFactoryHandler = (def: ProviderDefinition, modelName: string, targetModel: string, apiKey: string, concurrency?: number): ModelHandler | null => {
-    const result = createTransportForProvider(def, modelName, apiKey, concurrency, options.summarizeTools);
-    if (!result) return null;
-    const handler = new ProviderHandler(targetModel, modelName, port, options.isInteractive, result);
+    const components = selectProviderComponents(def, modelName, apiKey, concurrency);
+    if (!components) return null;
+    const handler = new ProviderHandler(targetModel, modelName, port, options.isInteractive, components, {
+      tokenStrategy: def.tokenStrategy,
+      summarizeTools: options.summarizeTools,
+    });
     handlerCache.set(targetModel, handler);
-    log(`[Proxy] ${result.logMessage}${concurrency !== undefined ? ` (concurrency: ${concurrency})` : ""}`);
+    log(`[Proxy] Created ${def.displayName} handler: ${modelName}${concurrency !== undefined ? ` (concurrency: ${concurrency})` : ""}`);
     return handler;
   };
 
@@ -98,7 +101,7 @@ export async function createProxyServer(
   };
 
   // Helper to get or create remote provider handler
-  // Uses createTransportForProvider() factory for all transports.
+  // Uses selectProviderComponents() factory for all transports.
   // Vertex express mode uses the Gemini definition; Vertex OAuth uses the Vertex definition.
   const getRemoteProviderHandler = async (targetModel: string): Promise<ModelHandler | null> => {
     if (handlerCache.has(targetModel)) return handlerCache.get(targetModel)!;

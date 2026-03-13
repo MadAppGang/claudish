@@ -367,7 +367,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     name: "opencode-zen",
     displayName: "OpenCode Zen",
-    transport: "zen",
+    transport: "openai",
     tokenStrategy: "delta-aware",
     baseUrl: "https://opencode.ai/zen",
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
@@ -388,11 +388,35 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     },
   },
 
+  // ── OpenCode Zen (MiniMax via Anthropic format) ──
+  {
+    name: "opencode-zen-minimax",
+    displayName: "OpenCode Zen MiniMax",
+    transport: "anthropic",
+    baseUrl: "https://opencode.ai/zen",
+    baseUrlEnvVars: ["OPENCODE_BASE_URL"],
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    apiKeyDescription: "OpenCode Zen MiniMax",
+    apiKeyUrl: "https://opencode.ai/",
+    authScheme: "bearer",
+    publicKeyFallback: true,
+    shortcuts: ["zenmm", "zenmax"],
+    legacyPrefixes: [],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: false,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: false,
+    },
+  },
+
   // ── OpenCode Zen Go ──
   {
     name: "opencode-zen-go",
     displayName: "OpenCode Zen Go",
-    transport: "zen",
+    transport: "openai",
     tokenStrategy: "delta-aware",
     baseUrl: "https://opencode.ai/zen/go",
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
@@ -410,6 +434,30 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       supportsStreaming: true,
       supportsJsonMode: true,
       supportsReasoning: true,
+    },
+  },
+
+  // ── OpenCode Zen Go (MiniMax via Anthropic format) ──
+  {
+    name: "opencode-zen-go-minimax",
+    displayName: "OpenCode Zen Go MiniMax",
+    transport: "anthropic",
+    baseUrl: "https://opencode.ai/zen/go",
+    baseUrlEnvVars: ["OPENCODE_BASE_URL"],
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    apiKeyDescription: "OpenCode Zen Go MiniMax",
+    apiKeyUrl: "https://opencode.ai/",
+    authScheme: "bearer",
+    publicKeyFallback: true,
+    shortcuts: [],
+    legacyPrefixes: [],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: false,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: false,
     },
   },
 
@@ -799,4 +847,3 @@ export async function loadUserProviders(): Promise<ProviderDefinition[]> {
 
   return _userProviders;
 }
-

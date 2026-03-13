@@ -33,7 +33,6 @@ export type TransportType =
   | "ollamacloud"
   | "kimi-coding"
   | "litellm"
-  | "zen"
   | "vertex"
   | "local"
   | "ollama";
@@ -91,7 +90,7 @@ export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
 };
 
 // Free providers — always return free pricing regardless of model
-const FREE_PROVIDERS = new Set(["opencode-zen", "zen"]);
+const FREE_PROVIDERS = new Set(["opencode-zen"]);
 
 // Subscription providers — display "SUB" instead of cost
 const SUBSCRIPTION_PROVIDERS = new Set(["minimax-coding", "kimi-coding", "glm-coding"]);

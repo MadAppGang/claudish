@@ -130,9 +130,6 @@ export class GrokAdapter extends ModelAdapter {
     return params;
   }
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.includes("grok") || modelId.includes("x-ai/");
-  }
 
   getName(): string {
     return "GrokAdapter";

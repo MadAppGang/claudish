@@ -40,9 +40,6 @@ export class GLMAdapter extends ModelAdapter {
     return request;
   }
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.includes("glm-") || modelId.includes("zhipu/");
-  }
 
   getName(): string {
     return "GLMAdapter";

@@ -5,10 +5,6 @@ export class LocalDeepSeekFormatAdapter extends LocalFormatAdapter {
     return "LocalDeepSeekFormatAdapter";
   }
 
-  override shouldHandle(modelId: string): boolean {
-    return modelId.toLowerCase().includes("deepseek");
-  }
-
   protected override getSamplingParams(): SamplingParams {
     return { temperature: 0.6, top_p: 0.95, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
   }

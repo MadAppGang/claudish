@@ -6,11 +6,6 @@ export class LocalQwenFormatAdapter extends LocalFormatAdapter {
     return "LocalQwenFormatAdapter";
   }
 
-  override shouldHandle(modelId: string): boolean {
-    const id = modelId.toLowerCase();
-    return id.includes("qwen") || id.includes("alibaba");
-  }
-
   protected override getSamplingParams(): SamplingParams {
     return { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, repetition_penalty: 1.05 };
   }

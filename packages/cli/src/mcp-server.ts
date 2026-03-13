@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName, getApiKeyInfo } from "./providers/provider-definitions.js";
 
-import { createTransportForProvider } from "./providers/provider-factory.js";
+import { selectProviderComponents } from "./providers/provider-components.js";
 import type { FormatAdapter } from "./adapters/format-adapter.js";
 import type { ProviderTransport, StreamFormat } from "./providers/transport/types.js";
 
@@ -143,7 +143,7 @@ function createComponentsForModel(model: string): {
       }
       // Fall through to OpenRouter
     } else {
-      const components = createTransportForProvider(def, parsed.model, apiKey || "");
+      const components = selectProviderComponents(def, parsed.model, apiKey || "");
       if (components) {
         return {
           transport: components.transport,
@@ -163,7 +163,7 @@ function createComponentsForModel(model: string): {
   if (!orDef) {
     throw new Error("OpenRouter provider definition not found");
   }
-  const orComponents = createTransportForProvider(orDef, parsed.model, orApiKey);
+  const orComponents = selectProviderComponents(orDef, parsed.model, orApiKey);
   if (!orComponents) {
     throw new Error("Failed to create OpenRouter transport");
   }

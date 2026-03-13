@@ -150,11 +150,6 @@ export class LocalFormatAdapter extends FormatAdapter {
 
   // ─── Overridable hooks for subclasses ───────────────────────────────
 
-  /** Whether this adapter should handle the given model. Override in subclass. */
-  shouldHandle(_modelId: string): boolean {
-    return false;
-  }
-
   /** Sampling parameters. Override in subclass for model-family tuning. */
   protected getSamplingParams(): SamplingParams {
     return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
