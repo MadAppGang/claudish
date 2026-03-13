@@ -2,8 +2,8 @@
  * LocalTransport: transport for local OpenAI-compatible providers.
  *
  * Extends BaseTransport (no auth). Adds local-specific concerns:
- * - Health checks (Ollama /api/tags, /v1/models fallback)
- * - Context window auto-detection (Ollama /api/show, LM Studio /v1/models)
+ * - Health checks with backend auto-detection (Ollama /api/tags, /v1/models fallback)
+ * - Context window auto-detection (Ollama /api/show, generic /v1/models)
  * - Custom undici agent with 10-minute timeouts for slow local inference
  * - LocalModelQueue for GPU concurrency control
  * - Provider-specific error messages
@@ -50,6 +50,7 @@ export class LocalTransport extends BaseTransport {
   private concurrency?: number;
   private healthChecked = false;
   private isHealthy = false;
+  private isOllamaBackend = false;
   private _contextWindow = 32768;
 
   constructor(
@@ -98,7 +99,7 @@ export class LocalTransport extends BaseTransport {
 
   getExtraPayloadFields(): Record<string, any> {
     // Ollama defaults to 2048 context and silently truncates, so set it explicitly
-    if (this.name === "ollama") {
+    if (this.isOllamaBackend) {
       const numCtx = Math.max(this._contextWindow, 32768);
       log(`[${this.displayName}] Setting num_ctx: ${numCtx} (detected: ${this._contextWindow})`);
       return { options: { num_ctx: numCtx } };
@@ -140,26 +141,27 @@ export class LocalTransport extends BaseTransport {
   private async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
 
-    // Ollama has its own health endpoint; skip for other providers to avoid 5s timeout
-    if (this.name === "ollama") {
-      try {
-        const healthUrl = `${this.baseUrl}/api/tags`;
-        log(`[${this.displayName}] Trying health check: ${healthUrl}`);
-        const response = await fetch(healthUrl, {
-          method: "GET",
-          signal: AbortSignal.timeout(5000),
-        });
+    // Probe Ollama's /api/tags to auto-detect backend type.
+    // This lets user-defined providers pointing at Ollama instances
+    // get num_ctx injection and context window detection automatically.
+    try {
+      const healthUrl = `${this.baseUrl}/api/tags`;
+      log(`[${this.displayName}] Probing Ollama endpoint: ${healthUrl}`);
+      const response = await fetch(healthUrl, {
+        method: "GET",
+        signal: AbortSignal.timeout(3000),
+      });
 
-        if (response.ok) {
-          this.isHealthy = true;
-          this.healthChecked = true;
-          log(`[${this.displayName}] Health check passed (/api/tags)`);
-          return true;
-        }
-        log(`[${this.displayName}] /api/tags returned ${response.status}, trying /v1/models`);
-      } catch (e: any) {
-        log(`[${this.displayName}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
+      if (response.ok) {
+        this.isOllamaBackend = true;
+        this.isHealthy = true;
+        this.healthChecked = true;
+        log(`[${this.displayName}] Detected Ollama backend (/api/tags)`);
+        return true;
       }
+      log(`[${this.displayName}] /api/tags returned ${response.status}, trying /v1/models`);
+    } catch (e: any) {
+      log(`[${this.displayName}] /api/tags not available, trying /v1/models`);
     }
 
     // Generic OpenAI-compatible health check (works for all local providers)
@@ -194,14 +196,11 @@ export class LocalTransport extends BaseTransport {
     if (process.env.CLAUDISH_CONTEXT_WINDOW) return;
 
     log(`[${this.displayName}] Fetching context window...`);
-    if (this.name === "ollama") {
+    if (this.isOllamaBackend) {
       await this.fetchOllamaContextWindow();
-    } else if (this.name === "lmstudio") {
-      await this.fetchLMStudioContextWindow();
     } else {
-      log(
-        `[${this.displayName}] No context window fetch for this provider, using default: ${this._contextWindow}`
-      );
+      // Try /v1/models context window detection (works for LM Studio and other OpenAI-compat servers)
+      await this.fetchModelsContextWindow();
     }
   }
 
@@ -247,7 +246,7 @@ export class LocalTransport extends BaseTransport {
     }
   }
 
-  private async fetchLMStudioContextWindow(): Promise<void> {
+  private async fetchModelsContextWindow(): Promise<void> {
     try {
       const response = await fetch(`${this.baseUrl}/v1/models`, {
         method: "GET",
@@ -291,6 +290,7 @@ export class LocalTransport extends BaseTransport {
   // ─── Error messages ─────────────────────────────────────────────────
 
   private getConnectionErrorMessage(): string {
+    const display = DISPLAY_NAMES[this.name] || this.name;
     switch (this.name) {
       case "ollama":
         return `Cannot connect to Ollama at ${this.baseUrl}. Make sure Ollama is running with: ollama serve`;
@@ -299,7 +299,7 @@ export class LocalTransport extends BaseTransport {
       case "vllm":
         return `Cannot connect to vLLM at ${this.baseUrl}. Make sure vLLM server is running.`;
       default:
-        return `Cannot connect to ${this.name} at ${this.baseUrl}. Make sure the server is running.`;
+        return `Cannot connect to ${display} at ${this.baseUrl}. Make sure the server is running.`;
     }
   }
 }
