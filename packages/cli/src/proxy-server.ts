@@ -17,6 +17,7 @@ import { ProviderHandler } from "./handlers/provider-handler.js";
 import {
   parseUrlModel,
   createUrlProvider,
+  URL_PROVIDER_CAPABILITIES,
 } from "./providers/provider-registry.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
@@ -142,11 +143,11 @@ export async function createProxyServer(
     const urlParsed = parseUrlModel(targetModel);
     if (urlParsed) {
       const providerConfig = createUrlProvider(urlParsed);
-      const provider = new LocalTransport(providerConfig, urlParsed.modelName);
+      const provider = new LocalTransport(providerConfig);
       const formatAdapter = new LocalModelAdapter(
         urlParsed.modelName,
         providerConfig.name,
-        providerConfig.capabilities
+        URL_PROVIDER_CAPABILITIES
       );
       const handler = new ProviderHandler(provider, urlParsed.modelName, urlParsed.modelName, port, {
         formatAdapter,

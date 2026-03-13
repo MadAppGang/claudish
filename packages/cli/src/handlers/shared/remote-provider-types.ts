@@ -31,6 +31,7 @@ export type TransportType =
   | "gemini-oauth"
   | "openrouter"
   | "ollamacloud"
+  | "kimi-coding"
   | "litellm"
   | "zen"
   | "vertex"

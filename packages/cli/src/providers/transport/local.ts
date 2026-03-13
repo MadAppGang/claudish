@@ -12,21 +12,10 @@
 
 import type { StreamFormat } from "./types.js";
 import { BaseTransport } from "./base.js";
-import type { ProviderCapabilities } from "../../handlers/shared/remote-provider-types.js";
+import type { TransportConfig } from "./base.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import { Agent } from "undici";
-
-/** Config shape accepted by LocalTransport. */
-export interface LocalProviderConfig {
-  name: string;
-  displayName: string;
-  baseUrl: string;
-  apiPath: string;
-  envVar: string;
-  prefixes: string[];
-  capabilities: ProviderCapabilities;
-}
 
 // Custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
@@ -40,25 +29,16 @@ const localProviderAgent = new Agent({
 export class LocalTransport extends BaseTransport {
   readonly streamFormat: StreamFormat = "openai-sse";
 
-  protected config: LocalProviderConfig;
   private concurrency?: number;
   protected healthChecked = false;
   protected isHealthy = false;
   protected _contextWindow = 32768;
 
   constructor(
-    config: LocalProviderConfig,
-    modelName: string,
+    config: TransportConfig,
     options?: { concurrency?: number }
   ) {
-    super({
-      name: config.name,
-      displayName: config.displayName,
-      baseUrl: config.baseUrl,
-      apiPath: config.apiPath,
-      modelName,
-    });
-    this.config = config;
+    super(config);
     this.concurrency = options?.concurrency;
 
     // Check for env var override of context window
@@ -112,11 +92,6 @@ export class LocalTransport extends BaseTransport {
 
   getContextWindow(): number {
     return this._contextWindow;
-  }
-
-  /** Expose config for adapter access */
-  getConfig(): LocalProviderConfig {
-    return this.config;
   }
 
   // ─── Health check ───────────────────────────────────────────────────

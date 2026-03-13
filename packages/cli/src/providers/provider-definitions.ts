@@ -241,7 +241,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     name: "kimi-coding",
     displayName: "Kimi Coding",
-    transport: "anthropic",
+    transport: "kimi-coding",
     baseUrl: "https://api.kimi.com/coding/v1",
     apiPath: "/messages",
     apiKeyEnvVar: "KIMI_CODING_API_KEY",

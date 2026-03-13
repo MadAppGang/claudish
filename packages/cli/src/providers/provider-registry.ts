@@ -6,7 +6,7 @@
  * by provider-definitions.ts like all other providers.
  */
 
-import type { LocalProviderConfig } from "./transport/local.js";
+import type { TransportConfig } from "./transport/base.js";
 
 export interface UrlParsedModel {
   baseUrl: string;
@@ -57,20 +57,21 @@ export function parseUrlModel(modelId: string): UrlParsedModel | null {
 /**
  * Create an ad-hoc provider config for URL-based models
  */
-export function createUrlProvider(parsed: UrlParsedModel): LocalProviderConfig {
+export function createUrlProvider(parsed: UrlParsedModel): TransportConfig {
   return {
     name: "custom-url",
     displayName: "Custom URL",
     baseUrl: parsed.baseUrl,
     apiPath: "/v1/chat/completions",
-    envVar: "",
-    prefixes: [],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: false,
-    },
+    modelName: parsed.modelName,
   };
 }
+
+/** Default capabilities for URL-based custom providers */
+export const URL_PROVIDER_CAPABILITIES = {
+  supportsTools: true,
+  supportsVision: false,
+  supportsStreaming: true,
+  supportsJsonMode: true,
+  supportsReasoning: false,
+};

@@ -19,8 +19,9 @@ import { OpenAITransport } from "./transport/openai.js";
 import { AnthropicCompatTransport } from "./transport/anthropic-compat.js";
 import { OllamaCloudTransport } from "./transport/ollamacloud.js";
 import { LiteLLMTransport } from "./transport/litellm.js";
-import { LocalTransport, type LocalProviderConfig } from "./transport/local.js";
+import { LocalTransport } from "./transport/local.js";
 import { OllamaTransport } from "./transport/ollama.js";
+import { KimiCodingTransport } from "./transport/kimi-coding.js";
 
 // Format adapter imports
 import { GeminiFormatAdapter } from "../adapters/gemini-format-adapter.js";
@@ -29,21 +30,6 @@ import { AnthropicPassthroughAdapter } from "../adapters/anthropic-passthrough-a
 import { OllamaCloudAdapter } from "../adapters/ollamacloud-adapter.js";
 import { LiteLLMAdapter } from "../adapters/litellm-adapter.js";
 import { LocalModelAdapter } from "../adapters/local-adapter.js";
-
-// ─── Helpers ─────────────────────────────────────────────
-
-/** Build LocalProviderConfig from a ProviderDefinition + shared TransportConfig. */
-function buildLocalConfig(def: ProviderDefinition, config: TransportConfig): LocalProviderConfig {
-  return {
-    name: def.name,
-    displayName: def.displayName,
-    baseUrl: config.baseUrl,
-    apiPath: def.apiPath,
-    envVar: def.baseUrlEnvVars?.[0] || "",
-    prefixes: def.legacyPrefixes,
-    capabilities: def.capabilities,
-  };
-}
 
 // ─── ProviderComponents ──────────────────────────────────
 
@@ -124,6 +110,14 @@ export function createTransportForProvider(
         logMessage: `Created ${def.displayName} handler: ${modelName}`,
       };
 
+    case "kimi-coding":
+      return {
+        transport: new KimiCodingTransport(config),
+        formatAdapter: new AnthropicPassthroughAdapter(modelName, def.name),
+        tokenStrategy: def.tokenStrategy,
+        logMessage: `Created ${def.displayName} handler: ${modelName}`,
+      };
+
     case "ollamacloud":
       return {
         transport: new OllamaCloudTransport(config),
@@ -165,27 +159,23 @@ export function createTransportForProvider(
       };
     }
 
-    case "ollama": {
-      const ollamaConfig = buildLocalConfig(def, config);
+    case "ollama":
       return {
-        transport: new OllamaTransport(ollamaConfig, modelName, { concurrency: options?.concurrency }),
+        transport: new OllamaTransport(config, { concurrency: options?.concurrency }),
         formatAdapter: new LocalModelAdapter(modelName, def.name, def.capabilities),
         tokenStrategy: "local",
         summarizeTools: options?.summarizeTools,
         logMessage: `Created ${def.displayName} handler: ${modelName}`,
       };
-    }
 
-    case "local": {
-      const localConfig = buildLocalConfig(def, config);
+    case "local":
       return {
-        transport: new LocalTransport(localConfig, modelName, { concurrency: options?.concurrency }),
+        transport: new LocalTransport(config, { concurrency: options?.concurrency }),
         formatAdapter: new LocalModelAdapter(modelName, def.name, def.capabilities),
         tokenStrategy: "local",
         summarizeTools: options?.summarizeTools,
         logMessage: `Created ${def.displayName} handler: ${modelName}`,
       };
-    }
 
     // Caller must handle these — they require custom routing logic:
     // - openrouter: uses OpenRouterHandler with its own queue and adapter
