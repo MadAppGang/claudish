@@ -1373,6 +1373,7 @@ ENVIRONMENT VARIABLES:
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
   OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
   OPENCODE_API_KEY                OpenCode Zen API key (optional - free models work without it)
+  GITHUB_MODELS_TOKEN             GitHub Models PAT (fine-grained, models:read permission)
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
   ANTHROPIC_AUTH_TOKEN            Placeholder (prevents Claude Code login screen)
 

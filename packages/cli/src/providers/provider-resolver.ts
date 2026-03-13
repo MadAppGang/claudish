@@ -169,6 +169,11 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     description: "OpenCode Zen (Free)",
     url: "https://opencode.ai/",
   },
+  "github-models": {
+    envVar: "GITHUB_MODELS_TOKEN",
+    description: "GitHub Models (fine-grained PAT with models:read)",
+    url: "https://github.com/settings/tokens?type=beta",
+  },
   zai: {
     envVar: "ZAI_API_KEY",
     description: "Z.AI API Key",
@@ -217,6 +222,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   zai: "Z.AI",
   ollamacloud: "OllamaCloud",
   "opencode-zen": "OpenCode Zen",
+  "github-models": "GitHub Models",
   litellm: "LiteLLM",
 };
 

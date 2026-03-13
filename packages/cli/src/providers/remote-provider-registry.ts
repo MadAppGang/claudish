@@ -242,6 +242,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     },
   },
   {
+    name: "github-models",
+    baseUrl: "https://models.github.ai",
+    apiPath: "/inference/chat/completions",
+    apiKeyEnvVar: "GITHUB_MODELS_TOKEN",
+    prefixes: ["gh/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: false,
+    },
+  },
+  {
     name: "vertex",
     baseUrl: "", // Vertex uses regional endpoints, constructed dynamically
     apiPath: "", // Constructed dynamically based on project/location
@@ -308,6 +322,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     ollamacloud: "ollamacloud",
     "opencode-zen": "opencode-zen",
     "opencode-zen-go": "opencode-zen-go",
+    "github-models": "github-models",
     vertex: "vertex", // Note: vertex might need special handling
     "gemini-codeassist": "gemini-codeassist",
     litellm: "litellm",

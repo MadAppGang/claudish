@@ -379,6 +379,16 @@ export async function createProxyServer(
           log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
           return null;
         }
+      } else if (resolved.provider.name === "github-models") {
+        // GitHub Models uses OpenAI-compatible API — composed handler
+        const ghProvider = new OpenAIProvider(resolved.provider, resolved.modelName, apiKey);
+        const ghAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
+        handler = new ComposedHandler(ghProvider, targetModel, resolved.modelName, port, {
+          adapter: ghAdapter,
+          tokenStrategy: "delta-aware",
+          isInteractive: options.isInteractive,
+        });
+        log(`[Proxy] Created GitHub Models handler (composed): ${resolved.modelName}`);
       } else {
         return null; // Unknown provider
       }
