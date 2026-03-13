@@ -140,27 +140,29 @@ export class LocalTransport extends BaseTransport {
   private async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
 
-    // Try Ollama-specific health check first
-    try {
-      const healthUrl = `${this.baseUrl}/api/tags`;
-      log(`[${this.displayName}] Trying health check: ${healthUrl}`);
-      const response = await fetch(healthUrl, {
-        method: "GET",
-        signal: AbortSignal.timeout(5000),
-      });
+    // Ollama has its own health endpoint; skip for other providers to avoid 5s timeout
+    if (this.name === "ollama") {
+      try {
+        const healthUrl = `${this.baseUrl}/api/tags`;
+        log(`[${this.displayName}] Trying health check: ${healthUrl}`);
+        const response = await fetch(healthUrl, {
+          method: "GET",
+          signal: AbortSignal.timeout(5000),
+        });
 
-      if (response.ok) {
-        this.isHealthy = true;
-        this.healthChecked = true;
-        log(`[${this.displayName}] Health check passed (/api/tags)`);
-        return true;
+        if (response.ok) {
+          this.isHealthy = true;
+          this.healthChecked = true;
+          log(`[${this.displayName}] Health check passed (/api/tags)`);
+          return true;
+        }
+        log(`[${this.displayName}] /api/tags returned ${response.status}, trying /v1/models`);
+      } catch (e: any) {
+        log(`[${this.displayName}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
       }
-      log(`[${this.displayName}] /api/tags returned ${response.status}, trying /v1/models`);
-    } catch (e: any) {
-      log(`[${this.displayName}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
     }
 
-    // Try generic OpenAI-compatible health check
+    // Generic OpenAI-compatible health check (works for all local providers)
     try {
       const modelsUrl = `${this.baseUrl}/v1/models`;
       log(`[${this.displayName}] Trying health check: ${modelsUrl}`);
