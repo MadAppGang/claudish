@@ -19,8 +19,8 @@ import { OpenAITransport } from "./transport/openai.js";
 import { AnthropicCompatTransport } from "./transport/anthropic-compat.js";
 import { OllamaCloudTransport } from "./transport/ollamacloud.js";
 import { LiteLLMTransport } from "./transport/litellm.js";
-import { LocalTransport } from "./transport/local.js";
-import { OllamaTransport } from "./transport/ollama-local.js";
+import { LocalTransport, type LocalProviderConfig } from "./transport/local.js";
+import { OllamaTransport } from "./transport/ollama.js";
 
 // Format adapter imports
 import { GeminiFormatAdapter } from "../adapters/gemini-format-adapter.js";
@@ -29,6 +29,21 @@ import { AnthropicPassthroughAdapter } from "../adapters/anthropic-passthrough-a
 import { OllamaCloudAdapter } from "../adapters/ollamacloud-adapter.js";
 import { LiteLLMAdapter } from "../adapters/litellm-adapter.js";
 import { LocalModelAdapter } from "../adapters/local-adapter.js";
+
+// ─── Helpers ─────────────────────────────────────────────
+
+/** Build LocalProviderConfig from a ProviderDefinition + shared TransportConfig. */
+function buildLocalConfig(def: ProviderDefinition, config: TransportConfig): LocalProviderConfig {
+  return {
+    name: def.name,
+    displayName: def.displayName,
+    baseUrl: config.baseUrl,
+    apiPath: def.apiPath,
+    envVar: def.baseUrlEnvVars?.[0] || "",
+    prefixes: def.legacyPrefixes,
+    capabilities: def.capabilities,
+  };
+}
 
 // ─── ProviderComponents ──────────────────────────────────
 
@@ -150,26 +165,22 @@ export function createTransportForProvider(
       };
     }
 
-    // Local transports have a different config shape (no auth, health checks
-    // instead) so they build their own config rather than using TransportConfig.
-    case "ollama":
-    case "local": {
-      const localConfig = {
-        name: def.name,
-        displayName: def.displayName,
-        baseUrl: config.baseUrl,
-        apiPath: def.apiPath,
-        envVar: def.baseUrlEnvVars?.[0] || "",
-        prefixes: def.legacyPrefixes,
-        capabilities: def.capabilities,
-      };
-      const transport = def.transport === "ollama"
-        ? new OllamaTransport(localConfig, modelName, { concurrency: options?.concurrency })
-        : new LocalTransport(localConfig, modelName, { concurrency: options?.concurrency });
-      const formatAdapter = new LocalModelAdapter(modelName, def.name, def.capabilities);
+    case "ollama": {
+      const ollamaConfig = buildLocalConfig(def, config);
       return {
-        transport,
-        formatAdapter,
+        transport: new OllamaTransport(ollamaConfig, modelName, { concurrency: options?.concurrency }),
+        formatAdapter: new LocalModelAdapter(modelName, def.name, def.capabilities),
+        tokenStrategy: "local",
+        summarizeTools: options?.summarizeTools,
+        logMessage: `Created ${def.displayName} handler: ${modelName}`,
+      };
+    }
+
+    case "local": {
+      const localConfig = buildLocalConfig(def, config);
+      return {
+        transport: new LocalTransport(localConfig, modelName, { concurrency: options?.concurrency }),
+        formatAdapter: new LocalModelAdapter(modelName, def.name, def.capabilities),
         tokenStrategy: "local",
         summarizeTools: options?.summarizeTools,
         logMessage: `Created ${def.displayName} handler: ${modelName}`,
