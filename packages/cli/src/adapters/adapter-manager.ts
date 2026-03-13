@@ -1,56 +1,43 @@
 /**
- * Adapter manager for selecting model-specific adapters
+ * AdapterManager — selects the appropriate ModelAdapter for a given model ID.
  *
- * This allows us to handle different model quirks:
- * - Grok: XML function calls
- * - Gemini: Thought signatures in reasoning_details
- * - Deepseek: (future)
- * - Others: (future)
+ * ModelAdapters handle model-specific quirks (reasoning filters, param mapping,
+ * special token stripping, context window overrides). They are independent of
+ * the wire format (FormatAdapter) and apply regardless of provider path.
  */
 
-import { BaseModelAdapter, DefaultAdapter } from "./base-adapter";
-import { GrokAdapter } from "./grok-adapter";
-import { GeminiAdapter } from "./gemini-adapter";
-import { OpenAIAdapter } from "./openai-adapter";
-import { QwenAdapter } from "./qwen-adapter";
-import { MiniMaxAdapter } from "./minimax-adapter";
-import { DeepSeekAdapter } from "./deepseek-adapter";
-import { GLMAdapter } from "./glm-adapter";
+import { ModelAdapter } from "./model-adapter.js";
+import { GrokAdapter } from "./grok-adapter.js";
+import { GeminiModelAdapter } from "./gemini-model-adapter.js";
+import { QwenAdapter } from "./qwen-adapter.js";
+import { MiniMaxAdapter } from "./minimax-adapter.js";
+import { DeepSeekAdapter } from "./deepseek-adapter.js";
+import { GLMAdapter } from "./glm-adapter.js";
 
 export class AdapterManager {
-  private adapters: BaseModelAdapter[];
-  private defaultAdapter: DefaultAdapter;
+  private adapters: ModelAdapter[];
 
-  constructor(modelId: string) {
-    // Register all available adapters
+  constructor(private modelId: string) {
     this.adapters = [
       new GrokAdapter(modelId),
-      new GeminiAdapter(modelId),
-      new OpenAIAdapter(modelId),
+      new GeminiModelAdapter(modelId),
       new QwenAdapter(modelId),
       new MiniMaxAdapter(modelId),
       new DeepSeekAdapter(modelId),
       new GLMAdapter(modelId),
     ];
-    this.defaultAdapter = new DefaultAdapter(modelId);
   }
 
   /**
-   * Get the appropriate adapter for the current model
+   * Get the appropriate ModelAdapter for the current model.
+   * Returns a no-op ModelAdapter if no model-specific adapter matches.
    */
-  getAdapter(): BaseModelAdapter {
+  getAdapter(): ModelAdapter {
     for (const adapter of this.adapters) {
-      if (adapter.shouldHandle(this.defaultAdapter["modelId"])) {
+      if (adapter.shouldHandle(this.modelId)) {
         return adapter;
       }
     }
-    return this.defaultAdapter;
-  }
-
-  /**
-   * Check if current model needs special handling
-   */
-  needsTransformation(): boolean {
-    return this.getAdapter() !== this.defaultAdapter;
+    return new ModelAdapter(this.modelId);
   }
 }

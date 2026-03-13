@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { TransportType } from "./handlers/shared/remote-provider-types.js";
 
 // Config directory and file paths
 const CONFIG_DIR = join(homedir(), ".claudish");
@@ -80,6 +81,48 @@ export interface ClaudishProfileConfig {
   profiles: Record<string, Profile>;
   /** Telemetry consent state. Absent = never prompted. */
   telemetry?: TelemetryConsent;
+  /** User-defined provider configurations. Keyed by canonical provider name. */
+  providers?: Record<string, UserProviderConfig>;
+}
+
+/**
+ * User-defined provider configuration (in ~/.claudish/config.json)
+ *
+ * Example:
+ *   "navy": {
+ *     "displayName": "Navy AI",
+ *     "baseUrl": "https://api.navy",
+ *     "apiPath": "/v1/chat/completions",
+ *     "apiKeyEnvVar": "NAVY_API_KEY",
+ *     "shortcuts": ["navy"]
+ *   }
+ *
+ * Then: `claudish --model navy@gpt-5 "task"`
+ */
+export interface UserProviderConfig {
+  displayName?: string;
+  /** Transport type. Picks from existing transports. Defaults to "openai". */
+  transport?: TransportType;
+  baseUrl?: string;
+  apiPath?: string;
+  apiKeyEnvVar?: string;
+  apiKeyAliases?: string[];
+  apiKeyDescription?: string;
+  apiKeyUrl?: string;
+  authScheme?: "bearer" | "x-api-key" | "none";
+  shortcuts?: string[];
+  legacyPrefixes?: string[];
+  nativeModelPatterns?: string[];
+  headers?: Record<string, string>;
+  publicKeyFallback?: boolean;
+  tokenStrategy?: "delta-aware" | "accumulate-both";
+  capabilities?: {
+    supportsTools?: boolean;
+    supportsVision?: boolean;
+    supportsStreaming?: boolean;
+    supportsJsonMode?: boolean;
+    supportsReasoning?: boolean;
+  };
 }
 
 /**
@@ -134,6 +177,10 @@ export function loadConfig(): ClaudishProfileConfig {
     // Preserve telemetry consent state if present
     if (config.telemetry !== undefined) {
       merged.telemetry = config.telemetry;
+    }
+    // Preserve user-defined providers if present
+    if (config.providers !== undefined) {
+      merged.providers = config.providers;
     }
     return merged;
   } catch (error) {
@@ -298,7 +345,7 @@ export function getDefaultProfile(scope?: ProfileScope): Profile {
     if (local && local.defaultProfile && local.profiles[local.defaultProfile]) {
       return local.profiles[local.defaultProfile];
     }
-    // Local config exists but no valid default — return empty
+    // Local config exists but no valid default, return empty
     return DEFAULT_CONFIG.profiles.default;
   }
 

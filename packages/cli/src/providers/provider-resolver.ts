@@ -27,16 +27,15 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { resolveProvider, parseUrlModel } from "./provider-registry.js";
+import { parseUrlModel } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
 import { autoRoute, getAutoRouteHint } from "./auto-route.js";
 import {
   parseModelSpec,
-  isLocalProviderName,
-  isDirectApiProvider,
   getLegacySyntaxWarning,
   type ParsedModel,
 } from "./model-parser.js";
+import { getApiKeyInfo, getDisplayName, isLocalTransport } from "./provider-definitions.js";
 
 /**
  * Provider category types
@@ -96,131 +95,6 @@ interface ApiKeyInfo {
 }
 
 /**
- * API key information for all providers
- */
-const API_KEY_INFO: Record<string, ApiKeyInfo> = {
-  openrouter: {
-    envVar: "OPENROUTER_API_KEY",
-    description: "OpenRouter API Key",
-    url: "https://openrouter.ai/keys",
-  },
-  gemini: {
-    envVar: "GEMINI_API_KEY",
-    description: "Google Gemini API Key",
-    url: "https://aistudio.google.com/app/apikey",
-  },
-  "gemini-codeassist": {
-    envVar: "", // OAuth-based, no env var
-    description: "Gemini Code Assist (OAuth)",
-    url: "https://cloud.google.com/code-assist",
-  },
-  vertex: {
-    envVar: "VERTEX_API_KEY",
-    description: "Vertex AI API Key",
-    url: "https://console.cloud.google.com/vertex-ai",
-    aliases: ["VERTEX_PROJECT"], // OAuth mode alternative
-  },
-  openai: {
-    envVar: "OPENAI_API_KEY",
-    description: "OpenAI API Key",
-    url: "https://platform.openai.com/api-keys",
-  },
-  minimax: {
-    envVar: "MINIMAX_API_KEY",
-    description: "MiniMax API Key",
-    url: "https://www.minimaxi.com/",
-  },
-  "minimax-coding": {
-    envVar: "MINIMAX_CODING_API_KEY",
-    description: "MiniMax Coding Plan API Key",
-    url: "https://platform.minimax.io/user-center/basic-information/interface-key",
-  },
-  kimi: {
-    envVar: "MOONSHOT_API_KEY",
-    description: "Kimi/Moonshot API Key",
-    url: "https://platform.moonshot.cn/",
-    aliases: ["KIMI_API_KEY"],
-  },
-  "kimi-coding": {
-    envVar: "KIMI_CODING_API_KEY",
-    description: "Kimi Coding API Key",
-    url: "https://kimi.com/code (get key from membership page, or run: claudish --kimi-login)",
-    oauthFallback: "kimi-oauth.json",
-  },
-  glm: {
-    envVar: "ZHIPU_API_KEY",
-    description: "GLM/Zhipu API Key",
-    url: "https://open.bigmodel.cn/",
-    aliases: ["GLM_API_KEY"],
-  },
-  "glm-coding": {
-    envVar: "GLM_CODING_API_KEY",
-    description: "GLM Coding Plan API Key",
-    url: "https://z.ai/subscribe",
-    aliases: ["ZAI_CODING_API_KEY"],
-  },
-  ollamacloud: {
-    envVar: "OLLAMA_API_KEY",
-    description: "OllamaCloud API Key",
-    url: "https://ollama.com/account",
-  },
-  "opencode-zen": {
-    envVar: "", // Free models don't require API key
-    description: "OpenCode Zen (Free)",
-    url: "https://opencode.ai/",
-  },
-  zai: {
-    envVar: "ZAI_API_KEY",
-    description: "Z.AI API Key",
-    url: "https://z.ai/",
-  },
-  litellm: {
-    envVar: "LITELLM_API_KEY",
-    description: "LiteLLM API Key",
-    url: "https://docs.litellm.ai/",
-  },
-};
-
-/**
- * Local provider prefixes that never require an API key
- */
-const LOCAL_PREFIXES = [
-  "ollama/",
-  "ollama:",
-  "lmstudio/",
-  "lmstudio:",
-  "mlstudio/", // common typo
-  "mlstudio:",
-  "vllm/",
-  "vllm:",
-  "mlx/",
-  "mlx:",
-  "http://",
-  "https://localhost",
-];
-
-/**
- * Display names for providers (for proper capitalization)
- */
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  gemini: "Gemini",
-  "gemini-codeassist": "Gemini Code Assist",
-  vertex: "Vertex AI",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  minimax: "MiniMax",
-  "minimax-coding": "MiniMax Coding",
-  kimi: "Kimi",
-  "kimi-coding": "Kimi Coding",
-  glm: "GLM",
-  "glm-coding": "GLM Coding",
-  zai: "Z.AI",
-  ollamacloud: "OllamaCloud",
-  "opencode-zen": "OpenCode Zen",
-  litellm: "LiteLLM",
-};
-
-/**
  * Check if any of the API keys (including aliases) are available
  */
 function isApiKeyAvailable(info: ApiKeyInfo): boolean {
@@ -257,6 +131,21 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
 }
 
 /**
+ * Get API key info for a provider name, using provider-definitions.ts as source of truth.
+ * Falls back to constructing info from the provider name if not found.
+ */
+function getApiKeyInfoForProvider(providerName: string): ApiKeyInfo {
+  const defInfo = getApiKeyInfo(providerName);
+  if (defInfo) return defInfo;
+  // Fallback for unknown providers
+  return {
+    envVar: "",
+    description: `${providerName} API Key`,
+    url: "",
+  };
+}
+
+/**
  * Resolve a model ID to its provider information
  *
  * This is THE single source of truth for provider resolution.
@@ -280,7 +169,7 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
 export function resolveModelProvider(modelId: string | undefined): ProviderResolution {
   // Default case: no model specified = OpenRouter with undefined model (will use default)
   if (!modelId) {
-    const info = API_KEY_INFO.openrouter;
+    const info = getApiKeyInfoForProvider("openrouter");
     return {
       category: "openrouter",
       providerName: "OpenRouter",
@@ -307,26 +196,11 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
   });
 
   // 1. Check for local providers (no API key needed)
-  if (isLocalProviderName(parsed.provider)) {
-    const resolved = resolveProvider(modelId);
-    const urlParsed = parseUrlModel(modelId);
-
-    let providerName = "Local";
-    let modelName = parsed.model;
-
-    if (resolved) {
-      providerName =
-        resolved.provider.name.charAt(0).toUpperCase() + resolved.provider.name.slice(1);
-      modelName = resolved.modelName;
-    } else if (urlParsed) {
-      providerName = "Custom URL";
-      modelName = urlParsed.modelName;
-    }
-
+  if (isLocalTransport(parsed.provider)) {
     return addCommonFields({
       category: "local",
-      providerName,
-      modelName,
+      providerName: getDisplayName(parsed.provider),
+      modelName: parsed.model,
       fullModelId: modelId,
       requiredApiKeyEnvVar: null,
       apiKeyAvailable: true,
@@ -366,7 +240,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
   // 4. Check for explicit OpenRouter routing
   if (parsed.provider === "openrouter") {
-    const info = API_KEY_INFO.openrouter;
+    const info = getApiKeyInfoForProvider("openrouter");
     return addCommonFields({
       category: "openrouter",
       providerName: "OpenRouter",
@@ -386,7 +260,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
     if (autoResult) {
       if (autoResult.provider === "litellm") {
-        const info = API_KEY_INFO.litellm;
+        const info = getApiKeyInfoForProvider("litellm");
         return addCommonFields({
           category: "direct-api",
           providerName: "LiteLLM",
@@ -402,7 +276,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       }
 
       if (autoResult.provider === "openrouter") {
-        const info = API_KEY_INFO.openrouter;
+        const info = getApiKeyInfoForProvider("openrouter");
         return addCommonFields({
           category: "openrouter",
           providerName: "OpenRouter",
@@ -428,28 +302,26 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     const provider = remoteResolved.provider;
 
     // Provider-specific prefix found - check if provider's API key is available
-    const info = API_KEY_INFO[provider.name] || {
-      envVar: provider.apiKeyEnvVar,
-      description: `${provider.name} API Key`,
-      url: "",
-    };
+    const info = getApiKeyInfoForProvider(provider.name);
+    // If definition has no info, fall back to the provider's apiKeyEnvVar
+    const effectiveInfo: ApiKeyInfo = info.envVar || !provider.apiKeyEnvVar
+      ? info
+      : { envVar: provider.apiKeyEnvVar, description: `${provider.name} API Key`, url: "" };
 
-    const providerDisplayName =
-      PROVIDER_DISPLAY_NAMES[provider.name] ||
-      provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
+    const providerDisplayName = getDisplayName(provider.name);
 
     const wasAutoRouted = !parsed.isExplicitProvider;
 
-    // Return direct-api resolution — report missing key instead of silent fallback
+    // Return direct-api resolution: report missing key instead of silent fallback
     return addCommonFields({
       category: "direct-api",
       providerName: providerDisplayName,
       modelName: remoteResolved.modelName,
       fullModelId: modelId,
-      requiredApiKeyEnvVar: info.envVar || null,
-      apiKeyAvailable: isApiKeyAvailable(info),
-      apiKeyDescription: info.envVar ? info.description : null,
-      apiKeyUrl: info.envVar ? info.url : null,
+      requiredApiKeyEnvVar: effectiveInfo.envVar || null,
+      apiKeyAvailable: isApiKeyAvailable(effectiveInfo),
+      apiKeyDescription: effectiveInfo.envVar ? effectiveInfo.description : null,
+      apiKeyUrl: effectiveInfo.envVar ? effectiveInfo.url : null,
       wasAutoRouted,
       autoRouteMessage: wasAutoRouted
         ? (pendingAutoRouteMessage ?? `Auto-routed: ${parsed.model} -> ${providerDisplayName}`)
@@ -652,17 +524,3 @@ export function requiresOpenRouterKey(modelId: string | undefined): boolean {
   return resolution.category === "openrouter";
 }
 
-/**
- * Check if a model is a local provider (no API key needed)
- *
- * This is a convenience function for backwards compatibility.
- * New code should use resolveModelProvider() directly.
- *
- * @param modelId - Model ID to check
- * @returns true if model is a local provider
- */
-export function isLocalModel(modelId: string | undefined): boolean {
-  if (!modelId) return false;
-  const resolution = resolveModelProvider(modelId);
-  return resolution.category === "local";
-}

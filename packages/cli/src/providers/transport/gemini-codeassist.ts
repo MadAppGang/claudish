@@ -1,44 +1,33 @@
 /**
- * GeminiCodeAssistProvider — Gemini Code Assist (gemini-cli backend) via OAuth.
+ * GeminiCodeAssistTransport -- Gemini Code Assist (gemini-cli backend) via OAuth.
  *
  * Transport concerns:
  * - OAuth access token via getValidAccessToken()
  * - Project ID via setupGeminiUser()
- * - Fixed endpoint: cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse
- * - Wraps payload in CodeAssist envelope: {model, project, user_prompt_id, request: <payload>}
+ * - Wraps payload in CodeAssist envelope: {model, project, user_prompt_id, request}
  * - GeminiRequestQueue for rate limiting
  * - gemini-sse stream format (with response wrapper)
  */
 
 import { randomUUID } from "node:crypto";
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
+import { OAuthTransport } from "./base.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log } from "../../logger.js";
 
-const CODE_ASSIST_ENDPOINT =
-  "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse";
-
-export class GeminiCodeAssistProvider implements ProviderTransport {
-  readonly name = "gemini-codeassist";
-  readonly displayName = "Gemini Free";
+export class GeminiCodeAssistTransport extends OAuthTransport {
   readonly streamFormat: StreamFormat = "gemini-sse";
 
-  private modelName: string;
-  private accessToken: string | null = null;
   private projectId: string | null = null;
 
   constructor(modelName: string) {
-    this.modelName = modelName;
-  }
-
-  getEndpoint(): string {
-    return CODE_ASSIST_ENDPOINT;
-  }
-
-  async getHeaders(): Promise<Record<string, string>> {
-    return {
-      Authorization: `Bearer ${this.accessToken}`,
-    };
+    super({
+      name: "gemini-codeassist",
+      displayName: "Gemini Free",
+      baseUrl: "https://cloudcode-pa.googleapis.com",
+      apiPath: "/v1internal:streamGenerateContent?alt=sse",
+      modelName,
+    });
   }
 
   /**
@@ -48,7 +37,7 @@ export class GeminiCodeAssistProvider implements ProviderTransport {
   async refreshAuth(): Promise<void> {
     const { getValidAccessToken, setupGeminiUser } = await import("../../auth/gemini-oauth.js");
     this.accessToken = await getValidAccessToken();
-    const { projectId } = await setupGeminiUser(this.accessToken);
+    const { projectId } = await setupGeminiUser(this.accessToken!);
     this.projectId = projectId;
     log(`[GeminiCodeAssist] Auth refreshed, project: ${this.projectId}`);
   }
@@ -56,7 +45,7 @@ export class GeminiCodeAssistProvider implements ProviderTransport {
   /**
    * Wrap the standard Gemini payload in the CodeAssist envelope.
    * The inner payload (contents, generationConfig, systemInstruction, tools)
-   * is built by GeminiAdapter.buildPayload().
+   * is built by GeminiFormatAdapter.buildPayload().
    */
   transformPayload(payload: any): any {
     return {

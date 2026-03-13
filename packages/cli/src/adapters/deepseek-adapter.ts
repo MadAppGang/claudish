@@ -1,15 +1,7 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { ModelAdapter } from "./model-adapter.js";
 import { log } from "../logger";
 
-export class DeepSeekAdapter extends BaseModelAdapter {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    return {
-      cleanedText: textContent,
-      extractedToolCalls: [],
-      wasTransformed: false,
-    };
-  }
-
+export class DeepSeekAdapter extends ModelAdapter {
   /**
    * Handle request preparation - specifically for stripping unsupported parameters
    */

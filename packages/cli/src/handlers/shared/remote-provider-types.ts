@@ -6,22 +6,6 @@
  */
 
 /**
- * Configuration for a remote API provider
- */
-export interface RemoteProviderConfig {
-  /** Provider name (e.g., "openrouter", "gemini", "openai") */
-  name: string;
-  /** Base URL for the API */
-  baseUrl: string;
-  /** API path (e.g., "/v1/chat/completions") */
-  apiPath: string;
-  /** Environment variable name for API key */
-  apiKeyEnvVar: string;
-  /** HTTP headers to include with requests */
-  headers?: Record<string, string>;
-}
-
-/**
  * Pricing information for a model
  */
 export interface ModelPricing {
@@ -36,6 +20,21 @@ export interface ModelPricing {
   /** Whether this model uses a subscription service (e.g., Kimi Coding) */
   isSubscription?: boolean;
 }
+
+/**
+ * Transport type identifier. Determines which handler/transport class is constructed.
+ */
+export type TransportType =
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "gemini-oauth"
+  | "openrouter"
+  | "ollama"
+  | "litellm"
+  | "zen"
+  | "vertex"
+  | "local";
 
 /**
  * Provider capabilities

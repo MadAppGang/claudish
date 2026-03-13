@@ -1,5 +1,5 @@
 /**
- * GeminiApiKeyProvider — direct Gemini API access with API key authentication.
+ * GeminiApiKeyTransport -- direct Gemini API access with API key authentication.
  *
  * Transport concerns:
  * - x-goog-api-key header
@@ -8,32 +8,19 @@
  * - gemini-sse stream format
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import type { StreamFormat } from "./types.js";
+import { KeyAuthTransport } from "./base.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
-import { log } from "../../logger.js";
 
-export class GeminiApiKeyProvider implements ProviderTransport {
-  readonly name = "gemini";
-  readonly displayName = "Gemini API";
+export class GeminiApiKeyTransport extends KeyAuthTransport {
   readonly streamFormat: StreamFormat = "gemini-sse";
 
-  private provider: RemoteProvider;
-  private apiKey: string;
-  private modelName: string;
-
-  constructor(provider: RemoteProvider, modelName: string, apiKey: string) {
-    this.provider = provider;
-    this.modelName = modelName;
-    this.apiKey = apiKey;
+  override getEndpoint(_model?: string): string {
+    const apiPath = this.apiPath.replace("{model}", this.modelName);
+    return `${this.baseUrl}${apiPath}`;
   }
 
-  getEndpoint(_model?: string): string {
-    const apiPath = this.provider.apiPath.replace("{model}", this.modelName);
-    return `${this.provider.baseUrl}${apiPath}`;
-  }
-
-  async getHeaders(): Promise<Record<string, string>> {
+  override async getHeaders(): Promise<Record<string, string>> {
     return {
       "x-goog-api-key": this.apiKey,
     };

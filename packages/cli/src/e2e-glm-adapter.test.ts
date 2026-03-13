@@ -4,7 +4,7 @@
  * Validates:
  * 1. GLMAdapter model detection, context windows, and vision support
  * 2. AdapterManager correctly selects GLMAdapter for GLM models
- * 3. ComposedHandler two-layer architecture — model adapter provides model-specific
+ * 3. ProviderHandler two-layer architecture — model adapter provides model-specific
  *    overrides (context window, vision, prepareRequest) even when a provider adapter
  *    (LiteLLMAdapter, OpenRouterAdapter) is set as the explicit adapter
  */
@@ -13,7 +13,7 @@ import { describe, test, expect } from "bun:test";
 import { GLMAdapter } from "./adapters/glm-adapter.js";
 import { AdapterManager } from "./adapters/adapter-manager.js";
 import { LiteLLMAdapter } from "./adapters/litellm-adapter.js";
-import { DefaultAdapter } from "./adapters/base-adapter.js";
+// DefaultAdapter removed — AdapterManager returns null for unknown models
 
 // ─── Group 1: GLMAdapter unit tests ──────────────────────────────────────────
 
@@ -57,8 +57,8 @@ describe("GLMAdapter — Model Detection", () => {
 });
 
 describe("GLMAdapter — Context Windows", () => {
-  test("glm-5 → 128K", () => {
-    expect(new GLMAdapter("glm-5").getContextWindow()).toBe(128_000);
+  test("glm-5 → 204K", () => {
+    expect(new GLMAdapter("glm-5").getContextWindow()).toBe(204_800);
   });
 
   test("glm-4-plus → 128K", () => {
@@ -73,8 +73,8 @@ describe("GLMAdapter — Context Windows", () => {
     expect(new GLMAdapter("glm-4-flash").getContextWindow()).toBe(128_000);
   });
 
-  test("unknown glm variant → 128K default", () => {
-    expect(new GLMAdapter("glm-99").getContextWindow()).toBe(128_000);
+  test("unknown glm variant → 131K default", () => {
+    expect(new GLMAdapter("glm-99").getContextWindow()).toBe(131_072);
   });
 });
 
@@ -155,12 +155,14 @@ describe("AdapterManager — GLM routing", () => {
     const manager = new AdapterManager("gpt-4o");
     const adapter = manager.getAdapter();
 
+    // No model-specific adapter matches gpt-4o → returns default no-op
     expect(adapter.getName()).not.toBe("GLMAdapter");
+    expect(adapter.getName()).toBe("ModelAdapter");
   });
 
-  test("needsTransformation returns true for GLM models", () => {
+  test("getAdapter returns non-null for GLM models", () => {
     const manager = new AdapterManager("glm-5");
-    expect(manager.needsTransformation()).toBe(true);
+    expect(manager.getAdapter()).not.toBeNull();
   });
 });
 
@@ -172,7 +174,7 @@ describe("AdapterManager — GLM routing", () => {
 
 describe("Two-layer adapter — model adapter overrides provider adapter", () => {
   test("AdapterManager resolves GLMAdapter even when LiteLLMAdapter would be used", () => {
-    // Simulate what ComposedHandler does:
+    // Simulate what ProviderHandler does:
     // 1. Explicit adapter = LiteLLMAdapter (provider transport)
     // 2. AdapterManager.getAdapter() = GLMAdapter (model quirks)
     const litellmAdapter = new LiteLLMAdapter("glm-5", "https://example.com");
@@ -184,7 +186,7 @@ describe("Two-layer adapter — model adapter overrides provider adapter", () =>
 
     // Model adapter handles model-specific concerns
     expect(modelAdapter.getName()).toBe("GLMAdapter");
-    expect(modelAdapter.getContextWindow()).toBe(128_000);
+    expect(modelAdapter.getContextWindow()).toBe(204_800);
     expect(modelAdapter.supportsVision()).toBe(true);
   });
 
@@ -211,12 +213,12 @@ describe("Two-layer adapter — model adapter overrides provider adapter", () =>
     expect(modelAdapter.supportsVision()).toBe(false);
   });
 
-  test("non-GLM model via LiteLLM falls back to DefaultAdapter", () => {
+  test("non-GLM model via LiteLLM falls back to default ModelAdapter", () => {
     const adapterManager = new AdapterManager("some-unknown-model");
     const modelAdapter = adapterManager.getAdapter();
 
-    // Should be DefaultAdapter, not GLMAdapter
-    expect(modelAdapter.getName()).toBe("DefaultAdapter");
+    // Should be the base no-op ModelAdapter, not GLMAdapter
+    expect(modelAdapter.getName()).toBe("ModelAdapter");
   });
 
   test("model adapter strips thinking, provider adapter does not", () => {

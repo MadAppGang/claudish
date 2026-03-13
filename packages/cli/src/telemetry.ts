@@ -101,7 +101,7 @@ export interface TelemetryConsent {
 }
 
 /**
- * Context passed from composed-handler.ts to reportError().
+ * Context passed from provider-handler.ts to reportError().
  * Carries the minimum information needed to build a TelemetryReport.
  * Deliberately omits: request body, response body, tool names, system prompt.
  */

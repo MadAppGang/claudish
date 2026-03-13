@@ -1,24 +1,22 @@
 /**
- * LiteLLM Model Adapter
+ * LiteLLM Format Adapter
  *
- * Handles LiteLLM-specific model transforms:
+ * Extends OpenAI format with LiteLLM-specific behaviors:
  * - Inline image conversion for MiniMax (LiteLLM doesn't forward image_url properly)
  * - Vision support detection from cached model discovery data
- * - OpenAI-compatible payload with stream_options and tool_choice
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DefaultAdapter } from "./base-adapter.js";
-import type { AdapterResult, ToolCall } from "./base-adapter.js";
+import { OpenAIFormatAdapter } from "./openai-format-adapter.js";
 import { log } from "../logger.js";
 
 /** Models needing image_url → inline base64 conversion */
 const INLINE_IMAGE_MODEL_PATTERNS = ["minimax"];
 
-export class LiteLLMAdapter extends DefaultAdapter {
+export class LiteLLMAdapter extends OpenAIFormatAdapter {
   private baseUrl: string;
   private visionSupported: boolean;
   private needsInlineImages: boolean;
@@ -32,15 +30,11 @@ export class LiteLLMAdapter extends DefaultAdapter {
     );
   }
 
-  getName(): string {
+  override getName(): string {
     return "LiteLLMAdapter";
   }
 
-  shouldHandle(modelId: string): boolean {
-    return false; // Always used explicitly, not via AdapterManager matching
-  }
-
-  supportsVision(): boolean {
+  override supportsVision(): boolean {
     return this.visionSupported;
   }
 
@@ -48,7 +42,7 @@ export class LiteLLMAdapter extends DefaultAdapter {
    * Convert messages, then transform image_url blocks to inline base64 text
    * for models where LiteLLM doesn't properly forward image content.
    */
-  convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
+  override convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
     const messages = super.convertMessages(claudeRequest, filterIdentityFn);
 
     if (!this.needsInlineImages) return messages;
@@ -95,38 +89,7 @@ export class LiteLLMAdapter extends DefaultAdapter {
     return messages;
   }
 
-  /**
-   * Build LiteLLM-specific request payload.
-   * Standard OpenAI format with stream_options and tool_choice support.
-   */
-  buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
-    const payload: any = {
-      model: this.modelId,
-      messages,
-      temperature: claudeRequest.temperature ?? 1,
-      stream: true,
-      stream_options: { include_usage: true },
-      max_tokens: claudeRequest.max_tokens,
-    };
-
-    if (tools.length > 0) {
-      payload.tools = tools;
-    }
-
-    // Handle tool choice
-    if (claudeRequest.tool_choice) {
-      const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
-        payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
-        payload.tool_choice = type;
-      }
-    }
-
-    return payload;
-  }
-
-  getContextWindow(): number {
+  override getContextWindow(): number {
     return 200_000; // Default, could be enhanced with model discovery
   }
 

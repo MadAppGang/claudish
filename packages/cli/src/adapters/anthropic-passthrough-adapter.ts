@@ -6,26 +6,14 @@
  * Used by: MiniMax, Kimi, Kimi Coding, Z.AI
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
+import { FormatAdapter } from "./format-adapter.js";
 
-export class AnthropicPassthroughAdapter extends BaseModelAdapter {
+export class AnthropicPassthroughAdapter extends FormatAdapter {
   private providerName: string;
 
   constructor(modelId: string, providerName: string) {
     super(modelId);
     this.providerName = providerName.toLowerCase();
-  }
-
-  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
-    return {
-      cleanedText: textContent,
-      extractedToolCalls: [],
-      wasTransformed: false,
-    };
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return false; // Not auto-selected; always explicitly passed
   }
 
   getName(): string {

@@ -6,50 +6,31 @@
  * Includes 30-second timeout with detailed error reporting.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import type { StreamFormat } from "./types.js";
+import { KeyAuthTransport, type TransportConfig } from "./base.js";
 import { log } from "../../logger.js";
 
-export class OpenAIProvider implements ProviderTransport {
-  readonly name: string;
-  readonly displayName: string;
+export class OpenAITransport extends KeyAuthTransport {
   readonly streamFormat: StreamFormat;
 
-  private provider: RemoteProvider;
-  private apiKey: string;
-  private modelName: string;
-
-  constructor(provider: RemoteProvider, modelName: string, apiKey: string) {
-    this.provider = provider;
-    this.modelName = modelName;
-    this.apiKey = apiKey;
-    this.name = provider.name;
-    this.displayName = OpenAIProvider.formatDisplayName(provider.name);
-
+  constructor(config: TransportConfig) {
+    super(config);
     // Codex models use the Responses API which has a different streaming format
-    this.streamFormat = modelName.toLowerCase().includes("codex")
+    this.streamFormat = config.modelName.toLowerCase().includes("codex")
       ? "openai-responses-sse"
       : "openai-sse";
   }
 
-  getEndpoint(): string {
+  override getEndpoint(): string {
     if (this.modelName.toLowerCase().includes("codex")) {
-      return `${this.provider.baseUrl}/v1/responses`;
+      return `${this.baseUrl}/v1/responses`;
     }
-    return `${this.provider.baseUrl}${this.provider.apiPath}`;
-  }
-
-  async getHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {};
-    if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
-    }
-    return headers;
+    return super.getEndpoint();
   }
 
   /**
    * Override fetch with 30-second timeout and detailed error handling.
-   * This replaces the standard ComposedHandler fetch path.
+   * This replaces the standard ProviderHandler fetch path.
    */
   async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
     const controller = new AbortController();
@@ -57,31 +38,22 @@ export class OpenAIProvider implements ProviderTransport {
 
     try {
       // We need to intercept the fetch to add the abort signal.
-      // Since ComposedHandler builds the fetch, we wrap it here.
+      // Since ProviderHandler builds the fetch, we wrap it here.
       const response = await fetchFn();
       return response;
     } catch (fetchError: any) {
       if (fetchError.name === "AbortError") {
         log(`[${this.displayName}] Request timed out after 30s`);
-        throw new OpenAITimeoutError(this.provider.baseUrl);
+        throw new OpenAITimeoutError(this.baseUrl);
       }
       if (fetchError.cause?.code === "UND_ERR_CONNECT_TIMEOUT") {
         log(`[${this.displayName}] Connection timeout: ${fetchError.message}`);
-        throw new OpenAIConnectionError(this.provider.baseUrl, fetchError.cause?.code);
+        throw new OpenAIConnectionError(this.baseUrl, fetchError.cause?.code);
       }
       throw fetchError;
     } finally {
       clearTimeout(timeoutId);
     }
-  }
-
-  private static formatDisplayName(name: string): string {
-    if (name === "opencode-zen") return "Zen";
-    if (name === "opencode-zen-go") return "Zen Go";
-    if (name === "glm") return "GLM";
-    if (name === "glm-coding") return "GLM Coding";
-    if (name === "openai") return "OpenAI";
-    return name.charAt(0).toUpperCase() + name.slice(1);
   }
 }
 

@@ -1,8 +1,8 @@
 /**
- * LocalModelAdapter — adapter for local OpenAI-compatible providers.
+ * LocalModelAdapter: format adapter for local OpenAI-compatible providers.
  *
- * Wraps a model-specific adapter (Qwen, DeepSeek, etc.) and adds
- * local-model-specific behaviors:
+ * Wire format: OpenAI Chat Completions (the base FormatAdapter default),
+ * with local-model-specific additions:
  * - System prompt guidance (tool calling, conversation handling)
  * - Model-family sampling parameters (Qwen, DeepSeek, Llama, Mistral)
  * - max_tokens floor (8192) for meaningful responses
@@ -12,9 +12,8 @@
  * - MLX simple format for message conversion
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
-import { AdapterManager } from "./adapter-manager.js";
-import type { ProviderCapabilities } from "../providers/provider-registry.js";
+import { FormatAdapter } from "./format-adapter.js";
+import type { ProviderCapabilities } from "../handlers/shared/remote-provider-types.js";
 import { log } from "../logger.js";
 
 interface SamplingParams {
@@ -25,8 +24,7 @@ interface SamplingParams {
   repetition_penalty: number;
 }
 
-export class LocalModelAdapter extends BaseModelAdapter {
-  private innerAdapter: BaseModelAdapter;
+export class LocalModelAdapter extends FormatAdapter {
   private capabilities: ProviderCapabilities;
   private providerName: string;
 
@@ -34,31 +32,13 @@ export class LocalModelAdapter extends BaseModelAdapter {
     super(modelId);
     this.providerName = providerName;
     this.capabilities = capabilities;
-
-    const manager = new AdapterManager(modelId);
-    this.innerAdapter = manager.getAdapter();
-  }
-
-  // ─── Text processing delegates to inner adapter ───────────────────
-
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    return this.innerAdapter.processTextContent(textContent, accumulatedText);
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return true; // Always used explicitly
   }
 
   getName(): string {
-    return `LocalModelAdapter(${this.innerAdapter.getName()})`;
+    return `LocalModelAdapter`;
   }
 
-  override reset(): void {
-    super.reset();
-    this.innerAdapter.reset();
-  }
-
-  supportsVision(): boolean {
+  override supportsVision(): boolean {
     return this.capabilities.supportsVision;
   }
 
@@ -152,13 +132,8 @@ export class LocalModelAdapter extends BaseModelAdapter {
   // ─── Request post-processing ────────────────────────────────────────
 
   override prepareRequest(request: any, originalRequest: any): any {
-    // Delegate to inner adapter (Qwen tool name truncation, etc.)
-    this.innerAdapter.prepareRequest(request, originalRequest);
-
-    // Merge inner adapter's tool name map
-    for (const [k, v] of this.innerAdapter.getToolNameMap()) {
-      this.toolNameMap.set(k, v);
-    }
+    // FormatAdapter base handles tool name truncation
+    super.prepareRequest(request, originalRequest);
 
     // Strip cloud-only thinking params that local providers don't understand
     delete request.enable_thinking;
@@ -168,16 +143,8 @@ export class LocalModelAdapter extends BaseModelAdapter {
     return request;
   }
 
-  override getToolNameMap(): Map<string, string> {
-    const map = new Map(super.getToolNameMap());
-    for (const [k, v] of this.innerAdapter.getToolNameMap()) {
-      map.set(k, v);
-    }
-    return map;
-  }
-
   override getContextWindow(): number {
-    return 32768; // Default — overridden by provider's dynamic context window fetch
+    return 32768; // Default, overridden by provider's dynamic context window fetch
   }
 
   // ─── Model-family sampling parameters ───────────────────────────────

@@ -115,44 +115,6 @@ export interface ProxyServer {
   shutdown: () => Promise<void>;
 }
 
-// Model Handler interface
-export interface ModelHandler {
-  handleRequest(request: Request): Promise<Response>;
-}
-
-// Middleware types
-export interface RequestContext {
-  request: Request;
-  body: any;
-  modelId: string;
-}
-
-export interface StreamChunkContext {
-  chunk: string;
-  modelId: string;
-  isFirst: boolean;
-  isLast: boolean;
-}
-
-export interface NonStreamingResponseContext {
-  response: any;
-  modelId: string;
-}
-
-export interface ModelMiddleware {
-  name: string;
-  priority?: number;
-
-  // Transform request before sending to provider
-  transformRequest?(ctx: RequestContext): Promise<RequestContext> | RequestContext;
-
-  // Transform streaming chunks
-  transformStreamChunk?(ctx: StreamChunkContext): Promise<string> | string;
-
-  // Transform non-streaming response
-  transformResponse?(ctx: NonStreamingResponseContext): Promise<any> | any;
-}
-
 // Validation types
 export type IssueSeverity = "error" | "warning" | "info";
 

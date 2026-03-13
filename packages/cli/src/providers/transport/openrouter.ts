@@ -1,5 +1,5 @@
 /**
- * OpenRouterProvider — OpenRouter API transport.
+ * OpenRouterTransport — OpenRouter API transport.
  *
  * Transport concerns:
  * - Bearer token auth
@@ -13,7 +13,7 @@ import { OpenRouterRequestQueue } from "../../handlers/shared/openrouter-queue.j
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-export class OpenRouterProvider implements ProviderTransport {
+export class OpenRouterTransport implements ProviderTransport {
   readonly name = "openrouter";
   readonly displayName = "OpenRouter";
   readonly streamFormat: StreamFormat = "openai-sse";

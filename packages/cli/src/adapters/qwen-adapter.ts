@@ -1,4 +1,4 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { ModelAdapter, type AdapterResult } from "./model-adapter.js";
 import { log } from "../logger";
 
 // Qwen special tokens that should be stripped from output
@@ -10,7 +10,7 @@ const QWEN_SPECIAL_TOKENS = [
   "assistant\n", // Role marker that sometimes leaks
 ];
 
-export class QwenAdapter extends BaseModelAdapter {
+export class QwenAdapter extends ModelAdapter {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // Strip Qwen special tokens that may leak through
     // This can happen when the model gets confused and outputs its chat template

@@ -82,7 +82,7 @@ Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conver
 
 ## Two-Layer Adapter Architecture
 
-ComposedHandler maintains two adapter layers:
+ProviderHandler maintains two adapter layers:
 - **Provider adapter** (explicit): LiteLLMAdapter, OpenRouterAdapter — handles transport format (messages, tools, payload)
 - **Model adapter** (via AdapterManager): GLMAdapter, GrokAdapter — handles model quirks (context window, vision, prepareRequest)
 

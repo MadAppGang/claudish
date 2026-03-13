@@ -45,7 +45,7 @@ export interface ProviderTransport {
 
   /**
    * Optional request queue for rate limiting / concurrency control.
-   * If provided, the ComposedHandler will call this instead of raw fetch.
+   * If provided, the ProviderHandler will call this instead of raw fetch.
    */
   enqueueRequest?(fetchFn: () => Promise<Response>): Promise<Response>;
 
@@ -58,7 +58,7 @@ export interface ProviderTransport {
   /**
    * Force refresh auth credentials after a 401 response.
    * Used by OAuth providers (Vertex, CodeAssist) to handle token expiry.
-   * ComposedHandler calls this automatically on 401 and retries the request.
+   * ProviderHandler calls this automatically on 401 and retries the request.
    */
   forceRefreshAuth?(): Promise<void>;
 
@@ -78,7 +78,7 @@ export interface ProviderTransport {
 
   /**
    * Dynamic context window discovered at runtime (e.g., from local model API).
-   * ComposedHandler calls this after refreshAuth to update TokenTracker.
+   * ProviderHandler calls this after refreshAuth to update TokenTracker.
    */
   getContextWindow?(): number;
 

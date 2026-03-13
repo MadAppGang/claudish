@@ -7,13 +7,14 @@
  */
 
 import type { Context } from "hono";
-import type { BaseModelAdapter } from "../../../adapters/base-adapter.js";
+import type { ModelAdapter } from "../../../adapters/model-adapter.js";
 import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { log } from "../../../logger.js";
 
 export interface GeminiSseOptions {
   modelName: string;
-  adapter?: BaseModelAdapter;
+  /** Model-specific adapter for text post-processing (reasoning filter, etc.) */
+  modelAdapter?: ModelAdapter;
   middlewareManager?: MiddlewareManager;
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
@@ -187,8 +188,8 @@ export function createGeminiSseStream(
                     }
 
                     let cleanedText = part.text;
-                    if (opts.adapter) {
-                      const res = opts.adapter.processTextContent(part.text, accumulatedText);
+                    if (opts.modelAdapter) {
+                      const res = opts.modelAdapter.processTextContent(part.text, accumulatedText);
                       cleanedText = res.cleanedText || "";
                       accumulatedText += cleanedText;
                     } else {

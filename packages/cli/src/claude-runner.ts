@@ -5,6 +5,8 @@ import { tmpdir, homedir } from "node:os";
 import { join, basename } from "node:path";
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
+import { parseModelSpec } from "./providers/model-parser.js";
+import { isLocalTransport } from "./providers/provider-definitions.js";
 
 // Use process.platform directly to ensure runtime evaluation
 // (module-level constants can be inlined by bundlers at build time)
@@ -285,16 +287,9 @@ export async function runClaudeWithProxy(
     claudeArgs.push(...config.claudeArgs);
   }
 
-  // Check if this is a local model (ollama/, lmstudio/, vllm/, mlx/, or http:// URL)
+  // Check if this is a local model
   const isLocalModel = modelId
-    ? modelId.startsWith("ollama/") ||
-      modelId.startsWith("ollama:") ||
-      modelId.startsWith("lmstudio/") ||
-      modelId.startsWith("lmstudio:") ||
-      modelId.startsWith("vllm/") ||
-      modelId.startsWith("vllm:") ||
-      modelId.startsWith("mlx/") ||
-      modelId.startsWith("mlx:") ||
+    ? isLocalTransport(parseModelSpec(modelId).provider) ||
       modelId.startsWith("http://") ||
       modelId.startsWith("https://")
     : false;

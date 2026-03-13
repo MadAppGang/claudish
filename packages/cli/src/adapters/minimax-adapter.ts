@@ -1,16 +1,7 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { ModelAdapter } from "./model-adapter.js";
 import { log } from "../logger";
 
-export class MiniMaxAdapter extends BaseModelAdapter {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    // MiniMax interleaved thinking is handled by the model
-    return {
-      cleanedText: textContent,
-      extractedToolCalls: [],
-      wasTransformed: false,
-    };
-  }
-
+export class MiniMaxAdapter extends ModelAdapter {
   /**
    * Handle request preparation - specifically for mapping reasoning parameters
    */

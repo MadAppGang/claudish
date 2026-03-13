@@ -1,61 +1,26 @@
 /**
- * OpenRouter Adapter
+ * OpenRouter Format Adapter
  *
- * Wraps a model-specific adapter (Grok, Gemini, Deepseek, etc.) and adds
- * OpenRouter-specific behaviors:
+ * Extends OpenAI format with OpenRouter-specific behaviors:
  * - Model-specific system prompts (Grok XML fix, Gemini reasoning suppression)
- * - stream_options: { include_usage: true }
  * - include_reasoning for models that support it
  * - removeUriFormat on tool schemas
- * - Tool choice mapping from Claude format
+ * - Thinking config passthrough
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
-import { AdapterManager } from "./adapter-manager.js";
+import { OpenAIFormatAdapter } from "./openai-format-adapter.js";
 import { removeUriFormat } from "../transform.js";
-import { log } from "../logger.js";
+import { parseModelSpec } from "../providers/model-parser.js";
 
-export class OpenRouterAdapter extends BaseModelAdapter {
-  private innerAdapter: BaseModelAdapter;
+export class OpenRouterAdapter extends OpenAIFormatAdapter {
 
-  constructor(modelId: string) {
-    super(modelId);
-
-    // Get model-specific adapter (GrokAdapter, GeminiAdapter, etc.)
-    const manager = new AdapterManager(modelId);
-    this.innerAdapter = manager.getAdapter();
-  }
-
-  /** Synchronous reasoning support check via model ID patterns */
-  private modelSupportsReasoning(): boolean {
-    const id = this.modelId.toLowerCase();
-    return id.includes("o1") || id.includes("o3") || id.includes("r1") ||
-      id.includes("qwq") || id.includes("reasoning");
-  }
-
-  // ─── Text processing delegates to inner adapter ───────────────────
-
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    return this.innerAdapter.processTextContent(textContent, accumulatedText);
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return true; // Always used explicitly
-  }
-
-  getName(): string {
-    return `OpenRouterAdapter(${this.innerAdapter.getName()})`;
-  }
-
-  override reset(): void {
-    super.reset();
-    this.innerAdapter.reset();
+  override getName(): string {
+    return "OpenRouterAdapter";
   }
 
   // ─── Message conversion with model-specific system prompts ─────────
 
   override convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
-    // Use default OpenAI conversion
     const messages = super.convertMessages(claudeRequest, filterIdentityFn);
 
     // Add model-specific system prompt tweaks
@@ -89,8 +54,7 @@ export class OpenRouterAdapter extends BaseModelAdapter {
 
   // ─── Tool conversion with uri format removal ──────────────────────
 
-  override convertTools(claudeRequest: any, summarize = false): any[] {
-    // Convert to OpenAI format, but strip uri format from schemas
+  override convertTools(claudeRequest: any, _summarize = false): any[] {
     return (
       claudeRequest.tools?.map((tool: any) => ({
         type: "function",
@@ -106,18 +70,7 @@ export class OpenRouterAdapter extends BaseModelAdapter {
   // ─── Payload with OpenRouter-specific fields ───────────────────────
 
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
-    const payload: any = {
-      model: this.modelId,
-      messages,
-      temperature: claudeRequest.temperature ?? 1,
-      stream: true,
-      max_tokens: claudeRequest.max_tokens,
-      stream_options: { include_usage: true },
-    };
-
-    if (tools.length > 0) {
-      payload.tools = tools;
-    }
+    const payload = super.buildPayload(claudeRequest, messages, tools);
 
     // Include reasoning for models that support it
     if (this.modelSupportsReasoning()) {
@@ -129,39 +82,14 @@ export class OpenRouterAdapter extends BaseModelAdapter {
       payload.thinking = claudeRequest.thinking;
     }
 
-    // Tool choice mapping from Claude format
-    if (claudeRequest.tool_choice) {
-      const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
-        payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
-        payload.tool_choice = type;
-      }
-    }
-
     return payload;
   }
 
-  // ─── Delegate prepareRequest to inner adapter ──────────────────────
-
-  override prepareRequest(request: any, originalRequest: any): any {
-    return this.innerAdapter.prepareRequest(request, originalRequest);
-  }
-
-  override getToolNameMap(): Map<string, string> {
-    // Merge maps from both adapters
-    const map = new Map(super.getToolNameMap());
-    for (const [k, v] of this.innerAdapter.getToolNameMap()) {
-      map.set(k, v);
-    }
-    return map;
-  }
-
-  /** Expose reasoning details extraction for Gemini via OpenRouter */
-  extractThoughtSignaturesFromReasoningDetails(reasoningDetails: any[]): Map<string, string> {
-    if (typeof (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails === "function") {
-      return (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
-    }
-    return new Map();
+  /** Synchronous reasoning support check via model ID patterns */
+  private modelSupportsReasoning(): boolean {
+    const model = parseModelSpec(this.modelId).model.toLowerCase();
+    return model.startsWith("o1") || model.startsWith("o3") ||
+      model.startsWith("r1") || model.startsWith("qwq") ||
+      model.includes("reasoning");
   }
 }

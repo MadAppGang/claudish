@@ -15,8 +15,14 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { getProviderByName, getApiKeyInfo } from "./providers/provider-definitions.js";
+
+import { createTransportForProvider } from "./providers/provider-factory.js";
+import { OpenRouterTransport } from "./providers/transport/openrouter.js";
+import { OpenAIFormatAdapter } from "./adapters/openai-format-adapter.js";
+import type { FormatAdapter } from "./adapters/format-adapter.js";
+import type { ProviderTransport, StreamFormat } from "./providers/transport/types.js";
 
 // Load environment variables
 config();
@@ -46,22 +52,6 @@ interface ModelInfo {
   supportsTools?: boolean;
   supportsReasoning?: boolean;
   supportsVision?: boolean;
-}
-
-interface OpenRouterResponse {
-  id: string;
-  choices: Array<{
-    message: {
-      content: string;
-      role: string;
-    };
-    finish_reason: string;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
 }
 
 /**
@@ -103,7 +93,7 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     const response = await fetch("https://openrouter.ai/api/v1/models");
     if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-    const data = await response.json();
+    const data: any = await response.json();
     const models = data.data || [];
 
     // Cache result - ensure directory exists
@@ -129,57 +119,43 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
 }
 
 /**
- * Resolve a model to its API endpoint and key.
- * Supports direct providers (gh@, g@, zen@, etc.) and falls back to OpenRouter.
+ * Create transport + format adapter for a model.
+ * Uses the provider factory for known providers, falls back to OpenRouter.
  */
-function resolveModelEndpoint(model: string): {
-  url: string;
-  apiKey: string;
+function createComponentsForModel(model: string): {
+  transport: ProviderTransport;
+  adapter: FormatAdapter;
   modelName: string;
-  providerName: string;
-  headers: Record<string, string>;
 } {
-  // Try direct provider resolution
-  const resolved = resolveRemoteProvider(model);
+  const parsed = parseModelSpec(model);
+  const def = getProviderByName(parsed.provider);
 
-  if (resolved && resolved.provider.name !== "openrouter") {
-    const { provider, modelName } = resolved;
+  if (def) {
+    // Resolve API key from provider definition
+    const keyInfo = getApiKeyInfo(def.name);
+    let apiKey = keyInfo?.envVar ? process.env[keyInfo.envVar] : "";
+    if (!apiKey && def.publicKeyFallback) {
+      apiKey = "public";
+    }
 
-    // Get API key
-    const apiKey = provider.apiKeyEnvVar ? process.env[provider.apiKeyEnvVar] : undefined;
-    if (!apiKey && provider.apiKeyEnvVar) {
-      // Some providers work without a key (e.g., opencode-zen with "public")
-      if (provider.name === "opencode-zen" || provider.name === "opencode-zen-go") {
-        // Zen falls back to "public" for free models
-      } else {
-        throw new Error(
-          `${provider.apiKeyEnvVar} environment variable not set for ${provider.name}`
-        );
+    // Only use direct provider if we have a key (or it's free).
+    // Missing key with explicit provider@ syntax is an error;
+    // otherwise fall through to OpenRouter like main branch did.
+    if (!apiKey && def.apiKeyEnvVar && def.transport !== "openrouter") {
+      if (parsed.isExplicitProvider) {
+        throw new Error(`${def.apiKeyEnvVar} environment variable not set for ${def.displayName}`);
+      }
+      // Fall through to OpenRouter
+    } else {
+      const components = createTransportForProvider(def, parsed.model, apiKey || "");
+      if (components) {
+        return {
+          transport: components.transport,
+          adapter: components.formatAdapter,
+          modelName: parsed.model,
+        };
       }
     }
-
-    // Gemini native API uses a different format, but Google provides an
-    // OpenAI-compatible endpoint we can use for simple chat completions
-    let url: string;
-    if (provider.name === "gemini" || provider.name === "gemini-codeassist") {
-      const baseUrl = provider.baseUrl || "https://generativelanguage.googleapis.com";
-      url = `${baseUrl}/v1beta/openai/chat/completions`;
-    } else {
-      url = provider.baseUrl + provider.apiPath;
-    }
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...(provider.headers || {}),
-    };
-
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`;
-    } else if (provider.name === "opencode-zen" || provider.name === "opencode-zen-go") {
-      headers["Authorization"] = `Bearer public`;
-    }
-
-    return { url, apiKey: apiKey || "public", modelName, providerName: provider.name, headers };
   }
 
   // Fall back to OpenRouter
@@ -188,26 +164,16 @@ function resolveModelEndpoint(model: string): {
     throw new Error("OPENROUTER_API_KEY environment variable not set");
   }
 
-  // Strip any provider prefix for OpenRouter (shouldn't have one, but be safe)
-  const parsed = parseModelSpec(model);
-  const modelName = parsed.provider === "openrouter" ? parsed.model : model;
-
   return {
-    url: "https://openrouter.ai/api/v1/chat/completions",
-    apiKey,
-    modelName,
-    providerName: "openrouter",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://claudish.com",
-      "X-Title": "Claudish MCP",
-    },
+    transport: new OpenRouterTransport(apiKey),
+    adapter: new OpenAIFormatAdapter(parsed.model),
+    modelName: parsed.model,
   };
 }
 
 /**
- * Run a prompt through a model (direct provider or OpenRouter)
+ * Run a prompt through a model using the transport/adapter stack.
+ * Non-streaming — collects full response and parses based on adapter type.
  */
 async function runPrompt(
   model: string,
@@ -215,39 +181,97 @@ async function runPrompt(
   systemPrompt?: string,
   maxTokens?: number
 ): Promise<{ content: string; usage?: { input: number; output: number } }> {
-  const endpoint = resolveModelEndpoint(model);
+  const { transport, adapter, modelName } = createComponentsForModel(model);
 
-  const messages: Array<{ role: string; content: string }> = [];
-
+  // Build a Claude-format request for the adapter to convert
+  const claudeRequest: any = {
+    model: modelName,
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+    max_tokens: maxTokens || 4096,
+  };
   if (systemPrompt) {
-    messages.push({ role: "system", content: systemPrompt });
+    claudeRequest.system = systemPrompt;
   }
 
-  messages.push({ role: "user", content: prompt });
+  // Use adapter to convert messages and build payload
+  const messages = adapter.convertMessages(claudeRequest);
+  const tools = adapter.convertTools(claudeRequest);
+  const payload = adapter.buildPayload(claudeRequest, messages, tools);
 
-  const response = await fetch(endpoint.url, {
+  // Non-streaming: Gemini uses a different endpoint URL, others use stream:false
+  let endpoint = transport.getEndpoint(modelName);
+  if (transport.streamFormat === "gemini-sse") {
+    endpoint = endpoint.replace(":streamGenerateContent?alt=sse", ":generateContent");
+  } else {
+    payload.stream = false;
+    delete payload.stream_options;
+  }
+
+  const headers = await transport.getHeaders();
+  headers["Content-Type"] = "application/json";
+
+  const response = await fetch(endpoint, {
     method: "POST",
-    headers: endpoint.headers,
-    body: JSON.stringify({
-      model: endpoint.modelName,
-      messages,
-      max_tokens: maxTokens || 4096,
-    }),
+    headers,
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`${endpoint.providerName} API error: ${response.status} - ${error}`);
+    throw new Error(`${transport.displayName} API error: ${response.status} - ${error}`);
   }
 
-  const data: OpenRouterResponse = await response.json();
+  const data: any = await response.json();
 
-  const content = data.choices?.[0]?.message?.content || "";
-  const usage = data.usage
-    ? { input: data.usage.prompt_tokens, output: data.usage.completion_tokens }
-    : undefined;
+  // Parse response based on wire format (matches streaming dispatch in provider-handler)
+  return parseResponse(transport.streamFormat, data);
+}
 
-  return { content, usage };
+/**
+ * Extract content and usage from provider response based on stream format.
+ * Uses the same format discriminator as the streaming parsers in provider-handler.
+ */
+function parseResponse(
+  format: StreamFormat,
+  data: any,
+): { content: string; usage?: { input: number; output: number } } {
+  switch (format) {
+    case "gemini-sse": {
+      const text = data.candidates?.[0]?.content?.parts
+        ?.map((p: any) => p.text || "")
+        .join("") || "";
+      const usage = data.usageMetadata
+        ? { input: data.usageMetadata.promptTokenCount, output: data.usageMetadata.candidatesTokenCount }
+        : undefined;
+      return { content: text, usage };
+    }
+
+    case "anthropic-sse": {
+      const text = data.content
+        ?.filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("") || "";
+      const usage = data.usage
+        ? { input: data.usage.input_tokens, output: data.usage.output_tokens }
+        : undefined;
+      return { content: text, usage };
+    }
+
+    case "ollama-jsonl": {
+      const text = data.message?.content || "";
+      return { content: text };
+    }
+
+    case "openai-sse":
+    case "openai-responses-sse":
+    default: {
+      const text = data.choices?.[0]?.message?.content || "";
+      const usage = data.usage
+        ? { input: data.usage.prompt_tokens, output: data.usage.completion_tokens }
+        : undefined;
+      return { content: text, usage };
+    }
+  }
 }
 
 /**

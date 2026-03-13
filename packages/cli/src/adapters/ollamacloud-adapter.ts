@@ -8,24 +8,9 @@
  * - No tool schema support
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
+import { FormatAdapter } from "./format-adapter.js";
 
-export class OllamaCloudAdapter extends BaseModelAdapter {
-  constructor(modelId: string) {
-    super(modelId);
-  }
-
-  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
-    return {
-      cleanedText: textContent,
-      extractedToolCalls: [],
-      wasTransformed: false,
-    };
-  }
-
-  shouldHandle(_modelId: string): boolean {
-    return false; // Not auto-selected; always explicitly passed
-  }
+export class OllamaCloudAdapter extends FormatAdapter {
 
   getName(): string {
     return "OllamaCloudAdapter";

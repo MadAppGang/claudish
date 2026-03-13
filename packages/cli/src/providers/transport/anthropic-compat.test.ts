@@ -1,6 +1,6 @@
 // REGRESSION: mm@MiniMax-M2.5 HTTP 401 — Fixed in /fix session dev-fix-20260306-023717-beb53cef
 //
-// Root cause: AnthropicCompatProvider.getHeaders() always sends "x-api-key" but
+// Root cause: AnthropicCompatTransport.getHeaders() always sends "x-api-key" but
 // MiniMax's /anthropic/v1/messages endpoint requires "Authorization: Bearer <key>".
 // Fix: RemoteProvider.authScheme: "bearer" | "x-api-key" selects the correct auth header.
 //
@@ -12,33 +12,33 @@
 // Fix: stripUnsupportedContentTypes() filters tool_reference from tool_result content arrays.
 
 import { describe, it, expect } from "bun:test";
-import { AnthropicCompatProvider } from "./anthropic-compat.js";
+import { AnthropicCompatTransport } from "./anthropic-compat.js";
 import { AnthropicPassthroughAdapter } from "../../adapters/anthropic-passthrough-adapter.js";
-import type { RemoteProvider } from "../../../handlers/shared/remote-provider-types.js";
-
-const BASE_CAPABILITIES = {
-  supportsTools: true,
-  supportsVision: true,
-  supportsStreaming: true,
-  supportsJsonMode: false,
-  supportsReasoning: false,
-};
+import type { TransportConfig } from "./base.js";
 
 const TEST_API_KEY = "test-key-abc123";
 
-describe("AnthropicCompatProvider.getHeaders()", () => {
-  it("returns Authorization: Bearer header when authScheme is 'bearer'", async () => {
-    const provider: RemoteProvider = {
-      name: "minimax",
-      baseUrl: "https://api.minimax.io",
-      apiPath: "/anthropic/v1/messages",
-      apiKeyEnvVar: "MINIMAX_API_KEY",
-      prefixes: ["mm@", "mmax@"],
-      capabilities: BASE_CAPABILITIES,
-      authScheme: "bearer",
-    };
+function makeConfig(overrides: Partial<TransportConfig> = {}): TransportConfig {
+  return {
+    name: "test",
+    displayName: "Test",
+    baseUrl: "https://api.example.com",
+    apiPath: "/anthropic/v1/messages",
+    apiKey: TEST_API_KEY,
+    modelName: "",
+    authScheme: "bearer",
+    ...overrides,
+  };
+}
 
-    const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
+describe("AnthropicCompatTransport.getHeaders()", () => {
+  it("returns Authorization: Bearer header when authScheme is 'bearer'", async () => {
+    const transport = new AnthropicCompatTransport(makeConfig({
+      name: "minimax",
+      displayName: "MiniMax",
+      baseUrl: "https://api.minimax.io",
+      authScheme: "bearer",
+    }));
     const headers = await transport.getHeaders();
 
     expect(headers["Authorization"]).toBe(`Bearer ${TEST_API_KEY}`);
@@ -47,17 +47,12 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
   });
 
   it("returns x-api-key header when authScheme is 'x-api-key'", async () => {
-    const provider: RemoteProvider = {
+    const transport = new AnthropicCompatTransport(makeConfig({
       name: "kimi",
+      displayName: "Kimi",
       baseUrl: "https://api.moonshot.cn",
-      apiPath: "/anthropic/v1/messages",
-      apiKeyEnvVar: "KIMI_API_KEY",
-      prefixes: ["kimi@", "moon@"],
-      capabilities: BASE_CAPABILITIES,
       authScheme: "x-api-key",
-    };
-
-    const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
+    }));
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);
@@ -66,17 +61,14 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
   });
 
   it("defaults to x-api-key when authScheme is undefined", async () => {
-    const provider: RemoteProvider = {
+    const transport = new AnthropicCompatTransport(makeConfig({
       name: "zai",
+      displayName: "Z.AI",
       baseUrl: "https://api.z.ai",
-      apiPath: "/anthropic/v1/messages",
-      apiKeyEnvVar: "ZAI_API_KEY",
-      prefixes: ["zai@"],
-      capabilities: BASE_CAPABILITIES,
-      // authScheme intentionally omitted — legacy / default behavior
-    };
-
-    const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
+      authScheme: undefined,
+      // authScheme omitted: AnthropicCompat overrides getHeaders, so base default doesn't matter.
+      // The override treats non-"bearer" as x-api-key.
+    }));
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);

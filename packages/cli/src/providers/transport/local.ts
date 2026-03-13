@@ -1,21 +1,30 @@
 /**
- * LocalProvider — transport for local OpenAI-compatible providers.
+ * LocalTransport: transport for local OpenAI-compatible providers.
  *
- * Supports Ollama, LM Studio, vLLM, MLX, and custom local endpoints.
- *
- * Transport concerns:
- * - Health checks (Ollama /api/tags → /v1/models fallback)
+ * Extends BaseTransport (no auth). Adds local-specific concerns:
+ * - Health checks (Ollama /api/tags, /v1/models fallback)
  * - Context window auto-detection (Ollama /api/show, LM Studio /v1/models)
  * - Custom undici agent with 10-minute timeouts for slow local inference
  * - LocalModelQueue for GPU concurrency control
  * - Provider-specific error messages
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
+import type { StreamFormat } from "./types.js";
+import { BaseTransport } from "./base.js";
+import type { ProviderCapabilities } from "../../handlers/shared/remote-provider-types.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import { Agent } from "undici";
+
+/** Config shape accepted by LocalTransport. */
+export interface LocalProviderConfig {
+  name: string;
+  baseUrl: string;
+  apiPath: string;
+  envVar: string;
+  prefixes: string[];
+  capabilities: ProviderCapabilities;
+}
 
 // Custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
@@ -34,13 +43,10 @@ const DISPLAY_NAMES: Record<string, string> = {
   custom: "Custom",
 };
 
-export class LocalTransport implements ProviderTransport {
-  readonly name: string;
-  readonly displayName: string;
+export class LocalTransport extends BaseTransport {
   readonly streamFormat: StreamFormat = "openai-sse";
 
   private config: LocalProviderConfig;
-  private modelName: string;
   private concurrency?: number;
   private healthChecked = false;
   private isHealthy = false;
@@ -51,10 +57,14 @@ export class LocalTransport implements ProviderTransport {
     modelName: string,
     options?: { concurrency?: number }
   ) {
+    super({
+      name: config.name,
+      displayName: DISPLAY_NAMES[config.name] || "Local",
+      baseUrl: config.baseUrl,
+      apiPath: config.apiPath,
+      modelName,
+    });
     this.config = config;
-    this.modelName = modelName;
-    this.name = config.name;
-    this.displayName = DISPLAY_NAMES[config.name] || "Local";
     this.concurrency = options?.concurrency;
 
     // Check for env var override of context window
@@ -74,10 +84,6 @@ export class LocalTransport implements ProviderTransport {
     }
   }
 
-  getEndpoint(): string {
-    return `${this.config.baseUrl}${this.config.apiPath}`;
-  }
-
   async getHeaders(): Promise<Record<string, string>> {
     return {};
   }
@@ -91,8 +97,8 @@ export class LocalTransport implements ProviderTransport {
   }
 
   getExtraPayloadFields(): Record<string, any> {
-    // Ollama defaults to 2048 context and silently truncates — set it explicitly
-    if (this.config.name === "ollama") {
+    // Ollama defaults to 2048 context and silently truncates, so set it explicitly
+    if (this.name === "ollama") {
       const numCtx = Math.max(this._contextWindow, 32768);
       log(`[${this.displayName}] Setting num_ctx: ${numCtx} (detected: ${this._contextWindow})`);
       return { options: { num_ctx: numCtx } };
@@ -107,7 +113,7 @@ export class LocalTransport implements ProviderTransport {
 
   /**
    * Health check + context window fetch on first request.
-   * Throws on failure so ComposedHandler can return an error response.
+   * Throws on failure so ProviderHandler can return an error response.
    */
   async refreshAuth(): Promise<void> {
     if (this.healthChecked) return;
@@ -136,7 +142,7 @@ export class LocalTransport implements ProviderTransport {
 
     // Try Ollama-specific health check first
     try {
-      const healthUrl = `${this.config.baseUrl}/api/tags`;
+      const healthUrl = `${this.baseUrl}/api/tags`;
       log(`[${this.displayName}] Trying health check: ${healthUrl}`);
       const response = await fetch(healthUrl, {
         method: "GET",
@@ -156,7 +162,7 @@ export class LocalTransport implements ProviderTransport {
 
     // Try generic OpenAI-compatible health check
     try {
-      const modelsUrl = `${this.config.baseUrl}/v1/models`;
+      const modelsUrl = `${this.baseUrl}/v1/models`;
       log(`[${this.displayName}] Trying health check: ${modelsUrl}`);
       const response = await fetch(modelsUrl, {
         method: "GET",
@@ -186,9 +192,9 @@ export class LocalTransport implements ProviderTransport {
     if (process.env.CLAUDISH_CONTEXT_WINDOW) return;
 
     log(`[${this.displayName}] Fetching context window...`);
-    if (this.config.name === "ollama") {
+    if (this.name === "ollama") {
       await this.fetchOllamaContextWindow();
-    } else if (this.config.name === "lmstudio") {
+    } else if (this.name === "lmstudio") {
       await this.fetchLMStudioContextWindow();
     } else {
       log(
@@ -199,7 +205,7 @@ export class LocalTransport implements ProviderTransport {
 
   private async fetchOllamaContextWindow(): Promise<void> {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/show`, {
+      const response = await fetch(`${this.baseUrl}/api/show`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: this.modelName }),
@@ -241,7 +247,7 @@ export class LocalTransport implements ProviderTransport {
 
   private async fetchLMStudioContextWindow(): Promise<void> {
     try {
-      const response = await fetch(`${this.config.baseUrl}/v1/models`, {
+      const response = await fetch(`${this.baseUrl}/v1/models`, {
         method: "GET",
         signal: AbortSignal.timeout(3000),
       });
@@ -283,15 +289,15 @@ export class LocalTransport implements ProviderTransport {
   // ─── Error messages ─────────────────────────────────────────────────
 
   private getConnectionErrorMessage(): string {
-    switch (this.config.name) {
+    switch (this.name) {
       case "ollama":
-        return `Cannot connect to Ollama at ${this.config.baseUrl}. Make sure Ollama is running with: ollama serve`;
+        return `Cannot connect to Ollama at ${this.baseUrl}. Make sure Ollama is running with: ollama serve`;
       case "lmstudio":
-        return `Cannot connect to LM Studio at ${this.config.baseUrl}. Make sure LM Studio server is running.`;
+        return `Cannot connect to LM Studio at ${this.baseUrl}. Make sure LM Studio server is running.`;
       case "vllm":
-        return `Cannot connect to vLLM at ${this.config.baseUrl}. Make sure vLLM server is running.`;
+        return `Cannot connect to vLLM at ${this.baseUrl}. Make sure vLLM server is running.`;
       default:
-        return `Cannot connect to ${this.config.name} at ${this.config.baseUrl}. Make sure the server is running.`;
+        return `Cannot connect to ${this.name} at ${this.baseUrl}. Make sure the server is running.`;
     }
   }
 }

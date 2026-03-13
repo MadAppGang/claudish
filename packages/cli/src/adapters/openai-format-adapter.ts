@@ -1,19 +1,21 @@
 /**
- * OpenAI adapter for handling model-specific behaviors
+ * OpenAIFormatAdapter — OpenAI Chat Completions / Responses API wire format.
  *
  * Handles:
- * - Context window detection for OpenAI, Grok, GLM, Kimi models
- * - Mapping 'thinking.budget_tokens' to 'reasoning_effort' for o1/o3 models
- * - max_completion_tokens vs max_tokens for newer models
+ * - Chat Completions payload building (stream_options, max_completion_tokens)
  * - Codex Responses API message conversion and payload building
- * - Vision support detection (GLM-specific V-variant rule)
- * - Tool choice mapping
+ * - reasoning_effort mapping for o1/o3 models
+ * - Tool name truncation (64-char limit)
+ * - Tool choice mapping from Claude format
+ *
+ * Used as the base format for: OpenAI direct, GitHub Models, xAI, Kimi, ZAI.
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
+import { FormatAdapter } from "./format-adapter.js";
+import { parseModelSpec } from "../providers/model-parser.js";
 import { log } from "../logger.js";
 
-export class OpenAIAdapter extends BaseModelAdapter {
+export class OpenAIFormatAdapter extends FormatAdapter {
   private providerCapabilities?: { supportsVision?: boolean };
 
   constructor(modelId: string, providerCapabilities?: { supportsVision?: boolean }) {
@@ -21,17 +23,14 @@ export class OpenAIAdapter extends BaseModelAdapter {
     this.providerCapabilities = providerCapabilities;
   }
 
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    return {
-      cleanedText: textContent,
-      extractedToolCalls: [],
-      wasTransformed: false,
-    };
+  getName(): string {
+    return "OpenAIFormatAdapter";
   }
 
-  /**
-   * Handle request preparation — reasoning parameters and tool name truncation
-   */
+  override getToolNameLimit(): number | null {
+    return 64;
+  }
+
   override prepareRequest(request: any, originalRequest: any): any {
     // Map thinking.budget_tokens -> reasoning_effort for o1/o3 models
     if (originalRequest.thinking && this.isReasoningModel()) {
@@ -43,7 +42,7 @@ export class OpenAIAdapter extends BaseModelAdapter {
 
       request.reasoning_effort = effort;
       delete request.thinking;
-      log(`[OpenAIAdapter] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
+      log(`[OpenAIFormatAdapter] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
     }
 
     // Truncate tool names if model has a limit
@@ -55,72 +54,6 @@ export class OpenAIAdapter extends BaseModelAdapter {
     return request;
   }
 
-  shouldHandle(modelId: string): boolean {
-    return (
-      modelId.startsWith("oai/") ||
-      modelId.includes("o1") ||
-      modelId.includes("o3")
-    );
-  }
-
-  getName(): string {
-    return "OpenAIAdapter";
-  }
-
-  // ─── ComposedHandler integration ───────────────────────────────────
-
-  override getContextWindow(): number {
-    const model = this.modelId.toLowerCase();
-
-    // xAI Grok models
-    if (model.includes("grok-4.1-fast") || model.includes("grok-4-1-fast"))
-      return 2_000_000;
-    if (model.includes("grok-4-fast")) return 2_000_000;
-    if (model.includes("grok-code-fast")) return 256_000;
-    if (model.includes("grok-4")) return 256_000;
-    if (model.includes("grok-3")) return 131_072;
-    if (model.includes("grok-2")) return 131_072;
-    if (model.includes("grok")) return 131_072;
-
-    // Kimi models
-    if (model.includes("kimi-k2.5") || model.includes("kimi-k2-5")) return 262_144;
-    if (model.includes("kimi-k2")) return 262_144;
-    if (model.includes("kimi")) return 131_072;
-
-    // GLM/Zhipu models
-    if (model.includes("glm-5")) return 204_800;
-    if (model.includes("glm-4.7-flash")) return 200_000;
-    if (model.includes("glm-4.7")) return 204_800;
-    if (model.includes("glm-4.6v")) return 128_000;
-    if (model.includes("glm-4.6")) return 204_800;
-    if (model.includes("glm-4.5v")) return 64_000;
-    if (model.includes("glm-4.5-flash")) return 131_072;
-    if (model.includes("glm-4.5-air")) return 131_072;
-    if (model.includes("glm-4.5")) return 131_072;
-    if (model.includes("glm-")) return 131_072;
-
-    // OpenAI models
-    if (model.includes("gpt-5")) return 256_000;
-    if (model.includes("o1") || model.includes("o3")) return 200_000;
-    if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) return 128_000;
-    if (model.includes("gpt-3.5")) return 16_385;
-
-    return 128_000; // Default
-  }
-
-  override supportsVision(): boolean {
-    // Provider-level: if provider says no vision, respect it
-    if (this.providerCapabilities && this.providerCapabilities.supportsVision === false) {
-      return false;
-    }
-    // GLM-specific: only "V" variants support vision
-    const model = this.modelId.toLowerCase();
-    if (model.startsWith("glm-") && !/\d+\.?\d*v/.test(model)) {
-      return false;
-    }
-    return true;
-  }
-
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
     if (this.isCodexModel()) {
       return this.buildResponsesPayload(claudeRequest, messages, tools);
@@ -128,28 +61,51 @@ export class OpenAIAdapter extends BaseModelAdapter {
     return this.buildChatCompletionsPayload(claudeRequest, messages, tools);
   }
 
+  override supportsVision(): boolean {
+    if (this.providerCapabilities && this.providerCapabilities.supportsVision === false) {
+      return false;
+    }
+    return true;
+  }
+
+  override getContextWindow(): number {
+    const m = this.bareModel;
+    if (m.startsWith("gpt-5")) return 256_000;
+    if (m.startsWith("o1") || m.startsWith("o3")) return 200_000;
+    if (m.startsWith("gpt-4o") || m.startsWith("gpt-4-turbo")) return 128_000;
+    if (m.startsWith("gpt-3.5")) return 16_385;
+    return 128_000;
+  }
+
   // ─── Private helpers ───────────────────────────────────────────────
 
-  private isReasoningModel(): boolean {
-    const model = this.modelId.toLowerCase();
-    return model.includes("o1") || model.includes("o3");
+  /** Bare model name (vendor prefix stripped, lowercased). Cached. */
+  private _bareModel: string | null = null;
+  protected get bareModel(): string {
+    if (this._bareModel === null) {
+      this._bareModel = parseModelSpec(this.modelId).model.toLowerCase();
+    }
+    return this._bareModel;
   }
 
-  private isCodexModel(): boolean {
-    return this.modelId.toLowerCase().includes("codex");
+  protected isReasoningModel(): boolean {
+    return this.bareModel.startsWith("o1") || this.bareModel.startsWith("o3");
   }
 
-  private usesMaxCompletionTokens(): boolean {
-    const model = this.modelId.toLowerCase();
+  protected isCodexModel(): boolean {
+    return this.bareModel.startsWith("codex");
+  }
+
+  protected usesMaxCompletionTokens(): boolean {
     return (
-      model.includes("gpt-5") ||
-      model.includes("o1") ||
-      model.includes("o3") ||
-      model.includes("o4")
+      this.bareModel.startsWith("gpt-5") ||
+      this.bareModel.startsWith("o1") ||
+      this.bareModel.startsWith("o3") ||
+      this.bareModel.startsWith("o4")
     );
   }
 
-  private buildChatCompletionsPayload(claudeRequest: any, messages: any[], tools: any[]): any {
+  protected buildChatCompletionsPayload(claudeRequest: any, messages: any[], tools: any[]): any {
     const payload: any = {
       model: this.modelId,
       messages,
@@ -177,7 +133,7 @@ export class OpenAIAdapter extends BaseModelAdapter {
       }
     }
 
-    // Reasoning params handled in prepareRequest instead
+    // Reasoning params for o1/o3
     if (claudeRequest.thinking && this.isReasoningModel()) {
       const { budget_tokens } = claudeRequest.thinking;
       let effort = "medium";
@@ -185,17 +141,13 @@ export class OpenAIAdapter extends BaseModelAdapter {
       else if (budget_tokens < 16000) effort = "low";
       else if (budget_tokens >= 32000) effort = "high";
       payload.reasoning_effort = effort;
-      log(`[OpenAIAdapter] Mapped thinking.budget_tokens ${budget_tokens} -> reasoning_effort: ${effort}`);
+      log(`[OpenAIFormatAdapter] Mapped thinking.budget_tokens ${budget_tokens} -> reasoning_effort: ${effort}`);
     }
 
     return payload;
   }
 
-  /**
-   * Build Responses API payload for Codex models.
-   * Uses 'input' instead of 'messages', different content types.
-   */
-  private buildResponsesPayload(claudeRequest: any, messages: any[], tools: any[]): any {
+  protected buildResponsesPayload(claudeRequest: any, messages: any[], tools: any[]): any {
     const convertedMessages = this.convertMessagesToResponsesAPI(messages);
 
     const payload: any = {
@@ -229,14 +181,11 @@ export class OpenAIAdapter extends BaseModelAdapter {
     return payload;
   }
 
-  /**
-   * Convert Chat Completions format messages to Responses API format.
-   */
-  private convertMessagesToResponsesAPI(messages: any[]): any[] {
+  protected convertMessagesToResponsesAPI(messages: any[]): any[] {
     const result: any[] = [];
 
     for (const msg of messages) {
-      if (msg.role === "system") continue; // Goes to instructions field
+      if (msg.role === "system") continue;
 
       if (msg.role === "tool") {
         result.push({

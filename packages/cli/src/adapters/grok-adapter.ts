@@ -10,10 +10,10 @@
  * This adapter translates that to Claude Code's expected tool_calls format.
  */
 
-import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
+import { ModelAdapter, type AdapterResult, type ToolCall } from "./model-adapter.js";
 import { log } from "../logger";
 
-export class GrokAdapter extends BaseModelAdapter {
+export class GrokAdapter extends ModelAdapter {
   private xmlBuffer: string = "";
 
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
@@ -138,10 +138,21 @@ export class GrokAdapter extends BaseModelAdapter {
     return "GrokAdapter";
   }
 
+  override getContextWindow(): number | undefined {
+    const model = this.modelId.toLowerCase();
+    if (model.includes("grok-4.1-fast") || model.includes("grok-4-1-fast")) return 2_000_000;
+    if (model.includes("grok-4-fast")) return 2_000_000;
+    if (model.includes("grok-code-fast")) return 256_000;
+    if (model.includes("grok-4")) return 256_000;
+    if (model.includes("grok-3")) return 131_072;
+    if (model.includes("grok-2")) return 131_072;
+    return 131_072;
+  }
+
   /**
    * Reset internal state (useful between requests)
    */
-  reset(): void {
+  override reset(): void {
     this.xmlBuffer = "";
   }
 }

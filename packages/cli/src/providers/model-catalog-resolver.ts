@@ -79,7 +79,7 @@ export function getResolver(provider: string): ModelCatalogResolver | null {
 /**
  * Main synchronous entry point.
  *
- * Called from proxy-server.ts BEFORE constructing ComposedHandler. If the resolver
+ * Called from proxy-server.ts BEFORE constructing ProviderHandler. If the resolver
  * for this provider has no warm cache and no disk fallback, userInput is returned
  * unchanged (graceful passthrough).
  *

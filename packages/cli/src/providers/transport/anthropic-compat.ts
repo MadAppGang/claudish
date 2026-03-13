@@ -6,47 +6,31 @@
  * anthropic-version, plus Kimi OAuth fallback for kimi-coding.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import type { StreamFormat } from "./types.js";
+import { KeyAuthTransport } from "./base.js";
 import { log } from "../../logger.js";
 
-export class AnthropicCompatProvider implements ProviderTransport {
-  readonly name: string;
-  readonly displayName: string;
+export class AnthropicCompatTransport extends KeyAuthTransport {
   readonly streamFormat: StreamFormat = "anthropic-sse";
 
-  private provider: RemoteProvider;
-  private apiKey: string;
-
-  constructor(provider: RemoteProvider, apiKey: string) {
-    this.provider = provider;
-    this.apiKey = apiKey;
-    this.name = provider.name;
-    this.displayName = AnthropicCompatProvider.formatDisplayName(provider.name);
-  }
-
-  getEndpoint(): string {
-    return `${this.provider.baseUrl}${this.provider.apiPath}`;
-  }
-
-  async getHeaders(): Promise<Record<string, string>> {
+  override async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       "anthropic-version": "2023-06-01",
     };
 
-    if (this.provider.authScheme === "bearer") {
+    if (this.authScheme === "bearer") {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     } else {
       headers["x-api-key"] = this.apiKey;
     }
 
     // Add provider-specific headers
-    if (this.provider.headers) {
-      Object.assign(headers, this.provider.headers);
+    if (this.providerHeaders) {
+      Object.assign(headers, this.providerHeaders);
     }
 
     // Kimi Coding: prefer API key auth, fall back to OAuth if no key provided
-    if (this.provider.name === "kimi-coding" && !this.apiKey) {
+    if (this.name === "kimi-coding" && !this.apiKey) {
       try {
         const { existsSync, readFileSync } = await import("node:fs");
         const { join } = await import("node:path");
@@ -75,17 +59,5 @@ export class AnthropicCompatProvider implements ProviderTransport {
     }
 
     return headers;
-  }
-
-  private static formatDisplayName(name: string): string {
-    const map: Record<string, string> = {
-      minimax: "MiniMax",
-      "minimax-coding": "MiniMax Coding",
-      kimi: "Kimi",
-      "kimi-coding": "Kimi Coding",
-      moonshot: "Kimi",
-      zai: "Z.AI",
-    };
-    return map[name.toLowerCase()] || name.charAt(0).toUpperCase() + name.slice(1);
   }
 }

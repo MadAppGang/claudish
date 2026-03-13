@@ -4,36 +4,23 @@ import { serve } from "@hono/node-server";
 import { log, logStderr, isLoggingEnabled } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 import { NativeHandler } from "./handlers/native-handler.js";
-import { OpenRouterProvider } from "./providers/transport/openrouter.js";
+import { OpenRouterTransport } from "./providers/transport/openrouter.js";
 import { OpenRouterAdapter } from "./adapters/openrouter-adapter.js";
-import { LocalTransport } from "./providers/transport/local.js";
-import { LocalModelAdapter } from "./adapters/local-adapter.js";
-import { GeminiApiKeyProvider } from "./providers/transport/gemini-apikey.js";
-import { GeminiCodeAssistProvider } from "./providers/transport/gemini-codeassist.js";
-import { GeminiAdapter } from "./adapters/gemini-adapter.js";
-import { VertexOAuthProvider, parseVertexModel } from "./providers/transport/vertex-oauth.js";
-import { DefaultAdapter } from "./adapters/base-adapter.js";
+import { GeminiFormatAdapter } from "./adapters/gemini-format-adapter.js";
+import { VertexOAuthTransport, parseVertexModel } from "./providers/transport/vertex-oauth.js";
+import { FormatAdapter } from "./adapters/format-adapter.js";
+import { AnthropicPassthroughAdapter } from "./adapters/anthropic-passthrough-adapter.js";
+import { OpenAIFormatAdapter } from "./adapters/openai-format-adapter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
 import type { ModelHandler } from "./handlers/types.js";
-import { ComposedHandler } from "./handlers/composed-handler.js";
-import { LiteLLMProvider } from "./providers/transport/litellm.js";
-import { LiteLLMAdapter } from "./adapters/litellm-adapter.js";
-import { OpenAIProvider } from "./providers/transport/openai.js";
-import { OpenAIAdapter } from "./adapters/openai-adapter.js";
-import { AnthropicCompatProvider } from "./providers/transport/anthropic-compat.js";
-import { AnthropicPassthroughAdapter } from "./adapters/anthropic-passthrough-adapter.js";
-import { OllamaCloudProvider } from "./providers/transport/ollamacloud.js";
-import { OllamaCloudAdapter } from "./adapters/ollamacloud-adapter.js";
+import { ProviderHandler } from "./handlers/provider-handler.js";
 import {
-  resolveProvider,
   parseUrlModel,
   createUrlProvider,
 } from "./providers/provider-registry.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
   resolveRemoteProvider,
-  validateRemoteProviderApiKey,
-  getRegisteredRemoteProviders,
 } from "./providers/remote-provider-registry.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
@@ -44,6 +31,13 @@ import {
   logResolution,
   warmAllCatalogs,
 } from "./providers/model-catalog-resolver.js";
+import {
+  getProviderByName,
+  isLocalTransport,
+} from "./providers/provider-definitions.js";
+import { createTransportForProvider } from "./providers/provider-factory.js";
+import { LocalTransport } from "./providers/transport/local.js";
+import { LocalModelAdapter } from "./adapters/local-adapter.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -77,11 +71,11 @@ export async function createProxyServer(
     const modelId = targetModel.includes("@") ? parsed.model : targetModel;
 
     if (!openRouterHandlers.has(modelId)) {
-      const orProvider = new OpenRouterProvider(openrouterApiKey || "");
+      const orProvider = new OpenRouterTransport(openrouterApiKey || "");
       const orAdapter = new OpenRouterAdapter(modelId);
       openRouterHandlers.set(
         modelId,
-        new ComposedHandler(orProvider, modelId, modelId, port, { adapter: orAdapter, isInteractive: options.isInteractive })
+        new ProviderHandler(orProvider, modelId, modelId, port, { formatAdapter: orAdapter, isInteractive: options.isInteractive })
       );
     }
     return openRouterHandlers.get(modelId)!;
@@ -98,9 +92,13 @@ export async function createProxyServer(
     const modelId = targetModel.replace(/^poe:/, "");
     if (!poeHandlers.has(modelId)) {
       const poeTransport = new PoeProvider(poeApiKey);
+      const poeDef = getProviderByName("poe");
       poeHandlers.set(
         modelId,
-        new ComposedHandler(poeTransport, modelId, modelId, port, { isInteractive: options.isInteractive })
+        new ProviderHandler(poeTransport, modelId, modelId, port, {
+          formatAdapter: new OpenAIFormatAdapter(modelId, poeDef?.capabilities || { supportsTools: true, supportsVision: true, supportsStreaming: true, supportsJsonMode: false, supportsReasoning: false }),
+          isInteractive: options.isInteractive,
+        })
       );
     }
     return poeHandlers.get(modelId)!;
@@ -117,28 +115,27 @@ export async function createProxyServer(
       return localProviderHandlers.get(targetModel)!;
     }
 
-    // Check for prefix-based local provider (ollama/, lmstudio/, etc.)
-    const resolved = resolveProvider(targetModel);
-    if (resolved) {
-      const provider = new LocalTransport(resolved.provider, resolved.modelName, {
-        concurrency: resolved.concurrency,
-      });
-      const adapter = new LocalModelAdapter(
-        resolved.modelName,
-        resolved.provider.name,
-        resolved.provider.capabilities
-      );
-      const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
-        adapter,
-        tokenStrategy: "local",
-        summarizeTools: options.summarizeTools,
-        isInteractive: options.isInteractive,
-      });
-      localProviderHandlers.set(targetModel, handler);
-      log(
-        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ""}`
-      );
-      return handler;
+    // Check for definition-based local provider (ollama@, lmstudio@, etc.)
+    const parsed = parseModelSpec(targetModel);
+    if (isLocalTransport(parsed.provider)) {
+      const def = getProviderByName(parsed.provider);
+      if (def) {
+        const result = createTransportForProvider(def, parsed.model, "", {
+          concurrency: parsed.concurrency,
+          summarizeTools: options.summarizeTools,
+        });
+        if (result) {
+          const handler = new ProviderHandler(result.transport, parsed.model, parsed.model, port, {
+            formatAdapter: result.formatAdapter,
+            tokenStrategy: result.tokenStrategy,
+            summarizeTools: result.summarizeTools,
+            isInteractive: options.isInteractive,
+          });
+          localProviderHandlers.set(targetModel, handler);
+          log(`[Proxy] ${result.logMessage}${parsed.concurrency !== undefined ? ` (concurrency: ${parsed.concurrency})` : ""}`);
+          return handler;
+        }
+      }
     }
 
     // Check for URL-based model (http://localhost:11434/llama3)
@@ -146,13 +143,13 @@ export async function createProxyServer(
     if (urlParsed) {
       const providerConfig = createUrlProvider(urlParsed);
       const provider = new LocalTransport(providerConfig, urlParsed.modelName);
-      const adapter = new LocalModelAdapter(
+      const formatAdapter = new LocalModelAdapter(
         urlParsed.modelName,
         providerConfig.name,
         providerConfig.capabilities
       );
-      const handler = new ComposedHandler(provider, urlParsed.modelName, urlParsed.modelName, port, {
-        adapter,
+      const handler = new ProviderHandler(provider, urlParsed.modelName, urlParsed.modelName, port, {
+        formatAdapter,
         tokenStrategy: "local",
         summarizeTools: options.summarizeTools,
         isInteractive: options.isInteractive,
@@ -167,8 +164,9 @@ export async function createProxyServer(
     return null;
   };
 
-  // Helper to get or create remote provider handler (Gemini, OpenAI)
-  // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
+  // Helper to get or create remote provider handler
+  // Uses createTransportForProvider() factory for most transports,
+  // with special handling for vertex (express vs oauth mode selection).
   const getRemoteProviderHandler = (targetModel: string): ModelHandler | null => {
     if (remoteProviderHandlers.has(targetModel)) {
       return remoteProviderHandlers.get(targetModel)!;
@@ -216,160 +214,51 @@ export async function createProxyServer(
         : "";
 
       let handler: ModelHandler;
-      if (resolved.provider.name === "gemini") {
-        const gemProvider = new GeminiApiKeyProvider(resolved.provider, resolved.modelName, apiKey);
-        const gemAdapter = new GeminiAdapter(resolved.modelName);
-        handler = new ComposedHandler(gemProvider, targetModel, resolved.modelName, port, {
-          adapter: gemAdapter,
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created Gemini handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "gemini-codeassist") {
-        const gcaProvider = new GeminiCodeAssistProvider(resolved.modelName);
-        const gcaAdapter = new GeminiAdapter(resolved.modelName);
-        handler = new ComposedHandler(gcaProvider, targetModel, resolved.modelName, port, {
-          adapter: gcaAdapter,
-          unwrapGeminiResponse: true,
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created Gemini Code Assist handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "openai") {
-        // OpenAI uses ComposedHandler with OpenAIProvider + OpenAIAdapter
-        const oaiProvider = new OpenAIProvider(resolved.provider, resolved.modelName, apiKey);
-        const oaiAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
-        handler = new ComposedHandler(oaiProvider, targetModel, resolved.modelName, port, {
-          adapter: oaiAdapter,
-          tokenStrategy: "delta-aware",
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created OpenAI handler (composed): ${resolved.modelName}`);
-      } else if (
-        resolved.provider.name === "minimax" ||
-        resolved.provider.name === "minimax-coding" ||
-        resolved.provider.name === "kimi" ||
-        resolved.provider.name === "kimi-coding" ||
-        resolved.provider.name === "zai"
-      ) {
-        // MiniMax, Kimi, Kimi Coding, and Z.AI use Anthropic-compatible APIs — composed handler
-        const acProvider = new AnthropicCompatProvider(resolved.provider, apiKey);
-        const acAdapter = new AnthropicPassthroughAdapter(resolved.modelName, resolved.provider.name);
-        handler = new ComposedHandler(acProvider, targetModel, resolved.modelName, port, {
-          adapter: acAdapter,
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created ${resolved.provider.name} handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "glm" || resolved.provider.name === "glm-coding") {
-        // GLM and GLM Coding Plan use OpenAI-compatible API — composed handler
-        const glmProvider = new OpenAIProvider(resolved.provider, resolved.modelName, apiKey);
-        const glmAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
-        handler = new ComposedHandler(glmProvider, targetModel, resolved.modelName, port, {
-          adapter: glmAdapter,
-          tokenStrategy: "delta-aware",
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created ${resolved.provider.name} handler (composed): ${resolved.modelName}`);
-      } else if (
-        resolved.provider.name === "opencode-zen" ||
-        resolved.provider.name === "opencode-zen-go"
-      ) {
-        // OpenCode Zen — two tiers:
-        //   zen/  (opencode-zen):    free anonymous models + full paid access (OPENCODE_API_KEY)
-        //   zgo/  (opencode-zen-go): go-plan models (glm-5, minimax-m2.5, kimi-k2.5) via zen/go/v1/
-        // Free anonymous models work without a key; use "public" as fallback for consistent rate-limit bucket
-        const zenApiKey = apiKey || "public";
-        const isGoProvider = resolved.provider.name === "opencode-zen-go";
-        if (resolved.modelName.toLowerCase().includes("minimax")) {
-          const zenAcProvider = new AnthropicCompatProvider(resolved.provider, zenApiKey);
-          const zenAcAdapter = new AnthropicPassthroughAdapter(resolved.modelName, resolved.provider.name);
-          handler = new ComposedHandler(zenAcProvider, targetModel, resolved.modelName, port, {
-            adapter: zenAcAdapter,
-            isInteractive: options.isInteractive,
-          });
-          log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (Anthropic composed): ${resolved.modelName}`);
-        } else {
-          const zenProvider = new OpenAIProvider(resolved.provider, resolved.modelName, zenApiKey);
-          const zenAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
-          handler = new ComposedHandler(zenProvider, targetModel, resolved.modelName, port, {
-            adapter: zenAdapter,
-            tokenStrategy: "delta-aware",
-            isInteractive: options.isInteractive,
-          });
-          log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (composed): ${resolved.modelName}`);
-        }
-      } else if (resolved.provider.name === "ollamacloud") {
-        // OllamaCloud uses Ollama native API (NOT OpenAI-compatible) — composed handler
-        const ocProvider = new OllamaCloudProvider(resolved.provider, apiKey);
-        const ocAdapter = new OllamaCloudAdapter(resolved.modelName);
-        handler = new ComposedHandler(ocProvider, targetModel, resolved.modelName, port, {
-          adapter: ocAdapter,
-          tokenStrategy: "accumulate-both",
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created OllamaCloud handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "litellm") {
-        // LiteLLM uses OpenAI-compatible API format — composed handler
-        if (!resolved.provider.baseUrl) {
-          logStderr("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
-          logStderr("Set it with: export LITELLM_BASE_URL='https://your-litellm-instance.com'");
-          logStderr("Or use: claudish --litellm-url https://your-instance.com --model litellm@model 'task'");
-          return null;
-        }
-        const provider = new LiteLLMProvider(resolved.provider.baseUrl, apiKey, resolved.modelName);
-        const adapter = new LiteLLMAdapter(resolved.modelName, resolved.provider.baseUrl);
-        handler = new ComposedHandler(provider, targetModel, resolved.modelName, port, {
-          adapter,
-          isInteractive: options.isInteractive,
-        });
-        log(`[Proxy] Created LiteLLM handler (composed): ${resolved.modelName} (${resolved.provider.baseUrl})`);
-      } else if (resolved.provider.name === "vertex") {
-        // Vertex AI supports two modes:
-        // 1. Express Mode (API key) - for Gemini models
-        // 2. OAuth Mode (project/service account) - for all models including partners
+
+      // Vertex has special express/OAuth mode selection
+      if (resolved.provider.name === "vertex") {
         const hasApiKey = !!process.env.VERTEX_API_KEY;
         const vertexConfig = getVertexConfig();
 
         if (hasApiKey) {
-          // Express Mode - Vertex Express uses the standard Gemini API endpoint
-          // but with VERTEX_API_KEY instead of GEMINI_API_KEY.
-          // We must use the Gemini provider config (which has the correct baseUrl/apiPath)
-          // because the vertex provider config has empty baseUrl/apiPath (designed for OAuth mode).
-          const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
-          const expressProvider = geminiConfig || resolved.provider;
-          const vxGemProvider = new GeminiApiKeyProvider(expressProvider, resolved.modelName, process.env.VERTEX_API_KEY!);
-          const vxGemAdapter = new GeminiAdapter(resolved.modelName);
-          handler = new ComposedHandler(vxGemProvider, targetModel, resolved.modelName, port, {
-            adapter: vxGemAdapter,
+          // Express Mode - uses Gemini API endpoint with VERTEX_API_KEY
+          const geminiDef = getProviderByName("google");
+          const expressResult = geminiDef
+            ? createTransportForProvider(geminiDef, resolved.modelName, process.env.VERTEX_API_KEY!)
+            : null;
+          if (!expressResult) {
+            log(`[Proxy] Failed to create Vertex Express handler`);
+            return null;
+          }
+          handler = new ProviderHandler(expressResult.transport, targetModel, resolved.modelName, port, {
+            formatAdapter: expressResult.formatAdapter,
             isInteractive: options.isInteractive,
           });
-          log(`[Proxy] Created Vertex AI Express handler (composed): ${resolved.modelName}`);
+          log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
         } else if (vertexConfig) {
-          // OAuth Mode - ComposedHandler with publisher-specific adapter
+          // OAuth Mode - publisher-specific adapter
           const oauthError = validateVertexOAuthConfig();
           if (oauthError) {
             log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
             return null;
           }
           const parsed = parseVertexModel(resolved.modelName);
-          const vxProvider = new VertexOAuthProvider(vertexConfig, parsed);
+          const vxProvider = new VertexOAuthTransport(vertexConfig, parsed);
 
-          // Select adapter based on publisher
-          let vxAdapter;
-          const handlerOpts: any = {};
+          let vxAdapter: FormatAdapter;
           if (parsed.publisher === "google") {
-            vxAdapter = new GeminiAdapter(resolved.modelName);
+            vxAdapter = new GeminiFormatAdapter(resolved.modelName);
           } else if (parsed.publisher === "anthropic") {
             vxAdapter = new AnthropicPassthroughAdapter(parsed.model, "vertex");
           } else {
-            // Mistral/Meta use OpenAI format; Mistral rawPredict uses bare model name
             const modelId = parsed.publisher === "mistralai"
               ? parsed.model
               : `${parsed.publisher}/${parsed.model}`;
-            vxAdapter = new DefaultAdapter(modelId);
+            vxAdapter = new OpenAIFormatAdapter(modelId, { supportsTools: true, supportsVision: true, supportsStreaming: true, supportsJsonMode: false, supportsReasoning: false });
           }
 
-          handler = new ComposedHandler(vxProvider, targetModel, resolved.modelName, port, {
-            adapter: vxAdapter,
-            ...handlerOpts,
+          handler = new ProviderHandler(vxProvider, targetModel, resolved.modelName, port, {
+            formatAdapter: vxAdapter,
             isInteractive: options.isInteractive,
           });
           log(
@@ -380,7 +269,27 @@ export async function createProxyServer(
           return null;
         }
       } else {
-        return null; // Unknown provider
+        // Use the transport factory for all other providers
+        const def = getProviderByName(resolved.provider.name);
+        if (!def) return null;
+
+        const result = createTransportForProvider(def, resolved.modelName, apiKey);
+        if (!result) {
+          if (def.transport === "litellm") {
+            logStderr("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
+            logStderr("Set it with: export LITELLM_BASE_URL='https://your-litellm-instance.com'");
+            logStderr("Or use: claudish --litellm-url https://your-instance.com --model litellm@model 'task'");
+          }
+          return null;
+        }
+
+        handler = new ProviderHandler(result.transport, targetModel, resolved.modelName, port, {
+          formatAdapter: result.formatAdapter,
+          tokenStrategy: result.tokenStrategy,
+          unwrapGeminiResponse: result.unwrapGeminiResponse,
+          isInteractive: options.isInteractive,
+        });
+        log(`[Proxy] ${result.logMessage}`);
       }
 
       // Cache under both the original targetModel and the resolveTarget (if different)
@@ -430,7 +339,7 @@ export async function createProxyServer(
       target = model;
     }
 
-    // 2b. Catalog resolution — resolve vendor prefix for OpenRouter and LiteLLM
+    // 2b. Catalog resolution: resolve vendor prefix for OpenRouter and LiteLLM
     // This must happen after target is determined but before handler construction.
     // resolveModelNameSync is synchronous (uses in-memory cache + readFileSync).
     {
@@ -475,7 +384,19 @@ export async function createProxyServer(
       return nativeHandler;
     }
 
-    // 7. OpenRouter Handler (default for any model with "/" or explicit provider not matched above)
+    // 7. Explicit provider@ that wasn't handled above means missing API key or
+    // unsupported provider -- warn instead of silently falling to OpenRouter.
+    if (hasExplicitProvider) {
+      const parsed = parseModelSpec(target);
+      const def = getProviderByName(parsed.provider);
+      if (def) {
+        logStderr(`[Proxy] Warning: ${def.displayName} API key not configured, falling back to OpenRouter for: ${target}`);
+      } else {
+        logStderr(`[Proxy] Warning: Unknown provider "${parsed.provider}", falling back to OpenRouter for: ${target}`);
+      }
+    }
+
+    // 8. OpenRouter Handler (default for any model with "/" or unmatched explicit provider)
     return getOpenRouterHandler(target);
   };
 
@@ -549,7 +470,7 @@ export async function createProxyServer(
   const catalogProvidersToWarm = ["openrouter"];
   if (process.env.LITELLM_BASE_URL) catalogProvidersToWarm.push("litellm");
   warmAllCatalogs(catalogProvidersToWarm).catch(() => {
-    // Warming failures are non-fatal — resolver falls back to passthrough
+    // Warming failures are non-fatal; resolver falls back to passthrough
   });
 
   return {
@@ -560,3 +481,5 @@ export async function createProxyServer(
     },
   };
 }
+
+// ─── Synchronous transport factory ───────────────────────

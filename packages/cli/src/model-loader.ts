@@ -1,3 +1,4 @@
+import { parseModelSpec } from "./providers/model-parser.js";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -221,14 +222,15 @@ export async function doesModelSupportReasoning(modelId: string): Promise<boolea
   if (_cachedOpenRouterModels) {
     const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
     if (model && model.supported_parameters) {
-      return (
+      if (
         model.supported_parameters.includes("include_reasoning") ||
-        model.supported_parameters.includes("reasoning") ||
-        // Fallback for models we know support it but metadata might lag
-        model.id.includes("o1") ||
-        model.id.includes("o3") ||
-        model.id.includes("r1")
-      );
+        model.supported_parameters.includes("reasoning")
+      ) {
+        return true;
+      }
+      // Fallback for models we know support reasoning but metadata might lag
+      const bare = parseModelSpec(model.id).model.toLowerCase();
+      return bare.startsWith("o1") || bare.startsWith("o3") || bare.startsWith("r1") || bare.startsWith("deepseek-r1");
     }
   }
 

@@ -1,25 +1,29 @@
 /**
- * ComposedHandler — composes a ProviderTransport + ModelAdapter to implement ModelHandler.
+ * ProviderHandler — composes Transport + FormatAdapter + ModelAdapter → ModelHandler.
  *
- * This is the universal handler that replaces all 11 monolithic handlers.
- * The Provider owns transport (auth, endpoint, headers, rate limiting).
- * The Adapter owns transforms (messages, tools, payload, text post-processing).
+ * Three concerns, cleanly separated:
+ *   Transport     — connectivity (auth, endpoint, headers, rate limiting)
+ *   FormatAdapter — wire format (message/tool/payload conversion for the target API)
+ *   ModelAdapter  — model quirks (reasoning filters, param mapping, context windows)
  *
  * Flow:
- *   1. transformOpenAIToClaude(payload)          — normalize incoming request
- *   2. adapter.convertMessages(claudeRequest)    — Claude → target format
- *   3. adapter.convertTools(claudeRequest)        — tool schema conversion
- *   4. adapter.buildPayload(...)                  — assemble full request body
- *   5. adapter.prepareRequest(payload, original)  — tool name truncation, etc.
- *   6. middleware.beforeRequest(...)               — pre-flight hooks
- *   7. fetch via provider (with optional queue)   — HTTP request
- *   8. stream parser by provider.streamFormat     — response → Claude SSE
+ *   1. transformOpenAIToClaude(payload)               — normalize incoming request
+ *   2. formatAdapter.convertMessages(claudeRequest)   — Claude → target format
+ *   3. formatAdapter.convertTools(claudeRequest)      — tool schema conversion
+ *   4. formatAdapter.buildPayload(...)                — assemble full request body
+ *   5. formatAdapter.prepareRequest(payload, original)— tool name truncation
+ *   6. modelAdapter.prepareRequest(payload, original) — param mapping
+ *   7. middleware.beforeRequest(...)                   — pre-flight hooks
+ *   8. fetch via transport (with optional queue)      — HTTP request
+ *   9. stream parser by transport.streamFormat        — response → Claude SSE
+ *      (uses modelAdapter.processTextContent for text post-processing)
  */
 
 import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
-import type { BaseModelAdapter } from "../adapters/base-adapter.js";
+import type { FormatAdapter } from "../adapters/format-adapter.js";
+import type { ModelAdapter } from "../adapters/model-adapter.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
@@ -41,11 +45,9 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   return auth;
 }
 
-export interface ComposedHandlerOptions {
-  /** Override adapter selection — use this specific adapter instance */
-  adapter?: BaseModelAdapter;
-  /** Tool schemas for validation (enables buffered tool call validation) */
-  toolSchemas?: any[];
+export interface ProviderHandlerOptions {
+  /** Wire format adapter for the target API */
+  formatAdapter: FormatAdapter;
   /** Token tracking strategy */
   tokenStrategy?: "standard" | "accumulate-both" | "delta-aware" | "actual-cost" | "local";
   /** Summarize tool descriptions (for models with small context) */
@@ -56,16 +58,14 @@ export interface ComposedHandlerOptions {
   isInteractive?: boolean;
 }
 
-export class ComposedHandler implements ModelHandler {
+export class ProviderHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private adapterManager: AdapterManager;
-  private explicitAdapter?: BaseModelAdapter;
-  /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
-  private modelAdapter?: BaseModelAdapter;
+  private formatAdapter: FormatAdapter;
+  private modelAdapter: ModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
   private targetModel: string;
-  private options: ComposedHandlerOptions;
+  private options: ProviderHandlerOptions;
   private isInteractive: boolean;
 
   constructor(
@@ -73,71 +73,61 @@ export class ComposedHandler implements ModelHandler {
     targetModel: string,
     modelName: string,
     port: number,
-    options: ComposedHandlerOptions = {}
+    options: ProviderHandlerOptions
   ) {
     this.provider = provider;
     this.targetModel = targetModel;
     this.options = options;
-    this.explicitAdapter = options.adapter;
+    this.formatAdapter = options.formatAdapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Initialize adapter manager for automatic adapter selection
-    this.adapterManager = new AdapterManager(targetModel);
+    // Resolve model-specific adapter (GLM, Grok, DeepSeek, Gemini, etc.)
+    // Handles model quirks independent of provider transport
+    const adapterManager = new AdapterManager(targetModel);
+    this.modelAdapter = adapterManager.getAdapter();
 
-    // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
-    // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
-    const resolvedModelAdapter = this.adapterManager.getAdapter();
-    if (resolvedModelAdapter.getName() !== "DefaultAdapter") {
-      this.modelAdapter = resolvedModelAdapter;
-    }
-
-    // Initialize middleware (only register model-specific middleware when applicable)
+    // Initialize middleware
     this.middlewareManager = new MiddlewareManager();
     if (targetModel.includes("gemini") || targetModel.includes("google/")) {
       this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
     }
     this.middlewareManager
       .initialize()
-      .catch((err) => log(`[ComposedHandler:${targetModel}] Middleware init error: ${err}`));
+      .catch((err) => log(`[ProviderHandler:${targetModel}] Middleware init error: ${err}`));
 
-    // Initialize token tracker — model adapter knows the real context window
+    // Initialize token tracker — model adapter overrides format adapter's context window
     this.tokenTracker = new TokenTracker(port, {
-      contextWindow: this.getModelContextWindow(),
+      contextWindow: this.getEffectiveContextWindow(),
       providerName: provider.name,
       modelName,
       providerDisplayName: provider.displayName,
     });
   }
 
-  /** Provider adapter — handles transport format (messages, tools, payload) */
-  private getAdapter(): BaseModelAdapter {
-    return this.explicitAdapter || this.adapterManager.getAdapter();
+  /** Context window — model adapter overrides format adapter default */
+  private getEffectiveContextWindow(): number {
+    return this.modelAdapter.getContextWindow() ?? this.formatAdapter.getContextWindow();
   }
 
-  /** Model context window — model adapter wins over provider adapter */
-  private getModelContextWindow(): number {
-    return this.modelAdapter?.getContextWindow() ?? this.getAdapter().getContextWindow();
-  }
-
-  /** Model vision support — model adapter wins over provider adapter */
-  private getModelSupportsVision(): boolean {
-    return this.modelAdapter?.supportsVision() ?? this.getAdapter().supportsVision();
+  /** Vision support — model adapter overrides format adapter default */
+  private getEffectiveSupportsVision(): boolean {
+    return this.modelAdapter.supportsVision() ?? this.formatAdapter.supportsVision();
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
     // 1. Transform incoming Claude-format request
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
-    // 2. Get adapter and reset state
-    const adapter = this.getAdapter();
-    if (typeof adapter.reset === "function") adapter.reset();
+    // 2. Reset adapter state
+    this.formatAdapter.reset();
+    this.modelAdapter.reset();
 
-    // 3. Convert messages and tools
-    const messages = adapter.convertMessages(claudeRequest, filterIdentity);
-    const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
+    // 3. Convert messages and tools (format adapter)
+    const messages = this.formatAdapter.convertMessages(claudeRequest, filterIdentity);
+    const tools = this.formatAdapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Handle image content for models that don't support vision
-    if (!this.getModelSupportsVision()) {
+    if (!this.getEffectiveSupportsVision()) {
       // Collect all image blocks from all messages with their positions
       const imageBlocks: Array<{ msgIdx: number; partIdx: number; block: OpenAIImageBlock }> = [];
       for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
@@ -153,7 +143,7 @@ export class ComposedHandler implements ModelHandler {
       }
 
       if (imageBlocks.length > 0) {
-        log(`[ComposedHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`);
+        log(`[ProviderHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`);
         const auth = extractAuthHeaders(c);
         const descriptions = await describeImages(imageBlocks.map((b) => b.block), auth);
 
@@ -166,10 +156,10 @@ export class ComposedHandler implements ModelHandler {
               text: `[Image Description: ${descriptions[i]}]`,
             };
           }
-          log(`[ComposedHandler] Vision proxy described ${descriptions.length} image(s)`);
+          log(`[ProviderHandler] Vision proxy described ${descriptions.length} image(s)`);
         } else {
           // Vision proxy failed — fall back to stripping
-          log(`[ComposedHandler] Vision proxy failed, stripping images`);
+          log(`[ProviderHandler] Vision proxy failed, stripping images`);
           for (const msg of messages) {
             if (Array.isArray(msg.content)) {
               msg.content = msg.content.filter((part: any) => part.type !== "image_url");
@@ -212,8 +202,8 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
-    // 4. Build request payload
-    let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
+    // 4. Build request payload (format adapter)
+    let requestPayload = this.formatAdapter.buildPayload(claudeRequest, messages, tools);
 
     // Merge provider-specific extra fields
     const extraFields = this.provider.getExtraPayloadFields?.();
@@ -221,13 +211,11 @@ export class ComposedHandler implements ModelHandler {
       Object.assign(requestPayload, extraFields);
     }
 
-    // 5. Adapter post-processing (tool name truncation, reasoning params, etc.)
-    adapter.prepareRequest(requestPayload, claudeRequest);
-    // Model adapter may also need to post-process (e.g., strip unsupported thinking params)
-    if (this.modelAdapter && this.modelAdapter !== adapter) {
-      this.modelAdapter.prepareRequest(requestPayload, claudeRequest);
-    }
-    const toolNameMap = adapter.getToolNameMap();
+    // 5. Format adapter post-processing (tool name truncation)
+    this.formatAdapter.prepareRequest(requestPayload, claudeRequest);
+    // 5a. Model adapter post-processing (param mapping, unsupported param stripping)
+    this.modelAdapter.prepareRequest(requestPayload, claudeRequest);
+    const toolNameMap = this.formatAdapter.getToolNameMap();
 
     // 5b. Refresh auth / health check (must happen before transformPayload, which may use auth state)
     if (this.provider.refreshAuth) {
@@ -412,13 +400,12 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 8. Parse streaming response based on provider's format
-    return this.handleStream(c, response, adapter, claudeRequest, toolNameMap);
+    return this.handleStream(c, response, claudeRequest, toolNameMap);
   }
 
   private handleStream(
     c: Context,
     response: Response,
-    adapter: BaseModelAdapter,
     claudeRequest: any,
     toolNameMap?: Map<string, string>
   ): Response {
@@ -447,7 +434,7 @@ export class ComposedHandler implements ModelHandler {
         return createStreamingResponseHandler(
           c,
           response,
-          adapter,
+          this.modelAdapter,
           this.targetModel,
           this.middlewareManager,
           onTokenUpdate,
@@ -459,7 +446,7 @@ export class ComposedHandler implements ModelHandler {
         return createResponsesStreamHandler(c, response, {
           modelName: this.targetModel,
           onTokenUpdate,
-          toolNameMap: adapter.getToolNameMap(),
+          toolNameMap: this.formatAdapter.getToolNameMap(),
         });
 
       case "anthropic-sse":
@@ -469,15 +456,15 @@ export class ComposedHandler implements ModelHandler {
         });
 
       case "gemini-sse": {
-        // Build onToolCall callback to register tool calls + thoughtSignatures on the adapter
+        // Build onToolCall callback to register tool calls + thoughtSignatures on the format adapter
         const onToolCall = (toolId: string, name: string, thoughtSignature?: string) => {
-          if (typeof (adapter as any).registerToolCall === "function") {
-            (adapter as any).registerToolCall(toolId, name, thoughtSignature);
+          if (typeof (this.formatAdapter as any).registerToolCall === "function") {
+            (this.formatAdapter as any).registerToolCall(toolId, name, thoughtSignature);
           }
         };
         return createGeminiSseStream(c, response, {
           modelName: this.targetModel,
-          adapter,
+          modelAdapter: this.modelAdapter,
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
           onToolCall,

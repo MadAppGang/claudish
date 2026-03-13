@@ -4,6 +4,8 @@
  * Related classes: src/index.ts - Main proxy service implementation
  */
 
+import { parseModelSpec } from "./providers/model-parser.js";
+
 // OpenAI-specific parameters that Claude doesn't support
 const DROP_KEYS = [
   "n",
@@ -352,8 +354,8 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
   isO3Model?: boolean;
 } {
   const req = JSON.parse(JSON.stringify(claudeRequestInput));
-  const isO3Model =
-    typeof req.model === "string" && (req.model.includes("o3") || req.model.includes("o1"));
+  const bareModel = typeof req.model === "string" ? parseModelSpec(req.model).model.toLowerCase() : "";
+  const isO3Model = bareModel.startsWith("o1") || bareModel.startsWith("o3");
 
   if (Array.isArray(req.system)) {
     // Extract text content from each system message item

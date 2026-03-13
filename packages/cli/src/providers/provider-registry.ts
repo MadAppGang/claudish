@@ -1,179 +1,16 @@
 /**
- * Provider Registry for Local LLM Providers
+ * URL-based model parsing for custom local endpoints.
  *
- * Supports Ollama and other OpenAI-compatible local providers.
- * Extensible via configuration - no code changes needed to add new providers.
- *
- * New syntax: provider@model[:concurrency]
- * Legacy syntax: prefix/model or prefix:model (with deprecation warnings)
+ * Handles http://localhost:11434/modelname style model specs.
+ * Named local providers (ollama, lmstudio, etc.) are now handled
+ * by provider-definitions.ts like all other providers.
  */
 
-import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
-
-export interface ProviderCapabilities {
-  supportsTools: boolean;
-  supportsVision: boolean;
-  supportsStreaming: boolean;
-  supportsJsonMode: boolean;
-}
-
-export interface LocalProvider {
-  name: string;
-  baseUrl: string;
-  apiPath: string;
-  envVar: string;
-  prefixes: string[]; // Legacy prefixes for backwards compatibility
-  capabilities: ProviderCapabilities;
-}
-
-export interface ResolvedProvider {
-  provider: LocalProvider;
-  modelName: string;
-  concurrency?: number; // Concurrency limit from model spec
-  isLegacySyntax?: boolean; // For deprecation warnings
-}
+import type { LocalProviderConfig } from "./transport/local.js";
 
 export interface UrlParsedModel {
   baseUrl: string;
   modelName: string;
-}
-
-// Built-in provider configurations
-const getProviders = (): LocalProvider[] => [
-  {
-    name: "ollama",
-    baseUrl: process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434",
-    apiPath: "/v1/chat/completions",
-    envVar: "OLLAMA_BASE_URL",
-    prefixes: ["ollama/", "ollama:"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
-  },
-  {
-    name: "lmstudio",
-    baseUrl: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234",
-    apiPath: "/v1/chat/completions",
-    envVar: "LMSTUDIO_BASE_URL",
-    prefixes: ["lmstudio/", "lmstudio:", "mlstudio/", "mlstudio:"], // mlstudio alias for common typo
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
-  },
-  {
-    name: "vllm",
-    baseUrl: process.env.VLLM_BASE_URL || "http://localhost:8000",
-    apiPath: "/v1/chat/completions",
-    envVar: "VLLM_BASE_URL",
-    prefixes: ["vllm/", "vllm:"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
-  },
-  {
-    name: "mlx",
-    baseUrl: process.env.MLX_BASE_URL || "http://127.0.0.1:8080",
-    apiPath: "/v1/chat/completions",
-    envVar: "MLX_BASE_URL",
-    prefixes: ["mlx/", "mlx:"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
-  },
-];
-
-/**
- * Get all registered providers (refreshes env vars on each call)
- */
-export function getRegisteredProviders(): LocalProvider[] {
-  return getProviders();
-}
-
-/**
- * Resolve a model ID to a local provider
- *
- * Supports both new syntax (provider@model) and legacy syntax (prefix/model)
- */
-export function resolveProvider(modelId: string): ResolvedProvider | null {
-  const providers = getProviders();
-
-  // Try new model parser first
-  const parsed = parseModelSpec(modelId);
-
-  // Check if parsed provider is a local provider
-  if (isLocalProviderName(parsed.provider)) {
-    const provider = providers.find((p) => p.name.toLowerCase() === parsed.provider.toLowerCase());
-
-    if (provider) {
-      return {
-        provider,
-        modelName: parsed.model,
-        concurrency: parsed.concurrency,
-        isLegacySyntax: parsed.isLegacySyntax,
-      };
-    }
-  }
-
-  // Legacy: check prefix patterns for backwards compatibility
-  for (const provider of providers) {
-    for (const prefix of provider.prefixes) {
-      if (modelId.startsWith(prefix)) {
-        // Check for concurrency suffix
-        let modelName = modelId.slice(prefix.length);
-        let concurrency: number | undefined;
-
-        const concurrencyMatch = modelName.match(/^(.+):(\d+)$/);
-        if (concurrencyMatch) {
-          modelName = concurrencyMatch[1];
-          concurrency = parseInt(concurrencyMatch[2], 10);
-        }
-
-        return {
-          provider,
-          modelName,
-          concurrency,
-          isLegacySyntax: true,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Check if a model ID matches any local provider pattern
- */
-export function isLocalProvider(modelId: string): boolean {
-  // Try model parser first
-  const parsed = parseModelSpec(modelId);
-  if (isLocalProviderName(parsed.provider)) {
-    return true;
-  }
-
-  // Check legacy prefix patterns
-  if (resolveProvider(modelId) !== null) {
-    return true;
-  }
-
-  // Check URL patterns
-  if (parseUrlModel(modelId) !== null) {
-    return true;
-  }
-
-  return false;
 }
 
 /**
@@ -220,7 +57,7 @@ export function parseUrlModel(modelId: string): UrlParsedModel | null {
 /**
  * Create an ad-hoc provider config for URL-based models
  */
-export function createUrlProvider(parsed: UrlParsedModel): LocalProvider {
+export function createUrlProvider(parsed: UrlParsedModel): LocalProviderConfig {
   return {
     name: "custom-url",
     baseUrl: parsed.baseUrl,
@@ -232,6 +69,7 @@ export function createUrlProvider(parsed: UrlParsedModel): LocalProvider {
       supportsVision: false,
       supportsStreaming: true,
       supportsJsonMode: true,
+      supportsReasoning: false,
     },
   };
 }

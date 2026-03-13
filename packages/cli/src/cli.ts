@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fuzzyScore } from "./utils.js";
 import { getModelMapping } from "./profile-config.js";
-// Re-export from centralized provider-resolver for backwards compatibility
+// Re-export from centralized provider-resolver
 export {
   resolveModelProvider,
   validateApiKeysForModels,
@@ -23,7 +23,6 @@ export {
   getMissingKeysError,
   getMissingKeyResolutions,
   requiresOpenRouterKey,
-  isLocalModel,
   type ProviderCategory,
   type ProviderResolution,
 } from "./providers/provider-resolver.js";
