@@ -15,6 +15,8 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
+import { parseModelSpec } from "./providers/model-parser.js";
 
 // Load environment variables
 config();
@@ -127,7 +129,85 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
 }
 
 /**
- * Run a prompt through OpenRouter
+ * Resolve a model to its API endpoint and key.
+ * Supports direct providers (gh@, g@, zen@, etc.) and falls back to OpenRouter.
+ */
+function resolveModelEndpoint(model: string): {
+  url: string;
+  apiKey: string;
+  modelName: string;
+  providerName: string;
+  headers: Record<string, string>;
+} {
+  // Try direct provider resolution
+  const resolved = resolveRemoteProvider(model);
+
+  if (resolved && resolved.provider.name !== "openrouter") {
+    const { provider, modelName } = resolved;
+
+    // Get API key
+    const apiKey = provider.apiKeyEnvVar ? process.env[provider.apiKeyEnvVar] : undefined;
+    if (!apiKey && provider.apiKeyEnvVar) {
+      // Some providers work without a key (e.g., opencode-zen with "public")
+      if (provider.name === "opencode-zen" || provider.name === "opencode-zen-go") {
+        // Zen falls back to "public" for free models
+      } else {
+        throw new Error(
+          `${provider.apiKeyEnvVar} environment variable not set for ${provider.name}`
+        );
+      }
+    }
+
+    // Gemini native API uses a different format, but Google provides an
+    // OpenAI-compatible endpoint we can use for simple chat completions
+    let url: string;
+    if (provider.name === "gemini" || provider.name === "gemini-codeassist") {
+      const baseUrl = provider.baseUrl || "https://generativelanguage.googleapis.com";
+      url = `${baseUrl}/v1beta/openai/chat/completions`;
+    } else {
+      url = provider.baseUrl + provider.apiPath;
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(provider.headers || {}),
+    };
+
+    if (apiKey) {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    } else if (provider.name === "opencode-zen" || provider.name === "opencode-zen-go") {
+      headers["Authorization"] = `Bearer public`;
+    }
+
+    return { url, apiKey: apiKey || "public", modelName, providerName: provider.name, headers };
+  }
+
+  // Fall back to OpenRouter
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY environment variable not set");
+  }
+
+  // Strip any provider prefix for OpenRouter (shouldn't have one, but be safe)
+  const parsed = parseModelSpec(model);
+  const modelName = parsed.provider === "openrouter" ? parsed.model : model;
+
+  return {
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    apiKey,
+    modelName,
+    providerName: "openrouter",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://claudish.com",
+      "X-Title": "Claudish MCP",
+    },
+  };
+}
+
+/**
+ * Run a prompt through a model (direct provider or OpenRouter)
  */
 async function runPrompt(
   model: string,
@@ -135,10 +215,7 @@ async function runPrompt(
   systemPrompt?: string,
   maxTokens?: number
 ): Promise<{ content: string; usage?: { input: number; output: number } }> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY environment variable not set");
-  }
+  const endpoint = resolveModelEndpoint(model);
 
   const messages: Array<{ role: string; content: string }> = [];
 
@@ -148,16 +225,11 @@ async function runPrompt(
 
   messages.push({ role: "user", content: prompt });
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch(endpoint.url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://claudish.com",
-      "X-Title": "Claudish MCP",
-    },
+    headers: endpoint.headers,
     body: JSON.stringify({
-      model,
+      model: endpoint.modelName,
       messages,
       max_tokens: maxTokens || 4096,
     }),
@@ -165,7 +237,7 @@ async function runPrompt(
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`OpenRouter API error: ${response.status} - ${error}`);
+    throw new Error(`${endpoint.providerName} API error: ${response.status} - ${error}`);
   }
 
   const data: OpenRouterResponse = await response.json();
@@ -210,14 +282,14 @@ async function main() {
     version: "2.5.0",
   });
 
-  // Tool: run_prompt - Run a prompt through an OpenRouter model
+  // Tool: run_prompt - Run a prompt through any supported model
   server.tool(
     "run_prompt",
-    "Run a prompt through an OpenRouter model (Grok, GPT-5, Gemini, etc.)",
+    "Run a prompt through any model: OpenRouter (vendor/model), GitHub Models (gh@model), Gemini (google/gemini-*), Zen (zen@model), etc.",
     {
       model: z
         .string()
-        .describe("OpenRouter model ID (e.g., 'x-ai/grok-code-fast-1', 'openai/gpt-5.1-codex')"),
+        .describe("Model ID. Direct: 'gh@gpt-4o-mini', 'zen@gpt-5-nano'. OpenRouter: 'x-ai/grok-code-fast-1', 'openai/gpt-5.1-codex'"),
       prompt: z.string().describe("The prompt to send to the model"),
       system_prompt: z.string().optional().describe("Optional system prompt"),
       max_tokens: z.number().optional().describe("Maximum tokens in response (default: 4096)"),
