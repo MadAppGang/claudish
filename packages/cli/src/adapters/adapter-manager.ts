@@ -13,8 +13,6 @@ import { QwenAdapter } from "./qwen-adapter.js";
 import { MiniMaxAdapter } from "./minimax-adapter.js";
 import { DeepSeekAdapter } from "./deepseek-adapter.js";
 import { GLMAdapter } from "./glm-adapter.js";
-import { LlamaAdapter } from "./llama-adapter.js";
-import { MistralAdapter } from "./mistral-adapter.js";
 
 export class AdapterManager {
   private adapters: ModelAdapter[];
@@ -27,8 +25,6 @@ export class AdapterManager {
       new MiniMaxAdapter(modelId),
       new DeepSeekAdapter(modelId),
       new GLMAdapter(modelId),
-      new LlamaAdapter(modelId),
-      new MistralAdapter(modelId),
     ];
   }
 
