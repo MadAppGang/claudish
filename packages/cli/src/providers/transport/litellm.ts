@@ -6,7 +6,7 @@
  */
 
 import type { StreamFormat } from "./types.js";
-import { KeyAuthTransport } from "./base.js";
+import { ApiKeyTransport } from "./base.js";
 
 /**
  * Extra headers that LiteLLM should forward to specific providers.
@@ -19,7 +19,7 @@ const MODEL_EXTRA_HEADERS: Array<{ pattern: string; headers: Record<string, stri
   { pattern: "kimi", headers: { "User-Agent": "claude-code/1.0" } },
 ];
 
-export class LiteLLMTransport extends KeyAuthTransport {
+export class LiteLLMTransport extends ApiKeyTransport {
   readonly streamFormat: StreamFormat = "openai-sse";
 
   getExtraPayloadFields(): Record<string, any> {

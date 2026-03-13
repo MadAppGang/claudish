@@ -4,7 +4,7 @@
  * Three tiers, capturing the actual trait subsets:
  *
  *   BaseTransport          - identity + endpoint (all transports)
- *   ├── KeyAuthTransport   - API key auth: bearer / x-api-key (most remote)
+ *   ├── ApiKeyTransport    - API key auth: bearer / x-api-key (most remote)
  *   └── OAuthTransport     - OAuth token auth with refresh (GeminiCodeAssist)
  *
  * LocalTransport extends BaseTransport directly (no auth, health checks instead).
@@ -50,9 +50,9 @@ export abstract class BaseTransport implements ProviderTransport {
   abstract getHeaders(): Promise<Record<string, string>>;
 }
 
-// ─── KeyAuthTransport: API key auth ──────────────────────
+// ─── ApiKeyTransport: API key auth ──────────────────────
 
-export abstract class KeyAuthTransport extends BaseTransport {
+export abstract class ApiKeyTransport extends BaseTransport {
   protected apiKey: string;
   protected authScheme?: string;
   protected providerHeaders?: Record<string, string>;

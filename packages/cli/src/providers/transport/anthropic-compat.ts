@@ -7,10 +7,10 @@
  */
 
 import type { StreamFormat } from "./types.js";
-import { KeyAuthTransport } from "./base.js";
+import { ApiKeyTransport } from "./base.js";
 import { log } from "../../logger.js";
 
-export class AnthropicCompatTransport extends KeyAuthTransport {
+export class AnthropicCompatTransport extends ApiKeyTransport {
   readonly streamFormat: StreamFormat = "anthropic-sse";
 
   override async getHeaders(): Promise<Record<string, string>> {

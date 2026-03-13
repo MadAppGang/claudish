@@ -7,10 +7,10 @@
  */
 
 import type { StreamFormat } from "./types.js";
-import { KeyAuthTransport, type TransportConfig } from "./base.js";
+import { ApiKeyTransport, type TransportConfig } from "./base.js";
 import { log } from "../../logger.js";
 
-export class OpenAITransport extends KeyAuthTransport {
+export class OpenAITransport extends ApiKeyTransport {
   readonly streamFormat: StreamFormat;
 
   constructor(config: TransportConfig) {

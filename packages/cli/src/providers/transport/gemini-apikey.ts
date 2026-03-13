@@ -9,10 +9,10 @@
  */
 
 import type { StreamFormat } from "./types.js";
-import { KeyAuthTransport } from "./base.js";
+import { ApiKeyTransport } from "./base.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 
-export class GeminiApiKeyTransport extends KeyAuthTransport {
+export class GeminiApiKeyTransport extends ApiKeyTransport {
   readonly streamFormat: StreamFormat = "gemini-sse";
 
   override getEndpoint(_model?: string): string {

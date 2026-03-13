@@ -6,8 +6,8 @@
  */
 
 import type { StreamFormat } from "./types.js";
-import { KeyAuthTransport } from "./base.js";
+import { ApiKeyTransport } from "./base.js";
 
-export class OllamaCloudTransport extends KeyAuthTransport {
+export class OllamaCloudTransport extends ApiKeyTransport {
   readonly streamFormat: StreamFormat = "ollama-jsonl";
 }
