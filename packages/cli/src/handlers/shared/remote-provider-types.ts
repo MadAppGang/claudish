@@ -30,11 +30,12 @@ export type TransportType =
   | "gemini"
   | "gemini-oauth"
   | "openrouter"
-  | "ollama"
+  | "ollamacloud"
   | "litellm"
   | "zen"
   | "vertex"
-  | "local";
+  | "local"
+  | "ollama";
 
 /**
  * Provider capabilities

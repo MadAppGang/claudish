@@ -339,7 +339,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     name: "ollamacloud",
     displayName: "OllamaCloud",
-    transport: "ollama",
+    transport: "ollamacloud",
     tokenStrategy: "accumulate-both",
     baseUrl: "https://ollama.com",
     baseUrlEnvVars: ["OLLAMACLOUD_BASE_URL"],
@@ -481,7 +481,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     name: "ollama",
     displayName: "Ollama",
-    transport: "local",
+    transport: "ollama",
     baseUrl: "http://localhost:11434",
     baseUrlEnvVars: ["OLLAMA_HOST", "OLLAMA_BASE_URL"],
     apiPath: "/v1/chat/completions",
@@ -630,7 +630,7 @@ export function getNativeModelPatterns(): Array<{ pattern: RegExp; provider: str
 /** Check if a provider name maps to a local transport. */
 export function isLocalTransport(providerName: string): boolean {
   const def = getProviderByName(providerName);
-  return def?.transport === "local";
+  return def?.transport === "local" || def?.transport === "ollama";
 }
 
 /** Look up a provider definition by canonical name. */

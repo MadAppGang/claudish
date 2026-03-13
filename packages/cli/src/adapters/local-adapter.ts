@@ -2,27 +2,22 @@
  * LocalModelAdapter: format adapter for local OpenAI-compatible providers.
  *
  * Wire format: OpenAI Chat Completions (the base FormatAdapter default),
- * with local-model-specific additions:
+ * with local-specific additions:
  * - System prompt guidance (tool calling, conversation handling)
- * - Model-family sampling parameters (Qwen, DeepSeek, Llama, Mistral)
+ * - Generic default sampling parameters (overridden by ModelAdapters)
  * - max_tokens floor (8192) for meaningful responses
  * - Capability-based tool stripping (non-tool models)
- * - Qwen /no_think toggle
  * - Strip cloud-only thinking params
  * - MLX simple format for message conversion
+ *
+ * Model-family-specific behavior (sampling params, Qwen /no_think, special
+ * token stripping) is handled by ModelAdapters (QwenAdapter, DeepSeekAdapter,
+ * LlamaAdapter, MistralAdapter) which run after this FormatAdapter.
  */
 
 import { FormatAdapter } from "./format-adapter.js";
 import type { ProviderCapabilities } from "../handlers/shared/remote-provider-types.js";
 import { log } from "../logger.js";
-
-interface SamplingParams {
-  temperature: number;
-  top_p: number;
-  top_k: number;
-  min_p: number;
-  repetition_penalty: number;
-}
 
 export class LocalModelAdapter extends FormatAdapter {
   private capabilities: ProviderCapabilities;
@@ -63,17 +58,6 @@ export class LocalModelAdapter extends FormatAdapter {
       );
     }
 
-    // Qwen /no_think toggle
-    if (
-      this.modelId.toLowerCase().includes("qwen") &&
-      process.env.CLAUDISH_QWEN_NO_THINK === "1"
-    ) {
-      if (messages.length > 0 && messages[0].role === "system") {
-        messages[0].content = "/no_think\n\n" + messages[0].content;
-        log(`[${this.getName()}] Added /no_think to disable Qwen thinking mode`);
-      }
-    }
-
     return messages;
   }
 
@@ -88,26 +72,24 @@ export class LocalModelAdapter extends FormatAdapter {
     return convertToolsToOpenAI(claudeRequest, summarize);
   }
 
-  // ─── Payload with model-family sampling params ──────────────────────
+  // ─── Payload with generic default sampling ──────────────────────────
 
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
-    const sampling = this.getSamplingParams();
     const requestedMaxTokens = claudeRequest.max_tokens || 4096;
     const effectiveMaxTokens = Math.max(requestedMaxTokens, 8192);
 
     log(
-      `[${this.getName()}] Sampling: temp=${sampling.temperature}, top_p=${sampling.top_p}, top_k=${sampling.top_k}, max_tokens=${effectiveMaxTokens}`
+      `[${this.getName()}] max_tokens=${effectiveMaxTokens}`
     );
 
     const payload: any = {
       model: this.modelId,
       messages,
-      temperature: sampling.temperature,
-      top_p: sampling.top_p,
-      top_k: sampling.top_k,
-      min_p: sampling.min_p,
-      repetition_penalty:
-        sampling.repetition_penalty > 1 ? sampling.repetition_penalty : undefined,
+      // Generic defaults — ModelAdapters override per model family in prepareRequest()
+      temperature: 0.7,
+      top_p: 0.9,
+      top_k: 40,
+      min_p: 0.0,
       stream: this.capabilities.supportsStreaming,
       max_tokens: effectiveMaxTokens,
       tools: tools.length > 0 ? tools : undefined,
@@ -147,28 +129,6 @@ export class LocalModelAdapter extends FormatAdapter {
     return 32768; // Default, overridden by provider's dynamic context window fetch
   }
 
-  // ─── Model-family sampling parameters ───────────────────────────────
-
-  private getSamplingParams(): SamplingParams {
-    const id = this.modelId.toLowerCase();
-
-    if (id.includes("qwen")) {
-      // Qwen3 Instruct recommended settings
-      return { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, repetition_penalty: 1.05 };
-    }
-    if (id.includes("deepseek")) {
-      return { temperature: 0.6, top_p: 0.95, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
-    }
-    if (id.includes("llama")) {
-      return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.05, repetition_penalty: 1.1 };
-    }
-    if (id.includes("mistral")) {
-      return { temperature: 0.7, top_p: 0.9, top_k: 50, min_p: 0.0, repetition_penalty: 1.0 };
-    }
-    // Generic defaults
-    return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
-  }
-
   // ─── System prompt guidance ─────────────────────────────────────────
 
   private buildSystemGuidance(toolCount: number): string {
@@ -196,27 +156,9 @@ IMPORTANT INSTRUCTIONS FOR THIS MODEL:
 - If you called a Glob/Search and got files, READ important files next, then ANALYZE, then SUGGEST improvements.`;
 
     if (toolCount > 0) {
-      const isQwen = this.modelId.toLowerCase().includes("qwen");
-
-      if (isQwen) {
-        guidance += `
-
-4. TOOL CALLING FORMAT (CRITICAL FOR QWEN):
-You MUST use proper OpenAI-style function calling. Do NOT output tool calls as XML text.
-When you want to call a tool, use the API's tool_calls mechanism, NOT text like <function=...>.
-The tool calls must be structured JSON in the API response, not XML in your text output.
-
-If you cannot use structured tool_calls, format as JSON:
-{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
-
-5. TOOL PARAMETER REQUIREMENTS:`;
-      } else {
-        guidance += `
-
-4. TOOL CALLING REQUIREMENTS:`;
-      }
-
       guidance += `
+
+4. TOOL CALLING REQUIREMENTS:
 - When calling tools, you MUST include ALL required parameters. Incomplete tool calls will fail.
 - For Task: always include "description" (3-5 words), "prompt" (detailed instructions), and "subagent_type"
 - For Bash: always include "command" and "description"

@@ -20,6 +20,7 @@ import { AnthropicCompatTransport } from "./transport/anthropic-compat.js";
 import { OllamaCloudTransport } from "./transport/ollamacloud.js";
 import { LiteLLMTransport } from "./transport/litellm.js";
 import { LocalTransport } from "./transport/local.js";
+import { OllamaTransport } from "./transport/ollama-local.js";
 
 // Format adapter imports
 import { GeminiFormatAdapter } from "../adapters/gemini-format-adapter.js";
@@ -108,7 +109,7 @@ export function createTransportForProvider(
         logMessage: `Created ${def.displayName} handler: ${modelName}`,
       };
 
-    case "ollama":
+    case "ollamacloud":
       return {
         transport: new OllamaCloudTransport(config),
         formatAdapter: new OllamaCloudAdapter(modelName),
@@ -149,20 +150,22 @@ export function createTransportForProvider(
       };
     }
 
-    // LocalTransport has a different config shape (no auth, health checks
-    // instead) so it builds its own config rather than using TransportConfig.
+    // Local transports have a different config shape (no auth, health checks
+    // instead) so they build their own config rather than using TransportConfig.
+    case "ollama":
     case "local": {
       const localConfig = {
         name: def.name,
+        displayName: def.displayName,
         baseUrl: config.baseUrl,
         apiPath: def.apiPath,
         envVar: def.baseUrlEnvVars?.[0] || "",
         prefixes: def.legacyPrefixes,
         capabilities: def.capabilities,
       };
-      const transport = new LocalTransport(localConfig, modelName, {
-        concurrency: options?.concurrency,
-      });
+      const transport = def.transport === "ollama"
+        ? new OllamaTransport(localConfig, modelName, { concurrency: options?.concurrency })
+        : new LocalTransport(localConfig, modelName, { concurrency: options?.concurrency });
       const formatAdapter = new LocalModelAdapter(modelName, def.name, def.capabilities);
       return {
         transport,

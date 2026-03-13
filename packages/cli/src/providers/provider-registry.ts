@@ -60,6 +60,7 @@ export function parseUrlModel(modelId: string): UrlParsedModel | null {
 export function createUrlProvider(parsed: UrlParsedModel): LocalProviderConfig {
   return {
     name: "custom-url",
+    displayName: "Custom URL",
     baseUrl: parsed.baseUrl,
     apiPath: "/v1/chat/completions",
     envVar: "",
