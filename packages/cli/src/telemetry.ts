@@ -218,7 +218,8 @@ export function detectInstallMethod(): string {
     scriptPath.includes("/node_modules/") ||
     scriptPath.includes("/.nvm/") ||
     scriptPath.includes("/npm/")
-  ) return "npm";
+  )
+    return "npm";
   return "binary";
 }
 
@@ -342,8 +343,8 @@ export function classifyError(
   if (error && typeof error === "object") {
     const code = (error as any).code ?? (error as any).cause?.code;
     if (code === "ECONNREFUSED") return { error_class: "connection", error_code: "econnrefused" };
-    if (code === "ECONNRESET")   return { error_class: "connection", error_code: "econnreset" };
-    if (code === "ETIMEDOUT")    return { error_class: "connection", error_code: "timeout" };
+    if (code === "ECONNRESET") return { error_class: "connection", error_code: "econnreset" };
+    if (code === "ETIMEDOUT") return { error_class: "connection", error_code: "timeout" };
   }
 
   // AbortError from AbortController (fetch timeout)
@@ -358,23 +359,34 @@ export function classifyError(
       if (lower.includes("context") || lower.includes("too long") || lower.includes("token")) {
         return { error_class: "http_error", error_code: "context_length_exceeded" };
       }
-      if (lower.includes("unsupported content type") || lower.includes("unsupported_content_type")) {
+      if (
+        lower.includes("unsupported content type") ||
+        lower.includes("unsupported_content_type")
+      ) {
         return { error_class: "http_error", error_code: "unsupported_content_type" };
       }
       return { error_class: "http_error", error_code: "bad_request_400" };
     }
-    if (httpStatus === 401) return { error_class: "auth",       error_code: "unauthorized_401" };
-    if (httpStatus === 403) return { error_class: "auth",       error_code: "forbidden_403" };
+    if (httpStatus === 401) return { error_class: "auth", error_code: "unauthorized_401" };
+    if (httpStatus === 403) return { error_class: "auth", error_code: "forbidden_403" };
     if (httpStatus === 404) return { error_class: "http_error", error_code: "not_found_404" };
     if (httpStatus === 429) return { error_class: "rate_limit", error_code: "rate_limited_429" };
-    if (httpStatus === 503) return { error_class: "overload",   error_code: "service_unavailable_503" };
-    if (httpStatus >= 500)  return { error_class: "http_error", error_code: "server_error_5xx" };
-    if (httpStatus >= 400)  return { error_class: "http_error", error_code: `http_error_${httpStatus}` };
+    if (httpStatus === 503)
+      return { error_class: "overload", error_code: "service_unavailable_503" };
+    if (httpStatus >= 500) return { error_class: "http_error", error_code: "server_error_5xx" };
+    if (httpStatus >= 400)
+      return { error_class: "http_error", error_code: `http_error_${httpStatus}` };
   }
 
   // Auth-related string patterns (for OAuth errors thrown as exceptions)
   const msg = error instanceof Error ? error.message.toLowerCase() : "";
-  if (msg.includes("oauth") || msg.includes("token expired") || msg.includes("invalid token") || msg.includes("refresh token") || msg.includes("auth")) {
+  if (
+    msg.includes("oauth") ||
+    msg.includes("token expired") ||
+    msg.includes("invalid token") ||
+    msg.includes("refresh token") ||
+    msg.includes("auth")
+  ) {
     return { error_class: "auth", error_code: "oauth_refresh_failed" };
   }
 
@@ -544,9 +556,9 @@ export async function runConsentPrompt(ctx: ErrorContext): Promise<void> {
   process.stderr.write("\n[claudish] An error occurred: " + errorSummary.error_code + "\n");
   process.stderr.write(
     "Help improve claudish by sending an anonymous error report?\n" +
-    "  Sends: version, error type, provider, model, platform.\n" +
-    "  Does NOT send: prompts, paths, API keys, or credentials.\n" +
-    "  Disable anytime: claudish telemetry off\n"
+      "  Sends: version, error type, provider, model, platform.\n" +
+      "  Does NOT send: prompts, paths, API keys, or credentials.\n" +
+      "  Disable anytime: claudish telemetry off\n"
   );
 
   const answer = await new Promise<string>((resolve) => {
@@ -583,7 +595,9 @@ export async function runConsentPrompt(ctx: ErrorContext): Promise<void> {
       // Silently discard
     }
   } else {
-    process.stderr.write("[claudish] Error reporting disabled. You can enable it later: claudish telemetry on\n");
+    process.stderr.write(
+      "[claudish] Error reporting disabled. You can enable it later: claudish telemetry on\n"
+    );
   }
 
   consentPromptActive = false;
@@ -645,12 +659,7 @@ export function reportError(ctx: ErrorContext): void {
   // Fast exit: telemetry not initialized or disabled
   if (!initialized || !consentEnabled) {
     // Check if we should show the consent prompt (first-time, interactive only)
-    if (
-      initialized &&
-      !consentEnabled &&
-      ctx.isInteractive &&
-      process.stderr.isTTY
-    ) {
+    if (initialized && !consentEnabled && ctx.isInteractive && process.stderr.isTTY) {
       // Show consent prompt asynchronously — does not block the caller
       showConsentPromptAsync(ctx);
     }
@@ -716,9 +725,13 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
       const envDisabled = envOverride === "0" || envOverride === "false" || envOverride === "off";
 
       if (envDisabled) {
-        process.stderr.write("[claudish] Telemetry: DISABLED (CLAUDISH_TELEMETRY env var override)\n");
+        process.stderr.write(
+          "[claudish] Telemetry: DISABLED (CLAUDISH_TELEMETRY env var override)\n"
+        );
       } else if (!t) {
-        process.stderr.write("[claudish] Telemetry: NOT YET CONFIGURED (will prompt on first error)\n");
+        process.stderr.write(
+          "[claudish] Telemetry: NOT YET CONFIGURED (will prompt on first error)\n"
+        );
       } else {
         const state = t.enabled ? "ENABLED" : "DISABLED";
         const asked = t.askedAt ? `(configured ${t.askedAt})` : "(never prompted)";
@@ -745,14 +758,16 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
         cfg.telemetry.enabled = false;
         await saveConfig(cfg);
       }
-      process.stderr.write("[claudish] Telemetry consent reset. You will be asked again on the next error.\n");
+      process.stderr.write(
+        "[claudish] Telemetry consent reset. You will be asked again on the next error.\n"
+      );
       process.exit(0);
     }
 
     default:
       process.stderr.write(
         `[claudish] Unknown telemetry subcommand: "${subcommand}"\n` +
-        "Usage: claudish telemetry on|off|status|reset\n"
+          "Usage: claudish telemetry on|off|status|reset\n"
       );
       process.exit(1);
   }

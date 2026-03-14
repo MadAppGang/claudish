@@ -66,9 +66,7 @@ export class LocalFormatAdapter extends FormatAdapter {
     // Add guidance to system prompt for local models
     if (messages.length > 0 && messages[0].role === "system") {
       messages[0].content += this.buildSystemGuidance(
-        this.capabilities.supportsTools
-          ? (claudeRequest.tools?.length || 0)
-          : 0
+        this.capabilities.supportsTools ? claudeRequest.tools?.length || 0 : 0
       );
     }
 
@@ -107,14 +105,11 @@ export class LocalFormatAdapter extends FormatAdapter {
       top_p: sampling.top_p,
       top_k: sampling.top_k,
       min_p: sampling.min_p,
-      repetition_penalty:
-        sampling.repetition_penalty > 1 ? sampling.repetition_penalty : undefined,
+      repetition_penalty: sampling.repetition_penalty > 1 ? sampling.repetition_penalty : undefined,
       stream: this.capabilities.supportsStreaming,
       max_tokens: effectiveMaxTokens,
       tools: tools.length > 0 ? tools : undefined,
-      stream_options: this.capabilities.supportsStreaming
-        ? { include_usage: true }
-        : undefined,
+      stream_options: this.capabilities.supportsStreaming ? { include_usage: true } : undefined,
     };
 
     // Tool choice mapping from Claude format

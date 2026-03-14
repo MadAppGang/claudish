@@ -29,7 +29,9 @@ const isKimiLogout = args.includes("--kimi-logout");
 // Check for subcommands (can appear anywhere in args due to aliases like `claudish -y`)
 const isUpdateCommand = args.includes("update");
 const isInitCommand = args[0] === "init" || args.includes("init");
-const isProfileCommand = args[0] === "profile" || args.some((a, i) => a === "profile" && (i === 0 || !args[i-1]?.startsWith("-")));
+const isProfileCommand =
+  args[0] === "profile" ||
+  args.some((a, i) => a === "profile" && (i === 0 || !args[i - 1]?.startsWith("-")));
 // Check for telemetry management subcommand
 const isTelemetryCommand = args[0] === "telemetry";
 
@@ -79,7 +81,10 @@ if (isMcpMode) {
       console.log("You can now use Kimi Coding with: claudish --model kc@kimi-for-coding");
       process.exit(0);
     } catch (error) {
-      console.error("\n❌ Kimi OAuth login failed:", error instanceof Error ? error.message : error);
+      console.error(
+        "\n❌ Kimi OAuth login failed:",
+        error instanceof Error ? error.message : error
+      );
       process.exit(1);
     }
   });
@@ -101,12 +106,18 @@ if (isMcpMode) {
   import("./update-command.js").then((m) => m.updateCommand());
 } else if (isInitCommand) {
   // Profile setup wizard — pass --local/--global scope flag if provided
-  const scopeFlag = args.includes("--local") ? "local" : args.includes("--global") ? "global" : undefined;
+  const scopeFlag = args.includes("--local")
+    ? "local"
+    : args.includes("--global")
+      ? "global"
+      : undefined;
   import("./profile-commands.js").then((pc) => pc.initCommand(scopeFlag).catch(handlePromptExit));
 } else if (isProfileCommand) {
   // Profile management commands
-  const profileArgIndex = args.findIndex(a => a === "profile");
-  import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(profileArgIndex + 1)).catch(handlePromptExit));
+  const profileArgIndex = args.findIndex((a) => a === "profile");
+  import("./profile-commands.js").then((pc) =>
+    pc.profileCommand(args.slice(profileArgIndex + 1)).catch(handlePromptExit)
+  );
 } else if (isTelemetryCommand) {
   // Telemetry management: claudish telemetry on|off|status|reset
   const subcommand = args[1] ?? "status";
@@ -193,7 +204,10 @@ async function runCli() {
     // Show interactive model selector ONLY when no model configuration exists
     // Skip if: explicit --model, OR profile provides tier mappings (Claude Code uses these internally)
     const hasProfileTiers =
-      cliConfig.modelOpus || cliConfig.modelSonnet || cliConfig.modelHaiku || cliConfig.modelSubagent;
+      cliConfig.modelOpus ||
+      cliConfig.modelSonnet ||
+      cliConfig.modelHaiku ||
+      cliConfig.modelSubagent;
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
       cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
       console.log(""); // Empty line after selection

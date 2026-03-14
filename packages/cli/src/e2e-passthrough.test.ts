@@ -175,7 +175,14 @@ describe("Group 1: E2E — Single-shot mode full pipeline", () => {
   });
 
   test("claudish --model grok -- --system-prompt '-verbose' 'task' → everything after -- passes through", async () => {
-    const config = await parseArgs(["--model", "grok", "--", "--system-prompt", "-verbose", "task"]);
+    const config = await parseArgs([
+      "--model",
+      "grok",
+      "--",
+      "--system-prompt",
+      "-verbose",
+      "task",
+    ]);
     const args = buildClaudeArgs(config);
 
     expect(args[2]).toBe("-p");
@@ -185,14 +192,7 @@ describe("Group 1: E2E — Single-shot mode full pipeline", () => {
   });
 
   test("claudish --model grok --json --add-dir /tmp 'task' → --output-format json and --add-dir /tmp in args", async () => {
-    const config = await parseArgs([
-      "--model",
-      "grok",
-      "--json",
-      "--add-dir",
-      "/tmp",
-      "task",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--json", "--add-dir", "/tmp", "task"]);
     expect(config.jsonOutput).toBe(true);
 
     const args = buildClaudeArgs(config);
@@ -439,12 +439,7 @@ describe("Group 5: E2E — Edge cases", () => {
   });
 
   test("unknown boolean flag followed by known flag → unknown in claudeArgs, known consumed", async () => {
-    const config = await parseArgs([
-      "--model",
-      "grok",
-      "--no-session-persistence",
-      "--quiet",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--no-session-persistence", "--quiet"]);
     expect(config.quiet).toBe(true);
     // --quiet must NOT appear in claudeArgs
     expect(config.claudeArgs).not.toContain("--quiet");

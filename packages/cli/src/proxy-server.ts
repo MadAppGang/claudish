@@ -29,6 +29,9 @@ import {
   type ProviderDefinition,
 } from "./providers/provider-definitions.js";
 import { selectProviderComponents } from "./providers/provider-components.js";
+import { FallbackHandler } from "./handlers/fallback-handler.js";
+import type { FallbackCandidate } from "./handlers/fallback-handler.js";
+import { getFallbackChain } from "./providers/auto-route.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -164,15 +167,19 @@ export async function createProxyServer(
 
   // Pre-warm LiteLLM model cache for auto-routing (non-blocking)
   if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
-    fetchLiteLLMModels(
-      process.env.LITELLM_BASE_URL,
-      process.env.LITELLM_API_KEY
-    ).then(() => {
-      log("[Proxy] LiteLLM model cache pre-warmed for auto-routing");
-    }).catch(() => {
-      // Silently ignore - auto-routing will skip LiteLLM if cache unavailable
-    });
+    fetchLiteLLMModels(process.env.LITELLM_BASE_URL, process.env.LITELLM_API_KEY)
+      .then(() => {
+        log("[Proxy] LiteLLM model cache pre-warmed for auto-routing");
+      })
+      .catch(() => {
+        // Silently ignore - auto-routing will skip LiteLLM if cache unavailable
+      });
   }
+
+  // Cache fallback handlers by target model string.
+  // No TTL/invalidation: claudish is ephemeral per session, so env changes
+  // (new API keys) take effect on next session start.
+  const fallbackHandlerCache = new Map<string, ModelHandler>();
 
   const getHandlerForRequest = async (requestedModel: string): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
@@ -206,6 +213,54 @@ export async function createProxyServer(
           // Reconstruct target with resolved model name so handler construction
           // uses the correct fully-qualified API ID (e.g., "qwen/qwen3-coder-next").
           target = `${parsedTarget.provider}@${resolution.resolvedId}`;
+        }
+      }
+    }
+
+    // 2c. Provider fallback chain for auto-routed models
+    // When no explicit provider@ prefix is given, build a priority chain of providers
+    // and wrap them in a FallbackHandler that tries each in order on retryable errors.
+    {
+      const parsedForFallback = parseModelSpec(target);
+      if (
+        !parsedForFallback.isExplicitProvider &&
+        parsedForFallback.provider !== "native-anthropic"
+      ) {
+        const cacheKey = `fallback:${target}`;
+        if (fallbackHandlerCache.has(cacheKey)) {
+          return fallbackHandlerCache.get(cacheKey)!;
+        }
+
+        const chain = await getFallbackChain(parsedForFallback.model, parsedForFallback.provider);
+        if (chain.length > 0) {
+          const candidates: FallbackCandidate[] = [];
+          for (const route of chain) {
+            let handler: ModelHandler | null = null;
+            if (route.provider === "openrouter") {
+              handler = getOpenRouterHandler(route.modelSpec);
+            } else {
+              handler = await getRemoteProviderHandler(route.modelSpec);
+            }
+            if (handler) {
+              candidates.push({ name: route.displayName, handler });
+            }
+          }
+
+          if (candidates.length > 0) {
+            const resultHandler =
+              candidates.length > 1
+                ? new FallbackHandler(candidates)
+                : candidates[0].handler;
+
+            fallbackHandlerCache.set(cacheKey, resultHandler);
+
+            if (!options.quiet && candidates.length > 1) {
+              logStderr(
+                `[Fallback] ${candidates.length} providers for ${parsedForFallback.model}: ${candidates.map((c) => c.name).join(" → ")}`
+              );
+            }
+            return resultHandler;
+          }
         }
       }
     }

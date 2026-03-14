@@ -102,8 +102,8 @@ const PROVIDER_ALIAS: Record<string, string> = {
   mm: "minimax",
   moonshot: "kimi",
   zhipu: "glm",
-  "minimax-coding": "minimax",  // Use MiniMax pricing as fallback (though subscription overrides)
-  "glm-coding": "glm",  // Use GLM pricing as fallback (though subscription overrides)
+  "minimax-coding": "minimax", // Use MiniMax pricing as fallback (though subscription overrides)
+  "glm-coding": "glm", // Use GLM pricing as fallback (though subscription overrides)
   oc: "ollamacloud",
 };
 

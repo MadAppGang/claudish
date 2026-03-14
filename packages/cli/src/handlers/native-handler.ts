@@ -17,8 +17,12 @@ export class NativeHandler implements ModelHandler {
     const target = payload.model;
 
     log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
-    log(`[Native] x-api-key: ${originalHeaders["x-api-key"] ? maskCredential(originalHeaders["x-api-key"]) : "(not set)"}`);
-    log(`[Native] authorization: ${originalHeaders["authorization"] ? maskCredential(originalHeaders["authorization"]) : "(not set)"}`);
+    log(
+      `[Native] x-api-key: ${originalHeaders["x-api-key"] ? maskCredential(originalHeaders["x-api-key"]) : "(not set)"}`
+    );
+    log(
+      `[Native] authorization: ${originalHeaders["authorization"] ? maskCredential(originalHeaders["authorization"]) : "(not set)"}`
+    );
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 

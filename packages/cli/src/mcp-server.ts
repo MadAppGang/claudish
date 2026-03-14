@@ -355,36 +355,35 @@ async function main() {
     async () => {
       const models = await loadRecommendedModels();
 
-      if (models.length === 0) {
-        return {
-          content: [
-            { type: "text", text: "No recommended models found. Try search_models instead." },
-          ],
-        };
-      }
-
-      let output = "# Recommended Models\n\n";
-      output += "| Model | Provider | Pricing | Context | Tools | Reasoning | Vision |\n";
-      output += "|-------|----------|---------|---------|-------|-----------|--------|\n";
-
-      for (const model of models) {
-        const tools = model.supportsTools ? "✓" : "·";
-        const reasoning = model.supportsReasoning ? "✓" : "·";
-        const vision = model.supportsVision ? "✓" : "·";
-        output += `| ${model.id} | ${model.provider} | ${model.pricing?.average || "N/A"} | ${model.context || "N/A"} | ${tools} | ${reasoning} | ${vision} |\n`;
-      }
-
-      output += "\n## Quick Picks\n";
-      output += "- **Budget**: `minimax-m2.5` ($0.75/1M)\n";
-      output += "- **Large context**: `gemini-3.1-pro-preview` (1M tokens)\n";
-      output += "- **Most advanced**: `gpt-5.2` ($7.88/1M)\n";
-      output += "- **Vision + coding**: `kimi-k2.5` ($1.32/1M)\n";
-      output += "- **Agentic**: `glm-5` ($1.68/1M)\n";
-      output += "- **Multimodal**: `qwen3.5-plus-02-15` ($1.40/1M)\n";
-
-      return { content: [{ type: "text", text: output }] };
+    if (models.length === 0) {
+      return {
+        content: [
+          { type: "text", text: "No recommended models found. Try search_models instead." },
+        ],
+      };
     }
-  );
+
+    let output = "# Recommended Models\n\n";
+    output += "| Model | Provider | Pricing | Context | Tools | Reasoning | Vision |\n";
+    output += "|-------|----------|---------|---------|-------|-----------|--------|\n";
+
+    for (const model of models) {
+      const tools = model.supportsTools ? "✓" : "·";
+      const reasoning = model.supportsReasoning ? "✓" : "·";
+      const vision = model.supportsVision ? "✓" : "·";
+      output += `| ${model.id} | ${model.provider} | ${model.pricing?.average || "N/A"} | ${model.context || "N/A"} | ${tools} | ${reasoning} | ${vision} |\n`;
+    }
+
+    output += "\n## Quick Picks\n";
+    output += "- **Budget**: `minimax-m2.5` ($0.75/1M)\n";
+    output += "- **Large context**: `gemini-3.1-pro-preview` (1M tokens)\n";
+    output += "- **Most advanced**: `gpt-5.2` ($7.88/1M)\n";
+    output += "- **Vision + coding**: `kimi-k2.5` ($1.32/1M)\n";
+    output += "- **Agentic**: `glm-5` ($1.68/1M)\n";
+    output += "- **Multimodal**: `qwen3.5-plus-02-15` ($1.40/1M)\n";
+
+    return { content: [{ type: "text", text: output }] };
+  });
 
   // Tool: search_models - Search all OpenRouter models
   server.tool(

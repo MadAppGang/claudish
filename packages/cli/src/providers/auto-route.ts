@@ -69,10 +69,7 @@ async function checkOAuthForProvider(
   };
 }
 
-function checkApiKeyForProvider(
-  nativeProvider: string,
-  modelName: string
-): AutoRouteResult | null {
+function checkApiKeyForProvider(nativeProvider: string, modelName: string): AutoRouteResult | null {
   const keyInfo = API_KEY_ENV_VARS[nativeProvider];
   if (!keyInfo) return null;
 
@@ -121,12 +118,12 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
     apiKeyEnvVar: "KIMI_CODING_API_KEY",
     openRouterModel: "moonshot/kimi-k2",
   },
-  "kimi": {
+  kimi: {
     loginFlag: "--kimi-login",
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     openRouterModel: "moonshot/moonshot-v1-8k",
   },
-  "google": {
+  google: {
     loginFlag: "--gemini-login",
     apiKeyEnvVar: "GEMINI_API_KEY",
     openRouterModel: "google/gemini-2.0-flash",
@@ -136,25 +133,25 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
     apiKeyEnvVar: "GEMINI_API_KEY",
     openRouterModel: "google/gemini-2.0-flash",
   },
-  "openai": {
+  openai: {
     apiKeyEnvVar: "OPENAI_API_KEY",
     openRouterModel: "openai/gpt-4o",
   },
-  "minimax": {
+  minimax: {
     apiKeyEnvVar: "MINIMAX_API_KEY",
     openRouterModel: "minimax/minimax-01",
   },
   "minimax-coding": {
     apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
   },
-  "glm": {
+  glm: {
     apiKeyEnvVar: "ZHIPU_API_KEY",
     openRouterModel: "zhipuai/glm-4",
   },
   "glm-coding": {
     apiKeyEnvVar: "GLM_CODING_API_KEY",
   },
-  "ollamacloud": {
+  ollamacloud: {
     apiKeyEnvVar: "OLLAMA_API_KEY",
   },
 };
@@ -171,9 +168,7 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
 export function getAutoRouteHint(modelName: string, nativeProvider: string): string | null {
   const hint = PROVIDER_HINT_MAP[nativeProvider];
 
-  const lines: string[] = [
-    `No credentials found for "${modelName}". Options:`,
-  ];
+  const lines: string[] = [`No credentials found for "${modelName}". Options:`];
 
   let hasOption = false;
 
@@ -208,9 +203,7 @@ export async function autoRoute(modelName: string, nativeProvider: string): Prom
   if (litellmBaseUrl) {
     const models = await readLiteLLMCache(litellmBaseUrl);
     if (models !== null) {
-      const match = models.find(
-        (m) => m.name === modelName || m.id === `litellm@${modelName}`
-      );
+      const match = models.find((m) => m.name === modelName || m.id === `litellm@${modelName}`);
       if (match) {
         return {
           provider: "litellm",
@@ -249,4 +242,179 @@ export async function autoRoute(modelName: string, nativeProvider: string): Prom
   }
 
   return null;
+}
+
+/**
+ * Fallback route candidate for provider failover.
+ */
+export interface FallbackRoute {
+  /** Canonical provider name */
+  provider: string;
+  /** Model spec to pass to handler creation (e.g., "litellm@minimax-m2.5") */
+  modelSpec: string;
+  /** Human-readable provider name for logging */
+  displayName: string;
+}
+
+/** Reverse mapping: canonical provider name → shortest @ prefix for handler creation */
+const PROVIDER_TO_PREFIX: Record<string, string> = {
+  google: "g",
+  openai: "oai",
+  minimax: "mm",
+  "minimax-coding": "mmc",
+  kimi: "kimi",
+  "kimi-coding": "kc",
+  glm: "glm",
+  "glm-coding": "gc",
+  zai: "zai",
+  ollamacloud: "oc",
+  "opencode-zen": "zen",
+  "opencode-zen-go": "zengo",
+  litellm: "ll",
+  vertex: "v",
+  "gemini-codeassist": "go",
+};
+
+const DISPLAY_NAMES: Record<string, string> = {
+  google: "Gemini",
+  openai: "OpenAI",
+  minimax: "MiniMax",
+  "minimax-coding": "MiniMax Coding",
+  kimi: "Kimi",
+  "kimi-coding": "Kimi Coding",
+  glm: "GLM",
+  "glm-coding": "GLM Coding",
+  zai: "Z.AI",
+  ollamacloud: "OllamaCloud",
+  "opencode-zen": "OpenCode Zen",
+  "opencode-zen-go": "OpenCode Zen Go",
+  litellm: "LiteLLM",
+  openrouter: "OpenRouter",
+};
+
+/**
+ * Subscription/coding-plan alternatives for native providers.
+ *
+ * Many providers offer both per-usage API access and a subscription/coding plan
+ * with higher limits or different pricing. The subscription tier should be tried
+ * before per-usage API in the fallback chain.
+ *
+ * modelName: null = use the same model name as the original request.
+ *            string = use this specific model name on the subscription endpoint.
+ */
+interface SubscriptionAlternative {
+  subscriptionProvider: string;
+  modelName: string | null;
+  prefix: string;
+  displayName: string;
+}
+
+const SUBSCRIPTION_ALTERNATIVES: Record<string, SubscriptionAlternative> = {
+  // Kimi → Kimi Coding Plan (subscription endpoint only accepts "kimi-for-coding")
+  kimi: {
+    subscriptionProvider: "kimi-coding",
+    modelName: "kimi-for-coding",
+    prefix: "kc",
+    displayName: "Kimi Coding",
+  },
+  // MiniMax → MiniMax Coding Plan (same model names, different endpoint/key)
+  minimax: {
+    subscriptionProvider: "minimax-coding",
+    modelName: null,
+    prefix: "mmc",
+    displayName: "MiniMax Coding",
+  },
+  // GLM → GLM Coding Plan at Z.AI (same model names, different endpoint/key)
+  glm: {
+    subscriptionProvider: "glm-coding",
+    modelName: null,
+    prefix: "gc",
+    displayName: "GLM Coding",
+  },
+  // Gemini → Gemini Code Assist (OAuth-based subscription, same model names)
+  google: {
+    subscriptionProvider: "gemini-codeassist",
+    modelName: null,
+    prefix: "go",
+    displayName: "Gemini Code Assist",
+  },
+};
+
+/** Check if credentials exist for a given provider (API key, aliases, or OAuth). */
+async function hasProviderCredentials(provider: string): Promise<boolean> {
+  const keyInfo = API_KEY_ENV_VARS[provider];
+  if (keyInfo?.envVar && process.env[keyInfo.envVar]) return true;
+  if (keyInfo?.aliases?.some((a) => process.env[a])) return true;
+  return hasOAuthCredentials(provider);
+}
+
+/**
+ * Generate an ordered list of provider fallback candidates for a bare model name.
+ *
+ * Priority: LiteLLM → Subscription (Zen) → Provider Subscription Plan → Native API → OpenRouter
+ *
+ * Only includes providers that have credentials configured.
+ * Used for auto-routed models (no explicit provider@ prefix).
+ */
+export async function getFallbackChain(modelName: string, nativeProvider: string): Promise<FallbackRoute[]> {
+  const routes: FallbackRoute[] = [];
+
+  // 1. LiteLLM (always try if configured; cache may be stale or model may
+  //    exist under a vendor-prefixed name that the proxy resolves dynamically)
+  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
+  if (litellmBaseUrl && process.env.LITELLM_API_KEY) {
+    routes.push({
+      provider: "litellm",
+      modelSpec: `litellm@${modelName}`,
+      displayName: "LiteLLM",
+    });
+  }
+
+  // 2. Subscription aggregator (OpenCode Zen covers many models without per-provider keys)
+  if (process.env.OPENCODE_API_KEY) {
+    routes.push({
+      provider: "opencode-zen",
+      modelSpec: `zen@${modelName}`,
+      displayName: "OpenCode Zen",
+    });
+  }
+
+  // 3. Provider-specific subscription/coding plan (tried before per-usage native API)
+  const sub = SUBSCRIPTION_ALTERNATIVES[nativeProvider];
+  if (sub && (await hasProviderCredentials(sub.subscriptionProvider))) {
+    const subModelName = sub.modelName || modelName;
+    routes.push({
+      provider: sub.subscriptionProvider,
+      modelSpec: `${sub.prefix}@${subModelName}`,
+      displayName: sub.displayName,
+    });
+  }
+
+  // 4. Native API (per-usage, provider-specific OAuth or API key)
+  if (
+    nativeProvider !== "unknown" &&
+    nativeProvider !== "qwen" &&
+    nativeProvider !== "native-anthropic"
+  ) {
+    if (await hasProviderCredentials(nativeProvider)) {
+      const prefix = PROVIDER_TO_PREFIX[nativeProvider] || nativeProvider;
+      routes.push({
+        provider: nativeProvider,
+        modelSpec: `${prefix}@${modelName}`,
+        displayName: DISPLAY_NAMES[nativeProvider] || nativeProvider,
+      });
+    }
+  }
+
+  // 5. OpenRouter (universal fallback)
+  if (process.env.OPENROUTER_API_KEY) {
+    const resolution = await resolveModelName(modelName, "openrouter");
+    routes.push({
+      provider: "openrouter",
+      modelSpec: resolution.resolvedId, // vendor-prefixed (e.g., "minimax/minimax-m2.5")
+      displayName: "OpenRouter",
+    });
+  }
+
+  return routes;
 }

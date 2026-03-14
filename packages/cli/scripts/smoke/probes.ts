@@ -240,8 +240,10 @@ export const runToolCallingProbe: ProbeFn = async (
     const choice = resp.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;
 
+    // Some providers (e.g. opencode-zen) return finish_reason: null even when
+    // tool_calls is present. Check tool_calls presence first; finish_reason is
+    // informational only.
     if (
-      choice?.finish_reason === "tool_calls" &&
       toolCalls &&
       toolCalls.length > 0 &&
       toolCalls[0].function.name === "get_weather" &&

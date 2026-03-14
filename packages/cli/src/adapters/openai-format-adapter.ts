@@ -226,10 +226,12 @@ export class OpenAIFormatAdapter extends FormatAdapter {
         result.push({
           type: "message",
           role: msg.role,
-          content: [{
-            type: msg.role === "user" ? "input_text" : "output_text",
-            text: msg.content,
-          }],
+          content: [
+            {
+              type: msg.role === "user" ? "input_text" : "output_text",
+              text: msg.content,
+            },
+          ],
         });
         continue;
       }

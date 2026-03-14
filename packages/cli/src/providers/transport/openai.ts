@@ -59,9 +59,7 @@ export class OpenAITransport extends ApiKeyTransport {
 
 export class OpenAITimeoutError extends Error {
   constructor(baseUrl: string) {
-    super(
-      `Request to OpenAI API timed out. Check your network connection to ${baseUrl}`
-    );
+    super(`Request to OpenAI API timed out. Check your network connection to ${baseUrl}`);
     this.name = "OpenAITimeoutError";
   }
 }

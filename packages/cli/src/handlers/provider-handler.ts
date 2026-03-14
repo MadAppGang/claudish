@@ -35,7 +35,11 @@ import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthro
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
-import { describeImages, type OpenAIImageBlock, type VisionProxyAuthHeaders } from "../services/vision-proxy.js";
+import {
+  describeImages,
+  type OpenAIImageBlock,
+  type VisionProxyAuthHeaders,
+} from "../services/vision-proxy.js";
 import { reportError } from "../telemetry.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
@@ -131,7 +135,10 @@ export class ProviderHandler implements ModelHandler {
       if (imageBlocks.length > 0) {
         log(`[ProviderHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`);
         const auth = extractAuthHeaders(c);
-        const descriptions = await describeImages(imageBlocks.map((b) => b.block), auth);
+        const descriptions = await describeImages(
+          imageBlocks.map((b) => b.block),
+          auth
+        );
 
         if (descriptions !== null) {
           // Replace image_url blocks with [Image Description: ...] text blocks
@@ -209,7 +216,9 @@ export class ProviderHandler implements ModelHandler {
         await this.provider.refreshAuth();
       } catch (err: any) {
         log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
-        logStderr(`Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`);
+        logStderr(
+          `Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`
+        );
         reportError({
           error: err,
           providerName: this.provider.name,
@@ -222,10 +231,7 @@ export class ProviderHandler implements ModelHandler {
           isInteractive: this.isInteractive,
           authType: "oauth",
         });
-        return c.json(
-          { error: { type: "connection_error", message: err.message } },
-          503 as any
-        );
+        return c.json({ error: { type: "connection_error", message: err.message } }, 503 as any);
       }
       // Update context window if provider dynamically discovered it
       if (this.provider.getContextWindow) {
@@ -310,7 +316,9 @@ export class ProviderHandler implements ModelHandler {
           } else {
             const errorText = await retryResp.text();
             log(`[${this.provider.displayName}] Retry failed: ${errorText}`);
-            logStderr(`Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`);
+            logStderr(
+              `Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`
+            );
             reportError({
               error: new Error(errorText),
               providerName: this.provider.name,
@@ -327,7 +335,9 @@ export class ProviderHandler implements ModelHandler {
           }
         } catch (err: any) {
           log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
-          logStderr(`Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`);
+          logStderr(
+            `Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`
+          );
           reportError({
             error: err,
             providerName: this.provider.name,
@@ -493,7 +503,11 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
   }
   if (status === 401 || status === 403) {
     // Some providers (e.g. OpenCode Zen) return 401 for unsupported models, not auth failures
-    if (lower.includes("not supported") || lower.includes("unsupported model") || lower.includes("model not found")) {
+    if (
+      lower.includes("not supported") ||
+      lower.includes("unsupported model") ||
+      lower.includes("model not found")
+    ) {
       return "Model not supported by this provider. Verify model name.";
     }
     return "Check API key / OAuth credentials.";
