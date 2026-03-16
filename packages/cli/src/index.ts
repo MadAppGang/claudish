@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 // Load .env file before anything else (quiet mode to suppress verbose output)
 import { config } from "dotenv";

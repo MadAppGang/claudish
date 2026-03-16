@@ -1,11 +1,11 @@
 {
   "name": "claudish",
-  "version": "5.9.0",
+  "version": "5.13.0",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "claudish": "dist/index.js"
+    "claudish": "bin/claudish.cjs"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
@@ -13,7 +13,7 @@
     "dev:grok": "bun run src/index.ts --interactive --model x-ai/grok-code-fast-1",
     "dev:grok:debug": "bun run src/index.ts --interactive --debug --log-level info --model x-ai/grok-code-fast-1",
     "dev:info": "bun run src/index.ts --interactive --monitor",
-    "build": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
+    "build": "bun build src/index.ts --outdir dist --target bun && chmod +x dist/index.js",
     "build:binary": "bun build src/index.ts --compile --outfile claudish",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
@@ -32,7 +32,7 @@
     "dotenv": "^17.2.3",
     "typescript": "^5.9.3"
   },
-  "files": ["dist/", "AI_AGENT_GUIDE.md", "recommended-models.json", "skills/"],
+  "files": ["dist/", "bin/", "AI_AGENT_GUIDE.md", "recommended-models.json", "skills/"],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"
