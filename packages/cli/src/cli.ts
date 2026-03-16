@@ -1196,14 +1196,14 @@ MODEL ROUTING:
   New syntax: provider@model[:concurrency]
     google@gemini-3-pro              Direct Google API (explicit)
     openrouter@google/gemini-3-pro   OpenRouter (explicit)
-    oai@gpt-5.3                      Direct OpenAI API (shortcut)
+    oai@gpt-5.4                      Direct OpenAI API (shortcut)
     ollama@llama3.2:3                Local Ollama with 3 concurrent requests
     ollama@llama3.2:0                Local Ollama with no limits
 
   Provider shortcuts:
     g, gemini    -> Google Gemini     google@gemini-3-pro
-    oai          -> OpenAI Direct     oai@gpt-5.3
-    or           -> OpenRouter        or@openai/gpt-5.3
+    oai          -> OpenAI Direct     oai@gpt-5.4
+    or           -> OpenRouter        or@openai/gpt-5.4
     mm, mmax     -> MiniMax Direct    mm@MiniMax-M2.1
     kimi, moon   -> Kimi Direct       kimi@kimi-k2-thinking-turbo
     glm, zhipu   -> GLM Direct        glm@glm-4.7
@@ -1369,7 +1369,7 @@ ENVIRONMENT VARIABLES:
   MLX_BASE_URL                    MLX server (default: http://127.0.0.1:8080)
 
   Model settings:
-  CLAUDISH_MODEL                  Default model to use (default: openai/gpt-5.3)
+  CLAUDISH_MODEL                  Default model to use (default: openai/gpt-5.4)
   CLAUDISH_PORT                   Default port for proxy
   CLAUDISH_CONTEXT_WINDOW         Override context window size
 
@@ -1389,8 +1389,8 @@ EXAMPLES:
 
   # New @ syntax - explicit provider routing
   claudish --model google@gemini-3-pro "implement user authentication"
-  claudish --model openrouter@openai/gpt-5.3 "add tests for login"
-  claudish --model oai@gpt-5.3 "direct to OpenAI"
+  claudish --model openrouter@openai/gpt-5.4 "add tests for login"
+  claudish --model oai@gpt-5.4 "direct to OpenAI"
 
   # Native model auto-detection (provider detected from model name)
   claudish --model gpt-4o "routes to OpenAI API (detected from model name)"
@@ -1430,11 +1430,11 @@ EXAMPLES:
   claudish --model lms@qwen2.5-coder "LM Studio shortcut"
 
   # Per-role model mapping (works with all syntaxes)
-  claudish --model-opus oai@gpt-5.3 --model-sonnet google@gemini-3-pro --model-haiku mm@MiniMax-M2.1
+  claudish --model-opus oai@gpt-5.4 --model-sonnet google@gemini-3-pro --model-haiku mm@MiniMax-M2.1
 
   # Use stdin for large prompts (e.g., git diffs, code review)
   echo "Review this code..." | claudish --stdin --model g@gemini-2.0-flash
-  git diff | claudish --stdin --model oai@gpt-5.3 "Review these changes"
+  git diff | claudish --stdin --model oai@gpt-5.4 "Review these changes"
 
   # Monitor mode - understand how Claude Code works
   claudish --monitor --debug "analyze code structure"
