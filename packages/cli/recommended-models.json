@@ -1,6 +1,6 @@
 {
   "version": "1.2.0",
-  "lastUpdated": "2026-03-03",
+  "lastUpdated": "2026-03-16",
   "source": "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
   "models": [
     {
@@ -92,19 +92,19 @@
       "recommended": true
     },
     {
-      "id": "gpt-5.2",
-      "openrouterId": "openai/gpt-5.2",
-      "name": "OpenAI: GPT-5.2",
-      "description": "GPT-5.2 is the latest frontier-grade model in the GPT-5 series, offering stronger agentic and long context perfomance compared to GPT-5.1. It uses adaptive reasoning to allocate computation dynamically, responding quickly to simple queries while spending more depth on complex tasks.\n\nBuilt for broad task coverage, GPT-5.2 delivers consistent gains across math, coding, sciende, and tool calling workloads, with more coherent long-form answers and improved tool-use reliability.",
+      "id": "gpt-5.4",
+      "openrouterId": "openai/gpt-5.4",
+      "name": "OpenAI: GPT-5.4",
+      "description": "GPT-5.4 is OpenAI's latest frontier model, unifying the Codex and GPT lines into a single system. It features a 1M+ token context window (922K input, 128K output) with support for text and image inputs, enabling high-context reasoning, coding, and multimodal analysis within the same workflow.\n\nThe model delivers improved performance in coding, document understanding, tool use, and instruction following. It is designed as a strong default for both general-purpose tasks and software engineering, capable of generating production-quality code, synthesizing information across multiple sources, and executing complex multi-step workflows with fewer iterations and greater token efficiency.",
       "provider": "Openai",
-      "category": "reasoning",
+      "category": "programming",
       "priority": 5,
       "pricing": {
-        "input": "$1.75/1M",
-        "output": "$14.00/1M",
-        "average": "$7.88/1M"
+        "input": "$2.50/1M",
+        "output": "$15.00/1M",
+        "average": "$8.75/1M"
       },
-      "context": "400K",
+      "context": "1050K",
       "maxOutputTokens": 128000,
       "modality": "text+image+file->text",
       "supportsTools": true,

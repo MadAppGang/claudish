@@ -377,7 +377,7 @@ async function main() {
     output += "\n## Quick Picks\n";
     output += "- **Budget**: `minimax-m2.5` ($0.75/1M)\n";
     output += "- **Large context**: `gemini-3.1-pro-preview` (1M tokens)\n";
-    output += "- **Most advanced**: `gpt-5.2` ($7.88/1M)\n";
+    output += "- **Most advanced**: `gpt-5.4` ($8.75/1M)\n";
     output += "- **Vision + coding**: `kimi-k2.5` ($1.32/1M)\n";
     output += "- **Agentic**: `glm-5` ($1.68/1M)\n";
     output += "- **Multimodal**: `qwen3.5-plus-02-15` ($1.40/1M)\n";
