@@ -395,13 +395,16 @@ export const runReasoningProbe: ProbeFn = async (
       };
     }
 
-    // Non-reasoning model: any non-empty content is a pass
-    if (msg.content && msg.content.length > 0) {
+    // Non-reasoning model: any non-empty content or reasoning_content is a pass
+    // Some providers (e.g. opencode-zen-go) put all output in reasoning_content
+    // even for models not classified as "reasoning".
+    const textOut = msg.content || msg.reasoning_content || "";
+    if (textOut.length > 0) {
       return {
         capability: "reasoning",
         status: "pass",
         durationMs: elapsed,
-        excerpt: msg.content.slice(0, 200),
+        excerpt: textOut.slice(0, 200),
       };
     }
     return {

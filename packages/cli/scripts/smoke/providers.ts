@@ -15,7 +15,7 @@ const SKIP_PROVIDERS = new Set([
   "ollamacloud", // Uses /api/chat Ollama JSONL format, not OpenAI-compat
   "gemini-codeassist", // OAuth-only, no API key auth
   "vertex", // Complex auth (VERTEX_PROJECT + OAuth)
-  "glm-coding", // Coding PAAS endpoint — valid model IDs not yet confirmed
+  "minimax", // Redundant — minimax-coding tests same model/format with active billing
 ]);
 
 // Map provider name → representative model for smoke testing
@@ -25,7 +25,7 @@ const REPRESENTATIVE_MODELS: Record<string, string> = {
   minimax: "minimax-m2.5",
   "minimax-coding": "minimax-m2.5",
   glm: "glm-5",
-  "glm-coding": "codegeex-4", // GLM coding plan representative model
+  "glm-coding": "glm-5", // GLM coding plan — codegeex-4 removed from API
   zai: "glm-5",
   openai: "gpt-4o-mini",
   openrouter: "openai/gpt-4o-mini", // stable model always available on OpenRouter
@@ -34,6 +34,15 @@ const REPRESENTATIVE_MODELS: Record<string, string> = {
   "opencode-zen-go": "glm-5", // Only confirmed working model (C2 fix)
   gemini: "gemini-2.0-flash",
 };
+
+// Providers whose representative smoke model can't process images.
+// The provider may support vision via other models (e.g. GLM-4.6V),
+// but the smoke test model (glm-5, minimax-m2.5) is text-only.
+const NO_NATIVE_VISION = new Set([
+  "minimax",
+  "minimax-coding",
+  "glm", // glm-5 is text-only; vision models are GLM-4.5V/GLM-4.6V
+]);
 
 // Providers that use Anthropic-compat wire format
 const ANTHROPIC_COMPAT_PROVIDERS = new Set([
@@ -125,7 +134,7 @@ export function discoverProviders(filterName?: string): SmokeProviderConfig[] {
         representativeModel: REPRESENTATIVE_MODELS[p.name],
         capabilities: {
           supportsTools: p.capabilities.supportsTools,
-          supportsVision: p.capabilities.supportsVision,
+          supportsVision: NO_NATIVE_VISION.has(p.name) ? false : p.capabilities.supportsVision,
           supportsReasoning: p.capabilities.supportsReasoning,
         },
       };
