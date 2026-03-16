@@ -115,6 +115,44 @@ export async function resolveModelName(
 }
 
 /**
+ * Synchronous variant of resolveModelName. Uses only in-memory caches
+ * (no async fetch). Safe to call from synchronous code paths like routing
+ * rules construction. Returns the best-effort resolved name.
+ */
+export function resolveModelNameSync(
+  userInput: string,
+  targetProvider: string
+): ModelResolutionResult {
+  // Already a fully-qualified name, pass through
+  if (targetProvider !== "openrouter" && userInput.includes("/")) {
+    return { resolvedId: userInput, wasResolved: false, sourceLabel: "passthrough" };
+  }
+
+  const resolver = getResolver(targetProvider);
+  if (!resolver) {
+    return { resolvedId: userInput, wasResolved: false, sourceLabel: "passthrough" };
+  }
+
+  // Try sync resolution if the resolver has a sync method, otherwise pass through.
+  // The resolvers use in-memory caches populated by warmAllCatalogs(), so
+  // if the cache is warm this will resolve correctly.
+  if (typeof (resolver as any).resolveSync === "function") {
+    const resolved = (resolver as any).resolveSync(userInput);
+    if (resolved && resolved !== userInput) {
+      return { resolvedId: resolved, wasResolved: true, sourceLabel: `${targetProvider} catalog (sync)` };
+    }
+  }
+
+  // Fallback: for openrouter, try the static vendor map
+  if (targetProvider === "openrouter") {
+    // Just pass through the userInput, the async resolver will handle it at request time
+    return { resolvedId: userInput, wasResolved: false, sourceLabel: "passthrough" };
+  }
+
+  return { resolvedId: userInput, wasResolved: false, sourceLabel: "passthrough" };
+}
+
+/**
  * Emit a resolution notice to stderr (called after resolveModelName returns wasResolved=true).
  */
 export function logResolution(

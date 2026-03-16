@@ -34,6 +34,8 @@ const isProfileCommand =
   args.some((a, i) => a === "profile" && (i === 0 || !args[i - 1]?.startsWith("-")));
 // Check for telemetry management subcommand
 const isTelemetryCommand = args[0] === "telemetry";
+// Check for stats management subcommand
+const isStatsCommand = args[0] === "stats";
 
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
@@ -125,6 +127,13 @@ if (isMcpMode) {
     tel.initTelemetry({ interactive: true } as any);
     return tel.handleTelemetryCommand(subcommand);
   });
+} else if (isStatsCommand) {
+  // Stats management: claudish stats on|off|status|reset
+  const subcommand = args[1] ?? "status";
+  import("./stats.js").then(async (stats) => {
+    await stats.initStats({ interactive: true } as any);
+    return stats.handleStatsCommand(subcommand);
+  });
 } else {
   // CLI mode
   runCli();
@@ -171,6 +180,11 @@ async function runCli() {
     // Must come after parseArgs() so cliConfig.interactive is known
     const { initTelemetry } = await import("./telemetry.js");
     await initTelemetry(cliConfig);
+
+    // Initialize anonymous usage stats (reads consent, detects environment)
+    const { initStats, showMonthlyBanner } = await import("./stats.js");
+    await initStats(cliConfig);
+    await showMonthlyBanner();
 
     // Show debug log location if enabled
     if (cliConfig.debug && !cliConfig.quiet) {

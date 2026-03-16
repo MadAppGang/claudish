@@ -315,7 +315,7 @@ export function sanitizeMessage(msg: string): string {
  * For non-public providers (litellm, local/ollama, lmstudio), truncate the
  * model ID to just the provider prefix to avoid leaking internal model names.
  */
-function sanitizeModelId(modelId: string, providerName: string): string {
+export function sanitizeModelId(modelId: string, providerName: string): string {
   if (PUBLIC_PROVIDERS.has(providerName)) {
     return modelId;
   }

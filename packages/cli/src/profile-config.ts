@@ -103,6 +103,14 @@ export interface ClaudishProfileConfig {
   apiKeys?: Record<string, string>;
   /** Custom provider endpoints (env var name -> URL) */
   endpoints?: Record<string, string>;
+  /** Anonymous usage stats consent and metadata */
+  stats?: {
+    enabled: boolean;
+    lastSentAt?: string;
+    lastMonthlyPrompt?: string;
+    enabledAt?: string;
+    promptedVersion?: string;
+  };
   /** User-defined provider configurations. Keyed by canonical provider name. */
   providers?: Record<string, UserProviderConfig>;
 }
@@ -203,6 +211,9 @@ export async function loadConfig(): Promise<ClaudishProfileConfig> {
     }
     if (config.endpoints !== undefined) {
       merged.endpoints = config.endpoints;
+    }
+    if (config.stats !== undefined) {
+      merged.stats = config.stats;
     }
     // Preserve user-defined providers if present
     if (config.providers !== undefined) {
