@@ -158,7 +158,8 @@ function isRetryableError(status: number, errorBody: string): boolean {
       lower.includes("not registered") ||
       lower.includes("does not exist") ||
       lower.includes("unknown model") ||
-      lower.includes("unsupported model")
+      lower.includes("unsupported model") ||
+      lower.includes("no healthy deployment")
     ) {
       return true;
     }

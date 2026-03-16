@@ -79,8 +79,10 @@ async function sendMessage(
     let errorData: any = null;
 
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const data = line.slice(6).trim();
+      // SSE spec: "data:" with optional space
+      const isDataLine = line.startsWith("data: ") || line.startsWith("data:");
+      if (isDataLine) {
+        const data = (line.startsWith("data: ") ? line.slice(6) : line.slice(5)).trim();
         if (data === "[DONE]") continue;
         try {
           const parsed = JSON.parse(data);
@@ -119,6 +121,10 @@ async function sendMessage(
       return { ok: true, status: res.status, body };
     } else if (hasError && errorData) {
       return { ok: false, status: res.status, body: errorData };
+    } else if (lastData?.type === "message_stop" || lastData?.type === "message_delta") {
+      // Anthropic SSE completed but no text extracted
+      body = { content: [{ type: "text", text: "" }], _raw_sse: true };
+      return { ok: true, status: res.status, body };
     } else {
       body = lastData || { _raw_text: text.slice(0, 500) };
       return { ok: false, status: res.status, body };
@@ -347,23 +353,97 @@ describe("Group 4: Real API — explicit provider skips fallback", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group 5: isRetryableError classification (documented through real behavior)
+// Group 5: isRetryableError classification (unit tests via FallbackHandler)
 // ---------------------------------------------------------------------------
 
-describe("Group 5: isRetryableError — validated through real API behavior", () => {
-  test("401 auth error is retryable (validated: LiteLLM/Zen 401 -> falls through)", () => {
-    // Confirmed in real test output: LiteLLM and Zen return 401,
-    // fallback continues to MiniMax Coding which succeeds.
-    expect(true).toBe(true);
+describe("Group 5: isRetryableError unit tests via FallbackHandler behavior", () => {
+  // We test isRetryableError indirectly through FallbackHandler since the function
+  // is not exported. We create mock handlers that return specific status codes and
+  // verify whether FallbackHandler tries the next candidate or stops.
+
+  const { Hono } = require("hono");
+  const { FallbackHandler } = require("./fallback-handler.js");
+
+  function mockHandler(status: number, body: string) {
+    return {
+      handle: async () => new Response(body, { status, headers: { "content-type": "application/json" } }),
+      shutdown: async () => {},
+    };
+  }
+
+  async function runFallback(firstStatus: number, firstBody: string): Promise<any> {
+    const handler = new FallbackHandler([
+      { name: "provider-a", handler: mockHandler(firstStatus, firstBody) },
+      { name: "provider-b", handler: mockHandler(200, '{"content":[{"type":"text","text":"ok"}]}') },
+    ]);
+    const app = new Hono();
+    let result: any;
+    app.post("/test", async (c: any) => {
+      result = await handler.handle(c, { model: "test-model" });
+      return result;
+    });
+    const res = await app.request("/test", { method: "POST", body: "{}" });
+    const text = await res.text();
+    return { status: res.status, text, usedFallback: text.includes('"ok"') };
+  }
+
+  test("401 auth error is retryable", async () => {
+    const result = await runFallback(401, '{"error":"unauthorized"}');
+    expect(result.usedFallback).toBe(true);
   });
 
-  test("500 with insufficient balance is retryable (validated: MiniMax 500 -> falls through)", () => {
-    // Confirmed: MiniMax returns HTTP 500 with "insufficient balance (1008)",
-    // fallback continues to next provider in chain.
-    expect(true).toBe(true);
+  test("403 forbidden is retryable", async () => {
+    const result = await runFallback(403, '{"error":"forbidden"}');
+    expect(result.usedFallback).toBe(true);
   });
 
-  test("429 rate limit IS retryable (per-provider limit, another provider may have capacity)", () => {
-    expect(true).toBe(true);
+  test("402 payment required is retryable", async () => {
+    const result = await runFallback(402, '{"error":"payment required"}');
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("404 not found is retryable", async () => {
+    const result = await runFallback(404, '{"error":"model not found"}');
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("429 rate limit is retryable", async () => {
+    const result = await runFallback(429, '{"error":"rate limited"}');
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("500 with insufficient balance is retryable", async () => {
+    const result = await runFallback(500, '{"error":"insufficient balance (1008)"}');
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("500 generic server error is NOT retryable", async () => {
+    const result = await runFallback(500, '{"error":"internal server error"}');
+    expect(result.usedFallback).toBe(false);
+  });
+
+  test("400 with unknown model is retryable", async () => {
+    const result = await runFallback(400, '{"error":"unknown model xyz"}');
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("400 generic bad request is NOT retryable", async () => {
+    const result = await runFallback(400, '{"error":"invalid request format"}');
+    expect(result.usedFallback).toBe(false);
+  });
+
+  test("422 with model not available is retryable", async () => {
+    const result = await runFallback(422, '{"error":"model not available"}');
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("422 generic is NOT retryable", async () => {
+    const result = await runFallback(422, '{"error":"unprocessable entity"}');
+    expect(result.usedFallback).toBe(false);
+  });
+
+  test("400 with no healthy deployments is retryable (LiteLLM)", async () => {
+    const result = await runFallback(400, '{"error":"No healthy deployment available"}');
+    expect(result.usedFallback).toBe(true);
   });
 });
