@@ -1,7 +1,7 @@
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 import { loadModelInfo, getAvailableModels, fetchLiteLLMModels } from "./model-loader.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, copyFile, readdir, unlink, access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -374,9 +374,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
  * Cache Management Constants
  */
 const CACHE_MAX_AGE_DAYS = 2;
-const MODELS_JSON_PATH = join(__dirname, "../recommended-models.json");
 // Use ~/.claudish/ for writable cache (binaries can't write to __dirname)
 const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
+const BUNDLED_MODELS_PATH = join(__dirname, "../recommended-models.json");
+const CACHED_MODELS_PATH = join(CLAUDISH_CACHE_DIR, "recommended-models.json");
 const ALL_MODELS_JSON_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
 
 /**
@@ -972,9 +973,15 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
 /**
  * Check if models cache is stale (older than CACHE_MAX_AGE_DAYS)
  */
-async function isCacheStale(): Promise<boolean> {
+function isCacheStale(): boolean {
+  // Check writable cache first, then bundled fallback
+  const cachePath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
+  if (!existsSync(cachePath)) {
+    return true; // No cache file = stale
+  }
+
   try {
-    const jsonContent = await readFile(MODELS_JSON_PATH, "utf-8");
+    const jsonContent = readFileSync(cachePath, "utf-8");
     const data = JSON.parse(jsonContent);
 
     if (!data.lastUpdated) {
@@ -987,7 +994,7 @@ async function isCacheStale(): Promise<boolean> {
 
     return ageInDays > CACHE_MAX_AGE_DAYS;
   } catch {
-    // If we can't read/parse (or file missing), consider it stale
+    // If we can't read/parse, consider it stale
     return true;
   }
 }
@@ -995,66 +1002,35 @@ async function isCacheStale(): Promise<boolean> {
 /**
  * Fetch models from OpenRouter and update recommended-models.json
  *
- * IMPORTANT: This function matches the exact models shown on OpenRouter's programming page:
- * https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly
- *
- * **Why hardcoded list?**
- * The OpenRouter website uses client-side rendering (React/Next.js), making it impossible
- * to scrape the HTML with simple HTTP requests. The API doesn't expose the "top-weekly"
- * ranking either. Therefore, we maintain a manually curated list based on the website.
+ * Dynamically fetches the top weekly programming models from OpenRouter's API:
+ * GET /api/v1/models?category=programming&order=top-weekly
  *
  * **Filtering rules:**
- * 1. Match the top 10 models from the "Top Weekly" programming category (verified manually)
- * 2. Take only ONE model per provider (the top-ranked one)
- *
- * **Maintenance:** Update this list when the OpenRouter website rankings change.
- * Last verified: 2025-11-19
+ * 1. Skip Anthropic models (redundant, Claudish already proxies to Claude)
+ * 2. Skip OpenRouter meta-routing models (e.g. hunter-alpha, healer-alpha)
+ * 3. Take only ONE model per provider (the highest-ranked one)
  */
 async function updateModelsFromOpenRouter(): Promise<void> {
   console.error("🔄 Updating model recommendations from OpenRouter...");
 
   try {
-    // Top Weekly Programming Models (manually verified from the website)
-    // Source: https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly
-    // Last verified: 2026-01-05
-    //
-    // This list represents the EXACT ranking shown on OpenRouter's website.
-    // The website is client-side rendered (React), so we can't scrape it with HTTP.
-    // The API doesn't expose the "top-weekly" ranking, so we maintain this manually.
-    const topWeeklyProgrammingModels = [
-      "x-ai/grok-code-fast-1", // #1: xAI Grok Code Fast 1
-      "minimax/minimax-m2.1", // #2: MiniMax M2.1 (Updated)
-      "z-ai/glm-4.7", // #3: Z.AI GLM 4.7 (Updated)
-      "google/gemini-3-pro-preview", // #4: Google Gemini 3 Pro Preview
-      "openai/gpt-5.3", // #5: OpenAI GPT-5.3 (Updated)
-      "moonshotai/kimi-k2-thinking", // #6: MoonShot Kimi K2 Thinking (New!)
-      "deepseek/deepseek-v3.2", // #7: DeepSeek V3.2 (New!)
-      "qwen/qwen3-vl-235b-a22b-thinking", // #8: Qwen3 VL 235B Thinking (Updated)
-      "anthropic/claude-sonnet-4.5", // #9: Anthropic Claude Sonnet 4.5
-      "anthropic/claude-sonnet-4", // #10: Anthropic Claude Sonnet 4
-      "anthropic/claude-haiku-4.5", // #11: Anthropic Claude Haiku 4.5
-    ];
-
-    // Fetch model metadata from OpenRouter API
-    const apiResponse = await fetch("https://openrouter.ai/api/v1/models");
+    // Fetch top weekly programming models directly from the API
+    const apiResponse = await fetch(
+      "https://openrouter.ai/api/v1/models?category=programming&order=top-weekly"
+    );
     if (!apiResponse.ok) {
       throw new Error(`OpenRouter API returned ${apiResponse.status}`);
     }
 
     const openrouterData = (await apiResponse.json()) as { data: any[] };
-    const allModels = openrouterData.data;
+    const topModels = openrouterData.data;
 
-    // Build a map for quick lookup
-    const modelMap = new Map();
-    for (const model of allModels) {
-      modelMap.set(model.id, model);
-    }
-
-    // Build recommendations list following the exact website ranking
+    // Build recommendations list from the API's ranking order
     const recommendations: any[] = [];
     const providers = new Set<string>();
 
-    for (const modelId of topWeeklyProgrammingModels) {
+    for (const model of topModels) {
+      const modelId = model.id; // e.g. "openai/gpt-5.4"
       const provider = modelId.split("/")[0];
 
       // Filter 1: Skip Anthropic models (not needed in Claudish)
@@ -1062,16 +1038,13 @@ async function updateModelsFromOpenRouter(): Promise<void> {
         continue;
       }
 
-      // Filter 2: Only ONE model per provider (take the first/top-ranked)
-      if (providers.has(provider)) {
+      // Filter 2: Skip OpenRouter meta-routing models
+      if (provider === "openrouter") {
         continue;
       }
 
-      const model = modelMap.get(modelId);
-      if (!model) {
-        // Model not in API - assume it's no longer available or strictly private
-        // User requested to skip these models rather than showing placeholders
-        console.error(`⚠️  Model ${modelId} not found in OpenRouter API - skipping`);
+      // Filter 3: Only ONE model per provider (take the first/top-ranked)
+      if (providers.has(provider)) {
         continue;
       }
 
@@ -1107,8 +1080,12 @@ async function updateModelsFromOpenRouter(): Promise<void> {
         category = "reasoning";
       }
 
+      // Bare model name (strip vendor prefix, strip :free suffix)
+      const bareId = modelId.split("/").pop()!.replace(/:free$/, "");
+
       recommendations.push({
-        id: modelId,
+        id: bareId,
+        openrouterId: modelId,
         name,
         description,
         provider: provider.charAt(0).toUpperCase() + provider.slice(1),
@@ -1138,12 +1115,15 @@ async function updateModelsFromOpenRouter(): Promise<void> {
     }
 
     // Read existing version if available
-    let version = "1.1.5"; // default
-    try {
-      const existing = JSON.parse(await readFile(MODELS_JSON_PATH, "utf-8"));
-      version = existing.version || version;
-    } catch {
-      // Use default version (file missing or invalid)
+    let version = "1.2.0"; // default
+    const existingPath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
+    if (existsSync(existingPath)) {
+      try {
+        const existing = JSON.parse(readFileSync(existingPath, "utf-8"));
+        version = existing.version || version;
+      } catch {
+        // Use default version
+      }
     }
 
     // Create new JSON structure
@@ -1154,8 +1134,9 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       models: recommendations,
     };
 
-    // Write to file
-    await writeFile(MODELS_JSON_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
+    // Write to writable cache dir (not bundled path, which may be read-only)
+    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
+    writeFileSync(CACHED_MODELS_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
 
     console.error(
       `✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`
@@ -1178,13 +1159,14 @@ async function checkAndUpdateModelsCache(forceUpdate: boolean = false): Promise<
     return;
   }
 
-  if (await isCacheStale()) {
+  if (isCacheStale()) {
     console.error("⚠️  Model cache is stale (>2 days old), updating...");
     await updateModelsFromOpenRouter();
   } else {
     // Cache is fresh, show timestamp in stderr (won't affect JSON output)
     try {
-      const data = JSON.parse(await readFile(MODELS_JSON_PATH, "utf-8"));
+      const cachePath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
+      const data = JSON.parse(readFileSync(cachePath, "utf-8"));
       console.error(`✓ Using cached models (last updated: ${data.lastUpdated})`);
     } catch {
       // Silently fallthrough if can't read
@@ -1609,7 +1591,9 @@ async function printAvailableModels(): Promise<void> {
   let models: any[] = [];
 
   try {
-    const data = JSON.parse(await readFile(MODELS_JSON_PATH, "utf-8"));
+    // Check writable cache first, then bundled fallback
+    const cachePath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
+    const data = JSON.parse(readFileSync(cachePath, "utf-8"));
     lastUpdated = data.lastUpdated || "unknown";
     models = data.models || [];
   } catch {
@@ -1674,10 +1658,11 @@ async function printAvailableModels(): Promise<void> {
  * Print available models in JSON format
  */
 async function printAvailableModelsJSON(): Promise<void> {
-  const jsonPath = join(__dirname, "../recommended-models.json");
+  // Check writable cache first, then bundled fallback
+  const jsonPath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
 
   try {
-    const jsonContent = await readFile(jsonPath, "utf-8");
+    const jsonContent = readFileSync(jsonPath, "utf-8");
     const data = JSON.parse(jsonContent);
 
     // Output clean JSON to stdout — IDs are provider-agnostic
