@@ -257,7 +257,7 @@ export interface FallbackRoute {
 }
 
 /** Reverse mapping: canonical provider name → shortest @ prefix for handler creation */
-const PROVIDER_TO_PREFIX: Record<string, string> = {
+export const PROVIDER_TO_PREFIX: Record<string, string> = {
   google: "g",
   openai: "oai",
   minimax: "mm",
@@ -275,7 +275,7 @@ const PROVIDER_TO_PREFIX: Record<string, string> = {
   "gemini-codeassist": "go",
 };
 
-const DISPLAY_NAMES: Record<string, string> = {
+export const DISPLAY_NAMES: Record<string, string> = {
   google: "Gemini",
   openai: "OpenAI",
   minimax: "MiniMax",

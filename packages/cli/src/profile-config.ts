@@ -53,6 +53,19 @@ export interface ProfileWithScope extends Profile {
 }
 
 /**
+ * A single routing destination: either "provider" (uses the original model name)
+ * or "provider@model" (uses a specific model on that provider).
+ */
+export type RoutingEntry = string;
+
+/**
+ * Custom routing rules: maps a model name pattern to an ordered list of routing
+ * destinations to try. Patterns can be exact names, globs ("kimi-*"), or "*"
+ * catch-all. Local .claudish.json rules replace global rules entirely.
+ */
+export type RoutingRules = Record<string, RoutingEntry[]>;
+
+/**
  * Telemetry consent state. Persisted to ~/.claudish/config.json under the
  * "telemetry" key. Absence of the "telemetry" key means the user has never
  * been prompted (equivalent to enabled: false, askedAt: undefined).
@@ -81,6 +94,15 @@ export interface ClaudishProfileConfig {
   profiles: Record<string, Profile>;
   /** Telemetry consent state. Absent = never prompted. */
   telemetry?: TelemetryConsent;
+  /**
+   * Custom routing rules. Local .claudish.json rules replace global rules entirely.
+   * Maps model name patterns (exact, glob, or "*") to ordered lists of routing entries.
+   */
+  routing?: RoutingRules;
+  /** API keys stored in config (NOT env files). Env vars take precedence at runtime. */
+  apiKeys?: Record<string, string>;
+  /** Custom provider endpoints (env var name -> URL) */
+  endpoints?: Record<string, string>;
   /** User-defined provider configurations. Keyed by canonical provider name. */
   providers?: Record<string, UserProviderConfig>;
 }
@@ -171,6 +193,16 @@ export async function loadConfig(): Promise<ClaudishProfileConfig> {
     // Preserve telemetry consent state if present
     if (config.telemetry !== undefined) {
       merged.telemetry = config.telemetry;
+    }
+    // Preserve custom routing rules if present
+    if (config.routing !== undefined) {
+      merged.routing = config.routing;
+    }
+    if (config.apiKeys !== undefined) {
+      merged.apiKeys = config.apiKeys;
+    }
+    if (config.endpoints !== undefined) {
+      merged.endpoints = config.endpoints;
     }
     // Preserve user-defined providers if present
     if (config.providers !== undefined) {
@@ -263,11 +295,16 @@ export async function loadLocalConfig(): Promise<ClaudishProfileConfig | null> {
     const content = await readFile(localPath, "utf-8");
     const config = JSON.parse(content) as ClaudishProfileConfig;
 
-    return {
+    const local: ClaudishProfileConfig = {
       version: config.version || DEFAULT_CONFIG.version,
       defaultProfile: config.defaultProfile || "",
       profiles: config.profiles || {},
     };
+    // Preserve custom routing rules if present
+    if (config.routing !== undefined) {
+      local.routing = config.routing;
+    }
+    return local;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
@@ -558,4 +595,66 @@ export async function listAllProfiles(): Promise<ProfileWithScope[]> {
   }
 
   return result;
+}
+
+// --- API Key Helpers ---
+
+/**
+ * Get a stored API key from ~/.claudish/config.json
+ */
+export async function getApiKey(envVar: string): Promise<string | undefined> {
+  const config = await loadConfig();
+  return config.apiKeys?.[envVar];
+}
+
+/**
+ * Store an API key in ~/.claudish/config.json
+ */
+export async function setApiKey(envVar: string, value: string): Promise<void> {
+  const config = await loadConfig();
+  if (!config.apiKeys) config.apiKeys = {};
+  config.apiKeys[envVar] = value;
+  await saveConfig(config);
+}
+
+/**
+ * Remove a stored API key from ~/.claudish/config.json
+ */
+export async function removeApiKey(envVar: string): Promise<void> {
+  const config = await loadConfig();
+  if (config.apiKeys) {
+    delete config.apiKeys[envVar];
+    await saveConfig(config);
+  }
+}
+
+// --- Endpoint Helpers ---
+
+/**
+ * Get a stored custom endpoint URL from ~/.claudish/config.json
+ */
+export async function getEndpoint(name: string): Promise<string | undefined> {
+  const config = await loadConfig();
+  return config.endpoints?.[name];
+}
+
+/**
+ * Store a custom endpoint URL in ~/.claudish/config.json
+ */
+export async function setEndpoint(name: string, value: string): Promise<void> {
+  const config = await loadConfig();
+  if (!config.endpoints) config.endpoints = {};
+  config.endpoints[name] = value;
+  await saveConfig(config);
+}
+
+/**
+ * Remove a stored custom endpoint from ~/.claudish/config.json
+ */
+export async function removeEndpoint(name: string): Promise<void> {
+  const config = await loadConfig();
+  if (config.endpoints) {
+    delete config.endpoints[name];
+    await saveConfig(config);
+  }
 }
