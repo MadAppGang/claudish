@@ -31,8 +31,13 @@ import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthro
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
-import { describeImages, type OpenAIImageBlock, type VisionProxyAuthHeaders } from "../services/vision-proxy.js";
-import { reportError } from "../telemetry.js";
+import {
+  describeImages,
+  type OpenAIImageBlock,
+  type VisionProxyAuthHeaders,
+} from "../services/vision-proxy.js";
+import { reportError, classifyError } from "../telemetry.js";
+import { recordStats } from "../stats.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -54,6 +59,8 @@ export interface ComposedHandlerOptions {
   unwrapGeminiResponse?: boolean;
   /** Whether the current session is interactive (gates consent prompt). */
   isInteractive?: boolean;
+  /** How this handler was invoked (for stats). */
+  invocationMode?: "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map";
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -67,6 +74,8 @@ export class ComposedHandler implements ModelHandler {
   private targetModel: string;
   private options: ComposedHandlerOptions;
   private isInteractive: boolean;
+  /** Fallback metadata set by FallbackHandler before calling handle() */
+  private pendingFallbackMeta?: { chain: string[]; attempts: number };
 
   constructor(
     provider: ProviderTransport,
@@ -124,7 +133,22 @@ export class ComposedHandler implements ModelHandler {
     return this.modelAdapter?.supportsVision() ?? this.getAdapter().supportsVision();
   }
 
+  /** Get the active adapter name for stats reporting. */
+  private getActiveAdapterName(): string {
+    // Model-specific adapter takes precedence (GLMAdapter, GrokAdapter, etc.)
+    if (this.modelAdapter) return this.modelAdapter.getName();
+    return this.getAdapter().getName();
+  }
+
   async handle(c: Context, payload: any): Promise<Response> {
+    const startTime = performance.now();
+    // latency_ms = time-to-first-byte (from request send to successful response).
+    // Captured here so it is available to the post-stream stats callback below.
+    let latencyMs = 0;
+    // Capture and consume fallback metadata (set by FallbackHandler before calling handle).
+    // Used in all stats recording paths so a single event carries complete info.
+    const fallbackMeta = this.pendingFallbackMeta;
+    this.pendingFallbackMeta = undefined;
     // 1. Transform incoming Claude-format request
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
@@ -153,9 +177,14 @@ export class ComposedHandler implements ModelHandler {
       }
 
       if (imageBlocks.length > 0) {
-        log(`[ComposedHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`);
+        log(
+          `[ComposedHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`
+        );
         const auth = extractAuthHeaders(c);
-        const descriptions = await describeImages(imageBlocks.map((b) => b.block), auth);
+        const descriptions = await describeImages(
+          imageBlocks.map((b) => b.block),
+          auth
+        );
 
         if (descriptions !== null) {
           // Replace image_url blocks with [Image Description: ...] text blocks
@@ -235,7 +264,9 @@ export class ComposedHandler implements ModelHandler {
         await this.provider.refreshAuth();
       } catch (err: any) {
         log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
-        logStderr(`Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`);
+        logStderr(
+          `Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`
+        );
         reportError({
           error: err,
           providerName: this.provider.name,
@@ -248,10 +279,7 @@ export class ComposedHandler implements ModelHandler {
           isInteractive: this.isInteractive,
           authType: "oauth",
         });
-        return c.json(
-          { error: { type: "connection_error", message: err.message } },
-          503 as any
-        );
+        return c.json({ error: { type: "connection_error", message: err.message } }, 503 as any);
       }
       // Update context window if provider dynamically discovered it
       if (this.provider.getContextWindow) {
@@ -310,6 +338,28 @@ export class ComposedHandler implements ModelHandler {
           retryAttempted: false,
           isInteractive: this.isInteractive,
         });
+        try {
+          const { error_class, error_code } = classifyError(error, undefined);
+          recordStats({
+            model_id: this.targetModel,
+            provider_name: this.provider.name,
+            stream_format: this.provider.streamFormat,
+            latency_ms: Math.round(performance.now() - startTime),
+            success: false,
+            http_status: 0,
+            error_class,
+            error_code,
+            token_strategy: this.options.tokenStrategy ?? "standard",
+            adapter_name: this.getActiveAdapterName(),
+            middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+            fallback_used: fallbackMeta !== undefined,
+            fallback_chain: fallbackMeta?.chain,
+            fallback_attempts: fallbackMeta?.attempts,
+            invocation_mode: this.options.invocationMode ?? "auto-route",
+          });
+        } catch {
+          // Stats must never crash claudish
+        }
         return c.json({ error: { type: "connection_error", message: msg } }, 503 as any);
       }
       throw error;
@@ -336,7 +386,9 @@ export class ComposedHandler implements ModelHandler {
           } else {
             const errorText = await retryResp.text();
             log(`[${this.provider.displayName}] Retry failed: ${errorText}`);
-            logStderr(`Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`);
+            logStderr(
+              `Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`
+            );
             reportError({
               error: new Error(errorText),
               providerName: this.provider.name,
@@ -349,11 +401,39 @@ export class ComposedHandler implements ModelHandler {
               isInteractive: this.isInteractive,
               authType: "oauth",
             });
+            try {
+              const { error_class, error_code } = classifyError(
+                new Error(errorText),
+                retryResp.status,
+                errorText
+              );
+              recordStats({
+                model_id: this.targetModel,
+                provider_name: this.provider.name,
+                stream_format: this.provider.streamFormat,
+                latency_ms: Math.round(performance.now() - startTime),
+                success: false,
+                http_status: retryResp.status,
+                error_class,
+                error_code,
+                token_strategy: this.options.tokenStrategy ?? "standard",
+                adapter_name: this.getActiveAdapterName(),
+                middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+                fallback_used: fallbackMeta !== undefined,
+                fallback_chain: fallbackMeta?.chain,
+                fallback_attempts: fallbackMeta?.attempts,
+                invocation_mode: this.options.invocationMode ?? "auto-route",
+              });
+            } catch {
+              // Stats must never crash claudish
+            }
             return c.json({ error: errorText }, retryResp.status as any);
           }
         } catch (err: any) {
           log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
-          logStderr(`Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`);
+          logStderr(
+            `Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`
+          );
           reportError({
             error: err,
             providerName: this.provider.name,
@@ -366,6 +446,28 @@ export class ComposedHandler implements ModelHandler {
             isInteractive: this.isInteractive,
             authType: "oauth",
           });
+          try {
+            const { error_class, error_code } = classifyError(err, 401, err.message);
+            recordStats({
+              model_id: this.targetModel,
+              provider_name: this.provider.name,
+              stream_format: this.provider.streamFormat,
+              latency_ms: Math.round(performance.now() - startTime),
+              success: false,
+              http_status: 401,
+              error_class,
+              error_code,
+              token_strategy: this.options.tokenStrategy ?? "standard",
+              adapter_name: this.getActiveAdapterName(),
+              middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+              fallback_used: fallbackMeta !== undefined,
+              fallback_chain: fallbackMeta?.chain,
+              fallback_attempts: fallbackMeta?.attempts,
+              invocation_mode: this.options.invocationMode ?? "auto-route",
+            });
+          } catch {
+            // Stats must never crash claudish
+          }
           return c.json(
             { error: { type: "authentication_error", message: err.message } },
             401 as any
@@ -402,6 +504,32 @@ export class ComposedHandler implements ModelHandler {
           isInteractive: this.isInteractive,
           providerErrorType,
         });
+        try {
+          const { error_class, error_code } = classifyError(
+            new Error(errorText),
+            response.status,
+            errorText
+          );
+          recordStats({
+            model_id: this.targetModel,
+            provider_name: this.provider.name,
+            stream_format: this.provider.streamFormat,
+            latency_ms: Math.round(performance.now() - startTime),
+            success: false,
+            http_status: response.status,
+            error_class,
+            error_code,
+            token_strategy: this.options.tokenStrategy ?? "standard",
+            adapter_name: this.getActiveAdapterName(),
+            middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+            fallback_used: fallbackMeta !== undefined,
+            fallback_chain: fallbackMeta?.chain,
+            fallback_attempts: fallbackMeta?.attempts,
+            invocation_mode: this.options.invocationMode ?? "auto-route",
+          });
+        } catch {
+          // Stats must never crash claudish
+        }
 
         return c.json({ error: errorText }, response.status as any);
       }
@@ -412,7 +540,42 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 8. Parse streaming response based on provider's format
-    return this.handleStream(c, response, adapter, claudeRequest, toolNameMap);
+    // latency_ms = time-to-first-byte (response received before stream consumed)
+    latencyMs = Math.round(performance.now() - startTime);
+    const httpStatus = response.status;
+
+    // 9. Record stats AFTER stream completes (tokens are populated by onTokenUpdate during streaming).
+    // Pass an onComplete callback into handleStream; it fires at the end of the stream after
+    // onTokenUpdate, so token counts are available.
+    // fallbackMeta was captured at the top of handle() and is available via closure.
+    const onStreamComplete = () => {
+      try {
+        const isFreeModel = this.tokenTracker.getTotalCost() === 0;
+        recordStats({
+          model_id: this.targetModel,
+          provider_name: this.provider.name,
+          stream_format: this.provider.streamFormat,
+          latency_ms: latencyMs,
+          success: true,
+          http_status: httpStatus,
+          input_tokens: this.tokenTracker.getInputTokens(),
+          output_tokens: this.tokenTracker.getOutputTokens(),
+          estimated_cost: this.tokenTracker.getTotalCost(),
+          is_free_model: isFreeModel,
+          token_strategy: this.options.tokenStrategy ?? "standard",
+          adapter_name: this.getActiveAdapterName(),
+          middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+          fallback_used: fallbackMeta !== undefined,
+          fallback_chain: fallbackMeta?.chain,
+          fallback_attempts: fallbackMeta?.attempts,
+          invocation_mode: this.options.invocationMode ?? "auto-route",
+        });
+      } catch {
+        // Stats must never crash claudish
+      }
+    };
+
+    return this.handleStream(c, response, adapter, claudeRequest, toolNameMap, onStreamComplete);
   }
 
   private handleStream(
@@ -420,7 +583,8 @@ export class ComposedHandler implements ModelHandler {
     response: Response,
     adapter: BaseModelAdapter,
     claudeRequest: any,
-    toolNameMap?: Map<string, string>
+    toolNameMap?: Map<string, string>,
+    onComplete?: () => void
   ): Response {
     const onTokenUpdate = (input: number, output: number) => {
       const strategy = this.options.tokenStrategy || "standard";
@@ -439,6 +603,16 @@ export class ComposedHandler implements ModelHandler {
         default:
           this.tokenTracker.update(input, output);
           break;
+      }
+      // Fire onComplete after token update so recordStats() sees the final token counts.
+      if (onComplete) {
+        try {
+          onComplete();
+        } catch {
+          // Stats must never crash claudish
+        }
+        // Prevent double-firing if onTokenUpdate is called more than once
+        onComplete = undefined;
       }
     };
 
@@ -501,6 +675,14 @@ export class ComposedHandler implements ModelHandler {
     return this.tokenTracker;
   }
 
+  /**
+   * Called by FallbackHandler before handle() when this handler is the winning provider
+   * after one or more failed attempts. Stores fallback metadata for inclusion in stats.
+   */
+  setFallbackMeta(chain: string[], attempts: number): void {
+    this.pendingFallbackMeta = { chain, attempts };
+  }
+
   async shutdown(): Promise<void> {
     if (this.provider.shutdown) {
       await this.provider.shutdown();
@@ -522,7 +704,11 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
   }
   if (status === 401 || status === 403) {
     // Some providers (e.g. OpenCode Zen) return 401 for unsupported models, not auth failures
-    if (lower.includes("not supported") || lower.includes("unsupported model") || lower.includes("model not found")) {
+    if (
+      lower.includes("not supported") ||
+      lower.includes("unsupported model") ||
+      lower.includes("model not found")
+    ) {
       return "Model not supported by this provider. Verify model name.";
     }
     return "Check API key / OAuth credentials.";

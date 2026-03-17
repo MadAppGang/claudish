@@ -46,11 +46,7 @@ export class LocalTransport implements ProviderTransport {
   private isHealthy = false;
   private _contextWindow = 32768;
 
-  constructor(
-    config: LocalProviderConfig,
-    modelName: string,
-    options?: { concurrency?: number }
-  ) {
+  constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
     this.config = config;
     this.modelName = modelName;
     this.name = config.name;
@@ -226,9 +222,7 @@ export class LocalTransport implements ProviderTransport {
         } else if (ctxFromParams) {
           this._contextWindow = parseInt(ctxFromParams, 10);
         } else {
-          log(
-            `[${this.displayName}] No context info found, using default: ${this._contextWindow}`
-          );
+          log(`[${this.displayName}] No context info found, using default: ${this._contextWindow}`);
         }
         if (ctxFromInfo || ctxFromParams) {
           log(`[${this.displayName}] Context window: ${this._contextWindow}`);

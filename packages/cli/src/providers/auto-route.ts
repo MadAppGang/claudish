@@ -56,10 +56,7 @@ function readLiteLLMCacheSync(baseUrl: string): Array<{ id: string; name: string
   }
 }
 
-function checkOAuthForProvider(
-  nativeProvider: string,
-  modelName: string
-): AutoRouteResult | null {
+function checkOAuthForProvider(nativeProvider: string, modelName: string): AutoRouteResult | null {
   if (!hasOAuthCredentials(nativeProvider)) return null;
 
   return {
@@ -71,10 +68,7 @@ function checkOAuthForProvider(
   };
 }
 
-function checkApiKeyForProvider(
-  nativeProvider: string,
-  modelName: string
-): AutoRouteResult | null {
+function checkApiKeyForProvider(nativeProvider: string, modelName: string): AutoRouteResult | null {
   const keyInfo = API_KEY_ENV_VARS[nativeProvider];
   if (!keyInfo) return null;
 
@@ -123,12 +117,12 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
     apiKeyEnvVar: "KIMI_CODING_API_KEY",
     openRouterModel: "moonshot/kimi-k2",
   },
-  "kimi": {
+  kimi: {
     loginFlag: "--kimi-login",
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     openRouterModel: "moonshot/moonshot-v1-8k",
   },
-  "google": {
+  google: {
     loginFlag: "--gemini-login",
     apiKeyEnvVar: "GEMINI_API_KEY",
     openRouterModel: "google/gemini-2.0-flash",
@@ -138,25 +132,25 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
     apiKeyEnvVar: "GEMINI_API_KEY",
     openRouterModel: "google/gemini-2.0-flash",
   },
-  "openai": {
+  openai: {
     apiKeyEnvVar: "OPENAI_API_KEY",
     openRouterModel: "openai/gpt-4o",
   },
-  "minimax": {
+  minimax: {
     apiKeyEnvVar: "MINIMAX_API_KEY",
     openRouterModel: "minimax/minimax-01",
   },
   "minimax-coding": {
     apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
   },
-  "glm": {
+  glm: {
     apiKeyEnvVar: "ZHIPU_API_KEY",
     openRouterModel: "zhipuai/glm-4",
   },
   "glm-coding": {
     apiKeyEnvVar: "GLM_CODING_API_KEY",
   },
-  "ollamacloud": {
+  ollamacloud: {
     apiKeyEnvVar: "OLLAMA_API_KEY",
   },
 };
@@ -173,9 +167,7 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
 export function getAutoRouteHint(modelName: string, nativeProvider: string): string | null {
   const hint = PROVIDER_HINT_MAP[nativeProvider];
 
-  const lines: string[] = [
-    `No credentials found for "${modelName}". Options:`,
-  ];
+  const lines: string[] = [`No credentials found for "${modelName}". Options:`];
 
   let hasOption = false;
 
@@ -210,9 +202,7 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
   if (litellmBaseUrl) {
     const models = readLiteLLMCacheSync(litellmBaseUrl);
     if (models !== null) {
-      const match = models.find(
-        (m) => m.name === modelName || m.id === `litellm@${modelName}`
-      );
+      const match = models.find((m) => m.name === modelName || m.id === `litellm@${modelName}`);
       if (match) {
         return {
           provider: "litellm",
@@ -251,4 +241,231 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
   }
 
   return null;
+}
+
+/**
+ * Fallback route candidate for provider failover.
+ */
+export interface FallbackRoute {
+  /** Canonical provider name */
+  provider: string;
+  /** Model spec to pass to handler creation (e.g., "litellm@minimax-m2.5") */
+  modelSpec: string;
+  /** Human-readable provider name for logging */
+  displayName: string;
+}
+
+/** Reverse mapping: canonical provider name → shortest @ prefix for handler creation */
+export const PROVIDER_TO_PREFIX: Record<string, string> = {
+  google: "g",
+  openai: "oai",
+  minimax: "mm",
+  "minimax-coding": "mmc",
+  kimi: "kimi",
+  "kimi-coding": "kc",
+  glm: "glm",
+  "glm-coding": "gc",
+  zai: "zai",
+  ollamacloud: "oc",
+  "opencode-zen": "zen",
+  "opencode-zen-go": "zengo",
+  litellm: "ll",
+  vertex: "v",
+  "gemini-codeassist": "go",
+};
+
+export const DISPLAY_NAMES: Record<string, string> = {
+  google: "Gemini",
+  openai: "OpenAI",
+  minimax: "MiniMax",
+  "minimax-coding": "MiniMax Coding",
+  kimi: "Kimi",
+  "kimi-coding": "Kimi Coding",
+  glm: "GLM",
+  "glm-coding": "GLM Coding",
+  zai: "Z.AI",
+  ollamacloud: "OllamaCloud",
+  "opencode-zen": "OpenCode Zen",
+  "opencode-zen-go": "OpenCode Zen Go",
+  litellm: "LiteLLM",
+  openrouter: "OpenRouter",
+};
+
+/**
+ * Subscription/coding-plan alternatives for native providers.
+ *
+ * Many providers offer both per-usage API access and a subscription/coding plan
+ * with higher limits or different pricing. The subscription tier should be tried
+ * before per-usage API in the fallback chain.
+ *
+ * modelName: null = use the same model name as the original request.
+ *            string = use this specific model name on the subscription endpoint.
+ */
+interface SubscriptionAlternative {
+  subscriptionProvider: string;
+  modelName: string | null;
+  prefix: string;
+  displayName: string;
+}
+
+const SUBSCRIPTION_ALTERNATIVES: Record<string, SubscriptionAlternative> = {
+  // Kimi → Kimi Coding Plan (subscription endpoint only accepts "kimi-for-coding")
+  kimi: {
+    subscriptionProvider: "kimi-coding",
+    modelName: "kimi-for-coding",
+    prefix: "kc",
+    displayName: "Kimi Coding",
+  },
+  // MiniMax → MiniMax Coding Plan (same model names, different endpoint/key)
+  minimax: {
+    subscriptionProvider: "minimax-coding",
+    modelName: null,
+    prefix: "mmc",
+    displayName: "MiniMax Coding",
+  },
+  // GLM → GLM Coding Plan at Z.AI (same model names, different endpoint/key)
+  glm: {
+    subscriptionProvider: "glm-coding",
+    modelName: null,
+    prefix: "gc",
+    displayName: "GLM Coding",
+  },
+  // Gemini → Gemini Code Assist (OAuth-based subscription, same model names)
+  google: {
+    subscriptionProvider: "gemini-codeassist",
+    modelName: null,
+    prefix: "go",
+    displayName: "Gemini Code Assist",
+  },
+};
+
+/**
+ * Read the cached Zen model list from disk (written by warmZenModelCache).
+ * Returns a Set of model IDs that Zen serves, or null if cache not available.
+ */
+function readZenModelCacheSync(): Set<string> | null {
+  const cachePath = join(homedir(), ".claudish", "zen-models.json");
+  if (!existsSync(cachePath)) return null;
+  try {
+    const data = JSON.parse(readFileSync(cachePath, "utf-8"));
+    if (!Array.isArray(data.models)) return null;
+    return new Set(data.models.map((m: any) => m.id));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if a model is served by OpenCode Zen.
+ * Uses the cached model list from zen/v1/models. If cache is unavailable,
+ * conservatively returns false (skip Zen rather than waste a request).
+ */
+function isZenCompatibleModel(modelName: string): boolean {
+  const zenModels = readZenModelCacheSync();
+  if (!zenModels) return false;
+  return zenModels.has(modelName);
+}
+
+/**
+ * Pre-warm the Zen model cache by fetching from the live API.
+ * Called at proxy startup (non-blocking). Writes to ~/.claudish/zen-models.json.
+ */
+export async function warmZenModelCache(): Promise<void> {
+  const apiKey = process.env.OPENCODE_API_KEY || "public";
+  const baseUrl = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen";
+  const resp = await fetch(`${baseUrl}/v1/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!resp.ok) return;
+  const data = await resp.json() as any;
+  const models = (data.data ?? []).map((m: any) => ({ id: m.id }));
+  if (models.length === 0) return;
+
+  const cacheDir = join(homedir(), ".claudish");
+  const { mkdirSync, writeFileSync: writeSync } = await import("node:fs");
+  mkdirSync(cacheDir, { recursive: true });
+  writeSync(
+    join(cacheDir, "zen-models.json"),
+    JSON.stringify({ models, fetchedAt: new Date().toISOString() })
+  );
+}
+
+/** Check if credentials exist for a given provider (API key, aliases, or OAuth). */
+function hasProviderCredentials(provider: string): boolean {
+  const keyInfo = API_KEY_ENV_VARS[provider];
+  if (keyInfo?.envVar && process.env[keyInfo.envVar]) return true;
+  if (keyInfo?.aliases?.some((a) => process.env[a])) return true;
+  return hasOAuthCredentials(provider);
+}
+
+/**
+ * Generate an ordered list of provider fallback candidates for a bare model name.
+ *
+ * Priority: LiteLLM → Subscription (Zen Go) → Provider Subscription Plan → Native API → OpenRouter
+ *
+ * Only includes providers that have credentials configured.
+ * Used for auto-routed models (no explicit provider@ prefix).
+ */
+export function getFallbackChain(modelName: string, nativeProvider: string): FallbackRoute[] {
+  const routes: FallbackRoute[] = [];
+
+  // 1. LiteLLM (always try if configured — cache may be stale or model may
+  //    exist under a vendor-prefixed name that the proxy resolves dynamically)
+  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
+  if (litellmBaseUrl && process.env.LITELLM_API_KEY) {
+    routes.push({
+      provider: "litellm",
+      modelSpec: `litellm@${modelName}`,
+      displayName: "LiteLLM",
+    });
+  }
+
+  // 2. Subscription aggregator (OpenCode Zen Go — only for model families it actually serves)
+  if (process.env.OPENCODE_API_KEY && isZenCompatibleModel(modelName)) {
+    routes.push({
+      provider: "opencode-zen-go",
+      modelSpec: `zengo@${modelName}`,
+      displayName: "OpenCode Zen Go",
+    });
+  }
+
+  // 3. Provider-specific subscription/coding plan (tried before per-usage native API)
+  const sub = SUBSCRIPTION_ALTERNATIVES[nativeProvider];
+  if (sub && hasProviderCredentials(sub.subscriptionProvider)) {
+    const subModelName = sub.modelName || modelName;
+    routes.push({
+      provider: sub.subscriptionProvider,
+      modelSpec: `${sub.prefix}@${subModelName}`,
+      displayName: sub.displayName,
+    });
+  }
+
+  // 4. Native API (per-usage, provider-specific OAuth or API key)
+  if (
+    nativeProvider !== "unknown" &&
+    nativeProvider !== "qwen" &&
+    nativeProvider !== "native-anthropic"
+  ) {
+    if (hasProviderCredentials(nativeProvider)) {
+      const prefix = PROVIDER_TO_PREFIX[nativeProvider] || nativeProvider;
+      routes.push({
+        provider: nativeProvider,
+        modelSpec: `${prefix}@${modelName}`,
+        displayName: DISPLAY_NAMES[nativeProvider] || nativeProvider,
+      });
+    }
+  }
+
+  // 5. OpenRouter (universal fallback)
+  if (process.env.OPENROUTER_API_KEY) {
+    const resolution = resolveModelNameSync(modelName, "openrouter");
+    routes.push({
+      provider: "openrouter",
+      modelSpec: resolution.resolvedId, // vendor-prefixed (e.g., "minimax/minimax-m2.5")
+      displayName: "OpenRouter",
+    });
+  }
+
+  return routes;
 }

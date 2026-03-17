@@ -52,7 +52,10 @@ export class AnthropicPassthroughAdapter extends BaseModelAdapter {
         if (block.type === "tool_result" && Array.isArray(block.content)) {
           const filtered = block.content.filter((c: any) => c.type !== "tool_reference");
           // Keep at least a minimal text block so tool_result content is never empty
-          return { ...block, content: filtered.length > 0 ? filtered : [{ type: "text", text: "" }] };
+          return {
+            ...block,
+            content: filtered.length > 0 ? filtered : [{ type: "text", text: "" }],
+          };
         }
         return block;
       })

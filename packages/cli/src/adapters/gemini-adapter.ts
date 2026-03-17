@@ -113,7 +113,9 @@ export class GeminiAdapter extends BaseModelAdapter {
         } else if (block.type === "tool_result") {
           const toolInfo = this.toolCallMap.get(block.tool_use_id);
           if (!toolInfo) {
-            log(`[GeminiAdapter] Warning: No function name found for tool_use_id ${block.tool_use_id}`);
+            log(
+              `[GeminiAdapter] Warning: No function name found for tool_use_id ${block.tool_use_id}`
+            );
             continue;
           }
           parts.push({
@@ -151,7 +153,9 @@ export class GeminiAdapter extends BaseModelAdapter {
           // Handles session recovery, migrations, or first request with history.
           if (!thoughtSignature) {
             thoughtSignature = "skip_thought_signature_validator";
-            log(`[GeminiAdapter] Using dummy thoughtSignature for tool ${block.name} (${block.id})`);
+            log(
+              `[GeminiAdapter] Using dummy thoughtSignature for tool ${block.name} (${block.id})`
+            );
           }
 
           const functionCallPart: any = {

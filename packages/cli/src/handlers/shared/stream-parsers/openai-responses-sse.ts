@@ -187,10 +187,7 @@ export function createResponsesStreamHandler(
                   inputTokens = event.response.usage.input_tokens || inputTokens;
                   outputTokens = event.response.usage.output_tokens || outputTokens;
                 }
-              } else if (
-                event.type === "response.completed" ||
-                event.type === "response.done"
-              ) {
+              } else if (event.type === "response.completed" || event.type === "response.done") {
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || 0;
                   outputTokens = event.response.usage.output_tokens || 0;
@@ -232,7 +229,10 @@ export function createResponsesStreamHandler(
                 });
                 send("message_stop", { type: "message_stop" });
                 isClosed = true;
-                if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+                if (pingInterval) {
+                  clearInterval(pingInterval);
+                  pingInterval = null;
+                }
                 if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
                 controller.close();
                 return;
@@ -243,7 +243,10 @@ export function createResponsesStreamHandler(
           }
         }
 
-        if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
 
         if (hasTextContent) {
           send("content_block_stop", { type: "content_block_stop", index: blockIndex });
@@ -261,7 +264,10 @@ export function createResponsesStreamHandler(
         if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
         controller.close();
       } catch (error) {
-        if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
         log(`[ResponsesSSE] Stream error: ${error}`);
 
         if (!isClosed) {
@@ -296,7 +302,9 @@ export function createResponsesStreamHandler(
 
           isClosed = true;
           if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
-          try { controller.close(); } catch {}
+          try {
+            controller.close();
+          } catch {}
         }
       }
     },

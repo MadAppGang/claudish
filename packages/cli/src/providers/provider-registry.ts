@@ -10,20 +10,12 @@
 
 import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
 
-export interface ProviderCapabilities {
-  supportsTools: boolean;
-  supportsVision: boolean;
-  supportsStreaming: boolean;
-  supportsJsonMode: boolean;
-}
-
 export interface LocalProvider {
   name: string;
   baseUrl: string;
   apiPath: string;
   envVar: string;
   prefixes: string[]; // Legacy prefixes for backwards compatibility
-  capabilities: ProviderCapabilities;
 }
 
 export interface ResolvedProvider {
@@ -46,12 +38,6 @@ const getProviders = (): LocalProvider[] => [
     apiPath: "/v1/chat/completions",
     envVar: "OLLAMA_BASE_URL",
     prefixes: ["ollama/", "ollama:"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
   },
   {
     name: "lmstudio",
@@ -59,12 +45,6 @@ const getProviders = (): LocalProvider[] => [
     apiPath: "/v1/chat/completions",
     envVar: "LMSTUDIO_BASE_URL",
     prefixes: ["lmstudio/", "lmstudio:", "mlstudio/", "mlstudio:"], // mlstudio alias for common typo
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
   },
   {
     name: "vllm",
@@ -72,12 +52,6 @@ const getProviders = (): LocalProvider[] => [
     apiPath: "/v1/chat/completions",
     envVar: "VLLM_BASE_URL",
     prefixes: ["vllm/", "vllm:"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
   },
   {
     name: "mlx",
@@ -85,12 +59,6 @@ const getProviders = (): LocalProvider[] => [
     apiPath: "/v1/chat/completions",
     envVar: "MLX_BASE_URL",
     prefixes: ["mlx/", "mlx:"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
   },
 ];
 
@@ -227,11 +195,5 @@ export function createUrlProvider(parsed: UrlParsedModel): LocalProvider {
     apiPath: "/v1/chat/completions",
     envVar: "",
     prefixes: [],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-    },
   };
 }

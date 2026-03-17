@@ -269,9 +269,13 @@ const LITELLM_CACHE_MAX_AGE_HOURS = 24;
  * @param forceUpdate Skip cache and fetch fresh data
  * @returns Array of transformed models compatible with model selector
  */
-export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceUpdate = false): Promise<any[]> {
+export async function fetchLiteLLMModels(
+  baseUrl: string,
+  apiKey: string,
+  forceUpdate = false
+): Promise<any[]> {
   // Create cache key from baseUrl hash
-  const hash = createHash('sha256').update(baseUrl).digest('hex').substring(0, 16);
+  const hash = createHash("sha256").update(baseUrl).digest("hex").substring(0, 16);
   const cacheDir = join(homedir(), ".claudish");
   const cachePath = join(cacheDir, `litellm-models-${hash}.json`);
 
@@ -293,7 +297,7 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceU
 
   // Fetch from LiteLLM API
   try {
-    const url = `${baseUrl.replace(/\/$/, '')}/model_group/info`;
+    const url = `${baseUrl.replace(/\/$/, "")}/model_group/info`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${apiKey}`,

@@ -174,7 +174,7 @@ export function getLogLevel(): "debug" | "info" | "minimal" {
  */
 export function truncateContent(content: string | any, maxLength: number = 200): string {
   if (content === undefined || content === null) return "[empty]";
-  const str = typeof content === "string" ? content : JSON.stringify(content) ?? "[empty]";
+  const str = typeof content === "string" ? content : (JSON.stringify(content) ?? "[empty]");
   if (str.length <= maxLength) {
     return str;
   }

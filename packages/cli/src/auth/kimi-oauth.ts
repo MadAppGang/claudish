@@ -347,10 +347,7 @@ export class KimiOAuth {
    * Poll for token with network retry (FIX H3)
    * Max 3 retries with exponential backoff (1s, 2s, 4s)
    */
-  private async pollForTokenWithRetry(
-    deviceCode: string,
-    retryCount = 0
-  ): Promise<TokenResponse> {
+  private async pollForTokenWithRetry(deviceCode: string, retryCount = 0): Promise<TokenResponse> {
     const maxRetries = 3;
     const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
 

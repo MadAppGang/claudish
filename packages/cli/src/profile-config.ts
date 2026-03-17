@@ -52,6 +52,19 @@ export interface ProfileWithScope extends Profile {
 }
 
 /**
+ * A single routing destination: either "provider" (uses the original model name)
+ * or "provider@model" (uses a specific model on that provider).
+ */
+export type RoutingEntry = string;
+
+/**
+ * Custom routing rules: maps a model name pattern to an ordered list of routing
+ * destinations to try. Patterns can be exact names, globs ("kimi-*"), or "*"
+ * catch-all. Local .claudish.json rules replace global rules entirely.
+ */
+export type RoutingRules = Record<string, RoutingEntry[]>;
+
+/**
  * Telemetry consent state. Persisted to ~/.claudish/config.json under the
  * "telemetry" key. Absence of the "telemetry" key means the user has never
  * been prompted (equivalent to enabled: false, askedAt: undefined).
@@ -72,6 +85,23 @@ export interface TelemetryConsent {
 }
 
 /**
+ * Anonymous usage stats consent state. Persisted to ~/.claudish/config.json
+ * under the "stats" key. Stats are OFF by default — user must explicitly enable.
+ */
+export interface StatsConsent {
+  /** Explicit opt-in. Default: false (disabled until user says yes). */
+  enabled: boolean;
+  /** ISO 8601 UTC of when the user first enabled stats. */
+  enabledAt?: string;
+  /** ISO 8601 UTC of last monthly banner shown. */
+  lastMonthlyPrompt?: string;
+  /** ISO 8601 UTC of last successful batch send. */
+  lastSentAt?: string;
+  /** Claudish version when first prompted. */
+  promptedVersion?: string;
+}
+
+/**
  * Root configuration structure
  */
 export interface ClaudishProfileConfig {
@@ -80,6 +110,17 @@ export interface ClaudishProfileConfig {
   profiles: Record<string, Profile>;
   /** Telemetry consent state. Absent = never prompted. */
   telemetry?: TelemetryConsent;
+  /** Anonymous usage stats consent state. Absent = never configured (defaults to disabled). */
+  stats?: StatsConsent;
+  /**
+   * Custom routing rules. Local .claudish.json rules replace global rules entirely.
+   * Maps model name patterns (exact, glob, or "*") to ordered lists of routing entries.
+   */
+  routing?: RoutingRules;
+  /** API keys stored in config (NOT env files). Env vars take precedence at runtime. */
+  apiKeys?: Record<string, string>;
+  /** Custom provider endpoints (env var name → URL) */
+  endpoints?: Record<string, string>;
 }
 
 /**
@@ -134,6 +175,20 @@ export function loadConfig(): ClaudishProfileConfig {
     // Preserve telemetry consent state if present
     if (config.telemetry !== undefined) {
       merged.telemetry = config.telemetry;
+    }
+    // Preserve stats consent state if present
+    if (config.stats !== undefined) {
+      merged.stats = config.stats;
+    }
+    // Preserve custom routing rules if present
+    if (config.routing !== undefined) {
+      merged.routing = config.routing;
+    }
+    if (config.apiKeys !== undefined) {
+      merged.apiKeys = config.apiKeys;
+    }
+    if (config.endpoints !== undefined) {
+      merged.endpoints = config.endpoints;
     }
     return merged;
   } catch (error) {
@@ -205,11 +260,16 @@ export function loadLocalConfig(): ClaudishProfileConfig | null {
     const content = readFileSync(localPath, "utf-8");
     const config = JSON.parse(content) as ClaudishProfileConfig;
 
-    return {
+    const local: ClaudishProfileConfig = {
       version: config.version || DEFAULT_CONFIG.version,
       defaultProfile: config.defaultProfile || "",
       profiles: config.profiles || {},
     };
+    // Preserve custom routing rules if present
+    if (config.routing !== undefined) {
+      local.routing = config.routing;
+    }
+    return local;
   } catch (error) {
     console.error(`Warning: Failed to load local config: ${error}`);
     return null;
@@ -497,4 +557,66 @@ export function listAllProfiles(): ProfileWithScope[] {
   }
 
   return result;
+}
+
+// ─── API Key Helpers ──────────────────────────────────────
+
+/**
+ * Get a stored API key from ~/.claudish/config.json
+ */
+export function getApiKey(envVar: string): string | undefined {
+  const config = loadConfig();
+  return config.apiKeys?.[envVar];
+}
+
+/**
+ * Store an API key in ~/.claudish/config.json
+ */
+export function setApiKey(envVar: string, value: string): void {
+  const config = loadConfig();
+  if (!config.apiKeys) config.apiKeys = {};
+  config.apiKeys[envVar] = value;
+  saveConfig(config);
+}
+
+/**
+ * Remove a stored API key from ~/.claudish/config.json
+ */
+export function removeApiKey(envVar: string): void {
+  const config = loadConfig();
+  if (config.apiKeys) {
+    delete config.apiKeys[envVar];
+    saveConfig(config);
+  }
+}
+
+// ─── Endpoint Helpers ─────────────────────────────────────
+
+/**
+ * Get a stored custom endpoint URL from ~/.claudish/config.json
+ */
+export function getEndpoint(name: string): string | undefined {
+  const config = loadConfig();
+  return config.endpoints?.[name];
+}
+
+/**
+ * Store a custom endpoint URL in ~/.claudish/config.json
+ */
+export function setEndpoint(name: string, value: string): void {
+  const config = loadConfig();
+  if (!config.endpoints) config.endpoints = {};
+  config.endpoints[name] = value;
+  saveConfig(config);
+}
+
+/**
+ * Remove a stored custom endpoint from ~/.claudish/config.json
+ */
+export function removeEndpoint(name: string): void {
+  const config = loadConfig();
+  if (config.endpoints) {
+    delete config.endpoints[name];
+    saveConfig(config);
+  }
 }

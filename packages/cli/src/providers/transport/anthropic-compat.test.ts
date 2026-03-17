@@ -16,14 +16,6 @@ import { AnthropicCompatProvider } from "./anthropic-compat.js";
 import { AnthropicPassthroughAdapter } from "../../adapters/anthropic-passthrough-adapter.js";
 import type { RemoteProvider } from "../../../handlers/shared/remote-provider-types.js";
 
-const BASE_CAPABILITIES = {
-  supportsTools: true,
-  supportsVision: true,
-  supportsStreaming: true,
-  supportsJsonMode: false,
-  supportsReasoning: false,
-};
-
 const TEST_API_KEY = "test-key-abc123";
 
 describe("AnthropicCompatProvider.getHeaders()", () => {
@@ -34,7 +26,6 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
       apiPath: "/anthropic/v1/messages",
       apiKeyEnvVar: "MINIMAX_API_KEY",
       prefixes: ["mm@", "mmax@"],
-      capabilities: BASE_CAPABILITIES,
       authScheme: "bearer",
     };
 
@@ -53,7 +44,6 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
       apiPath: "/anthropic/v1/messages",
       apiKeyEnvVar: "KIMI_API_KEY",
       prefixes: ["kimi@", "moon@"],
-      capabilities: BASE_CAPABILITIES,
       authScheme: "x-api-key",
     };
 
@@ -72,7 +62,6 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
       apiPath: "/anthropic/v1/messages",
       apiKeyEnvVar: "ZAI_API_KEY",
       prefixes: ["zai@"],
-      capabilities: BASE_CAPABILITIES,
       // authScheme intentionally omitted — legacy / default behavior
     };
 

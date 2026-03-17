@@ -1,8 +1,48 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 // Load .env file before anything else (quiet mode to suppress verbose output)
 import { config } from "dotenv";
 config({ quiet: true }); // Loads .env from current working directory
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Load API keys and custom endpoints from ~/.claudish/config.json into process.env.
+ * Environment variables already set take precedence over stored values.
+ * Uses raw fs reads (no profile-config.ts import) to avoid loading heavy dependencies
+ * on every CLI invocation.
+ */
+function loadStoredApiKeys(): void {
+  try {
+    const configPath = join(homedir(), ".claudish", "config.json");
+    if (!existsSync(configPath)) return;
+    const raw = readFileSync(configPath, "utf-8");
+    const cfg = JSON.parse(raw) as {
+      apiKeys?: Record<string, string>;
+      endpoints?: Record<string, string>;
+    };
+    if (cfg.apiKeys) {
+      for (const [envVar, value] of Object.entries(cfg.apiKeys)) {
+        if (!process.env[envVar] && typeof value === "string") {
+          process.env[envVar] = value;
+        }
+      }
+    }
+    if (cfg.endpoints) {
+      for (const [envVar, value] of Object.entries(cfg.endpoints)) {
+        if (!process.env[envVar] && typeof value === "string") {
+          process.env[envVar] = value;
+        }
+      }
+    }
+  } catch {
+    // Silently ignore config load failures
+  }
+}
+
+loadStoredApiKeys();
 
 // Check for MCP mode before loading heavy dependencies
 const isMcpMode = process.argv.includes("--mcp");
@@ -18,7 +58,6 @@ function handlePromptExit(err: unknown): void {
 
 // Check for auth and profile management commands
 const args = process.argv.slice(2);
-const firstArg = args[0];
 
 // Auth commands (--gemini-login, --gemini-logout, --kimi-login, --kimi-logout)
 const isGeminiLogin = args.includes("--gemini-login");
@@ -29,9 +68,15 @@ const isKimiLogout = args.includes("--kimi-logout");
 // Check for subcommands (can appear anywhere in args due to aliases like `claudish -y`)
 const isUpdateCommand = args.includes("update");
 const isInitCommand = args[0] === "init" || args.includes("init");
-const isProfileCommand = args[0] === "profile" || args.some((a, i) => a === "profile" && (i === 0 || !args[i-1]?.startsWith("-")));
+const isProfileCommand =
+  args[0] === "profile" ||
+  args.some((a, i) => a === "profile" && (i === 0 || !args[i - 1]?.startsWith("-")));
 // Check for telemetry management subcommand
 const isTelemetryCommand = args[0] === "telemetry";
+// Check for stats management subcommand
+const isStatsCommand = args[0] === "stats";
+// Check for interactive config TUI
+const isConfigCommand = args[0] === "config";
 
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
@@ -79,7 +124,10 @@ if (isMcpMode) {
       console.log("You can now use Kimi Coding with: claudish --model kc@kimi-for-coding");
       process.exit(0);
     } catch (error) {
-      console.error("\n❌ Kimi OAuth login failed:", error instanceof Error ? error.message : error);
+      console.error(
+        "\n❌ Kimi OAuth login failed:",
+        error instanceof Error ? error.message : error
+      );
       process.exit(1);
     }
   });
@@ -101,12 +149,18 @@ if (isMcpMode) {
   import("./update-command.js").then((m) => m.updateCommand());
 } else if (isInitCommand) {
   // Profile setup wizard — pass --local/--global scope flag if provided
-  const scopeFlag = args.includes("--local") ? "local" : args.includes("--global") ? "global" : undefined;
+  const scopeFlag = args.includes("--local")
+    ? "local"
+    : args.includes("--global")
+      ? "global"
+      : undefined;
   import("./profile-commands.js").then((pc) => pc.initCommand(scopeFlag).catch(handlePromptExit));
 } else if (isProfileCommand) {
   // Profile management commands
-  const profileArgIndex = args.findIndex(a => a === "profile");
-  import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(profileArgIndex + 1)).catch(handlePromptExit));
+  const profileArgIndex = args.findIndex((a) => a === "profile");
+  import("./profile-commands.js").then((pc) =>
+    pc.profileCommand(args.slice(profileArgIndex + 1)).catch(handlePromptExit)
+  );
 } else if (isTelemetryCommand) {
   // Telemetry management: claudish telemetry on|off|status|reset
   const subcommand = args[1] ?? "status";
@@ -114,6 +168,16 @@ if (isMcpMode) {
     tel.initTelemetry({ interactive: true } as any);
     return tel.handleTelemetryCommand(subcommand);
   });
+} else if (isStatsCommand) {
+  // Stats management: claudish stats on|off|status|reset
+  const subcommand = args[1] ?? "status";
+  import("./stats.js").then((stats) => {
+    stats.initStats({ interactive: true } as any);
+    return stats.handleStatsCommand(subcommand);
+  });
+} else if (isConfigCommand) {
+  // Interactive configuration TUI: claudish config (full-screen btop-inspired TUI)
+  import("./tui/index.js").then((m) => m.startConfigTui().catch(handlePromptExit));
 } else {
   // CLI mode
   runCli();
@@ -161,6 +225,11 @@ async function runCli() {
     const { initTelemetry } = await import("./telemetry.js");
     initTelemetry(cliConfig);
 
+    // Initialize anonymous usage stats (reads consent, detects environment)
+    const { initStats, showMonthlyBanner } = await import("./stats.js");
+    initStats(cliConfig);
+    showMonthlyBanner();
+
     // Show debug log location if enabled
     if (cliConfig.debug && !cliConfig.quiet) {
       const logFile = getLogFilePath();
@@ -193,7 +262,10 @@ async function runCli() {
     // Show interactive model selector ONLY when no model configuration exists
     // Skip if: explicit --model, OR profile provides tier mappings (Claude Code uses these internally)
     const hasProfileTiers =
-      cliConfig.modelOpus || cliConfig.modelSonnet || cliConfig.modelHaiku || cliConfig.modelSubagent;
+      cliConfig.modelOpus ||
+      cliConfig.modelSonnet ||
+      cliConfig.modelHaiku ||
+      cliConfig.modelSubagent;
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
       cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
       console.log(""); // Empty line after selection

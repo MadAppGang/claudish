@@ -122,7 +122,7 @@ function printManualInstructions(): void {
   console.log(`${YELLOW}Please update manually:${RESET}\n`);
   console.log(`  ${CYAN}npm:${RESET}  npm install -g claudish@latest`);
   console.log(`  ${CYAN}bun:${RESET}  bun install -g claudish@latest`);
-  console.log(`  ${CYAN}brew:${RESET} brew upgrade claudish ${RED}(not yet available)${RESET}\n`);
+  console.log(`  ${CYAN}brew:${RESET} brew upgrade claudish\n`);
 }
 
 /**
@@ -166,13 +166,6 @@ export async function updateCommand(): Promise<void> {
 
   // Get update command
   const command = getUpdateCommand(installInfo.method);
-
-  // Homebrew not yet available
-  if (installInfo.method === "brew") {
-    console.log(`${RED}Note: Homebrew formula not yet published.${RESET}\n`);
-    printManualInstructions();
-    process.exit(1);
-  }
 
   console.log(`${BOLD}Update command:${RESET} ${command}\n`);
 

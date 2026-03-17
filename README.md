@@ -84,7 +84,7 @@ Claudish is a **BYOK AI coding assistant**:
 curl -fsSL https://raw.githubusercontent.com/MadAppGang/claudish/main/install.sh | bash
 
 # Homebrew (macOS)
-brew tap MadAppGang/claudish && brew install claudish
+brew tap MadAppGang/tap && brew install claudish
 
 # npm
 npm install -g claudish
@@ -267,64 +267,176 @@ claudish [OPTIONS] <claude-args...>
 
 ### Options
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-i, --interactive` | Run in interactive mode (persistent session) | Single-shot mode |
-| `-m, --model <model>` | OpenRouter model to use | `x-ai/grok-code-fast-1` |
-| `-p, --port <port>` | Proxy server port | Random (3000-9000) |
-| `-q, --quiet` | Suppress [claudish] log messages | **Quiet in single-shot** |
-| `-v, --verbose` | Show [claudish] log messages | Verbose in interactive |
-| `--json` | Output in JSON format (implies --quiet) | `false` |
-| `-d, --debug` | Enable debug logging to file | `false` |
-| `--no-auto-approve` | Disable auto-approve (require prompts) | Auto-approve **enabled** |
-| `--dangerous` | Pass `--dangerouslyDisableSandbox` | `false` |
-| `--models` | List all models or search (e.g., `--models gemini`) | - |
-| `--top-models` | Show top recommended programming models | - |
-| `--list-agents` | List available agents in current project | - |
-| `--force-update` | Force refresh model cache | - |
-| `--init` | Install Claudish skill in current project | - |
-| `--` | Separator: pass remaining flags directly to Claude Code | - |
-| `--help-ai` | Show AI agent usage guide | - |
-| `-h, --help` | Show help message | - |
+> For the exhaustive reference with all details, see [Settings Reference](docs/settings-reference.md).
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--model <model>` | `-m` | Model to use (`provider@model` syntax) | Interactive selector |
+| `--model-opus <model>` | | Model for Opus role (planning, complex tasks) | |
+| `--model-sonnet <model>` | | Model for Sonnet role (default coding) | |
+| `--model-haiku <model>` | | Model for Haiku role (fast tasks) | |
+| `--model-subagent <model>` | | Model for sub-agents (Task tool) | |
+| `--profile <name>` | `-p` | Named profile for model mapping | Default profile |
+| `--interactive` | `-i` | Interactive mode (persistent session) | Auto when no prompt |
+| `--auto-approve` | `-y` | Skip permission prompts | `false` |
+| `--no-auto-approve` | | Explicitly enable permission prompts | |
+| `--dangerous` | | Pass `--dangerouslyDisableSandbox` | `false` |
+| `--port <port>` | | Proxy server port | Random (3000-9000) |
+| `--debug` | `-d` | Enable debug logging to `logs/` | `false` |
+| `--log-level <level>` | | Log verbosity: `debug`, `info`, `minimal` | `info` |
+| `--quiet` | `-q` | Suppress `[claudish]` messages | Default in single-shot |
+| `--verbose` | `-v` | Show `[claudish]` messages | Default in interactive |
+| `--json` | | JSON output for tool integration (implies `--quiet`) | `false` |
+| `--stdin` | | Read prompt from stdin | `false` |
+| `--free` | | Show only free models in selector | `false` |
+| `--monitor` | | Proxy to real Anthropic API and log traffic | `false` |
+| `--summarize-tools` | | Summarize tool descriptions (for local models) | `false` |
+| `--cost-tracker` | | Enable cost tracking (enables monitor mode) | `false` |
+| `--audit-costs` | | Show cost analysis report | |
+| `--reset-costs` | | Reset accumulated cost statistics | |
+| `--models [query]` | `-s` | List all models or fuzzy search | |
+| `--top-models` | | Show curated recommended models | |
+| `--force-update` | | Force refresh model cache | |
+| `--init` | | Install Claudish skill in current project | |
+| `--mcp` | | Run as MCP server | |
+| `--gemini-login` | | Login to Gemini Code Assist via OAuth | |
+| `--gemini-logout` | | Clear Gemini OAuth credentials | |
+| `--kimi-login` | | Login to Kimi via OAuth | |
+| `--kimi-logout` | | Clear Kimi OAuth credentials | |
+| `--help-ai` | | Show AI agent usage guide | |
+| `--version` | | Show version | |
+| `--help` | `-h` | Show help message | |
+| `--` | | Everything after passes to Claude Code | |
+
+**Flag passthrough**: Any unrecognized flag is automatically forwarded to Claude Code (e.g., `--agent`, `--effort`, `--permission-mode`).
 
 ### Environment Variables
 
-#### API Keys (at least one required)
+Claudish automatically loads `.env` from the current directory at startup. For the full list, see [Settings Reference](docs/settings-reference.md).
 
-| Variable | Description | Used For |
-|----------|-------------|----------|
-| `OPENROUTER_API_KEY` | OpenRouter API key | Default backend (100+ models) |
-| `GEMINI_API_KEY` | Google Gemini API key | Direct Gemini access (`g/` prefix) |
-| `VERTEX_API_KEY` | Vertex AI Express API key | Vertex AI Express mode (`v/` prefix) |
-| `VERTEX_PROJECT` | GCP Project ID | Vertex AI OAuth mode (`v/` prefix) |
-| `VERTEX_LOCATION` | GCP Region (default: us-central1) | Vertex AI regional endpoint |
-| `OPENAI_API_KEY` | OpenAI API key | Direct OpenAI access (`oai/` prefix) |
-| `OLLAMA_API_KEY` | OllamaCloud API key | OllamaCloud access (`oc/` prefix) |
-| `ANTHROPIC_API_KEY` | Placeholder (any value) | Prevents Claude Code dialog |
+#### API Keys (at least one required for cloud models)
 
-#### Custom Endpoints (optional)
+| Variable | Provider | Aliases |
+|----------|----------|---------|
+| `OPENROUTER_API_KEY` | OpenRouter (default backend, 580+ models) | |
+| `GEMINI_API_KEY` | Google Gemini (`g@`, `google@`) | |
+| `OPENAI_API_KEY` | OpenAI (`oai@`) | |
+| `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | |
+| `MINIMAX_CODING_API_KEY` | MiniMax Coding Plan (`mmc@`) | |
+| `MOONSHOT_API_KEY` | Kimi/Moonshot (`kimi@`) | `KIMI_API_KEY` |
+| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`) | Or OAuth via `--kimi-login` |
+| `ZHIPU_API_KEY` | GLM/Zhipu (`glm@`) | `GLM_API_KEY` |
+| `GLM_CODING_API_KEY` | GLM Coding Plan (`gc@`) | `ZAI_CODING_API_KEY` |
+| `ZAI_API_KEY` | Z.AI (`zai@`) | |
+| `OLLAMA_API_KEY` | OllamaCloud (`oc@`) | |
+| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — optional for free models | |
+| `LITELLM_API_KEY` | LiteLLM (`ll@`) — requires `LITELLM_BASE_URL` | |
+| `POE_API_KEY` | Poe (`poe@`) | |
+| `VERTEX_API_KEY` | Vertex AI Express (`v@`) | |
+| `VERTEX_PROJECT` | Vertex AI OAuth mode (`v@`) | `GOOGLE_CLOUD_PROJECT` |
+| `ANTHROPIC_API_KEY` | Placeholder (suppresses Claude Code dialog) | |
+
+#### Claudish Settings
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GEMINI_BASE_URL` | Custom Gemini endpoint | `https://generativelanguage.googleapis.com` |
-| `OPENAI_BASE_URL` | Custom OpenAI/Azure endpoint | `https://api.openai.com` |
-| `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
-| `OLLAMACLOUD_BASE_URL` | Custom OllamaCloud endpoint | `https://ollama.com` |
-| `LMSTUDIO_BASE_URL` | LM Studio server URL | `http://localhost:1234` |
-| `VLLM_BASE_URL` | vLLM server URL | `http://localhost:8000` |
-| `MLX_BASE_URL` | MLX server URL | `http://127.0.0.1:8080` |
-
-#### Other Settings
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CLAUDISH_MODEL` | Default model to use | `openai/gpt-5.3` |
+| `CLAUDISH_MODEL` | Default model (overrides `ANTHROPIC_MODEL`) | Interactive selector |
 | `CLAUDISH_PORT` | Default proxy port | Random (3000-9000) |
-| `CLAUDISH_CONTEXT_WINDOW` | Override context window size | Auto-detected |
+| `CLAUDISH_CONTEXT_WINDOW` | Override context window size (local models) | Auto-detected |
+| `CLAUDISH_MODEL_OPUS` | Model for Opus role | |
+| `CLAUDISH_MODEL_SONNET` | Model for Sonnet role | |
+| `CLAUDISH_MODEL_HAIKU` | Model for Haiku role | |
+| `CLAUDISH_MODEL_SUBAGENT` | Model for sub-agents | |
+| `CLAUDISH_SUMMARIZE_TOOLS` | Summarize tool descriptions (`true`/`1`) | `false` |
+| `CLAUDISH_TELEMETRY` | Override telemetry (`0`/`false`/`off` to disable) | From config |
+| `CLAUDISH_LOCAL_MAX_PARALLEL` | Max concurrent local model requests (1-8) | `1` |
+| `CLAUDISH_LOCAL_QUEUE_ENABLED` | Enable/disable local model queue | `true` |
+| `CLAUDISH_QWEN_NO_THINK` | Disable thinking for Qwen models (`1`) | |
+
+#### Claude Code Compatibility
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_MODEL` | Fallback for `CLAUDISH_MODEL` |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | Fallback for `CLAUDISH_MODEL_OPUS` |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | Fallback for `CLAUDISH_MODEL_SONNET` |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Fallback for `CLAUDISH_MODEL_HAIKU` |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | Fallback for `CLAUDISH_MODEL_SUBAGENT` |
+| `CLAUDE_PATH` | Custom path to Claude Code binary |
+
+#### Custom Endpoints
+
+| Variable | Provider | Default |
+|----------|----------|---------|
+| `GEMINI_BASE_URL` | Gemini API | `https://generativelanguage.googleapis.com` |
+| `OPENAI_BASE_URL` | OpenAI/Azure | `https://api.openai.com` |
+| `MINIMAX_BASE_URL` | MiniMax | `https://api.minimax.io` |
+| `MOONSHOT_BASE_URL` | Kimi/Moonshot | `https://api.moonshot.ai` |
+| `ZHIPU_BASE_URL` | GLM/Zhipu | `https://open.bigmodel.cn` |
+| `ZAI_BASE_URL` | Z.AI | `https://api.z.ai` |
+| `OLLAMACLOUD_BASE_URL` | OllamaCloud | `https://ollama.com` |
+| `OPENCODE_BASE_URL` | OpenCode Zen | `https://opencode.ai/zen` |
+| `LITELLM_BASE_URL` | LiteLLM proxy server | _(required with LITELLM_API_KEY)_ |
+| `OLLAMA_BASE_URL` | Ollama (local) | `http://localhost:11434` |
+| `OLLAMA_HOST` | Alias for `OLLAMA_BASE_URL` | |
+| `LMSTUDIO_BASE_URL` | LM Studio (local) | `http://localhost:1234` |
+| `VLLM_BASE_URL` | vLLM (local) | `http://localhost:8000` |
+| `MLX_BASE_URL` | MLX (local) | `http://127.0.0.1:8080` |
+
+**Priority order**: CLI flags > `CLAUDISH_*` env vars > `ANTHROPIC_*` env vars > profile config > interactive selector.
 
 **Important Notes:**
-- You MUST set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value). Without it, Claude Code will show a dialog
+- Set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value) to suppress the Claude Code login dialog
 - In interactive mode, if no API key is set, you'll be prompted to enter one
+
+### Configuration Files
+
+Claudish uses a two-scope configuration system:
+
+| File | Scope | Purpose |
+|------|-------|---------|
+| `~/.claudish/config.json` | Global | Profiles, telemetry, routing rules (shared across projects) |
+| `.claudish.json` | Local | Project-specific profiles and routing rules (overrides global) |
+| `.env` | Local | Environment variables (auto-loaded at startup) |
+
+**Profile configuration** (`~/.claudish/config.json`):
+
+```json
+{
+  "version": "1.0.0",
+  "defaultProfile": "default",
+  "profiles": {
+    "default": {
+      "name": "default",
+      "models": {
+        "opus": "oai@gpt-5.3",
+        "sonnet": "google@gemini-3-pro",
+        "haiku": "mm@MiniMax-M2.1",
+        "subagent": "google@gemini-2.0-flash"
+      }
+    }
+  },
+  "routing": {
+    "kimi-*": ["kc", "kimi", "openrouter"],
+    "glm-*": ["gc", "glm"],
+    "*": ["litellm", "openrouter"]
+  }
+}
+```
+
+**Custom routing rules** map model name patterns to ordered provider fallback chains. Patterns support exact names, globs (`kimi-*`), and `*` catch-all. Local `.claudish.json` routing rules **replace** global rules entirely.
+
+Manage profiles with:
+
+```bash
+claudish init [--local|--global]            # Setup wizard
+claudish profile list [--local|--global]    # List profiles
+claudish profile add [--local|--global]     # Add profile
+claudish profile use <name>                 # Set default
+claudish profile edit <name>                # Edit profile
+```
+
+For the complete configuration reference, see [Settings Reference](docs/settings-reference.md).
 
 ## Model Routing (v4.0.0+)
 

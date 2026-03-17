@@ -6,7 +6,6 @@
  * - System prompt guidance (tool calling, conversation handling)
  * - Model-family sampling parameters (Qwen, DeepSeek, Llama, Mistral)
  * - max_tokens floor (8192) for meaningful responses
- * - Capability-based tool stripping (non-tool models)
  * - Qwen /no_think toggle
  * - Strip cloud-only thinking params
  * - MLX simple format for message conversion
@@ -14,7 +13,6 @@
 
 import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
 import { AdapterManager } from "./adapter-manager.js";
-import type { ProviderCapabilities } from "../providers/provider-registry.js";
 import { log } from "../logger.js";
 
 interface SamplingParams {
@@ -27,13 +25,11 @@ interface SamplingParams {
 
 export class LocalModelAdapter extends BaseModelAdapter {
   private innerAdapter: BaseModelAdapter;
-  private capabilities: ProviderCapabilities;
   private providerName: string;
 
-  constructor(modelId: string, providerName: string, capabilities: ProviderCapabilities) {
+  constructor(modelId: string, providerName: string) {
     super(modelId);
     this.providerName = providerName;
-    this.capabilities = capabilities;
 
     const manager = new AdapterManager(modelId);
     this.innerAdapter = manager.getAdapter();
@@ -59,7 +55,7 @@ export class LocalModelAdapter extends BaseModelAdapter {
   }
 
   supportsVision(): boolean {
-    return this.capabilities.supportsVision;
+    return true;
   }
 
   // ─── Message conversion with system prompt guidance ─────────────────
@@ -76,18 +72,11 @@ export class LocalModelAdapter extends BaseModelAdapter {
 
     // Add guidance to system prompt for local models
     if (messages.length > 0 && messages[0].role === "system") {
-      messages[0].content += this.buildSystemGuidance(
-        this.capabilities.supportsTools
-          ? (claudeRequest.tools?.length || 0)
-          : 0
-      );
+      messages[0].content += this.buildSystemGuidance(claudeRequest.tools?.length || 0);
     }
 
     // Qwen /no_think toggle
-    if (
-      this.modelId.toLowerCase().includes("qwen") &&
-      process.env.CLAUDISH_QWEN_NO_THINK === "1"
-    ) {
+    if (this.modelId.toLowerCase().includes("qwen") && process.env.CLAUDISH_QWEN_NO_THINK === "1") {
       if (messages.length > 0 && messages[0].role === "system") {
         messages[0].content = "/no_think\n\n" + messages[0].content;
         log(`[${this.getName()}] Added /no_think to disable Qwen thinking mode`);
@@ -97,13 +86,9 @@ export class LocalModelAdapter extends BaseModelAdapter {
     return messages;
   }
 
-  // ─── Tool conversion with capability check ──────────────────────────
+  // ─── Tool conversion ─────────────────────────────────────────────────
 
   override convertTools(claudeRequest: any, summarize = false): any[] {
-    if (!this.capabilities.supportsTools) {
-      log(`[${this.getName()}] Tools stripped (not supported)`);
-      return [];
-    }
     const { convertToolsToOpenAI } = require("../handlers/shared/openai-compat.js");
     return convertToolsToOpenAI(claudeRequest, summarize);
   }
@@ -126,14 +111,11 @@ export class LocalModelAdapter extends BaseModelAdapter {
       top_p: sampling.top_p,
       top_k: sampling.top_k,
       min_p: sampling.min_p,
-      repetition_penalty:
-        sampling.repetition_penalty > 1 ? sampling.repetition_penalty : undefined,
-      stream: this.capabilities.supportsStreaming,
+      repetition_penalty: sampling.repetition_penalty > 1 ? sampling.repetition_penalty : undefined,
+      stream: true,
       max_tokens: effectiveMaxTokens,
       tools: tools.length > 0 ? tools : undefined,
-      stream_options: this.capabilities.supportsStreaming
-        ? { include_usage: true }
-        : undefined,
+      stream_options: { include_usage: true },
     };
 
     // Tool choice mapping from Claude format

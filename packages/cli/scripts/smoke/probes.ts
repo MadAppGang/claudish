@@ -10,6 +10,7 @@ import type {
   ProbeResult,
   ProbeFn,
   AnthropicResponse,
+  OllamaResponse,
   OpenAIResponse,
 } from "./types.js";
 
@@ -170,6 +171,35 @@ export const runToolCallingProbe: ProbeFn = async (
         },
       ],
     };
+  } else if (config.wireFormat === "ollama") {
+    body = {
+      model: config.representativeModel,
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant. When asked about weather, use the get_weather tool.",
+        },
+        { role: "user", content: "What's the weather in Tokyo?" },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Get current weather for a city",
+            parameters: {
+              type: "object",
+              properties: {
+                city: { type: "string", description: "City name" },
+              },
+              required: ["city"],
+            },
+          },
+        },
+      ],
+    };
   } else {
     body = {
       model: config.representativeModel,
@@ -235,13 +265,41 @@ export const runToolCallingProbe: ProbeFn = async (
       reason: `no tool_use block (stop_reason was: ${resp.stop_reason})`,
       excerpt: JSON.stringify(resp.content).slice(0, 200),
     };
+  } else if (config.wireFormat === "ollama") {
+    const resp = raw as OllamaResponse;
+    const toolCalls = resp.message?.tool_calls;
+
+    if (
+      toolCalls &&
+      toolCalls.length > 0 &&
+      toolCalls[0].function.name === "get_weather" &&
+      Object.keys(toolCalls[0].function.arguments).length > 0
+    ) {
+      return {
+        capability: "tool_calling",
+        status: "pass",
+        durationMs: elapsed,
+        reason: "tool_calls detected",
+        excerpt: `tool: ${toolCalls[0].function.name}, args: ${JSON.stringify(toolCalls[0].function.arguments).slice(0, 100)}`,
+      };
+    }
+
+    return {
+      capability: "tool_calling",
+      status: "fail",
+      durationMs: elapsed,
+      reason: `no tool_calls (done_reason was: ${resp.done_reason ?? "unknown"})`,
+      excerpt: JSON.stringify(resp.message).slice(0, 200),
+    };
   } else {
     const resp = raw as OpenAIResponse;
     const choice = resp.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;
 
+    // Some providers (e.g. opencode-zen) return finish_reason: null even when
+    // tool_calls is present. Check tool_calls presence first; finish_reason is
+    // informational only.
     if (
-      choice?.finish_reason === "tool_calls" &&
       toolCalls &&
       toolCalls.length > 0 &&
       toolCalls[0].function.name === "get_weather" &&
@@ -286,6 +344,15 @@ export const runReasoningProbe: ProbeFn = async (
       system: "You are a helpful math assistant.",
       messages: [{ role: "user", content: "What is 17 × 23? Show your reasoning step by step." }],
     };
+  } else if (config.wireFormat === "ollama") {
+    body = {
+      model: config.representativeModel,
+      stream: false,
+      messages: [
+        { role: "system", content: "You are a helpful math assistant." },
+        { role: "user", content: "What is 17 × 23? Show your reasoning step by step." },
+      ],
+    };
   } else {
     body = {
       model: config.representativeModel,
@@ -302,7 +369,25 @@ export const runReasoningProbe: ProbeFn = async (
   const elapsed = Date.now() - t0;
   const isReasoning = isReasoningModel(config.representativeModel);
 
-  if (config.wireFormat === "anthropic-compat") {
+  if (config.wireFormat === "ollama") {
+    const resp = raw as OllamaResponse;
+    const content = resp.message?.content ?? "";
+
+    if (content.length > 0) {
+      return {
+        capability: "reasoning",
+        status: "pass",
+        durationMs: elapsed,
+        excerpt: content.slice(0, 200),
+      };
+    }
+    return {
+      capability: "reasoning",
+      status: "fail",
+      durationMs: elapsed,
+      reason: "empty response",
+    };
+  } else if (config.wireFormat === "anthropic-compat") {
     const resp = raw as AnthropicResponse;
     const thinkingBlock = resp.content?.find((b) => b.type === "thinking") as
       | { type: "thinking"; thinking: string }
@@ -393,13 +478,16 @@ export const runReasoningProbe: ProbeFn = async (
       };
     }
 
-    // Non-reasoning model: any non-empty content is a pass
-    if (msg.content && msg.content.length > 0) {
+    // Non-reasoning model: any non-empty content or reasoning_content is a pass
+    // Some providers (e.g. opencode-zen-go) put all output in reasoning_content
+    // even for models not classified as "reasoning".
+    const textOut = msg.content || msg.reasoning_content || "";
+    if (textOut.length > 0) {
       return {
         capability: "reasoning",
         status: "pass",
         durationMs: elapsed,
-        excerpt: msg.content.slice(0, 200),
+        excerpt: textOut.slice(0, 200),
       };
     }
     return {
@@ -457,6 +545,18 @@ export const runVisionProbe: ProbeFn = async (
         },
       ],
     };
+  } else if (config.wireFormat === "ollama") {
+    body = {
+      model: config.representativeModel,
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content: "Describe what you see in this image in one sentence.",
+          images: [TEST_IMAGE_BASE64],
+        },
+      ],
+    };
   } else {
     body = {
       model: config.representativeModel,
@@ -493,6 +593,9 @@ export const runVisionProbe: ProbeFn = async (
       | { type: "text"; text: string }
       | undefined;
     textContent = textBlock?.text ?? "";
+  } else if (config.wireFormat === "ollama") {
+    const resp = raw as OllamaResponse;
+    textContent = resp.message?.content ?? "";
   } else {
     const resp = raw as OpenAIResponse;
     textContent = resp.choices?.[0]?.message?.content ?? "";

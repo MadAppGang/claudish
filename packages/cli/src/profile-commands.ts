@@ -178,13 +178,13 @@ export async function profileListCommand(scopeFilter?: ProfileScope): Promise<vo
   const allProfiles = listAllProfiles();
 
   // Filter by scope if flag given
-  const profiles = scopeFilter
-    ? allProfiles.filter((p) => p.scope === scopeFilter)
-    : allProfiles;
+  const profiles = scopeFilter ? allProfiles.filter((p) => p.scope === scopeFilter) : allProfiles;
 
   if (profiles.length === 0) {
     if (scopeFilter) {
-      console.log(`No ${scopeFilter} profiles found. Run 'claudish init --${scopeFilter}' to create one.`);
+      console.log(
+        `No ${scopeFilter} profiles found. Run 'claudish init --${scopeFilter}' to create one.`
+      );
     } else {
       console.log("No profiles found. Run 'claudish init' to create one.");
     }
@@ -239,10 +239,7 @@ export async function profileAddCommand(scopeFlag?: ProfileScope): Promise<void>
 /**
  * Remove a profile
  */
-export async function profileRemoveCommand(
-  name?: string,
-  scopeFlag?: ProfileScope
-): Promise<void> {
+export async function profileRemoveCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
   // If no scope flag and name is given, figure out where it lives
   let scope = scopeFlag;
   let profileName = name;
@@ -250,9 +247,7 @@ export async function profileRemoveCommand(
   if (!profileName) {
     // Interactive selection — show all profiles
     const allProfiles = listAllProfiles();
-    const selectable = scope
-      ? allProfiles.filter((p) => p.scope === scope)
-      : allProfiles;
+    const selectable = scope ? allProfiles.filter((p) => p.scope === scope) : allProfiles;
 
     if (selectable.length === 0) {
       console.log("No profiles to remove.");
@@ -330,19 +325,14 @@ export async function profileRemoveCommand(
 /**
  * Set default profile
  */
-export async function profileUseCommand(
-  name?: string,
-  scopeFlag?: ProfileScope
-): Promise<void> {
+export async function profileUseCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
   let scope = scopeFlag;
   let profileName = name;
 
   if (!profileName) {
     // Show all profiles for selection
     const allProfiles = listAllProfiles();
-    const selectable = scope
-      ? allProfiles.filter((p) => p.scope === scope)
-      : allProfiles;
+    const selectable = scope ? allProfiles.filter((p) => p.scope === scope) : allProfiles;
 
     if (selectable.length === 0) {
       console.log("No profiles found. Run 'claudish init' to create one.");
@@ -395,18 +385,13 @@ export async function profileUseCommand(
   }
 
   setDefaultProfile(profileName, scope);
-  console.log(
-    `${GREEN}✓${RESET} "${profileName}" is now the default ${scope} profile.`
-  );
+  console.log(`${GREEN}✓${RESET} "${profileName}" is now the default ${scope} profile.`);
 }
 
 /**
  * Show profile details
  */
-export async function profileShowCommand(
-  name?: string,
-  scopeFlag?: ProfileScope
-): Promise<void> {
+export async function profileShowCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
   let profileName = name;
   let scope = scopeFlag;
 
@@ -459,19 +444,14 @@ export async function profileShowCommand(
 /**
  * Edit an existing profile
  */
-export async function profileEditCommand(
-  name?: string,
-  scopeFlag?: ProfileScope
-): Promise<void> {
+export async function profileEditCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
   let scope = scopeFlag;
   let profileName = name;
 
   if (!profileName) {
     // Show all profiles for selection
     const allProfiles = listAllProfiles();
-    const selectable = scope
-      ? allProfiles.filter((p) => p.scope === scope)
-      : allProfiles;
+    const selectable = scope ? allProfiles.filter((p) => p.scope === scope) : allProfiles;
 
     if (selectable.length === 0) {
       console.log("No profiles found. Run 'claudish init' to create one.");

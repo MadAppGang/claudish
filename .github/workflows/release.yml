@@ -306,41 +306,38 @@ jobs:
       - name: Update Homebrew tap
         uses: actions/checkout@v4
         with:
-          repository: MadAppGang/homebrew-claudish
+          repository: MadAppGang/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
       - name: Update formula
         run: |
-          cat > tap/Casks/claudish.rb << 'EOF'
-          cask "claudish" do
+          mkdir -p tap/Formula
+          cat > tap/Formula/claudish.rb << EOF
+          class Claudish < Formula
+            desc "Multi-model AI CLI - run Claude Code with any model"
+            homepage "https://github.com/MadAppGang/claudish"
             version "${{ steps.release.outputs.version }}"
+            license "MIT"
 
             on_arm do
-              url "https://github.com/MadAppGang/claudish/releases/download/v#{version}/claudish-darwin-arm64"
+              url "https://github.com/MadAppGang/claudish/releases/download/v${{ steps.release.outputs.version }}/claudish-darwin-arm64"
               sha256 "${{ steps.release.outputs.arm64_sha }}"
             end
 
             on_intel do
-              url "https://github.com/MadAppGang/claudish/releases/download/v#{version}/claudish-darwin-x64"
+              url "https://github.com/MadAppGang/claudish/releases/download/v${{ steps.release.outputs.version }}/claudish-darwin-x64"
               sha256 "${{ steps.release.outputs.x64_sha }}"
             end
 
-            name "claudish"
-            desc "Run Claude Code with any OpenRouter model"
-            homepage "https://github.com/MadAppGang/claudish"
-
-            binary "claudish-darwin-#{Hardware::CPU.arch == :arm64 ? 'arm64' : 'x64'}", target: "claudish"
-
-            livecheck do
-              url :url
-              strategy :github_latest
+            def install
+              binary = "claudish-darwin-#{Hardware::CPU.arch == :arm64 ? "arm64" : "x64"}"
+              bin.install binary => "claudish"
             end
 
-            zap trash: [
-              "~/.claudish",
-              "~/.config/claudish",
-            ]
+            test do
+              assert_match "claudish", shell_output("#{bin}/claudish --version")
+            end
           end
           EOF
 
@@ -349,6 +346,6 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Casks/claudish.rb
+          git add Formula/claudish.rb
           git commit -m "Update claudish to v${{ steps.release.outputs.version }}"
           git push

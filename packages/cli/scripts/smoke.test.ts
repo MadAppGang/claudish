@@ -409,7 +409,8 @@ describe("runVisionProbe — error phrase detection", () => {
               finish_reason: "stop",
               message: {
                 role: "assistant",
-                content: "The image shows a minimal PNG with an unsupported-looking plain background.",
+                content:
+                  "The image shows a minimal PNG with an unsupported-looking plain background.",
               },
             },
           ],

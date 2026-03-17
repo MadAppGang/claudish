@@ -145,7 +145,7 @@ const HeroSection: React.FC = () => {
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-claude-ish">
             <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse"></span>
-            v5.1.0
+            v5.11.0
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-900/20 border border-green-500/20 text-xs font-mono text-green-400">
             <span className="text-[10px]">🔑</span>
@@ -189,7 +189,13 @@ const HeroSection: React.FC = () => {
             <div className="flex flex-col gap-3 font-mono text-sm md:text-base text-left">
               <div className="flex items-center gap-3 text-gray-300 group-hover:text-white transition-colors">
                 <span className="text-claude-ish select-none font-bold">$</span>
+                <span>brew tap MadAppGang/tap && brew install claudish</span>
+              </div>
+              <div className="w-full h-[1px] bg-white/5"></div>
+              <div className="flex items-center gap-3 text-gray-400 text-xs">
+                <span className="text-claude-ish select-none font-bold">$</span>
                 <span>npm install -g claudish</span>
+                <span className="text-gray-600 ml-2"># or via npm</span>
               </div>
               <div className="w-full h-[1px] bg-white/5"></div>
               <div className="flex items-center gap-3 text-white font-bold">

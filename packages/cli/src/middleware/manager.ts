@@ -71,6 +71,14 @@ export class MiddlewareManager {
   }
 
   /**
+   * Get names of active middlewares for a specific model.
+   * Used by stats recording to capture middleware names without details.
+   */
+  getActiveNames(modelId: string): string[] {
+    return this.getActiveMiddlewares(modelId).map((m) => m.name);
+  }
+
+  /**
    * Execute beforeRequest hooks for all active middlewares
    */
   async beforeRequest(context: RequestContext): Promise<void> {

@@ -120,8 +120,13 @@ export function createGeminiSseStream(
 
         if (!isClosed) {
           isClosed = true;
-          if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-          try { controller.close(); } catch {}
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+          try {
+            controller.close();
+          } catch {}
         }
       };
 
@@ -148,7 +153,7 @@ export function createGeminiSseStream(
               const chunk = JSON.parse(dataStr);
 
               // CodeAssist wraps in {response: {...}}, standard Gemini doesn't
-              const responseData = opts.unwrapResponse ? (chunk.response || chunk) : chunk;
+              const responseData = opts.unwrapResponse ? chunk.response || chunk : chunk;
 
               if (responseData.usageMetadata) {
                 usage = responseData.usageMetadata;
@@ -182,7 +187,10 @@ export function createGeminiSseStream(
                   if (part.text) {
                     // Close thinking block before text
                     if (thinkingStarted) {
-                      send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                      send("content_block_stop", {
+                        type: "content_block_stop",
+                        index: thinkingIdx,
+                      });
                       thinkingStarted = false;
                     }
 
@@ -216,7 +224,10 @@ export function createGeminiSseStream(
                   // Handle function calls
                   if (part.functionCall) {
                     if (thinkingStarted) {
-                      send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                      send("content_block_stop", {
+                        type: "content_block_stop",
+                        index: thinkingIdx,
+                      });
                       thinkingStarted = false;
                     }
                     if (textStarted) {
@@ -279,7 +290,10 @@ export function createGeminiSseStream(
     },
     cancel() {
       isClosed = true;
-      if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+      }
     },
   });
 

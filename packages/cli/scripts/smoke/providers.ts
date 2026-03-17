@@ -12,10 +12,7 @@ import type { SmokeProviderConfig, WireFormat } from "./types.js";
 
 // Providers to skip in v1 smoke tests
 const SKIP_PROVIDERS = new Set([
-  "ollamacloud", // Uses /api/chat Ollama JSONL format, not OpenAI-compat
   "gemini-codeassist", // OAuth-only, no API key auth
-  "vertex", // Complex auth (VERTEX_PROJECT + OAuth)
-  "glm-coding", // Coding PAAS endpoint — valid model IDs not yet confirmed
 ]);
 
 // Map provider name → representative model for smoke testing
@@ -25,14 +22,34 @@ const REPRESENTATIVE_MODELS: Record<string, string> = {
   minimax: "minimax-m2.5",
   "minimax-coding": "minimax-m2.5",
   glm: "glm-5",
-  "glm-coding": "codegeex-4", // GLM coding plan representative model
+  "glm-coding": "glm-5", // GLM coding plan — codegeex-4 removed from API
   zai: "glm-5",
   openai: "gpt-4o-mini",
   openrouter: "openai/gpt-4o-mini", // stable model always available on OpenRouter
-  litellm: "gpt-4o-mini",
-  "opencode-zen": "gpt-5-nano", // Free model (C1 fix: not kimi-k2.5)
+  litellm: "gemini-2.5-flash", // model deployed on the madappgang litellm instance
+  "opencode-zen": "minimax-m2.5-free", // Free model that works for tools+reasoning
   "opencode-zen-go": "glm-5", // Only confirmed working model (C2 fix)
   gemini: "gemini-2.0-flash",
+  ollamacloud: "ministral-3:8b",
+  vertex: "google/gemini-2.0-flash",
+};
+
+// Per-model capability map for smoke testing.
+// Capabilities are model-specific, not provider-specific.
+const SMOKE_MODEL_CAPABILITIES: Record<
+  string,
+  { supportsTools: boolean; supportsVision: boolean; supportsReasoning: boolean }
+> = {
+  "gemini-2.0-flash": { supportsTools: true, supportsVision: true, supportsReasoning: true },
+  "gpt-4o-mini": { supportsTools: true, supportsVision: true, supportsReasoning: true },
+  "openai/gpt-4o-mini": { supportsTools: true, supportsVision: true, supportsReasoning: true },
+  "minimax-m2.5": { supportsTools: true, supportsVision: false, supportsReasoning: true },
+  "minimax-m2.5-free": { supportsTools: true, supportsVision: false, supportsReasoning: true },
+  "kimi-k2.5": { supportsTools: true, supportsVision: true, supportsReasoning: true },
+  "glm-5": { supportsTools: true, supportsVision: false, supportsReasoning: true },
+  "ministral-3:8b": { supportsTools: true, supportsVision: false, supportsReasoning: true },
+  "google/gemini-2.0-flash": { supportsTools: true, supportsVision: true, supportsReasoning: true },
+  "gemini-2.5-flash": { supportsTools: true, supportsVision: true, supportsReasoning: true },
 };
 
 // Providers that use Anthropic-compat wire format
@@ -45,21 +62,48 @@ const ANTHROPIC_COMPAT_PROVIDERS = new Set([
 ]);
 
 function getWireFormat(providerName: string): WireFormat {
+  if (providerName === "ollamacloud") return "ollama";
   return ANTHROPIC_COMPAT_PROVIDERS.has(providerName) ? "anthropic-compat" : "openai-compat";
 }
 
 function getAuthScheme(provider: RemoteProvider): SmokeProviderConfig["authScheme"] {
   const wireFormat = getWireFormat(provider.name);
-  if (wireFormat === "openai-compat") {
+  if (wireFormat === "openai-compat" || wireFormat === "ollama") {
     return "openai"; // Authorization: Bearer
   }
   // Anthropic-compat providers
   return provider.authScheme === "bearer" ? "bearer" : "x-api-key";
 }
 
+// Cached Vertex OAuth token (fetched once per run via gcloud)
+let _vertexToken: string | undefined;
+
+/**
+ * Get a Vertex OAuth token via `gcloud auth print-access-token`.
+ * Returns undefined if gcloud is not available or fails.
+ */
+function getVertexToken(): string | undefined {
+  if (_vertexToken) return _vertexToken;
+  try {
+    const result = Bun.spawnSync(["gcloud", "auth", "print-access-token"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const token = result.stdout.toString().trim();
+    if (token && !token.includes("ERROR")) {
+      _vertexToken = token;
+      return token;
+    }
+  } catch {
+    // gcloud not available
+  }
+  return undefined;
+}
+
 /**
  * Get the API key for a provider. For opencode-zen providers, fall back to
  * "public" if OPENCODE_API_KEY is not set (zen is free with public access).
+ * For vertex, obtain an OAuth token via gcloud.
  */
 function getApiKey(provider: RemoteProvider): string | undefined {
   if (
@@ -67,6 +111,9 @@ function getApiKey(provider: RemoteProvider): string | undefined {
     !process.env[provider.apiKeyEnvVar]
   ) {
     return "public";
+  }
+  if (provider.name === "vertex") {
+    return getVertexToken();
   }
   return process.env[provider.apiKeyEnvVar];
 }
@@ -80,7 +127,24 @@ function getApiPath(provider: RemoteProvider): string {
   if (provider.name === "gemini") {
     return "/v1beta/openai/chat/completions";
   }
+  if (provider.name === "vertex") {
+    const project = process.env.VERTEX_PROJECT || "gen-lang-client-0934119819";
+    const location = process.env.VERTEX_LOCATION || "us-central1";
+    return `/v1beta1/projects/${project}/locations/${location}/endpoints/openapi/chat/completions`;
+  }
   return provider.apiPath;
+}
+
+/**
+ * Get the base URL for a provider.
+ * Vertex needs a dynamically constructed regional endpoint.
+ */
+function getBaseUrl(provider: RemoteProvider): string {
+  if (provider.name === "vertex") {
+    const location = process.env.VERTEX_LOCATION || "us-central1";
+    return `https://${location}-aiplatform.googleapis.com`;
+  }
+  return provider.baseUrl;
 }
 
 /**
@@ -114,20 +178,22 @@ export function discoverProviders(filterName?: string): SmokeProviderConfig[] {
     })
     .map((p) => {
       const apiKey = getApiKey(p)!;
+      const repModel = REPRESENTATIVE_MODELS[p.name];
+      const modelCaps = SMOKE_MODEL_CAPABILITIES[repModel] ?? {
+        supportsTools: true,
+        supportsVision: false,
+        supportsReasoning: true,
+      };
       return {
         name: p.name,
-        baseUrl: p.baseUrl,
+        baseUrl: getBaseUrl(p),
         apiPath: getApiPath(p),
         apiKey,
         authScheme: getAuthScheme(p),
         extraHeaders: p.headers ?? {},
         wireFormat: getWireFormat(p.name),
-        representativeModel: REPRESENTATIVE_MODELS[p.name],
-        capabilities: {
-          supportsTools: p.capabilities.supportsTools,
-          supportsVision: p.capabilities.supportsVision,
-          supportsReasoning: p.capabilities.supportsReasoning,
-        },
+        representativeModel: repModel,
+        capabilities: modelCaps,
       };
     });
 }

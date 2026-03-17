@@ -30,6 +30,7 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           KIMI_CODING_API_KEY: ${{ secrets.KIMI_CODING_API_KEY }}
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
 
       - name: Upload smoke results
         uses: actions/upload-artifact@v4

@@ -42,7 +42,17 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
-  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI" | "GLM" | "GLM Coding" | "OllamaCloud" | "LiteLLM" | "Recommended"; // Which platform the model is from
+  source?:
+    | "OpenRouter"
+    | "Zen"
+    | "xAI"
+    | "Gemini"
+    | "OpenAI"
+    | "GLM"
+    | "GLM Coding"
+    | "OllamaCloud"
+    | "LiteLLM"
+    | "Recommended"; // Which platform the model is from
 }
 
 /**
@@ -172,7 +182,9 @@ async function fetchZenGoModels(): Promise<ModelInfo[]> {
 
   try {
     // Fetch models.dev for metadata
-    const mdevResp = await fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(5000) });
+    const mdevResp = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!mdevResp.ok) return [];
     const mdevData = await mdevResp.json();
     const ocModels: Record<string, any> = mdevData?.opencode?.models ?? {};
@@ -192,7 +204,11 @@ async function fetchZenGoModels(): Promise<ModelInfo[]> {
           const r = await fetch(`${ZEN_GO_BASE}/v1/chat/completions`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({ model: modelId, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+            body: JSON.stringify({
+              model: modelId,
+              messages: [{ role: "user", content: "hi" }],
+              max_tokens: 1,
+            }),
             signal: AbortSignal.timeout(8000),
           });
           if (!r.ok) return null;
@@ -277,7 +293,8 @@ async function fetchZenFreeModels(): Promise<ModelInfo[]> {
       })
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
-        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const supportsVision =
+          inputModalities.includes("image") || inputModalities.includes("video");
 
         return {
           id: `zen@${id}`,
@@ -607,7 +624,8 @@ async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
       .filter(([_, m]: [string, any]) => m.tool_call === true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
-        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const supportsVision =
+          inputModalities.includes("image") || inputModalities.includes("video");
         const contextLength = m.limit?.context || 131072;
 
         return {
@@ -620,9 +638,10 @@ async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
             output: "SUB",
             average: "SUB",
           },
-          context: contextLength >= 1000000
-            ? `${Math.round(contextLength / 1000000)}M`
-            : `${Math.round(contextLength / 1000)}K`,
+          context:
+            contextLength >= 1000000
+              ? `${Math.round(contextLength / 1000000)}M`
+              : `${Math.round(contextLength / 1000)}K`,
           contextLength,
           supportsTools: true,
           supportsReasoning: m.reasoning || false,
@@ -659,7 +678,8 @@ async function fetchGLMDirectModels(): Promise<ModelInfo[]> {
       .filter(([_, m]: [string, any]) => m.tool_call === true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
-        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const supportsVision =
+          inputModalities.includes("image") || inputModalities.includes("video");
         const contextLength = m.limit?.context || 131072;
         const inputCost = m.cost?.input || 0;
         const outputCost = m.cost?.output || 0;
@@ -675,9 +695,10 @@ async function fetchGLMDirectModels(): Promise<ModelInfo[]> {
             output: isFree ? "FREE" : `$${outputCost.toFixed(2)}`,
             average: isFree ? "FREE" : `$${((inputCost + outputCost) / 2).toFixed(2)}/1M`,
           },
-          context: contextLength >= 1000000
-            ? `${Math.round(contextLength / 1000000)}M`
-            : `${Math.round(contextLength / 1000)}K`,
+          context:
+            contextLength >= 1000000
+              ? `${Math.round(contextLength / 1000000)}M`
+              : `${Math.round(contextLength / 1000)}K`,
           contextLength,
           supportsTools: true,
           supportsReasoning: m.reasoning || false,
@@ -714,7 +735,8 @@ async function fetchOllamaCloudModels(): Promise<ModelInfo[]> {
       .filter(([_, m]: [string, any]) => m.tool_call === true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
-        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const supportsVision =
+          inputModalities.includes("image") || inputModalities.includes("video");
         const contextLength = m.limit?.context || 131072;
 
         return {
@@ -727,9 +749,10 @@ async function fetchOllamaCloudModels(): Promise<ModelInfo[]> {
             output: "N/A",
             average: "N/A",
           },
-          context: contextLength >= 1000000
-            ? `${Math.round(contextLength / 1000000)}M`
-            : `${Math.round(contextLength / 1000)}K`,
+          context:
+            contextLength >= 1000000
+              ? `${Math.round(contextLength / 1000000)}M`
+              : `${Math.round(contextLength / 1000)}K`,
           contextLength,
           supportsTools: true,
           supportsReasoning: m.reasoning || false,
@@ -818,7 +841,10 @@ async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> 
 
   // Build named fetch entries for robust error handling
   const fetchEntries: Array<{ name: string; promise: Promise<ModelInfo[]> }> = [
-    { name: "OpenRouter", promise: fetchAllModels(forceUpdate).then((models) => models.map(toModelInfo)) },
+    {
+      name: "OpenRouter",
+      promise: fetchAllModels(forceUpdate).then((models) => models.map(toModelInfo)),
+    },
     { name: "xAI", promise: fetchXAIModels() },
     { name: "Gemini", promise: fetchGeminiModels() },
     { name: "OpenAI", promise: fetchOpenAIModels() },
@@ -831,7 +857,10 @@ async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> 
 
   // Add LiteLLM fetch if configured
   if (litellmBaseUrl && litellmApiKey) {
-    fetchEntries.push({ name: "LiteLLM", promise: fetchLiteLLMModels(litellmBaseUrl, litellmApiKey, forceUpdate) });
+    fetchEntries.push({
+      name: "LiteLLM",
+      promise: fetchLiteLLMModels(litellmBaseUrl, litellmApiKey, forceUpdate),
+    });
   }
 
   // Use allSettled so one failing provider can't break the whole list
@@ -1055,7 +1084,9 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
 
     // 3. Add direct API models (xAI, Gemini, OpenAI, LiteLLM) - user has keys for these
-    for (const m of allModels.filter((m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter")) {
+    for (const m of allModels.filter(
+      (m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter"
+    )) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
         models.push(m);
@@ -1103,10 +1134,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   }
 
   const promptMessage =
-    message ||
-    (freeOnly
-      ? "Select a FREE model:"
-      : "Select a model (type to search):");
+    message || (freeOnly ? "Select a FREE model:" : "Select a model (type to search):");
 
   const selected = await search<string>({
     message: promptMessage,
@@ -1165,24 +1193,82 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 /**
  * Provider choices for profile model configuration
  */
-const ALL_PROVIDER_CHOICES: Array<{ name: string; value: string; description: string; envVar?: string }> = [
-  { name: "Skip (keep Claude default)", value: "skip", description: "Use native Claude model for this tier" },
+const ALL_PROVIDER_CHOICES: Array<{
+  name: string;
+  value: string;
+  description: string;
+  envVar?: string;
+}> = [
+  {
+    name: "Skip (keep Claude default)",
+    value: "skip",
+    description: "Use native Claude model for this tier",
+  },
   { name: "OpenRouter", value: "openrouter", description: "580+ models via unified API" },
   { name: "OpenCode Zen", value: "zen", description: "Free models, no API key needed" },
-  { name: "Google Gemini", value: "google", description: "Direct API (GEMINI_API_KEY)", envVar: "GEMINI_API_KEY" },
-  { name: "OpenAI", value: "openai", description: "Direct API (OPENAI_API_KEY)", envVar: "OPENAI_API_KEY" },
-  { name: "xAI / Grok", value: "xai", description: "Direct API (XAI_API_KEY)", envVar: "XAI_API_KEY" },
-  { name: "MiniMax", value: "minimax", description: "Direct API (MINIMAX_API_KEY)", envVar: "MINIMAX_API_KEY" },
-  { name: "MiniMax Coding", value: "minimax-coding", description: "MiniMax Coding subscription (MINIMAX_CODING_API_KEY)", envVar: "MINIMAX_CODING_API_KEY" },
-  { name: "Kimi / Moonshot", value: "kimi", description: "Direct API (MOONSHOT_API_KEY)", envVar: "MOONSHOT_API_KEY" },
-  { name: "Kimi Coding", value: "kimi-coding", description: "Kimi Coding subscription (KIMI_CODING_API_KEY)", envVar: "KIMI_CODING_API_KEY" },
-  { name: "GLM / Zhipu", value: "glm", description: "Direct API (ZHIPU_API_KEY)", envVar: "ZHIPU_API_KEY" },
-  { name: "GLM Coding Plan", value: "glm-coding", description: "GLM Coding subscription (GLM_CODING_API_KEY)", envVar: "GLM_CODING_API_KEY" },
+  {
+    name: "Google Gemini",
+    value: "google",
+    description: "Direct API (GEMINI_API_KEY)",
+    envVar: "GEMINI_API_KEY",
+  },
+  {
+    name: "OpenAI",
+    value: "openai",
+    description: "Direct API (OPENAI_API_KEY)",
+    envVar: "OPENAI_API_KEY",
+  },
+  {
+    name: "xAI / Grok",
+    value: "xai",
+    description: "Direct API (XAI_API_KEY)",
+    envVar: "XAI_API_KEY",
+  },
+  {
+    name: "MiniMax",
+    value: "minimax",
+    description: "Direct API (MINIMAX_API_KEY)",
+    envVar: "MINIMAX_API_KEY",
+  },
+  {
+    name: "MiniMax Coding",
+    value: "minimax-coding",
+    description: "MiniMax Coding subscription (MINIMAX_CODING_API_KEY)",
+    envVar: "MINIMAX_CODING_API_KEY",
+  },
+  {
+    name: "Kimi / Moonshot",
+    value: "kimi",
+    description: "Direct API (MOONSHOT_API_KEY)",
+    envVar: "MOONSHOT_API_KEY",
+  },
+  {
+    name: "Kimi Coding",
+    value: "kimi-coding",
+    description: "Kimi Coding subscription (KIMI_CODING_API_KEY)",
+    envVar: "KIMI_CODING_API_KEY",
+  },
+  {
+    name: "GLM / Zhipu",
+    value: "glm",
+    description: "Direct API (ZHIPU_API_KEY)",
+    envVar: "ZHIPU_API_KEY",
+  },
+  {
+    name: "GLM Coding Plan",
+    value: "glm-coding",
+    description: "GLM Coding subscription (GLM_CODING_API_KEY)",
+    envVar: "GLM_CODING_API_KEY",
+  },
   { name: "Z.AI", value: "zai", description: "Z.AI API (ZAI_API_KEY)", envVar: "ZAI_API_KEY" },
   { name: "OllamaCloud", value: "ollamacloud", description: "Cloud models (OLLAMA_API_KEY)" },
   { name: "Ollama (local)", value: "ollama", description: "Local Ollama instance" },
   { name: "LM Studio (local)", value: "lmstudio", description: "Local LM Studio instance" },
-  { name: "Enter custom model", value: "custom", description: "Type a provider@model specification" },
+  {
+    name: "Enter custom model",
+    value: "custom",
+    description: "Type a provider@model specification",
+  },
 ];
 
 /**
@@ -1231,16 +1317,34 @@ const PROVIDER_SOURCE_FILTER: Record<string, string> = {
  * Well-known models per provider (fallback when API fetch returns no results)
  */
 function getKnownModels(provider: string): ModelInfo[] {
-  const known: Record<string, Array<{ id: string; name: string; context?: string; description?: string }>> = {
+  const known: Record<
+    string,
+    Array<{ id: string; name: string; context?: string; description?: string }>
+  > = {
     google: [
       { id: "google@gemini-2.5-pro", name: "Gemini 2.5 Pro", context: "1M" },
       { id: "google@gemini-2.5-flash", name: "Gemini 2.5 Flash", context: "1M" },
       { id: "google@gemini-2.0-flash", name: "Gemini 2.0 Flash", context: "1M" },
     ],
     openai: [
-      { id: "oai@gpt-5.3-codex", name: "GPT-5.3 Codex", context: "400K", description: "Latest coding model" },
-      { id: "oai@gpt-5.2-codex", name: "GPT-5.2 Codex", context: "400K", description: "Coding model" },
-      { id: "oai@gpt-5.1-codex-mini", name: "GPT-5.1 Codex Mini", context: "400K", description: "Fast coding model" },
+      {
+        id: "oai@gpt-5.3-codex",
+        name: "GPT-5.3 Codex",
+        context: "400K",
+        description: "Latest coding model",
+      },
+      {
+        id: "oai@gpt-5.2-codex",
+        name: "GPT-5.2 Codex",
+        context: "400K",
+        description: "Coding model",
+      },
+      {
+        id: "oai@gpt-5.1-codex-mini",
+        name: "GPT-5.1 Codex Mini",
+        context: "400K",
+        description: "Fast coding model",
+      },
       { id: "oai@o3", name: "o3", context: "200K", description: "Reasoning model" },
       { id: "oai@o4-mini", name: "o4-mini", context: "200K", description: "Fast reasoning model" },
       { id: "oai@gpt-4.1", name: "GPT-4.1", context: "1M", description: "Large context model" },
@@ -1248,39 +1352,102 @@ function getKnownModels(provider: string): ModelInfo[] {
     xai: [
       { id: "xai@grok-4", name: "Grok 4", context: "256K" },
       { id: "xai@grok-4-fast", name: "Grok 4 Fast", context: "2M" },
-      { id: "xai@grok-code-fast-1", name: "Grok Code Fast 1", context: "256K", description: "Optimized for coding" },
+      {
+        id: "xai@grok-code-fast-1",
+        name: "Grok Code Fast 1",
+        context: "256K",
+        description: "Optimized for coding",
+      },
     ],
     minimax: [
-      { id: "mm@minimax-m2.1", name: "MiniMax M2.1", context: "196K", description: "Lightweight coding model" },
+      {
+        id: "mm@minimax-m2.1",
+        name: "MiniMax M2.1",
+        context: "196K",
+        description: "Lightweight coding model",
+      },
     ],
     "minimax-coding": [
-      { id: "mmc@minimax-m2.5", name: "MiniMax M2.5", context: "196K", description: "MiniMax Coding subscription model" },
-      { id: "mmc@minimax-m2.1", name: "MiniMax M2.1", context: "196K", description: "MiniMax Coding subscription model" },
+      {
+        id: "mmc@minimax-m2.5",
+        name: "MiniMax M2.5",
+        context: "196K",
+        description: "MiniMax Coding subscription model",
+      },
+      {
+        id: "mmc@minimax-m2.1",
+        name: "MiniMax M2.1",
+        context: "196K",
+        description: "MiniMax Coding subscription model",
+      },
     ],
     kimi: [
       { id: "kimi@kimi-k2-thinking-turbo", name: "Kimi K2 Thinking Turbo", context: "128K" },
       { id: "kimi@moonshot-v1-128k", name: "Moonshot V1 128K", context: "128K" },
     ],
     "kimi-coding": [
-      { id: "kc@kimi-for-coding", name: "Kimi for Coding", context: "128K", description: "Kimi Coding subscription model" },
+      {
+        id: "kc@kimi-for-coding",
+        name: "Kimi for Coding",
+        context: "128K",
+        description: "Kimi Coding subscription model",
+      },
     ],
     glm: [
-      { id: "glm@glm-5", name: "GLM-5", context: "200K", description: "Latest GLM model with reasoning" },
-      { id: "glm@glm-4.7", name: "GLM-4.7", context: "200K", description: "GLM 4.7 with reasoning" },
-      { id: "glm@glm-4.7-flash", name: "GLM-4.7 Flash", context: "200K", description: "Fast GLM 4.7" },
+      {
+        id: "glm@glm-5",
+        name: "GLM-5",
+        context: "200K",
+        description: "Latest GLM model with reasoning",
+      },
+      {
+        id: "glm@glm-4.7",
+        name: "GLM-4.7",
+        context: "200K",
+        description: "GLM 4.7 with reasoning",
+      },
+      {
+        id: "glm@glm-4.7-flash",
+        name: "GLM-4.7 Flash",
+        context: "200K",
+        description: "Fast GLM 4.7",
+      },
       { id: "glm@glm-4.6", name: "GLM-4.6", context: "200K" },
       { id: "glm@glm-4.5-flash", name: "GLM-4.5 Flash", context: "128K" },
     ],
-    zai: [
-      { id: "zai@glm-4.7", name: "GLM 4.7 (Z.AI)", context: "128K" },
-    ],
+    zai: [{ id: "zai@glm-4.7", name: "GLM 4.7 (Z.AI)", context: "128K" }],
     ollamacloud: [
       { id: "oc@glm-5", name: "GLM-5", context: "203K", description: "GLM-5 on OllamaCloud" },
-      { id: "oc@deepseek-v3.2", name: "DeepSeek V3.2", context: "164K", description: "DeepSeek V3.2 on OllamaCloud" },
-      { id: "oc@gemini-3-pro-preview", name: "Gemini 3 Pro Preview", context: "1M", description: "Gemini 3 Pro on OllamaCloud" },
-      { id: "oc@kimi-k2.5", name: "Kimi K2.5", context: "262K", description: "Kimi K2.5 on OllamaCloud" },
-      { id: "oc@qwen3-coder-next", name: "Qwen3 Coder Next", context: "262K", description: "Qwen3 Coder on OllamaCloud" },
-      { id: "oc@minimax-m2.1", name: "MiniMax M2.1", context: "205K", description: "MiniMax M2.1 on OllamaCloud" },
+      {
+        id: "oc@deepseek-v3.2",
+        name: "DeepSeek V3.2",
+        context: "164K",
+        description: "DeepSeek V3.2 on OllamaCloud",
+      },
+      {
+        id: "oc@gemini-3-pro-preview",
+        name: "Gemini 3 Pro Preview",
+        context: "1M",
+        description: "Gemini 3 Pro on OllamaCloud",
+      },
+      {
+        id: "oc@kimi-k2.5",
+        name: "Kimi K2.5",
+        context: "262K",
+        description: "Kimi K2.5 on OllamaCloud",
+      },
+      {
+        id: "oc@qwen3-coder-next",
+        name: "Qwen3 Coder Next",
+        context: "262K",
+        description: "Qwen3 Coder on OllamaCloud",
+      },
+      {
+        id: "oc@minimax-m2.1",
+        name: "MiniMax M2.1",
+        context: "205K",
+        description: "MiniMax M2.1 on OllamaCloud",
+      },
     ],
   };
 
@@ -1319,7 +1486,7 @@ async function selectModelFromProvider(
   provider: string,
   tierName: string,
   allModels: ModelInfo[],
-  recommendedModels: ModelInfo[],
+  recommendedModels: ModelInfo[]
 ): Promise<string> {
   const LOCAL_INPUT_PROVIDERS = new Set(["ollama", "lmstudio"]);
   const prefix = PROVIDER_MODEL_PREFIX[provider] || `${provider}@`;
@@ -1489,7 +1656,7 @@ export async function selectModelsForProfile(): Promise<{
       provider,
       tier.name,
       fetchedModels,
-      recommendedModels,
+      recommendedModels
     );
   }
 

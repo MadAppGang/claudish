@@ -36,7 +36,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
     expiresAtField: "expires_at",
     expiryBufferMs: 5 * 60 * 1000,
   },
-  "kimi": {
+  kimi: {
     credentialFile: "kimi-oauth.json",
     validationMode: "check-expiry",
     expiresAtField: "expires_at",
@@ -44,7 +44,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
   },
   // Google Gemini Code Assist - OAuth2 PKCE flow (browser-based)
   // Login via: claudish --gemini-login
-  "google": {
+  google: {
     credentialFile: "gemini-oauth.json",
     validationMode: "check-expiry",
     expiresAtField: "expires_at",

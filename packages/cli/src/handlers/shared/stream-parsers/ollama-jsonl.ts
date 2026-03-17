@@ -86,8 +86,13 @@ export function createOllamaJsonlStream(
 
         if (!isClosed) {
           isClosed = true;
-          if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-          try { controller.close(); } catch {}
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+          try {
+            controller.close();
+          } catch {}
         }
       };
 
@@ -151,7 +156,10 @@ export function createOllamaJsonlStream(
     },
     cancel() {
       isClosed = true;
-      if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+      }
     },
   });
 

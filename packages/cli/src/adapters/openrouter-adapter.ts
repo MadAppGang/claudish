@@ -29,8 +29,13 @@ export class OpenRouterAdapter extends BaseModelAdapter {
   /** Synchronous reasoning support check via model ID patterns */
   private modelSupportsReasoning(): boolean {
     const id = this.modelId.toLowerCase();
-    return id.includes("o1") || id.includes("o3") || id.includes("r1") ||
-      id.includes("qwq") || id.includes("reasoning");
+    return (
+      id.includes("o1") ||
+      id.includes("o3") ||
+      id.includes("r1") ||
+      id.includes("qwq") ||
+      id.includes("reasoning")
+    );
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────
@@ -159,8 +164,12 @@ export class OpenRouterAdapter extends BaseModelAdapter {
 
   /** Expose reasoning details extraction for Gemini via OpenRouter */
   extractThoughtSignaturesFromReasoningDetails(reasoningDetails: any[]): Map<string, string> {
-    if (typeof (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails === "function") {
-      return (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
+    if (
+      typeof (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails === "function"
+    ) {
+      return (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails(
+        reasoningDetails
+      );
     }
     return new Map();
   }

@@ -3,7 +3,7 @@
  */
 
 // Wire format classification
-export type WireFormat = "anthropic-compat" | "openai-compat";
+export type WireFormat = "anthropic-compat" | "openai-compat" | "ollama";
 
 // Capability probe identifiers
 export type Capability = "tool_calling" | "reasoning" | "vision";
@@ -71,6 +71,24 @@ export interface AnthropicResponse {
     | { type: "thinking"; thinking: string }
     | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   >;
+}
+
+// Ollama raw response shape (subset)
+export interface OllamaResponse {
+  model: string;
+  message: {
+    role: string;
+    content: string;
+    tool_calls?: Array<{
+      id?: string;
+      function: {
+        name: string;
+        arguments: Record<string, unknown>;
+      };
+    }>;
+  };
+  done: boolean;
+  done_reason?: string;
 }
 
 // OpenAI-compat raw response shape (subset)

@@ -41,13 +41,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "GEMINI_API_KEY",
     prefixes: ["g/", "gemini/"], // google/ routes to OpenRouter to avoid breaking existing workflows
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: true,
-    },
   },
   {
     name: "gemini-codeassist",
@@ -55,13 +48,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1internal:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "", // Empty - OAuth handles auth
     prefixes: ["go/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: true,
-    },
   },
   {
     name: "openai",
@@ -69,13 +55,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENAI_API_KEY",
     prefixes: ["oai/"], // openai/ routes to OpenRouter to avoid breaking existing workflows
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
   {
     name: "openrouter",
@@ -87,13 +66,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
       "HTTP-Referer": "https://claudish.com",
       "X-Title": "Claudish - OpenRouter Proxy",
     },
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
   {
     name: "minimax",
@@ -102,13 +74,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiKeyEnvVar: "MINIMAX_API_KEY",
     prefixes: ["mmax/", "mm/"],
     authScheme: "bearer",
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: false,
-    },
   },
   {
     name: "minimax-coding",
@@ -117,13 +82,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
     prefixes: ["mmc/"],
     authScheme: "bearer",
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: false,
-    },
   },
   {
     name: "kimi",
@@ -132,13 +90,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/anthropic/v1/messages",
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     prefixes: ["kimi/", "moonshot/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: true,
-    },
   },
   {
     name: "kimi-coding",
@@ -146,13 +97,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/messages",
     apiKeyEnvVar: "KIMI_CODING_API_KEY",
     prefixes: ["kc/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: true,
-    },
   },
   {
     name: "glm",
@@ -160,13 +104,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/api/paas/v4/chat/completions",
     apiKeyEnvVar: "ZHIPU_API_KEY",
     prefixes: ["glm/", "zhipu/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
   {
     name: "glm-coding",
@@ -174,13 +111,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/api/coding/paas/v4/chat/completions",
     apiKeyEnvVar: "GLM_CODING_API_KEY",
     prefixes: ["gc/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false, // Z.AI coding plan endpoint doesn't support image_url content
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
   {
     name: "zai",
@@ -188,13 +118,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/api/anthropic/v1/messages",
     apiKeyEnvVar: "ZAI_API_KEY",
     prefixes: ["zai/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
   {
     name: "ollamacloud",
@@ -202,13 +125,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/api/chat",
     apiKeyEnvVar: "OLLAMA_API_KEY",
     prefixes: ["oc/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: false,
-    },
   },
   {
     name: "opencode-zen",
@@ -216,13 +132,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
     prefixes: ["zen/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: false,
-    },
   },
   {
     // OpenCode Zen "Go" plan — same API key, lite model list (glm-5, minimax-m2.5, kimi-k2.5)
@@ -233,13 +142,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
     prefixes: ["zengo/", "zgo/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: false,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
   {
     name: "vertex",
@@ -247,13 +149,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "", // Constructed dynamically based on project/location
     apiKeyEnvVar: "VERTEX_PROJECT", // OAuth-based, uses project ID as indicator
     prefixes: ["v/", "vertex/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: false,
-      supportsReasoning: true,
-    },
   },
   {
     name: "litellm",
@@ -261,13 +156,6 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "LITELLM_API_KEY",
     prefixes: ["litellm/", "ll/"],
-    capabilities: {
-      supportsTools: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsJsonMode: true,
-      supportsReasoning: true,
-    },
   },
 ];
 
