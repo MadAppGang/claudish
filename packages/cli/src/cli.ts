@@ -92,6 +92,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     jsonOutput: false, // No JSON output by default
     monitor: false, // Monitor mode disabled by default
     stdin: false, // Read prompt from stdin instead of args
+    pipe: false, // Pipe mode: persistent stdin/stdout loop without TUI
     freeOnly: false, // Show all models by default
     claudeArgs: [],
   };
@@ -202,6 +203,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.monitor = true;
     } else if (arg === "--stdin") {
       config.stdin = true;
+    } else if (arg === "--pipe") {
+      config.pipe = true;
+      config.interactive = false; // Pipe mode is non-interactive
     } else if (arg === "--free") {
       config.freeOnly = true;
     } else if (arg === "--profile" || arg === "-p") {
@@ -328,7 +332,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Determine if this will be interactive mode BEFORE API key check
   // If no prompt provided and not explicitly interactive, default to interactive mode
   // Exception: --stdin mode reads prompt from stdin, so don't default to interactive
-  if ((!config.claudeArgs || config.claudeArgs.length === 0) && !config.stdin) {
+  if ((!config.claudeArgs || config.claudeArgs.length === 0) && !config.stdin && !config.pipe) {
     config.interactive = true;
   }
 
@@ -1506,6 +1510,7 @@ OPTIONS:
   -v, --verbose            Show [claudish] log messages (default in interactive mode)
   --json                   Output in JSON format for tool integration (implies --quiet)
   --stdin                  Read prompt from stdin (useful for large prompts or piping)
+  --pipe                   Pipe mode: persistent stdin/stdout loop (no TUI, for automation)
   --free                   Show only FREE models in the interactive selector
   --monitor                Monitor mode - proxy to REAL Anthropic API and log all traffic
   -y, --auto-approve       Skip permission prompts (--dangerously-skip-permissions)
@@ -1693,6 +1698,10 @@ EXAMPLES:
   # Use stdin for large prompts (e.g., git diffs, code review)
   echo "Review this code..." | claudish --stdin --model g@gemini-2.0-flash
   git diff | claudish --stdin --model oai@gpt-5.3 "Review these changes"
+
+  # Pipe mode: persistent stdin/stdout loop for automation (no TUI)
+  # Each line on stdin is a prompt; responses stream to stdout as JSON
+  echo "hello" | claudish --pipe --model g@gemini-2.0-flash
 
   # Monitor mode - understand how Claude Code works
   claudish --monitor --debug "analyze code structure"

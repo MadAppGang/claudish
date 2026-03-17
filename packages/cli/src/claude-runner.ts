@@ -267,6 +267,20 @@ export async function runClaudeWithProxy(
     }
     // Forward user-provided passthrough args (e.g. --permission-mode, --effort, --add-dir)
     claudeArgs.push(...config.claudeArgs);
+  } else if (config.pipe) {
+    // Pipe mode: persistent stdin/stdout loop for automation
+    // Use -p with stream-json for structured, parseable output
+    claudeArgs.push("-p");
+    claudeArgs.push("--output-format", "stream-json");
+    claudeArgs.push("--verbose");
+    if (config.autoApprove) {
+      claudeArgs.push("--dangerously-skip-permissions");
+    }
+    if (config.dangerous) {
+      claudeArgs.push("--dangerouslyDisableSandbox");
+    }
+    // Forward user args (model flags, etc.)
+    claudeArgs.push(...config.claudeArgs);
   } else {
     // Single-shot mode - add all arguments
     // Add -p flag FIRST to enable headless/print mode (non-interactive, exits after task)
@@ -381,12 +395,56 @@ export async function runClaudeWithProxy(
   }
 
   // Spawn claude CLI process using Node.js child_process (works on both Node.js and Bun)
-  // Use the found binary path directly
-  const proc = spawn(claudeBinary, claudeArgs, {
-    env,
-    stdio: "inherit", // Stream stdin/stdout/stderr to parent
-    shell: false, // No shell needed when using direct path
-  });
+  // Use different stdio modes based on config
+  let proc: ChildProcess;
+  let capturedOutput = "";
+
+  if (config.pipe) {
+    // Pipe mode: persistent stdin/stdout loop for automation
+    // Use piped I/O so we can relay messages between our stdin and Claude Code
+    proc = spawn(claudeBinary, claudeArgs, {
+      env,
+      stdio: ["pipe", "pipe", "inherit"],
+      shell: false,
+    });
+
+    // Relay stdout to our stdout and capture for processing
+    proc.stdout?.on("data", (data: Buffer) => {
+      process.stdout.write(data);
+    });
+
+    // Relay our stdin to Claude Code's stdin
+    process.stdin.setEncoding("utf8");
+    process.stdin.resume();
+    process.stdin.on("data", (data: string) => {
+      proc.stdin?.write(data);
+    });
+
+    process.stdin.on("end", () => {
+      proc.stdin?.end();
+    });
+  } else if (config.jsonOutput) {
+    // JSON mode: capture stdout so we can re-emit it properly
+    proc = spawn(claudeBinary, claudeArgs, {
+      env,
+      stdio: ["inherit", "pipe", "inherit"],
+      shell: false,
+    });
+
+    // Capture stdout
+    proc.stdout?.on("data", (data: Buffer) => {
+      capturedOutput += data.toString();
+      // Also write to real stdout so user sees progress
+      process.stdout.write(data);
+    });
+  } else {
+    // Normal mode: inherit all stdio (interactive or single-shot)
+    proc = spawn(claudeBinary, claudeArgs, {
+      env,
+      stdio: "inherit",
+      shell: false,
+    });
+  }
 
   // Handle process termination signals (includes cleanup)
   setupSignalHandlers(proc, tempSettingsPath, config.quiet);
