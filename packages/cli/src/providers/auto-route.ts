@@ -370,12 +370,12 @@ export async function getFallbackChain(modelName: string, nativeProvider: string
     });
   }
 
-  // 2. Subscription aggregator (OpenCode Zen covers many models without per-provider keys)
+  // 2. Subscription aggregator (OpenCode Zen Go uses subscription plan, no per-call credits)
   if (process.env.OPENCODE_API_KEY) {
     routes.push({
-      provider: "opencode-zen",
-      modelSpec: `zen@${modelName}`,
-      displayName: "OpenCode Zen",
+      provider: "opencode-zen-go",
+      modelSpec: `zengo@${modelName}`,
+      displayName: "OpenCode Zen Go",
     });
   }
 
