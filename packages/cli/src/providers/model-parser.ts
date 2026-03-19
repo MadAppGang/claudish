@@ -61,183 +61,46 @@ export interface ParsedModel {
 }
 
 /**
- * Provider shortcut mappings (lowercase)
- * Maps short names to canonical provider names
+ * Provider shortcut mappings — derived from BUILTIN_PROVIDERS.
+ * Re-exported for backward compatibility.
  */
-export const PROVIDER_SHORTCUTS: Record<string, string> = {
-  // Remote providers
-  g: "google",
-  gemini: "google",
-  oai: "openai",
-  or: "openrouter",
-  mm: "minimax",
-  mmax: "minimax",
-  mmc: "minimax-coding",
-  kimi: "kimi",
-  moon: "kimi",
-  moonshot: "kimi",
-  kc: "kimi-coding",
-  glm: "glm",
-  zhipu: "glm",
-  gc: "glm-coding",
-  zai: "zai",
-  oc: "ollamacloud",
-  zen: "opencode-zen",
-  zengo: "opencode-zen-go",
-  zgo: "opencode-zen-go",
-  v: "vertex",
-  vertex: "vertex",
-  go: "gemini-codeassist",
-  llama: "ollamacloud",
-  lc: "ollamacloud",
-  meta: "ollamacloud",
-  poe: "poe",
-  litellm: "litellm",
-  ll: "litellm",
+import {
+  getShortcuts as _getShortcuts,
+  getLegacyPrefixPatterns as _getLegacyPrefixPatterns,
+  getNativeModelPatterns as _getNativeModelPatterns,
+  isLocalTransport,
+  isDirectApiProvider as _isDirectApiProvider,
+} from "./provider-definitions.js";
 
-  // Local providers
-  ollama: "ollama",
-  lms: "lmstudio",
-  lmstudio: "lmstudio",
-  mlstudio: "lmstudio", // Common typo
-  vllm: "vllm",
-  mlx: "mlx",
+export const PROVIDER_SHORTCUTS: Record<string, string> = _getShortcuts();
+
+/**
+ * Local providers (no API key needed) — derived from BUILTIN_PROVIDERS.
+ */
+export const LOCAL_PROVIDERS = {
+  has(name: string): boolean {
+    return isLocalTransport(name);
+  },
 };
 
 /**
- * Providers that support direct API access (not OpenRouter)
- * Maps canonical provider name to whether direct API is available
+ * Providers that support direct API access — derived from BUILTIN_PROVIDERS.
  */
-export const DIRECT_API_PROVIDERS = new Set([
-  "google",
-  "openai",
-  "minimax",
-  "kimi",
-  "minimax-coding",
-  "kimi-coding",
-  "glm",
-  "glm-coding",
-  "zai",
-  "ollamacloud",
-  "opencode-zen",
-  "vertex",
-  "gemini-codeassist",
-  "poe",
-  "litellm",
-]);
+export const DIRECT_API_PROVIDERS = {
+  has(name: string): boolean {
+    return _isDirectApiProvider(name);
+  },
+};
 
 /**
- * Local providers (no API key needed)
+ * Native model prefixes — derived from BUILTIN_PROVIDERS.
  */
-export const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio", "vllm", "mlx"]);
+export const NATIVE_MODEL_PATTERNS = _getNativeModelPatterns();
 
 /**
- * Native model prefixes - models that should route to their native provider
- * when no explicit provider is specified
- *
- * Order matters! More specific patterns should come before general ones.
+ * Legacy prefix patterns — derived from BUILTIN_PROVIDERS.
  */
-export const NATIVE_MODEL_PATTERNS: Array<{
-  pattern: RegExp;
-  provider: string;
-}> = [
-  // Google Gemini models
-  { pattern: /^google\//i, provider: "google" },
-  { pattern: /^gemini-/i, provider: "google" },
-
-  // OpenAI models
-  { pattern: /^openai\//i, provider: "openai" },
-  { pattern: /^gpt-/i, provider: "openai" },
-  { pattern: /^o1(-|$)/i, provider: "openai" },
-  { pattern: /^o3(-|$)/i, provider: "openai" },
-  { pattern: /^chatgpt-/i, provider: "openai" },
-
-  // MiniMax models
-  { pattern: /^minimax\//i, provider: "minimax" },
-  { pattern: /^minimax-/i, provider: "minimax" },
-  { pattern: /^abab-/i, provider: "minimax" },
-
-  // Kimi Coding models (must be before general kimi-* pattern)
-  { pattern: /^kimi-for-coding$/i, provider: "kimi-coding" },
-
-  // Kimi/Moonshot models
-  { pattern: /^moonshot(ai)?\//i, provider: "kimi" },
-  { pattern: /^moonshot-/i, provider: "kimi" },
-  { pattern: /^kimi-/i, provider: "kimi" },
-
-  // GLM/Zhipu models (direct Zhipu API)
-  { pattern: /^zhipu\//i, provider: "glm" },
-  { pattern: /^glm-/i, provider: "glm" },
-  { pattern: /^chatglm-/i, provider: "glm" },
-
-  // Z.AI models (Anthropic-compatible GLM API)
-  { pattern: /^z-ai\//i, provider: "zai" },
-  { pattern: /^zai\//i, provider: "zai" },
-
-  // OllamaCloud models (native to all Llama models)
-  { pattern: /^ollamacloud\//i, provider: "ollamacloud" },
-  { pattern: /^meta-llama\//i, provider: "ollamacloud" },
-  { pattern: /^llama-/i, provider: "ollamacloud" },
-  { pattern: /^llama3/i, provider: "ollamacloud" },
-
-  // OpenRouter vendor-prefixed models (openrouter/hunter-alpha, etc.)
-  { pattern: /^openrouter\//i, provider: "openrouter" },
-
-  // Qwen models (auto-routed, no direct API yet)
-  { pattern: /^qwen/i, provider: "qwen" },
-
-  // Poe models (poe: prefix)
-  { pattern: /^poe:/i, provider: "poe" },
-
-  // Anthropic models (native Claude Code auth)
-  { pattern: /^anthropic\//i, provider: "native-anthropic" },
-  { pattern: /^claude-/i, provider: "native-anthropic" },
-];
-
-/**
- * Legacy prefix patterns for backwards compatibility
- * Maps old prefix -> [canonical provider, strip prefix?]
- */
-export const LEGACY_PREFIX_PATTERNS: Array<{
-  prefix: string;
-  provider: string;
-  stripPrefix: boolean;
-}> = [
-  // Remote providers (strip prefix)
-  { prefix: "g/", provider: "google", stripPrefix: true },
-  { prefix: "gemini/", provider: "google", stripPrefix: true },
-  { prefix: "oai/", provider: "openai", stripPrefix: true },
-  { prefix: "or/", provider: "openrouter", stripPrefix: true },
-  { prefix: "mmax/", provider: "minimax", stripPrefix: true },
-  { prefix: "mm/", provider: "minimax", stripPrefix: true },
-  { prefix: "mmc/", provider: "minimax-coding", stripPrefix: true },
-  { prefix: "kimi/", provider: "kimi", stripPrefix: true },
-  { prefix: "moonshot/", provider: "kimi", stripPrefix: true },
-  { prefix: "kc/", provider: "kimi-coding", stripPrefix: true },
-  { prefix: "glm/", provider: "glm", stripPrefix: true },
-  { prefix: "zhipu/", provider: "glm", stripPrefix: true },
-  { prefix: "gc/", provider: "glm-coding", stripPrefix: true },
-  { prefix: "zai/", provider: "zai", stripPrefix: true },
-  { prefix: "oc/", provider: "ollamacloud", stripPrefix: true },
-  { prefix: "zen/", provider: "opencode-zen", stripPrefix: true },
-  { prefix: "zengo/", provider: "opencode-zen-go", stripPrefix: true },
-  { prefix: "zgo/", provider: "opencode-zen-go", stripPrefix: true },
-  { prefix: "v/", provider: "vertex", stripPrefix: true },
-  { prefix: "vertex/", provider: "vertex", stripPrefix: true },
-  { prefix: "go/", provider: "gemini-codeassist", stripPrefix: true },
-
-  // Local providers (strip prefix)
-  { prefix: "ollama/", provider: "ollama", stripPrefix: true },
-  { prefix: "ollama:", provider: "ollama", stripPrefix: true },
-  { prefix: "lmstudio/", provider: "lmstudio", stripPrefix: true },
-  { prefix: "lmstudio:", provider: "lmstudio", stripPrefix: true },
-  { prefix: "mlstudio/", provider: "lmstudio", stripPrefix: true },
-  { prefix: "mlstudio:", provider: "lmstudio", stripPrefix: true },
-  { prefix: "vllm/", provider: "vllm", stripPrefix: true },
-  { prefix: "vllm:", provider: "vllm", stripPrefix: true },
-  { prefix: "mlx/", provider: "mlx", stripPrefix: true },
-  { prefix: "mlx:", provider: "mlx", stripPrefix: true },
-];
+export const LEGACY_PREFIX_PATTERNS = _getLegacyPrefixPatterns();
 
 /**
  * Parse a model specification string

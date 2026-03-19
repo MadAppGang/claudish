@@ -1,4 +1,4 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { BaseModelAdapter, AdapterResult, matchesModelFamily } from "./base-adapter";
 import { log } from "../logger";
 
 export class MiniMaxAdapter extends BaseModelAdapter {
@@ -29,7 +29,7 @@ export class MiniMaxAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    return modelId.includes("minimax");
+    return matchesModelFamily(modelId, "minimax");
   }
 
   getName(): string {

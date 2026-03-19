@@ -37,6 +37,10 @@ import {
   getLegacySyntaxWarning,
   type ParsedModel,
 } from "./model-parser.js";
+import {
+  getApiKeyInfo as getApiKeyInfoFromDefs,
+  getDisplayName as getDisplayNameFromDefs,
+} from "./provider-definitions.js";
 
 /**
  * Provider category types
@@ -83,142 +87,66 @@ export interface ProviderResolution {
 }
 
 /**
- * API Key metadata for each provider
+ * API Key metadata for each provider — derived from BUILTIN_PROVIDERS.
  */
 interface ApiKeyInfo {
   envVar: string;
   description: string;
   url: string;
-  /** Alternative env vars to check (aliases) */
   aliases?: string[];
-  /** OAuth credential file under ~/.claudish/ to check as fallback */
   oauthFallback?: string;
 }
 
 /**
- * API key information for all providers
+ * Get API key info for a provider from the centralized definitions.
+ * Falls back to a generic entry if the provider is unknown.
  */
-const API_KEY_INFO: Record<string, ApiKeyInfo> = {
-  openrouter: {
-    envVar: "OPENROUTER_API_KEY",
-    description: "OpenRouter API Key",
-    url: "https://openrouter.ai/keys",
-  },
-  gemini: {
-    envVar: "GEMINI_API_KEY",
-    description: "Google Gemini API Key",
-    url: "https://aistudio.google.com/app/apikey",
-  },
-  "gemini-codeassist": {
-    envVar: "", // OAuth-based, no env var
-    description: "Gemini Code Assist (OAuth)",
-    url: "https://cloud.google.com/code-assist",
-  },
-  vertex: {
-    envVar: "VERTEX_API_KEY",
-    description: "Vertex AI API Key",
-    url: "https://console.cloud.google.com/vertex-ai",
-    aliases: ["VERTEX_PROJECT"], // OAuth mode alternative
-  },
-  openai: {
-    envVar: "OPENAI_API_KEY",
-    description: "OpenAI API Key",
-    url: "https://platform.openai.com/api-keys",
-  },
-  minimax: {
-    envVar: "MINIMAX_API_KEY",
-    description: "MiniMax API Key",
-    url: "https://www.minimaxi.com/",
-  },
-  "minimax-coding": {
-    envVar: "MINIMAX_CODING_API_KEY",
-    description: "MiniMax Coding Plan API Key",
-    url: "https://platform.minimax.io/user-center/basic-information/interface-key",
-  },
-  kimi: {
-    envVar: "MOONSHOT_API_KEY",
-    description: "Kimi/Moonshot API Key",
-    url: "https://platform.moonshot.cn/",
-    aliases: ["KIMI_API_KEY"],
-  },
-  "kimi-coding": {
-    envVar: "KIMI_CODING_API_KEY",
-    description: "Kimi Coding API Key",
-    url: "https://kimi.com/code (get key from membership page, or run: claudish --kimi-login)",
-    oauthFallback: "kimi-oauth.json",
-  },
-  glm: {
-    envVar: "ZHIPU_API_KEY",
-    description: "GLM/Zhipu API Key",
-    url: "https://open.bigmodel.cn/",
-    aliases: ["GLM_API_KEY"],
-  },
-  "glm-coding": {
-    envVar: "GLM_CODING_API_KEY",
-    description: "GLM Coding Plan API Key",
-    url: "https://z.ai/subscribe",
-    aliases: ["ZAI_CODING_API_KEY"],
-  },
-  ollamacloud: {
-    envVar: "OLLAMA_API_KEY",
-    description: "OllamaCloud API Key",
-    url: "https://ollama.com/account",
-  },
-  "opencode-zen": {
-    envVar: "", // Free models don't require API key
-    description: "OpenCode Zen (Free)",
-    url: "https://opencode.ai/",
-  },
-  zai: {
-    envVar: "ZAI_API_KEY",
-    description: "Z.AI API Key",
-    url: "https://z.ai/",
-  },
-  litellm: {
-    envVar: "LITELLM_API_KEY",
-    description: "LiteLLM API Key",
-    url: "https://docs.litellm.ai/",
-  },
-};
+function getApiKeyInfoForProvider(providerName: string): ApiKeyInfo {
+  // Handle the google→gemini naming difference in provider-profiles.ts
+  const lookupName = providerName === "gemini" ? "google" : providerName;
+  const info = getApiKeyInfoFromDefs(lookupName);
+  if (info) {
+    return {
+      envVar: info.envVar,
+      description: info.description,
+      url: info.url,
+      aliases: info.aliases,
+      oauthFallback: info.oauthFallback,
+    };
+  }
+  return {
+    envVar: "",
+    description: `${providerName} API Key`,
+    url: "",
+  };
+}
+
+// Backwards-compatible record wrapper for code that accesses API_KEY_INFO[name]
+const API_KEY_INFO = new Proxy<Record<string, ApiKeyInfo>>(
+  {},
+  {
+    get(_target, prop: string) {
+      return getApiKeyInfoForProvider(prop);
+    },
+    has() {
+      return true; // All provider names have info via the fallback
+    },
+  }
+);
 
 /**
- * Local provider prefixes that never require an API key
+ * Display names for providers — derived from BUILTIN_PROVIDERS.
  */
-const LOCAL_PREFIXES = [
-  "ollama/",
-  "ollama:",
-  "lmstudio/",
-  "lmstudio:",
-  "mlstudio/", // common typo
-  "mlstudio:",
-  "vllm/",
-  "vllm:",
-  "mlx/",
-  "mlx:",
-  "http://",
-  "https://localhost",
-];
-
-/**
- * Display names for providers (for proper capitalization)
- */
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  gemini: "Gemini",
-  "gemini-codeassist": "Gemini Code Assist",
-  vertex: "Vertex AI",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  minimax: "MiniMax",
-  "minimax-coding": "MiniMax Coding",
-  kimi: "Kimi",
-  "kimi-coding": "Kimi Coding",
-  glm: "GLM",
-  "glm-coding": "GLM Coding",
-  zai: "Z.AI",
-  ollamacloud: "OllamaCloud",
-  "opencode-zen": "OpenCode Zen",
-  litellm: "LiteLLM",
-};
+const PROVIDER_DISPLAY_NAMES = new Proxy<Record<string, string>>(
+  {},
+  {
+    get(_target, prop: string) {
+      // Handle the google→gemini naming difference
+      const lookupName = prop === "gemini" ? "google" : prop;
+      return getDisplayNameFromDefs(lookupName);
+    },
+  }
+);
 
 /**
  * Check if any of the API keys (including aliases) are available

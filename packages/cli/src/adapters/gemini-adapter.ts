@@ -11,7 +11,7 @@
  * Used with GeminiApiKeyProvider (direct API) and GeminiCodeAssistProvider (OAuth).
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
+import { BaseModelAdapter, type AdapterResult, matchesModelFamily } from "./base-adapter.js";
 import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
 import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
@@ -338,7 +338,7 @@ export class GeminiAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    return modelId.includes("gemini") || modelId.includes("google/");
+    return matchesModelFamily(modelId, "gemini") || modelId.toLowerCase().includes("google/");
   }
 
   getName(): string {

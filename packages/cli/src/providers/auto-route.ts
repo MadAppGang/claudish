@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import { resolveModelNameSync } from "./model-catalog-resolver.js";
+import { getApiKeyEnvVars } from "./provider-definitions.js";
 
 export interface AutoRouteResult {
   provider: string;
@@ -19,27 +20,6 @@ export type AutoRouteReason =
   | "api-key"
   | "openrouter-fallback"
   | "no-route";
-
-/**
- * Local copy of API key env var mapping to avoid circular imports with provider-resolver.ts
- */
-const API_KEY_ENV_VARS: Record<string, { envVar: string; aliases?: string[] }> = {
-  google: { envVar: "GEMINI_API_KEY" },
-  "gemini-codeassist": { envVar: "GEMINI_API_KEY" }, // uses OAuth not API key, but included for completeness
-  openai: { envVar: "OPENAI_API_KEY" },
-  minimax: { envVar: "MINIMAX_API_KEY" },
-  "minimax-coding": { envVar: "MINIMAX_CODING_API_KEY" },
-  kimi: { envVar: "MOONSHOT_API_KEY", aliases: ["KIMI_API_KEY"] },
-  "kimi-coding": { envVar: "KIMI_CODING_API_KEY" },
-  glm: { envVar: "ZHIPU_API_KEY", aliases: ["GLM_API_KEY"] },
-  "glm-coding": { envVar: "GLM_CODING_API_KEY", aliases: ["ZAI_CODING_API_KEY"] },
-  zai: { envVar: "ZAI_API_KEY" },
-  ollamacloud: { envVar: "OLLAMA_API_KEY" },
-  litellm: { envVar: "LITELLM_API_KEY" },
-  openrouter: { envVar: "OPENROUTER_API_KEY" },
-  vertex: { envVar: "VERTEX_API_KEY", aliases: ["VERTEX_PROJECT"] },
-  poe: { envVar: "POE_API_KEY" },
-};
 
 function readLiteLLMCacheSync(baseUrl: string): Array<{ id: string; name: string }> | null {
   const hash = createHash("sha256").update(baseUrl).digest("hex").substring(0, 16);
@@ -69,7 +49,7 @@ function checkOAuthForProvider(nativeProvider: string, modelName: string): AutoR
 }
 
 function checkApiKeyForProvider(nativeProvider: string, modelName: string): AutoRouteResult | null {
-  const keyInfo = API_KEY_ENV_VARS[nativeProvider];
+  const keyInfo = getApiKeyEnvVars(nativeProvider);
   if (!keyInfo) return null;
 
   if (keyInfo.envVar && process.env[keyInfo.envVar]) {
@@ -255,41 +235,32 @@ export interface FallbackRoute {
   displayName: string;
 }
 
-/** Reverse mapping: canonical provider name → shortest @ prefix for handler creation */
-export const PROVIDER_TO_PREFIX: Record<string, string> = {
-  google: "g",
-  openai: "oai",
-  minimax: "mm",
-  "minimax-coding": "mmc",
-  kimi: "kimi",
-  "kimi-coding": "kc",
-  glm: "glm",
-  "glm-coding": "gc",
-  zai: "zai",
-  ollamacloud: "oc",
-  "opencode-zen": "zen",
-  "opencode-zen-go": "zengo",
-  litellm: "ll",
-  vertex: "v",
-  "gemini-codeassist": "go",
-};
+import {
+  getShortestPrefix,
+  getDisplayName as _getDisplayName,
+  getAllProviders,
+} from "./provider-definitions.js";
 
-export const DISPLAY_NAMES: Record<string, string> = {
-  google: "Gemini",
-  openai: "OpenAI",
-  minimax: "MiniMax",
-  "minimax-coding": "MiniMax Coding",
-  kimi: "Kimi",
-  "kimi-coding": "Kimi Coding",
-  glm: "GLM",
-  "glm-coding": "GLM Coding",
-  zai: "Z.AI",
-  ollamacloud: "OllamaCloud",
-  "opencode-zen": "OpenCode Zen",
-  "opencode-zen-go": "OpenCode Zen Go",
-  litellm: "LiteLLM",
-  openrouter: "OpenRouter",
-};
+/** Reverse mapping: canonical provider name → shortest @ prefix for handler creation.
+ *  Derived from BUILTIN_PROVIDERS. */
+export const PROVIDER_TO_PREFIX: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const def of getAllProviders()) {
+    if (def.shortestPrefix) {
+      map[def.name] = def.shortestPrefix;
+    }
+  }
+  return map;
+})();
+
+/** Display names — derived from BUILTIN_PROVIDERS. */
+export const DISPLAY_NAMES: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const def of getAllProviders()) {
+    map[def.name] = def.displayName;
+  }
+  return map;
+})();
 
 /**
  * Subscription/coding-plan alternatives for native providers.
@@ -393,7 +364,7 @@ export async function warmZenModelCache(): Promise<void> {
 
 /** Check if credentials exist for a given provider (API key, aliases, or OAuth). */
 function hasProviderCredentials(provider: string): boolean {
-  const keyInfo = API_KEY_ENV_VARS[provider];
+  const keyInfo = getApiKeyEnvVars(provider);
   if (keyInfo?.envVar && process.env[keyInfo.envVar]) return true;
   if (keyInfo?.aliases?.some((a) => process.env[a])) return true;
   return hasOAuthCredentials(provider);

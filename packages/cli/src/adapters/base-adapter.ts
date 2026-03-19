@@ -13,6 +13,21 @@ import { getModelPricing } from "../handlers/shared/remote-provider-types.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import type { FormatConverter } from "./format-converter.js";
 import type { ModelTranslator } from "./model-translator.js";
+
+/**
+ * Match a model ID against a model family name, handling vendor-prefixed IDs.
+ *
+ * Matches: "grok-beta", "x-ai/grok-beta", "openrouter/x-ai/grok-beta"
+ * Does NOT match: "qwen-grok-hybrid" (grok is not at a family boundary)
+ *
+ * @param modelId - The full model ID (may include vendor prefix)
+ * @param family - The family name to match (e.g., "grok", "deepseek", "qwen")
+ */
+export function matchesModelFamily(modelId: string, family: string): boolean {
+  const lower = modelId.toLowerCase();
+  const fam = family.toLowerCase();
+  return lower.startsWith(fam) || lower.includes(`/${fam}`);
+}
 import { convertMessagesToOpenAI } from "../handlers/shared/format/openai-messages.js";
 import { convertToolsToOpenAI } from "../handlers/shared/format/openai-tools.js";
 

@@ -7,7 +7,7 @@
  * - Vision support detection
  */
 
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { BaseModelAdapter, AdapterResult, matchesModelFamily } from "./base-adapter";
 import { log } from "../logger";
 
 /** GLM model context windows (pattern-match, checked in order) */
@@ -54,7 +54,7 @@ export class GLMAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    return modelId.includes("glm-") || modelId.includes("zhipu/");
+    return matchesModelFamily(modelId, "glm-") || matchesModelFamily(modelId, "chatglm-") || modelId.toLowerCase().includes("zhipu/");
   }
 
   getName(): string {

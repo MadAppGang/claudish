@@ -11,7 +11,7 @@
  * This adapter handles Codex models only. All other OpenAI models use OpenAIAdapter.
  */
 
-import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
+import { BaseModelAdapter, type AdapterResult, matchesModelFamily } from "./base-adapter.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 
 export class CodexAdapter extends BaseModelAdapter {
@@ -28,7 +28,7 @@ export class CodexAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    return modelId.toLowerCase().includes("codex");
+    return matchesModelFamily(modelId, "codex");
   }
 
   getName(): string {

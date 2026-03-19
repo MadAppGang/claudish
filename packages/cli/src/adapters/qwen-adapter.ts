@@ -1,4 +1,4 @@
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { BaseModelAdapter, AdapterResult, matchesModelFamily } from "./base-adapter";
 import { log } from "../logger";
 
 // Qwen special tokens that should be stripped from output
@@ -64,8 +64,7 @@ export class QwenAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    const lower = modelId.toLowerCase();
-    return lower.includes("qwen") || lower.includes("alibaba");
+    return matchesModelFamily(modelId, "qwen") || matchesModelFamily(modelId, "alibaba");
   }
 
   getName(): string {

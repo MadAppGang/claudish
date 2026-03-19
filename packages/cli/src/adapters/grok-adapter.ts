@@ -10,7 +10,7 @@
  * This adapter translates that to Claude Code's expected tool_calls format.
  */
 
-import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
+import { BaseModelAdapter, AdapterResult, ToolCall, matchesModelFamily } from "./base-adapter";
 import { log } from "../logger";
 
 export class GrokAdapter extends BaseModelAdapter {
@@ -131,7 +131,7 @@ export class GrokAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    return modelId.includes("grok") || modelId.includes("x-ai/");
+    return matchesModelFamily(modelId, "grok") || modelId.toLowerCase().includes("x-ai/");
   }
 
   getName(): string {

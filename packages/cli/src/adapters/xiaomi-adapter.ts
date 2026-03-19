@@ -7,7 +7,7 @@
  * - Context window comes dynamically from OpenRouter model catalog
  */
 
-import { BaseModelAdapter, AdapterResult } from "./base-adapter";
+import { BaseModelAdapter, AdapterResult, matchesModelFamily } from "./base-adapter";
 import { log } from "../logger";
 
 export class XiaomiAdapter extends BaseModelAdapter {
@@ -40,8 +40,7 @@ export class XiaomiAdapter extends BaseModelAdapter {
   }
 
   shouldHandle(modelId: string): boolean {
-    const lower = modelId.toLowerCase();
-    return lower.includes("xiaomi") || lower.includes("mimo");
+    return matchesModelFamily(modelId, "xiaomi") || matchesModelFamily(modelId, "mimo");
   }
 
   getName(): string {

@@ -30,134 +30,17 @@ import type {
   ResolvedRemoteProvider,
 } from "../handlers/shared/remote-provider-types.js";
 import { parseModelSpec, isLocalProviderName } from "./model-parser.js";
+import { getAllProviders, toRemoteProvider } from "./provider-definitions.js";
 
 /**
- * Remote provider configurations
+ * Remote provider configurations — derived from BUILTIN_PROVIDERS.
+ * Filters out local-only and virtual providers (qwen, native-anthropic).
  */
-const getRemoteProviders = (): RemoteProvider[] => [
-  {
-    name: "gemini",
-    baseUrl: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com",
-    apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
-    apiKeyEnvVar: "GEMINI_API_KEY",
-    prefixes: ["g/", "gemini/"], // google/ routes to OpenRouter to avoid breaking existing workflows
-  },
-  {
-    name: "gemini-codeassist",
-    baseUrl: "https://cloudcode-pa.googleapis.com",
-    apiPath: "/v1internal:streamGenerateContent?alt=sse",
-    apiKeyEnvVar: "", // Empty - OAuth handles auth
-    prefixes: ["go/"],
-  },
-  {
-    name: "openai",
-    baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com",
-    apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "OPENAI_API_KEY",
-    prefixes: ["oai/"], // openai/ routes to OpenRouter to avoid breaking existing workflows
-  },
-  {
-    name: "openrouter",
-    baseUrl: "https://openrouter.ai",
-    apiPath: "/api/v1/chat/completions",
-    apiKeyEnvVar: "OPENROUTER_API_KEY",
-    prefixes: ["or/"],
-    headers: {
-      "HTTP-Referer": "https://claudish.com",
-      "X-Title": "Claudish - OpenRouter Proxy",
-    },
-  },
-  {
-    name: "minimax",
-    baseUrl: process.env.MINIMAX_BASE_URL || "https://api.minimax.io",
-    apiPath: "/anthropic/v1/messages",
-    apiKeyEnvVar: "MINIMAX_API_KEY",
-    prefixes: ["mmax/", "mm/"],
-    authScheme: "bearer",
-  },
-  {
-    name: "minimax-coding",
-    baseUrl: process.env.MINIMAX_CODING_BASE_URL || "https://api.minimax.io",
-    apiPath: "/anthropic/v1/messages",
-    apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
-    prefixes: ["mmc/"],
-    authScheme: "bearer",
-  },
-  {
-    name: "kimi",
-    baseUrl:
-      process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "https://api.moonshot.ai",
-    apiPath: "/anthropic/v1/messages",
-    apiKeyEnvVar: "MOONSHOT_API_KEY",
-    prefixes: ["kimi/", "moonshot/"],
-  },
-  {
-    name: "kimi-coding",
-    baseUrl: "https://api.kimi.com/coding/v1",
-    apiPath: "/messages",
-    apiKeyEnvVar: "KIMI_CODING_API_KEY",
-    prefixes: ["kc/"],
-  },
-  {
-    name: "glm",
-    baseUrl: process.env.ZHIPU_BASE_URL || process.env.GLM_BASE_URL || "https://open.bigmodel.cn",
-    apiPath: "/api/paas/v4/chat/completions",
-    apiKeyEnvVar: "ZHIPU_API_KEY",
-    prefixes: ["glm/", "zhipu/"],
-  },
-  {
-    name: "glm-coding",
-    baseUrl: "https://api.z.ai",
-    apiPath: "/api/coding/paas/v4/chat/completions",
-    apiKeyEnvVar: "GLM_CODING_API_KEY",
-    prefixes: ["gc/"],
-  },
-  {
-    name: "zai",
-    baseUrl: process.env.ZAI_BASE_URL || "https://api.z.ai",
-    apiPath: "/api/anthropic/v1/messages",
-    apiKeyEnvVar: "ZAI_API_KEY",
-    prefixes: ["zai/"],
-  },
-  {
-    name: "ollamacloud",
-    baseUrl: process.env.OLLAMACLOUD_BASE_URL || "https://ollama.com",
-    apiPath: "/api/chat",
-    apiKeyEnvVar: "OLLAMA_API_KEY",
-    prefixes: ["oc/"],
-  },
-  {
-    name: "opencode-zen",
-    baseUrl: process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen",
-    apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "OPENCODE_API_KEY",
-    prefixes: ["zen/"],
-  },
-  {
-    // OpenCode Zen "Go" plan — same API key, lite model list (glm-5, minimax-m2.5, kimi-k2.5)
-    name: "opencode-zen-go",
-    baseUrl: process.env.OPENCODE_BASE_URL
-      ? process.env.OPENCODE_BASE_URL.replace("/zen", "/zen/go")
-      : "https://opencode.ai/zen/go",
-    apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "OPENCODE_API_KEY",
-    prefixes: ["zengo/", "zgo/"],
-  },
-  {
-    name: "vertex",
-    baseUrl: "", // Vertex uses regional endpoints, constructed dynamically
-    apiPath: "", // Constructed dynamically based on project/location
-    apiKeyEnvVar: "VERTEX_PROJECT", // OAuth-based, uses project ID as indicator
-    prefixes: ["v/", "vertex/"],
-  },
-  {
-    name: "litellm",
-    baseUrl: process.env.LITELLM_BASE_URL || "",
-    apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "LITELLM_API_KEY",
-    prefixes: ["litellm/", "ll/"],
-  },
-];
+const getRemoteProviders = (): RemoteProvider[] => {
+  return getAllProviders()
+    .filter((def) => !def.isLocal && def.baseUrl !== "" && def.name !== "qwen" && def.name !== "native-anthropic")
+    .map(toRemoteProvider);
+};
 
 /**
  * Resolve a model ID to a remote provider
@@ -181,36 +64,16 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     return null;
   }
 
-  // Map parsed provider name to remote provider config
-  const providerNameMap: Record<string, string> = {
-    google: "gemini",
-    openai: "openai",
-    openrouter: "openrouter",
-    minimax: "minimax",
-    "minimax-coding": "minimax-coding",
-    kimi: "kimi",
-    "kimi-coding": "kimi-coding",
-    glm: "glm",
-    "glm-coding": "glm-coding",
-    zai: "zai",
-    ollamacloud: "ollamacloud",
-    "opencode-zen": "opencode-zen",
-    "opencode-zen-go": "opencode-zen-go",
-    vertex: "vertex", // Note: vertex might need special handling
-    "gemini-codeassist": "gemini-codeassist",
-    litellm: "litellm",
-  };
-
-  const mappedProviderName = providerNameMap[parsed.provider];
-  if (mappedProviderName) {
-    const provider = providers.find((p) => p.name === mappedProviderName);
-    if (provider) {
-      return {
-        provider,
-        modelName: parsed.model,
-        isLegacySyntax: parsed.isLegacySyntax,
-      };
-    }
+  // Look up provider by canonical name (toRemoteProvider maps "google" → "gemini" for compat)
+  // Try both the parsed provider name and the RemoteProvider name (which may differ, e.g. google→gemini)
+  const mappedName = parsed.provider === "google" ? "gemini" : parsed.provider;
+  const provider = providers.find((p) => p.name === mappedName || p.name === parsed.provider);
+  if (provider) {
+    return {
+      provider,
+      modelName: parsed.model,
+      isLegacySyntax: parsed.isLegacySyntax,
+    };
   }
 
   // Legacy: check prefix patterns for backwards compatibility
