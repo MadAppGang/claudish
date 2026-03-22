@@ -67,7 +67,8 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
   }
 
   shouldHandle(modelId: string): boolean {
-    return isOpenAIChatModel(modelId) || modelId.includes("o1") || modelId.includes("o3");
+    const model = modelId.toLowerCase();
+    return isOpenAIChatModel(modelId) || model.includes("o1") || model.includes("o3");
   }
 
   getName(): string {
