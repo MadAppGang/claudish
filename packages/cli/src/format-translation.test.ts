@@ -441,6 +441,136 @@ describe("Model Adapter Quirks", () => {
     expect(request.thinking).toBeUndefined();
   });
 
+  test("OpenAIAdapter: output_config.effort=max → reasoning_effort for gpt-5.4", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.4");
+
+    const request: any = { model: "gpt-5.4", messages: [] };
+    const original = { output_config: { effort: "max" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("xhigh");
+  });
+
+  test("OpenAIAdapter: output_config.effort=max → reasoning_effort for gpt-5.4-mini", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.4-mini");
+
+    const request: any = { model: "gpt-5.4-mini", messages: [] };
+    const original = { output_config: { effort: "max" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("high");
+  });
+
+  test('OpenAIAdapter: thinking.type="disabled" → reasoning_effort for gpt-5', async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5");
+
+    const request: any = { model: "gpt-5", messages: [] };
+    const original = { thinking: { type: "disabled" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("minimal");
+  });
+
+  test('OpenAIAdapter: thinking.type="disabled" → reasoning_effort for gpt-5-mini', async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5-mini");
+
+    const request: any = { model: "gpt-5-mini", messages: [] };
+    const original = { thinking: { type: "disabled" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("low");
+  });
+
+  test('OpenAIAdapter: thinking.type="disabled" → reasoning_effort for gpt-5.1', async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.1");
+
+    const request: any = { model: "gpt-5.1", messages: [] };
+    const original = { thinking: { type: "disabled" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("none");
+  });
+
+  test('OpenAIAdapter: thinking.type="adaptive" → reasoning_effort for gpt-5.4', async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.4");
+
+    const request: any = { model: "gpt-5.4", messages: [] };
+    const original = { thinking: { type: "adaptive" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("high");
+  });
+
+  test("OpenAIAdapter: omits reasoning_effort for gpt-5.4-nano", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.4-nano");
+
+    const request: any = { model: "gpt-5.4-nano", messages: [], thinking: { type: "adaptive" } };
+    const original = { thinking: { type: "adaptive" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBeUndefined();
+    expect(request.thinking).toBeUndefined();
+  });
+
+  test("CodexAPIFormat: output_config.effort=low → reasoning.effort for gpt-5.4-pro", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5.4-pro");
+
+    const payload = adapter.buildPayload(
+      { max_tokens: 4096, output_config: { effort: "low" } },
+      [],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "medium" });
+  });
+
+  test('CodexAPIFormat: thinking.type="disabled" → reasoning.effort for gpt-5.4-pro', async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5.4-pro");
+
+    const payload = adapter.buildPayload(
+      { max_tokens: 4096, thinking: { type: "disabled" } },
+      [],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "medium" });
+  });
+
+  test("CodexAPIFormat: output_config.effort=max → reasoning.effort for gpt-5.3-codex", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5.3-codex");
+
+    const payload = adapter.buildPayload(
+      { max_tokens: 4096, output_config: { effort: "max" } },
+      [],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "xhigh" });
+  });
+
+  test("CodexAPIFormat: output_config.effort=low → reasoning.effort for gpt-5-pro", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5-pro");
+
+    const payload = adapter.buildPayload(
+      { max_tokens: 4096, output_config: { effort: "low" } },
+      [],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "high" });
+  });
+
   test("GLMAdapter: strips thinking params", async () => {
     const { GLMModelDialect } = await import("./adapters/glm-model-dialect.js");
     const adapter = new GLMModelDialect("glm-5");

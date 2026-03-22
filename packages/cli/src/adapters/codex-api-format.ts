@@ -1,18 +1,20 @@
 /**
- * CodexAPIFormat — Layer 1 wire format for the OpenAI Responses API (Codex models).
+ * CodexAPIFormat — Layer 1 wire format for the OpenAI Responses API.
  *
- * The Codex Responses API is a distinct wire format from Chat Completions:
+ * The Responses API is a distinct wire format from Chat Completions:
  * - Uses 'input' instead of 'messages'
  * - Uses 'instructions' instead of 'system' messages
  * - Uses 'max_output_tokens' instead of 'max_tokens'
  * - Tools are flattened (no 'function' wrapper)
  * - SSE events use different event names (response.output_text.delta etc.)
  *
- * This format handles Codex models only. All other OpenAI models use OpenAIAPIFormat.
+ * This format handles Codex-family and Responses-only OpenAI models.
  */
 
 import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import { log } from "../logger.js";
+import { resolveOpenAIReasoningEffort } from "./openai-reasoning.js";
 
 export class CodexAPIFormat extends BaseAPIFormat {
   constructor(modelId: string) {
@@ -39,6 +41,18 @@ export class CodexAPIFormat extends BaseAPIFormat {
     return "openai-responses-sse";
   }
 
+  override prepareRequest(request: any, originalRequest: any): any {
+    const reasoning = resolveOpenAIReasoningEffort(this.modelId, originalRequest);
+    if (reasoning) {
+      request.reasoning = { effort: reasoning.effort };
+      delete request.thinking;
+      log(`[CodexAPIFormat] Mapped ${reasoning.source} -> reasoning.effort: ${reasoning.effort}`);
+    }
+
+    this.truncateToolNames(request);
+    return request;
+  }
+
   override getContextWindow(): number {
     // Codex models: use a safe default
     return 200_000;
@@ -59,6 +73,12 @@ export class CodexAPIFormat extends BaseAPIFormat {
 
     if (claudeRequest.max_tokens) {
       payload.max_output_tokens = Math.max(16, claudeRequest.max_tokens);
+    }
+
+    const reasoning = resolveOpenAIReasoningEffort(this.modelId, claudeRequest);
+    if (reasoning) {
+      payload.reasoning = { effort: reasoning.effort };
+      log(`[CodexAPIFormat] Mapped ${reasoning.source} -> reasoning.effort: ${reasoning.effort}`);
     }
 
     if (tools.length > 0) {

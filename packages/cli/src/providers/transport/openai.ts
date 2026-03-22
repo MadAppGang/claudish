@@ -9,6 +9,7 @@
 import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
+import { isOpenAIResponsesModel } from "../../adapters/openai-reasoning.js";
 
 export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -26,17 +27,19 @@ export class OpenAIProviderTransport implements ProviderTransport {
     this.name = provider.name;
     this.displayName = OpenAIProviderTransport.formatDisplayName(provider.name);
 
-    // Codex models use the Responses API which has a different streaming format
-    this.streamFormat = modelName.toLowerCase().includes("codex")
-      ? "openai-responses-sse"
-      : "openai-sse";
+    // Responses models use a different streaming format from Chat Completions.
+    this.streamFormat = this.usesResponsesAPI() ? "openai-responses-sse" : "openai-sse";
   }
 
   getEndpoint(): string {
-    if (this.modelName.toLowerCase().includes("codex")) {
+    if (this.usesResponsesAPI()) {
       return `${this.provider.baseUrl}/v1/responses`;
     }
     return `${this.provider.baseUrl}${this.provider.apiPath}`;
+  }
+
+  private usesResponsesAPI(): boolean {
+    return isOpenAIResponsesModel(this.modelName) || this.modelName.toLowerCase().includes("codex");
   }
 
   async getHeaders(): Promise<Record<string, string>> {

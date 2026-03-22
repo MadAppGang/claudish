@@ -25,6 +25,7 @@ import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
+import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
@@ -39,6 +40,7 @@ import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.
 import { log, logStderr } from "../logger.js";
 import { resolveApiKeyProvenance, formatProvenanceLog } from "./api-key-provenance.js";
 import type { ModelHandler } from "../handlers/types.js";
+import { isOpenAIResponsesModel } from "../adapters/openai-reasoning.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -83,6 +85,12 @@ export interface ProviderProfile {
 // Profile implementations
 // ---------------------------------------------------------------------------
 
+function createOpenAIAdapter(modelName: string): BaseModelAdapter {
+  const usesResponsesAPI =
+    isOpenAIResponsesModel(modelName) || modelName.toLowerCase().includes("codex");
+  return usesResponsesAPI ? new CodexAPIFormat(modelName) : new OpenAIAPIFormat(modelName);
+}
+
 const geminiProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new GeminiProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
@@ -113,7 +121,7 @@ const geminiCodeAssistProfile: ProviderProfile = {
 const openaiProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
-    const adapter = new OpenAIAPIFormat(ctx.modelName);
+    const adapter = createOpenAIAdapter(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
       tokenStrategy: "delta-aware",
@@ -163,7 +171,7 @@ const glmProfile: ProviderProfile = {
  *
  * Model routing inside the profile:
  *   - MiniMax models → AnthropicProviderTransport + AnthropicAPIFormat
- *   - All other models → OpenAIProviderTransport + OpenAIAPIFormat (delta-aware)
+ *   - All other models → OpenAIProviderTransport + OpenAI/Codex adapter (delta-aware)
  */
 const openCodeZenProfile: ProviderProfile = {
   createHandler(ctx) {
@@ -184,7 +192,7 @@ const openCodeZenProfile: ProviderProfile = {
     }
 
     const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, zenApiKey);
-    const adapter = new OpenAIAPIFormat(ctx.modelName);
+    const adapter = createOpenAIAdapter(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
       tokenStrategy: "delta-aware",

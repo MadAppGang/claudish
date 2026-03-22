@@ -2,18 +2,22 @@
  * OpenAIAPIFormat — Layer 1 wire format for OpenAI Chat Completions API.
  *
  * Handles:
- * - Context window detection for OpenAI models (gpt-*, o1, o3, codex)
- * - Mapping 'thinking.budget_tokens' to 'reasoning_effort' for o1/o3 models
+ * - Context window detection for OpenAI models (gpt-*, o1, o3)
+ * - Mapping Claude thinking/output_config to OpenAI reasoning_effort
  * - max_completion_tokens vs max_tokens for newer models
- * - Codex Responses API message conversion and payload building
  * - Tool choice mapping
  *
- * Also serves as Layer 2 ModelDialect for OpenAI-native models (o1/o3 reasoning params).
+ * Also serves as Layer 2 ModelDialect for OpenAI-native chat models.
  */
 
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import {
+  isOpenAIChatModel,
+  mapBudgetTokensToReasoningEffort,
+  resolveOpenAIReasoningEffort,
+} from "./openai-reasoning.js";
 
 export class OpenAIAPIFormat extends BaseAPIFormat {
   constructor(modelId: string) {
@@ -36,17 +40,21 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
    * Handle request preparation — reasoning parameters and tool name truncation
    */
   override prepareRequest(request: any, originalRequest: any): any {
-    // Map thinking.budget_tokens -> reasoning_effort for o1/o3 models
-    if (originalRequest.thinking && this.isReasoningModel()) {
-      const { budget_tokens } = originalRequest.thinking;
-      let effort = "medium";
-      if (budget_tokens < 4000) effort = "minimal";
-      else if (budget_tokens < 16000) effort = "low";
-      else if (budget_tokens >= 32000) effort = "high";
-
+    const reasoning = resolveOpenAIReasoningEffort(this.modelId, originalRequest);
+    if (reasoning) {
+      request.reasoning_effort = reasoning.effort;
+      delete request.thinking;
+      log(`[OpenAIAPIFormat] Mapped ${reasoning.source} -> reasoning_effort: ${reasoning.effort}`);
+    } else if (originalRequest.thinking?.budget_tokens !== undefined && this.isReasoningModel()) {
+      const effort = mapBudgetTokensToReasoningEffort(originalRequest.thinking.budget_tokens);
       request.reasoning_effort = effort;
       delete request.thinking;
-      log(`[OpenAIAPIFormat] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
+      log(
+        `[OpenAIAPIFormat] Mapped thinking.budget_tokens ${originalRequest.thinking.budget_tokens} -> reasoning_effort: ${effort}`
+      );
+    } else if (request.thinking && isOpenAIChatModel(this.modelId)) {
+      delete request.thinking;
+      log(`[OpenAIAPIFormat] Stripped unsupported thinking params for ${this.modelId}`);
     }
 
     // Truncate tool names if model has a limit
@@ -59,7 +67,7 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
   }
 
   shouldHandle(modelId: string): boolean {
-    return modelId.startsWith("oai/") || modelId.includes("o1") || modelId.includes("o3");
+    return isOpenAIChatModel(modelId) || modelId.includes("o1") || modelId.includes("o3");
   }
 
   getName(): string {
@@ -130,16 +138,15 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
       }
     }
 
-    // Reasoning params handled in prepareRequest instead
-    if (claudeRequest.thinking && this.isReasoningModel()) {
-      const { budget_tokens } = claudeRequest.thinking;
-      let effort = "medium";
-      if (budget_tokens < 4000) effort = "minimal";
-      else if (budget_tokens < 16000) effort = "low";
-      else if (budget_tokens >= 32000) effort = "high";
+    const reasoning = resolveOpenAIReasoningEffort(this.modelId, claudeRequest);
+    if (reasoning) {
+      payload.reasoning_effort = reasoning.effort;
+      log(`[OpenAIAPIFormat] Mapped ${reasoning.source} -> reasoning_effort: ${reasoning.effort}`);
+    } else if (claudeRequest.thinking?.budget_tokens !== undefined && this.isReasoningModel()) {
+      const effort = mapBudgetTokensToReasoningEffort(claudeRequest.thinking.budget_tokens);
       payload.reasoning_effort = effort;
       log(
-        `[OpenAIAPIFormat] Mapped thinking.budget_tokens ${budget_tokens} -> reasoning_effort: ${effort}`
+        `[OpenAIAPIFormat] Mapped thinking.budget_tokens ${claudeRequest.thinking.budget_tokens} -> reasoning_effort: ${effort}`
       );
     }
 

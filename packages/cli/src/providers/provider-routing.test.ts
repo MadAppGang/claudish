@@ -226,6 +226,21 @@ describe("DialectManager — correct dialect selection", () => {
     expect(adapter).toBeInstanceOf(OpenAIAPIFormat);
   });
 
+  test("gpt-5.4 → OpenAIAPIFormat", () => {
+    const adapter = new DialectManager("gpt-5.4").getAdapter();
+    expect(adapter).toBeInstanceOf(OpenAIAPIFormat);
+  });
+
+  test("openai/gpt-5.4 → OpenAIAPIFormat", () => {
+    const adapter = new DialectManager("openai/gpt-5.4").getAdapter();
+    expect(adapter).toBeInstanceOf(OpenAIAPIFormat);
+  });
+
+  test("openrouter/openai/gpt-5.4-mini → OpenAIAPIFormat", () => {
+    const adapter = new DialectManager("openrouter/openai/gpt-5.4-mini").getAdapter();
+    expect(adapter).toBeInstanceOf(OpenAIAPIFormat);
+  });
+
   test("unknown-model → DefaultAPIFormat", () => {
     const adapter = new DialectManager("unknown-model").getAdapter();
     expect(adapter).toBeInstanceOf(DefaultAPIFormat);
