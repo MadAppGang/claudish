@@ -12,7 +12,7 @@ import { parseModelSpec } from "./model-parser.js";
 import { BUILTIN_PROVIDERS, getShortcuts } from "./provider-definitions.js";
 import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
-import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
+import { GeminiModelDialect } from "../adapters/gemini-model-dialect.js";
 import { QwenModelDialect } from "../adapters/qwen-model-dialect.js";
 import { DeepSeekModelDialect } from "../adapters/deepseek-model-dialect.js";
 import { GLMModelDialect } from "../adapters/glm-model-dialect.js";
@@ -173,14 +173,14 @@ describe("resolveModelDialect — correct dialect selection", () => {
     expect(adapter).toBeInstanceOf(GrokModelDialect);
   });
 
-  test("gemini-2.0-flash → GeminiAPIFormat", () => {
+  test("gemini-2.0-flash → GeminiModelDialect", () => {
     const adapter = resolveModelDialect("gemini-2.0-flash");
-    expect(adapter).toBeInstanceOf(GeminiAPIFormat);
+    expect(adapter).toBeInstanceOf(GeminiModelDialect);
   });
 
-  test("google/gemini-2.5-pro → GeminiAPIFormat", () => {
+  test("google/gemini-2.5-pro → GeminiModelDialect", () => {
     const adapter = resolveModelDialect("google/gemini-2.5-pro");
-    expect(adapter).toBeInstanceOf(GeminiAPIFormat);
+    expect(adapter).toBeInstanceOf(GeminiModelDialect);
   });
 
   test("deepseek-r1 → DeepSeekModelDialect", () => {

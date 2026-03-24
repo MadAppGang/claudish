@@ -8,11 +8,12 @@
  * - Vision: not supported — supportsVision() returns false so ComposedHandler strips images
  */
 
-import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
+import { BaseModelDialect } from "./base-model-dialect.js";
+import type { AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
-export class MiniMaxModelDialect extends BaseAPIFormat {
+export class MiniMaxModelDialect extends BaseModelDialect {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // MiniMax interleaved thinking is handled by the model
     return {

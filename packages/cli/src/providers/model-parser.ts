@@ -65,14 +65,14 @@ export interface ParsedModel {
  * Re-exported for backward compatibility.
  */
 import {
-  getShortcuts as _getShortcuts,
-  getLegacyPrefixPatterns as _getLegacyPrefixPatterns,
-  getNativeModelPatterns as _getNativeModelPatterns,
+  PROVIDER_SHORTCUTS as _PROVIDER_SHORTCUTS,
+  LEGACY_PREFIX_PATTERNS as _LEGACY_PREFIX_PATTERNS,
+  NATIVE_MODEL_PATTERNS as _NATIVE_MODEL_PATTERNS,
   isLocalTransport,
   isDirectApiProvider as _isDirectApiProvider,
 } from "./provider-definitions.js";
 
-export const PROVIDER_SHORTCUTS: Record<string, string> = _getShortcuts();
+export const PROVIDER_SHORTCUTS: Record<string, string> = _PROVIDER_SHORTCUTS;
 
 /**
  * Local providers (no API key needed) — derived from BUILTIN_PROVIDERS.
@@ -95,12 +95,12 @@ export const DIRECT_API_PROVIDERS = {
 /**
  * Native model prefixes — derived from BUILTIN_PROVIDERS.
  */
-export const NATIVE_MODEL_PATTERNS = _getNativeModelPatterns();
+export const NATIVE_MODEL_PATTERNS = _NATIVE_MODEL_PATTERNS;
 
 /**
  * Legacy prefix patterns — derived from BUILTIN_PROVIDERS.
  */
-export const LEGACY_PREFIX_PATTERNS = _getLegacyPrefixPatterns();
+export const LEGACY_PREFIX_PATTERNS = _LEGACY_PREFIX_PATTERNS;
 
 /**
  * Parse a model specification string

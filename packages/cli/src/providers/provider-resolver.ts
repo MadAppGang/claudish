@@ -85,6 +85,10 @@ export interface ProviderResolution {
   wasAutoRouted?: boolean;
   /** Human-readable auto-routing decision message */
   autoRouteMessage?: string;
+  /** The resolved ProviderDefinition (for direct handoff to createHandlerForProvider) */
+  def?: import("./provider-definitions.js").ProviderDefinition;
+  /** The resolved API key value (for direct handoff to createHandlerForProvider) */
+  apiKey?: string;
 }
 
 /**
@@ -296,6 +300,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
   // 4. Check for explicit OpenRouter routing
   if (parsed.provider === "openrouter") {
     const info = API_KEY_INFO.openrouter;
+    const orDef = getProviderByName("openrouter");
     return addCommonFields({
       category: "openrouter",
       providerName: "OpenRouter",
@@ -305,6 +310,8 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       apiKeyAvailable: isApiKeyAvailable(info),
       apiKeyDescription: info.description,
       apiKeyUrl: info.url,
+      def: orDef,
+      apiKey: info.envVar ? (process.env[info.envVar] || "") : "",
     });
   }
 
@@ -316,6 +323,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     if (autoResult) {
       if (autoResult.provider === "litellm") {
         const info = API_KEY_INFO.litellm;
+        const llDef = getProviderByName("litellm");
         return addCommonFields({
           category: "direct-api",
           providerName: "LiteLLM",
@@ -327,11 +335,14 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
           apiKeyUrl: info.url,
           wasAutoRouted: true,
           autoRouteMessage: autoResult.displayMessage,
+          def: llDef,
+          apiKey: info.envVar ? (process.env[info.envVar] || "") : "",
         });
       }
 
       if (autoResult.provider === "openrouter") {
         const info = API_KEY_INFO.openrouter;
+        const orDef = getProviderByName("openrouter");
         return addCommonFields({
           category: "openrouter",
           providerName: "OpenRouter",
@@ -343,6 +354,8 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
           apiKeyUrl: info.url,
           wasAutoRouted: true,
           autoRouteMessage: autoResult.displayMessage,
+          def: orDef,
+          apiKey: info.envVar ? (process.env[info.envVar] || "") : "",
         });
       }
 
@@ -369,6 +382,19 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
     const wasAutoRouted = !parsed.isExplicitProvider;
 
+    // Resolve the actual API key value for direct handoff
+    let resolvedApiKey = "";
+    if (info.envVar && process.env[info.envVar]) {
+      resolvedApiKey = process.env[info.envVar]!;
+    } else if (info.aliases) {
+      for (const alias of info.aliases) {
+        if (process.env[alias]) {
+          resolvedApiKey = process.env[alias]!;
+          break;
+        }
+      }
+    }
+
     // Return direct-api resolution with parsed model name (prefix already stripped by parser)
     return addCommonFields({
       category: "direct-api",
@@ -383,6 +409,8 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       autoRouteMessage: wasAutoRouted
         ? (pendingAutoRouteMessage ?? `Auto-routed: ${parsed.model} -> ${providerDisplayName}`)
         : undefined,
+      def: remoteDef,
+      apiKey: resolvedApiKey,
     });
   }
 

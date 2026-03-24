@@ -7,11 +7,12 @@
  * - Context window comes dynamically from OpenRouter model catalog
  */
 
-import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
+import { BaseModelDialect } from "./base-model-dialect.js";
+import type { AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
-export class XiaomiModelDialect extends BaseAPIFormat {
+export class XiaomiModelDialect extends BaseModelDialect {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,

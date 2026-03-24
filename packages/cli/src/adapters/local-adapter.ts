@@ -12,6 +12,7 @@
  */
 
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
+import type { BaseModelDialect } from "./base-model-dialect.js";
 import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { log } from "../logger.js";
 
@@ -24,7 +25,7 @@ export interface SamplingParams {
 }
 
 export class LocalModelAdapter extends BaseAPIFormat {
-  private innerAdapter: BaseAPIFormat;
+  private innerAdapter: BaseAPIFormat | BaseModelDialect;
   private providerName: string;
 
   constructor(modelId: string, providerName: string) {

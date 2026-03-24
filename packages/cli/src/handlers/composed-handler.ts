@@ -20,8 +20,9 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
-// Alias for readability within this file
-type BaseModelAdapter = BaseAPIFormat;
+import type { BaseModelDialect } from "../adapters/base-model-dialect.js";
+// ModelAdapter: either a full wire format adapter or a dialect-only adapter
+type ModelAdapter = BaseAPIFormat | BaseModelDialect;
 import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
@@ -52,7 +53,7 @@ export interface ComposedHandlerOptions {
   /** Override format selection — use this specific APIFormat instance */
   adapter?: BaseAPIFormat;
   /** Model dialect (GLM, Grok, etc.) — resolved by the provider registry */
-  modelDialect?: BaseAPIFormat;
+  modelDialect?: ModelAdapter;
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
   /** Token tracking strategy override (transport provides default via tokenStrategy) */
@@ -67,11 +68,11 @@ export interface ComposedHandlerOptions {
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private explicitAdapter?: BaseModelAdapter;
+  private explicitAdapter?: BaseAPIFormat;
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
-  private modelAdapter?: BaseModelAdapter;
+  private modelAdapter?: ModelAdapter;
   /** Auto-resolved dialect for this model */
-  private resolvedDialect: BaseModelAdapter;
+  private resolvedDialect: ModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
   private targetModel: string;

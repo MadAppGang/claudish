@@ -608,100 +608,130 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Lazy-cached derived accessors
+// Pre-computed derived maps (built once at module load)
 // ---------------------------------------------------------------------------
 
-let _shortcutsCache: Record<string, string> | null = null;
-let _legacyPrefixCache: Array<{
+/** Provider name -> definition lookup. */
+export const PROVIDERS_BY_NAME: Map<string, ProviderDefinition> = (() => {
+  const m = new Map<string, ProviderDefinition>();
+  for (const def of BUILTIN_PROVIDERS) m.set(def.name, def);
+  return m;
+})();
+
+/** Shortcut -> canonical provider name. */
+export const PROVIDER_SHORTCUTS: Record<string, string> = (() => {
+  const r: Record<string, string> = {};
+  for (const def of BUILTIN_PROVIDERS) {
+    for (const s of def.shortcuts) r[s] = def.name;
+  }
+  return r;
+})();
+
+/** Legacy prefix patterns for backwards compatibility. */
+export const LEGACY_PREFIX_PATTERNS: Array<{
   prefix: string;
   provider: string;
   stripPrefix: boolean;
-}> | null = null;
-let _nativeModelPatternsCache: Array<{ pattern: RegExp; provider: string }> | null = null;
-let _providerByNameCache: Map<string, ProviderDefinition> | null = null;
-let _directApiProvidersCache: Set<string> | null = null;
-let _localProvidersCache: Set<string> | null = null;
-
-function ensureProviderByNameCache(): Map<string, ProviderDefinition> {
-  if (!_providerByNameCache) {
-    _providerByNameCache = new Map();
-    for (const def of BUILTIN_PROVIDERS) {
-      _providerByNameCache.set(def.name, def);
+}> = (() => {
+  const a: Array<{ prefix: string; provider: string; stripPrefix: boolean }> = [];
+  for (const def of BUILTIN_PROVIDERS) {
+    for (const lp of def.legacyPrefixes) {
+      a.push({ prefix: lp.prefix, provider: def.name, stripPrefix: lp.stripPrefix });
     }
   }
-  return _providerByNameCache;
-}
+  return a;
+})();
 
 /**
- * Get the shortcuts → canonical provider name mapping.
- * Replaces PROVIDER_SHORTCUTS in model-parser.ts.
+ * Native model patterns for auto-detection.
+ * Order follows BUILTIN_PROVIDERS definition order.
+ * kimi-coding's pattern (kimi-for-coding$) comes before kimi's (kimi-*) because
+ * kimi-coding is defined earlier in BUILTIN_PROVIDERS.
  */
-export function getShortcuts(): Record<string, string> {
-  if (!_shortcutsCache) {
-    _shortcutsCache = {};
-    for (const def of BUILTIN_PROVIDERS) {
-      for (const shortcut of def.shortcuts) {
-        _shortcutsCache[shortcut] = def.name;
+export const NATIVE_MODEL_PATTERNS: Array<{ pattern: RegExp; provider: string }> = (() => {
+  const a: Array<{ pattern: RegExp; provider: string }> = [];
+  for (const def of BUILTIN_PROVIDERS) {
+    if (def.nativeModelPatterns) {
+      for (const np of def.nativeModelPatterns) {
+        a.push({ pattern: np.pattern, provider: def.name });
       }
     }
   }
-  return _shortcutsCache;
+  return a;
+})();
+
+/** API key env var + metadata per provider. */
+export const API_KEY_INFO: Record<string, {
+  envVar: string;
+  description: string;
+  url: string;
+  aliases?: string[];
+  oauthFallback?: string;
+}> = (() => {
+  const r: Record<string, { envVar: string; description: string; url: string; aliases?: string[]; oauthFallback?: string }> = {};
+  for (const def of BUILTIN_PROVIDERS) {
+    r[def.name] = {
+      envVar: def.apiKeyEnvVar,
+      description: def.apiKeyDescription,
+      url: def.apiKeyUrl,
+      aliases: def.apiKeyAliases,
+      oauthFallback: def.oauthFallback,
+    };
+  }
+  return r;
+})();
+
+/** Display name per provider. */
+export const PROVIDER_DISPLAY_NAMES: Record<string, string> = (() => {
+  const r: Record<string, string> = {};
+  for (const def of BUILTIN_PROVIDERS) r[def.name] = def.displayName;
+  return r;
+})();
+
+/** Set of local provider names. */
+const LOCAL_PROVIDERS: Set<string> = (() => {
+  const s = new Set<string>();
+  for (const def of BUILTIN_PROVIDERS) {
+    if (def.isLocal) s.add(def.name);
+  }
+  return s;
+})();
+
+/** Set of direct API provider names. */
+const DIRECT_API_PROVIDERS: Set<string> = (() => {
+  const s = new Set<string>();
+  for (const def of BUILTIN_PROVIDERS) {
+    if (def.isDirectApi) s.add(def.name);
+  }
+  return s;
+})();
+
+// ---------------------------------------------------------------------------
+// Getter functions (thin wrappers for backward compatibility)
+// ---------------------------------------------------------------------------
+
+/** Get the shortcuts -> canonical provider name mapping. */
+export function getShortcuts(): Record<string, string> {
+  return PROVIDER_SHORTCUTS;
 }
 
-/**
- * Get legacy prefix patterns for backwards compatibility.
- * Replaces LEGACY_PREFIX_PATTERNS in model-parser.ts.
- */
+/** Get legacy prefix patterns for backwards compatibility. */
 export function getLegacyPrefixPatterns(): Array<{
   prefix: string;
   provider: string;
   stripPrefix: boolean;
 }> {
-  if (!_legacyPrefixCache) {
-    _legacyPrefixCache = [];
-    for (const def of BUILTIN_PROVIDERS) {
-      for (const lp of def.legacyPrefixes) {
-        _legacyPrefixCache.push({
-          prefix: lp.prefix,
-          provider: def.name,
-          stripPrefix: lp.stripPrefix,
-        });
-      }
-    }
-  }
-  return _legacyPrefixCache;
+  return LEGACY_PREFIX_PATTERNS;
 }
 
-/**
- * Get native model patterns for auto-detection.
- * Replaces NATIVE_MODEL_PATTERNS in model-parser.ts.
- *
- * Order follows the definition order in BUILTIN_PROVIDERS.
- * kimi-coding's pattern (kimi-for-coding$) comes before kimi's (kimi-*) because
- * kimi-coding is defined earlier in BUILTIN_PROVIDERS.
- */
+/** Get native model patterns for auto-detection. */
 export function getNativeModelPatterns(): Array<{ pattern: RegExp; provider: string }> {
-  if (!_nativeModelPatternsCache) {
-    _nativeModelPatternsCache = [];
-    for (const def of BUILTIN_PROVIDERS) {
-      if (def.nativeModelPatterns) {
-        for (const np of def.nativeModelPatterns) {
-          _nativeModelPatternsCache.push({
-            pattern: np.pattern,
-            provider: def.name,
-          });
-        }
-      }
-    }
-  }
-  return _nativeModelPatternsCache;
+  return NATIVE_MODEL_PATTERNS;
 }
 
-/**
- * Get a provider definition by canonical name.
- */
+/** Get a provider definition by canonical name. */
 export function getProviderByName(name: string): ProviderDefinition | undefined {
-  return ensureProviderByNameCache().get(name);
+  return PROVIDERS_BY_NAME.get(name);
 }
 
 /**
@@ -709,10 +739,9 @@ export function getProviderByName(name: string): ProviderDefinition | undefined 
  * RemoteProvider.name uses "gemini" for the google provider; this looks up the original definition.
  */
 export function getProviderDefinitionByRemoteName(remoteName: string): ProviderDefinition | undefined {
-  const direct = ensureProviderByNameCache().get(remoteName);
+  const direct = PROVIDERS_BY_NAME.get(remoteName);
   if (direct) return direct;
-  // Reverse the google→gemini mapping from toRemoteProvider()
-  if (remoteName === "gemini") return ensureProviderByNameCache().get("google");
+  if (remoteName === "gemini") return PROVIDERS_BY_NAME.get("google");
   return undefined;
 }
 
@@ -765,15 +794,7 @@ export function getEffectiveBaseUrl(def: ProviderDefinition): string {
  * Replaces LOCAL_PROVIDERS set in model-parser.ts.
  */
 export function isLocalTransport(providerName: string): boolean {
-  if (!_localProvidersCache) {
-    _localProvidersCache = new Set();
-    for (const def of BUILTIN_PROVIDERS) {
-      if (def.isLocal) {
-        _localProvidersCache.add(def.name);
-      }
-    }
-  }
-  return _localProvidersCache.has(providerName.toLowerCase());
+  return LOCAL_PROVIDERS.has(providerName.toLowerCase());
 }
 
 /**
@@ -781,15 +802,7 @@ export function isLocalTransport(providerName: string): boolean {
  * Replaces DIRECT_API_PROVIDERS set in model-parser.ts.
  */
 export function isDirectApiProvider(providerName: string): boolean {
-  if (!_directApiProvidersCache) {
-    _directApiProvidersCache = new Set();
-    for (const def of BUILTIN_PROVIDERS) {
-      if (def.isDirectApi) {
-        _directApiProvidersCache.add(def.name);
-      }
-    }
-  }
-  return _directApiProvidersCache.has(providerName.toLowerCase());
+  return DIRECT_API_PROVIDERS.has(providerName.toLowerCase());
 }
 
 /**

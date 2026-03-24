@@ -6,7 +6,8 @@
  * - Maps thinking → enable_thinking + thinking_budget params
  */
 
-import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
+import { BaseModelDialect } from "./base-model-dialect.js";
+import type { AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 
 // Qwen special tokens that should be stripped from output
@@ -18,7 +19,7 @@ const QWEN_SPECIAL_TOKENS = [
   "assistant\n", // Role marker that sometimes leaks
 ];
 
-export class QwenModelDialect extends BaseAPIFormat {
+export class QwenModelDialect extends BaseModelDialect {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // Strip Qwen special tokens that may leak through
     // This can happen when the model gets confused and outputs its chat template

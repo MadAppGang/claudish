@@ -627,9 +627,9 @@ describe("APIFormat: getStreamFormat()", () => {
     expect(new CodexAPIFormat("codex-mini").getStreamFormat()).toBe("openai-responses-sse");
   });
 
-  test("GLMModelDialect inherits openai-sse (uses OpenAI-compat API)", async () => {
+  test("GLMModelDialect returns undefined (dialect has no stream format opinion)", async () => {
     const { GLMModelDialect } = await import("./adapters/glm-model-dialect.js");
-    expect(new GLMModelDialect("glm-5").getStreamFormat()).toBe("openai-sse");
+    expect(new GLMModelDialect("glm-5").getStreamFormat()).toBeUndefined();
   });
 });
 

@@ -5,10 +5,11 @@
  * - Strips unsupported thinking params (DeepSeek thinks automatically)
  */
 
-import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
+import { BaseModelDialect } from "./base-model-dialect.js";
+import type { AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 
-export class DeepSeekModelDialect extends BaseAPIFormat {
+export class DeepSeekModelDialect extends BaseModelDialect {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,

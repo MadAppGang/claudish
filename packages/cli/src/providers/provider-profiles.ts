@@ -8,6 +8,7 @@
 import type { ComposedHandlerOptions } from "../handlers/composed-handler.js";
 import type { ProviderTransport } from "./transport/types.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
+import type { BaseModelDialect } from "../adapters/base-model-dialect.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { ComposedHandler } from "../handlers/composed-handler.js";
@@ -28,6 +29,7 @@ import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 import { DefaultAPIFormat, matchesModelFamily } from "../adapters/base-api-format.js";
 import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
+import { GeminiModelDialect } from "../adapters/gemini-model-dialect.js";
 import { QwenModelDialect } from "../adapters/qwen-model-dialect.js";
 import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
 import { DeepSeekModelDialect } from "../adapters/deepseek-model-dialect.js";
@@ -35,6 +37,7 @@ import { GLMModelDialect } from "../adapters/glm-model-dialect.js";
 import { XiaomiModelDialect } from "../adapters/xiaomi-model-dialect.js";
 import { OpenRouterProviderTransport } from "./transport/openrouter.js";
 import { OpenRouterAPIFormat } from "../adapters/openrouter-api-format.js";
+import { ZenTransport } from "./transport/zen.js";
 import { PoeProvider } from "./transport/poe.js";
 import { LocalTransport } from "./transport/local.js";
 import { LocalModelAdapter } from "../adapters/local-adapter.js";
@@ -71,29 +74,23 @@ function resolveTransport(
       return new GeminiCodeAssistProviderTransport(modelName);
 
     case "openai": {
+      const isZen = def.name === "opencode-zen" || def.name === "opencode-zen-go";
       // OpenCode Zen: GPT models go through Responses API
-      if (
-        (def.name === "opencode-zen" || def.name === "opencode-zen-go") &&
-        modelName.toLowerCase().startsWith("gpt-")
-      ) {
-        return new OpenAIProviderTransport(
+      if (isZen && modelName.toLowerCase().startsWith("gpt-")) {
+        return new ZenTransport(
           { ...rp, apiPath: "/v1/responses" },
           modelName,
-          apiKey || def.publicKeyFallback || "",
+          apiKey,
         );
       }
       // OpenCode Zen: MiniMax models go through Anthropic transport
-      if (
-        (def.name === "opencode-zen" || def.name === "opencode-zen-go") &&
-        modelName.toLowerCase().includes("minimax")
-      ) {
+      if (isZen && modelName.toLowerCase().includes("minimax")) {
         return new AnthropicProviderTransport(rp, apiKey || def.publicKeyFallback || "");
       }
-      return new OpenAIProviderTransport(
-        rp,
-        modelName,
-        apiKey || def.publicKeyFallback || "",
-      );
+      if (isZen) {
+        return new ZenTransport(rp, modelName, apiKey);
+      }
+      return new OpenAIProviderTransport(rp, modelName, apiKey);
     }
 
     case "anthropic":
@@ -231,13 +228,13 @@ function resolveAPIFormat(
 // Model dialect resolution
 // ---------------------------------------------------------------------------
 
-export function resolveModelDialect(modelId: string): BaseAPIFormat {
+export function resolveModelDialect(modelId: string): BaseAPIFormat | BaseModelDialect {
   const m = matchesModelFamily;
 
   if (m(modelId, "grok") || modelId.toLowerCase().includes("x-ai/"))
     return new GrokModelDialect(modelId);
   if (m(modelId, "gemini") || modelId.toLowerCase().includes("google/"))
-    return new GeminiAPIFormat(modelId);
+    return new GeminiModelDialect(modelId);
   if (m(modelId, "codex"))
     return new CodexAPIFormat(modelId);
   if (modelId.startsWith("oai/") || modelId.includes("o1") || modelId.includes("o3"))

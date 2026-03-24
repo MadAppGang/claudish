@@ -10,11 +10,12 @@
  * This dialect translates that to Claude Code's expected tool_calls format.
  */
 
-import { BaseAPIFormat, AdapterResult, ToolCall } from "./base-api-format.js";
+import { BaseModelDialect } from "./base-model-dialect.js";
+import type { AdapterResult, ToolCall } from "./base-api-format.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
-export class GrokModelDialect extends BaseAPIFormat {
+export class GrokModelDialect extends BaseModelDialect {
   private xmlBuffer: string = "";
 
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
