@@ -10,6 +10,8 @@
  */
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -162,7 +164,22 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Direct OpenAI API (oai@)",
   },
 
-
+  // ── GitHub Models (OpenAI-compatible) ────────────────────────────────
+  {
+    name: "github-models",
+    displayName: "GitHub Models",
+    transport: "openai",
+    baseUrl: "https://models.github.ai/inference",
+    apiPath: "/chat/completions",
+    apiKeyEnvVar: "GITHUB_MODELS_TOKEN",
+    apiKeyDescription: "GitHub Fine-Grained PAT",
+    apiKeyUrl: "https://github.com/settings/tokens",
+    shortcuts: ["gh"],
+    shortestPrefix: "gh",
+    legacyPrefixes: [{ prefix: "gh/", stripPrefix: true }],
+    isDirectApi: true,
+    description: "GitHub Models (gh@)",
+  },
 
   // ── OpenRouter ─────────────────────────────────────────────────────
   {
@@ -923,3 +940,122 @@ export function isProviderAvailableByName(providerName: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Dynamic provider registration
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a provider definition into all derived maps.
+ * Used for user-defined providers loaded from config.
+ */
+export function registerProvider(def: ProviderDefinition): void {
+  BUILTIN_PROVIDERS.push(def);
+  PROVIDERS_BY_NAME.set(def.name, def);
+
+  for (const s of def.shortcuts) {
+    PROVIDER_SHORTCUTS[s] = def.name;
+  }
+
+  for (const lp of def.legacyPrefixes) {
+    LEGACY_PREFIX_PATTERNS.push({
+      prefix: lp.prefix,
+      provider: def.name,
+      stripPrefix: lp.stripPrefix,
+    });
+  }
+
+  if (def.nativeModelPatterns) {
+    for (const np of def.nativeModelPatterns) {
+      NATIVE_MODEL_PATTERNS.push({ pattern: np.pattern, provider: def.name });
+    }
+  }
+
+  API_KEY_INFO[def.name] = {
+    envVar: def.apiKeyEnvVar,
+    description: def.apiKeyDescription,
+    url: def.apiKeyUrl,
+    aliases: def.apiKeyAliases,
+    oauthFallback: def.oauthFallback,
+  };
+
+  PROVIDER_DISPLAY_NAMES[def.name] = def.displayName;
+
+  if (def.isLocal) {
+    LOCAL_PROVIDERS.add(def.name);
+  }
+
+  if (def.isDirectApi) {
+    DIRECT_API_PROVIDERS.add(def.name);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// User-defined providers (loaded from ~/.claudish/config.json)
+// ---------------------------------------------------------------------------
+
+/** Shape of a user-defined provider in config.json */
+export interface UserProviderConfig {
+  name: string;
+  displayName?: string;
+  transport: TransportType;
+  baseUrl: string;
+  apiPath?: string;
+  apiKeyEnvVar?: string;
+  apiKeyDescription?: string;
+  apiKeyUrl?: string;
+  shortcuts?: string[];
+  shortestPrefix?: string;
+  legacyPrefixes?: Array<{ prefix: string; stripPrefix: boolean }>;
+  nativeModelPatterns?: string[];
+  isDirectApi?: boolean;
+  isLocal?: boolean;
+  description?: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Load user-defined providers from ~/.claudish/config.json and register them.
+ */
+export function loadUserProviders(): void {
+  const configPath = join(homedir(), ".claudish", "config.json");
+  if (!existsSync(configPath)) return;
+
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const config = JSON.parse(raw);
+    const providers: UserProviderConfig[] = config.providers;
+    if (!Array.isArray(providers)) return;
+
+    for (const p of providers) {
+      if (!p.name || !p.transport || !p.baseUrl) continue;
+      if (PROVIDERS_BY_NAME.has(p.name)) continue; // do not override builtins
+
+      const def: ProviderDefinition = {
+        name: p.name,
+        displayName: p.displayName || p.name,
+        transport: p.transport,
+        baseUrl: p.baseUrl,
+        apiPath: p.apiPath || "/v1/chat/completions",
+        apiKeyEnvVar: p.apiKeyEnvVar || "",
+        apiKeyDescription: p.apiKeyDescription || `${p.displayName || p.name} API Key`,
+        apiKeyUrl: p.apiKeyUrl || "",
+        shortcuts: p.shortcuts || [],
+        shortestPrefix: p.shortestPrefix || p.name,
+        legacyPrefixes: p.legacyPrefixes || [],
+        nativeModelPatterns: p.nativeModelPatterns
+          ? p.nativeModelPatterns.map((pat) => ({ pattern: new RegExp(pat, "i") }))
+          : undefined,
+        isDirectApi: p.isDirectApi,
+        isLocal: p.isLocal,
+        description: p.description,
+        headers: p.headers,
+      };
+
+      registerProvider(def);
+    }
+  } catch {
+    // Config parse error; silently skip user providers
+  }
+}
+
+// Load user providers at module init
+loadUserProviders();
