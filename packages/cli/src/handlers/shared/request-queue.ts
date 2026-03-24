@@ -1,0 +1,262 @@
+/**
+ * RequestQueue — unified request handler for all transports.
+ *
+ * One config covers timeout, rate limiting, concurrency, and retry.
+ * Hooks are optional functions on the config, not separate strategy objects.
+ */
+
+import { getLogLevel, log } from "../../logger.js";
+
+// ---- Config ----
+
+export interface QueueState {
+  consecutiveErrors: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  currentDelayMs: number;
+}
+
+export interface RequestQueueConfig {
+  /** Max parallel requests. 1 = serial. Default: 1. */
+  maxParallel?: number;
+  /** Max queued requests. Default: 100. */
+  maxQueueSize?: number;
+  /** Per-request timeout in ms. 0 = no timeout. */
+  timeoutMs?: number;
+  /** Base inter-request delay in ms. 0 = no delay. */
+  baseDelayMs?: number;
+  /** Max inter-request delay in ms. Default: 10000. */
+  maxDelayMs?: number;
+  /** Delay before retry in ms. Default: 2000. */
+  retryDelayMs?: number;
+  /** Override delay calculation. */
+  calculateDelay?(state: QueueState): number;
+  /** Called after each response. Return true if rate limited. */
+  onResponse?(response: Response, state: QueueState): boolean;
+  /** Called on 5xx. Return true to retry once. */
+  shouldRetry?(response: Response, errorBody: string): boolean;
+}
+
+export interface RequestQueueStats {
+  queueLength: number;
+  processing: boolean;
+  activeRequests: number;
+  maxParallel: number;
+  consecutiveErrors: number;
+  currentDelayMs: number;
+  totalProcessed: number;
+  totalErrors: number;
+}
+
+// ---- Provider-specific hooks ----
+
+/** Gemini: parse quotaResetDelay from 429 error body. */
+export function geminiOnResponse(response: Response, state: QueueState): boolean {
+  if (response.status !== 429) return false;
+  try {
+    response.clone().text().then(text => {
+      const data = JSON.parse(text);
+      const detail = data?.error?.details?.find((d: any) => d.quotaResetDelay);
+      if (detail?.quotaResetDelay) {
+        const match = detail.quotaResetDelay.match(/(\d+(?:\.\d+)?)/);
+        if (match) {
+          state.currentDelayMs = Math.min(
+            Math.max(Math.ceil(parseFloat(match[1]) * 1000), state.baseDelayMs),
+            state.maxDelayMs,
+          );
+        }
+      }
+    }).catch(() => {});
+  } catch {}
+  return true;
+}
+
+/** OpenRouter: parse X-RateLimit headers, spread requests. */
+export function createOpenRouterHooks() {
+  let limitRequests: number | null = null;
+  let remainingRequests: number | null = null;
+  let resetTime: number | null = null;
+
+  return {
+    calculateDelay(state: QueueState): number {
+      let delayMs = state.baseDelayMs;
+      if (remainingRequests !== null && limitRequests !== null && limitRequests > 0) {
+        const pct = remainingRequests / limitRequests;
+        if (pct < 0.2) delayMs = Math.max(delayMs, 3000);
+        else if (pct < 0.5) delayMs = Math.max(delayMs, 2000);
+      }
+      if (resetTime !== null && remainingRequests !== null && remainingRequests > 0) {
+        const until = resetTime - Date.now() / 1000;
+        if (until > 0) delayMs = Math.max(delayMs, Math.min((until * 1000) / remainingRequests, state.maxDelayMs));
+      }
+      if (state.consecutiveErrors > 0) delayMs *= 1 + state.consecutiveErrors * 0.5;
+      return Math.min(delayMs, state.maxDelayMs);
+    },
+    onResponse(response: Response, state: QueueState): boolean {
+      const lr = response.headers.get("X-RateLimit-Limit-Requests");
+      if (lr) limitRequests = parseInt(lr, 10);
+      const rr = response.headers.get("X-RateLimit-Remaining-Requests");
+      if (rr) remainingRequests = parseInt(rr, 10);
+      const r = response.headers.get("X-RateLimit-Reset-Requests");
+      if (r) resetTime = parseFloat(r);
+
+      if (response.status === 429) {
+        remainingRequests = 0;
+        const ra = response.headers.get("Retry-After");
+        if (ra) { const s = parseInt(ra, 10); if (!isNaN(s)) state.currentDelayMs = Math.max(state.currentDelayMs, Math.min(s * 1000, state.maxDelayMs)); }
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
+/** OOM retry for local GPU inference. */
+export function oomShouldRetry(_response: Response, errorBody: string): boolean {
+  const lower = errorBody.toLowerCase();
+  return ["failed to allocate memory", "cuda out of memory", "oom", "out of memory",
+    "memory allocation failed", "insufficient memory", "gpu memory"]
+    .some(p => lower.includes(p));
+}
+
+// ---- RequestQueue ----
+
+interface QueuedRequest {
+  fetchFn: () => Promise<Response>;
+  resolve: (response: Response) => void;
+  reject: (error: Error) => void;
+}
+
+function defaultCalculateDelay(state: QueueState): number {
+  let d = state.baseDelayMs;
+  if (state.consecutiveErrors > 0) d = Math.min(d * (1 + state.consecutiveErrors * 0.5), state.maxDelayMs);
+  return d;
+}
+
+export class RequestQueue {
+  private queue: QueuedRequest[] = [];
+  private processing = false;
+  private activeRequests = 0;
+  private lastRequestTime = 0;
+  private totalProcessed = 0;
+  private totalErrors = 0;
+
+  private readonly label: string;
+  private readonly maxQueueSize: number;
+  private readonly timeoutMs: number;
+  private readonly retryDelayMs: number;
+  private readonly calculateDelay: (state: QueueState) => number;
+  private readonly onResponse: (response: Response, state: QueueState) => boolean;
+  private readonly shouldRetry?: (response: Response, errorBody: string) => boolean;
+  private state: QueueState;
+  maxParallel: number;
+
+  constructor(label: string, config: RequestQueueConfig = {}) {
+    this.label = label;
+    this.maxQueueSize = config.maxQueueSize ?? 100;
+    this.maxParallel = config.maxParallel ?? 1;
+    this.timeoutMs = config.timeoutMs ?? 0;
+    this.retryDelayMs = config.retryDelayMs ?? 2000;
+    this.calculateDelay = config.calculateDelay ?? defaultCalculateDelay;
+    this.onResponse = config.onResponse ?? ((r, _s) => r.status === 429);
+    this.shouldRetry = config.shouldRetry;
+    this.state = {
+      consecutiveErrors: 0,
+      baseDelayMs: config.baseDelayMs ?? 0,
+      maxDelayMs: config.maxDelayMs ?? 10000,
+      currentDelayMs: config.baseDelayMs ?? 0,
+    };
+  }
+
+  async enqueue(fetchFn: () => Promise<Response>): Promise<Response> {
+    if (this.queue.length >= this.maxQueueSize) {
+      throw new Error(`${this.label} queue full (${this.queue.length}/${this.maxQueueSize}).`);
+    }
+    return new Promise<Response>((resolve, reject) => {
+      this.queue.push({ fetchFn, resolve, reject });
+      if (!this.processing) this.processQueue();
+    });
+  }
+
+  getStats(): RequestQueueStats {
+    return {
+      queueLength: this.queue.length, processing: this.processing,
+      activeRequests: this.activeRequests, maxParallel: this.maxParallel,
+      consecutiveErrors: this.state.consecutiveErrors, currentDelayMs: this.state.currentDelayMs,
+      totalProcessed: this.totalProcessed, totalErrors: this.totalErrors,
+    };
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+    while (this.queue.length > 0 && this.activeRequests < this.maxParallel) {
+      const request = this.queue.shift()!;
+      this.activeRequests++;
+      if (this.maxParallel === 1) {
+        await this.executeRequest(request);
+      } else {
+        this.executeRequest(request).catch(() => {});
+        if (this.queue.length > 0) await new Promise(r => setTimeout(r, 100));
+      }
+    }
+    this.processing = false;
+  }
+
+  private async executeRequest(request: QueuedRequest): Promise<void> {
+    try {
+      await this.waitForNextSlot();
+      const doFetch = this.timeoutMs > 0
+        ? () => Promise.race([
+            request.fetchFn(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`Request timed out after ${this.timeoutMs}ms`)), this.timeoutMs)
+            ),
+          ])
+        : request.fetchFn;
+      const response = await doFetch();
+      this.lastRequestTime = Date.now();
+
+      if (this.onResponse(response, this.state)) {
+        this.totalErrors++;
+        this.state.consecutiveErrors++;
+      } else {
+        if (this.state.consecutiveErrors > 0) this.state.consecutiveErrors = 0;
+        if (this.state.currentDelayMs > this.state.baseDelayMs) {
+          this.state.currentDelayMs = Math.max(this.state.baseDelayMs, this.state.currentDelayMs * 0.9);
+        }
+      }
+
+      if (this.shouldRetry && response.status >= 500) {
+        const errorBody = await response.clone().text();
+        if (this.shouldRetry(response, errorBody)) {
+          await new Promise(r => setTimeout(r, this.retryDelayMs));
+          const retryResponse = await doFetch();
+          this.totalProcessed++;
+          request.resolve(retryResponse);
+          return;
+        }
+      }
+
+      this.totalProcessed++;
+      request.resolve(response);
+    } catch (error) {
+      this.totalErrors++;
+      this.state.consecutiveErrors++;
+      request.reject(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.activeRequests--;
+      if (this.maxParallel > 1 && this.queue.length > 0) this.processQueue();
+    }
+  }
+
+  private async waitForNextSlot(): Promise<void> {
+    const delayMs = this.calculateDelay(this.state);
+    this.state.currentDelayMs = delayMs;
+    if (delayMs <= 0) return;
+    const elapsed = Date.now() - this.lastRequestTime;
+    if (elapsed < delayMs) {
+      await new Promise(resolve => setTimeout(resolve, delayMs - elapsed));
+    }
+  }
+}
