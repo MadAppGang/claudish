@@ -7,7 +7,7 @@
  */
 
 import type { RemoteProvider } from "../../src/handlers/shared/remote-provider-types.js";
-import { getRegisteredRemoteProviders } from "../../src/providers/remote-provider-registry.js";
+import { getAllProviders, toRemoteProvider } from "../../src/providers/provider-definitions.js";
 import type { SmokeProviderConfig, WireFormat } from "./types.js";
 
 // Providers to skip in v1 smoke tests
@@ -154,7 +154,9 @@ function getBaseUrl(provider: RemoteProvider): string {
  * @returns Array of SmokeProviderConfig for providers ready to test.
  */
 export function discoverProviders(filterName?: string): SmokeProviderConfig[] {
-  const all = getRegisteredRemoteProviders();
+  const all = getAllProviders()
+    .filter((def) => !def.isLocal && def.baseUrl !== "" && def.name !== "qwen" && def.name !== "native-anthropic")
+    .map(toRemoteProvider);
 
   return all
     .filter((p) => {

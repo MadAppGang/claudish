@@ -28,7 +28,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { resolveProvider, parseUrlModel } from "./provider-registry.js";
-import { resolveRemoteProvider } from "./remote-provider-registry.js";
 import { autoRoute, getAutoRouteHint } from "./auto-route.js";
 import {
   parseModelSpec,
@@ -40,6 +39,8 @@ import {
 import {
   getApiKeyInfo as getApiKeyInfoFromDefs,
   getDisplayName as getDisplayNameFromDefs,
+  getProviderByName,
+  getProviderDefinitionByRemoteName,
 } from "./provider-definitions.js";
 
 /**
@@ -350,29 +351,29 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     }
   }
 
-  // 6. Try to resolve as direct API provider
-  const remoteResolved = resolveRemoteProvider(modelId);
-  if (remoteResolved) {
-    const provider = remoteResolved.provider;
-
+  // 6. Try to resolve as direct API provider using the parsed provider name
+  // Handle google -> gemini naming difference used by RemoteProvider
+  const remoteName = parsed.provider === "google" ? "gemini" : parsed.provider;
+  const remoteDef = getProviderByName(parsed.provider) || getProviderDefinitionByRemoteName(remoteName);
+  if (remoteDef && !remoteDef.isLocal && remoteDef.baseUrl !== "" && remoteDef.name !== "qwen" && remoteDef.name !== "native-anthropic") {
     // Provider-specific prefix found - check if provider's API key is available
-    const info = API_KEY_INFO[provider.name] || {
-      envVar: provider.apiKeyEnvVar,
-      description: `${provider.name} API Key`,
+    const info = API_KEY_INFO[remoteName] || {
+      envVar: remoteDef.apiKeyEnvVar,
+      description: `${remoteName} API Key`,
       url: "",
     };
 
     const providerDisplayName =
-      PROVIDER_DISPLAY_NAMES[provider.name] ||
-      provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
+      PROVIDER_DISPLAY_NAMES[remoteName] ||
+      remoteName.charAt(0).toUpperCase() + remoteName.slice(1);
 
     const wasAutoRouted = !parsed.isExplicitProvider;
 
-    // Return direct-api resolution — report missing key instead of silent fallback
+    // Return direct-api resolution with parsed model name (prefix already stripped by parser)
     return addCommonFields({
       category: "direct-api",
       providerName: providerDisplayName,
-      modelName: remoteResolved.modelName,
+      modelName: parsed.model,
       fullModelId: modelId,
       requiredApiKeyEnvVar: info.envVar || null,
       apiKeyAvailable: isApiKeyAvailable(info),

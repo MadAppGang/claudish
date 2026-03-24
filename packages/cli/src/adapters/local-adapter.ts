@@ -15,7 +15,7 @@ import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { log } from "../logger.js";
 
-interface SamplingParams {
+export interface SamplingParams {
   temperature: number;
   top_p: number;
   top_k: number;
@@ -68,14 +68,6 @@ export class LocalModelAdapter extends BaseAPIFormat {
     // Add guidance to system prompt for local models
     if (messages.length > 0 && messages[0].role === "system") {
       messages[0].content += this.buildSystemGuidance(claudeRequest.tools?.length || 0);
-    }
-
-    // Qwen /no_think toggle
-    if (this.modelId.toLowerCase().includes("qwen") && process.env.CLAUDISH_QWEN_NO_THINK === "1") {
-      if (messages.length > 0 && messages[0].role === "system") {
-        messages[0].content = "/no_think\n\n" + messages[0].content;
-        log(`[${this.getName()}] Added /no_think to disable Qwen thinking mode`);
-      }
     }
 
     return messages;
@@ -159,29 +151,14 @@ export class LocalModelAdapter extends BaseAPIFormat {
 
   // ─── Model-family sampling parameters ───────────────────────────────
 
-  private getSamplingParams(): SamplingParams {
-    const id = this.modelId.toLowerCase();
-
-    if (id.includes("qwen")) {
-      // Qwen3 Instruct recommended settings
-      return { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, repetition_penalty: 1.05 };
-    }
-    if (id.includes("deepseek")) {
-      return { temperature: 0.6, top_p: 0.95, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
-    }
-    if (id.includes("llama")) {
-      return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.05, repetition_penalty: 1.1 };
-    }
-    if (id.includes("mistral")) {
-      return { temperature: 0.7, top_p: 0.9, top_k: 50, min_p: 0.0, repetition_penalty: 1.0 };
-    }
-    // Generic defaults
+  protected getSamplingParams(): SamplingParams {
+    // Generic defaults; model-family subclasses override with tuned values
     return { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repetition_penalty: 1.0 };
   }
 
   // ─── System prompt guidance ─────────────────────────────────────────
 
-  private buildSystemGuidance(toolCount: number): string {
+  protected buildSystemGuidance(toolCount: number): string {
     let guidance = `
 
 IMPORTANT INSTRUCTIONS FOR THIS MODEL:

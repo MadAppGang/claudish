@@ -18,6 +18,7 @@ import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
+import { KimiCodingTransport } from "./transport/kimi-coding.js";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
@@ -37,12 +38,16 @@ import { OpenRouterAPIFormat } from "../adapters/openrouter-api-format.js";
 import { PoeProvider } from "./transport/poe.js";
 import { LocalTransport } from "./transport/local.js";
 import { LocalModelAdapter } from "../adapters/local-adapter.js";
+import { LocalQwenFormatAdapter } from "../adapters/local-qwen-format-adapter.js";
+import { LocalDeepSeekFormatAdapter } from "../adapters/local-deepseek-format-adapter.js";
+import { LocalLlamaFormatAdapter } from "../adapters/local-llama-format-adapter.js";
+import { LocalMistralFormatAdapter } from "../adapters/local-mistral-format-adapter.js";
 import {
   resolveProvider,
   parseUrlModel,
   createUrlProvider,
 } from "./provider-registry.js";
-import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
+import { getProviderByName } from "./provider-definitions.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
 import { log, logStderr } from "../logger.js";
 import { resolveApiKeyProvenance, formatProvenanceLog } from "./api-key-provenance.js";
@@ -95,8 +100,7 @@ function resolveTransport(
       return new AnthropicProviderTransport(rp, apiKey);
 
     case "kimi-coding":
-      // Kimi Coding uses Anthropic-compatible transport
-      return new AnthropicProviderTransport(rp, apiKey);
+      return new KimiCodingTransport(rp, apiKey);
 
     case "openrouter":
       return new OpenRouterProviderTransport(apiKey, modelName);
@@ -114,8 +118,9 @@ function resolveTransport(
     case "vertex": {
       if (process.env.VERTEX_API_KEY) {
         // Express mode: use Gemini transport with VERTEX_API_KEY
-        const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
-        return new GeminiProviderTransport(geminiConfig || rp, modelName, process.env.VERTEX_API_KEY);
+        const geminiDef = getProviderByName("google");
+        const geminiConfig = geminiDef ? toRemoteProvider(geminiDef) : rp;
+        return new GeminiProviderTransport(geminiConfig, modelName, process.env.VERTEX_API_KEY);
       }
       const vertexConfig = getVertexConfig();
       if (!vertexConfig) {
@@ -334,6 +339,18 @@ export function createHandlerForProvider(
  * Local providers use the provider-registry to resolve the LocalProvider config,
  * which includes the correct base URL (with env var overrides) and API path.
  */
+/**
+ * Select the right LocalModelAdapter subclass based on model family.
+ */
+function createLocalAdapter(modelName: string, providerName: string): LocalModelAdapter {
+  const m = matchesModelFamily;
+  if (m(modelName, "qwen")) return new LocalQwenFormatAdapter(modelName, providerName);
+  if (m(modelName, "deepseek")) return new LocalDeepSeekFormatAdapter(modelName, providerName);
+  if (m(modelName, "llama")) return new LocalLlamaFormatAdapter(modelName, providerName);
+  if (m(modelName, "mistral")) return new LocalMistralFormatAdapter(modelName, providerName);
+  return new LocalModelAdapter(modelName, providerName);
+}
+
 function createLocalHandler(
   def: ProviderDefinition,
   modelName: string,
@@ -349,7 +366,7 @@ function createLocalHandler(
     const provider = new LocalTransport(resolved.provider, resolved.modelName, {
       concurrency: opts?.concurrency ?? resolved.concurrency,
     });
-    const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name);
+    const adapter = createLocalAdapter(resolved.modelName, resolved.provider.name);
     const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
       adapter,
       tokenStrategy: "local",
@@ -368,7 +385,7 @@ function createLocalHandler(
   if (urlParsed) {
     const providerConfig = createUrlProvider(urlParsed);
     const provider = new LocalTransport(providerConfig, urlParsed.modelName);
-    const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name);
+    const adapter = createLocalAdapter(urlParsed.modelName, providerConfig.name);
     const handler = new ComposedHandler(
       provider,
       urlParsed.modelName,

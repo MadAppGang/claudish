@@ -23,11 +23,12 @@ export {
   type UrlParsedModel,
 } from "./provider-registry.js";
 
-// Remote provider registry
+// Provider definitions
 export {
-  resolveRemoteProvider,
-  getRegisteredRemoteProviders,
-} from "./remote-provider-registry.js";
+  getAllProviders,
+  toRemoteProvider,
+  getProviderByName,
+} from "./provider-definitions.js";
 
 // Model parser - unified syntax for provider@model[:concurrency]
 export {

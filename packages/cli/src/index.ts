@@ -472,7 +472,7 @@ async function runCli() {
     // Run Claude Code with proxy
     let exitCode = 0;
     try {
-      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, () => diag.cleanup(), mtmRunner);
+      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, mtmRunner);
     } finally {
       // Clear diagOutput BEFORE cleanup to prevent write-after-end
       setDiagOutput(null);

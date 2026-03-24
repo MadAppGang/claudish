@@ -7,9 +7,6 @@ import { NativeHandler } from "./handlers/native-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import {
-  resolveRemoteProvider,
-} from "./providers/remote-provider-registry.js";
 import { getProviderDefinitionByRemoteName } from "./providers/provider-definitions.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
@@ -92,15 +89,15 @@ export async function createProxyServer(
 
     // Direct-api: look up the ProviderDefinition and create a handler
     if (resolution.category === "direct-api" && resolution.apiKeyAvailable) {
-      // When auto-routed, use fullModelId for resolveRemoteProvider so it sees
+      // When auto-routed, use fullModelId for parseModelSpec so it sees
       // "litellm@gemini-2.0-flash" instead of bare "gemini-2.0-flash"
       const resolveTarget =
         resolution.wasAutoRouted && resolution.fullModelId ? resolution.fullModelId : targetModel;
 
-      const resolved = resolveRemoteProvider(resolveTarget);
-      if (!resolved) return null;
-
-      const def = getProviderDefinitionByRemoteName(resolved.provider.name);
+      const parsedTarget = parseModelSpec(resolveTarget);
+      // Map google -> gemini for RemoteProvider name compat
+      const remoteName = parsedTarget.provider === "google" ? "gemini" : parsedTarget.provider;
+      const def = getProviderDefinitionByRemoteName(remoteName);
       if (!def) return null;
 
       // Get API key (empty for providers without auth requirement, like zen free models)
@@ -110,7 +107,7 @@ export async function createProxyServer(
 
       const handler = createHandlerForProvider(
         def,
-        resolved.modelName,
+        parsedTarget.model,
         apiKey,
         targetModel,
         port,

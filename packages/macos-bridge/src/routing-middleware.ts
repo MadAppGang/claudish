@@ -18,8 +18,9 @@ import { LocalModelAdapter } from "../../cli/src/adapters/local-adapter.js";
 import { OpenRouterProvider } from "../../cli/src/providers/transport/openrouter.js";
 import { OpenRouterAPIFormat } from "../../cli/src/adapters/openrouter-api-format.js";
 import {
-  getRegisteredRemoteProviders,
-} from "../../cli/src/providers/remote-provider-registry.js";
+  getAllProviders,
+  toRemoteProvider,
+} from "../../cli/src/providers/provider-definitions.js";
 import {
   resolveProvider,
 } from "../../cli/src/providers/provider-registry.js";
@@ -68,7 +69,9 @@ export class RoutingMiddleware {
    * Create handler for a model ID using ComposedHandler + Provider + Adapter.
    */
   private createHandlerForModel(model: string): Handler {
-    const remoteProviders = getRegisteredRemoteProviders();
+    const remoteProviders = getAllProviders()
+      .filter((def) => !def.isLocal && def.baseUrl !== "" && def.name !== "qwen" && def.name !== "native-anthropic")
+      .map(toRemoteProvider);
 
     // Gemini direct API: g/gemini-2.0-flash-exp, gemini/gemini-pro
     if (model.startsWith("g/") || model.startsWith("gemini/")) {
