@@ -677,18 +677,26 @@ describe("ModelDialect interface compliance", () => {
 // ─── ProviderProfile Table Tests ─────────────────────────────────────────────
 
 describe("Provider coverage completeness", () => {
-  test("all expected providers are supported", async () => {
-    const { SUPPORTED_PROVIDERS } = await import("./providers/provider-profiles.js");
+  test("all expected providers create handlers via createHandlerForProvider", async () => {
+    const { createHandlerForProvider } = await import("./providers/provider-profiles.js");
+    const { getProviderByName } = await import("./providers/provider-definitions.js");
 
+    // Providers wired through createHandlerForProvider (excludes vertex which needs env config)
     const expectedProviders = [
-      "gemini", "gemini-codeassist", "openai",
+      "google", "gemini-codeassist", "openai",
       "minimax", "minimax-coding", "kimi", "kimi-coding", "zai",
       "glm", "glm-coding", "opencode-zen", "opencode-zen-go",
-      "ollamacloud", "litellm", "vertex",
+      "ollamacloud",
     ];
 
-    for (const provider of expectedProviders) {
-      expect(SUPPORTED_PROVIDERS.has(provider)).toBe(true);
+    for (const name of expectedProviders) {
+      const def = getProviderByName(name);
+      expect(def).toBeDefined();
+      const handler = createHandlerForProvider(
+        def!, "test-model", "test-key", "test-target", 4000,
+        { isInteractive: false, invocationMode: "explicit-model" as const },
+      );
+      expect(handler).not.toBeNull();
     }
   });
 });

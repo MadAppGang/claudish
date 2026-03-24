@@ -705,6 +705,18 @@ export function getProviderByName(name: string): ProviderDefinition | undefined 
 }
 
 /**
+ * Get a provider definition by RemoteProvider name (handles google/gemini reverse mapping).
+ * RemoteProvider.name uses "gemini" for the google provider; this looks up the original definition.
+ */
+export function getProviderDefinitionByRemoteName(remoteName: string): ProviderDefinition | undefined {
+  const direct = ensureProviderByNameCache().get(remoteName);
+  if (direct) return direct;
+  // Reverse the google→gemini mapping from toRemoteProvider()
+  if (remoteName === "gemini") return ensureProviderByNameCache().get("google");
+  return undefined;
+}
+
+/**
  * Get API key info for a provider.
  * Replaces API_KEY_INFO in provider-resolver.ts.
  */

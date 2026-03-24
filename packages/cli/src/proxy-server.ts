@@ -35,6 +35,7 @@ import {
   validateRemoteProviderApiKey,
   getRegisteredRemoteProviders,
 } from "./providers/remote-provider-registry.js";
+import { getProviderDefinitionByRemoteName } from "./providers/provider-definitions.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
@@ -238,19 +239,23 @@ export async function createProxyServer(
         return null; // Will fall through to OpenRouterHandler
       }
 
+      // Look up the ProviderDefinition from the RemoteProvider name
+      const def = getProviderDefinitionByRemoteName(resolved.provider.name);
+      if (!def) return null;
+
       // Get API key - empty string for providers that don't require auth (like zen/ free models)
-      const apiKey = resolved.provider.apiKeyEnvVar
-        ? process.env[resolved.provider.apiKeyEnvVar] || ""
+      const apiKey = def.apiKeyEnvVar
+        ? process.env[def.apiKeyEnvVar] || ""
         : "";
 
-      const handler = createHandlerForProvider({
-        provider: resolved.provider,
-        modelName: resolved.modelName,
+      const handler = createHandlerForProvider(
+        def,
+        resolved.modelName,
         apiKey,
         targetModel,
         port,
-        sharedOpts: { isInteractive: options.isInteractive, invocationMode },
-      });
+        { isInteractive: options.isInteractive, invocationMode },
+      );
       if (!handler) {
         return null; // Profile returned null (missing config) or unknown provider
       }

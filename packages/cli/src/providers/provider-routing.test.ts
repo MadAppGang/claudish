@@ -21,7 +21,8 @@ import { XiaomiModelDialect } from "../adapters/xiaomi-model-dialect.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { DefaultAPIFormat } from "../adapters/base-api-format.js";
-import { SUPPORTED_PROVIDERS, createHandlerForProvider } from "./provider-profiles.js";
+import { createHandlerForProvider } from "./provider-profiles.js";
+import { getProviderByName } from "./provider-definitions.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 
 // ---------------------------------------------------------------------------
@@ -290,33 +291,32 @@ describe("resolveModelDialect — false positive prevention", () => {
 // Section 3: Provider profiles
 // ---------------------------------------------------------------------------
 
-describe("SUPPORTED_PROVIDERS — coverage", () => {
-  test("every entry in SUPPORTED_PROVIDERS has a matching BUILTIN_PROVIDER", () => {
-    for (const profileName of [...SUPPORTED_PROVIDERS]) {
-      // Profile names match RemoteProvider.name which maps google→gemini
-      const builtinName = profileName === "gemini" ? "google" : profileName;
-      const def = BUILTIN_PROVIDERS.find((d) => d.name === builtinName || d.name === profileName);
-      expect(def).toBeDefined();
-    }
-  });
+describe("createHandlerForProvider — coverage", () => {
+  // Providers that are wired through createHandlerForProvider (ComposedHandler).
+  // Excludes: openrouter (dedicated handler), poe (dedicated handler),
+  // local providers (dedicated handler), qwen/native-anthropic (virtual, auto-routed).
+  const skipProviders = new Set([
+    "qwen",
+    "native-anthropic",
+    "poe",
+    "openrouter",
+    "xai", // auto-routed through OpenRouter
+    "ollama",
+    "lmstudio",
+    "vllm",
+    "mlx",
+    "vertex", // requires VERTEX_PROJECT or VERTEX_API_KEY env
+    "litellm", // requires LITELLM_BASE_URL env
+  ]);
 
-  test("all remote BUILTIN_PROVIDERS have a profile (except openrouter, poe, qwen, native-anthropic)", () => {
-    // openrouter has its own dedicated handler (not ComposedHandler), poe has transport but no profile yet
-    const skipProviders = new Set([
-      "qwen",
-      "native-anthropic",
-      "poe",
-      "openrouter",
-      "xai", // auto-routed through OpenRouter
-      "ollama",
-      "lmstudio",
-      "vllm",
-      "mlx",
-    ]);
+  test("all remote BUILTIN_PROVIDERS create a handler via createHandlerForProvider", () => {
     for (const def of BUILTIN_PROVIDERS) {
       if (skipProviders.has(def.name)) continue;
-      const profileName = def.name === "google" ? "gemini" : def.name;
-      expect(SUPPORTED_PROVIDERS.has(profileName)).toBe(true);
+      const handler = createHandlerForProvider(
+        def, "test-model", "test-key", "test-target", 4000,
+        { isInteractive: false, invocationMode: "explicit-model" },
+      );
+      expect(handler).not.toBeNull();
     }
   });
 });
@@ -404,22 +404,15 @@ describe("matchesModelFamily", () => {
 // ---------------------------------------------------------------------------
 
 describe("OpenCode Zen — model routing", () => {
+  const zenDef = getProviderByName("opencode-zen")!;
   const zenBaseProvider = {
     name: "opencode-zen" as const,
     baseUrl: "https://opencode.ai/zen",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    prefixes: [],
+    prefixes: [] as string[],
     headers: undefined,
     authScheme: undefined,
-  };
-
-  const sharedCtx = {
-    provider: zenBaseProvider,
-    apiKey: "test-key",
-    targetModel: "placeholder",
-    port: 4000,
-    sharedOpts: { isInteractive: false as const, invocationMode: "explicit-model" as const },
   };
 
   test("GPT model routes to Responses API endpoint (/v1/responses)", () => {
@@ -435,17 +428,26 @@ describe("OpenCode Zen — model routing", () => {
   });
 
   test("GPT model createHandler returns non-null", () => {
-    const handler = createHandlerForProvider({ ...sharedCtx, modelName: "gpt-4o" });
+    const handler = createHandlerForProvider(
+      zenDef, "gpt-4o", "test-key", "placeholder", 4000,
+      { isInteractive: false, invocationMode: "explicit-model" },
+    );
     expect(handler).not.toBeNull();
   });
 
   test("MiniMax model createHandler returns non-null", () => {
-    const handler = createHandlerForProvider({ ...sharedCtx, modelName: "minimax-m2.5" });
+    const handler = createHandlerForProvider(
+      zenDef, "minimax-m2.5", "test-key", "placeholder", 4000,
+      { isInteractive: false, invocationMode: "explicit-model" },
+    );
     expect(handler).not.toBeNull();
   });
 
   test("GLM model createHandler returns non-null (default OpenAI path)", () => {
-    const handler = createHandlerForProvider({ ...sharedCtx, modelName: "glm-5" });
+    const handler = createHandlerForProvider(
+      zenDef, "glm-5", "test-key", "placeholder", 4000,
+      { isInteractive: false, invocationMode: "explicit-model" },
+    );
     expect(handler).not.toBeNull();
   });
 
