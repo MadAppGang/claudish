@@ -52,40 +52,8 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
     this.innerAdapter.reset();
   }
 
-  // ─── Message conversion with model-specific system prompts ─────────
-
-  override convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
-    // Use default OpenAI conversion
-    const messages = super.convertMessages(claudeRequest, filterIdentityFn);
-
-    // Add model-specific system prompt tweaks
-    if (this.modelId.includes("grok") || this.modelId.includes("x-ai")) {
-      const msg =
-        "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
-      this.appendToSystemPrompt(messages, msg);
-    }
-
-    if (this.modelId.includes("gemini") || this.modelId.includes("google/")) {
-      const geminiMsg = `CRITICAL INSTRUCTION FOR OUTPUT FORMAT:
-1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
-2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so...", "First, I need to..."
-3. Do NOT output numbered planning steps or internal debugging statements.
-4. Only output: final responses, tool calls, and code. Nothing else.
-5. When calling tools, proceed directly without announcing your intentions.
-6. Your internal thinking should use the reasoning/thinking API, not visible text output.`;
-      this.appendToSystemPrompt(messages, geminiMsg);
-    }
-
-    return messages;
-  }
-
-  private appendToSystemPrompt(messages: any[], text: string): void {
-    if (messages.length > 0 && messages[0].role === "system") {
-      messages[0].content += "\n\n" + text;
-    } else {
-      messages.unshift({ role: "system", content: text });
-    }
-  }
+  // Model-specific system prompts are handled by the inner dialect's prepareRequest()
+  // (GrokModelDialect injects tool format instruction, GeminiModelDialect injects output format)
 
   // ─── Tool conversion with uri format removal ──────────────────────
 

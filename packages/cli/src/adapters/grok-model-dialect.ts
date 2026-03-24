@@ -84,6 +84,16 @@ export class GrokModelDialect extends BaseModelDialect {
   override prepareRequest(request: any, originalRequest: any): any {
     const modelId = this.modelId || "";
 
+    // Inject tool format instruction to prevent XML function calls
+    if (request.messages && Array.isArray(request.messages)) {
+      const msg = "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
+      if (request.messages.length > 0 && request.messages[0].role === "system") {
+        request.messages[0].content += "\n\n" + msg;
+      } else {
+        request.messages.unshift({ role: "system", content: msg });
+      }
+    }
+
     if (originalRequest.thinking) {
       // Only Grok 3 Mini supports reasoning_effort
       const supportsReasoningEffort = modelId.includes("mini");

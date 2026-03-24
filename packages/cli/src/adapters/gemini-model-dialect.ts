@@ -59,6 +59,25 @@ export class GeminiModelDialect extends BaseModelDialect {
     return "GeminiModelDialect";
   }
 
+  override prepareRequest(request: any, originalRequest: any): any {
+    // Inject output format instruction to suppress leaked reasoning text
+    if (request.messages && Array.isArray(request.messages)) {
+      const msg = `CRITICAL INSTRUCTION FOR OUTPUT FORMAT:
+1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
+2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so...", "First, I need to..."
+3. Do NOT output numbered planning steps or internal debugging statements.
+4. Only output: final responses, tool calls, and code. Nothing else.
+5. When calling tools, proceed directly without announcing your intentions.
+6. Your internal thinking should use the reasoning/thinking API, not visible text output.`;
+      if (request.messages.length > 0 && request.messages[0].role === "system") {
+        request.messages[0].content += "\n\n" + msg;
+      } else {
+        request.messages.unshift({ role: "system", content: msg });
+      }
+    }
+    return request;
+  }
+
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     if (!textContent || textContent.trim() === "") {
       return { cleanedText: textContent, extractedToolCalls: [], wasTransformed: false };

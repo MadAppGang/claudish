@@ -24,17 +24,6 @@ export function convertMessagesToOpenAI(
     messages.push({ role: "system", content });
   }
 
-  // Add instruction for Grok models to use proper tool format
-  if (modelId.includes("grok") || modelId.includes("x-ai")) {
-    const msg =
-      "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
-    if (messages.length > 0 && messages[0].role === "system") {
-      messages[0].content += "\n\n" + msg;
-    } else {
-      messages.unshift({ role: "system", content: msg });
-    }
-  }
-
   if (req.messages) {
     for (const msg of req.messages) {
       if (msg.role === "user") processUserMessage(msg, messages, simpleFormat);

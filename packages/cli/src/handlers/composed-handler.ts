@@ -100,11 +100,9 @@ export class ComposedHandler implements ModelHandler {
       this.modelAdapter = this.resolvedDialect;
     }
 
-    // Initialize middleware (only register model-specific middleware when applicable)
+    // Initialize middleware — register all, manager filters by shouldHandle(modelId)
     this.middlewareManager = new MiddlewareManager();
-    if (targetModel.includes("gemini") || targetModel.includes("google/")) {
-      this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
-    }
+    this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
     this.middlewareManager
       .initialize()
       .catch((err) => log(`[ComposedHandler:${targetModel}] Middleware init error: ${err}`));
