@@ -348,6 +348,60 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
 };
 
 // ---------------------------------------------------------------------------
+// Granular factory functions for non-streaming callers (MCP server, batch)
+// ---------------------------------------------------------------------------
+
+/** Resolve the APIFormat (Layer 1) for a provider + model without constructing a handler. */
+export function resolveAPIFormat(providerName: string, modelName: string): BaseAPIFormat | null {
+  const formatMap: Record<string, (m: string) => BaseAPIFormat> = {
+    gemini: (m) => new GeminiAPIFormat(m),
+    "gemini-codeassist": (m) => new GeminiAPIFormat(m),
+    openai: (m) => new OpenAIAPIFormat(m),
+    minimax: (m) => new AnthropicAPIFormat(m, "minimax"),
+    "minimax-coding": (m) => new AnthropicAPIFormat(m, "minimax-coding"),
+    kimi: (m) => new AnthropicAPIFormat(m, "kimi"),
+    "kimi-coding": (m) => new AnthropicAPIFormat(m, "kimi-coding"),
+    zai: (m) => new AnthropicAPIFormat(m, "zai"),
+    glm: (m) => new OpenAIAPIFormat(m),
+    "glm-coding": (m) => new OpenAIAPIFormat(m),
+    ollamacloud: (m) => new OllamaAPIFormat(m),
+    litellm: (m) => {
+      const baseUrl = process.env.LITELLM_BASE_URL ?? "";
+      return new LiteLLMAPIFormat(m, baseUrl);
+    },
+  };
+  const factory = formatMap[providerName];
+  return factory ? factory(modelName) : null;
+}
+
+/** Resolve the ProviderTransport (Layer 3) for a provider + model + key without constructing a handler. */
+export function resolveTransport(
+  provider: RemoteProvider,
+  modelName: string,
+  apiKey: string,
+): ProviderTransport | null {
+  const transportMap: Record<string, () => ProviderTransport | null> = {
+    gemini: () => new GeminiProviderTransport(provider, modelName, apiKey),
+    "gemini-codeassist": () => new GeminiCodeAssistProviderTransport(modelName),
+    openai: () => new OpenAIProviderTransport(provider, modelName, apiKey),
+    minimax: () => new AnthropicProviderTransport(provider, apiKey),
+    "minimax-coding": () => new AnthropicProviderTransport(provider, apiKey),
+    kimi: () => new AnthropicProviderTransport(provider, apiKey),
+    "kimi-coding": () => new AnthropicProviderTransport(provider, apiKey),
+    zai: () => new AnthropicProviderTransport(provider, apiKey),
+    glm: () => new OpenAIProviderTransport(provider, modelName, apiKey),
+    "glm-coding": () => new OpenAIProviderTransport(provider, modelName, apiKey),
+    ollamacloud: () => new OllamaProviderTransport(provider, apiKey),
+    litellm: () => {
+      if (!provider.baseUrl) return null;
+      return new LiteLLMProviderTransport(provider.baseUrl, apiKey, modelName);
+    },
+  };
+  const factory = transportMap[provider.name];
+  return factory ? factory() : null;
+}
+
+// ---------------------------------------------------------------------------
 // Public factory
 // ---------------------------------------------------------------------------
 
