@@ -80,48 +80,44 @@ Claudish supports local models via:
 
 Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. The `writeTokenFile` function uses assignment (`=`) not accumulation (`+=`) for input tokens to handle this correctly.
 
-## Three-Layer Adapter Architecture (v6.0+)
+## Three-Layer Provider Architecture
 
-The translation pipeline has three decoupled layers:
+All provider-specific logic lives in `providers/provider-profiles.ts`. Three resolvers select the right class for each layer. `createHandlerForProvider(def, ...)` composes them into a ComposedHandler.
 
-### Layer 1: APIFormat — wire format translation
-Translates between Claude API format and target model's wire format (messages, tools, payload).
-Each format declares its stream format via `getStreamFormat()` and response parsing via `parseResponse()`.
-- **Interface**: `adapters/api-format.ts`
-- **Implementations**: OpenAIAPIFormat, AnthropicAPIFormat, GeminiAPIFormat, CodexAPIFormat, OllamaAPIFormat, LiteLLMAPIFormat
-- **Non-streaming**: `adapter.parseResponse(data)` parses wire-format responses (OpenAI default, Gemini/Anthropic overrides)
+### Layer 1: APIFormat — wire format
+- **Base**: `BaseAPIFormat` (`adapters/base-api-format.ts`)
+- **Classes**: OpenAIAPIFormat, AnthropicAPIFormat, GeminiAPIFormat, CodexAPIFormat, OllamaAPIFormat, LiteLLMAPIFormat, OpenRouterAPIFormat
+- **Resolver**: `resolveAPIFormat(def, modelName)` switches on `def.transport`
+- **Key methods**: `convertMessages()`, `convertTools()`, `buildPayload()`, `getStreamFormat()`, `parseResponse()`
 
-### Layer 2: ModelDialect — model dialect translation
-Translates model-specific dialect differences (context windows, thinking→reasoning_effort, vision rules).
-- **Interface**: `adapters/model-dialect.ts`
-- **Implementations**: GrokModelDialect, GeminiAPIFormat, MiniMaxModelDialect, DeepSeekModelDialect, QwenModelDialect, GLMModelDialect, XiaomiModelDialect
-- **Selection**: `resolveModelDialect(modelId)` pure function, no class
+### Layer 2: ModelDialect — model quirks
+- **Base**: `BaseModelDialect` (`adapters/base-model-dialect.ts`)
+- **Classes**: GrokModelDialect, GeminiModelDialect, DeepSeekModelDialect, QwenModelDialect, MiniMaxModelDialect, GLMModelDialect, XiaomiModelDialect
+- **Resolver**: `resolveModelDialect(modelId)` matches model family patterns
+- **Key methods**: `processTextContent()`, `getContextWindow()`, `supportsVision()`, `prepareRequest()`
 
 ### Layer 3: ProviderTransport — HTTP transport
-Handles auth, endpoints, headers, rate limiting, token strategy. All transports extend `BaseTransport`.
-- **Interface**: `providers/transport/types.ts`
-- **Base classes**: `BaseTransport` (owns `RequestQueue`), `ApiKeyTransport` (Bearer auth), `OAuthTransport` (token refresh)
-- **Hierarchy**: Poe/OllamaCloud/LiteLLM extend `ApiKeyTransport`. CodeAssist/Vertex extend `OAuthTransport`. OpenAI/Anthropic/Gemini/OpenRouter/Local extend `BaseTransport`.
-- **Transport metadata**: `tokenStrategy` (each transport declares its own), `getNonStreamingEndpoint()` (Gemini), `unwrapResponse` (CodeAssist envelope)
-- **Rate limiting**: `RequestQueue` with provider-specific hooks. Gemini uses `geminiOnResponse` (quotaResetDelay). OpenRouter uses `createOpenRouterHooks` (X-RateLimit headers). Local uses `oomShouldRetry`.
+- **Base**: `BaseTransport` (`providers/transport/base.ts`) owns a `RequestQueue`
+- **Subclasses**: `ApiKeyTransport` (Bearer auth), `OAuthTransport` (token refresh)
+- **Classes**: OpenAI, Gemini, CodeAssist, Anthropic, OpenRouter, OllamaCloud, LiteLLM, Vertex, Poe, Local, Zen, KimiCoding
+- **Resolver**: `resolveTransport(def, modelName, apiKey)` switches on `def.transport`
+- **Rate limiting**: `onResponse()`, `shouldRetry()`, `calculateDelay()` as overridable methods (Gemini parses quotaResetDelay, OpenRouter tracks X-RateLimit headers)
 
-### Composition in ComposedHandler
-```
-ComposedHandler = APIFormat (explicit adapter) + ModelDialect (auto-selected) + ProviderTransport
-```
+### How to add a provider
+1. Add entry to `BUILTIN_PROVIDERS` in `provider-definitions.ts` with `transport` type
+2. Add case to `resolveTransport` and `resolveAPIFormat` in `provider-profiles.ts`
+3. If model has quirks, add case to `resolveModelDialect` and create a ModelDialect class
+4. If transport needs custom auth/queue behavior, create a transport subclass extending `BaseTransport`
 
-**Stream parser selection** (3-tier priority):
+### How to add a model dialect
+Add case to `resolveModelDialect()` in `provider-profiles.ts`. Create class extending `BaseModelDialect`.
+
+### Stream parser selection
 ```typescript
 transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? adapter.getStreamFormat()
 ```
 
-**Token strategy**: `transport.tokenStrategy` (default), overridden by `ComposedHandlerOptions.tokenStrategy` if set.
-
-**Adding a new provider**: Add one entry to `PROVIDER_PROFILES` table in `providers/provider-profiles.ts`.
-**Adding a new model**: Create a ModelDialect adapter, add it to the `DIALECTS` array in `adapters/dialect-manager.ts`.
-**Non-streaming callers**: Use `resolveAPIFormat()` + `resolveTransport()` from `provider-profiles.ts`. Use `adapter.parseResponse(data)` to parse responses.
-**New transports**: Extend `BaseTransport` (or `ApiKeyTransport`/`OAuthTransport`) from `providers/transport/base.ts`.
-**Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
+**Verifying wiring**: `claudish --probe <model>` shows the full composition.
 
 ### Stream Parsers
 Located in `handlers/shared/stream-parsers/`:

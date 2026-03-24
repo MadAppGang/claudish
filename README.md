@@ -905,18 +905,20 @@ claudish "your prompt"
 2. Find available port (random or specified)
 3. Start local proxy on http://127.0.0.1:PORT
 4. Spawn: claude --auto-approve --env ANTHROPIC_BASE_URL=http://127.0.0.1:PORT
-5. Proxy translates: Anthropic API → OpenRouter API
+5. Proxy translates via three-layer pipeline:
+   - ProviderTransport: auth, endpoint, rate limiting
+   - APIFormat: wire format conversion (OpenAI, Gemini, Anthropic, etc.)
+   - ModelDialect: model-specific quirks (reasoning filters, tool format)
 6. Stream output in real-time
 7. Cleanup proxy on exit
 ```
 
 ### Request Flow
 
-**Normal Mode (OpenRouter):**
 ```
-Claude Code → Anthropic API format → Local Proxy → OpenRouter API format → OpenRouter
-                                         ↓
-Claude Code ← Anthropic API format ← Local Proxy ← OpenRouter API format ← OpenRouter
+Claude Code → Anthropic API → Local Proxy → [APIFormat + ProviderTransport] → Any Provider
+                                    ↓
+Claude Code ← Anthropic API ← Local Proxy ← [Stream Parser] ← Any Provider
 ```
 
 **Monitor Mode (Anthropic Passthrough):**
