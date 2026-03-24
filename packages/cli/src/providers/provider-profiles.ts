@@ -71,12 +71,11 @@ export interface ProfileContext {
  * Complex ones (opencode-zen, vertex) may contain branching logic internally.
  */
 export interface ProviderProfile {
-  /**
-   * Attempt to create a ModelHandler for this provider.
-   *
-   * Returns null if the provider config is invalid (e.g. missing LITELLM_BASE_URL).
-   * Returning null causes proxy-server.ts to skip caching and fall through.
-   */
+  /** Create the Layer 1 APIFormat for this provider. */
+  createFormat(modelName: string, providerName?: string): BaseAPIFormat;
+  /** Create the Layer 3 ProviderTransport for this provider. Returns null if config invalid. */
+  createTransport(ctx: ProfileContext): ProviderTransport | null;
+  /** Create a full ModelHandler composing transport + format + dialect. Returns null if config invalid. */
   createHandler(ctx: ProfileContext): ModelHandler | null;
 }
 
@@ -85,69 +84,59 @@ export interface ProviderProfile {
 // ---------------------------------------------------------------------------
 
 const geminiProfile: ProviderProfile = {
+  createFormat: (m) => new GeminiAPIFormat(m),
+  createTransport: (ctx) => new GeminiProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey),
   createHandler(ctx) {
-    const transport = new GeminiProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
-    const adapter = new GeminiAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName);
     log(`[Proxy] Created Gemini handler (composed): ${ctx.modelName}`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
 const geminiCodeAssistProfile: ProviderProfile = {
+  createFormat: (m) => new GeminiAPIFormat(m),
+  createTransport: (ctx) => new GeminiCodeAssistProviderTransport(ctx.modelName),
   createHandler(ctx) {
-    const transport = new GeminiCodeAssistProviderTransport(ctx.modelName);
-    const adapter = new GeminiAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName);
     log(`[Proxy] Created Gemini Code Assist handler (composed): ${ctx.modelName}`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
 const openaiProfile: ProviderProfile = {
+  createFormat: (m) => new OpenAIAPIFormat(m),
+  createTransport: (ctx) => new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey),
   createHandler(ctx) {
-    const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
-    const adapter = new OpenAIAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName);
     log(`[Proxy] Created OpenAI handler (composed): ${ctx.modelName}`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
 /** Shared profile for MiniMax, Kimi, Kimi Coding, and Z.AI (all Anthropic-compatible APIs) */
 const anthropicCompatProfile: ProviderProfile = {
+  createFormat: (m, p) => new AnthropicAPIFormat(m, p),
+  createTransport: (ctx) => new AnthropicProviderTransport(ctx.provider, ctx.apiKey),
   createHandler(ctx) {
-    const transport = new AnthropicProviderTransport(ctx.provider, ctx.apiKey);
-    const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName, ctx.provider.name);
     log(`[Proxy] Created ${ctx.provider.name} handler (composed): ${ctx.modelName}`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
 /** GLM and GLM Coding Plan use the OpenAI-compatible API */
 const glmProfile: ProviderProfile = {
+  createFormat: (m) => new OpenAIAPIFormat(m),
+  createTransport: (ctx) => new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey),
   createHandler(ctx) {
-    const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
-    const adapter = new OpenAIAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName);
     log(`[Proxy] Created ${ctx.provider.name} handler (composed): ${ctx.modelName}`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
@@ -165,80 +154,54 @@ const glmProfile: ProviderProfile = {
  *   - All other models → OpenAIProviderTransport (/v1/chat/completions) + OpenAIAPIFormat (delta-aware)
  */
 const openCodeZenProfile: ProviderProfile = {
-  createHandler(ctx) {
+  createFormat(m, _p) {
+    if (m.toLowerCase().includes("minimax")) return new AnthropicAPIFormat(m, "opencode-zen");
+    if (m.toLowerCase().startsWith("gpt-")) return new CodexAPIFormat(m);
+    return new OpenAIAPIFormat(m);
+  },
+  createTransport(ctx) {
     const zenApiKey = ctx.apiKey || "public";
-    const isGoProvider = ctx.provider.name === "opencode-zen-go";
-
-    if (ctx.modelName.toLowerCase().includes("minimax")) {
-      const transport = new AnthropicProviderTransport(ctx.provider, zenApiKey);
-      const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(
-        `[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (Anthropic composed): ${ctx.modelName}`
-      );
-      return handler;
-    }
-
-    // GPT models are served via the OpenAI Responses API (/v1/responses), not /v1/chat/completions.
-    if (ctx.modelName.toLowerCase().startsWith("gpt-")) {
-      const responsesProvider = { ...ctx.provider, apiPath: "/v1/responses" };
-      const transport = new OpenAIProviderTransport(responsesProvider, ctx.modelName, zenApiKey);
-      const adapter = new CodexAPIFormat(ctx.modelName);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(
-        `[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (Responses API composed): ${ctx.modelName}`
-      );
-      return handler;
-    }
-
-    const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, zenApiKey);
-    const adapter = new OpenAIAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
-    log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (composed): ${ctx.modelName}`);
-    return handler;
+    if (ctx.modelName.toLowerCase().includes("minimax"))
+      return new AnthropicProviderTransport(ctx.provider, zenApiKey);
+    if (ctx.modelName.toLowerCase().startsWith("gpt-"))
+      return new OpenAIProviderTransport({ ...ctx.provider, apiPath: "/v1/responses" }, ctx.modelName, zenApiKey);
+    return new OpenAIProviderTransport(ctx.provider, ctx.modelName, zenApiKey);
+  },
+  createHandler(ctx) {
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName);
+    const label = ctx.provider.name === "opencode-zen-go" ? "Zen Go" : "Zen";
+    log(`[Proxy] Created OpenCode ${label} handler (composed): ${ctx.modelName}`);
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
 const ollamaCloudProfile: ProviderProfile = {
+  createFormat: (m) => new OllamaAPIFormat(m),
+  createTransport: (ctx) => new OllamaProviderTransport(ctx.provider, ctx.apiKey),
   createHandler(ctx) {
-    const transport = new OllamaProviderTransport(ctx.provider, ctx.apiKey);
-    const adapter = new OllamaAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    const transport = this.createTransport(ctx)!;
+    const adapter = this.createFormat(ctx.modelName);
     log(`[Proxy] Created OllamaCloud handler (composed): ${ctx.modelName}`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
 const litellmProfile: ProviderProfile = {
-  createHandler(ctx) {
+  createFormat: (m) => new LiteLLMAPIFormat(m, process.env.LITELLM_BASE_URL ?? ""),
+  createTransport(ctx) {
     if (!ctx.provider.baseUrl) {
       logStderr("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
-      logStderr("Set it with: export LITELLM_BASE_URL='https://your-litellm-instance.com'");
-      logStderr(
-        "Or use: claudish --litellm-url https://your-instance.com --model litellm@model 'task'"
-      );
       return null;
     }
-    const transport = new LiteLLMProviderTransport(ctx.provider.baseUrl, ctx.apiKey, ctx.modelName);
-    const adapter = new LiteLLMAPIFormat(ctx.modelName, ctx.provider.baseUrl);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      ...ctx.sharedOpts,
-    });
+    return new LiteLLMProviderTransport(ctx.provider.baseUrl, ctx.apiKey, ctx.modelName);
+  },
+  createHandler(ctx) {
+    const transport = this.createTransport(ctx);
+    if (!transport) return null;
+    const adapter = this.createFormat(ctx.modelName);
     log(`[Proxy] Created LiteLLM handler (composed): ${ctx.modelName} (${ctx.provider.baseUrl})`);
-    return handler;
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
@@ -252,65 +215,35 @@ const litellmProfile: ProviderProfile = {
  * Returns null if neither key nor project config is available.
  */
 const vertexProfile: ProviderProfile = {
-  createHandler(ctx) {
-    const hasApiKey = !!process.env.VERTEX_API_KEY;
-    const vertexConfig = getVertexConfig();
-
-    if (hasApiKey) {
-      // Express Mode — Vertex Express uses the standard Gemini API endpoint
-      // but with VERTEX_API_KEY instead of GEMINI_API_KEY.
-      // Must use the Gemini provider config (which has the correct baseUrl/apiPath)
-      // because the vertex provider config has empty baseUrl/apiPath (designed for OAuth mode).
+  createFormat(m) {
+    const parsed = parseVertexModel(m);
+    if (parsed.publisher === "google") return new GeminiAPIFormat(m);
+    if (parsed.publisher === "anthropic") return new AnthropicAPIFormat(parsed.model, "vertex");
+    const modelId = parsed.publisher === "mistralai" ? parsed.model : `${parsed.publisher}/${parsed.model}`;
+    return new DefaultAPIFormat(modelId);
+  },
+  createTransport(ctx) {
+    if (process.env.VERTEX_API_KEY) {
       const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
-      const expressProvider = geminiConfig || ctx.provider;
-      const transport = new GeminiProviderTransport(
-        expressProvider,
-        ctx.modelName,
-        process.env.VERTEX_API_KEY!
-      );
-      const adapter = new GeminiAPIFormat(ctx.modelName);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(`[Proxy] Created Vertex AI Express handler (composed): ${ctx.modelName}`);
-      return handler;
+      return new GeminiProviderTransport(geminiConfig || ctx.provider, ctx.modelName, process.env.VERTEX_API_KEY);
     }
-
+    const vertexConfig = getVertexConfig();
     if (vertexConfig) {
-      // OAuth Mode — ComposedHandler with publisher-specific adapter
       const oauthError = validateVertexOAuthConfig();
-      if (oauthError) {
-        log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
-        return null;
-      }
-      const parsed = parseVertexModel(ctx.modelName);
-      const transport = new VertexProviderTransport(vertexConfig, parsed);
-
-      let adapter: BaseModelAdapter;
-      if (parsed.publisher === "google") {
-        adapter = new GeminiAPIFormat(ctx.modelName);
-      } else if (parsed.publisher === "anthropic") {
-        adapter = new AnthropicAPIFormat(parsed.model, "vertex");
-      } else {
-        // Mistral/Meta use OpenAI format; Mistral rawPredict uses bare model name
-        const modelId =
-          parsed.publisher === "mistralai" ? parsed.model : `${parsed.publisher}/${parsed.model}`;
-        adapter = new DefaultAPIFormat(modelId);
-      }
-
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(
-        `[Proxy] Created Vertex AI OAuth handler (composed): ${ctx.modelName} [${parsed.publisher}] (project: ${vertexConfig.projectId})`
-      );
-      return handler;
+      if (oauthError) { log(`[Proxy] Vertex OAuth config error: ${oauthError}`); return null; }
+      return new VertexProviderTransport(vertexConfig, parseVertexModel(ctx.modelName));
     }
-
     log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
     return null;
+  },
+  createHandler(ctx) {
+    const transport = this.createTransport(ctx);
+    if (!transport) return null;
+    const adapter = process.env.VERTEX_API_KEY
+      ? new GeminiAPIFormat(ctx.modelName)
+      : this.createFormat(ctx.modelName);
+    log(`[Proxy] Created Vertex AI handler (composed): ${ctx.modelName}`);
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, { adapter, ...ctx.sharedOpts });
   },
 };
 
@@ -347,52 +280,14 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
 
 /** Resolve the APIFormat (Layer 1) for a provider + model without constructing a handler. */
 export function resolveAPIFormat(providerName: string, modelName: string): BaseAPIFormat | null {
-  const formatMap: Record<string, (m: string) => BaseAPIFormat> = {
-    gemini: (m) => new GeminiAPIFormat(m),
-    "gemini-codeassist": (m) => new GeminiAPIFormat(m),
-    openai: (m) => new OpenAIAPIFormat(m),
-    minimax: (m) => new AnthropicAPIFormat(m, "minimax"),
-    "minimax-coding": (m) => new AnthropicAPIFormat(m, "minimax-coding"),
-    kimi: (m) => new AnthropicAPIFormat(m, "kimi"),
-    "kimi-coding": (m) => new AnthropicAPIFormat(m, "kimi-coding"),
-    zai: (m) => new AnthropicAPIFormat(m, "zai"),
-    glm: (m) => new OpenAIAPIFormat(m),
-    "glm-coding": (m) => new OpenAIAPIFormat(m),
-    ollamacloud: (m) => new OllamaAPIFormat(m),
-    litellm: (m) => {
-      const baseUrl = process.env.LITELLM_BASE_URL ?? "";
-      return new LiteLLMAPIFormat(m, baseUrl);
-    },
-  };
-  const factory = formatMap[providerName];
-  return factory ? factory(modelName) : null;
+  const profile = PROVIDER_PROFILES[providerName];
+  return profile ? profile.createFormat(modelName, providerName) : null;
 }
 
 /** Resolve the ProviderTransport (Layer 3) for a provider + model + key without constructing a handler. */
-export function resolveTransport(
-  provider: RemoteProvider,
-  modelName: string,
-  apiKey: string,
-): ProviderTransport | null {
-  const transportMap: Record<string, () => ProviderTransport | null> = {
-    gemini: () => new GeminiProviderTransport(provider, modelName, apiKey),
-    "gemini-codeassist": () => new GeminiCodeAssistProviderTransport(modelName),
-    openai: () => new OpenAIProviderTransport(provider, modelName, apiKey),
-    minimax: () => new AnthropicProviderTransport(provider, apiKey),
-    "minimax-coding": () => new AnthropicProviderTransport(provider, apiKey),
-    kimi: () => new AnthropicProviderTransport(provider, apiKey),
-    "kimi-coding": () => new AnthropicProviderTransport(provider, apiKey),
-    zai: () => new AnthropicProviderTransport(provider, apiKey),
-    glm: () => new OpenAIProviderTransport(provider, modelName, apiKey),
-    "glm-coding": () => new OpenAIProviderTransport(provider, modelName, apiKey),
-    ollamacloud: () => new OllamaProviderTransport(provider, apiKey),
-    litellm: () => {
-      if (!provider.baseUrl) return null;
-      return new LiteLLMProviderTransport(provider.baseUrl, apiKey, modelName);
-    },
-  };
-  const factory = transportMap[provider.name];
-  return factory ? factory() : null;
+export function resolveTransport(ctx: ProfileContext): ProviderTransport | null {
+  const profile = PROVIDER_PROFILES[ctx.provider.name];
+  return profile ? profile.createTransport(ctx) : null;
 }
 
 // ---------------------------------------------------------------------------
