@@ -80,42 +80,47 @@ Claudish supports local models via:
 
 Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. The `writeTokenFile` function uses assignment (`=`) not accumulation (`+=`) for input tokens to handle this correctly.
 
-## Three-Layer Adapter Architecture (v5.14.0+)
+## Three-Layer Adapter Architecture (v6.0+)
 
 The translation pipeline has three decoupled layers:
 
-### Layer 1: FormatConverter — wire format translation
+### Layer 1: APIFormat — wire format translation
 Translates between Claude API format and target model's wire format (messages, tools, payload).
-Each converter declares its stream format via `getStreamFormat()`.
-- **Interface**: `adapters/format-converter.ts`
-- **Implementations**: OpenAIAdapter, AnthropicPassthroughAdapter, GeminiAdapter, CodexAdapter, OllamaCloudAdapter, LiteLLMAdapter
-- **Message/tool conversion**: `handlers/shared/format/openai-messages.ts`, `openai-tools.ts`
+Each format declares its stream format via `getStreamFormat()` and response parsing via `parseResponse()`.
+- **Interface**: `adapters/api-format.ts`
+- **Implementations**: OpenAIAPIFormat, AnthropicAPIFormat, GeminiAPIFormat, CodexAPIFormat, OllamaAPIFormat, LiteLLMAPIFormat
+- **Non-streaming**: `adapter.parseResponse(data)` parses wire-format responses (OpenAI default, Gemini/Anthropic overrides)
 
-### Layer 2: ModelTranslator — model dialect translation
+### Layer 2: ModelDialect — model dialect translation
 Translates model-specific dialect differences (context windows, thinking→reasoning_effort, vision rules).
-- **Interface**: `adapters/model-translator.ts`
-- **Implementations**: GLMAdapter, GrokAdapter, MiniMaxAdapter, DeepSeekAdapter, QwenAdapter, CodexAdapter
-- **Selection**: `resolveModelDialect(modelId)` selects based on model ID
+- **Interface**: `adapters/model-dialect.ts`
+- **Implementations**: GrokModelDialect, GeminiAPIFormat, MiniMaxModelDialect, DeepSeekModelDialect, QwenModelDialect, GLMModelDialect, XiaomiModelDialect
+- **Selection**: `resolveModelDialect(modelId)` pure function, no class
 
 ### Layer 3: ProviderTransport — HTTP transport
-Handles auth, endpoints, headers, rate limiting. Optionally overrides stream format for aggregators.
+Handles auth, endpoints, headers, rate limiting, token strategy. All transports extend `BaseTransport`.
 - **Interface**: `providers/transport/types.ts`
-- **Stream format override**: LiteLLM and OpenRouter implement `overrideStreamFormat()` → `"openai-sse"`
+- **Base classes**: `BaseTransport` (owns `RequestQueue`), `ApiKeyTransport` (Bearer auth), `OAuthTransport` (token refresh)
+- **Hierarchy**: Poe/OllamaCloud/LiteLLM extend `ApiKeyTransport`. CodeAssist/Vertex extend `OAuthTransport`. OpenAI/Anthropic/Gemini/OpenRouter/Local extend `BaseTransport`.
+- **Transport metadata**: `tokenStrategy` (each transport declares its own), `getNonStreamingEndpoint()` (Gemini), `unwrapResponse` (CodeAssist envelope)
+- **Rate limiting**: `RequestQueue` with provider-specific hooks. Gemini uses `geminiOnResponse` (quotaResetDelay). OpenRouter uses `createOpenRouterHooks` (X-RateLimit headers). Local uses `oomShouldRetry`.
 
 ### Composition in ComposedHandler
 ```
-ComposedHandler = FormatConverter (explicit adapter) + ModelTranslator (auto-selected) + ProviderTransport
+ComposedHandler = APIFormat (explicit adapter) + ModelDialect (auto-selected) + ProviderTransport
 ```
 
 **Stream parser selection** (3-tier priority):
 ```typescript
-transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAdapter.getStreamFormat()
+transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? adapter.getStreamFormat()
 ```
+
+**Token strategy**: `transport.tokenStrategy` (default), overridden by `ComposedHandlerOptions.tokenStrategy` if set.
 
 **Adding a new provider**: Add one entry to `PROVIDER_PROFILES` table in `providers/provider-profiles.ts`.
 **Adding a new model**: Create a ModelDialect adapter, add it to the `DIALECTS` array in `adapters/dialect-manager.ts`.
-**Non-streaming callers**: Use `resolveAPIFormat()` + `resolveTransport()` from `provider-profiles.ts` to construct transport and adapter without the full ComposedHandler. Use `adapter.parseResponse(data)` to parse wire-format responses.
-**New transports**: Extend `BaseTransport` (or `ApiKeyTransport`/`OAuthTransport`) from `providers/transport/base.ts` for built-in `RequestQueue` and auth patterns.
+**Non-streaming callers**: Use `resolveAPIFormat()` + `resolveTransport()` from `provider-profiles.ts`. Use `adapter.parseResponse(data)` to parse responses.
+**New transports**: Extend `BaseTransport` (or `ApiKeyTransport`/`OAuthTransport`) from `providers/transport/base.ts`.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
 
 ### Stream Parsers
