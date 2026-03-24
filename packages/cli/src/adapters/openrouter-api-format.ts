@@ -43,10 +43,6 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
     return this.innerAdapter.processTextContent(textContent, accumulatedText);
   }
 
-  shouldHandle(modelId: string): boolean {
-    return true; // Always used explicitly
-  }
-
   getName(): string {
     return `OpenRouterAPIFormat(${this.innerAdapter.getName()})`;
   }

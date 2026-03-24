@@ -634,18 +634,6 @@ describe("APIFormat: getStreamFormat()", () => {
 });
 
 describe("CodexAdapter", () => {
-  test("shouldHandle returns true for codex models", async () => {
-    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
-    expect(new CodexAPIFormat("codex-mini").shouldHandle("codex-mini")).toBe(true);
-    expect(new CodexAPIFormat("codex-mini").shouldHandle("codex-davinci-002")).toBe(true);
-  });
-
-  test("shouldHandle returns false for non-codex models", async () => {
-    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
-    expect(new CodexAPIFormat("gpt-5.4").shouldHandle("gpt-5.4")).toBe(false);
-    expect(new CodexAPIFormat("o3").shouldHandle("o3")).toBe(false);
-  });
-
   test("getStreamFormat returns openai-responses-sse", async () => {
     const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
     expect(new CodexAPIFormat("codex-mini").getStreamFormat()).toBe("openai-responses-sse");
@@ -669,7 +657,6 @@ describe("ModelDialect interface compliance", () => {
     expect(typeof t.getContextWindow()).toBe("number");
     expect(typeof t.supportsVision()).toBe("boolean");
     expect(typeof t.prepareRequest).toBe("function");
-    expect(typeof t.shouldHandle).toBe("function");
     expect(typeof t.getName).toBe("function");
   });
 });

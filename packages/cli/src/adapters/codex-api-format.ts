@@ -11,7 +11,7 @@
  * This format handles Codex models only. All other OpenAI models use OpenAIAPIFormat.
  */
 
-import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 
 export class CodexAPIFormat extends BaseAPIFormat {
@@ -25,10 +25,6 @@ export class CodexAPIFormat extends BaseAPIFormat {
       extractedToolCalls: [],
       wasTransformed: false,
     };
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "codex");
   }
 
   getName(): string {

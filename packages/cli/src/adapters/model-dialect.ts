@@ -24,9 +24,6 @@ export interface ModelDialect {
   /** Maximum tool name length, or null if unlimited */
   getToolNameLimit(): number | null;
 
-  /** Check if this dialect handles the given model ID */
-  shouldHandle(modelId: string): boolean;
-
   /** Dialect name for logging */
   getName(): string;
 }

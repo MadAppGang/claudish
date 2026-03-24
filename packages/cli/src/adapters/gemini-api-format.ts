@@ -11,7 +11,7 @@
  * Used with GeminiProviderTransport (direct API) and GeminiCodeAssistProviderTransport (OAuth).
  */
 
-import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
 import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
@@ -345,10 +345,6 @@ export class GeminiAPIFormat extends BaseAPIFormat {
 
   override getContextWindow(): number {
     return 1_048_576; // Gemini models have 1M context (2^20 tokens)
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "gemini") || modelId.toLowerCase().includes("google/");
   }
 
   getName(): string {

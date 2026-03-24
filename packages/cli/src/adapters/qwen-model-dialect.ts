@@ -6,7 +6,7 @@
  * - Maps thinking → enable_thinking + thinking_budget params
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 
 // Qwen special tokens that should be stripped from output
@@ -69,10 +69,6 @@ export class QwenModelDialect extends BaseAPIFormat {
     }
 
     return request;
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "qwen") || matchesModelFamily(modelId, "alibaba");
   }
 
   getName(): string {

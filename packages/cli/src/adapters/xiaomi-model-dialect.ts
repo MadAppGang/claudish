@@ -7,7 +7,7 @@
  * - Context window comes dynamically from OpenRouter model catalog
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
@@ -38,10 +38,6 @@ export class XiaomiModelDialect extends BaseAPIFormat {
     }
 
     return request;
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "xiaomi") || matchesModelFamily(modelId, "mimo");
   }
 
   getName(): string {

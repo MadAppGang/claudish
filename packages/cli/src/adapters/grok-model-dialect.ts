@@ -10,7 +10,7 @@
  * This dialect translates that to Claude Code's expected tool_calls format.
  */
 
-import { BaseAPIFormat, AdapterResult, ToolCall, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, AdapterResult, ToolCall } from "./base-api-format.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
@@ -129,10 +129,6 @@ export class GrokModelDialect extends BaseAPIFormat {
     }
 
     return params;
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "grok") || modelId.toLowerCase().includes("x-ai/");
   }
 
   getName(): string {

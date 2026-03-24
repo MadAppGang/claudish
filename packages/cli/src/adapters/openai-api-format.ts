@@ -59,10 +59,6 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     return request;
   }
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.startsWith("oai/") || modelId.includes("o1") || modelId.includes("o3");
-  }
-
   getName(): string {
     return "OpenAIAPIFormat";
   }

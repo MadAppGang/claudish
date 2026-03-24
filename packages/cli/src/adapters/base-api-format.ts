@@ -69,11 +69,6 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   abstract processTextContent(textContent: string, accumulatedText: string): AdapterResult;
 
   /**
-   * Check if this format/dialect should be used for the given model
-   */
-  abstract shouldHandle(modelId: string): boolean;
-
-  /**
    * Get name for logging
    */
   abstract getName(): string;
@@ -269,10 +264,6 @@ export class DefaultAPIFormat extends BaseAPIFormat {
       extractedToolCalls: [],
       wasTransformed: false,
     };
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return false; // Default is fallback
   }
 
   getName(): string {

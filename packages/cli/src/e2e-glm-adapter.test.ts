@@ -17,39 +17,8 @@ import { DefaultAPIFormat } from "./adapters/base-api-format.js";
 
 // ─── Group 1: GLMModelDialect unit tests ─────────────────────────────────────
 
-describe("GLMModelDialect — Model Detection", () => {
+describe("GLMModelDialect — Basics", () => {
   const adapter = new GLMModelDialect("glm-5");
-
-  test("should handle glm-5", () => {
-    expect(adapter.shouldHandle("glm-5")).toBe(true);
-  });
-
-  test("should handle glm-4-plus", () => {
-    expect(adapter.shouldHandle("glm-4-plus")).toBe(true);
-  });
-
-  test("should handle glm-4-flash", () => {
-    expect(adapter.shouldHandle("glm-4-flash")).toBe(true);
-  });
-
-  test("should handle glm-4-long", () => {
-    expect(adapter.shouldHandle("glm-4-long")).toBe(true);
-  });
-
-  test("should handle glm-3-turbo", () => {
-    expect(adapter.shouldHandle("glm-3-turbo")).toBe(true);
-  });
-
-  test("should handle zhipu/ prefixed models", () => {
-    expect(adapter.shouldHandle("zhipu/glm-5")).toBe(true);
-  });
-
-  test("should NOT handle non-GLM models", () => {
-    expect(adapter.shouldHandle("gpt-4o")).toBe(false);
-    expect(adapter.shouldHandle("gemini-2.0-flash")).toBe(false);
-    expect(adapter.shouldHandle("deepseek-r1")).toBe(false);
-    expect(adapter.shouldHandle("grok-3")).toBe(false);
-  });
 
   test("should return correct adapter name", () => {
     expect(adapter.getName()).toBe("GLMModelDialect");

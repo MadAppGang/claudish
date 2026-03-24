@@ -36,10 +36,6 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
     return "LiteLLMAPIFormat";
   }
 
-  shouldHandle(modelId: string): boolean {
-    return false; // Always used explicitly, not via resolveModelDialect matching
-  }
-
   supportsVision(): boolean {
     return this.visionSupported;
   }

@@ -26,10 +26,6 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
     };
   }
 
-  shouldHandle(modelId: string): boolean {
-    return false; // Not auto-selected; always explicitly passed
-  }
-
   getName(): string {
     return "AnthropicAPIFormat";
   }

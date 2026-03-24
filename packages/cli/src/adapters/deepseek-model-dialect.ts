@@ -5,7 +5,7 @@
  * - Strips unsupported thinking params (DeepSeek thinks automatically)
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 
 export class DeepSeekModelDialect extends BaseAPIFormat {
@@ -33,10 +33,6 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
     }
 
     return request;
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "deepseek");
   }
 
   getName(): string {

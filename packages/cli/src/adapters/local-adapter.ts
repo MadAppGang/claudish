@@ -40,10 +40,6 @@ export class LocalModelAdapter extends BaseAPIFormat {
     return this.innerAdapter.processTextContent(textContent, accumulatedText);
   }
 
-  shouldHandle(modelId: string): boolean {
-    return true; // Always used explicitly
-  }
-
   getName(): string {
     return `LocalModelAdapter(${this.innerAdapter.getName()})`;
   }

@@ -8,7 +8,7 @@
  * - Vision: not supported — supportsVision() returns false so ComposedHandler strips images
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
+import { BaseAPIFormat, AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
@@ -64,10 +64,6 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
    */
   override supportsVision(): boolean {
     return lookupModel(this.modelId)?.supportsVision ?? false;
-  }
-
-  shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "minimax");
   }
 
   getName(): string {
