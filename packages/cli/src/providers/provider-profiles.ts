@@ -32,6 +32,16 @@ import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
 import { DeepSeekModelDialect } from "../adapters/deepseek-model-dialect.js";
 import { GLMModelDialect } from "../adapters/glm-model-dialect.js";
 import { XiaomiModelDialect } from "../adapters/xiaomi-model-dialect.js";
+import { OpenRouterProviderTransport } from "./transport/openrouter.js";
+import { OpenRouterAPIFormat } from "../adapters/openrouter-api-format.js";
+import { PoeProvider } from "./transport/poe.js";
+import { LocalTransport } from "./transport/local.js";
+import { LocalModelAdapter } from "../adapters/local-adapter.js";
+import {
+  resolveProvider,
+  parseUrlModel,
+  createUrlProvider,
+} from "./provider-registry.js";
 import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
 import { log, logStderr } from "../logger.js";
@@ -89,8 +99,7 @@ function resolveTransport(
       return new AnthropicProviderTransport(rp, apiKey);
 
     case "openrouter":
-      // OpenRouter has its own dedicated handler, not ComposedHandler
-      return null;
+      return new OpenRouterProviderTransport(apiKey, modelName);
 
     case "ollamacloud":
       return new OllamaProviderTransport(rp, apiKey);
@@ -122,12 +131,17 @@ function resolveTransport(
       return new VertexProviderTransport(vertexConfig, parsed);
     }
 
-    case "poe":
-      // Poe has its own handler in proxy-server.ts
-      return null;
+    case "poe": {
+      const poeApiKey = process.env.POE_API_KEY;
+      if (!poeApiKey) {
+        log(`[Proxy] POE_API_KEY not set, cannot use Poe model: ${modelName}`);
+        return null;
+      }
+      return new PoeProvider(poeApiKey);
+    }
 
     case "local":
-      // Local providers have their own handler in proxy-server.ts
+      // Handled separately in createHandlerForProvider (needs LocalProvider config)
       return null;
 
     default:
@@ -195,9 +209,13 @@ function resolveAPIFormat(
     }
 
     case "openrouter":
+      return new OpenRouterAPIFormat(modelName);
+
     case "poe":
+      return new OpenAIAPIFormat(modelName);
+
     case "local":
-      return null;
+      return null; // Handled separately in createHandlerForProvider
 
     default:
       return null;
@@ -238,10 +256,34 @@ export function resolveModelDialect(modelId: string): BaseAPIFormat {
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolve the effective definition and API key for special cases.
+ *
+ * Handles:
+ * - OpenCode Zen minimax variant swap (zen + minimax model -> zen-minimax def)
+ * - publicKeyFallback for providers that allow auth-less access (e.g. Zen "public")
+ */
+function resolveEffective(
+  def: ProviderDefinition,
+  modelName: string,
+  apiKey: string,
+): { def: ProviderDefinition; apiKey: string } {
+  // Zen + minimax: the opencode-zen def uses OpenAI transport, but minimax models
+  // need Anthropic transport. The zen transport code already handles this in
+  // resolveTransport, so no definition swap is needed here. But we do need to
+  // ensure the publicKeyFallback is applied.
+  if (def.publicKeyFallback && !apiKey) {
+    return { def, apiKey: def.publicKeyFallback };
+  }
+  return { def, apiKey };
+}
+
+/**
  * Create a ModelHandler for a given ProviderDefinition.
  *
  * Resolves transport + format adapter + model dialect, composes into ComposedHandler.
  * Returns null if the provider cannot be wired (missing config, unsupported transport).
+ *
+ * Handles all provider types including OpenRouter, Poe, and local providers.
  */
 export function createHandlerForProvider(
   def: ProviderDefinition,
@@ -249,23 +291,102 @@ export function createHandlerForProvider(
   apiKey: string,
   targetModel: string,
   port: number,
-  opts?: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode">,
+  opts?: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode" | "summarizeTools"> & {
+    concurrency?: number;
+  },
 ): ModelHandler | null {
-  if (def.apiKeyEnvVar) {
-    const provenance = resolveApiKeyProvenance(def.apiKeyEnvVar);
+  const effective = resolveEffective(def, modelName, apiKey);
+
+  // Strip "poe:" prefix from model name (native pattern match preserves it)
+  let effectiveModelName = modelName;
+  if (effective.def.transport === "poe") {
+    effectiveModelName = modelName.replace(/^poe:/, "");
+  }
+
+  if (effective.def.apiKeyEnvVar) {
+    const provenance = resolveApiKeyProvenance(effective.def.apiKeyEnvVar);
     log(`[Proxy] API key: ${formatProvenanceLog(provenance)}`);
   }
-  log(`[Proxy] Handler: provider=${def.name}, model=${modelName}`);
+  log(`[Proxy] Handler: provider=${effective.def.name}, model=${effectiveModelName}`);
 
-  const transport = resolveTransport(def, modelName, apiKey);
+  // Local providers need special handling: LocalTransport takes a LocalProvider config
+  if (effective.def.transport === "local") {
+    return createLocalHandler(effective.def, effectiveModelName, targetModel, port, opts);
+  }
+
+  const transport = resolveTransport(effective.def, effectiveModelName, effective.apiKey);
   if (!transport) return null;
 
-  const adapter = resolveAPIFormat(def, modelName);
-  const dialect = resolveModelDialect(modelName);
+  const adapter = resolveAPIFormat(effective.def, effectiveModelName);
+  const dialect = resolveModelDialect(effectiveModelName);
 
-  return new ComposedHandler(transport, targetModel, modelName, port, {
+  return new ComposedHandler(transport, targetModel, effectiveModelName, port, {
     adapter: adapter ?? undefined,
     modelDialect: dialect,
-    ...opts,
+    isInteractive: opts?.isInteractive,
+    invocationMode: opts?.invocationMode,
   });
+}
+
+/**
+ * Create a handler for a local provider (ollama, lmstudio, vllm, mlx, custom URL).
+ *
+ * Local providers use the provider-registry to resolve the LocalProvider config,
+ * which includes the correct base URL (with env var overrides) and API path.
+ */
+function createLocalHandler(
+  def: ProviderDefinition,
+  modelName: string,
+  targetModel: string,
+  port: number,
+  opts?: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode" | "summarizeTools"> & {
+    concurrency?: number;
+  },
+): ModelHandler | null {
+  // Try prefix-based local provider resolution (ollama/, lmstudio/, etc.)
+  const resolved = resolveProvider(targetModel);
+  if (resolved) {
+    const provider = new LocalTransport(resolved.provider, resolved.modelName, {
+      concurrency: opts?.concurrency ?? resolved.concurrency,
+    });
+    const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name);
+    const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
+      adapter,
+      tokenStrategy: "local",
+      summarizeTools: opts?.summarizeTools,
+      isInteractive: opts?.isInteractive,
+      invocationMode: opts?.invocationMode,
+    });
+    log(
+      `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${(opts?.concurrency ?? resolved.concurrency) !== undefined ? ` (concurrency: ${opts?.concurrency ?? resolved.concurrency})` : ""}`
+    );
+    return handler;
+  }
+
+  // Try URL-based model (http://localhost:11434/llama3)
+  const urlParsed = parseUrlModel(targetModel);
+  if (urlParsed) {
+    const providerConfig = createUrlProvider(urlParsed);
+    const provider = new LocalTransport(providerConfig, urlParsed.modelName);
+    const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name);
+    const handler = new ComposedHandler(
+      provider,
+      urlParsed.modelName,
+      urlParsed.modelName,
+      port,
+      {
+        adapter,
+        tokenStrategy: "local",
+        summarizeTools: opts?.summarizeTools,
+        isInteractive: opts?.isInteractive,
+        invocationMode: opts?.invocationMode,
+      }
+    );
+    log(
+      `[Proxy] Created URL-based local provider handler: ${urlParsed.baseUrl}/${urlParsed.modelName}`
+    );
+    return handler;
+  }
+
+  return null;
 }
