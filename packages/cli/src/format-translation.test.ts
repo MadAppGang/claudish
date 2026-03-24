@@ -583,7 +583,7 @@ describe("Model Adapter Quirks", () => {
   });
 
   test("resolveModelDialect selects correct adapter for model IDs", async () => {
-    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
+    const { resolveModelDialect } = await import("./providers/provider-profiles.js");
 
     expect(resolveModelDialect("glm-5").getName()).toBe("GLMModelDialect");
     expect(resolveModelDialect("grok-3").getName()).toBe("GrokModelDialect");
@@ -657,7 +657,7 @@ describe("CodexAdapter", () => {
   });
 
   test("resolveModelDialect selects CodexAPIFormat for codex-mini", async () => {
-    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
+    const { resolveModelDialect } = await import("./providers/provider-profiles.js");
     expect(resolveModelDialect("codex-mini").getName()).toBe("CodexAPIFormat");
   });
 });

@@ -22,7 +22,7 @@ import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { resolveModelDialect } from "../adapters/dialect-manager.js";
+import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -51,6 +51,8 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
 export interface ComposedHandlerOptions {
   /** Override format selection — use this specific APIFormat instance */
   adapter?: BaseAPIFormat;
+  /** Model dialect (GLM, Grok, etc.) — resolved by the provider registry */
+  modelDialect?: BaseAPIFormat;
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
   /** Token tracking strategy override (transport provides default via tokenStrategy) */
@@ -91,9 +93,8 @@ export class ComposedHandler implements ModelHandler {
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Resolve model dialect (GLM, Grok, DeepSeek, etc.)
-    // Handles model quirks independent of provider transport
-    this.resolvedDialect = resolveModelDialect(targetModel);
+    // Model dialect (GLM, Grok, DeepSeek, etc.) — passed from resolver or resolved here as fallback
+    this.resolvedDialect = options.modelDialect ?? resolveModelDialect(targetModel);
     if (this.resolvedDialect.getName() !== "DefaultAPIFormat") {
       this.modelAdapter = this.resolvedDialect;
     }

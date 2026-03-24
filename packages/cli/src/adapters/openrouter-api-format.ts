@@ -11,7 +11,7 @@
  */
 
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
-import { resolveModelDialect } from "./dialect-manager.js";
+import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { removeUriFormat } from "../transform.js";
 import { log } from "../logger.js";
 

@@ -10,7 +10,7 @@
 import { describe, test, expect } from "bun:test";
 import { parseModelSpec } from "./model-parser.js";
 import { BUILTIN_PROVIDERS, getShortcuts } from "./provider-definitions.js";
-import { resolveModelDialect } from "../adapters/dialect-manager.js";
+import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { QwenModelDialect } from "../adapters/qwen-model-dialect.js";

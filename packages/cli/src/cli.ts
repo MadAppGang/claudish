@@ -1431,7 +1431,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       }
 
       // Get model dialect via resolveModelDialect
-      const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
+      const { resolveModelDialect } = await import("./providers/provider-profiles.js");
       const modelTranslator = resolveModelDialect(modelName);
       const modelTranslatorName = modelTranslator.getName();
 

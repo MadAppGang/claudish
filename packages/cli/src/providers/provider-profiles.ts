@@ -25,7 +25,13 @@ import { LiteLLMProviderTransport } from "./transport/litellm.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
-import { DefaultAPIFormat } from "../adapters/base-api-format.js";
+import { DefaultAPIFormat, matchesModelFamily } from "../adapters/base-api-format.js";
+import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
+import { QwenModelDialect } from "../adapters/qwen-model-dialect.js";
+import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
+import { DeepSeekModelDialect } from "../adapters/deepseek-model-dialect.js";
+import { GLMModelDialect } from "../adapters/glm-model-dialect.js";
+import { XiaomiModelDialect } from "../adapters/xiaomi-model-dialect.js";
 import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
 import { log, logStderr } from "../logger.js";
@@ -199,6 +205,35 @@ function resolveAPIFormat(
 }
 
 // ---------------------------------------------------------------------------
+// Model dialect resolution
+// ---------------------------------------------------------------------------
+
+export function resolveModelDialect(modelId: string): BaseAPIFormat {
+  const m = matchesModelFamily;
+
+  if (m(modelId, "grok") || modelId.toLowerCase().includes("x-ai/"))
+    return new GrokModelDialect(modelId);
+  if (m(modelId, "gemini") || modelId.toLowerCase().includes("google/"))
+    return new GeminiAPIFormat(modelId);
+  if (m(modelId, "codex"))
+    return new CodexAPIFormat(modelId);
+  if (modelId.startsWith("oai/") || modelId.includes("o1") || modelId.includes("o3"))
+    return new OpenAIAPIFormat(modelId);
+  if (m(modelId, "qwen") || m(modelId, "alibaba"))
+    return new QwenModelDialect(modelId);
+  if (m(modelId, "minimax"))
+    return new MiniMaxModelDialect(modelId);
+  if (m(modelId, "deepseek"))
+    return new DeepSeekModelDialect(modelId);
+  if (m(modelId, "glm-") || m(modelId, "chatglm-") || modelId.toLowerCase().includes("zhipu/"))
+    return new GLMModelDialect(modelId);
+  if (m(modelId, "xiaomi") || m(modelId, "mimo"))
+    return new XiaomiModelDialect(modelId);
+
+  return new DefaultAPIFormat(modelId);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -226,9 +261,11 @@ export function createHandlerForProvider(
   if (!transport) return null;
 
   const adapter = resolveAPIFormat(def, modelName);
+  const dialect = resolveModelDialect(modelName);
 
   return new ComposedHandler(transport, targetModel, modelName, port, {
     adapter: adapter ?? undefined,
+    modelDialect: dialect,
     ...opts,
   });
 }

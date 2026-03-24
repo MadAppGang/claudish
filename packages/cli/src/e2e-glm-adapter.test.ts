@@ -11,7 +11,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
-import { resolveModelDialect } from "./adapters/dialect-manager.js";
+import { resolveModelDialect } from "./providers/provider-profiles.js";
 import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
 import { DefaultAPIFormat } from "./adapters/base-api-format.js";
 

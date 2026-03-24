@@ -15,7 +15,7 @@ import { lookupModel } from "./adapters/model-catalog.js";
 import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { GrokModelDialect } from "./adapters/grok-model-dialect.js";
-import { resolveModelDialect } from "./adapters/dialect-manager.js";
+import { resolveModelDialect } from "./providers/provider-profiles.js";
 import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
 
 const MINIMAX_API_KEY =
