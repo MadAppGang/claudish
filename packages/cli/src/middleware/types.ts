@@ -64,12 +64,6 @@ export interface ModelMiddleware {
   readonly name: string;
 
   /**
-   * Determines if this middleware should handle the given model
-   * Called once per request to filter active middlewares
-   */
-  shouldHandle(modelId: string): boolean;
-
-  /**
    * Called once when the proxy server starts (optional)
    * Use for initialization, loading config, etc.
    */

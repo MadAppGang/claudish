@@ -12,6 +12,8 @@ import type { BaseModelDialect } from "../adapters/base-model-dialect.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { ComposedHandler } from "../handlers/composed-handler.js";
+import { GeminiThoughtSignatureMiddleware } from "../middleware/gemini-thought-signature.js";
+import type { ModelMiddleware } from "../middleware/types.js";
 import { toRemoteProvider } from "./provider-definitions.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
 import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist.js";
@@ -231,6 +233,22 @@ function resolveAPIFormat(
 // Model dialect resolution
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Middleware resolution
+// ---------------------------------------------------------------------------
+
+function resolveMiddlewares(modelId: string): ModelMiddleware[] {
+  const mw: ModelMiddleware[] = [];
+  if (matchesModelFamily(modelId, "gemini") || modelId.toLowerCase().includes("google/")) {
+    mw.push(new GeminiThoughtSignatureMiddleware());
+  }
+  return mw;
+}
+
+// ---------------------------------------------------------------------------
+// Model dialect resolution
+// ---------------------------------------------------------------------------
+
 export function resolveModelDialect(modelId: string): BaseAPIFormat | BaseModelDialect {
   const m = matchesModelFamily;
 
@@ -324,10 +342,12 @@ export function createHandlerForProvider(
 
   const adapter = resolveAPIFormat(effective.def, effectiveModelName);
   const dialect = resolveModelDialect(effectiveModelName);
+  const middlewares = resolveMiddlewares(effectiveModelName);
 
   return new ComposedHandler(transport, targetModel, effectiveModelName, port, {
     adapter: adapter ?? undefined,
     modelDialect: dialect,
+    middlewares,
     isInteractive: opts?.isInteractive,
     invocationMode: opts?.invocationMode,
   });

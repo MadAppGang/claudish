@@ -46,10 +46,6 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
     }
   >();
 
-  shouldHandle(modelId: string): boolean {
-    return modelId.includes("gemini") || modelId.includes("google/");
-  }
-
   onInit(): void {
     log("[Gemini] Thought signature middleware initialized");
   }

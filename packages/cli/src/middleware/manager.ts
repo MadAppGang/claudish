@@ -64,25 +64,17 @@ export class MiddlewareManager {
   }
 
   /**
-   * Get active middlewares for a specific model
+   * Get names of registered middlewares (all are active, selection is done by resolver).
    */
-  private getActiveMiddlewares(modelId: string): ModelMiddleware[] {
-    return this.middlewares.filter((m) => m.shouldHandle(modelId));
-  }
-
-  /**
-   * Get names of active middlewares for a specific model.
-   * Used by stats recording to capture middleware names without details.
-   */
-  getActiveNames(modelId: string): string[] {
-    return this.getActiveMiddlewares(modelId).map((m) => m.name);
+  getActiveNames(_modelId: string): string[] {
+    return this.middlewares.map((m) => m.name);
   }
 
   /**
    * Execute beforeRequest hooks for all active middlewares
    */
   async beforeRequest(context: RequestContext): Promise<void> {
-    const active = this.getActiveMiddlewares(context.modelId);
+    const active = this.middlewares;
 
     if (active.length === 0) {
       return; // No middlewares for this model
@@ -110,7 +102,7 @@ export class MiddlewareManager {
    * Execute afterResponse hooks for non-streaming responses
    */
   async afterResponse(context: NonStreamingResponseContext): Promise<void> {
-    const active = this.getActiveMiddlewares(context.modelId);
+    const active = this.middlewares;
 
     if (active.length === 0) {
       return;
@@ -138,7 +130,7 @@ export class MiddlewareManager {
    * Execute afterStreamChunk hooks for each streaming chunk
    */
   async afterStreamChunk(context: StreamChunkContext): Promise<void> {
-    const active = this.getActiveMiddlewares(context.modelId);
+    const active = this.middlewares;
 
     if (active.length === 0) {
       return;
@@ -168,7 +160,7 @@ export class MiddlewareManager {
    * Execute afterStreamComplete hooks after streaming finishes
    */
   async afterStreamComplete(modelId: string, metadata: Map<string, any>): Promise<void> {
-    const active = this.getActiveMiddlewares(modelId);
+    const active = this.middlewares;
 
     if (active.length === 0) {
       return;

@@ -24,7 +24,7 @@ import type { BaseModelDialect } from "../adapters/base-model-dialect.js";
 // ModelAdapter: either a full wire format adapter or a dialect-only adapter
 type ModelAdapter = BaseAPIFormat | BaseModelDialect;
 import { resolveModelDialect } from "../providers/provider-profiles.js";
-import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
+import { MiddlewareManager } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { filterIdentity } from "./shared/openai-compat.js";
@@ -54,6 +54,8 @@ export interface ComposedHandlerOptions {
   adapter?: BaseAPIFormat;
   /** Model dialect (GLM, Grok, etc.) — resolved by the provider registry */
   modelDialect?: ModelAdapter;
+  /** Middleware instances — resolved by the provider registry */
+  middlewares?: import("../middleware/types.js").ModelMiddleware[];
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
   /** Token tracking strategy override (transport provides default via tokenStrategy) */
@@ -100,9 +102,11 @@ export class ComposedHandler implements ModelHandler {
       this.modelAdapter = this.resolvedDialect;
     }
 
-    // Initialize middleware — register all, manager filters by shouldHandle(modelId)
+    // Initialize middleware — resolved by the provider registry
     this.middlewareManager = new MiddlewareManager();
-    this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
+    if (options.middlewares) {
+      for (const mw of options.middlewares) this.middlewareManager.register(mw);
+    }
     this.middlewareManager
       .initialize()
       .catch((err) => log(`[ComposedHandler:${targetModel}] Middleware init error: ${err}`));
