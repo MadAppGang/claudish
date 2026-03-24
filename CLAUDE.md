@@ -114,6 +114,8 @@ transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAd
 
 **Adding a new provider**: Add one entry to `PROVIDER_PROFILES` table in `providers/provider-profiles.ts`.
 **Adding a new model**: Create a ModelDialect adapter, add it to the `DIALECTS` array in `adapters/dialect-manager.ts`.
+**Non-streaming callers**: Use `resolveAPIFormat()` + `resolveTransport()` from `provider-profiles.ts` to construct transport and adapter without the full ComposedHandler. Use `adapter.parseResponse(data)` to parse wire-format responses.
+**New transports**: Extend `BaseTransport` (or `ApiKeyTransport`/`OAuthTransport`) from `providers/transport/base.ts` for built-in `RequestQueue` and auth patterns.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
 
 ### Stream Parsers
