@@ -4,16 +4,16 @@
  * Transport concerns:
  * - x-goog-api-key header
  * - Endpoint URL with {model} substitution
- * - GeminiRequestQueue for rate limiting
+ * - RequestQueue with geminiOnResponse hook for rate limiting
  * - gemini-sse stream format
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
-import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
-import { log } from "../../logger.js";
+import { BaseTransport } from "./base.js";
+import { geminiOnResponse } from "../../handlers/shared/request-queue.js";
 
-export class GeminiProviderTransport implements ProviderTransport {
+export class GeminiProviderTransport extends BaseTransport {
   readonly name = "gemini";
   readonly displayName = "Gemini API";
   readonly streamFormat: StreamFormat = "gemini-sse";
@@ -24,6 +24,11 @@ export class GeminiProviderTransport implements ProviderTransport {
   private modelName: string;
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string) {
+    super("gemini", {
+      baseDelayMs: 1000,
+      maxDelayMs: 10000,
+      onResponse: geminiOnResponse,
+    });
     this.provider = provider;
     this.modelName = modelName;
     this.apiKey = apiKey;
@@ -45,15 +50,6 @@ export class GeminiProviderTransport implements ProviderTransport {
       .replace("{model}", this.modelName)
       .replace(":streamGenerateContent", ":generateContent");
     return `${this.provider.baseUrl}${apiPath}`;
-  }
-
-  /**
-   * Rate-limited request via GeminiRequestQueue singleton.
-   * Serializes all Gemini requests to prevent quota exhaustion.
-   */
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
-    const queue = GeminiRequestQueue.getInstance();
-    return queue.enqueue(fetchFn);
   }
 }
 

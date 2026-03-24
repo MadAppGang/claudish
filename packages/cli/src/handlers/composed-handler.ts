@@ -53,12 +53,10 @@ export interface ComposedHandlerOptions {
   adapter?: BaseAPIFormat;
   /** Tool schemas for validation (enables buffered tool call validation) */
   toolSchemas?: any[];
-  /** Token tracking strategy */
+  /** Token tracking strategy override (transport provides default via tokenStrategy) */
   tokenStrategy?: "standard" | "accumulate-both" | "delta-aware" | "actual-cost" | "local";
   /** Summarize tool descriptions (for models with small context) */
   summarizeTools?: boolean;
-  /** Whether the Gemini SSE stream wraps chunks in {response: {...}} (CodeAssist) */
-  unwrapGeminiResponse?: boolean;
   /** Whether the current session is interactive (gates consent prompt). */
   isInteractive?: boolean;
   /** How this handler was invoked (for stats). */
@@ -700,7 +698,7 @@ export class ComposedHandler implements ModelHandler {
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
           onToolCall,
-          unwrapResponse: this.options.unwrapGeminiResponse ?? this.provider.unwrapResponse,
+          unwrapResponse: this.provider.unwrapResponse,
         });
       }
 

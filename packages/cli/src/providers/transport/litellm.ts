@@ -5,7 +5,8 @@
  * LiteLLM uses OpenAI-compatible /v1/chat/completions endpoint.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
+import { ApiKeyTransport } from "./base.js";
 
 /**
  * Extra headers that LiteLLM should forward to specific providers.
@@ -18,18 +19,15 @@ const MODEL_EXTRA_HEADERS: Array<{ pattern: string; headers: Record<string, stri
   { pattern: "kimi", headers: { "User-Agent": "claude-code/1.0" } },
 ];
 
-export class LiteLLMProviderTransport implements ProviderTransport {
+export class LiteLLMProviderTransport extends ApiKeyTransport {
   readonly name = "litellm";
   readonly displayName = "LiteLLM";
   readonly streamFormat: StreamFormat = "openai-sse";
 
-  private baseUrl: string;
-  private apiKey: string;
   private modelName: string;
 
   constructor(baseUrl: string, apiKey: string, modelName: string) {
-    this.baseUrl = baseUrl;
-    this.apiKey = apiKey;
+    super("litellm", baseUrl, "/v1/chat/completions", apiKey);
     this.modelName = modelName;
   }
 
@@ -39,17 +37,6 @@ export class LiteLLMProviderTransport implements ProviderTransport {
    */
   overrideStreamFormat(): StreamFormat {
     return "openai-sse";
-  }
-
-  getEndpoint(): string {
-    return `${this.baseUrl}/v1/chat/completions`;
-  }
-
-  async getHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.apiKey}`,
-    };
-    return headers;
   }
 
   getExtraPayloadFields(): Record<string, any> {

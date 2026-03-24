@@ -3,24 +3,26 @@
  *
  * Handles communication with OpenAI's API (and OpenAI-compatible providers
  * like GLM, Zen). Supports both Chat Completions and Codex Responses API.
- * Includes 30-second timeout with detailed error reporting.
+ * Includes custom 429 retry logic with exponential backoff (up to 5 retries).
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { BaseTransport } from "./base.js";
 import { log } from "../../logger.js";
 
-export class OpenAIProviderTransport implements ProviderTransport {
+export class OpenAIProviderTransport extends BaseTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat;
   readonly tokenStrategy = "delta-aware" as const;
 
   private provider: RemoteProvider;
-  private apiKey: string;
+  protected apiKey: string;
   private modelName: string;
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string) {
+    super(provider.name);
     this.provider = provider;
     this.modelName = modelName;
     this.apiKey = apiKey;
@@ -49,8 +51,8 @@ export class OpenAIProviderTransport implements ProviderTransport {
   }
 
   /**
-   * Override fetch with 30-second timeout, 429 retry with exponential backoff,
-   * and detailed error handling.
+   * Override fetch with 429 retry with exponential backoff and detailed error handling.
+   * Bypasses the base RequestQueue to implement its own retry logic.
    */
   async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
     const maxRetries = 5;

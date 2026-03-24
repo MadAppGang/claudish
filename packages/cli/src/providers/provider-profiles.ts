@@ -103,7 +103,6 @@ const geminiCodeAssistProfile: ProviderProfile = {
     const adapter = new GeminiAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
-      unwrapGeminiResponse: true,
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created Gemini Code Assist handler (composed): ${ctx.modelName}`);
@@ -117,7 +116,6 @@ const openaiProfile: ProviderProfile = {
     const adapter = new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
-      tokenStrategy: "delta-aware",
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created OpenAI handler (composed): ${ctx.modelName}`);
@@ -146,7 +144,6 @@ const glmProfile: ProviderProfile = {
     const adapter = new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
-      tokenStrategy: "delta-aware",
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created ${ctx.provider.name} handler (composed): ${ctx.modelName}`);
@@ -192,7 +189,6 @@ const openCodeZenProfile: ProviderProfile = {
       const adapter = new CodexAPIFormat(ctx.modelName);
       const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
         adapter,
-        tokenStrategy: "delta-aware",
         ...ctx.sharedOpts,
       });
       log(
@@ -205,7 +201,6 @@ const openCodeZenProfile: ProviderProfile = {
     const adapter = new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
-      tokenStrategy: "delta-aware",
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (composed): ${ctx.modelName}`);
@@ -219,7 +214,6 @@ const ollamaCloudProfile: ProviderProfile = {
     const adapter = new OllamaAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
-      tokenStrategy: "accumulate-both",
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created OllamaCloud handler (composed): ${ctx.modelName}`);

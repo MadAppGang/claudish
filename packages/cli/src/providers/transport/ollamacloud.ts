@@ -5,28 +5,22 @@
  * Uses Bearer token auth and Ollama's native JSONL streaming format.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { ApiKeyTransport } from "./base.js";
 
-export class OllamaProviderTransport implements ProviderTransport {
+export class OllamaProviderTransport extends ApiKeyTransport {
   readonly name = "ollamacloud";
   readonly displayName = "OllamaCloud";
   readonly streamFormat: StreamFormat = "ollama-jsonl";
   readonly tokenStrategy = "accumulate-both" as const;
 
-  private provider: RemoteProvider;
-  private apiKey: string;
-
   constructor(provider: RemoteProvider, apiKey: string) {
-    this.provider = provider;
-    this.apiKey = apiKey;
-  }
-
-  getEndpoint(): string {
-    return `${this.provider.baseUrl}${this.provider.apiPath}`;
+    super("ollamacloud", provider.baseUrl, provider.apiPath, apiKey);
   }
 
   async getHeaders(): Promise<Record<string, string>> {
+    // Only include Authorization if key is present (matches original behavior)
     const headers: Record<string, string> = {};
     if (this.apiKey) {
       headers["Authorization"] = `Bearer ${this.apiKey}`;

@@ -4,30 +4,36 @@
  * Transport concerns:
  * - Bearer token auth
  * - OpenRouter-specific headers (HTTP-Referer, X-Title)
- * - OpenRouterRequestQueue for rate limiting
+ * - RequestQueue with OpenRouter rate limit hooks
  * - openai-sse stream format
  * - Context window lookup from cached OpenRouter model catalog
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import { OpenRouterRequestQueue } from "../../handlers/shared/openrouter-queue.js";
+import type { StreamFormat } from "./types.js";
+import { BaseTransport } from "./base.js";
+import { createOpenRouterHooks } from "../../handlers/shared/request-queue.js";
 import { getCachedOpenRouterModels } from "../../model-loader.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-export class OpenRouterProviderTransport implements ProviderTransport {
+export class OpenRouterProviderTransport extends BaseTransport {
   readonly name = "openrouter";
   readonly displayName = "OpenRouter";
   readonly streamFormat: StreamFormat = "openai-sse";
 
   private apiKey: string;
-  private queue: OpenRouterRequestQueue;
   private modelId: string;
 
   constructor(apiKey: string, modelId?: string) {
+    const hooks = createOpenRouterHooks();
+    super("openrouter", {
+      baseDelayMs: 1000,
+      maxDelayMs: 10000,
+      calculateDelay: hooks.calculateDelay,
+      onResponse: hooks.onResponse,
+    });
     this.apiKey = apiKey;
     this.modelId = modelId || "";
-    this.queue = OpenRouterRequestQueue.getInstance();
   }
 
   /**
@@ -48,10 +54,6 @@ export class OpenRouterProviderTransport implements ProviderTransport {
       "HTTP-Referer": "https://claudish.com",
       "X-Title": "Claudish - OpenRouter Proxy",
     };
-  }
-
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
-    return this.queue.enqueue(fetchFn);
   }
 
   /**

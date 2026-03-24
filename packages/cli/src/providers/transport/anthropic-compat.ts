@@ -6,20 +6,22 @@
  * anthropic-version, plus Kimi OAuth fallback for kimi-coding.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { BaseTransport } from "./base.js";
 import { log } from "../../logger.js";
 
-export class AnthropicProviderTransport implements ProviderTransport {
+export class AnthropicProviderTransport extends BaseTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat = "anthropic-sse";
   readonly tokenStrategy = "standard" as const;
 
   private provider: RemoteProvider;
-  private apiKey: string;
+  protected apiKey: string;
 
   constructor(provider: RemoteProvider, apiKey: string) {
+    super(provider.name);
     this.provider = provider;
     this.apiKey = apiKey;
     this.name = provider.name;

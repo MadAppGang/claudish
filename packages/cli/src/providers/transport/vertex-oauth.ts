@@ -12,7 +12,8 @@
  * - 30s request timeout
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
+import { OAuthTransport } from "./base.js";
 import {
   getVertexAuthManager,
   buildVertexOAuthEndpoint,
@@ -27,8 +28,8 @@ export interface ParsedVertexModel {
 
 /**
  * Parse vertex model string into publisher and model.
- *   "gemini-2.5-flash" → { publisher: "google", model: "gemini-2.5-flash" }
- *   "anthropic/claude-3-5-sonnet" → { publisher: "anthropic", model: "claude-3-5-sonnet" }
+ *   "gemini-2.5-flash" -> { publisher: "google", model: "gemini-2.5-flash" }
+ *   "anthropic/claude-3-5-sonnet" -> { publisher: "anthropic", model: "claude-3-5-sonnet" }
  */
 export function parseVertexModel(modelId: string): ParsedVertexModel {
   const parts = modelId.split("/");
@@ -38,16 +39,16 @@ export function parseVertexModel(modelId: string): ParsedVertexModel {
   return { publisher: parts[0], model: parts.slice(1).join("/") };
 }
 
-export class VertexProviderTransport implements ProviderTransport {
+export class VertexProviderTransport extends OAuthTransport {
   readonly name = "vertex";
   readonly displayName = "Vertex AI";
   readonly streamFormat: StreamFormat;
 
   private config: VertexConfig;
   private parsed: ParsedVertexModel;
-  private accessToken?: string;
 
   constructor(config: VertexConfig, parsed: ParsedVertexModel) {
+    super("vertex");
     this.config = config;
     this.parsed = parsed;
 
@@ -68,12 +69,6 @@ export class VertexProviderTransport implements ProviderTransport {
       this.parsed.model,
       true // streaming
     );
-  }
-
-  async getHeaders(): Promise<Record<string, string>> {
-    return {
-      Authorization: `Bearer ${this.accessToken}`,
-    };
   }
 
   getRequestInit(): Record<string, any> {

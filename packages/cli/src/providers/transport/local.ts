@@ -4,15 +4,16 @@
  * Supports Ollama, LM Studio, vLLM, MLX, and custom local endpoints.
  *
  * Transport concerns:
- * - Health checks (Ollama /api/tags → /v1/models fallback)
+ * - Health checks (Ollama /api/tags -> /v1/models fallback)
  * - Context window auto-detection (Ollama /api/show, LM Studio /v1/models)
  * - Custom undici agent with 10-minute timeouts for slow local inference
  * - LocalModelQueue for GPU concurrency control
  * - Provider-specific error messages
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { StreamFormat } from "./types.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
+import { BaseTransport } from "./base.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import { Agent } from "undici";
@@ -34,7 +35,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   custom: "Custom",
 };
 
-export class LocalTransport implements ProviderTransport {
+export class LocalTransport extends BaseTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat = "openai-sse";
@@ -48,6 +49,7 @@ export class LocalTransport implements ProviderTransport {
   private _contextWindow = 32768;
 
   constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
+    super(config.name);
     this.config = config;
     this.modelName = modelName;
     this.name = config.name;
@@ -126,7 +128,7 @@ export class LocalTransport implements ProviderTransport {
     return this.config;
   }
 
-  // ─── Health checks ──────────────────────────────────────────────────
+  // --- Health checks ---
 
   private async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
@@ -176,7 +178,7 @@ export class LocalTransport implements ProviderTransport {
     return false;
   }
 
-  // ─── Context window auto-detection ──────────────────────────────────
+  // --- Context window auto-detection ---
 
   private async fetchContextWindow(): Promise<void> {
     // Skip if env var already set
@@ -275,7 +277,7 @@ export class LocalTransport implements ProviderTransport {
     }
   }
 
-  // ─── Error messages ─────────────────────────────────────────────────
+  // --- Error messages ---
 
   private getConnectionErrorMessage(): string {
     switch (this.config.name) {
