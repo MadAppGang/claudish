@@ -159,6 +159,12 @@ export class LocalModelAdapter extends BaseAPIFormat {
 
   // ─── System prompt guidance ─────────────────────────────────────────
 
+  protected getToolGuidanceHeader(): string {
+    return `
+
+4. TOOL CALLING REQUIREMENTS:`;
+  }
+
   protected buildSystemGuidance(toolCount: number): string {
     let guidance = `
 
@@ -184,25 +190,7 @@ IMPORTANT INSTRUCTIONS FOR THIS MODEL:
 - If you called a Glob/Search and got files, READ important files next, then ANALYZE, then SUGGEST improvements.`;
 
     if (toolCount > 0) {
-      const isQwen = this.modelId.toLowerCase().includes("qwen");
-
-      if (isQwen) {
-        guidance += `
-
-4. TOOL CALLING FORMAT (CRITICAL FOR QWEN):
-You MUST use proper OpenAI-style function calling. Do NOT output tool calls as XML text.
-When you want to call a tool, use the API's tool_calls mechanism, NOT text like <function=...>.
-The tool calls must be structured JSON in the API response, not XML in your text output.
-
-If you cannot use structured tool_calls, format as JSON:
-{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
-
-5. TOOL PARAMETER REQUIREMENTS:`;
-      } else {
-        guidance += `
-
-4. TOOL CALLING REQUIREMENTS:`;
-      }
+      guidance += this.getToolGuidanceHeader();
 
       guidance += `
 - When calling tools, you MUST include ALL required parameters. Incomplete tool calls will fail.
