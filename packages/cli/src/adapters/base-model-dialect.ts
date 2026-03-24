@@ -9,7 +9,6 @@
  * Wire format adapters (OpenAI, Gemini, Anthropic, etc.) extend BaseAPIFormat instead.
  */
 
-import { truncateToolName } from "./tool-name-utils.js";
 import type { ModelDialect } from "./model-dialect.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import type { AdapterResult } from "./base-api-format.js";
@@ -18,12 +17,6 @@ import { getModelPricing } from "../handlers/shared/remote-provider-types.js";
 
 export abstract class BaseModelDialect implements ModelDialect {
   protected modelId: string;
-
-  /**
-   * Map of truncated tool names back to original names.
-   * Populated during prepareRequest() when tool names are truncated.
-   */
-  protected toolNameMap: Map<string, string> = new Map();
 
   constructor(modelId: string) {
     this.modelId = modelId;
@@ -48,20 +41,6 @@ export abstract class BaseModelDialect implements ModelDialect {
   }
 
   /**
-   * Get the tool name map (truncated -> original).
-   */
-  getToolNameMap(): Map<string, string> {
-    return this.toolNameMap;
-  }
-
-  /**
-   * Restore a potentially truncated tool name to its original.
-   */
-  restoreToolName(name: string): string {
-    return this.toolNameMap.get(name) || name;
-  }
-
-  /**
    * Handle any request preparation before sending to the model.
    */
   prepareRequest(request: any, originalRequest: any): any {
@@ -71,9 +50,7 @@ export abstract class BaseModelDialect implements ModelDialect {
   /**
    * Reset internal state between requests.
    */
-  reset(): void {
-    this.toolNameMap.clear();
-  }
+  reset(): void {}
 
   /**
    * Context window size for this model (tokens).
@@ -84,9 +61,10 @@ export abstract class BaseModelDialect implements ModelDialect {
 
   /**
    * Whether this model supports vision/image input.
+   * Default false; override in dialects for models with vision support.
    */
   supportsVision(): boolean {
-    return true;
+    return false;
   }
 
   /**
@@ -102,49 +80,5 @@ export abstract class BaseModelDialect implements ModelDialect {
    */
   getPricing(providerName: string): ModelPricing {
     return getModelPricing(providerName, this.modelId);
-  }
-
-  /**
-   * Truncate tool names in the request payload if the model has a name length limit.
-   */
-  protected truncateToolNames(request: any): void {
-    const limit = this.getToolNameLimit();
-    if (!limit || !request.tools) return;
-
-    for (const tool of request.tools) {
-      const originalName = tool.function?.name || tool.name;
-      if (originalName && originalName.length > limit) {
-        const truncated = truncateToolName(originalName, limit);
-        this.toolNameMap.set(truncated, originalName);
-        if (tool.function?.name) {
-          tool.function.name = truncated;
-        } else if (tool.name) {
-          tool.name = truncated;
-        }
-      }
-    }
-  }
-
-  /**
-   * Truncate tool names in assistant message history (for messages array).
-   */
-  protected truncateToolNamesInMessages(messages: any[]): void {
-    const limit = this.getToolNameLimit();
-    if (!limit) return;
-
-    for (const msg of messages) {
-      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
-          const name = tc.function?.name;
-          if (name && name.length > limit) {
-            const truncated = truncateToolName(name, limit);
-            tc.function.name = truncated;
-            if (!this.toolNameMap.has(truncated)) {
-              this.toolNameMap.set(truncated, name);
-            }
-          }
-        }
-      }
-    }
   }
 }

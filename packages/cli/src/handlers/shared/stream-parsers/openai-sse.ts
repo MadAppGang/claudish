@@ -106,7 +106,8 @@ export function createStreamingResponseHandler(
   middlewareManager: any,
   onTokenUpdate?: (input: number, output: number) => void,
   toolSchemas?: any[], // Tool schemas for validation
-  toolNameMap?: Map<string, string> // Truncated → original tool name mapping
+  toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
+  modelDialect?: any, // Model dialect for additional text processing
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -408,7 +409,10 @@ export function createStreamingResponseHandler(
                       });
                       state.reasoningStarted = false;
                     }
-                    const res = adapter.processTextContent(txt, "");
+                    let res = adapter.processTextContent(txt, "");
+                    if (modelDialect?.processTextContent && !res.wasTransformed) {
+                      res = modelDialect.processTextContent(res.cleanedText, "");
+                    }
                     log(
                       `[Streaming] After adapter: "${res.cleanedText.substring(0, 30).replace(/\n/g, "\\n")}" (${res.cleanedText.length} chars, transformed=${res.wasTransformed})`
                     );

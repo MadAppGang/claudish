@@ -68,7 +68,9 @@ export class GeminiProviderTransport extends BaseTransport {
     const apiPath = this.provider.apiPath
       .replace("{model}", this.modelName)
       .replace(":streamGenerateContent", ":generateContent");
-    return `${this.provider.baseUrl}${apiPath}`;
+    const url = new URL(apiPath, this.provider.baseUrl);
+    url.searchParams.delete("alt");
+    return url.toString();
   }
 }
 

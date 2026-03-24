@@ -61,10 +61,18 @@ import { log, logStderr } from "../logger.js";
 import { resolveApiKeyProvenance, formatProvenanceLog } from "./api-key-provenance.js";
 
 // ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+function isZenProvider(def: ProviderDefinition): boolean {
+  return def.name === "opencode-zen" || def.name === "opencode-zen-go";
+}
+
+// ---------------------------------------------------------------------------
 // Transport resolution
 // ---------------------------------------------------------------------------
 
-function resolveTransport(
+export function resolveTransport(
   def: ProviderDefinition,
   modelName: string,
   apiKey: string,
@@ -79,22 +87,7 @@ function resolveTransport(
       return new GeminiCodeAssistProviderTransport(modelName);
 
     case "openai": {
-      const isZen = def.name === "opencode-zen" || def.name === "opencode-zen-go";
-      // OpenCode Zen: GPT models go through Responses API
-      if (isZen && modelName.toLowerCase().startsWith("gpt-")) {
-        return new ZenTransport(
-          { ...rp, apiPath: "/v1/responses" },
-          modelName,
-          apiKey,
-        );
-      }
-      // OpenCode Zen: MiniMax models go through Anthropic transport
-      if (isZen && modelName.toLowerCase().includes("minimax")) {
-        return new AnthropicProviderTransport(rp, apiKey || def.publicKeyFallback || "");
-      }
-      if (isZen) {
-        return new ZenTransport(rp, modelName, apiKey);
-      }
+      if (isZenProvider(def)) return new ZenTransport(rp, modelName, apiKey);
       return new OpenAIProviderTransport(rp, modelName, apiKey);
     }
 
@@ -160,7 +153,7 @@ function resolveTransport(
 // Format adapter resolution
 // ---------------------------------------------------------------------------
 
-function resolveAPIFormat(
+export function resolveAPIFormat(
   def: ProviderDefinition,
   modelName: string,
 ): BaseAPIFormat | null {
@@ -170,20 +163,8 @@ function resolveAPIFormat(
       return new GeminiAPIFormat(modelName);
 
     case "openai": {
-      // OpenCode Zen: MiniMax models use Anthropic format
-      if (
-        (def.name === "opencode-zen" || def.name === "opencode-zen-go") &&
-        modelName.toLowerCase().includes("minimax")
-      ) {
-        return new AnthropicAPIFormat(modelName, def.name);
-      }
-      // OpenCode Zen: GPT models use Codex format (Responses API)
-      if (
-        (def.name === "opencode-zen" || def.name === "opencode-zen-go") &&
-        modelName.toLowerCase().startsWith("gpt-")
-      ) {
+      if (isZenProvider(def) && modelName.toLowerCase().startsWith("gpt-"))
         return new CodexAPIFormat(modelName);
-      }
       return new OpenAIAPIFormat(modelName);
     }
 
@@ -230,10 +211,6 @@ function resolveAPIFormat(
 }
 
 // ---------------------------------------------------------------------------
-// Model dialect resolution
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Middleware resolution
 // ---------------------------------------------------------------------------
 
@@ -249,17 +226,13 @@ function resolveMiddlewares(modelId: string): ModelMiddleware[] {
 // Model dialect resolution
 // ---------------------------------------------------------------------------
 
-export function resolveModelDialect(modelId: string): BaseAPIFormat | BaseModelDialect {
+export function resolveModelDialect(modelId: string): BaseModelDialect | null {
   const m = matchesModelFamily;
 
   if (m(modelId, "grok") || modelId.toLowerCase().includes("x-ai/"))
     return new GrokModelDialect(modelId);
   if (m(modelId, "gemini") || modelId.toLowerCase().includes("google/"))
     return new GeminiModelDialect(modelId);
-  if (m(modelId, "codex"))
-    return new CodexAPIFormat(modelId);
-  if (modelId.startsWith("oai/") || modelId.includes("o1") || modelId.includes("o3"))
-    return new OpenAIAPIFormat(modelId);
   if (m(modelId, "qwen") || m(modelId, "alibaba"))
     return new QwenModelDialect(modelId);
   if (m(modelId, "minimax"))
@@ -271,7 +244,7 @@ export function resolveModelDialect(modelId: string): BaseAPIFormat | BaseModelD
   if (m(modelId, "xiaomi") || m(modelId, "mimo"))
     return new XiaomiModelDialect(modelId);
 
-  return new DefaultAPIFormat(modelId);
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,19 +258,26 @@ export function resolveModelDialect(modelId: string): BaseAPIFormat | BaseModelD
  * - OpenCode Zen minimax variant swap (zen + minimax model -> zen-minimax def)
  * - publicKeyFallback for providers that allow auth-less access (e.g. Zen "public")
  */
-function resolveEffective(
+export function resolveEffective(
   def: ProviderDefinition,
   modelName: string,
   apiKey: string,
 ): { def: ProviderDefinition; apiKey: string } {
-  // Zen + minimax: the opencode-zen def uses OpenAI transport, but minimax models
-  // need Anthropic transport. The zen transport code already handles this in
-  // resolveTransport, so no definition swap is needed here. But we do need to
-  // ensure the publicKeyFallback is applied.
-  if (def.publicKeyFallback && !apiKey) {
-    return { def, apiKey: def.publicKeyFallback };
+  let effectiveDef = def;
+
+  // Zen + minimax: swap to the anthropic-transport variant definition.
+  // The zen-minimax defs have transport: "anthropic", so resolveTransport and
+  // resolveAPIFormat handle them via the standard anthropic case branches.
+  if (def.name === "opencode-zen" && modelName.toLowerCase().includes("minimax")) {
+    effectiveDef = getProviderByName("opencode-zen-minimax") ?? def;
+  } else if (def.name === "opencode-zen-go" && modelName.toLowerCase().includes("minimax")) {
+    effectiveDef = getProviderByName("opencode-zen-go-minimax") ?? def;
   }
-  return { def, apiKey };
+
+  if (effectiveDef.publicKeyFallback && !apiKey) {
+    return { def: effectiveDef, apiKey: effectiveDef.publicKeyFallback };
+  }
+  return { def: effectiveDef, apiKey };
 }
 
 /**
@@ -345,7 +325,7 @@ export function createHandlerForProvider(
   const middlewares = resolveMiddlewares(effectiveModelName);
 
   return new ComposedHandler(transport, targetModel, effectiveModelName, port, {
-    adapter: adapter ?? undefined,
+    formatAdapter: adapter ?? undefined,
     modelDialect: dialect,
     middlewares,
     isInteractive: opts?.isInteractive,
@@ -407,8 +387,9 @@ function createLocalHandler(
       concurrency: opts?.concurrency ?? resolved.concurrency,
     });
     const adapter = createLocalAdapter(resolved.modelName, resolved.provider.name);
+    // For local models, targetModel = modelName (no provider prefix to preserve)
     const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
-      adapter,
+      formatAdapter: adapter,
       tokenStrategy: "local",
       summarizeTools: opts?.summarizeTools,
       isInteractive: opts?.isInteractive,
@@ -432,7 +413,7 @@ function createLocalHandler(
       urlParsed.modelName,
       port,
       {
-        adapter,
+        formatAdapter: adapter,
         tokenStrategy: "local",
         summarizeTools: opts?.summarizeTools,
         isInteractive: opts?.isInteractive,

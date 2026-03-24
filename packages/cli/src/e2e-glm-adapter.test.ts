@@ -121,12 +121,12 @@ describe("resolveModelDialect — GLM routing", () => {
   test("does NOT select GLMModelDialect for gpt-4o", () => {
     const adapter = resolveModelDialect("gpt-4o");
 
-    expect(adapter.getName()).not.toBe("GLMModelDialect");
+    expect(adapter).toBeNull();
   });
 
   test("needsTransformation returns true for GLM models", () => {
     const adapter = resolveModelDialect("glm-5");
-    expect(adapter.getName() !== "DefaultAPIFormat").toBe(true);
+    expect(adapter).not.toBeNull();
   });
 });
 
@@ -178,7 +178,7 @@ describe("Three-layer adapter — model dialect overrides format adapter", () =>
     const modelAdapter = resolveModelDialect("some-unknown-model");
 
     // Should be DefaultAPIFormat, not GLMModelDialect
-    expect(modelAdapter.getName()).toBe("DefaultAPIFormat");
+    expect(modelAdapter).toBeNull();
   });
 
   test("model dialect strips thinking, format adapter does not", () => {

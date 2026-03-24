@@ -21,8 +21,6 @@ import type { ModelHandler } from "./types.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 import type { BaseModelDialect } from "../adapters/base-model-dialect.js";
-// ModelAdapter: either a full wire format adapter or a dialect-only adapter
-type ModelAdapter = BaseAPIFormat | BaseModelDialect;
 import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { MiddlewareManager } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
@@ -51,9 +49,9 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
 
 export interface ComposedHandlerOptions {
   /** Override format selection — use this specific APIFormat instance */
-  adapter?: BaseAPIFormat;
+  formatAdapter?: BaseAPIFormat;
   /** Model dialect (GLM, Grok, etc.) — resolved by the provider registry */
-  modelDialect?: ModelAdapter;
+  modelDialect?: BaseModelDialect | null;
   /** Middleware instances — resolved by the provider registry */
   middlewares?: import("../middleware/types.js").ModelMiddleware[];
   /** Tool schemas for validation (enables buffered tool call validation) */
@@ -70,11 +68,9 @@ export interface ComposedHandlerOptions {
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private explicitAdapter?: BaseAPIFormat;
+  private formatAdapter?: BaseAPIFormat;
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
-  private modelAdapter?: ModelAdapter;
-  /** Auto-resolved dialect for this model */
-  private resolvedDialect: ModelAdapter;
+  private modelAdapter?: BaseModelDialect;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
   private targetModel: string;
@@ -93,13 +89,13 @@ export class ComposedHandler implements ModelHandler {
     this.provider = provider;
     this.targetModel = targetModel;
     this.options = options;
-    this.explicitAdapter = options.adapter;
+    this.formatAdapter = options.formatAdapter;
     this.isInteractive = options.isInteractive ?? false;
 
     // Model dialect (GLM, Grok, DeepSeek, etc.) — passed from resolver or resolved here as fallback
-    this.resolvedDialect = options.modelDialect ?? resolveModelDialect(targetModel);
-    if (this.resolvedDialect.getName() !== "DefaultAPIFormat") {
-      this.modelAdapter = this.resolvedDialect;
+    const dialect = options.modelDialect !== undefined ? options.modelDialect : resolveModelDialect(targetModel);
+    if (dialect) {
+      this.modelAdapter = dialect;
     }
 
     // Initialize middleware — resolved by the provider registry
@@ -126,8 +122,9 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
-  private getAdapter(): BaseModelAdapter {
-    return this.explicitAdapter || this.resolvedDialect;
+  private getAdapter(): BaseAPIFormat {
+    if (!this.formatAdapter) throw new Error("No format adapter set");
+    return this.formatAdapter;
   }
 
   /** Model context window — model adapter wins over provider adapter */
@@ -286,6 +283,15 @@ export class ComposedHandler implements ModelHandler {
     // Model adapter may also need to post-process (e.g., strip unsupported thinking params)
     if (this.modelAdapter && this.modelAdapter !== adapter) {
       this.modelAdapter.prepareRequest(requestPayload, claudeRequest);
+      // If the model dialect specifies a stricter tool name limit than the format adapter,
+      // apply truncation through the format adapter so the mapping is centralized.
+      const dialectLimit = this.modelAdapter.getToolNameLimit();
+      if (dialectLimit !== null) {
+        adapter.truncateToolNames(requestPayload, dialectLimit);
+        if (requestPayload.messages) {
+          adapter.truncateToolNamesInMessages(requestPayload.messages, dialectLimit);
+        }
+      }
     }
     const toolNameMap = adapter.getToolNameMap();
 
@@ -620,7 +626,7 @@ export class ComposedHandler implements ModelHandler {
   private handleStream(
     c: Context,
     response: Response,
-    adapter: BaseModelAdapter,
+    adapter: BaseAPIFormat,
     claudeRequest: any,
     toolNameMap?: Map<string, string>,
     onComplete?: () => void
@@ -673,7 +679,8 @@ export class ComposedHandler implements ModelHandler {
           this.middlewareManager,
           onTokenUpdate,
           claudeRequest.tools,
-          toolNameMap
+          toolNameMap,
+          this.modelAdapter,
         );
 
       case "openai-responses-sse":
@@ -699,6 +706,7 @@ export class ComposedHandler implements ModelHandler {
         return createGeminiSseStream(c, response, {
           modelName: this.targetModel,
           adapter,
+          modelDialect: this.modelAdapter,
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
           onToolCall,

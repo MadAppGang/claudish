@@ -213,24 +213,24 @@ describe("resolveModelDialect — correct dialect selection", () => {
     expect(adapter).toBeInstanceOf(XiaomiModelDialect);
   });
 
-  test("codex-mini → CodexAPIFormat", () => {
+  test("codex-mini → null (no dialect, wire format only)", () => {
     const adapter = resolveModelDialect("codex-mini");
-    expect(adapter).toBeInstanceOf(CodexAPIFormat);
+    expect(adapter).toBeNull();
   });
 
-  test("gpt-4o → DefaultAPIFormat (GPT models use default OpenAI format)", () => {
+  test("gpt-4o → null (no dialect quirks)", () => {
     const adapter = resolveModelDialect("gpt-4o");
-    expect(adapter).toBeInstanceOf(DefaultAPIFormat);
+    expect(adapter).toBeNull();
   });
 
-  test("o3-mini → OpenAIAPIFormat (o-series needs reasoning_effort mapping)", () => {
+  test("o3-mini → null (no dialect quirks)", () => {
     const adapter = resolveModelDialect("o3-mini");
-    expect(adapter).toBeInstanceOf(OpenAIAPIFormat);
+    expect(adapter).toBeNull();
   });
 
-  test("unknown-model → DefaultAPIFormat", () => {
+  test("unknown-model → null", () => {
     const adapter = resolveModelDialect("unknown-model");
-    expect(adapter).toBeInstanceOf(DefaultAPIFormat);
+    expect(adapter).toBeNull();
   });
 });
 
@@ -247,23 +247,23 @@ describe("resolveModelDialect — false positive prevention", () => {
     expect(adapter).not.toBeInstanceOf(GLMModelDialect);
   });
 
-  test("my-grok-clone → DefaultAPIFormat (not GrokModelDialect — grok is mid-string)", () => {
+  test("my-grok-clone → null (not GrokModelDialect — grok is mid-string)", () => {
     const adapter = resolveModelDialect("my-grok-clone");
     expect(adapter).not.toBeInstanceOf(GrokModelDialect);
     // Should fall to default since none of the specific families match
-    expect(adapter).toBeInstanceOf(DefaultAPIFormat);
+    expect(adapter).toBeNull();
   });
 
-  test("my-minimax-clone → DefaultAPIFormat (not MiniMaxModelDialect)", () => {
+  test("my-minimax-clone → null (not MiniMaxModelDialect)", () => {
     const adapter = resolveModelDialect("my-minimax-clone");
     expect(adapter).not.toBeInstanceOf(MiniMaxModelDialect);
-    expect(adapter).toBeInstanceOf(DefaultAPIFormat);
+    expect(adapter).toBeNull();
   });
 
-  test("test-deepseek-model → DefaultAPIFormat (not DeepSeekModelDialect — deepseek is mid-string)", () => {
+  test("test-deepseek-model → null (not DeepSeekModelDialect — deepseek is mid-string)", () => {
     const adapter = resolveModelDialect("test-deepseek-model");
     expect(adapter).not.toBeInstanceOf(DeepSeekModelDialect);
-    expect(adapter).toBeInstanceOf(DefaultAPIFormat);
+    expect(adapter).toBeNull();
   });
 
   test("vendor/grok-beta uses GrokModelDialect (vendor prefix is fine)", () => {

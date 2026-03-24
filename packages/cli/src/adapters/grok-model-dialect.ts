@@ -150,6 +150,10 @@ export class GrokModelDialect extends BaseModelDialect {
     return lookupModel(this.modelId)?.contextWindow ?? 131_072;
   }
 
+  override supportsVision(): boolean {
+    return lookupModel(this.modelId)?.supportsVision ?? false;
+  }
+
   /**
    * Reset internal state (useful between requests)
    */

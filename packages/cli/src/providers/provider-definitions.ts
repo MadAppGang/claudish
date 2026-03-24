@@ -10,9 +10,7 @@
  */
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -83,6 +81,9 @@ export interface ProviderDefinition {
   oauthFallback?: string;
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
+  /** Whether model names for this provider may contain vendor prefixes (e.g., "google/gemini-2.0-flash")
+   *  that should be preserved during catalog resolution. Used by aggregators like OpenRouter and LiteLLM. */
+  preserveVendorPrefix?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
   isDirectApi?: boolean;
   /** Shortest @ prefix for handler creation (reverse of shortcuts) */
@@ -161,6 +162,8 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Direct OpenAI API (oai@)",
   },
 
+
+
   // ── OpenRouter ─────────────────────────────────────────────────────
   {
     name: "openrouter",
@@ -180,6 +183,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       "X-Title": "Claudish - OpenRouter Proxy",
     },
     isDirectApi: true,
+    preserveVendorPrefix: true,
     description: "580+ models, default backend (or@)",
   },
 
@@ -408,6 +412,21 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "OpenCode Zen (zen@) - free models",
   },
 
+  // ── OpenCode Zen MiniMax (internal variant, swapped by resolveEffective) ──
+  {
+    name: "opencode-zen-minimax",
+    displayName: "OpenCode Zen (MiniMax)",
+    shortcuts: [],
+    legacyPrefixes: [],
+    baseUrl: process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen",
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    apiKeyDescription: "OpenCode API Key",
+    apiKeyUrl: "https://opencode.ai",
+    transport: "anthropic",
+    publicKeyFallback: "public",
+  },
+
   // ── OpenCode Zen Go (lite plan) ────────────────────────────────────
   {
     name: "opencode-zen-go",
@@ -428,6 +447,21 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "OpenCode Zen Go plan (zengo@)",
+  },
+
+  // ── OpenCode Zen Go MiniMax (internal variant, swapped by resolveEffective) ──
+  {
+    name: "opencode-zen-go-minimax",
+    displayName: "OpenCode Zen Go (MiniMax)",
+    shortcuts: [],
+    legacyPrefixes: [],
+    baseUrl: process.env.OPENCODE_BASE_URL ? process.env.OPENCODE_BASE_URL.replace("/zen", "/zen/go") : "https://opencode.ai/zen/go",
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    apiKeyDescription: "OpenCode API Key",
+    apiKeyUrl: "https://opencode.ai",
+    transport: "anthropic",
+    publicKeyFallback: "public",
   },
 
   // ── Vertex AI ──────────────────────────────────────────────────────
@@ -469,6 +503,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "ll/", stripPrefix: true },
     ],
     isDirectApi: true,
+    preserveVendorPrefix: true,
     description: "LiteLLM proxy (ll@, litellm@)",
   },
 
@@ -886,3 +921,5 @@ export function isProviderAvailableByName(providerName: string): boolean {
   if (!def) return false;
   return isProviderAvailable(def);
 }
+
+// ---------------------------------------------------------------------------

@@ -53,7 +53,6 @@ const REASONING_CONTINUATION_PATTERNS = [
 
 export class GeminiModelDialect extends BaseModelDialect {
   private inReasoningBlock = false;
-  private reasoningBlockDepth = 0;
 
   getName(): string {
     return "GeminiModelDialect";
@@ -99,7 +98,6 @@ export class GeminiModelDialect extends BaseModelDialect {
         log(`[GeminiModelDialect] Filtered reasoning: "${trimmed.substring(0, 50)}..."`);
         wasFiltered = true;
         this.inReasoningBlock = true;
-        this.reasoningBlockDepth++;
         continue;
       }
 
@@ -113,11 +111,9 @@ export class GeminiModelDialect extends BaseModelDialect {
 
       if (
         this.inReasoningBlock &&
-        trimmed.length > 20 &&
         !REASONING_CONTINUATION_PATTERNS.some((p) => p.test(trimmed))
       ) {
         this.inReasoningBlock = false;
-        this.reasoningBlockDepth = 0;
       }
 
       cleanedLines.push(line);
@@ -133,10 +129,13 @@ export class GeminiModelDialect extends BaseModelDialect {
 
   override reset(): void {
     this.inReasoningBlock = false;
-    this.reasoningBlockDepth = 0;
   }
 
   override getContextWindow(): number {
     return 1_048_576; // Gemini models have 1M context (2^20 tokens)
+  }
+
+  override supportsVision(): boolean {
+    return true; // All Gemini models support vision
   }
 }

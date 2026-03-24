@@ -20,6 +20,8 @@ export interface GeminiSseOptions {
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
   /** CodeAssist wraps chunks in {response: {...}} */
   unwrapResponse?: boolean;
+  /** Model dialect for additional text processing */
+  modelDialect?: any;
 }
 
 export function createGeminiSseStream(
@@ -196,7 +198,10 @@ export function createGeminiSseStream(
 
                     let cleanedText = part.text;
                     if (opts.adapter) {
-                      const res = opts.adapter.processTextContent(part.text, accumulatedText);
+                      let res = opts.adapter.processTextContent(part.text, accumulatedText);
+                      if (opts.modelDialect?.processTextContent && !res.wasTransformed) {
+                        res = opts.modelDialect.processTextContent(res.cleanedText, accumulatedText);
+                      }
                       cleanedText = res.cleanedText || "";
                       accumulatedText += cleanedText;
                     } else {

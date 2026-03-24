@@ -264,12 +264,14 @@ export async function createProxyServer(
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
 
-    // 2b. Catalog resolution — resolve vendor prefix for OpenRouter and LiteLLM
+    // 2b. Catalog resolution — resolve vendor prefix for aggregator providers
+    // (e.g., OpenRouter, LiteLLM) that use vendor-prefixed model names.
     // This must happen after target is determined but before handler construction.
     // resolveModelNameSync is synchronous (uses in-memory cache + readFileSync).
     {
       const parsedTarget = parseModelSpec(target);
-      if (parsedTarget.provider === "openrouter" || parsedTarget.provider === "litellm") {
+      const targetDef = getProviderDefinitionByRemoteName(parsedTarget.provider);
+      if (targetDef?.preserveVendorPrefix) {
         const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
         logResolution(parsedTarget.model, resolution, options.quiet);
         if (resolution.wasResolved) {

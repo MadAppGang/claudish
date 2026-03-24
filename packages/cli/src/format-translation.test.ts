@@ -590,7 +590,7 @@ describe("Model Adapter Quirks", () => {
     expect(resolveModelDialect("minimax-m2.5").getName()).toBe("MiniMaxModelDialect");
     expect(resolveModelDialect("qwen3.5-plus").getName()).toBe("QwenModelDialect");
     expect(resolveModelDialect("deepseek-r1").getName()).toBe("DeepSeekModelDialect");
-    expect(resolveModelDialect("unknown-model").getName()).toBe("DefaultAPIFormat");
+    expect(resolveModelDialect("unknown-model")).toBeNull();
   });
 });
 
@@ -644,9 +644,9 @@ describe("CodexAdapter", () => {
     expect(new CodexAPIFormat("codex-mini").getName()).toBe("CodexAPIFormat");
   });
 
-  test("resolveModelDialect selects CodexAPIFormat for codex-mini", async () => {
+  test("codex-mini has no dialect (wire format only)", async () => {
     const { resolveModelDialect } = await import("./providers/provider-profiles.js");
-    expect(resolveModelDialect("codex-mini").getName()).toBe("CodexAPIFormat");
+    expect(resolveModelDialect("codex-mini")).toBeNull();
   });
 });
 
