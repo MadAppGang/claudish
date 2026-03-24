@@ -40,6 +40,8 @@ import { OpenRouterAPIFormat } from "../adapters/openrouter-api-format.js";
 import { ZenTransport } from "./transport/zen.js";
 import { PoeProvider } from "./transport/poe.js";
 import { LocalTransport } from "./transport/local.js";
+import { OllamaTransport } from "./transport/ollama.js";
+import { LMStudioTransport } from "./transport/lmstudio.js";
 import { LocalModelAdapter } from "../adapters/local-adapter.js";
 import { LocalQwenFormatAdapter } from "../adapters/local-qwen-format-adapter.js";
 import { LocalDeepSeekFormatAdapter } from "../adapters/local-deepseek-format-adapter.js";
@@ -49,6 +51,7 @@ import {
   resolveProvider,
   parseUrlModel,
   createUrlProvider,
+  type LocalProvider as LocalProviderConfig,
 } from "./provider-registry.js";
 import { getProviderByName } from "./provider-definitions.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
@@ -348,6 +351,26 @@ function createLocalAdapter(modelName: string, providerName: string): LocalModel
   return new LocalModelAdapter(modelName, providerName);
 }
 
+/**
+ * Create the right LocalTransport subclass based on provider name.
+ * Ollama and LM Studio have provider-specific health checks, context window
+ * detection, and payload fields. Everything else uses the generic LocalTransport.
+ */
+function createLocalTransport(
+  config: LocalProviderConfig,
+  modelName: string,
+  options?: { concurrency?: number },
+): LocalTransport {
+  switch (config.name) {
+    case "ollama":
+      return new OllamaTransport(config, modelName, options);
+    case "lmstudio":
+      return new LMStudioTransport(config, modelName, options);
+    default:
+      return new LocalTransport(config, modelName, options);
+  }
+}
+
 function createLocalHandler(
   def: ProviderDefinition,
   modelName: string,
@@ -360,7 +383,7 @@ function createLocalHandler(
   // Try prefix-based local provider resolution (ollama/, lmstudio/, etc.)
   const resolved = resolveProvider(targetModel);
   if (resolved) {
-    const provider = new LocalTransport(resolved.provider, resolved.modelName, {
+    const provider = createLocalTransport(resolved.provider, resolved.modelName, {
       concurrency: opts?.concurrency ?? resolved.concurrency,
     });
     const adapter = createLocalAdapter(resolved.modelName, resolved.provider.name);
@@ -381,7 +404,7 @@ function createLocalHandler(
   const urlParsed = parseUrlModel(targetModel);
   if (urlParsed) {
     const providerConfig = createUrlProvider(urlParsed);
-    const provider = new LocalTransport(providerConfig, urlParsed.modelName);
+    const provider = createLocalTransport(providerConfig, urlParsed.modelName);
     const adapter = createLocalAdapter(urlParsed.modelName, providerConfig.name);
     const handler = new ComposedHandler(
       provider,

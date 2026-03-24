@@ -1,14 +1,15 @@
 /**
- * LocalProvider — transport for local OpenAI-compatible providers.
+ * LocalTransport — base transport for local OpenAI-compatible providers.
  *
- * Supports Ollama, LM Studio, vLLM, MLX, and custom local endpoints.
+ * Generic base for vLLM, MLX, custom URLs, and any OpenAI-compatible local endpoint.
+ * Provider-specific behavior lives in subclasses:
+ *   - OllamaTransport: /api/tags health check, /api/show context window, num_ctx injection
+ *   - LMStudioTransport: /v1/models context window detection
  *
  * Transport concerns:
- * - Health checks (Ollama /api/tags -> /v1/models fallback)
- * - Context window auto-detection (Ollama /api/show, LM Studio /v1/models)
+ * - Health checks (/v1/models for generic providers)
  * - Custom undici agent with 10-minute timeouts for slow local inference
  * - LocalModelQueue for GPU concurrency control
- * - Provider-specific error messages
  */
 
 import type { StreamFormat } from "./types.js";
@@ -41,11 +42,10 @@ export class LocalTransport extends BaseTransport {
   readonly streamFormat: StreamFormat = "openai-sse";
   readonly tokenStrategy = "local" as const;
 
-  private config: LocalProviderConfig;
-  private modelName: string;
+  protected config: LocalProviderConfig;
+  protected modelName: string;
   private concurrency?: number;
   private healthChecked = false;
-  private isHealthy = false;
   private _contextWindow = 32768;
 
   constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
@@ -90,12 +90,6 @@ export class LocalTransport extends BaseTransport {
   }
 
   getExtraPayloadFields(): Record<string, any> {
-    // Ollama defaults to 2048 context and silently truncates — set it explicitly
-    if (this.config.name === "ollama") {
-      const numCtx = Math.max(this._contextWindow, 32768);
-      log(`[${this.displayName}] Setting num_ctx: ${numCtx} (detected: ${this._contextWindow})`);
-      return { options: { num_ctx: numCtx } };
-    }
     return {};
   }
 
@@ -116,6 +110,7 @@ export class LocalTransport extends BaseTransport {
       throw new Error(this.getConnectionErrorMessage());
     }
 
+    this.healthChecked = true;
     await this.fetchContextWindow();
   }
 
@@ -128,32 +123,24 @@ export class LocalTransport extends BaseTransport {
     return this.config;
   }
 
+  /** Expose model name for subclass access */
+  getModelName(): string {
+    return this.modelName;
+  }
+
+  /** Allow subclasses to update the context window */
+  protected setContextWindow(value: number): void {
+    this._contextWindow = value;
+  }
+
   // --- Health checks ---
 
-  private async checkHealth(): Promise<boolean> {
-    if (this.healthChecked) return this.isHealthy;
-
-    // Try Ollama-specific health check first
-    try {
-      const healthUrl = `${this.config.baseUrl}/api/tags`;
-      log(`[${this.displayName}] Trying health check: ${healthUrl}`);
-      const response = await fetch(healthUrl, {
-        method: "GET",
-        signal: AbortSignal.timeout(5000),
-      });
-
-      if (response.ok) {
-        this.isHealthy = true;
-        this.healthChecked = true;
-        log(`[${this.displayName}] Health check passed (/api/tags)`);
-        return true;
-      }
-      log(`[${this.displayName}] /api/tags returned ${response.status}, trying /v1/models`);
-    } catch (e: any) {
-      log(`[${this.displayName}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
-    }
-
-    // Try generic OpenAI-compatible health check
+  /**
+   * Generic health check: tries /v1/models.
+   * Subclasses can override to try provider-specific endpoints first,
+   * then call super.checkHealth() as fallback.
+   */
+  protected async checkHealth(): Promise<boolean> {
     try {
       const modelsUrl = `${this.config.baseUrl}/v1/models`;
       log(`[${this.displayName}] Trying health check: ${modelsUrl}`);
@@ -162,8 +149,6 @@ export class LocalTransport extends BaseTransport {
         signal: AbortSignal.timeout(5000),
       });
       if (response.ok) {
-        this.isHealthy = true;
-        this.healthChecked = true;
         log(`[${this.displayName}] Health check passed (/v1/models)`);
         return true;
       }
@@ -172,119 +157,29 @@ export class LocalTransport extends BaseTransport {
       log(`[${this.displayName}] /v1/models failed: ${e?.message || e}`);
     }
 
-    this.healthChecked = true;
-    this.isHealthy = false;
     log(`[${this.displayName}] Health check FAILED - provider not available`);
     return false;
   }
 
   // --- Context window auto-detection ---
 
-  private async fetchContextWindow(): Promise<void> {
-    // Skip if env var already set
+  /**
+   * Fetch context window from the provider API.
+   * Base implementation is a no-op (uses default). Subclasses override for
+   * provider-specific detection (Ollama /api/show, LM Studio /v1/models).
+   */
+  protected async fetchContextWindow(): Promise<void> {
     if (process.env.CLAUDISH_CONTEXT_WINDOW) return;
 
-    log(`[${this.displayName}] Fetching context window...`);
-    if (this.config.name === "ollama") {
-      await this.fetchOllamaContextWindow();
-    } else if (this.config.name === "lmstudio") {
-      await this.fetchLMStudioContextWindow();
-    } else {
-      log(
-        `[${this.displayName}] No context window fetch for this provider, using default: ${this._contextWindow}`
-      );
-    }
-  }
-
-  private async fetchOllamaContextWindow(): Promise<void> {
-    try {
-      const response = await fetch(`${this.config.baseUrl}/api/show`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: this.modelName }),
-        signal: AbortSignal.timeout(3000),
-      });
-
-      if (response.ok) {
-        const data = (await response.json()) as any;
-        let ctxFromInfo = data.model_info?.["general.context_length"];
-
-        // Search for {arch}.context_length if not found at general.context_length
-        if (!ctxFromInfo && data.model_info) {
-          for (const key of Object.keys(data.model_info)) {
-            if (key.endsWith(".context_length")) {
-              ctxFromInfo = data.model_info[key];
-              break;
-            }
-          }
-        }
-
-        const ctxFromParams = data.parameters?.match(/num_ctx\s+(\d+)/)?.[1];
-        if (ctxFromInfo) {
-          this._contextWindow = parseInt(String(ctxFromInfo), 10);
-        } else if (ctxFromParams) {
-          this._contextWindow = parseInt(ctxFromParams, 10);
-        } else {
-          log(`[${this.displayName}] No context info found, using default: ${this._contextWindow}`);
-        }
-        if (ctxFromInfo || ctxFromParams) {
-          log(`[${this.displayName}] Context window: ${this._contextWindow}`);
-        }
-      }
-    } catch {
-      // Use default context window
-    }
-  }
-
-  private async fetchLMStudioContextWindow(): Promise<void> {
-    try {
-      const response = await fetch(`${this.config.baseUrl}/v1/models`, {
-        method: "GET",
-        signal: AbortSignal.timeout(3000),
-      });
-
-      if (response.ok) {
-        const data = (await response.json()) as any;
-        log(`[${this.displayName}] Models response: ${JSON.stringify(data).slice(0, 500)}`);
-
-        const models = data.data || [];
-        const targetModel =
-          models.find((m: any) => m.id === this.modelName) ||
-          models.find((m: any) => m.id?.endsWith(`/${this.modelName}`)) ||
-          models.find((m: any) => this.modelName.includes(m.id));
-
-        if (targetModel) {
-          const ctxLength =
-            targetModel.context_length ||
-            targetModel.max_context_length ||
-            targetModel.context_window ||
-            targetModel.max_tokens;
-          if (ctxLength && typeof ctxLength === "number") {
-            this._contextWindow = ctxLength;
-            log(`[${this.displayName}] Context window from model: ${this._contextWindow}`);
-            return;
-          }
-        }
-
-        this._contextWindow = 32768;
-        log(`[${this.displayName}] Using default context window: ${this._contextWindow}`);
-      }
-    } catch (e: any) {
-      this._contextWindow = 32768;
-      log(
-        `[${this.displayName}] Failed to fetch model info: ${e?.message || e}. Using default: ${this._contextWindow}`
-      );
-    }
+    log(
+      `[${this.displayName}] No context window fetch for this provider, using default: ${this._contextWindow}`
+    );
   }
 
   // --- Error messages ---
 
-  private getConnectionErrorMessage(): string {
+  protected getConnectionErrorMessage(): string {
     switch (this.config.name) {
-      case "ollama":
-        return `Cannot connect to Ollama at ${this.config.baseUrl}. Make sure Ollama is running with: ollama serve`;
-      case "lmstudio":
-        return `Cannot connect to LM Studio at ${this.config.baseUrl}. Make sure LM Studio server is running.`;
       case "vllm":
         return `Cannot connect to vLLM at ${this.config.baseUrl}. Make sure vLLM server is running.`;
       default:
