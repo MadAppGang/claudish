@@ -676,38 +676,19 @@ describe("ModelDialect interface compliance", () => {
 
 // ─── ProviderProfile Table Tests ─────────────────────────────────────────────
 
-describe("ProviderProfile table completeness", () => {
-  test("all expected providers are registered", async () => {
-    const { PROVIDER_PROFILES } = await import("./providers/provider-profiles.js");
+describe("Provider coverage completeness", () => {
+  test("all expected providers are supported", async () => {
+    const { SUPPORTED_PROVIDERS } = await import("./providers/provider-profiles.js");
 
     const expectedProviders = [
-      "gemini",
-      "gemini-codeassist",
-      "openai",
-      "minimax",
-      "minimax-coding",
-      "kimi",
-      "kimi-coding",
-      "zai",
-      "glm",
-      "glm-coding",
-      "opencode-zen",
-      "opencode-zen-go",
-      "ollamacloud",
-      "litellm",
-      "vertex",
+      "gemini", "gemini-codeassist", "openai",
+      "minimax", "minimax-coding", "kimi", "kimi-coding", "zai",
+      "glm", "glm-coding", "opencode-zen", "opencode-zen-go",
+      "ollamacloud", "litellm", "vertex",
     ];
 
     for (const provider of expectedProviders) {
-      expect(PROVIDER_PROFILES).toHaveProperty(provider);
-    }
-  });
-
-  test("each profile has a createHandler function", async () => {
-    const { PROVIDER_PROFILES } = await import("./providers/provider-profiles.js");
-
-    for (const [name, profile] of Object.entries(PROVIDER_PROFILES)) {
-      expect(typeof profile.createHandler).toBe("function");
+      expect(SUPPORTED_PROVIDERS.has(provider)).toBe(true);
     }
   });
 });

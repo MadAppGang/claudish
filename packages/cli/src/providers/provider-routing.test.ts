@@ -21,7 +21,7 @@ import { XiaomiModelDialect } from "../adapters/xiaomi-model-dialect.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { DefaultAPIFormat } from "../adapters/base-api-format.js";
-import { PROVIDER_PROFILES, createHandlerForProvider } from "./provider-profiles.js";
+import { SUPPORTED_PROVIDERS, createHandlerForProvider } from "./provider-profiles.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 
 // ---------------------------------------------------------------------------
@@ -290,9 +290,9 @@ describe("resolveModelDialect — false positive prevention", () => {
 // Section 3: Provider profiles
 // ---------------------------------------------------------------------------
 
-describe("PROVIDER_PROFILES — coverage", () => {
-  test("every entry in PROVIDER_PROFILES has a matching BUILTIN_PROVIDER", () => {
-    for (const profileName of Object.keys(PROVIDER_PROFILES)) {
+describe("SUPPORTED_PROVIDERS — coverage", () => {
+  test("every entry in SUPPORTED_PROVIDERS has a matching BUILTIN_PROVIDER", () => {
+    for (const profileName of [...SUPPORTED_PROVIDERS]) {
       // Profile names match RemoteProvider.name which maps google→gemini
       const builtinName = profileName === "gemini" ? "google" : profileName;
       const def = BUILTIN_PROVIDERS.find((d) => d.name === builtinName || d.name === profileName);
@@ -316,8 +316,7 @@ describe("PROVIDER_PROFILES — coverage", () => {
     for (const def of BUILTIN_PROVIDERS) {
       if (skipProviders.has(def.name)) continue;
       const profileName = def.name === "google" ? "gemini" : def.name;
-      const profile = PROVIDER_PROFILES[profileName];
-      expect(profile).toBeDefined();
+      expect(SUPPORTED_PROVIDERS.has(profileName)).toBe(true);
     }
   });
 });
@@ -436,20 +435,17 @@ describe("OpenCode Zen — model routing", () => {
   });
 
   test("GPT model createHandler returns non-null", () => {
-    const profile = PROVIDER_PROFILES["opencode-zen"];
-    const handler = profile.createHandler({ ...sharedCtx, modelName: "gpt-4o" });
+    const handler = createHandlerForProvider({ ...sharedCtx, modelName: "gpt-4o" });
     expect(handler).not.toBeNull();
   });
 
   test("MiniMax model createHandler returns non-null", () => {
-    const profile = PROVIDER_PROFILES["opencode-zen"];
-    const handler = profile.createHandler({ ...sharedCtx, modelName: "minimax-m2.5" });
+    const handler = createHandlerForProvider({ ...sharedCtx, modelName: "minimax-m2.5" });
     expect(handler).not.toBeNull();
   });
 
   test("GLM model createHandler returns non-null (default OpenAI path)", () => {
-    const profile = PROVIDER_PROFILES["opencode-zen"];
-    const handler = profile.createHandler({ ...sharedCtx, modelName: "glm-5" });
+    const handler = createHandlerForProvider({ ...sharedCtx, modelName: "glm-5" });
     expect(handler).not.toBeNull();
   });
 
