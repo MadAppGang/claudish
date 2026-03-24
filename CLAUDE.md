@@ -82,7 +82,7 @@ Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conver
 
 ## Three-Layer Provider Architecture
 
-All provider-specific logic lives in `providers/provider-profiles.ts`. Three resolvers select the right class for each layer. `createHandlerForProvider(def, ...)` composes them into a ComposedHandler.
+All provider-specific logic lives in `providers/provider-profiles.ts`. Four resolvers and one effective-definition resolver. `createHandlerForProvider(def, modelName, apiKey, targetModel, port, opts)` composes them into a ComposedHandler.
 
 ### Layer 1: APIFormat — wire format
 - **Base**: `BaseAPIFormat` (`adapters/base-api-format.ts`)
@@ -109,8 +109,10 @@ All provider-specific logic lives in `providers/provider-profiles.ts`. Three res
 3. If model has quirks, add case to `resolveModelDialect` and create a ModelDialect class
 4. If transport needs custom auth/queue behavior, create a transport subclass extending `BaseTransport`
 
-### How to add a model dialect
-Add case to `resolveModelDialect()` in `provider-profiles.ts`. Create class extending `BaseModelDialect`.
+### Additional resolvers
+- `resolveMiddlewares(modelId)`: selects middleware instances (e.g., GeminiThoughtSignatureMiddleware for Gemini models)
+- `resolveEffective(def, modelName, apiKey)`: handles definition swaps (zen + minimax) and publicKeyFallback
+- `resolveModelDialect(modelId)`: returns `BaseModelDialect | null` (null = no dialect quirks)
 
 ### Stream parser selection
 ```typescript
