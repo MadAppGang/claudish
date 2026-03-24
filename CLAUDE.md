@@ -95,7 +95,7 @@ Each converter declares its stream format via `getStreamFormat()`.
 Translates model-specific dialect differences (context windows, thinking→reasoning_effort, vision rules).
 - **Interface**: `adapters/model-translator.ts`
 - **Implementations**: GLMAdapter, GrokAdapter, MiniMaxAdapter, DeepSeekAdapter, QwenAdapter, CodexAdapter
-- **Selection**: `AdapterManager` auto-selects based on model ID
+- **Selection**: `resolveModelDialect(modelId)` selects based on model ID
 
 ### Layer 3: ProviderTransport — HTTP transport
 Handles auth, endpoints, headers, rate limiting. Optionally overrides stream format for aggregators.
@@ -113,7 +113,7 @@ transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAd
 ```
 
 **Adding a new provider**: Add one entry to `PROVIDER_PROFILES` table in `providers/provider-profiles.ts`.
-**Adding a new model**: Create a ModelTranslator adapter, register in `adapters/adapter-manager.ts`.
+**Adding a new model**: Create a ModelDialect adapter, add it to the `DIALECTS` array in `adapters/dialect-manager.ts`.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
 
 ### Stream Parsers
