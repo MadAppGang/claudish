@@ -30,8 +30,19 @@ export interface ProviderTransport {
   /** Which stream parser to use for this provider's responses */
   readonly streamFormat: StreamFormat;
 
+  /** Token counting strategy for this transport */
+  readonly tokenStrategy?: "standard" | "accumulate-both" | "delta-aware" | "actual-cost" | "local";
+
   /** Get the full API endpoint URL for a request */
   getEndpoint(model?: string): string;
+
+  /** Get the non-streaming endpoint URL, if different from streaming.
+   *  Used by Gemini (:generateContent vs :streamGenerateContent). */
+  getNonStreamingEndpoint?(model?: string): string;
+
+  /** Whether the response body is wrapped in an envelope that must be unwrapped.
+   *  Used by CodeAssist ({response: {...}}) and similar. */
+  unwrapResponse?: boolean;
 
   /** Get HTTP headers (may be async for OAuth token refresh) */
   getHeaders(): Promise<Record<string, string>>;

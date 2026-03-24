@@ -322,6 +322,16 @@ export class GeminiAPIFormat extends BaseAPIFormat {
     return "gemini-sse";
   }
 
+  override parseResponse(data: any): { content: string; usage?: { input: number; output: number } } {
+    const parts = data?.candidates?.[0]?.content?.parts;
+    const content = parts?.map((p: any) => p.text ?? "").join("") ?? "";
+    const meta = data?.usageMetadata;
+    const usage = meta
+      ? { input: meta.promptTokenCount ?? 0, output: meta.candidatesTokenCount ?? 0 }
+      : undefined;
+    return { content, usage };
+  }
+
   /**
    * Reset reasoning filter state between requests.
    * NOTE: toolCallMap is intentionally NOT cleared — it persists across requests

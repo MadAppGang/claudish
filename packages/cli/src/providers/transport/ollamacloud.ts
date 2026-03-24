@@ -12,6 +12,7 @@ export class OllamaProviderTransport implements ProviderTransport {
   readonly name = "ollamacloud";
   readonly displayName = "OllamaCloud";
   readonly streamFormat: StreamFormat = "ollama-jsonl";
+  readonly tokenStrategy = "accumulate-both" as const;
 
   private provider: RemoteProvider;
   private apiKey: string;

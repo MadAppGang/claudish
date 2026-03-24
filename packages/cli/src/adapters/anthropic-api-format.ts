@@ -114,6 +114,15 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
     return "anthropic-sse";
   }
 
+  override parseResponse(data: any): { content: string; usage?: { input: number; output: number } } {
+    const blocks = data?.content ?? [];
+    const content = blocks.map((b: any) => b.text ?? "").join("");
+    const usage = data?.usage
+      ? { input: data.usage.input_tokens ?? 0, output: data.usage.output_tokens ?? 0 }
+      : undefined;
+    return { content, usage };
+  }
+
   override getContextWindow(): number {
     // Try catalog lookup first (handles kimi/minimax model name variants)
     const catalogEntry = lookupModel(this.modelId);

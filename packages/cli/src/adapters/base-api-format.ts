@@ -173,6 +173,20 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
+   * Parse a non-streaming response into content + usage.
+   * Default handles OpenAI Chat Completions format.
+   * Override for Gemini, Anthropic, etc.
+   */
+  parseResponse(data: any): { content: string; usage?: { input: number; output: number } } {
+    const choice = data?.choices?.[0];
+    const content = choice?.message?.content ?? "";
+    const usage = data?.usage
+      ? { input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 }
+      : undefined;
+    return { content, usage };
+  }
+
+  /**
    * Context window size for this model (tokens).
    * Used for token tracking and context-left-percent calculation.
    */

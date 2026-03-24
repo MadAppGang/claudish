@@ -17,6 +17,7 @@ export class GeminiProviderTransport implements ProviderTransport {
   readonly name = "gemini";
   readonly displayName = "Gemini API";
   readonly streamFormat: StreamFormat = "gemini-sse";
+  readonly tokenStrategy = "standard" as const;
 
   private provider: RemoteProvider;
   private apiKey: string;
@@ -37,6 +38,13 @@ export class GeminiProviderTransport implements ProviderTransport {
     return {
       "x-goog-api-key": this.apiKey,
     };
+  }
+
+  getNonStreamingEndpoint(_model?: string): string {
+    const apiPath = this.provider.apiPath
+      .replace("{model}", this.modelName)
+      .replace(":streamGenerateContent", ":generateContent");
+    return `${this.provider.baseUrl}${apiPath}`;
   }
 
   /**

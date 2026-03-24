@@ -22,6 +22,8 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   readonly name = "gemini-codeassist";
   readonly displayName = "Gemini Free";
   readonly streamFormat: StreamFormat = "gemini-sse";
+  readonly tokenStrategy = "standard" as const;
+  readonly unwrapResponse = true;
 
   private modelName: string;
   private accessToken: string | null = null;

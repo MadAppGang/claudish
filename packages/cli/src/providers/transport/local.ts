@@ -38,6 +38,7 @@ export class LocalTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat = "openai-sse";
+  readonly tokenStrategy = "local" as const;
 
   private config: LocalProviderConfig;
   private modelName: string;

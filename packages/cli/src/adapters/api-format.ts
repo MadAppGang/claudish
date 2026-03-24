@@ -34,4 +34,8 @@ export interface APIFormat {
     textContent: string,
     accumulatedText: string
   ): import("./base-api-format.js").AdapterResult;
+
+  /** Parse a non-streaming response body into content + usage.
+   *  Default handles OpenAI format. Override for other wire formats. */
+  parseResponse(data: any): { content: string; usage?: { input: number; output: number } };
 }

@@ -14,6 +14,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat;
+  readonly tokenStrategy = "delta-aware" as const;
 
   private provider: RemoteProvider;
   private apiKey: string;

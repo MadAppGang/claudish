@@ -14,6 +14,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat = "anthropic-sse";
+  readonly tokenStrategy = "standard" as const;
 
   private provider: RemoteProvider;
   private apiKey: string;

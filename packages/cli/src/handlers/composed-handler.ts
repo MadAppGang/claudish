@@ -118,6 +118,11 @@ export class ComposedHandler implements ModelHandler {
     });
   }
 
+  /** Token strategy: options override, then transport, then default */
+  private getTokenStrategy() {
+    return this.options.tokenStrategy ?? this.provider.tokenStrategy ?? "standard";
+  }
+
   /** Provider adapter — handles transport format (messages, tools, payload) */
   private getAdapter(): BaseModelAdapter {
     return this.explicitAdapter || this.resolvedDialect;
@@ -374,7 +379,7 @@ export class ComposedHandler implements ModelHandler {
             http_status: 0,
             error_class,
             error_code,
-            token_strategy: this.options.tokenStrategy ?? "standard",
+            token_strategy: this.getTokenStrategy(),
             adapter_name: this.getActiveAdapterName(),
             middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
             fallback_used: fallbackMeta !== undefined,
@@ -441,7 +446,7 @@ export class ComposedHandler implements ModelHandler {
                 http_status: retryResp.status,
                 error_class,
                 error_code,
-                token_strategy: this.options.tokenStrategy ?? "standard",
+                token_strategy: this.getTokenStrategy(),
                 adapter_name: this.getActiveAdapterName(),
                 middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
                 fallback_used: fallbackMeta !== undefined,
@@ -482,7 +487,7 @@ export class ComposedHandler implements ModelHandler {
               http_status: 401,
               error_class,
               error_code,
-              token_strategy: this.options.tokenStrategy ?? "standard",
+              token_strategy: this.getTokenStrategy(),
               adapter_name: this.getActiveAdapterName(),
               middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
               fallback_used: fallbackMeta !== undefined,
@@ -544,7 +549,7 @@ export class ComposedHandler implements ModelHandler {
             http_status: response.status,
             error_class,
             error_code,
-            token_strategy: this.options.tokenStrategy ?? "standard",
+            token_strategy: this.getTokenStrategy(),
             adapter_name: this.getActiveAdapterName(),
             middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
             fallback_used: fallbackMeta !== undefined,
@@ -594,7 +599,7 @@ export class ComposedHandler implements ModelHandler {
           output_tokens: this.tokenTracker.getOutputTokens(),
           estimated_cost: this.tokenTracker.getTotalCost(),
           is_free_model: isFreeModel,
-          token_strategy: this.options.tokenStrategy ?? "standard",
+          token_strategy: this.getTokenStrategy(),
           adapter_name: this.getActiveAdapterName(),
           middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
           fallback_used: fallbackMeta !== undefined,
@@ -619,7 +624,7 @@ export class ComposedHandler implements ModelHandler {
     onComplete?: () => void
   ): Response {
     const onTokenUpdate = (input: number, output: number) => {
-      const strategy = this.options.tokenStrategy || "standard";
+      const strategy = this.getTokenStrategy();
       switch (strategy) {
         case "accumulate-both":
           this.tokenTracker.accumulateBoth(input, output);
@@ -695,7 +700,7 @@ export class ComposedHandler implements ModelHandler {
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
           onToolCall,
-          unwrapResponse: this.options.unwrapGeminiResponse,
+          unwrapResponse: this.options.unwrapGeminiResponse ?? this.provider.unwrapResponse,
         });
       }
 
