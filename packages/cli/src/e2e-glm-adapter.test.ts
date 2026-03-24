@@ -3,7 +3,7 @@
  *
  * Validates:
  * 1. GLMModelDialect model detection, context windows, and vision support
- * 2. DialectManager correctly selects GLMModelDialect for GLM models
+ * 2. resolveModelDialect correctly selects GLMModelDialect for GLM models
  * 3. ComposedHandler three-layer architecture — model dialect provides model-specific
  *    overrides (context window, vision, prepareRequest) even when a provider format
  *    (LiteLLMAPIFormat, OpenRouterAPIFormat) is set as the explicit adapter
@@ -11,7 +11,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
-import { DialectManager } from "./adapters/dialect-manager.js";
+import { resolveModelDialect } from "./adapters/dialect-manager.js";
 import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
 import { DefaultAPIFormat } from "./adapters/base-api-format.js";
 
@@ -134,50 +134,46 @@ describe("GLMModelDialect — processTextContent", () => {
   });
 });
 
-// ─── Group 2: DialectManager selects GLMModelDialect ─────────────────────────
+// ─── Group 2: resolveModelDialect selects GLMModelDialect ─────────────────────
 
-describe("DialectManager — GLM routing", () => {
+describe("resolveModelDialect — GLM routing", () => {
   test("selects GLMModelDialect for glm-5", () => {
-    const manager = new DialectManager("glm-5");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("glm-5");
 
     expect(adapter.getName()).toBe("GLMModelDialect");
   });
 
   test("selects GLMModelDialect for glm-4-long", () => {
-    const manager = new DialectManager("glm-4-long");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("glm-4-long");
 
     expect(adapter.getName()).toBe("GLMModelDialect");
   });
 
   test("does NOT select GLMModelDialect for gpt-4o", () => {
-    const manager = new DialectManager("gpt-4o");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("gpt-4o");
 
     expect(adapter.getName()).not.toBe("GLMModelDialect");
   });
 
   test("needsTransformation returns true for GLM models", () => {
-    const manager = new DialectManager("glm-5");
-    expect(manager.needsTransformation()).toBe(true);
+    const adapter = resolveModelDialect("glm-5");
+    expect(adapter.getName() !== "DefaultAPIFormat").toBe(true);
   });
 });
 
 // ─── Group 3: Three-layer adapter architecture ───────────────────────────────
 //
 // When a format adapter (LiteLLMAPIFormat) is the explicit adapter, the model
-// dialect (GLMModelDialect) should still be resolved by DialectManager for
+// dialect (GLMModelDialect) should still be resolved by resolveModelDialect for
 // model-specific concerns.
 
 describe("Three-layer adapter — model dialect overrides format adapter", () => {
-  test("DialectManager resolves GLMModelDialect even when LiteLLMAPIFormat would be used", () => {
+  test("resolveModelDialect resolves GLMModelDialect even when LiteLLMAPIFormat would be used", () => {
     // Simulate what ComposedHandler does:
     // 1. Explicit adapter = LiteLLMAPIFormat (L1 wire format)
-    // 2. DialectManager.getAdapter() = GLMModelDialect (L2 model quirks)
+    // 2. resolveModelDialect() = GLMModelDialect (L2 model quirks)
     const litellmAdapter = new LiteLLMAPIFormat("glm-5", "https://example.com");
-    const adapterManager = new DialectManager("glm-5");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelDialect("glm-5");
 
     // Format adapter handles wire format / transport
     expect(litellmAdapter.getName()).toBe("LiteLLMAPIFormat");
@@ -196,24 +192,21 @@ describe("Three-layer adapter — model dialect overrides format adapter", () =>
   });
 
   test("model dialect provides correct context window for glm-4-long via LiteLLM", () => {
-    const adapterManager = new DialectManager("glm-4-long");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelDialect("glm-4-long");
 
     expect(modelAdapter.getName()).toBe("GLMModelDialect");
     expect(modelAdapter.getContextWindow()).toBe(1_000_000);
   });
 
   test("model dialect correctly reports no vision for glm-4-flash via LiteLLM", () => {
-    const adapterManager = new DialectManager("glm-4-flash");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelDialect("glm-4-flash");
 
     expect(modelAdapter.getName()).toBe("GLMModelDialect");
     expect(modelAdapter.supportsVision()).toBe(false);
   });
 
   test("non-GLM model via LiteLLM falls back to DefaultAPIFormat", () => {
-    const adapterManager = new DialectManager("some-unknown-model");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelDialect("some-unknown-model");
 
     // Should be DefaultAPIFormat, not GLMModelDialect
     expect(modelAdapter.getName()).toBe("DefaultAPIFormat");
@@ -221,8 +214,7 @@ describe("Three-layer adapter — model dialect overrides format adapter", () =>
 
   test("model dialect strips thinking, format adapter does not", () => {
     const litellmAdapter = new LiteLLMAPIFormat("glm-5", "https://example.com");
-    const adapterManager = new DialectManager("glm-5");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelDialect("glm-5");
 
     // Format adapter does not strip thinking (no override)
     const request1 = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };

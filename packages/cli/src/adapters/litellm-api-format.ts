@@ -37,7 +37,7 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
   }
 
   shouldHandle(modelId: string): boolean {
-    return false; // Always used explicitly, not via DialectManager matching
+    return false; // Always used explicitly, not via resolveModelDialect matching
   }
 
   supportsVision(): boolean {

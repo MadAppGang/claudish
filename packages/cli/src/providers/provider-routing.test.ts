@@ -10,7 +10,7 @@
 import { describe, test, expect } from "bun:test";
 import { parseModelSpec } from "./model-parser.js";
 import { BUILTIN_PROVIDERS, getShortcuts } from "./provider-definitions.js";
-import { DialectManager } from "../adapters/dialect-manager.js";
+import { resolveModelDialect } from "../adapters/dialect-manager.js";
 import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { QwenModelDialect } from "../adapters/qwen-model-dialect.js";
@@ -161,127 +161,127 @@ describe("parseModelSpec — native model auto-detection", () => {
 // Section 2: Adapter selection
 // ---------------------------------------------------------------------------
 
-describe("DialectManager — correct dialect selection", () => {
+describe("resolveModelDialect — correct dialect selection", () => {
   test("grok-beta → GrokModelDialect", () => {
-    const adapter = new DialectManager("grok-beta").getAdapter();
+    const adapter = resolveModelDialect("grok-beta");
     expect(adapter).toBeInstanceOf(GrokModelDialect);
   });
 
   test("x-ai/grok-beta → GrokModelDialect", () => {
-    const adapter = new DialectManager("x-ai/grok-beta").getAdapter();
+    const adapter = resolveModelDialect("x-ai/grok-beta");
     expect(adapter).toBeInstanceOf(GrokModelDialect);
   });
 
   test("gemini-2.0-flash → GeminiAPIFormat", () => {
-    const adapter = new DialectManager("gemini-2.0-flash").getAdapter();
+    const adapter = resolveModelDialect("gemini-2.0-flash");
     expect(adapter).toBeInstanceOf(GeminiAPIFormat);
   });
 
   test("google/gemini-2.5-pro → GeminiAPIFormat", () => {
-    const adapter = new DialectManager("google/gemini-2.5-pro").getAdapter();
+    const adapter = resolveModelDialect("google/gemini-2.5-pro");
     expect(adapter).toBeInstanceOf(GeminiAPIFormat);
   });
 
   test("deepseek-r1 → DeepSeekModelDialect", () => {
-    const adapter = new DialectManager("deepseek-r1").getAdapter();
+    const adapter = resolveModelDialect("deepseek-r1");
     expect(adapter).toBeInstanceOf(DeepSeekModelDialect);
   });
 
   test("glm-5 → GLMModelDialect", () => {
-    const adapter = new DialectManager("glm-5").getAdapter();
+    const adapter = resolveModelDialect("glm-5");
     expect(adapter).toBeInstanceOf(GLMModelDialect);
   });
 
   test("zhipu/glm-4 → GLMModelDialect", () => {
-    const adapter = new DialectManager("zhipu/glm-4").getAdapter();
+    const adapter = resolveModelDialect("zhipu/glm-4");
     expect(adapter).toBeInstanceOf(GLMModelDialect);
   });
 
   test("minimax-m2.5 → MiniMaxModelDialect", () => {
-    const adapter = new DialectManager("minimax-m2.5").getAdapter();
+    const adapter = resolveModelDialect("minimax-m2.5");
     expect(adapter).toBeInstanceOf(MiniMaxModelDialect);
   });
 
   test("qwen3-coder → QwenModelDialect", () => {
-    const adapter = new DialectManager("qwen3-coder").getAdapter();
+    const adapter = resolveModelDialect("qwen3-coder");
     expect(adapter).toBeInstanceOf(QwenModelDialect);
   });
 
   test("xiaomi/mimo-vl-2b → XiaomiModelDialect", () => {
-    const adapter = new DialectManager("xiaomi/mimo-vl-2b").getAdapter();
+    const adapter = resolveModelDialect("xiaomi/mimo-vl-2b");
     expect(adapter).toBeInstanceOf(XiaomiModelDialect);
   });
 
   test("codex-mini → CodexAPIFormat", () => {
-    const adapter = new DialectManager("codex-mini").getAdapter();
+    const adapter = resolveModelDialect("codex-mini");
     expect(adapter).toBeInstanceOf(CodexAPIFormat);
   });
 
   test("gpt-4o → DefaultAPIFormat (GPT models use default OpenAI format)", () => {
-    const adapter = new DialectManager("gpt-4o").getAdapter();
+    const adapter = resolveModelDialect("gpt-4o");
     expect(adapter).toBeInstanceOf(DefaultAPIFormat);
   });
 
   test("o3-mini → OpenAIAPIFormat (o-series needs reasoning_effort mapping)", () => {
-    const adapter = new DialectManager("o3-mini").getAdapter();
+    const adapter = resolveModelDialect("o3-mini");
     expect(adapter).toBeInstanceOf(OpenAIAPIFormat);
   });
 
   test("unknown-model → DefaultAPIFormat", () => {
-    const adapter = new DialectManager("unknown-model").getAdapter();
+    const adapter = resolveModelDialect("unknown-model");
     expect(adapter).toBeInstanceOf(DefaultAPIFormat);
   });
 });
 
-describe("DialectManager — false positive prevention", () => {
+describe("resolveModelDialect — false positive prevention", () => {
   test("qwen-grok-hybrid → QwenModelDialect (NOT GrokModelDialect)", () => {
-    const adapter = new DialectManager("qwen-grok-hybrid").getAdapter();
+    const adapter = resolveModelDialect("qwen-grok-hybrid");
     expect(adapter).toBeInstanceOf(QwenModelDialect);
     expect(adapter).not.toBeInstanceOf(GrokModelDialect);
   });
 
   test("deepseek-glm-test → DeepSeekModelDialect (NOT GLMModelDialect)", () => {
-    const adapter = new DialectManager("deepseek-glm-test").getAdapter();
+    const adapter = resolveModelDialect("deepseek-glm-test");
     expect(adapter).toBeInstanceOf(DeepSeekModelDialect);
     expect(adapter).not.toBeInstanceOf(GLMModelDialect);
   });
 
   test("my-grok-clone → DefaultAPIFormat (not GrokModelDialect — grok is mid-string)", () => {
-    const adapter = new DialectManager("my-grok-clone").getAdapter();
+    const adapter = resolveModelDialect("my-grok-clone");
     expect(adapter).not.toBeInstanceOf(GrokModelDialect);
     // Should fall to default since none of the specific families match
     expect(adapter).toBeInstanceOf(DefaultAPIFormat);
   });
 
   test("my-minimax-clone → DefaultAPIFormat (not MiniMaxModelDialect)", () => {
-    const adapter = new DialectManager("my-minimax-clone").getAdapter();
+    const adapter = resolveModelDialect("my-minimax-clone");
     expect(adapter).not.toBeInstanceOf(MiniMaxModelDialect);
     expect(adapter).toBeInstanceOf(DefaultAPIFormat);
   });
 
   test("test-deepseek-model → DefaultAPIFormat (not DeepSeekModelDialect — deepseek is mid-string)", () => {
-    const adapter = new DialectManager("test-deepseek-model").getAdapter();
+    const adapter = resolveModelDialect("test-deepseek-model");
     expect(adapter).not.toBeInstanceOf(DeepSeekModelDialect);
     expect(adapter).toBeInstanceOf(DefaultAPIFormat);
   });
 
   test("vendor/grok-beta uses GrokModelDialect (vendor prefix is fine)", () => {
-    const adapter = new DialectManager("vendor/grok-beta").getAdapter();
+    const adapter = resolveModelDialect("vendor/grok-beta");
     expect(adapter).toBeInstanceOf(GrokModelDialect);
   });
 
   test("vendor/deepseek-r1 uses DeepSeekModelDialect (vendor prefix)", () => {
-    const adapter = new DialectManager("vendor/deepseek-r1").getAdapter();
+    const adapter = resolveModelDialect("vendor/deepseek-r1");
     expect(adapter).toBeInstanceOf(DeepSeekModelDialect);
   });
 
   test("vendor/minimax-m2.5 uses MiniMaxModelDialect (vendor prefix)", () => {
-    const adapter = new DialectManager("vendor/minimax-m2.5").getAdapter();
+    const adapter = resolveModelDialect("vendor/minimax-m2.5");
     expect(adapter).toBeInstanceOf(MiniMaxModelDialect);
   });
 
   test("openrouter/x-ai/grok-beta uses GrokModelDialect (double vendor prefix)", () => {
-    const adapter = new DialectManager("openrouter/x-ai/grok-beta").getAdapter();
+    const adapter = resolveModelDialect("openrouter/x-ai/grok-beta");
     expect(adapter).toBeInstanceOf(GrokModelDialect);
   });
 });

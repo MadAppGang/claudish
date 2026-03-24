@@ -11,7 +11,7 @@
  */
 
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
-import { DialectManager } from "./dialect-manager.js";
+import { resolveModelDialect } from "./dialect-manager.js";
 import { removeUriFormat } from "../transform.js";
 import { log } from "../logger.js";
 
@@ -22,8 +22,7 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
     super(modelId);
 
     // Get model-specific dialect (GrokModelDialect, GeminiAPIFormat, etc.)
-    const manager = new DialectManager(modelId);
-    this.innerAdapter = manager.getAdapter();
+    this.innerAdapter = resolveModelDialect(modelId);
   }
 
   /** Synchronous reasoning support check via model ID patterns */

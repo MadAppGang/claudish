@@ -15,7 +15,7 @@ import { lookupModel } from "./adapters/model-catalog.js";
 import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { GrokModelDialect } from "./adapters/grok-model-dialect.js";
-import { DialectManager } from "./adapters/dialect-manager.js";
+import { resolveModelDialect } from "./adapters/dialect-manager.js";
 import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
 
 const MINIMAX_API_KEY =
@@ -181,40 +181,34 @@ describe("Group 2: GrokModelDialect — catalog integration", () => {
   });
 });
 
-describe("Group 2: DialectManager — correct dialect selection", () => {
+describe("Group 2: resolveModelDialect — correct dialect selection", () => {
   test("selects MiniMaxModelDialect for MiniMax-M2.7", () => {
-    const manager = new DialectManager("MiniMax-M2.7");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("MiniMax-M2.7");
     expect(adapter.getName()).toBe("MiniMaxModelDialect");
   });
 
   test("selects GLMModelDialect for glm-5", () => {
-    const manager = new DialectManager("glm-5");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("glm-5");
     expect(adapter.getName()).toBe("GLMModelDialect");
   });
 
   test("selects GrokModelDialect for grok-4", () => {
-    const manager = new DialectManager("grok-4");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("grok-4");
     expect(adapter.getName()).toBe("GrokModelDialect");
   });
 
   test("selects GrokModelDialect for x-ai/grok-4-fast", () => {
-    const manager = new DialectManager("x-ai/grok-4-fast");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("x-ai/grok-4-fast");
     expect(adapter.getName()).toBe("GrokModelDialect");
   });
 
   test("selects MiniMaxModelDialect for minimax-m2.5", () => {
-    const manager = new DialectManager("minimax-m2.5");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("minimax-m2.5");
     expect(adapter.getName()).toBe("MiniMaxModelDialect");
   });
 
   test("returns DefaultAPIFormat for unknown model", () => {
-    const manager = new DialectManager("totally-unknown-model-xyz");
-    const adapter = manager.getAdapter();
+    const adapter = resolveModelDialect("totally-unknown-model-xyz");
     expect(adapter.getName()).toBe("DefaultAPIFormat");
   });
 });

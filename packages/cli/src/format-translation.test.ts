@@ -582,15 +582,15 @@ describe("Model Adapter Quirks", () => {
     expect(request.thinking).toBeUndefined();
   });
 
-  test("AdapterManager selects correct adapter for model IDs", async () => {
-    const { DialectManager } = await import("./adapters/dialect-manager.js");
+  test("resolveModelDialect selects correct adapter for model IDs", async () => {
+    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
 
-    expect(new DialectManager("glm-5").getAdapter().getName()).toBe("GLMModelDialect");
-    expect(new DialectManager("grok-3").getAdapter().getName()).toBe("GrokModelDialect");
-    expect(new DialectManager("minimax-m2.5").getAdapter().getName()).toBe("MiniMaxModelDialect");
-    expect(new DialectManager("qwen3.5-plus").getAdapter().getName()).toBe("QwenModelDialect");
-    expect(new DialectManager("deepseek-r1").getAdapter().getName()).toBe("DeepSeekModelDialect");
-    expect(new DialectManager("unknown-model").getAdapter().getName()).toBe("DefaultAPIFormat");
+    expect(resolveModelDialect("glm-5").getName()).toBe("GLMModelDialect");
+    expect(resolveModelDialect("grok-3").getName()).toBe("GrokModelDialect");
+    expect(resolveModelDialect("minimax-m2.5").getName()).toBe("MiniMaxModelDialect");
+    expect(resolveModelDialect("qwen3.5-plus").getName()).toBe("QwenModelDialect");
+    expect(resolveModelDialect("deepseek-r1").getName()).toBe("DeepSeekModelDialect");
+    expect(resolveModelDialect("unknown-model").getName()).toBe("DefaultAPIFormat");
   });
 });
 
@@ -656,9 +656,9 @@ describe("CodexAdapter", () => {
     expect(new CodexAPIFormat("codex-mini").getName()).toBe("CodexAPIFormat");
   });
 
-  test("AdapterManager selects CodexAPIFormat for codex-mini", async () => {
-    const { DialectManager } = await import("./adapters/dialect-manager.js");
-    expect(new DialectManager("codex-mini").getAdapter().getName()).toBe("CodexAPIFormat");
+  test("resolveModelDialect selects CodexAPIFormat for codex-mini", async () => {
+    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
+    expect(resolveModelDialect("codex-mini").getName()).toBe("CodexAPIFormat");
   });
 });
 

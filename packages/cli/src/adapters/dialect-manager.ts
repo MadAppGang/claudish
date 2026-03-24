@@ -1,11 +1,8 @@
 /**
- * DialectManager — selects the appropriate Layer 2 ModelDialect for a given model.
+ * resolveModelDialect — select the appropriate ModelDialect for a given model.
  *
- * This allows ComposedHandler to apply model-specific quirks independent of
- * which Layer 1 APIFormat or Layer 3 ProviderTransport are used:
- * - Grok: XML function calls
- * - Gemini: Thought signatures in reasoning_details
- * - DeepSeek, GLM, etc.: thinking param stripping / mapping
+ * Pure function. Returns the first dialect whose shouldHandle() matches,
+ * or DefaultAPIFormat as fallback.
  */
 
 import { BaseAPIFormat, DefaultAPIFormat } from "./base-api-format.js";
@@ -19,46 +16,22 @@ import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
 import { GLMModelDialect } from "./glm-model-dialect.js";
 import { XiaomiModelDialect } from "./xiaomi-model-dialect.js";
 
-export class DialectManager {
-  private adapters: BaseAPIFormat[];
-  private defaultAdapter: DefaultAPIFormat;
+const DIALECTS: Array<new (modelId: string) => BaseAPIFormat> = [
+  GrokModelDialect,
+  GeminiAPIFormat,
+  CodexAPIFormat, // Must precede OpenAIAPIFormat
+  OpenAIAPIFormat,
+  QwenModelDialect,
+  MiniMaxModelDialect,
+  DeepSeekModelDialect,
+  GLMModelDialect,
+  XiaomiModelDialect,
+];
 
-  constructor(modelId: string) {
-    // Register all available dialects/formats
-    this.adapters = [
-      new GrokModelDialect(modelId),
-      new GeminiAPIFormat(modelId),
-      new CodexAPIFormat(modelId), // Must be before OpenAIAPIFormat (codex matches first)
-      new OpenAIAPIFormat(modelId),
-      new QwenModelDialect(modelId),
-      new MiniMaxModelDialect(modelId),
-      new DeepSeekModelDialect(modelId),
-      new GLMModelDialect(modelId),
-      new XiaomiModelDialect(modelId),
-    ];
-    this.defaultAdapter = new DefaultAPIFormat(modelId);
+export function resolveModelDialect(modelId: string): BaseAPIFormat {
+  for (const Dialect of DIALECTS) {
+    const d = new Dialect(modelId);
+    if (d.shouldHandle(modelId)) return d;
   }
-
-  /**
-   * Get the appropriate dialect/format for the current model
-   */
-  getAdapter(): BaseAPIFormat {
-    for (const adapter of this.adapters) {
-      if (adapter.shouldHandle(this.defaultAdapter["modelId"])) {
-        return adapter;
-      }
-    }
-    return this.defaultAdapter;
-  }
-
-  /**
-   * Check if current model needs special handling
-   */
-  needsTransformation(): boolean {
-    return this.getAdapter() !== this.defaultAdapter;
-  }
+  return new DefaultAPIFormat(modelId);
 }
-
-// Backward-compatible alias
-/** @deprecated Use DialectManager */
-export { DialectManager as AdapterManager };

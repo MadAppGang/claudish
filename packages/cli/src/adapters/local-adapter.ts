@@ -12,7 +12,7 @@
  */
 
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
-import { DialectManager } from "./dialect-manager.js";
+import { resolveModelDialect } from "./dialect-manager.js";
 import { log } from "../logger.js";
 
 interface SamplingParams {
@@ -31,8 +31,7 @@ export class LocalModelAdapter extends BaseAPIFormat {
     super(modelId);
     this.providerName = providerName;
 
-    const manager = new DialectManager(modelId);
-    this.innerAdapter = manager.getAdapter();
+    this.innerAdapter = resolveModelDialect(modelId);
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────

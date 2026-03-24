@@ -22,7 +22,7 @@ import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { DialectManager } from "../adapters/dialect-manager.js";
+import { resolveModelDialect } from "../adapters/dialect-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -67,10 +67,11 @@ export interface ComposedHandlerOptions {
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private adapterManager: DialectManager;
   private explicitAdapter?: BaseModelAdapter;
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
   private modelAdapter?: BaseModelAdapter;
+  /** Auto-resolved dialect for this model */
+  private resolvedDialect: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
   private targetModel: string;
@@ -92,14 +93,11 @@ export class ComposedHandler implements ModelHandler {
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Initialize dialect manager for automatic dialect/format selection
-    this.adapterManager = new DialectManager(targetModel);
-
-    // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
-    // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
-    const resolvedModelAdapter = this.adapterManager.getAdapter();
-    if (resolvedModelAdapter.getName() !== "DefaultAPIFormat") {
-      this.modelAdapter = resolvedModelAdapter;
+    // Resolve model dialect (GLM, Grok, DeepSeek, etc.)
+    // Handles model quirks independent of provider transport
+    this.resolvedDialect = resolveModelDialect(targetModel);
+    if (this.resolvedDialect.getName() !== "DefaultAPIFormat") {
+      this.modelAdapter = this.resolvedDialect;
     }
 
     // Initialize middleware (only register model-specific middleware when applicable)
@@ -122,7 +120,7 @@ export class ComposedHandler implements ModelHandler {
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
   private getAdapter(): BaseModelAdapter {
-    return this.explicitAdapter || this.adapterManager.getAdapter();
+    return this.explicitAdapter || this.resolvedDialect;
   }
 
   /** Model context window — model adapter wins over provider adapter */

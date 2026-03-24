@@ -1430,10 +1430,9 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
         declaredStreamFormat = "openai-sse";
       }
 
-      // Get model dialect via DialectManager
-      const { DialectManager } = await import("./adapters/dialect-manager.js");
-      const adapterManager = new DialectManager(modelName);
-      const modelTranslator = adapterManager.getAdapter();
+      // Get model dialect via resolveModelDialect
+      const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
+      const modelTranslator = resolveModelDialect(modelName);
       const modelTranslatorName = modelTranslator.getName();
 
       // Transport overrides (aggregators that normalize responses to openai-sse)
