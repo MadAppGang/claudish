@@ -4,14 +4,14 @@
  * Transport concerns:
  * - x-goog-api-key header
  * - Endpoint URL with {model} substitution
- * - RequestQueue with geminiOnResponse hook for rate limiting
+ * - Rate limiting via onResponse override (parses quotaResetDelay from 429)
  * - gemini-sse stream format
  */
 
 import type { StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { BaseTransport } from "./base.js";
-import { geminiOnResponse } from "../../handlers/shared/request-queue.js";
+import type { QueueState } from "../../handlers/shared/request-queue.js";
 
 export class GeminiProviderTransport extends BaseTransport {
   readonly name = "gemini";
@@ -27,7 +27,6 @@ export class GeminiProviderTransport extends BaseTransport {
     super("gemini", {
       baseDelayMs: 1000,
       maxDelayMs: 10000,
-      onResponse: geminiOnResponse,
     });
     this.provider = provider;
     this.modelName = modelName;
@@ -43,6 +42,26 @@ export class GeminiProviderTransport extends BaseTransport {
     return {
       "x-goog-api-key": this.apiKey,
     };
+  }
+
+  protected override onResponse(response: Response, state: QueueState): boolean {
+    if (response.status !== 429) return false;
+    try {
+      response.clone().text().then(text => {
+        const data = JSON.parse(text);
+        const detail = data?.error?.details?.find((d: any) => d.quotaResetDelay);
+        if (detail?.quotaResetDelay) {
+          const match = detail.quotaResetDelay.match(/(\d+(?:\.\d+)?)/);
+          if (match) {
+            state.currentDelayMs = Math.min(
+              Math.max(Math.ceil(parseFloat(match[1]) * 1000), state.baseDelayMs),
+              state.maxDelayMs,
+            );
+          }
+        }
+      }).catch(() => {});
+    } catch {}
+    return true;
   }
 
   getNonStreamingEndpoint(_model?: string): string {

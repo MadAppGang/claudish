@@ -6,14 +6,14 @@
  * - Project ID via setupGeminiUser()
  * - Fixed endpoint: cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse
  * - Wraps payload in CodeAssist envelope: {model, project, user_prompt_id, request: <payload>}
- * - RequestQueue with geminiOnResponse hook for rate limiting
+ * - Rate limiting via onResponse override (parses quotaResetDelay from 429)
  * - gemini-sse stream format (with response wrapper)
  */
 
 import { randomUUID } from "node:crypto";
 import type { StreamFormat } from "./types.js";
 import { OAuthTransport } from "./base.js";
-import { geminiOnResponse } from "../../handlers/shared/request-queue.js";
+import type { QueueState } from "../../handlers/shared/request-queue.js";
 import { log } from "../../logger.js";
 
 const CODE_ASSIST_ENDPOINT =
@@ -33,13 +33,32 @@ export class GeminiCodeAssistProviderTransport extends OAuthTransport {
     super("gemini-codeassist", {
       baseDelayMs: 1000,
       maxDelayMs: 10000,
-      onResponse: geminiOnResponse,
     });
     this.modelName = modelName;
   }
 
   getEndpoint(): string {
     return CODE_ASSIST_ENDPOINT;
+  }
+
+  protected override onResponse(response: Response, state: QueueState): boolean {
+    if (response.status !== 429) return false;
+    try {
+      response.clone().text().then(text => {
+        const data = JSON.parse(text);
+        const detail = data?.error?.details?.find((d: any) => d.quotaResetDelay);
+        if (detail?.quotaResetDelay) {
+          const match = detail.quotaResetDelay.match(/(\d+(?:\.\d+)?)/);
+          if (match) {
+            state.currentDelayMs = Math.min(
+              Math.max(Math.ceil(parseFloat(match[1]) * 1000), state.baseDelayMs),
+              state.maxDelayMs,
+            );
+          }
+        }
+      }).catch(() => {});
+    } catch {}
+    return true;
   }
 
   /**
