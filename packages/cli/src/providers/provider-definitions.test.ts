@@ -7,9 +7,9 @@
 import { describe, test, expect } from "bun:test";
 import {
   BUILTIN_PROVIDERS,
-  getShortcuts,
-  getLegacyPrefixPatterns,
-  getNativeModelPatterns,
+  PROVIDER_SHORTCUTS,
+  LEGACY_PREFIX_PATTERNS,
+  NATIVE_MODEL_PATTERNS,
   getProviderByName,
   getApiKeyInfo,
   getDisplayName,
@@ -18,7 +18,6 @@ import {
   isDirectApiProvider,
   toRemoteProvider,
   getAllProviders,
-  getShortestPrefix,
   getApiKeyEnvVars,
   isProviderAvailable,
   type ProviderDefinition,
@@ -91,11 +90,11 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getShortcuts
+// PROVIDER_SHORTCUTS
 // ---------------------------------------------------------------------------
 
-describe("getShortcuts", () => {
-  const shortcuts = getShortcuts();
+describe("PROVIDER_SHORTCUTS", () => {
+  const shortcuts = PROVIDER_SHORTCUTS;
 
   test("maps 'g' to 'google'", () => {
     expect(shortcuts["g"]).toBe("google");
@@ -143,11 +142,11 @@ describe("getShortcuts", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getLegacyPrefixPatterns
+// LEGACY_PREFIX_PATTERNS
 // ---------------------------------------------------------------------------
 
-describe("getLegacyPrefixPatterns", () => {
-  const patterns = getLegacyPrefixPatterns();
+describe("LEGACY_PREFIX_PATTERNS", () => {
+  const patterns = LEGACY_PREFIX_PATTERNS;
 
   test("includes 'g/' for google", () => {
     const gPattern = patterns.find((p) => p.prefix === "g/");
@@ -172,11 +171,11 @@ describe("getLegacyPrefixPatterns", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getNativeModelPatterns
+// NATIVE_MODEL_PATTERNS
 // ---------------------------------------------------------------------------
 
-describe("getNativeModelPatterns", () => {
-  const patterns = getNativeModelPatterns();
+describe("NATIVE_MODEL_PATTERNS", () => {
+  const patterns = NATIVE_MODEL_PATTERNS;
 
   test("gemini-* matches google", () => {
     const match = patterns.find((p) => p.pattern.test("gemini-2.0-flash"));
@@ -368,20 +367,8 @@ describe("toRemoteProvider", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getShortestPrefix / getApiKeyEnvVars
+// getApiKeyEnvVars
 // ---------------------------------------------------------------------------
-
-describe("getShortestPrefix", () => {
-  test("returns shortest prefix for known providers", () => {
-    expect(getShortestPrefix("google")).toBe("g");
-    expect(getShortestPrefix("minimax")).toBe("mm");
-    expect(getShortestPrefix("openrouter")).toBe("or");
-  });
-
-  test("falls back to provider name for unknown", () => {
-    expect(getShortestPrefix("unknown")).toBe("unknown");
-  });
-});
 
 describe("getApiKeyEnvVars", () => {
   test("returns env var info for known providers", () => {

@@ -707,27 +707,8 @@ const DIRECT_API_PROVIDERS: Set<string> = (() => {
 })();
 
 // ---------------------------------------------------------------------------
-// Getter functions (thin wrappers for backward compatibility)
+// Getter functions
 // ---------------------------------------------------------------------------
-
-/** Get the shortcuts -> canonical provider name mapping. */
-export function getShortcuts(): Record<string, string> {
-  return PROVIDER_SHORTCUTS;
-}
-
-/** Get legacy prefix patterns for backwards compatibility. */
-export function getLegacyPrefixPatterns(): Array<{
-  prefix: string;
-  provider: string;
-  stripPrefix: boolean;
-}> {
-  return LEGACY_PREFIX_PATTERNS;
-}
-
-/** Get native model patterns for auto-detection. */
-export function getNativeModelPatterns(): Array<{ pattern: RegExp; provider: string }> {
-  return NATIVE_MODEL_PATTERNS;
-}
 
 /** Get a provider definition by canonical name. */
 export function getProviderByName(name: string): ProviderDefinition | undefined {
@@ -836,15 +817,6 @@ export function toRemoteProvider(def: ProviderDefinition): RemoteProvider {
  */
 export function getAllProviders(): ProviderDefinition[] {
   return BUILTIN_PROVIDERS;
-}
-
-/**
- * Get the shortest prefix for a provider (for @ syntax handler creation).
- * Replaces PROVIDER_TO_PREFIX in auto-route.ts.
- */
-export function getShortestPrefix(providerName: string): string {
-  const def = getProviderByName(providerName);
-  return def?.shortestPrefix || providerName;
 }
 
 /**

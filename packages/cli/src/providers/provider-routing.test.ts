@@ -9,7 +9,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { parseModelSpec } from "./model-parser.js";
-import { BUILTIN_PROVIDERS, getShortcuts } from "./provider-definitions.js";
+import { BUILTIN_PROVIDERS, PROVIDER_SHORTCUTS } from "./provider-definitions.js";
 import { resolveModelDialect } from "../providers/provider-profiles.js";
 import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
 import { GeminiModelDialect } from "../adapters/gemini-model-dialect.js";
@@ -30,7 +30,7 @@ import { OpenAIProviderTransport } from "./transport/openai.js";
 // ---------------------------------------------------------------------------
 
 describe("parseModelSpec — shortcut resolution", () => {
-  const shortcuts = getShortcuts();
+  const shortcuts = PROVIDER_SHORTCUTS;
 
   test("every shortcut in BUILTIN_PROVIDERS resolves to the correct provider", () => {
     for (const def of BUILTIN_PROVIDERS) {

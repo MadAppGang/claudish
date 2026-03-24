@@ -236,7 +236,6 @@ export interface FallbackRoute {
 }
 
 import {
-  getShortestPrefix,
   getDisplayName as _getDisplayName,
   getAllProviders,
 } from "./provider-definitions.js";
