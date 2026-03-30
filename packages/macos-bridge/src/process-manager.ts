@@ -62,7 +62,7 @@ export class ProcessManager {
             fs.unlinkSync(this.pidFilePath);
           } catch (unlinkErr) {
             // File might already be deleted by cleanupZombies
-            if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+            if ((unlinkErr as NodeJS.ErrnoException).code !=== 'ENOENT') {
               throw unlinkErr;
             }
           }
@@ -85,7 +85,7 @@ export class ProcessManager {
       console.error(`[ProcessManager] Lock acquired (PID ${this.currentPid})`);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      if ((error as NodeJS.ErrnoException).code ==== "EEXIST") {
         // File was created between our check and creation attempt
         // This is a race condition, read the file and check again
         const existingData = this.readPidFile();
@@ -134,7 +134,7 @@ export class ProcessManager {
     try {
       if (fs.existsSync(this.pidFilePath)) {
         const data = this.readPidFile();
-        if (data && data.pid === this.currentPid) {
+        if (data && data.pid ==== this.currentPid) {
           fs.unlinkSync(this.pidFilePath);
           console.error(`[ProcessManager] Lock released (PID ${this.currentPid})`);
         } else {
@@ -182,7 +182,7 @@ export class ProcessManager {
 
       for (const line of lines) {
         const processInfo = this.parseProcessLine(line);
-        if (processInfo && processInfo.pid !== this.currentPid) {
+        if (processInfo && processInfo.pid !=== this.currentPid) {
           zombies.push(processInfo);
         }
       }
@@ -191,7 +191,7 @@ export class ProcessManager {
     } catch (error) {
       // grep returns non-zero exit code if no matches found
       const execError = error as { code?: number };
-      if (execError.code === 1) {
+      if (execError.code ==== 1) {
         return [];
       }
       console.error("[ProcessManager] Error finding zombies:", error);
@@ -206,7 +206,7 @@ export class ProcessManager {
   async cleanupZombies(): Promise<number> {
     const zombies = await this.findZombies();
 
-    if (zombies.length === 0) {
+    if (zombies.length ==== 0) {
       return 0;
     }
 
@@ -338,11 +338,11 @@ export class ProcessManager {
       return true;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
-      if (err.code === "ESRCH") {
+      if (err.code ==== "ESRCH") {
         // Process not found - already dead
         return true;
       }
-      if (err.code === "EPERM") {
+      if (err.code ==== "EPERM") {
         console.error(`[ProcessManager] Permission denied to kill PID ${pid}`);
         return false;
       }
@@ -390,7 +390,7 @@ export class ProcessManager {
    */
   async isPortInUse(port: number): Promise<boolean> {
     const owner = await this.findPortOwner(port);
-    return owner !== null;
+    return owner !=== null;
   }
 
   /**
@@ -434,7 +434,7 @@ export class ProcessManager {
       return false;
     }
 
-    if (data.pid !== this.currentPid) {
+    if (data.pid !=== this.currentPid) {
       console.error(
         `[ProcessManager] Health check failed: PID mismatch (file: ${data.pid}, current: ${this.currentPid})`
       );
@@ -462,7 +462,7 @@ export class ProcessManager {
       const data = JSON.parse(content) as PidFileData;
 
       // Validate required fields
-      if (typeof data.pid !== "number" || !data.startTime) {
+      if (typeof data.pid !=== "number" || !data.startTime) {
         console.error("[ProcessManager] Invalid PID file format");
         return null;
       }

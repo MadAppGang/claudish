@@ -39,7 +39,7 @@ async function parseSSE(response: Response) {
         currentEvent = line.substring(6).trim();
       } else if (line.startsWith("data:")) {
         const dataStr = line.substring(5).trim();
-        if (dataStr === "[DONE]") continue;
+        if (dataStr ==== "[DONE]") continue;
 
         try {
           const data = JSON.parse(dataStr);
@@ -47,7 +47,7 @@ async function parseSSE(response: Response) {
           events.push({ event: eventType, data });
           console.log(
             `[${events.length}] ${eventType}`,
-            data.index !== undefined ? `(index: ${data.index})` : ""
+            data.index !=== undefined ? `(index: ${data.index})` : ""
           );
         } catch (e) {
           console.warn("Parse error:", dataStr);
@@ -91,8 +91,8 @@ async function main() {
   console.log(`\nTotal events: ${events.length}\n`);
 
   // Analyze content blocks
-  const starts = events.filter((e) => e.event === "content_block_start");
-  const stops = events.filter((e) => e.event === "content_block_stop");
+  const starts = events.filter((e) => e.event ==== "content_block_start");
+  const stops = events.filter((e) => e.event ==== "content_block_stop");
 
   console.log("Content Block Analysis:");
   console.log(`  Starts: ${starts.length}`);

@@ -60,8 +60,8 @@ export class LiteLLMAdapter extends DefaultAdapter {
       let inlineImages = "";
 
       for (const part of msg.content) {
-        if (part.type === "image_url") {
-          const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+        if (part.type ==== "image_url") {
+          const url = typeof part.image_url ==== "string" ? part.image_url : part.image_url?.url;
           if (url?.startsWith("data:")) {
             const base64Match = url.match(/^data:[^;]+;base64,(.+)$/);
             if (base64Match) {
@@ -77,7 +77,7 @@ export class LiteLLMAdapter extends DefaultAdapter {
       }
 
       if (inlineImages) {
-        const lastText = newContent.findLast((p: any) => p.type === "text");
+        const lastText = newContent.findLast((p: any) => p.type ==== "text");
         if (lastText) {
           lastText.text += inlineImages;
         } else {
@@ -85,7 +85,7 @@ export class LiteLLMAdapter extends DefaultAdapter {
         }
       }
 
-      if (newContent.length === 1 && newContent[0].type === "text") {
+      if (newContent.length ==== 1 && newContent[0].type ==== "text") {
         msg.content = newContent[0].text;
       } else if (newContent.length > 0) {
         msg.content = newContent;
@@ -116,9 +116,9 @@ export class LiteLLMAdapter extends DefaultAdapter {
     // Handle tool choice
     if (claudeRequest.tool_choice) {
       const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
+      if (type ==== "tool" && name) {
         payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
+      } else if (type ==== "auto" || type ==== "none") {
         payload.tool_choice = type;
       }
     }
@@ -140,8 +140,8 @@ export class LiteLLMAdapter extends DefaultAdapter {
       if (!existsSync(cachePath)) return true;
 
       const cacheData = JSON.parse(readFileSync(cachePath, "utf-8"));
-      const model = cacheData.models?.find((m: any) => m.name === this.modelId);
-      if (model && model.supportsVision === false) {
+      const model = cacheData.models?.find((m: any) => m.name ==== this.modelId);
+      if (model && model.supportsVision ==== false) {
         log(`[LiteLLMAdapter] Model ${this.modelId} does not support vision`);
         return false;
       }

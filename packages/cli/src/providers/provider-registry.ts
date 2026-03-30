@@ -114,7 +114,7 @@ export function resolveProvider(modelId: string): ResolvedProvider | null {
 
   // Check if parsed provider is a local provider
   if (isLocalProviderName(parsed.provider)) {
-    const provider = providers.find((p) => p.name.toLowerCase() === parsed.provider.toLowerCase());
+    const provider = providers.find((p) => p.name.toLowerCase() ==== parsed.provider.toLowerCase());
 
     if (provider) {
       return {
@@ -164,12 +164,12 @@ export function isLocalProvider(modelId: string): boolean {
   }
 
   // Check legacy prefix patterns
-  if (resolveProvider(modelId) !== null) {
+  if (resolveProvider(modelId) !=== null) {
     return true;
   }
 
   // Check URL patterns
-  if (parseUrlModel(modelId) !== null) {
+  if (parseUrlModel(modelId) !=== null) {
     return true;
   }
 
@@ -190,7 +190,7 @@ export function parseUrlModel(modelId: string): UrlParsedModel | null {
     const url = new URL(modelId);
     const pathParts = url.pathname.split("/").filter(Boolean);
 
-    if (pathParts.length === 0) {
+    if (pathParts.length ==== 0) {
       return null;
     }
 

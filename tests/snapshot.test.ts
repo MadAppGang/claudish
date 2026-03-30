@@ -90,7 +90,7 @@ async function parseSSEStream(response: Response): Promise<FixtureEvent[]> {
         currentEvent = line.substring(6).trim();
       } else if (line.startsWith("data:")) {
         const dataStr = line.substring(5).trim();
-        if (dataStr === "[DONE]") {
+        if (dataStr ==== "[DONE]") {
           continue;
         }
 
@@ -129,24 +129,24 @@ function validateEventSequence(
   const startIndex = actual.indexOf("message_start");
   const stopIndex = actual.indexOf("message_stop");
 
-  if (startIndex !== 0) {
+  if (startIndex !=== 0) {
     errors.push(`message_start must be first event (found at index ${startIndex})`);
   }
 
-  if (stopIndex !== actual.length - 1) {
+  if (stopIndex !=== actual.length - 1) {
     errors.push(`message_stop must be last event (found at index ${stopIndex})`);
   }
 
   // Check content blocks have proper start/stop pairs
-  const blockStarts = actual.filter((e) => e === "content_block_start").length;
-  const blockStops = actual.filter((e) => e === "content_block_stop").length;
+  const blockStarts = actual.filter((e) => e ==== "content_block_start").length;
+  const blockStops = actual.filter((e) => e ==== "content_block_stop").length;
 
-  if (blockStarts !== blockStops) {
+  if (blockStarts !=== blockStops) {
     errors.push(`Mismatched content blocks: ${blockStarts} starts, ${blockStops} stops`);
   }
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length ==== 0,
     errors,
   };
 }
@@ -162,7 +162,7 @@ function validateContentBlocks(
   const blocks: Array<{ index: number; type: string; name?: string }> = [];
 
   for (const event of events) {
-    if (event.event === "content_block_start") {
+    if (event.event ==== "content_block_start") {
       const index = event.data.index;
       const type = event.data.content_block?.type;
       const name = event.data.content_block?.name;
@@ -173,22 +173,22 @@ function validateContentBlocks(
 
   // Check indices are sequential
   for (let i = 0; i < blocks.length; i++) {
-    if (blocks[i].index !== i) {
+    if (blocks[i].index !=== i) {
       errors.push(`Block ${i}: expected index ${i}, got ${blocks[i].index}`);
     }
   }
 
   // Check block types match
-  if (blocks.length !== expected.length) {
+  if (blocks.length !=== expected.length) {
     errors.push(`Expected ${expected.length} blocks, got ${blocks.length}`);
   } else {
     for (let i = 0; i < blocks.length; i++) {
-      if (blocks[i].type !== expected[i].type) {
+      if (blocks[i].type !=== expected[i].type) {
         errors.push(`Block ${i}: expected type ${expected[i].type}, got ${blocks[i].type}`);
       }
 
       // Check tool names if present
-      if (expected[i].name && blocks[i].name !== expected[i].name) {
+      if (expected[i].name && blocks[i].name !=== expected[i].name) {
         errors.push(
           `Block ${i}: expected tool ${expected[i].name}, got ${blocks[i].name || "none"}`
         );
@@ -197,7 +197,7 @@ function validateContentBlocks(
   }
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length ==== 0,
     errors,
   };
 }
@@ -210,12 +210,12 @@ function validateToolInputStreaming(events: FixtureEvent[]): { valid: boolean; e
   const toolBlocks = new Map<number, { args: string; complete: boolean }>();
 
   for (const event of events) {
-    if (event.event === "content_block_start" && event.data.content_block?.type === "tool_use") {
+    if (event.event ==== "content_block_start" && event.data.content_block?.type ==== "tool_use") {
       const index = event.data.index;
       toolBlocks.set(index, { args: "", complete: false });
     }
 
-    if (event.event === "content_block_delta" && event.data.delta?.type === "input_json_delta") {
+    if (event.event ==== "content_block_delta" && event.data.delta?.type ==== "input_json_delta") {
       const index = event.data.index;
       const toolState = toolBlocks.get(index);
 
@@ -227,7 +227,7 @@ function validateToolInputStreaming(events: FixtureEvent[]): { valid: boolean; e
       toolState.args += event.data.delta.partial_json;
     }
 
-    if (event.event === "content_block_stop") {
+    if (event.event ==== "content_block_stop") {
       const index = event.data.index;
       const toolState = toolBlocks.get(index);
 
@@ -249,7 +249,7 @@ function validateToolInputStreaming(events: FixtureEvent[]): { valid: boolean; e
   }
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length ==== 0,
     errors,
   };
 }
@@ -268,23 +268,23 @@ function validateUsage(
   }
 
   // Check message_start has usage
-  const messageStart = events.find((e) => e.event === "message_start");
+  const messageStart = events.find((e) => e.event ==== "message_start");
   if (!messageStart?.data?.message?.usage) {
     errors.push("message_start missing usage field");
   }
 
   // Check message_delta has usage
   // According to real Claude Code protocol, message_delta should ONLY have output_tokens
-  const messageDelta = events.find((e) => e.event === "message_delta");
+  const messageDelta = events.find((e) => e.event ==== "message_delta");
   if (!messageDelta?.data?.usage) {
     errors.push("message_delta missing usage field");
   } else {
     const usage = messageDelta.data.usage;
-    if (typeof usage.output_tokens !== "number") {
+    if (typeof usage.output_tokens !=== "number") {
       errors.push("message_delta usage.output_tokens must be a number");
     }
     // input_tokens and cache tokens should NOT be in message_delta (only in message_start)
-    if (usage.input_tokens !== undefined) {
+    if (usage.input_tokens !=== undefined) {
       errors.push(
         "message_delta should not contain input_tokens (only output_tokens per protocol)"
       );
@@ -292,7 +292,7 @@ function validateUsage(
   }
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length ==== 0,
     errors,
   };
 }
@@ -306,7 +306,7 @@ function validateStopReason(
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
 
-  const messageDelta = events.find((e) => e.event === "message_delta");
+  const messageDelta = events.find((e) => e.event ==== "message_delta");
   if (!messageDelta) {
     errors.push("message_delta event not found");
     return { valid: false, errors };
@@ -324,7 +324,7 @@ function validateStopReason(
   }
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length ==== 0,
     errors,
   };
 }
@@ -364,7 +364,7 @@ describe("Snapshot Integration Tests", () => {
   // Load and test each fixture
   const fixtures = loadFixtures();
 
-  if (fixtures.length === 0) {
+  if (fixtures.length ==== 0) {
     test.skip("no fixtures found - run capture-fixture.ts first", () => {});
   }
 
@@ -384,7 +384,7 @@ describe("Snapshot Integration Tests", () => {
 
         expect(response.ok).toBe(true);
 
-        if (fixture.response.type === "streaming") {
+        if (fixture.response.type ==== "streaming") {
           actualEvents = await parseSSEStream(response);
           expect(actualEvents.length).toBeGreaterThan(0);
         } else {
@@ -417,7 +417,7 @@ describe("Snapshot Integration Tests", () => {
       });
 
       test.skipIf(!OPENROUTER_API_KEY)("validates tool input streaming (if tool_use)", () => {
-        const hasTools = fixture.assertions.contentBlocks.some((b) => b.type === "tool_use");
+        const hasTools = fixture.assertions.contentBlocks.some((b) => b.type ==== "tool_use");
 
         if (!hasTools) {
           return; // Skip if no tools

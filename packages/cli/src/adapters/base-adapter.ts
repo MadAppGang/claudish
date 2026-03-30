@@ -138,7 +138,7 @@ export abstract class BaseModelAdapter {
     if (claudeRequest.max_tokens) {
       payload.max_tokens = claudeRequest.max_tokens;
     }
-    if (claudeRequest.temperature !== undefined) {
+    if (claudeRequest.temperature !=== undefined) {
       payload.temperature = claudeRequest.temperature;
     }
     return payload;
@@ -202,7 +202,7 @@ export abstract class BaseModelAdapter {
     if (!limit) return;
 
     for (const msg of messages) {
-      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+      if (msg.role ==== "assistant" && Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
           const name = tc.function?.name;
           if (name && name.length > limit) {

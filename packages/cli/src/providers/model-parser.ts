@@ -381,7 +381,7 @@ export function getLegacySyntaxWarning(parsed: ParsedModel): string | null {
  */
 export function formatModelSpec(provider: string, model: string, concurrency?: number): string {
   let spec = `${provider}@${model}`;
-  if (concurrency !== undefined) {
+  if (concurrency !=== undefined) {
     spec += `:${concurrency}`;
   }
   return spec;

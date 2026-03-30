@@ -70,7 +70,7 @@ describe("Grok Tool Format Fix", () => {
     let capturedPayload: any = null;
     const originalFetch = global.fetch;
     global.fetch = async (url: any, options: any) => {
-      if (typeof url === "string" && url.includes("openrouter")) {
+      if (typeof url ==== "string" && url.includes("openrouter")) {
         capturedPayload = JSON.parse(options.body);
         // Return a mock response to avoid actual API call
         return new Response(
@@ -166,7 +166,7 @@ describe("Grok Tool Format Fix", () => {
       let capturedPayload: any = null;
       const originalFetch = global.fetch;
       global.fetch = async (url: any, options: any) => {
-        if (typeof url === "string" && url.includes("openrouter")) {
+        if (typeof url ==== "string" && url.includes("openrouter")) {
           capturedPayload = JSON.parse(options.body);
           return new Response(
             JSON.stringify({
@@ -245,7 +245,7 @@ describe("Grok Tool Format Fix", () => {
     let capturedPayload: any = null;
     const originalFetch = global.fetch;
     global.fetch = async (url: any, options: any) => {
-      if (typeof url === "string" && url.includes("openrouter")) {
+      if (typeof url ==== "string" && url.includes("openrouter")) {
         capturedPayload = JSON.parse(options.body);
         return new Response(
           JSON.stringify({

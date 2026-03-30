@@ -99,7 +99,7 @@ export function convertMessagesToOpenAI(
   if (modelId.includes("grok") || modelId.includes("x-ai")) {
     const msg =
       "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
-    if (messages.length > 0 && messages[0].role === "system") {
+    if (messages.length > 0 && messages[0].role ==== "system") {
       messages[0].content += "\n\n" + msg;
     } else {
       messages.unshift({ role: "system", content: msg });
@@ -108,8 +108,8 @@ export function convertMessagesToOpenAI(
 
   if (req.messages) {
     for (const msg of req.messages) {
-      if (msg.role === "user") processUserMessage(msg, messages, simpleFormat);
-      else if (msg.role === "assistant") processAssistantMessage(msg, messages, simpleFormat);
+      if (msg.role ==== "user") processUserMessage(msg, messages, simpleFormat);
+      else if (msg.role ==== "assistant") processAssistantMessage(msg, messages, simpleFormat);
     }
   }
 
@@ -124,12 +124,12 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
     const seen = new Set<string>();
 
     for (const block of msg.content) {
-      if (block.type === "text") {
+      if (block.type ==== "text") {
         textParts.push(block.text);
         if (!simpleFormat) {
           contentParts.push({ type: "text", text: block.text });
         }
-      } else if (block.type === "image") {
+      } else if (block.type ==== "image") {
         if (!simpleFormat) {
           contentParts.push({
             type: "image_url",
@@ -137,11 +137,11 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
           });
         }
         // Skip images in simple format - MLX doesn't support vision
-      } else if (block.type === "tool_result") {
+      } else if (block.type ==== "tool_result") {
         if (seen.has(block.tool_use_id)) continue;
         seen.add(block.tool_use_id);
         const resultContent =
-          typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+          typeof block.content ==== "string" ? block.content : JSON.stringify(block.content);
         if (simpleFormat) {
           // In simple format, include tool results as text in user message
           textParts.push(`[Tool Result]: ${resultContent}`);
@@ -177,15 +177,15 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
     let reasoningContent = "";
 
     for (const block of msg.content) {
-      if (block.type === "text") {
+      if (block.type ==== "text") {
         strings.push(block.text);
-      } else if (block.type === "thinking") {
+      } else if (block.type ==== "thinking") {
         // Accumulate thinking content to send back as reasoning_content
         // Skip in simpleFormat (same as tool calls)
         if (!simpleFormat && block.thinking) {
           reasoningContent += block.thinking;
         }
-      } else if (block.type === "tool_use") {
+      } else if (block.type ==== "tool_use") {
         if (seen.has(block.id)) continue;
         seen.add(block.id);
         if (simpleFormat) {
@@ -212,7 +212,7 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
       else if (toolCalls.length) m.content = null;
       if (toolCalls.length) m.tool_calls = toolCalls;
       if (reasoningContent) m.reasoning_content = reasoningContent;
-      if (m.content !== undefined || m.tool_calls) messages.push(m);
+      if (m.content !=== undefined || m.tool_calls) messages.push(m);
     }
   } else {
     messages.push({ role: "assistant", content: msg.content });
@@ -343,7 +343,7 @@ export function createStreamingResponseHandler(
   onTokenUpdate?: (input: number, output: number) => void,
   toolSchemas?: any[] // Tool schemas for validation
 ): Response {
-  log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
+  log(`[Streaming] ====== HANDLER STARTED for ${target} ======`);
   let isClosed = false;
   let ping: NodeJS.Timeout | null = null;
   const encoder = new TextEncoder();
@@ -446,7 +446,7 @@ export function createStreamingResponseHandler(
             await middlewareManager.afterStreamComplete(target, streamMetadata);
           }
 
-          if (reason === "error") {
+          if (reason ==== "error") {
             send("error", { type: "error", error: { type: "api_error", message: err } });
           } else {
             // Set stop_reason based on whether we sent tool calls
@@ -501,7 +501,7 @@ export function createStreamingResponseHandler(
             for (const line of lines) {
               if (!line.trim() || !line.startsWith("data: ")) continue;
               const dataStr = line.slice(6);
-              if (dataStr === "[DONE]") {
+              if (dataStr ==== "[DONE]") {
                 await finalize("done");
                 return;
               }
@@ -575,7 +575,7 @@ export function createStreamingResponseHandler(
                     );
 
                     // Debug: Log text processing
-                    if (txt.length > 0 && res.cleanedText.length === 0) {
+                    if (txt.length > 0 && res.cleanedText.length ==== 0) {
                       log(`[Streaming] Text filtered out by adapter: "${txt.substring(0, 50)}"`);
                     }
 
@@ -692,7 +692,7 @@ export function createStreamingResponseHandler(
                   }
                 }
 
-                if (chunk.choices?.[0]?.finish_reason === "tool_calls") {
+                if (chunk.choices?.[0]?.finish_reason ==== "tool_calls") {
                   for (const t of Array.from(state.tools.values())) {
                     if (!t.closed) {
                       // Validate and potentially repair tool arguments

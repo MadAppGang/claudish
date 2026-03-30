@@ -16,11 +16,11 @@ export class NativeHandler implements ModelHandler {
     const originalHeaders = c.req.header();
     const target = payload.model;
 
-    log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
+    log("\n==== [NATIVE] Claude Code → Anthropic API Request ====");
     log(`[Native] x-api-key: ${originalHeaders["x-api-key"] ? maskCredential(originalHeaders["x-api-key"]) : "(not set)"}`);
     log(`[Native] authorization: ${originalHeaders["authorization"] ? maskCredential(originalHeaders["authorization"]) : "(not set)"}`);
     log(`Request body (Model: ${target}):`);
-    log("=== End Request ===\n");
+    log("==== End Request ====\n");
 
     // Build headers - pass through auth headers exactly as received
     const headers: Record<string, string> = {
@@ -96,7 +96,7 @@ export class NativeHandler implements ModelHandler {
 
       // Handle JSON
       const data = await anthropicResponse.json();
-      log("\n=== [NATIVE] Response ===");
+      log("\n==== [NATIVE] Response ====");
       log(JSON.stringify(data, null, 2));
 
       const responseHeaders: Record<string, string> = { "Content-Type": "application/json" };

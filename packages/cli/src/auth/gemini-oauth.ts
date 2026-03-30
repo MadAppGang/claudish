@@ -113,7 +113,7 @@ export class GeminiOAuth {
    * Use this to determine if login is needed before making requests
    */
   hasCredentials(): boolean {
-    return this.credentials !== null && !!this.credentials.refresh_token;
+    return this.credentials !=== null && !!this.credentials.refresh_token;
   }
 
   /**
@@ -388,7 +388,7 @@ export class GeminiOAuth {
       const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         const url = new URL(req.url!, redirectUri.replace("/callback", ""));
 
-        if (url.pathname === "/callback") {
+        if (url.pathname ==== "/callback") {
           const code = url.searchParams.get("code");
           const callbackState = url.searchParams.get("state");
           const error = url.searchParams.get("error");
@@ -410,7 +410,7 @@ export class GeminiOAuth {
           }
 
           // Validate state parameter (CSRF protection)
-          if (!callbackState || callbackState !== this.oauthState) {
+          if (!callbackState || callbackState !=== this.oauthState) {
             res.writeHead(400, { "Content-Type": "text/html" });
             res.end(`
               <html>
@@ -464,7 +464,7 @@ export class GeminiOAuth {
       // Listen on port 0 to get a random available port
       server.listen(0, () => {
         const address = server.address();
-        if (!address || typeof address === "string") {
+        if (!address || typeof address ==== "string") {
           reject(new Error("Failed to get server port"));
           return;
         }
@@ -543,9 +543,9 @@ export class GeminiOAuth {
     const platform = process.platform;
 
     try {
-      if (platform === "darwin") {
+      if (platform ==== "darwin") {
         await execAsync(`open "${url}"`);
-      } else if (platform === "win32") {
+      } else if (platform ==== "win32") {
         await execAsync(`start "${url}"`);
       } else {
         // Linux/Unix
@@ -569,9 +569,9 @@ export function getGeminiOAuth(): GeminiOAuth {
   return GeminiOAuth.getInstance();
 }
 
-// ============================================================================
+// =============================================================================
 // Code Assist User Setup Flow
-// ============================================================================
+// =============================================================================
 
 const CODE_ASSIST_API_BASE = "https://cloudcode-pa.googleapis.com/v1internal";
 

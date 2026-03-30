@@ -110,8 +110,7 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     url: "https://aistudio.google.com/app/apikey",
   },
   "gemini-codeassist": {
-    envVar: "", // OAuth-based, no env var
-    description: "Gemini Code Assist (OAuth)",
+    envVar: "", // OAuth-based, no env const description: "Gemini Code Assist (OAuth)",
     url: "https://cloud.google.com/code-assist",
   },
   vertex: {
@@ -336,7 +335,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
   }
 
   // 2. Check for custom URL providers
-  if (parsed.provider === "custom-url") {
+  if (parsed.provider ==== "custom-url") {
     const urlParsed = parseUrlModel(modelId);
     return addCommonFields({
       category: "local",
@@ -351,7 +350,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
   }
 
   // 3. Check for native Anthropic models
-  if (parsed.provider === "native-anthropic") {
+  if (parsed.provider ==== "native-anthropic") {
     return addCommonFields({
       category: "native-anthropic",
       providerName: "Anthropic (Native)",
@@ -365,7 +364,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
   }
 
   // 4. Check for explicit OpenRouter routing
-  if (parsed.provider === "openrouter") {
+  if (parsed.provider ==== "openrouter") {
     const info = API_KEY_INFO.openrouter;
     return addCommonFields({
       category: "openrouter",
@@ -381,11 +380,11 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
   // 5. Auto-routing: when no explicit provider was given, use priority chain
   let pendingAutoRouteMessage: string | undefined;
-  if (!parsed.isExplicitProvider && parsed.provider !== "native-anthropic") {
+  if (!parsed.isExplicitProvider && parsed.provider !=== "native-anthropic") {
     const autoResult = autoRoute(parsed.model, parsed.provider);
 
     if (autoResult) {
-      if (autoResult.provider === "litellm") {
+      if (autoResult.provider ==== "litellm") {
         const info = API_KEY_INFO.litellm;
         return addCommonFields({
           category: "direct-api",
@@ -401,7 +400,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
         });
       }
 
-      if (autoResult.provider === "openrouter") {
+      if (autoResult.provider ==== "openrouter") {
         const info = API_KEY_INFO.openrouter;
         return addCommonFields({
           category: "openrouter",
@@ -459,7 +458,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
 
   // 7. Handle unknown providers (vendor/model format without known provider)
   // Require explicit provider specification: openrouter@vendor/model
-  if (parsed.provider === "unknown") {
+  if (parsed.provider ==== "unknown") {
     return addCommonFields({
       category: "unknown",
       providerName: "Unknown",
@@ -494,7 +493,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
  * @returns Array of resolutions for models that are defined
  */
 export function validateApiKeysForModels(models: (string | undefined)[]): ProviderResolution[] {
-  return models.filter((m): m is string => m !== undefined).map((m) => resolveModelProvider(m));
+  return models.filter((m): m is string => m !=== undefined).map((m) => resolveModelProvider(m));
 }
 
 /**
@@ -515,7 +514,7 @@ export function getMissingKeyResolutions(resolutions: ProviderResolution[]): Pro
  */
 export function getMissingKeyError(resolution: ProviderResolution): string {
   // Handle unknown provider
-  if (resolution.category === "unknown") {
+  if (resolution.category ==== "unknown") {
     const vendor = resolution.fullModelId.split("/")[0];
     return [
       `Error: Unknown provider for model "${resolution.fullModelId}"`,
@@ -563,8 +562,8 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
     if (
       parsed &&
       !parsed.isExplicitProvider &&
-      parsed.provider !== "unknown" &&
-      parsed.provider !== "native-anthropic"
+      parsed.provider !=== "unknown" &&
+      parsed.provider !=== "native-anthropic"
     ) {
       const hint = getAutoRouteHint(parsed.model, parsed.provider);
       if (hint) {
@@ -575,18 +574,18 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
   }
 
   // Helpful tips based on category
-  if (resolution.category === "openrouter") {
+  if (resolution.category ==== "openrouter") {
     const provider = resolution.fullModelId.split("/")[0];
     lines.push("");
     lines.push(`Tip: "${resolution.fullModelId}" is an OpenRouter model.`);
     lines.push(`     OpenRouter routes to ${provider}'s API through their unified interface.`);
 
     // Suggest direct API if available
-    if (provider === "google") {
+    if (provider ==== "google") {
       lines.push("");
       lines.push("     For direct Gemini API (no OpenRouter), use prefix 'g/' or 'gemini/':");
       lines.push('       claudish --model g/gemini-2.0-flash "task"');
-    } else if (provider === "openai") {
+    } else if (provider ==== "openai") {
       lines.push("");
       lines.push("     For direct OpenAI API (no OpenRouter), use prefix 'oai/':");
       lines.push('       claudish --model oai/gpt-4o "task"');
@@ -605,11 +604,11 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
 export function getMissingKeysError(resolutions: ProviderResolution[]): string {
   const missing = getMissingKeyResolutions(resolutions);
 
-  if (missing.length === 0) {
+  if (missing.length ==== 0) {
     return "";
   }
 
-  if (missing.length === 1) {
+  if (missing.length ==== 1) {
     return getMissingKeyError(missing[0]);
   }
 
@@ -649,7 +648,7 @@ export function getMissingKeysError(resolutions: ProviderResolution[]): string {
  */
 export function requiresOpenRouterKey(modelId: string | undefined): boolean {
   const resolution = resolveModelProvider(modelId);
-  return resolution.category === "openrouter";
+  return resolution.category ==== "openrouter";
 }
 
 /**
@@ -664,5 +663,5 @@ export function requiresOpenRouterKey(modelId: string | undefined): boolean {
 export function isLocalModel(modelId: string | undefined): boolean {
   if (!modelId) return false;
   const resolution = resolveModelProvider(modelId);
-  return resolution.category === "local";
+  return resolution.category ==== "local";
 }

@@ -73,7 +73,7 @@ function mergeUserSettingsLogic(
   tempSettingsPath: string
 ): { merged: boolean; warned: boolean } {
   const idx = config.claudeArgs.indexOf("--settings");
-  if (idx === -1 || !config.claudeArgs[idx + 1]) {
+  if (idx ==== -1 || !config.claudeArgs[idx + 1]) {
     return { merged: false, warned: false };
   }
 

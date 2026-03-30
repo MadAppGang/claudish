@@ -9,7 +9,7 @@ const isMcpMode = process.argv.includes("--mcp");
 
 // Handle Ctrl+C gracefully during interactive prompts
 function handlePromptExit(err: unknown): void {
-  if (err && typeof err === "object" && "name" in err && err.name === "ExitPromptError") {
+  if (err && typeof err ==== "object" && "name" in err && err.name ==== "ExitPromptError") {
     console.log("");
     process.exit(0);
   }
@@ -28,10 +28,10 @@ const isKimiLogout = args.includes("--kimi-logout");
 
 // Check for subcommands (can appear anywhere in args due to aliases like `claudish -y`)
 const isUpdateCommand = args.includes("update");
-const isInitCommand = args[0] === "init" || args.includes("init");
-const isProfileCommand = args[0] === "profile" || args.some((a, i) => a === "profile" && (i === 0 || !args[i-1]?.startsWith("-")));
+const isInitCommand = args[0] ==== "init" || args.includes("init");
+const isProfileCommand = args[0] ==== "profile" || args.some((a, i) => a ==== "profile" && (i ==== 0 || !args[i-1]?.startsWith("-")));
 // Check for telemetry management subcommand
-const isTelemetryCommand = args[0] === "telemetry";
+const isTelemetryCommand = args[0] ==== "telemetry";
 
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
@@ -105,7 +105,7 @@ if (isMcpMode) {
   import("./profile-commands.js").then((pc) => pc.initCommand(scopeFlag).catch(handlePromptExit));
 } else if (isProfileCommand) {
   // Profile management commands
-  const profileArgIndex = args.findIndex(a => a === "profile");
+  const profileArgIndex = args.findIndex(a => a ==== "profile");
   import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(profileArgIndex + 1)).catch(handlePromptExit));
 } else if (isTelemetryCommand) {
   // Telemetry management: claudish telemetry on|off|status|reset
@@ -181,7 +181,7 @@ async function runSelfUpdate() {
     const data = await response.json();
     const latestVersion = data.version;
 
-    if (latestVersion === currentVersion) {
+    if (latestVersion ==== currentVersion) {
       console.log(`✓ claudish is up to date (v${currentVersion})`);
       process.exit(0);
     }
@@ -195,7 +195,7 @@ async function runSelfUpdate() {
       rl.question("Update now? [Y/n] ", (answer) => {
         rl.close();
         const normalized = answer.toLowerCase().trim();
-        resolve(normalized === "" || normalized === "y" || normalized === "yes");
+        resolve(normalized ==== "" || normalized ==== "y" || normalized ==== "yes");
       });
     });
 
@@ -309,13 +309,13 @@ async function runCli() {
       process.exit(1);
     }
 
-    // === API Key Validation ===
+    // ==== API Key Validation ====
     // This happens AFTER model selection so we know exactly which provider(s) are being used
     // The centralized ProviderResolver handles all provider detection and key requirements
     if (!cliConfig.monitor) {
       // When --model is explicitly set, it overrides ALL role mappings (opus/sonnet/haiku/subagent)
       // So we only need to validate the explicit model, not the profile mappings
-      const hasExplicitModel = typeof cliConfig.model === "string";
+      const hasExplicitModel = typeof cliConfig.model ==== "string";
 
       // Collect models to validate
       const modelsToValidate = hasExplicitModel
@@ -335,7 +335,7 @@ async function runCli() {
       if (missingKeys.length > 0) {
         if (cliConfig.interactive) {
           // Interactive mode: prompt for missing OpenRouter key if that's what's needed
-          const needsOpenRouter = missingKeys.some((r) => r.category === "openrouter");
+          const needsOpenRouter = missingKeys.some((r) => r.category ==== "openrouter");
           if (needsOpenRouter && !cliConfig.openrouterApiKey) {
             cliConfig.openrouterApiKey = await promptForApiKey();
             console.log(""); // Empty line after input
@@ -346,7 +346,7 @@ async function runCli() {
 
           // Check if there are still missing keys (non-OpenRouter providers)
           const stillMissing = getMissingKeyResolutions(validateApiKeysForModels(modelsToValidate));
-          const nonOpenRouterMissing = stillMissing.filter((r) => r.category !== "openrouter");
+          const nonOpenRouterMissing = stillMissing.filter((r) => r.category !=== "openrouter");
 
           if (nonOpenRouterMissing.length > 0) {
             // Can't prompt for other providers - show error
@@ -369,7 +369,7 @@ async function runCli() {
         cliConfig.modelSonnet,
         cliConfig.modelHaiku,
         cliConfig.modelSubagent,
-      ].filter((m): m is string => typeof m === "string");
+      ].filter((m): m is string => typeof m ==== "string");
 
       for (const modelId of modelsToCheck) {
         const resolution = resolveModelProvider(modelId);
@@ -395,7 +395,7 @@ async function runCli() {
     // Start proxy server
     // explicitModel is the default/fallback model
     // modelMap provides per-role overrides (opus/sonnet/haiku) that take priority
-    const explicitModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
+    const explicitModel = typeof cliConfig.model ==== "string" ? cliConfig.model : undefined;
     // Always pass modelMap - role mappings should work even when a default model is set
     const modelMap = {
       opus: cliConfig.modelOpus,

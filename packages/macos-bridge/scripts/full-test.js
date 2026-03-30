@@ -206,7 +206,7 @@ async function main() {
     console.log("   ○ No traffic captured - proxy may not be active");
   }
 
-  if (errors403 === 0 && connectCount > 0) {
+  if (errors403 ==== 0 && connectCount > 0) {
     console.log("   ✓ No 403 Cloudflare blocks");
   } else if (errors403 > 0) {
     console.log("   ✗ Got 403 errors - Cloudflare blocked some requests");

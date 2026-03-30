@@ -189,22 +189,22 @@ describe("Vision Proxy", () => {
       const urlStr = url.toString();
 
       // Ollama health check
-      if (urlStr === OLLAMA_HEALTH_ENDPOINT || urlStr === OLLAMA_MODELS_ENDPOINT) {
+      if (urlStr ==== OLLAMA_HEALTH_ENDPOINT || urlStr ==== OLLAMA_MODELS_ENDPOINT) {
         return ollamaHealthResponse();
       }
 
       // Ollama context window fetch
-      if (urlStr === OLLAMA_CONTEXT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CONTEXT_ENDPOINT) {
         return new Response(JSON.stringify({ parameters: "" }), { status: 200 });
       }
 
       // Vision proxy call (Anthropic API)
-      if (urlStr === ANTHROPIC_VISION_ENDPOINT) {
+      if (urlStr ==== ANTHROPIC_VISION_ENDPOINT) {
         return visionProxyResponse("A small transparent 1x1 PNG pixel.");
       }
 
       // Main model call (Ollama)
-      if (urlStr === OLLAMA_CHAT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CHAT_ENDPOINT) {
         return ollamaStreamingResponse("Described image response");
       }
 
@@ -239,7 +239,7 @@ describe("Vision Proxy", () => {
 
       // Verify vision proxy was called
       const visionCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === ANTHROPIC_VISION_ENDPOINT
+        (call) => call[0].toString() ==== ANTHROPIC_VISION_ENDPOINT
       );
       expect(visionCall).toBeDefined();
 
@@ -249,10 +249,10 @@ describe("Vision Proxy", () => {
       expect(visionBody.messages).toBeDefined();
 
       // Find image block in vision request
-      const visionUserMsg = visionBody.messages.find((m: any) => m.role === "user");
+      const visionUserMsg = visionBody.messages.find((m: any) => m.role ==== "user");
       expect(visionUserMsg).toBeDefined();
       const visionImageBlock = visionUserMsg.content.find(
-        (part: any) => part.type === "image"
+        (part: any) => part.type ==== "image"
       );
       expect(visionImageBlock).toBeDefined();
       expect(visionImageBlock.source.type).toBe("base64");
@@ -261,23 +261,23 @@ describe("Vision Proxy", () => {
 
       // Verify main model (Ollama) was called
       const ollamaCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === OLLAMA_CHAT_ENDPOINT
+        (call) => call[0].toString() ==== OLLAMA_CHAT_ENDPOINT
       );
       expect(ollamaCall).toBeDefined();
 
       // Verify the main model received text description, NOT image_url blocks
       const ollamaBody = JSON.parse(ollamaCall![1]!.body as string);
-      const userMsg = ollamaBody.messages.find((m: any) => m.role === "user");
+      const userMsg = ollamaBody.messages.find((m: any) => m.role ==== "user");
       expect(userMsg).toBeDefined();
 
       // No image_url blocks in the main model request
       const contentArray = Array.isArray(userMsg.content) ? userMsg.content : [];
-      const imageUrlBlocks = contentArray.filter((p: any) => p.type === "image_url");
+      const imageUrlBlocks = contentArray.filter((p: any) => p.type ==== "image_url");
       expect(imageUrlBlocks).toHaveLength(0);
 
       // A text block with [Image Description: ...] should be present
       const descriptionBlocks = contentArray.filter(
-        (p: any) => p.type === "text" && p.text.startsWith("[Image Description:")
+        (p: any) => p.type ==== "text" && p.text.startsWith("[Image Description:")
       );
       expect(descriptionBlocks.length).toBeGreaterThan(0);
       expect(descriptionBlocks[0].text).toContain("A small transparent 1x1 PNG pixel.");
@@ -296,7 +296,7 @@ describe("Vision Proxy", () => {
       const urlStr = url.toString();
 
       // Main model call (OpenRouter) — vision-capable, no proxy needed
-      if (urlStr === OPENROUTER_ENDPOINT) {
+      if (urlStr ==== OPENROUTER_ENDPOINT) {
         return openRouterResponse("I see a 1x1 PNG image.");
       }
 
@@ -331,22 +331,22 @@ describe("Vision Proxy", () => {
 
       // Vision proxy must NOT be called
       const visionCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === ANTHROPIC_VISION_ENDPOINT
+        (call) => call[0].toString() ==== ANTHROPIC_VISION_ENDPOINT
       );
       expect(visionCall).toBeUndefined();
 
       // Main model (OpenRouter) must be called
       const orCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === OPENROUTER_ENDPOINT
+        (call) => call[0].toString() ==== OPENROUTER_ENDPOINT
       );
       expect(orCall).toBeDefined();
 
       // The image_url block must be present in the main model request
       const orBody = JSON.parse(orCall![1]!.body as string);
-      const userMsg = orBody.messages.find((m: any) => m.role === "user");
+      const userMsg = orBody.messages.find((m: any) => m.role ==== "user");
       expect(userMsg).toBeDefined();
       const contentArray = Array.isArray(userMsg.content) ? userMsg.content : [];
-      const imageUrlBlocks = contentArray.filter((p: any) => p.type === "image_url");
+      const imageUrlBlocks = contentArray.filter((p: any) => p.type ==== "image_url");
       expect(imageUrlBlocks.length).toBeGreaterThan(0);
       expect(imageUrlBlocks[0].image_url.url).toBe(DATA_URL);
     } finally {
@@ -364,17 +364,17 @@ describe("Vision Proxy", () => {
       const urlStr = url.toString();
 
       // Ollama health check
-      if (urlStr === OLLAMA_HEALTH_ENDPOINT || urlStr === OLLAMA_MODELS_ENDPOINT) {
+      if (urlStr ==== OLLAMA_HEALTH_ENDPOINT || urlStr ==== OLLAMA_MODELS_ENDPOINT) {
         return ollamaHealthResponse();
       }
 
       // Ollama context window fetch
-      if (urlStr === OLLAMA_CONTEXT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CONTEXT_ENDPOINT) {
         return new Response(JSON.stringify({ parameters: "" }), { status: 200 });
       }
 
       // Main model call (Ollama)
-      if (urlStr === OLLAMA_CHAT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CHAT_ENDPOINT) {
         return ollamaStreamingResponse("Hello, how can I help?");
       }
 
@@ -404,13 +404,13 @@ describe("Vision Proxy", () => {
 
       // Vision proxy must NOT be called (no images in request)
       const visionCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === ANTHROPIC_VISION_ENDPOINT
+        (call) => call[0].toString() ==== ANTHROPIC_VISION_ENDPOINT
       );
       expect(visionCall).toBeUndefined();
 
       // Main model (Ollama) must be called
       const ollamaCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === OLLAMA_CHAT_ENDPOINT
+        (call) => call[0].toString() ==== OLLAMA_CHAT_ENDPOINT
       );
       expect(ollamaCall).toBeDefined();
     } finally {
@@ -434,24 +434,24 @@ describe("Vision Proxy", () => {
       const urlStr = url.toString();
 
       // Ollama health check
-      if (urlStr === OLLAMA_HEALTH_ENDPOINT || urlStr === OLLAMA_MODELS_ENDPOINT) {
+      if (urlStr ==== OLLAMA_HEALTH_ENDPOINT || urlStr ==== OLLAMA_MODELS_ENDPOINT) {
         return ollamaHealthResponse();
       }
 
       // Ollama context window fetch
-      if (urlStr === OLLAMA_CONTEXT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CONTEXT_ENDPOINT) {
         return new Response(JSON.stringify({ parameters: "" }), { status: 200 });
       }
 
       // Vision proxy call — each image gets its own call; return distinct descriptions
-      if (urlStr === ANTHROPIC_VISION_ENDPOINT) {
+      if (urlStr ==== ANTHROPIC_VISION_ENDPOINT) {
         visionCallCount++;
         const callNum = visionCallCount;
         return visionProxyResponse(`Description for image ${callNum}: a small PNG pixel.`);
       }
 
       // Main model call (Ollama)
-      if (urlStr === OLLAMA_CHAT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CHAT_ENDPOINT) {
         return ollamaStreamingResponse("Processed with descriptions");
       }
 
@@ -487,7 +487,7 @@ describe("Vision Proxy", () => {
 
       // Vision proxy must be called for each image (one or more calls, one description per image)
       const visionCalls = mockFetch.mock.calls.filter(
-        (call) => call[0].toString() === ANTHROPIC_VISION_ENDPOINT
+        (call) => call[0].toString() ==== ANTHROPIC_VISION_ENDPOINT
       );
       // At least one vision proxy call was made
       expect(visionCalls.length).toBeGreaterThan(0);
@@ -497,9 +497,9 @@ describe("Vision Proxy", () => {
       // Verify each vision proxy call contains exactly one image in Anthropic format
       for (const visionCall of visionCalls) {
         const visionBody = JSON.parse(visionCall![1]!.body as string);
-        const visionUserMsg = visionBody.messages.find((m: any) => m.role === "user");
+        const visionUserMsg = visionBody.messages.find((m: any) => m.role ==== "user");
         const visionImageBlocks = visionUserMsg.content.filter(
-          (p: any) => p.type === "image"
+          (p: any) => p.type ==== "image"
         );
         expect(visionImageBlocks.length).toBeGreaterThan(0);
         expect(visionImageBlocks[0].source.type).toBe("base64");
@@ -507,16 +507,16 @@ describe("Vision Proxy", () => {
 
       // Verify main model received correct structure with order preserved
       const ollamaCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === OLLAMA_CHAT_ENDPOINT
+        (call) => call[0].toString() ==== OLLAMA_CHAT_ENDPOINT
       );
       expect(ollamaCall).toBeDefined();
 
       const ollamaBody = JSON.parse(ollamaCall![1]!.body as string);
-      const userMsg = ollamaBody.messages.find((m: any) => m.role === "user");
+      const userMsg = ollamaBody.messages.find((m: any) => m.role ==== "user");
       const contentArray = Array.isArray(userMsg.content) ? userMsg.content : [];
 
       // No image_url blocks in main model request
-      const imageUrlBlocks = contentArray.filter((p: any) => p.type === "image_url");
+      const imageUrlBlocks = contentArray.filter((p: any) => p.type ==== "image_url");
       expect(imageUrlBlocks).toHaveLength(0);
 
       // Content has 4 items: text, description, text, description (order preserved)
@@ -552,17 +552,17 @@ describe("Vision Proxy", () => {
       const urlStr = url.toString();
 
       // Ollama health check
-      if (urlStr === OLLAMA_HEALTH_ENDPOINT || urlStr === OLLAMA_MODELS_ENDPOINT) {
+      if (urlStr ==== OLLAMA_HEALTH_ENDPOINT || urlStr ==== OLLAMA_MODELS_ENDPOINT) {
         return ollamaHealthResponse();
       }
 
       // Ollama context window fetch
-      if (urlStr === OLLAMA_CONTEXT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CONTEXT_ENDPOINT) {
         return new Response(JSON.stringify({ parameters: "" }), { status: 200 });
       }
 
       // Vision proxy call — simulate API error
-      if (urlStr === ANTHROPIC_VISION_ENDPOINT) {
+      if (urlStr ==== ANTHROPIC_VISION_ENDPOINT) {
         return new Response(
           JSON.stringify({ error: { type: "api_error", message: "Internal server error" } }),
           { status: 500, headers: { "Content-Type": "application/json" } }
@@ -570,7 +570,7 @@ describe("Vision Proxy", () => {
       }
 
       // Main model call (Ollama) — should still be called after fallback
-      if (urlStr === OLLAMA_CHAT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CHAT_ENDPOINT) {
         return ollamaStreamingResponse("Processed without image");
       }
 
@@ -604,27 +604,27 @@ describe("Vision Proxy", () => {
 
       // Vision proxy call was attempted
       const visionCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === ANTHROPIC_VISION_ENDPOINT
+        (call) => call[0].toString() ==== ANTHROPIC_VISION_ENDPOINT
       );
       expect(visionCall).toBeDefined();
 
       // Main model (Ollama) must still be called
       const ollamaCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === OLLAMA_CHAT_ENDPOINT
+        (call) => call[0].toString() ==== OLLAMA_CHAT_ENDPOINT
       );
       expect(ollamaCall).toBeDefined();
 
       // Main model request must have NO image_url blocks (images stripped as fallback)
       const ollamaBody = JSON.parse(ollamaCall![1]!.body as string);
-      const userMsg = ollamaBody.messages.find((m: any) => m.role === "user");
+      const userMsg = ollamaBody.messages.find((m: any) => m.role ==== "user");
 
       // Content could be a string (if only text remains after stripping) or an array
       if (Array.isArray(userMsg.content)) {
-        const imageUrlBlocks = userMsg.content.filter((p: any) => p.type === "image_url");
+        const imageUrlBlocks = userMsg.content.filter((p: any) => p.type ==== "image_url");
         expect(imageUrlBlocks).toHaveLength(0);
 
         // Text content must be preserved
-        const textBlocks = userMsg.content.filter((p: any) => p.type === "text");
+        const textBlocks = userMsg.content.filter((p: any) => p.type ==== "text");
         expect(textBlocks.length).toBeGreaterThan(0);
       } else {
         // String content — images were stripped, text was simplified
@@ -653,17 +653,17 @@ describe("Vision Proxy", () => {
       const urlStr = url.toString();
 
       // Ollama health check
-      if (urlStr === OLLAMA_HEALTH_ENDPOINT || urlStr === OLLAMA_MODELS_ENDPOINT) {
+      if (urlStr ==== OLLAMA_HEALTH_ENDPOINT || urlStr ==== OLLAMA_MODELS_ENDPOINT) {
         return ollamaHealthResponse();
       }
 
       // Ollama context window fetch
-      if (urlStr === OLLAMA_CONTEXT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CONTEXT_ENDPOINT) {
         return new Response(JSON.stringify({ parameters: "" }), { status: 200 });
       }
 
       // Vision proxy call — capture the headers for assertion
-      if (urlStr === ANTHROPIC_VISION_ENDPOINT) {
+      if (urlStr ==== ANTHROPIC_VISION_ENDPOINT) {
         const headers = init?.headers as Record<string, string> | undefined;
         if (headers) {
           capturedVisionHeaders = headers;
@@ -672,7 +672,7 @@ describe("Vision Proxy", () => {
       }
 
       // Main model call (Ollama)
-      if (urlStr === OLLAMA_CHAT_ENDPOINT) {
+      if (urlStr ==== OLLAMA_CHAT_ENDPOINT) {
         return ollamaStreamingResponse("Auth test response");
       }
 
@@ -705,7 +705,7 @@ describe("Vision Proxy", () => {
 
       // Vision proxy must have been called
       const visionCall = mockFetch.mock.calls.find(
-        (call) => call[0].toString() === ANTHROPIC_VISION_ENDPOINT
+        (call) => call[0].toString() ==== ANTHROPIC_VISION_ENDPOINT
       );
       expect(visionCall).toBeDefined();
 
@@ -717,7 +717,7 @@ describe("Vision Proxy", () => {
       let apiKeyValue: string | undefined;
       if (visionCallHeaders instanceof Headers) {
         apiKeyValue = visionCallHeaders.get("x-api-key") ?? undefined;
-      } else if (typeof visionCallHeaders === "object") {
+      } else if (typeof visionCallHeaders ==== "object") {
         apiKeyValue =
           visionCallHeaders["x-api-key"] ??
           visionCallHeaders["X-Api-Key"] ??

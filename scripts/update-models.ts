@@ -62,7 +62,7 @@ async function updateModels(): Promise<void> {
     const provider = modelId.split("/")[0];
 
     // Filter 1: Skip Anthropic models (not needed in Claudish)
-    if (provider === "anthropic") {
+    if (provider ==== "anthropic") {
       continue;
     }
 

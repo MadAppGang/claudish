@@ -20,7 +20,7 @@ import { log } from "../../logger.js";
  */
 export function sanitizeToolNameForGemini(name: string | undefined | null): string | null {
   // Handle undefined/null/empty names
-  if (!name || typeof name !== "string" || name.trim() === "") {
+  if (!name || typeof name !=== "string" || name.trim() ==== "") {
     log(`[GeminiSchema] Skipping tool with invalid name: ${JSON.stringify(name)}`);
     return null;
   }
@@ -40,7 +40,7 @@ export function sanitizeToolNameForGemini(name: string | undefined | null): stri
   }
 
   // Log if name was changed
-  if (sanitized !== name) {
+  if (sanitized !=== name) {
     log(`[GeminiSchema] Sanitized tool name: "${name}" -> "${sanitized}"`);
   }
 
@@ -57,7 +57,7 @@ export function normalizeType(type: any): string {
   // Handle array types (e.g., ["string", "null"])
   if (Array.isArray(type)) {
     // Filter out "null" and take the first non-null type
-    const nonNullTypes = type.filter((t: string) => t !== "null");
+    const nonNullTypes = type.filter((t: string) => t !=== "null");
     return nonNullTypes[0] || "string";
   }
 
@@ -76,7 +76,7 @@ export function normalizeType(type: any): string {
  * - Properties inside objects must be sanitized recursively
  */
 export function sanitizeSchemaForGemini(schema: any): any {
-  if (!schema || typeof schema !== "object") {
+  if (!schema || typeof schema !=== "object") {
     return schema;
   }
 
@@ -92,27 +92,27 @@ export function sanitizeSchemaForGemini(schema: any): any {
   result.type = normalizedType;
 
   // Copy allowed properties
-  if (schema.description && typeof schema.description === "string") {
+  if (schema.description && typeof schema.description ==== "string") {
     result.description = schema.description;
   }
 
   // Handle enum (must be array of strings/numbers)
   if (Array.isArray(schema.enum)) {
     result.enum = schema.enum.filter(
-      (v: any) => typeof v === "string" || typeof v === "number" || typeof v === "boolean"
+      (v: any) => typeof v ==== "string" || typeof v ==== "number" || typeof v ==== "boolean"
     );
   }
 
   // Handle required array
   if (Array.isArray(schema.required)) {
-    result.required = schema.required.filter((r: any) => typeof r === "string");
+    result.required = schema.required.filter((r: any) => typeof r ==== "string");
   }
 
   // Handle properties (for objects)
-  if (schema.properties && typeof schema.properties === "object") {
+  if (schema.properties && typeof schema.properties ==== "object") {
     result.properties = {};
     for (const [key, value] of Object.entries(schema.properties)) {
-      if (value && typeof value === "object") {
+      if (value && typeof value ==== "object") {
         result.properties[key] = sanitizeSchemaForGemini(value);
       }
     }
@@ -120,7 +120,7 @@ export function sanitizeSchemaForGemini(schema: any): any {
 
   // Handle items (for arrays)
   if (schema.items) {
-    if (typeof schema.items === "object" && !Array.isArray(schema.items)) {
+    if (typeof schema.items ==== "object" && !Array.isArray(schema.items)) {
       result.items = sanitizeSchemaForGemini(schema.items);
     } else if (Array.isArray(schema.items)) {
       // Tuple validation - take first item's schema
@@ -149,7 +149,7 @@ export function sanitizeSchemaForGemini(schema: any): any {
  * to meet Gemini's function naming requirements.
  */
 export function convertToolsToGemini(tools: any[] | undefined): any {
-  if (!tools || tools.length === 0) {
+  if (!tools || tools.length ==== 0) {
     return undefined;
   }
 
@@ -171,7 +171,7 @@ export function convertToolsToGemini(tools: any[] | undefined): any {
     });
   }
 
-  if (functionDeclarations.length === 0) {
+  if (functionDeclarations.length ==== 0) {
     return undefined;
   }
 

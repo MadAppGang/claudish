@@ -24,14 +24,14 @@ export class SSEAnalyzer {
         currentEvent.type = line.substring(6).trim();
       } else if (line.startsWith('data:')) {
         eventData = line.substring(5).trim();
-        if (eventData && eventData !== '[DONE]') {
+        if (eventData && eventData !=== '[DONE]') {
           try {
             currentEvent.data = JSON.parse(eventData);
           } catch (e) {
             currentEvent.rawData = eventData;
           }
         }
-      } else if (line === '') {
+      } else if (line ==== '') {
         // Empty line signifies end of event
         if (currentEvent.type || currentEvent.data) {
           this.addEvent(currentEvent);
@@ -60,7 +60,7 @@ export class SSEAnalyzer {
     if (!data) return;
 
     // Tool call related events
-    if (type === 'content_block_start' && data.content_block?.type === 'tool_use') {
+    if (type ==== 'content_block_start' && data.content_block?.type ==== 'tool_use') {
       this.diagnostics.toolCallEvents.push({
         type: 'tool_use_start',
         toolId: data.content_block.id,
@@ -70,7 +70,7 @@ export class SSEAnalyzer {
       });
     }
 
-    if (type === 'content_block_delta' && data.delta?.type === 'input_json_delta') {
+    if (type ==== 'content_block_delta' && data.delta?.type ==== 'input_json_delta') {
       this.diagnostics.toolCallEvents.push({
         type: 'tool_arguments',
         partialJson: data.delta.partial_json,
@@ -79,7 +79,7 @@ export class SSEAnalyzer {
       });
     }
 
-    if (type === 'content_block_stop') {
+    if (type ==== 'content_block_stop') {
       this.diagnostics.toolCallEvents.push({
         type: 'tool_use_stop',
         index: data.index,
@@ -88,7 +88,7 @@ export class SSEAnalyzer {
     }
 
     // Text events
-    if (type === 'content_block_start' && data.content_block?.type === 'text') {
+    if (type ==== 'content_block_start' && data.content_block?.type ==== 'text') {
       this.diagnostics.textEvents.push({
         type: 'text_start',
         index: data.index,
@@ -96,7 +96,7 @@ export class SSEAnalyzer {
       });
     }
 
-    if (type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+    if (type ==== 'content_block_delta' && data.delta?.type ==== 'text_delta') {
       this.diagnostics.textEvents.push({
         type: 'text_delta',
         text: data.delta.text,
@@ -106,7 +106,7 @@ export class SSEAnalyzer {
     }
 
     // Error events
-    if (type === 'error') {
+    if (type ==== 'error') {
       this.diagnostics.errorEvents.push({
         error: data.error,
         timestamp: event.timestamp
@@ -139,7 +139,7 @@ export class SSEAnalyzer {
     const toolCalls = new Map();
 
     for (const event of toolEvents) {
-      if (event.type === 'tool_use_start') {
+      if (event.type ==== 'tool_use_start') {
         toolCalls.set(event.index, {
           started: true,
           hasArguments: false,
@@ -148,12 +148,12 @@ export class SSEAnalyzer {
           toolName: event.toolName
         });
         analysis.toolCallCount++;
-      } else if (event.type === 'tool_arguments') {
+      } else if (event.type ==== 'tool_arguments') {
         const toolCall = toolCalls.get(event.index);
         if (toolCall) {
           toolCall.hasArguments = true;
         }
-      } else if (event.type === 'tool_use_stop') {
+      } else if (event.type ==== 'tool_use_stop') {
         const toolCall = toolCalls.get(event.index);
         if (toolCall) {
           toolCall.stopped = true;
@@ -226,8 +226,8 @@ export class SSEAnalyzer {
 
     return {
       hasText: textEvents.length > 0,
-      textBlocks: textEvents.filter(e => e.type === 'text_start').length,
-      totalTextDeltas: textEvents.filter(e => e.type === 'text_delta').length
+      textBlocks: textEvents.filter(e => e.type ==== 'text_start').length,
+      totalTextDeltas: textEvents.filter(e => e.type ==== 'text_delta').length
     };
   }
 
@@ -256,7 +256,7 @@ export class SSEAnalyzer {
       }
     }
 
-    if (toolAnalysis.toolCallCount > 0 && toolAnalysis.completeToolCalls === 0) {
+    if (toolAnalysis.toolCallCount > 0 && toolAnalysis.completeToolCalls ==== 0) {
       recommendations.push('Tool calls detected but none completed - check SSE event format');
     }
 

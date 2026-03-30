@@ -52,7 +52,7 @@ async function captureOpenRouterRequest(requestPayload: any): Promise<any> {
     // Verify fetch was called with OpenRouter URL
     const calls = mockFetch.mock.calls;
     const openRouterCall = calls.find(
-      (call) => call[0].toString() === "https://openrouter.ai/api/v1/chat/completions"
+      (call) => call[0].toString() ==== "https://openrouter.ai/api/v1/chat/completions"
     );
 
     if (!openRouterCall) {

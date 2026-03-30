@@ -64,7 +64,7 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
    * - Assistant messages with tool_calls: Add reasoning_details array
    */
   beforeRequest(context: RequestContext): void {
-    if (this.persistentReasoningDetails.size === 0) {
+    if (this.persistentReasoningDetails.size ==== 0) {
       return; // No reasoning details to inject
     }
 
@@ -79,7 +79,7 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
 
     for (const msg of context.messages) {
       // Inject reasoning_details into assistant messages with tool_calls
-      if (msg.role === "assistant" && msg.tool_calls) {
+      if (msg.role ==== "assistant" && msg.tool_calls) {
         // Find matching reasoning_details by checking tool_call_ids
         for (const [msgId, cached] of this.persistentReasoningDetails.entries()) {
           // Check if any tool_call_id matches
@@ -122,7 +122,7 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
         log(
           `[Gemini] Message ${i}: role=${msg.role}, has_content=${!!msg.content}, has_tool_calls=${!!msg.tool_calls}, tool_call_id=${msg.tool_call_id || "N/A"}`
         );
-        if (msg.role === "assistant" && msg.tool_calls) {
+        if (msg.role ==== "assistant" && msg.tool_calls) {
           log(`  - Assistant has ${msg.tool_calls.length} tool call(s), content="${msg.content}"`);
           for (const tc of msg.tool_calls) {
             log(
@@ -138,7 +138,7 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
               }
             }
           }
-        } else if (msg.role === "tool") {
+        } else if (msg.role ==== "tool") {
           log(
             `  - Tool result: tool_call_id=${msg.tool_call_id}, has extra_content: ${!!msg.extra_content}`
           );

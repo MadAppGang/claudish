@@ -157,8 +157,8 @@ describe('Poe Handler - End-to-End Proxy Server Tests', () => {
 
     // Look for Claude-compatible tool_use events
     const toolUseStartEvent = events.find(e =>
-      e.type === 'content_block_start' &&
-      e.data?.content_block?.type === 'tool_use'
+      e.type ==== 'content_block_start' &&
+      e.data?.content_block?.type ==== 'tool_use'
     );
 
     expect(toolUseStartEvent).toBeDefined();
@@ -167,8 +167,8 @@ describe('Poe Handler - End-to-End Proxy Server Tests', () => {
 
     // Look for input_json_delta events
     const argumentEvents = events.filter(e =>
-      e.type === 'content_block_delta' &&
-      e.data?.delta?.type === 'input_json_delta'
+      e.type ==== 'content_block_delta' &&
+      e.data?.delta?.type ==== 'input_json_delta'
     );
 
     expect(argumentEvents.length).toBeGreaterThan(0);

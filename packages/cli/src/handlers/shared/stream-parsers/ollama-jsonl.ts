@@ -69,7 +69,7 @@ export function createOllamaJsonlStream(
           send("content_block_stop", { type: "content_block_stop", index: 0 });
         }
 
-        if (reason === "error") {
+        if (reason ==== "error") {
           send("error", { type: "error", error: { type: "api_error", message: err } });
         } else {
           send("message_delta", {

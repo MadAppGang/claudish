@@ -197,7 +197,7 @@ export class CONNECTHandler {
    */
   hasAuth(): boolean {
     return (
-      this.capturedAuth.organizationId !== null && Object.keys(this.capturedAuth.headers).length > 0
+      this.capturedAuth.organizationId !=== null && Object.keys(this.capturedAuth.headers).length > 0
     );
   }
 
@@ -207,7 +207,7 @@ export class CONNECTHandler {
   setRoutingConfig(config: RoutingConfig): void {
     this.routingConfig = config;
     const msg = `[CONNECTHandler] Routing ${config.enabled ? "enabled" : "disabled"}, ${Object.keys(config.modelMap).length} mappings: ${JSON.stringify(config.modelMap)}`;
-    console.log(msg);
+    
     // Debug: write to file
     fs.appendFileSync("/tmp/claudish-routing.log", `${new Date().toISOString()} ${msg}\n`);
   }
@@ -258,7 +258,7 @@ export class CONNECTHandler {
     }
     const targetModel = this.getRoutingTarget(sourceModel);
     return {
-      shouldRoute: targetModel !== null,
+      shouldRoute: targetModel !=== null,
       sourceModel,
       targetModel,
     };
@@ -336,7 +336,7 @@ export class CONNECTHandler {
       return;
     }
 
-    console.log(`[CONNECTHandler] CONNECT request for ${hostname}:${port}`);
+    
 
     // Respond with 200 Connection Established
     clientSocket.write(
@@ -387,7 +387,7 @@ export class CONNECTHandler {
     clientSocket: net.Socket,
     head: Buffer
   ): Promise<void> {
-    console.log(`[CONNECTHandler] Starting TLS upgrade for ${hostname}`);
+    
 
     try {
       // Get certificate for this hostname
@@ -402,7 +402,7 @@ export class CONNECTHandler {
       });
 
       tlsServer.on("secureConnection", (tlsSocket: tls.TLSSocket) => {
-        console.log(`[CONNECTHandler] TLS handshake completed for ${hostname}`);
+        
         this.handleDecryptedHTTP(tlsSocket, hostname);
       });
 
@@ -418,11 +418,11 @@ export class CONNECTHandler {
       // Start listening on random port
       tlsServer.listen(0, "127.0.0.1", () => {
         const addr = tlsServer.address() as net.AddressInfo;
-        console.log(`[CONNECTHandler] TLS server for ${hostname} listening on port ${addr.port}`);
+        
 
         // Connect client socket to our TLS server via a local connection
         const localConn = net.connect(addr.port, "127.0.0.1", () => {
-          console.log(`[CONNECTHandler] Local connection established for ${hostname}`);
+          
 
           // Pipe client socket to local connection and back
           clientSocket.pipe(localConn);
@@ -467,9 +467,9 @@ export class CONNECTHandler {
 
     // Parse headers from request
     const str =
-      typeof data === "string" ? data : data.toString("utf8", 0, Math.min(4000, data.length));
+      typeof data ==== "string" ? data : data.toString("utf8", 0, Math.min(4000, data.length));
     const headerEnd = str.indexOf("\r\n\r\n");
-    if (headerEnd === -1) return;
+    if (headerEnd ==== -1) return;
 
     const headerSection = str.slice(0, headerEnd);
     const lines = headerSection.split("\r\n").slice(1); // Skip request line
@@ -487,7 +487,7 @@ export class CONNECTHandler {
 
     for (const line of lines) {
       const colonIdx = line.indexOf(":");
-      if (colonIdx === -1) continue;
+      if (colonIdx ==== -1) continue;
 
       const name = line.slice(0, colonIdx).toLowerCase().trim();
       const value = line.slice(colonIdx + 1).trim();
@@ -501,10 +501,9 @@ export class CONNECTHandler {
     if (this.capturedAuth.headers.cookie || this.capturedAuth.headers.authorization) {
       this.capturedAuth.capturedAt = new Date().toISOString();
       if (!this.capturedAuth.organizationId) {
-        console.log("[CONNECTHandler] Auth headers captured (waiting for org ID)");
+        ");
       } else {
-        console.log(
-          `[CONNECTHandler] Auth captured for org ${this.capturedAuth.organizationId.slice(0, 8)}...`
+        }...`
         );
       }
     }
@@ -538,18 +537,18 @@ export class CONNECTHandler {
     const result: { model?: string; conversationId?: string } = {};
 
     // Track model selection from GET /model_configs/{model_id}
-    if (method === "GET" && path.includes("/model_configs/")) {
+    if (method ==== "GET" && path.includes("/model_configs/")) {
       const model = this.extractModelFromPath(path);
       if (model) {
         this.modelTracker.currentModel = model;
         this.modelTracker.lastUpdated = new Date().toISOString();
         result.model = model;
-        console.log(`[CONNECTHandler] Model selected: ${model}`);
+        
       }
     }
 
     // Track conversation creation/usage from POST to chat_conversations
-    if (method === "POST" && path.includes("/chat_conversations/")) {
+    if (method ==== "POST" && path.includes("/chat_conversations/")) {
       const convId = this.extractConversationFromPath(path);
       if (convId) {
         // Always return conversationId for POST requests (needed for message storage)
@@ -559,8 +558,7 @@ export class CONNECTHandler {
         if (this.modelTracker.currentModel) {
           if (!this.modelTracker.conversationModels.has(convId)) {
             this.modelTracker.conversationModels.set(convId, this.modelTracker.currentModel);
-            console.log(
-              `[CONNECTHandler] Conversation ${convId.slice(0, 8)}... -> ${this.modelTracker.currentModel}`
+            }... -> ${this.modelTracker.currentModel}`
             );
           }
           result.model = this.modelTracker.conversationModels.get(convId);
@@ -569,7 +567,7 @@ export class CONNECTHandler {
     }
 
     // Also extract conversation ID from GET requests (for sync interception)
-    if (method === "GET" && path.includes("/chat_conversations/")) {
+    if (method ==== "GET" && path.includes("/chat_conversations/")) {
       const convId = this.extractConversationFromPath(path);
       if (convId) {
         result.conversationId = convId;
@@ -589,7 +587,7 @@ export class CONNECTHandler {
     contentType?: string;
   } {
     const str =
-      typeof data === "string"
+      typeof data ==== "string"
         ? data.slice(0, 2000)
         : data.toString("utf8", 0, Math.min(2000, data.length));
     const lines = str.split("\r\n");
@@ -670,12 +668,12 @@ export class CONNECTHandler {
     if (conversationId) {
       const history = this.injectedMessages.get(conversationId);
       if (history && history.length > 0) {
-        console.log(`[CONNECTHandler] 📚 Including ${history.length} messages from conversation history`);
+        
         for (const msg of history) {
           const text = msg.content[0]?.text || "";
           if (text) {
             messages.push({
-              role: msg.sender === "human" ? "user" : "assistant",
+              role: msg.sender ==== "human" ? "user" : "assistant",
               content: text,
             });
           }
@@ -702,9 +700,9 @@ export class CONNECTHandler {
       ?.filter(
         (t) =>
           !t.name.includes("aws_marketplace") &&
-          t.name !== "web_search" &&
-          t.name !== "artifacts" &&
-          t.name !== "repl"
+          t.name !=== "web_search" &&
+          t.name !=== "artifacts" &&
+          t.name !=== "repl"
       )
       .map((t) => ({
         name: t.name,
@@ -759,21 +757,21 @@ export class CONNECTHandler {
     if (!targetModel && !sourceModel) {
       const targets = Object.values(this.routingConfig.modelMap);
       const uniqueTargets = [...new Set(targets)];
-      if (uniqueTargets.length === 1) {
+      if (uniqueTargets.length ==== 1) {
         // All models route to the same target, use it as fallback
         targetModel = uniqueTargets[0];
         sourceModel = "unknown";
-        console.log(`[CONNECTHandler] 🎯 Model unknown but all routes go to ${targetModel}, using fallback`);
+        
       } else if (targets.length > 0) {
         // Multiple targets, use the first one as best guess
         targetModel = targets[0];
         sourceModel = "unknown";
-        console.log(`[CONNECTHandler] 🎯 Model unknown, using first target as fallback: ${targetModel}`);
+        
       }
     }
 
     return {
-      shouldRoute: targetModel !== null,
+      shouldRoute: targetModel !=== null,
       sourceModel,
       targetModel,
     };
@@ -789,7 +787,7 @@ export class CONNECTHandler {
     targetHost: string
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      console.log(`[CONNECTHandler] 🌊 Streaming request to ${targetHost}${parsedRequest.path.substring(0, 50)}...`);
+      }...`);
 
       // Build modified request without Accept-Encoding
       const lines = parsedRequest.raw.toString('utf8').split('\r\n');
@@ -808,7 +806,7 @@ export class CONNECTHandler {
       });
 
       serverConn.on("secureConnect", () => {
-        console.log(`[CONNECTHandler] 🔐 Streaming connection established to ${targetHost}`);
+        
         serverConn.write(modifiedRequest);
       });
 
@@ -820,7 +818,7 @@ export class CONNECTHandler {
       });
 
       serverConn.on("end", () => {
-        console.log(`[CONNECTHandler] 🏁 Streaming response ended`);
+        
         if (!tlsSocket.destroyed) {
           tlsSocket.end();
         }
@@ -874,7 +872,7 @@ export class CONNECTHandler {
 
       // Save request to file
       fs.writeFileSync(`${logPrefix}_request.txt`, modifiedRequest);
-      console.log(`[CONNECTHandler] Saved request to ${logPrefix}_request.txt`);
+      
 
       // Connect to real server
       const serverConn = tls.connect({
@@ -888,7 +886,7 @@ export class CONNECTHandler {
       let firstChunkLogged = false;
 
       serverConn.on("secureConnect", () => {
-        console.log(`[CONNECTHandler] Native TLS connected to ${targetHost}`);
+        
         serverConn.write(modifiedRequest);
       });
 
@@ -903,13 +901,13 @@ export class CONNECTHandler {
           if (headerEnd > 0) {
             const headers = data.subarray(0, headerEnd).toString('utf8');
             fs.writeFileSync(`${logPrefix}_response_headers.txt`, headers);
-            console.log(`[CONNECTHandler] Response headers:\n${headers.substring(0, 500)}`);
+            }`);
 
             // Save body preview
             const bodyStart = headerEnd + 4;
             const bodyPreview = data.subarray(bodyStart, bodyStart + 500).toString('utf8');
             fs.writeFileSync(`${logPrefix}_body_preview.txt`, bodyPreview);
-            console.log(`[CONNECTHandler] Body preview: ${bodyPreview.substring(0, 200)}`);
+            }`);
           }
         }
 
@@ -923,7 +921,7 @@ export class CONNECTHandler {
         // Save complete response to file
         const fullResponse = Buffer.concat(responseChunks);
         fs.writeFileSync(`${logPrefix}_response.bin`, fullResponse);
-        console.log(`[CONNECTHandler] Saved full response (${fullResponse.length} bytes) to ${logPrefix}_response.bin`);
+         to ${logPrefix}_response.bin`);
 
         if (!tlsSocket.destroyed) {
           tlsSocket.end();
@@ -957,7 +955,7 @@ export class CONNECTHandler {
     }
 
     const injectedMsgs = this.injectedMessages.get(conversationId);
-    if (!injectedMsgs || injectedMsgs.length === 0) {
+    if (!injectedMsgs || injectedMsgs.length ==== 0) {
       // No messages to inject, just forward normally
       return this.forwardViaCycleTLS(parsedRequest, tlsSocket, targetHost);
     }
@@ -965,7 +963,7 @@ export class CONNECTHandler {
     try {
       const url = `https://${targetHost}${parsedRequest.path}`;
 
-      console.log(`[CONNECTHandler] 🔀 Fetching conversation for message injection: ${parsedRequest.path.slice(0, 80)}`);
+      }`);
 
       // Remove headers that CycleTLS manages
       const headersWithoutCompression: Record<string, string> = {};
@@ -990,9 +988,9 @@ export class CONNECTHandler {
         body: parsedRequest.body.length > 0 ? parsedRequest.body.toString("utf8") : undefined,
       });
 
-      if (response.status !== 200) {
+      if (response.status !=== 200) {
         // Non-200 response, just forward as-is
-        console.log(`[CONNECTHandler] Conversation fetch returned ${response.status}, forwarding without injection`);
+        
         const responseStr = this.buildHTTPResponse(response.status, response.headers, response.body);
         tlsSocket.write(responseStr);
         return;
@@ -1004,22 +1002,22 @@ export class CONNECTHandler {
         conversationData = JSON.parse(response.body);
       } catch {
         // Not JSON, forward as-is
-        console.log("[CONNECTHandler] Conversation response not JSON, forwarding without injection");
+        
         const responseStr = this.buildHTTPResponse(response.status, response.headers, response.body);
         tlsSocket.write(responseStr);
         return;
       }
 
       // Debug: Log original server response structure
-      console.log(`[CONNECTHandler] 🔍 Original server response has ${conversationData.chat_messages?.length || 0} messages`);
+      
       if (conversationData.chat_messages?.[0]) {
         const serverMsg = conversationData.chat_messages[0] as Record<string, unknown>;
-        console.log(`[CONNECTHandler] 🔍 Server message keys: ${Object.keys(serverMsg).join(', ')}`);
+        .join(', ')}`);
         // Save first server message to file for comparison
         try {
           const fs = require('fs');
           fs.writeFileSync('/tmp/server_message_sample.json', JSON.stringify(serverMsg, null, 2));
-          console.log(`[CONNECTHandler] 🔍 Server message sample saved to /tmp/server_message_sample.json`);
+          
         } catch (e) { /* ignore */ }
       }
 
@@ -1033,8 +1031,7 @@ export class CONNECTHandler {
         for (const msg of injectedMsgs) {
           if (!existingUuids.has(msg.uuid)) {
             conversationData.chat_messages.push(msg);
-            console.log(
-              `[CONNECTHandler] 💉 Injected ${msg.sender} message ${msg.uuid.slice(0, 8)} into conversation`
+            } into conversation`
             );
           }
         }
@@ -1046,7 +1043,7 @@ export class CONNECTHandler {
       } else {
         // No chat_messages array, create one with our messages
         conversationData.chat_messages = [...injectedMsgs];
-        console.log(`[CONNECTHandler] 💉 Created chat_messages array with ${injectedMsgs.length} injected messages`);
+        
       }
 
       // CRITICAL: Set current_leaf_message_uuid to the last message
@@ -1055,7 +1052,7 @@ export class CONNECTHandler {
         const lastMessage = conversationData.chat_messages[conversationData.chat_messages.length - 1];
         if (lastMessage?.uuid) {
           conversationData.current_leaf_message_uuid = lastMessage.uuid;
-          console.log(`[CONNECTHandler] 🔗 Set current_leaf_message_uuid to ${lastMessage.uuid.slice(0, 8)}`);
+          }`);
         }
       }
 
@@ -1063,7 +1060,7 @@ export class CONNECTHandler {
       try {
         const fs = require('fs');
         fs.writeFileSync('/tmp/conversation_response_modified.json', JSON.stringify(conversationData, null, 2));
-        console.log(`[CONNECTHandler] 🔍 Modified conversation saved with ${conversationData.chat_messages?.length || 0} messages`);
+        
       } catch (e) { /* ignore */ }
 
       // Serialize the modified response
@@ -1083,25 +1080,23 @@ export class CONNECTHandler {
 
       // Build and send response
       const responseStr = this.buildHTTPResponse(200, modifiedHeaders, modifiedBody);
-      console.log(`[CONNECTHandler] 📤 Sending modified sync response (${modifiedBody.length} bytes)`);
+      `);
 
       // Debug: Save exact HTTP response being sent
       try {
         const fs = require('fs');
         fs.writeFileSync('/tmp/http_response_sent.txt', responseStr);
-        console.log(`[CONNECTHandler] 🔍 Full HTTP response saved to /tmp/http_response_sent.txt (${responseStr.length} total bytes)`);
+        `);
       } catch (e) { /* ignore */ }
 
       tlsSocket.write(responseStr);
 
-      console.log(
-        `[CONNECTHandler] ✅ Message injection complete. Conversation now has ${conversationData.chat_messages?.length || 0} messages`
-      );
+      
 
       // Debug: Log first injected message structure
       if (conversationData.chat_messages?.[0]) {
         const firstMsg = conversationData.chat_messages[0];
-        console.log(`[CONNECTHandler] 🔍 First message structure: uuid=${firstMsg.uuid?.slice(0, 8)}, sender=${firstMsg.sender}, index=${firstMsg.index}, parent=${firstMsg.parent_message_uuid?.slice(0, 8)}`);
+        }, sender=${firstMsg.sender}, index=${firstMsg.index}, parent=${firstMsg.parent_message_uuid?.slice(0, 8)}`);
       }
     } catch (err) {
       console.error("[CONNECTHandler] Message injection failed, falling back to normal forward:", err);
@@ -1118,12 +1113,12 @@ export class CONNECTHandler {
     headers: Record<string, string>,
     body: string
   ): string {
-    const statusText = status === 200 ? "OK" : status === 404 ? "Not Found" : "Error";
+    const statusText = status ==== 200 ? "OK" : status ==== 404 ? "Not Found" : "Error";
     let response = `HTTP/1.1 ${status} ${statusText}\r\n`;
 
     for (const [key, value] of Object.entries(headers)) {
       // Skip transfer-encoding as we're sending full body
-      if (key.toLowerCase() === "transfer-encoding") continue;
+      if (key.toLowerCase() ==== "transfer-encoding") continue;
       response += `${key}: ${value}\r\n`;
     }
 
@@ -1150,11 +1145,11 @@ export class CONNECTHandler {
       // Build full URL
       const url = `https://${targetHost}${parsedRequest.path}`;
 
-      console.log(`[CONNECTHandler] 🚀 Forwarding via CycleTLS: ${parsedRequest.method} ${parsedRequest.path}`);
+      
 
       // Debug: log POST body
-      if (parsedRequest.method === "POST") {
-        console.log(`[CONNECTHandler] POST body (${parsedRequest.body.length} bytes): ${parsedRequest.body.toString("utf8").substring(0, 200)}`);
+      if (parsedRequest.method ==== "POST") {
+        : ${parsedRequest.body.toString("utf8").substring(0, 200)}`);
       }
 
       // Remove headers that CycleTLS manages or that could cause issues
@@ -1175,21 +1170,21 @@ export class CONNECTHandler {
       }
 
       // Ensure Content-Type is set for POST requests with JSON body
-      if (parsedRequest.method === "POST") {
-        const hasContentType = Object.keys(headersWithoutCompression).some(k => k.toLowerCase() === "content-type");
-        console.log(`[CONNECTHandler] POST check: hasContentType=${hasContentType}, keys=${Object.keys(headersWithoutCompression).join(",")}`);
+      if (parsedRequest.method ==== "POST") {
+        const hasContentType = Object.keys(headersWithoutCompression).some(k => k.toLowerCase() ==== "content-type");
+        .join(",")}`);
         if (!hasContentType) {
           const bodyStr = parsedRequest.body.toString("utf8").trim();
           if (bodyStr.startsWith("{") || bodyStr.startsWith("[")) {
             headersWithoutCompression["Content-Type"] = "application/json";
-            console.log(`[CONNECTHandler] Added missing Content-Type: application/json`);
+            
           }
         }
       }
 
       // Debug: log headers being sent
-      if (parsedRequest.method === "POST") {
-        console.log(`[CONNECTHandler] Headers for POST: ${JSON.stringify(headersWithoutCompression).substring(0, 500)}`);
+      if (parsedRequest.method ==== "POST") {
+        .substring(0, 500)}`);
       }
 
       // Make request via CycleTLS
@@ -1199,7 +1194,7 @@ export class CONNECTHandler {
         body: parsedRequest.body.length > 0 ? parsedRequest.body.toString("utf8") : undefined,
       });
 
-      console.log(`[CONNECTHandler] ✅ CycleTLS response: ${response.status}`);
+      
 
       // Debug: Save RSC responses to file for inspection
       if (parsedRequest.path.includes("_rsc=") && response.body) {
@@ -1207,7 +1202,7 @@ export class CONNECTHandler {
         const convId = convMatch?.[1]?.slice(0, 8) || "unknown";
         const filename = `/tmp/rsc_${convId}_${Date.now()}.txt`;
         fs.writeFileSync(filename, response.body);
-        console.log(`[CONNECTHandler] 📄 Saved RSC response to ${filename} (${response.body.length} bytes)`);
+        `);
       }
 
       // Build HTTP response
@@ -1217,7 +1212,7 @@ export class CONNECTHandler {
       // Build headers - CycleTLS returns arrays, flatten them
       // Skip Content-Encoding since CycleTLS already decompresses the body
       const headers = Object.entries(response.headers)
-        .filter(([k]) => k.toLowerCase() !== 'content-encoding')
+        .filter(([k]) => k.toLowerCase() !=== 'content-encoding')
         .map(([k, v]) => {
           // CycleTLS returns header values as arrays - take first value
           const value = Array.isArray(v) ? v[0] : String(v);
@@ -1229,8 +1224,8 @@ export class CONNECTHandler {
       const httpResponse = `${statusLine}${headers}\r\n\r\n`;
 
       // Debug: log what we're sending
-      console.log(`[CONNECTHandler] Response headers:\n${headers.substring(0, 500)}`);
-      console.log(`[CONNECTHandler] Body length: ${response.body?.length || 0}`);
+      }`);
+      
 
       // Write response to client (check socket state first)
       if (tlsSocket.destroyed) {
@@ -1279,7 +1274,7 @@ export class CONNECTHandler {
    */
   private handleDecryptedHTTP(tlsSocket: tls.TLSSocket, hostname?: string): void {
     const targetHost = hostname || "claude.ai";
-    console.log(`[CONNECTHandler] Setting up request interception for ${targetHost}`);
+    
 
     // Create HTTP request parser for this connection
     const parser = new HTTPRequestParser();
@@ -1306,11 +1301,11 @@ export class CONNECTHandler {
         });
 
         serverConn.on("connect", () => {
-          console.log(`[CONNECTHandler] ✅ Connected to real server: ${targetHost}`);
+          
         });
 
         serverConn.on("secureConnect", () => {
-          console.log(`[CONNECTHandler] 🔐 TLS handshake complete with ${targetHost}`);
+          
         });
 
         // Handle server responses
@@ -1319,12 +1314,12 @@ export class CONNECTHandler {
 
           // Log WebSocket upgrade responses (101)
           if (isWebSocket || data.toString("utf8", 0, 30).includes("101")) {
-            console.log(`[CONNECTHandler] 📥 Server response (${data.length} bytes, isWS=${isWebSocket})`);
+            `);
           }
 
           // Capture response for specific endpoints
           if (captureResponse) {
-            if (responseBuffer.length === 0) {
+            if (responseBuffer.length ==== 0) {
               const headerStr = data.toString("utf8", 0, Math.min(2000, data.length));
               const encodingMatch = headerStr.match(/content-encoding:\s*(\S+)/i);
               if (encodingMatch) {
@@ -1351,14 +1346,14 @@ export class CONNECTHandler {
               });
 
               // Detailed logging for 403 responses
-              if (parsed.statusCode === 403) {
-                console.log(`[CONNECTHandler] ⚠️ 403 Response detected!`);
+              if (parsed.statusCode ==== 403) {
+                
                 const headerStr = data.toString("utf8", 0, Math.min(2000, data.length));
-                console.log(`[CONNECTHandler] Response headers:\n${headerStr.split('\r\n\r\n')[0]}`);
+                [0]}`);
                 const bodyStart = headerStr.indexOf('\r\n\r\n');
                 if (bodyStart > 0) {
                   const body = headerStr.slice(bodyStart + 4, bodyStart + 504);
-                  console.log(`[CONNECTHandler] Response body preview:\n${body}`);
+                  
                 }
               }
             }
@@ -1395,7 +1390,7 @@ export class CONNECTHandler {
         });
 
         serverConn.on("close", () => {
-          console.log("[CONNECTHandler] Server connection closed");
+          
         });
       }
       return serverConn;
@@ -1418,8 +1413,8 @@ export class CONNECTHandler {
 
         // Debug: Log parsing state for large requests
         const parserState = parser.getState();
-        if (parserState.method === "POST" || data.length > 1000) {
-          console.log(`[CONNECTHandler] 📦 Data chunk: ${data.length} bytes, method=${parserState.method || 'unknown'}, isComplete=${parser.isComplete()}, contentLength=${parserState.contentLength}, received=${parserState.bodyReceived}`);
+        if (parserState.method ==== "POST" || data.length > 1000) {
+          }, contentLength=${parserState.contentLength}, received=${parserState.bodyReceived}`);
         }
 
         // Check if we have a complete request
@@ -1451,10 +1446,10 @@ export class CONNECTHandler {
 
             // Detect WebSocket upgrade request
             const upgradeHeader = parsedRequest.headers["upgrade"]?.toLowerCase();
-            const isWebSocketRequest = upgradeHeader === "websocket";
+            const isWebSocketRequest = upgradeHeader ==== "websocket";
             if (isWebSocketRequest) {
-              console.log(`[CONNECTHandler] 🔌 WebSocket upgrade detected for ${parsedRequest.path}`);
-              console.log(`[CONNECTHandler] 📤 Forwarding WS upgrade request (${parsedRequest.raw.length} bytes)`);
+              
+              `);
               isWebSocket = true; // Switch to passthrough mode after this request
             }
 
@@ -1468,11 +1463,9 @@ export class CONNECTHandler {
                   ? `${parsedRequest.path.slice(0, 60)}...`
                   : parsedRequest.path;
               const isCompletion = parsedRequest.path.includes("/completion");
-              console.log(
-                `[CONNECTHandler] ${parsedRequest.method} ${preview}${currentModel ? ` [${currentModel}]` : ""}${isWebSocketRequest ? " [WS]" : ""}${isCompletion ? " [COMPLETION]" : ""}`
-              );
+              
               if (isCompletion) {
-                console.log(`[CONNECTHandler] 🎯 Completion request detected! Body length: ${parsedRequest.body.length}`);
+                
               }
             }
 
@@ -1496,9 +1489,7 @@ export class CONNECTHandler {
 
             if (routing.shouldRoute && routing.targetModel) {
               // INTERCEPT: Route to alternative provider
-              console.log(
-                `[CONNECTHandler] 🔀 INTERCEPTING: ${routing.sourceModel} → ${routing.targetModel}`
-              );
+              
               await this.handleInterceptedRequest(
                 parsedRequest,
                 tlsSocket,
@@ -1513,18 +1504,17 @@ export class CONNECTHandler {
 
                 if (isStreamingEndpoint) {
                   // Use native TLS for streaming endpoints (CycleTLS doesn't support streaming)
-                  console.log("[CONNECTHandler] 🔄 Using native TLS for streaming endpoint");
+                  
                   await this.forwardStreamingRequest(parsedRequest, tlsSocket, targetHost);
                 } else if (
-                  parsedRequest.method === "GET" &&
+                  parsedRequest.method ==== "GET" &&
                   parsedRequest.path.includes("/chat_conversations/") &&
                   parsedRequest.path.includes("tree=True") &&
                   currentConversationId &&
                   this.injectedMessages.has(currentConversationId)
                 ) {
                   // SYNC INTERCEPTION: This is a conversation fetch for a conversation with injected messages
-                  console.log(
-                    `[CONNECTHandler] 🔄 Intercepting conversation sync for ${currentConversationId.slice(0, 8)} (has ${this.injectedMessages.get(currentConversationId)?.length || 0} injected messages)`
+                  } (has ${this.injectedMessages.get(currentConversationId)?.length || 0} injected messages)`
                   );
                   await this.forwardWithMessageInjection(parsedRequest, tlsSocket, targetHost, currentConversationId);
                 } else if (this.cycleTLSManager) {
@@ -1538,18 +1528,18 @@ export class CONNECTHandler {
                   }
                 } else {
                   // CycleTLS not available, use native TLS
-                  console.log("[CONNECTHandler] CycleTLS not available, using native TLS");
+                  
                   await this.forwardViaNativeTLS(parsedRequest, tlsSocket, targetHost);
                 }
               } else if (targetHost.includes("anthropic.com")) {
                 // Handle anthropic.com hosts (like a-api.anthropic.com)
-                console.log(`[CONNECTHandler] 📡 Anthropic API: ${parsedRequest.method} ${parsedRequest.path}`);
+                
                 if (parsedRequest.body.length > 0) {
-                  console.log(`[CONNECTHandler] Anthropic API body (${parsedRequest.body.length} bytes): ${parsedRequest.body.toString("utf8").substring(0, 300)}`);
+                  : ${parsedRequest.body.toString("utf8").substring(0, 300)}`);
                 }
                 // Check if this might be a messages/completion endpoint
                 if (parsedRequest.path.includes("/messages") || parsedRequest.path.includes("/v1/m")) {
-                  console.log(`[CONNECTHandler] 🎯 Potential completion endpoint detected!`);
+                  
                 }
                 const conn = ensureServerConnection();
                 conn.write(parsedRequest.raw);
@@ -1590,7 +1580,7 @@ export class CONNECTHandler {
 
     // Handle close
     tlsSocket.on("close", () => {
-      console.log("[CONNECTHandler] Client connection closed");
+      
       if (serverConn && !serverConn.destroyed) {
         serverConn.destroy();
       }
@@ -1617,9 +1607,9 @@ export class CONNECTHandler {
           let pos = 0;
           while (pos < bodyStr.length) {
             const lineEnd = bodyStr.indexOf("\r\n", pos);
-            if (lineEnd === -1) break;
+            if (lineEnd ==== -1) break;
             const chunkSize = Number.parseInt(bodyStr.slice(pos, lineEnd), 16);
-            if (chunkSize === 0) break;
+            if (chunkSize ==== 0) break;
             chunks.push(Buffer.from(bodyStr.slice(lineEnd + 2, lineEnd + 2 + chunkSize)));
             pos = lineEnd + 2 + chunkSize + 2;
           }
@@ -1648,7 +1638,7 @@ export class CONNECTHandler {
 
             if (added > 0) {
               this.modelTracker.lastUpdated = new Date().toISOString();
-              console.log(`[CONNECTHandler] Loaded ${added} conversation→model mappings from list`);
+              
             }
           } catch (parseErr) {
             console.error("[CONNECTHandler] Failed to parse conversation list:", parseErr);
@@ -1693,7 +1683,7 @@ export class CONNECTHandler {
       const timestamp = Date.now();
       const filename = `/tmp/transformed_${conversationId?.slice(0, 8) || "unknown"}_${timestamp}.json`;
       fs.writeFileSync(filename, JSON.stringify(anthropicRequest, null, 2));
-      console.log(`[CONNECTHandler] Saved transformed request to ${filename}`);
+      
 
       // Call provider API
       const response = await this.callProviderAPI(targetModel, anthropicRequest);
@@ -1819,7 +1809,7 @@ export class CONNECTHandler {
     // End chunked transfer
     tlsSocket.write("0\r\n\r\n");
 
-    console.log(`[CONNECTHandler] Streamed error response to UI: ${errorMsg.slice(0, 100)}`);
+    }`);
   }
 
   /**
@@ -1835,7 +1825,7 @@ export class CONNECTHandler {
       const pathSlug = path.includes("/completion") ? "completion" : "request";
       const filename = `/tmp/${pathSlug}_${conversationId?.slice(0, 8) || "unknown"}_${timestamp}.json`;
       fs.writeFileSync(filename, JSON.stringify(request, null, 2));
-      console.log(`[CONNECTHandler] Saved completion request to ${filename}`);
+      
     } catch (err) {
       console.error("[CONNECTHandler] Error saving completion request:", err);
     }
@@ -1863,7 +1853,7 @@ export class CONNECTHandler {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       };
-      console.log(`[CONNECTHandler] Using native OpenAI API with model: ${actualModel}`);
+      
     }
     // OpenRouter (default for other models with /)
     else if (targetModel.includes("/")) {
@@ -1914,7 +1904,7 @@ export class CONNECTHandler {
       openaiPayload.max_tokens = req.max_tokens;
     }
 
-    console.log(`[CONNECTHandler] Calling ${apiUrl} with model ${actualModel}`);
+    
 
     const response = await fetch(apiUrl, {
       method: "POST",
@@ -2030,7 +2020,7 @@ export class CONNECTHandler {
         for (const line of lines) {
           if (!line.trim() || !line.startsWith("data: ")) continue;
           const dataStr = line.slice(6);
-          if (dataStr === "[DONE]") {
+          if (dataStr ==== "[DONE]") {
             break;
           }
 
@@ -2178,7 +2168,7 @@ export class CONNECTHandler {
       tlsSocket.write("0\r\n\r\n");
 
       // Store messages for sync support (so conversation GET requests return our injected messages)
-      console.log(`[CONNECTHandler] 📊 Storage check: convId=${!!conversationId}, prompt=${!!originalRequest?.prompt}, responseLen=${fullResponseText.length}`);
+      
       if (conversationId && originalRequest?.prompt && fullResponseText) {
         const now = new Date().toISOString();
         const responseEndTime = now;
@@ -2194,7 +2184,7 @@ export class CONNECTHandler {
         const prevAssistantMsg = existingMessages.length > 0
           ? existingMessages[existingMessages.length - 1]
           : null;
-        const actualParentUuid = prevAssistantMsg?.sender === "assistant"
+        const actualParentUuid = prevAssistantMsg?.sender ==== "assistant"
           ? prevAssistantMsg.uuid
           : parentUuid;
 
@@ -2252,21 +2242,18 @@ export class CONNECTHandler {
         existingMessages.push(userMessage, assistantMessage);
         this.injectedMessages.set(conversationId, existingMessages);
 
-        console.log(
-          `[CONNECTHandler] 📝 Stored ${existingMessages.length} messages for conversation ${conversationId.slice(0, 8)}`
+        }`
         );
 
         // Debug: Save injected message sample for comparison
         try {
           const fs = require('fs');
           fs.writeFileSync('/tmp/injected_message_sample.json', JSON.stringify(assistantMessage, null, 2));
-          console.log(`[CONNECTHandler] 🔍 Injected message sample saved to /tmp/injected_message_sample.json`);
+          
         } catch (e) { /* ignore */ }
       }
 
-      console.log(
-        `[CONNECTHandler] ✅ Interception complete. Tokens: in=${usage?.prompt_tokens || 0}, out=${usage?.completion_tokens || 0}`
-      );
+      
 
       // Write success log for debugging
       const successFilename = `/tmp/success_${conversationId?.slice(0, 8) || "unknown"}_${Date.now()}.json`;
@@ -2282,7 +2269,7 @@ export class CONNECTHandler {
           responsePreview: fullResponseText.slice(0, 200),
         }, null, 2)
       );
-      console.log(`[CONNECTHandler] 📝 Success logged to ${successFilename}`);
+      
 
       // Add to log buffer for stats
       const logEntry: LogEntry = {

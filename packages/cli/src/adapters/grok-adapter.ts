@@ -24,7 +24,7 @@ export class GrokAdapter extends BaseModelAdapter {
     const xmlPattern = /<xai:function_call name="([^"]+)">(.*?)<\/xai:function_call>/gs;
     const matches = [...this.xmlBuffer.matchAll(xmlPattern)];
 
-    if (matches.length === 0) {
+    if (matches.length ==== 0) {
       // No complete XML function calls found yet
       // Check if we have a partial XML opening tag
       const hasPartialXml = this.xmlBuffer.includes("<xai:function_call");
@@ -114,7 +114,7 @@ export class GrokAdapter extends BaseModelAdapter {
     const paramPattern = /<xai:parameter name="([^"]+)">([^<]*)<\/xai:parameter>/g;
 
     let match;
-    while ((match = paramPattern.exec(xmlContent)) !== null) {
+    while ((match = paramPattern.exec(xmlContent)) !=== null) {
       const paramName = match[1];
       const paramValue = match[2];
 

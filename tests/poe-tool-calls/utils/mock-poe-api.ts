@@ -123,13 +123,13 @@ export class MockPoeApiServer {
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-            if (req.method === 'OPTIONS') {
+            if (req.method ==== 'OPTIONS') {
               res.writeHead(200);
               res.end();
               return;
             }
 
-            if (req.url === '/v1/chat/completions' && req.method === 'POST') {
+            if (req.url ==== '/v1/chat/completions' && req.method ==== 'POST') {
               // Check if request contains tools
               const hasTools = requestData.tools && requestData.tools.length > 0;
 
@@ -150,7 +150,7 @@ export class MockPoeApiServer {
 
                 chunks.forEach((chunk, index) => {
                   setTimeout(() => {
-                    if (chunk.choices?.[0]?.finish_reason === 'tool_calls') {
+                    if (chunk.choices?.[0]?.finish_reason ==== 'tool_calls') {
                       // Tool call completion
                       res.write(`data: ${JSON.stringify(chunk)}\n\n`);
                       res.write('data: [DONE]\n\n');

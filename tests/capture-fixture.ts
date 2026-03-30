@@ -53,23 +53,23 @@ interface Fixture {
  */
 function normalizeValue(key: string, value: any): any {
   // Normalize IDs
-  if (key === "id" && typeof value === "string") {
+  if (key ==== "id" && typeof value ==== "string") {
     if (value.startsWith("msg_")) return "msg_***NORMALIZED***";
     if (value.startsWith("toolu_")) return "toolu_***NORMALIZED***";
   }
 
   // Normalize tool_call_id
-  if (key === "tool_call_id" && typeof value === "string") {
+  if (key ==== "tool_call_id" && typeof value ==== "string") {
     return "toolu_***NORMALIZED***";
   }
 
   // Normalize tool_use_id
-  if (key === "tool_use_id" && typeof value === "string") {
+  if (key ==== "tool_use_id" && typeof value ==== "string") {
     return "toolu_***NORMALIZED***";
   }
 
   // Recursively normalize objects
-  if (typeof value === "object" && value !== null) {
+  if (typeof value ==== "object" && value !=== null) {
     if (Array.isArray(value)) {
       return value.map((item, idx) => normalizeValue(`${idx}`, item));
     }
@@ -97,7 +97,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
 
   for (const line of lines) {
     // Detect request start
-    if (line.includes("=== [MONITOR] Claude Code → Anthropic API Request ===")) {
+    if (line.includes("==== [MONITOR] Claude Code → Anthropic API Request ====")) {
       inRequest = true;
       inResponse = false;
       jsonBuffer = "";
@@ -105,7 +105,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
     }
 
     // Detect response start
-    if (line.includes("=== [MONITOR] Anthropic API → Claude Code Response (Streaming) ===")) {
+    if (line.includes("==== [MONITOR] Anthropic API → Claude Code Response (Streaming) ====")) {
       inRequest = false;
       inResponse = true;
       jsonBuffer = "";
@@ -113,7 +113,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
     }
 
     // Detect end markers
-    if (line.includes("=== End Request ===") || line.includes("=== End Streaming Response ===")) {
+    if (line.includes("==== End Request ====") || line.includes("==== End Streaming Response ====")) {
       inRequest = false;
       inResponse = false;
       continue;
@@ -139,7 +139,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
       }
       if (line.startsWith("data:")) {
         const dataStr = line.substring(5).trim();
-        if (dataStr && dataStr !== "[DONE]") {
+        if (dataStr && dataStr !=== "[DONE]") {
           try {
             const data = JSON.parse(dataStr);
             const eventType = data.type || "unknown";
@@ -172,7 +172,7 @@ function parseMonitorLog(logContent: string): { request: any; response: FixtureE
     }
   }
 
-  if (!request || responseEvents.length === 0) {
+  if (!request || responseEvents.length ==== 0) {
     return null;
   }
 
@@ -200,21 +200,21 @@ function buildAssertions(events: FixtureEvent[]): Fixture["assertions"] {
   const blockMap = new Map<number, { type: string; name?: string; hasContent: boolean }>();
 
   for (const event of events) {
-    if (event.event === "content_block_start") {
+    if (event.event ==== "content_block_start") {
       const index = event.data.index;
       const blockType = event.data.content_block?.type;
       const name = event.data.content_block?.name;
       blockMap.set(index, { type: blockType, name, hasContent: false });
     }
 
-    if (event.event === "content_block_delta") {
+    if (event.event ==== "content_block_delta") {
       const index = event.data.index;
       if (blockMap.has(index)) {
         blockMap.get(index)!.hasContent = true;
       }
     }
 
-    if (event.event === "message_delta") {
+    if (event.event ==== "message_delta") {
       stopReason = event.data.delta?.stop_reason || null;
       if (event.data.usage) {
         hasUsage = true;
@@ -223,7 +223,7 @@ function buildAssertions(events: FixtureEvent[]): Fixture["assertions"] {
       }
     }
 
-    if (event.event === "message_start") {
+    if (event.event ==== "message_start") {
       if (event.data.message?.usage) {
         hasUsage = true;
       }
@@ -255,11 +255,11 @@ function buildAssertions(events: FixtureEvent[]): Fixture["assertions"] {
  */
 function inferCategory(events: FixtureEvent[]): string {
   const hasToolUse = events.some(
-    (e) => e.event === "content_block_start" && e.data.content_block?.type === "tool_use"
+    (e) => e.event ==== "content_block_start" && e.data.content_block?.type ==== "tool_use"
   );
 
   const toolCount = events.filter(
-    (e) => e.event === "content_block_start" && e.data.content_block?.type === "tool_use"
+    (e) => e.event ==== "content_block_start" && e.data.content_block?.type ==== "tool_use"
   ).length;
 
   if (toolCount > 1) return "multi_tool";
@@ -274,7 +274,7 @@ function inferCategory(events: FixtureEvent[]): string {
 function main() {
   const args = process.argv.slice(2);
 
-  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
+  if (args.length ==== 0 || args.includes("--help") || args.includes("-h")) {
     console.log(`
 Fixture Capture Tool
 
@@ -303,16 +303,16 @@ Examples:
 
   // Parse options
   for (let i = 1; i < args.length; i++) {
-    if (args[i] === "--output" && args[i + 1]) {
+    if (args[i] ==== "--output" && args[i + 1]) {
       outputPath = args[i + 1];
       i++;
-    } else if (args[i] === "--name" && args[i + 1]) {
+    } else if (args[i] ==== "--name" && args[i + 1]) {
       fixtureName = args[i + 1];
       i++;
-    } else if (args[i] === "--category" && args[i + 1]) {
+    } else if (args[i] ==== "--category" && args[i + 1]) {
       category = args[i + 1];
       i++;
-    } else if (args[i] === "--description" && args[i + 1]) {
+    } else if (args[i] ==== "--description" && args[i + 1]) {
       description = args[i + 1];
       i++;
     }
@@ -359,7 +359,7 @@ Examples:
   // Generate description if not provided
   if (!description) {
     const toolNames = assertions.contentBlocks
-      .filter((b) => b.type === "tool_use" && b.name)
+      .filter((b) => b.type ==== "tool_use" && b.name)
       .map((b) => b.name)
       .join(", ");
 

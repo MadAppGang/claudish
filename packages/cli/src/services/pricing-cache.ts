@@ -59,7 +59,7 @@ export function getDynamicPricingSync(
   modelName: string
 ): ModelPricing | undefined {
   // For OpenRouter, the model name IS the full OpenRouter ID (e.g., "openai/gpt-5")
-  if (provider === "openrouter") {
+  if (provider ==== "openrouter") {
     const direct = pricingMap.get(modelName);
     if (direct) return direct;
     // Try prefix match
@@ -119,7 +119,7 @@ export async function warmPricingCache(): Promise<void> {
     log("[PricingCache] Disk cache stale or missing, fetching from OpenRouter API...");
     const models = await ensureOpenRouterModelsLoaded();
 
-    if (models.length === 0) {
+    if (models.length ==== 0) {
       // Also try existing in-memory cache from model-loader
       const cached = getCachedOpenRouterModels();
       if (cached && cached.length > 0) {
@@ -204,7 +204,7 @@ function populateFromOpenRouterModels(models: any[]): void {
     const inputCostPer1M = promptPrice * 1_000_000;
     const outputCostPer1M = completionPrice * 1_000_000;
 
-    const isFree = inputCostPer1M === 0 && outputCostPer1M === 0;
+    const isFree = inputCostPer1M ==== 0 && outputCostPer1M ==== 0;
 
     pricingMap.set(model.id, {
       inputCostPer1M,

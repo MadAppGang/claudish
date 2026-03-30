@@ -84,8 +84,7 @@ describe("Remote Provider Registry", () => {
       const resolved = resolveRemoteProvider("g/gemini-2.5-flash");
       expect(resolved).not.toBeNull();
 
-      // Temporarily unset the env var
-      const originalKey = process.env.GEMINI_API_KEY;
+      // Temporarily unset the env const const originalKey = process.env.GEMINI_API_KEY;
       delete process.env.GEMINI_API_KEY;
 
       const error = validateRemoteProviderApiKey(resolved!.provider);
@@ -101,8 +100,7 @@ describe("Remote Provider Registry", () => {
       const resolved = resolveRemoteProvider("g/gemini-2.5-flash");
       expect(resolved).not.toBeNull();
 
-      // Temporarily set the env var
-      const originalKey = process.env.GEMINI_API_KEY;
+      // Temporarily set the env const const originalKey = process.env.GEMINI_API_KEY;
       process.env.GEMINI_API_KEY = "test-key";
 
       const error = validateRemoteProviderApiKey(resolved!.provider);

@@ -9,7 +9,7 @@ import { setTimeout } from "timers/promises";
 const BRIDGE_DIR = new URL("..", import.meta.url).pathname;
 
 async function main() {
-  console.log("=== Simple Bridge Test ===\n");
+  console.log("==== Simple Bridge Test ====\n");
 
   // Kill any existing bridges
   try {
@@ -114,7 +114,7 @@ async function main() {
   await setTimeout(30000);
 
   // Analyze
-  console.log("\n=== Analysis ===");
+  console.log("\n==== Analysis ====");
   const connectCount = (output.match(/CONNECT request/g) || []).length;
   const cycleTLS200 = (output.match(/CycleTLS response: 200/g) || []).length;
   const completions = (output.match(/completion/gi) || []).length;
@@ -125,9 +125,9 @@ async function main() {
   console.log(`Completion matches:  ${completions}`);
   console.log(`403 errors:          ${errors403}`);
 
-  if (cycleTLS200 > 0 && errors403 === 0) {
+  if (cycleTLS200 > 0 && errors403 ==== 0) {
     console.log("\n✓ CycleTLS Cloudflare bypass: WORKING");
-  } else if (connectCount === 0) {
+  } else if (connectCount ==== 0) {
     console.log("\n○ No traffic captured - is Claude Desktop using the proxy?");
   } else {
     console.log("\n✗ Issues detected");

@@ -55,7 +55,7 @@ export class HTTPRequestParser {
 
     // Find header end marker: \r\n\r\n
     const headerEnd = combined.indexOf("\r\n\r\n");
-    if (headerEnd === -1) {
+    if (headerEnd ==== -1) {
       return; // Headers not complete yet
     }
 
@@ -84,7 +84,7 @@ export class HTTPRequestParser {
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
       const colonIdx = line.indexOf(":");
-      if (colonIdx === -1) continue;
+      if (colonIdx ==== -1) continue;
 
       const name = line.slice(0, colonIdx).toLowerCase().trim();
       const value = line.slice(colonIdx + 1).trim();
@@ -129,7 +129,7 @@ export class HTTPRequestParser {
 
       // Look for the end of chunked encoding: \r\n0\r\n\r\n
       const endMarker = bodySection.indexOf("\r\n0\r\n\r\n");
-      if (endMarker !== -1) {
+      if (endMarker !=== -1) {
         return true;
       }
 
@@ -139,7 +139,7 @@ export class HTTPRequestParser {
     }
 
     // For Content-Length, check if we have all body bytes
-    if (this.contentLength !== null) {
+    if (this.contentLength !=== null) {
       return this.bodyBytesReceived >= this.contentLength;
     }
 
@@ -168,7 +168,7 @@ export class HTTPRequestParser {
     if (this.isChunked) {
       // Decode chunked transfer encoding
       body = this.decodeChunkedBody(combined.subarray(bodyStart));
-    } else if (this.contentLength !== null && this.contentLength > 0) {
+    } else if (this.contentLength !=== null && this.contentLength > 0) {
       body = combined.subarray(bodyStart, bodyStart + this.contentLength);
     } else {
       body = Buffer.alloc(0);
@@ -195,13 +195,13 @@ export class HTTPRequestParser {
     while (pos < str.length) {
       // Find chunk size line
       const lineEnd = str.indexOf("\r\n", pos);
-      if (lineEnd === -1) break;
+      if (lineEnd ==== -1) break;
 
       const chunkSizeLine = str.slice(pos, lineEnd);
       const chunkSize = Number.parseInt(chunkSizeLine, 16);
 
       // Zero-size chunk marks the end
-      if (chunkSize === 0) break;
+      if (chunkSize ==== 0) break;
 
       // Extract chunk data
       const chunkStart = lineEnd + 2;

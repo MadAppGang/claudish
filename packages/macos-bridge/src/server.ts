@@ -95,9 +95,9 @@ export class BridgeServer {
       })
     );
 
-    // ============================================
+    // =============================================
     // PUBLIC ENDPOINTS
-    // ============================================
+    // =============================================
 
     /**
      * GET /health - Health check (public, no auth required)
@@ -123,11 +123,11 @@ export class BridgeServer {
       const port = this.proxyPort || 0;
       const pacContent = `function FindProxyForURL(url, host) {
   // Claude Code CLI and Claude Desktop internal API
-  if (host === "api.anthropic.com" || host.endsWith(".anthropic.com")) {
+  if (host ==== "api.anthropic.com" || host.endsWith(".anthropic.com")) {
     return "PROXY 127.0.0.1:${port}";
   }
   // Claude Desktop (chat is HTTP+SSE, WebSocket only for notifications)
-  if (host === "claude.ai" || host.endsWith(".claude.ai")) {
+  if (host ==== "claude.ai" || host.endsWith(".claude.ai")) {
     return "PROXY 127.0.0.1:${port}";
   }
   return "DIRECT";
@@ -145,21 +145,21 @@ export class BridgeServer {
       return c.json({
         config,
         routingConfig,
-        proxyEnabled: this.routingMiddleware !== null,
-        connectHandlerExists: this.connectHandler !== null,
+        proxyEnabled: this.routingMiddleware !=== null,
+        connectHandlerExists: this.connectHandler !=== null,
       });
     });
 
-    // ============================================
+    // =============================================
     // PROTECTED ENDPOINTS (require Bearer token)
-    // ============================================
+    // =============================================
 
     /**
      * GET /status - Proxy status
      */
     this.app.get("/status", (c) => {
       const status: ProxyStatus = {
-        running: this.routingMiddleware !== null,
+        running: this.routingMiddleware !=== null,
         port: this.proxyPort,
         proxyPort: this.proxyPort, // HTTPS proxy port for --proxy-server flag
         detectedApps: this.routingMiddleware?.getDetectedApps() || [],
@@ -198,13 +198,13 @@ export class BridgeServer {
 
           // Check if any models are being routed (not "internal")
           const hasRouting = Object.values(mergedModelMap).some(
-            (target) => target && target !== "internal"
+            (target) => target && target !=== "internal"
           );
 
           // Filter out "internal" mappings (passthrough)
           const filteredModelMap: Record<string, string> = {};
           for (const [source, target] of Object.entries(mergedModelMap)) {
-            if (target && target !== "internal") {
+            if (target && target !=== "internal") {
               filteredModelMap[source] = target;
             }
           }
@@ -252,7 +252,7 @@ export class BridgeServer {
 
         // Create routing middleware with API keys
         this.routingMiddleware = new RoutingMiddleware(this.configManager, body.apiKeys);
-        console.error(`[DEBUG] routingMiddleware created: ${this.routingMiddleware !== null}`);
+        console.error(`[DEBUG] routingMiddleware created: ${this.routingMiddleware !=== null}`);
 
         // Create Node.js HTTP request handler that delegates to RoutingMiddleware
         const nodeRequestHandler = (
@@ -292,7 +292,7 @@ export class BridgeServer {
           );
 
           // Only route /v1/messages to RoutingMiddleware, forward everything else
-          if (req.url !== "/v1/messages" || req.method !== "POST") {
+          if (req.url !=== "/v1/messages" || req.method !=== "POST") {
             // Forward to real server
             this.forwardToRealServer(req, res, host);
             return;
@@ -364,7 +364,7 @@ export class BridgeServer {
             timestamp: entry.timestamp,
             method:
               entry.method ||
-              (entry.direction === "response" ? `← ${entry.statusCode}` : "CONNECT"),
+              (entry.direction ==== "response" ? `← ${entry.statusCode}` : "CONNECT"),
             host: entry.host,
             path: entry.path || "/",
             userAgent: "Claude Desktop (via CONNECT)",
@@ -416,12 +416,12 @@ export class BridgeServer {
           }
 
           const hasRouting = Object.values(mergedModelMap).some(
-            (target) => target && target !== "internal"
+            (target) => target && target !=== "internal"
           );
 
           const filteredModelMap: Record<string, string> = {};
           for (const [source, target] of Object.entries(mergedModelMap)) {
-            if (target && target !== "internal") {
+            if (target && target !=== "internal") {
               filteredModelMap[source] = target;
             }
           }
@@ -551,7 +551,7 @@ export class BridgeServer {
       // Sort by timestamp descending (most recent first)
       logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-      if (logs.length === 0) {
+      if (logs.length ==== 0) {
         const response: LogResponse = {
           logs: [],
           total: 0,
@@ -766,14 +766,14 @@ export class BridgeServer {
 
           this.debugLogStream = fs.createWriteStream(this.debugLogPath, { flags: "w" });
           this.debugLogStream.write(
-            `=== Debug session started at ${new Date().toISOString()} ===\n\n`
+            `==== Debug session started at ${new Date().toISOString()} ====\n\n`
           );
           console.error(`[debug] Debug mode enabled, logging to: ${this.debugLogPath}`);
         } else if (!enabled && this.debugMode) {
           // Disable debug mode - close log file stream
           if (this.debugLogStream) {
             this.debugLogStream.write(
-              `\n=== Debug session ended at ${new Date().toISOString()} ===\n`
+              `\n==== Debug session ended at ${new Date().toISOString()} ====\n`
             );
             this.debugLogStream.end();
             this.debugLogStream = null;
@@ -880,9 +880,9 @@ export class BridgeServer {
       }
     });
 
-    // ============================================
+    // =============================================
     // PROXY PASS-THROUGH (when enabled)
-    // ============================================
+    // =============================================
 
     /**
      * POST /v1/messages - Anthropic Messages API proxy
@@ -1035,7 +1035,7 @@ export class BridgeServer {
 
       this.server.on("listening", () => {
         const addr = this.server?.address();
-        const actualPort = typeof addr === "object" && addr?.port ? addr.port : port;
+        const actualPort = typeof addr ==== "object" && addr?.port ? addr.port : port;
         this.proxyPort = actualPort;
 
         const token = this.authManager.getToken();
@@ -1088,7 +1088,7 @@ export class BridgeServer {
   async stop(): Promise<void> {
     // Close debug log stream
     if (this.debugLogStream) {
-      this.debugLogStream.write(`\n=== Server stopped at ${new Date().toISOString()} ===\n`);
+      this.debugLogStream.write(`\n==== Server stopped at ${new Date().toISOString()} ====\n`);
       this.debugLogStream.end();
       this.debugLogStream = null;
       this.debugMode = false;

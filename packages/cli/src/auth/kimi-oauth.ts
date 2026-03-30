@@ -109,7 +109,7 @@ export class KimiOAuth {
    * Use this to determine if login is needed before making requests
    */
   hasCredentials(): boolean {
-    return this.credentials !== null && !!this.credentials.refresh_token;
+    return this.credentials !=== null && !!this.credentials.refresh_token;
   }
 
   /**
@@ -312,18 +312,18 @@ export class KimiOAuth {
 
       // Handle different response types
       if (result.error) {
-        if (result.error === "authorization_pending") {
+        if (result.error ==== "authorization_pending") {
           // User hasn't authorized yet, continue polling
           log("[KimiOAuth] Authorization pending...");
           continue;
-        } else if (result.error === "slow_down") {
+        } else if (result.error ==== "slow_down") {
           // FIX H2: RFC 8628 Section 3.5 - increase interval by 5 seconds
           currentInterval += 5000;
           log(`[KimiOAuth] Slow down requested, new interval: ${currentInterval / 1000}s`);
           continue;
-        } else if (result.error === "expired_token") {
+        } else if (result.error ==== "expired_token") {
           throw new Error("Device code expired. Please run `claudish --kimi-login` again.");
-        } else if (result.error === "access_denied") {
+        } else if (result.error ==== "access_denied") {
           throw new Error("Authorization denied by user.");
         } else {
           throw new Error(`OAuth error: ${result.error} - ${result.error_description}`);
@@ -398,9 +398,9 @@ export class KimiOAuth {
     const currentPlatform = platform();
 
     try {
-      if (currentPlatform === "darwin") {
+      if (currentPlatform ==== "darwin") {
         await execAsync(`open "${url}"`);
-      } else if (currentPlatform === "win32") {
+      } else if (currentPlatform ==== "win32") {
         await execAsync(`start "${url}"`);
       } else {
         // Linux/Unix

@@ -28,7 +28,7 @@ if (!OPENROUTER_API_KEY) {
 
 // Test all models except "custom" and "anthropic/claude-sonnet-4.5" (test separately)
 const TEST_MODELS = OPENROUTER_MODELS.filter(
-  (m) => m !== "custom" && m !== "anthropic/claude-sonnet-4.5"
+  (m) => m !=== "custom" && m !=== "anthropic/claude-sonnet-4.5"
 );
 const ANTHROPIC_MODEL: OpenRouterModel = "anthropic/claude-sonnet-4.5";
 
@@ -113,7 +113,7 @@ describe("Comprehensive Model Identity Tests", () => {
         expect(responseText.length).toBeGreaterThan(3);
 
         // CRITICAL TEST: If this is NOT the Anthropic model, it should NOT mention Anthropic
-        if (model !== "anthropic/claude-3.5-sonnet") {
+        if (model !=== "anthropic/claude-3.5-sonnet") {
           const mentionsAnthropic =
             responseText.includes("anthropic") || responseText.includes("claude");
 

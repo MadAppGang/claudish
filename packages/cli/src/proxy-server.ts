@@ -66,7 +66,7 @@ export async function createProxyServer(
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
     // Strip any provider prefix (e.g., openrouter@google/gemini -> google/gemini, glm@glm-5 -> glm-5)
     const parsed = parseModelSpec(targetModel);
-    const modelId = parsed.provider !== "native-anthropic" ? parsed.model : targetModel;
+    const modelId = parsed.provider !=== "native-anthropic" ? parsed.model : targetModel;
 
     if (!openRouterHandlers.has(modelId)) {
       const orProvider = new OpenRouterProvider(openrouterApiKey || "");
@@ -128,7 +128,7 @@ export async function createProxyServer(
       });
       localProviderHandlers.set(targetModel, handler);
       log(
-        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ""}`
+        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !=== undefined ? ` (concurrency: ${resolved.concurrency})` : ""}`
       );
       return handler;
     }
@@ -179,7 +179,7 @@ export async function createProxyServer(
     // If resolver says use OpenRouter (including fallback cases), create the handler
     // directly here so we can use the correctly-formatted fullModelId (e.g. "google/gemini-2.0-flash")
     // rather than the raw targetModel string.
-    if (resolution.category === "openrouter") {
+    if (resolution.category ==== "openrouter") {
       if (resolution.wasAutoRouted && resolution.fullModelId) {
         return getOpenRouterHandler(resolution.fullModelId);
       }
@@ -193,12 +193,12 @@ export async function createProxyServer(
       resolution.wasAutoRouted && resolution.fullModelId ? resolution.fullModelId : targetModel;
 
     // If resolver says use direct-api and key is available, create handler
-    if (resolution.category === "direct-api" && resolution.apiKeyAvailable) {
+    if (resolution.category ==== "direct-api" && resolution.apiKeyAvailable) {
       const resolved = resolveRemoteProvider(resolveTarget);
       if (!resolved) return null;
 
       // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
-      if (resolved.provider.name === "openrouter") {
+      if (resolved.provider.name ==== "openrouter") {
         return null; // Will fall through to OpenRouterHandler
       }
 
@@ -208,7 +208,7 @@ export async function createProxyServer(
         : "";
 
       let handler: ModelHandler;
-      if (resolved.provider.name === "gemini") {
+      if (resolved.provider.name ==== "gemini") {
         const gemProvider = new GeminiApiKeyProvider(resolved.provider, resolved.modelName, apiKey);
         const gemAdapter = new GeminiAdapter(resolved.modelName);
         handler = new ComposedHandler(gemProvider, targetModel, resolved.modelName, port, {
@@ -216,7 +216,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created Gemini handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "gemini-codeassist") {
+      } else if (resolved.provider.name ==== "gemini-codeassist") {
         const gcaProvider = new GeminiCodeAssistProvider(resolved.modelName);
         const gcaAdapter = new GeminiAdapter(resolved.modelName);
         handler = new ComposedHandler(gcaProvider, targetModel, resolved.modelName, port, {
@@ -225,7 +225,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created Gemini Code Assist handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "openai") {
+      } else if (resolved.provider.name ==== "openai") {
         // OpenAI uses ComposedHandler with OpenAIProvider + OpenAIAdapter
         const oaiProvider = new OpenAIProvider(resolved.provider, resolved.modelName, apiKey);
         const oaiAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
@@ -236,11 +236,11 @@ export async function createProxyServer(
         });
         log(`[Proxy] Created OpenAI handler (composed): ${resolved.modelName}`);
       } else if (
-        resolved.provider.name === "minimax" ||
-        resolved.provider.name === "minimax-coding" ||
-        resolved.provider.name === "kimi" ||
-        resolved.provider.name === "kimi-coding" ||
-        resolved.provider.name === "zai"
+        resolved.provider.name ==== "minimax" ||
+        resolved.provider.name ==== "minimax-coding" ||
+        resolved.provider.name ==== "kimi" ||
+        resolved.provider.name ==== "kimi-coding" ||
+        resolved.provider.name ==== "zai"
       ) {
         // MiniMax, Kimi, Kimi Coding, and Z.AI use Anthropic-compatible APIs — composed handler
         const acProvider = new AnthropicCompatProvider(resolved.provider, apiKey);
@@ -250,7 +250,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created ${resolved.provider.name} handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "glm" || resolved.provider.name === "glm-coding") {
+      } else if (resolved.provider.name ==== "glm" || resolved.provider.name ==== "glm-coding") {
         // GLM and GLM Coding Plan use OpenAI-compatible API — composed handler
         const glmProvider = new OpenAIProvider(resolved.provider, resolved.modelName, apiKey);
         const glmAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
@@ -260,7 +260,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created ${resolved.provider.name} handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "opencode-zen") {
+      } else if (resolved.provider.name ==== "opencode-zen") {
         // OpenCode Zen uses OpenAI-compatible API for most models
         // MiniMax models on Zen use Anthropic-compatible API
         if (resolved.modelName.toLowerCase().includes("minimax")) {
@@ -281,7 +281,7 @@ export async function createProxyServer(
           });
           log(`[Proxy] Created OpenCode Zen (composed): ${resolved.modelName}`);
         }
-      } else if (resolved.provider.name === "ollamacloud") {
+      } else if (resolved.provider.name ==== "ollamacloud") {
         // OllamaCloud uses Ollama native API (NOT OpenAI-compatible) — composed handler
         const ocProvider = new OllamaCloudProvider(resolved.provider, apiKey);
         const ocAdapter = new OllamaCloudAdapter(resolved.modelName);
@@ -291,7 +291,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created OllamaCloud handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "litellm") {
+      } else if (resolved.provider.name ==== "litellm") {
         // LiteLLM uses OpenAI-compatible API format — composed handler
         if (!resolved.provider.baseUrl) {
           logStderr("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
@@ -306,7 +306,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created LiteLLM handler (composed): ${resolved.modelName} (${resolved.provider.baseUrl})`);
-      } else if (resolved.provider.name === "vertex") {
+      } else if (resolved.provider.name ==== "vertex") {
         // Vertex AI supports two modes:
         // 1. Express Mode (API key) - for Gemini models
         // 2. OAuth Mode (project/service account) - for all models including partners
@@ -318,7 +318,7 @@ export async function createProxyServer(
           // but with VERTEX_API_KEY instead of GEMINI_API_KEY.
           // We must use the Gemini provider config (which has the correct baseUrl/apiPath)
           // because the vertex provider config has empty baseUrl/apiPath (designed for OAuth mode).
-          const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
+          const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name ==== "gemini");
           const expressProvider = geminiConfig || resolved.provider;
           const vxGemProvider = new GeminiApiKeyProvider(expressProvider, resolved.modelName, process.env.VERTEX_API_KEY!);
           const vxGemAdapter = new GeminiAdapter(resolved.modelName);
@@ -340,13 +340,13 @@ export async function createProxyServer(
           // Select adapter based on publisher
           let vxAdapter;
           const handlerOpts: any = {};
-          if (parsed.publisher === "google") {
+          if (parsed.publisher ==== "google") {
             vxAdapter = new GeminiAdapter(resolved.modelName);
-          } else if (parsed.publisher === "anthropic") {
+          } else if (parsed.publisher ==== "anthropic") {
             vxAdapter = new AnthropicPassthroughAdapter(parsed.model, "vertex");
           } else {
             // Mistral/Meta use OpenAI format; Mistral rawPredict uses bare model name
-            const modelId = parsed.publisher === "mistralai"
+            const modelId = parsed.publisher ==== "mistralai"
               ? parsed.model
               : `${parsed.publisher}/${parsed.model}`;
             vxAdapter = new DefaultAdapter(modelId);
@@ -371,7 +371,7 @@ export async function createProxyServer(
       // Cache under both the original targetModel and the resolveTarget (if different)
       // so subsequent lookups with either key are served from cache.
       remoteProviderHandlers.set(resolveTarget, handler);
-      if (resolveTarget !== targetModel) {
+      if (resolveTarget !=== targetModel) {
         remoteProviderHandlers.set(targetModel, handler);
       }
       return handler;
@@ -505,8 +505,8 @@ export async function createProxyServer(
 
   // Port resolution
   const addr = server.address();
-  const actualPort = typeof addr === "object" && addr?.port ? addr.port : port;
-  if (actualPort !== port) port = actualPort;
+  const actualPort = typeof addr ==== "object" && addr?.port ? addr.port : port;
+  if (actualPort !=== port) port = actualPort;
 
   log(`[Proxy] Server started on port ${port}`);
 

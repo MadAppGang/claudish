@@ -106,7 +106,7 @@ export class OpenRouterRequestQueue {
   private readonly maxQueueSize = 100;
 
   private constructor() {
-    if (getLogLevel() === "debug") {
+    if (getLogLevel() ==== "debug") {
       log("[OpenRouterQueue] Queue initialized with baseDelay=1000ms, maxQueueSize=100");
     }
   }
@@ -131,7 +131,7 @@ export class OpenRouterRequestQueue {
   async enqueue(fetchFn: () => Promise<Response>): Promise<Response> {
     // Check queue size limit
     if (this.queue.length >= this.maxQueueSize) {
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(
           `[OpenRouterQueue] Queue full (${this.queue.length}/${this.maxQueueSize}), rejecting request`
         );
@@ -150,7 +150,7 @@ export class OpenRouterRequestQueue {
       };
 
       this.queue.push(queuedRequest);
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(`[OpenRouterQueue] Request enqueued (queue length: ${this.queue.length})`);
       }
 
@@ -170,7 +170,7 @@ export class OpenRouterRequestQueue {
     }
 
     this.processing = true;
-    if (getLogLevel() === "debug") {
+    if (getLogLevel() ==== "debug") {
       log("[OpenRouterQueue] Worker started");
     }
 
@@ -178,7 +178,7 @@ export class OpenRouterRequestQueue {
       const request = this.queue.shift();
       if (!request) break;
 
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(`[OpenRouterQueue] Processing request (${this.queue.length} remaining in queue)`);
       }
 
@@ -194,11 +194,11 @@ export class OpenRouterRequestQueue {
         this.parseRateLimitHeaders(response);
 
         // Check for rate limit response
-        if (response.status === 429) {
+        if (response.status ==== 429) {
           this.rateLimitState.totalErrors++;
           this.rateLimitState.total429Errors++;
           await this.handleRateLimitError(response);
-          if (getLogLevel() === "debug") {
+          if (getLogLevel() ==== "debug") {
             log(
               `[OpenRouterQueue] Rate limit hit (429), adjusted delay to ${this.rateLimitState.currentDelayMs}ms`
             );
@@ -214,7 +214,7 @@ export class OpenRouterRequestQueue {
         // Network error or other exception
         this.rateLimitState.totalErrors++;
         this.rateLimitState.consecutiveErrors++;
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(`[OpenRouterQueue] Request failed with error: ${error}`);
         }
         request.reject(error instanceof Error ? error : new Error(String(error)));
@@ -222,7 +222,7 @@ export class OpenRouterRequestQueue {
     }
 
     this.processing = false;
-    if (getLogLevel() === "debug") {
+    if (getLogLevel() ==== "debug") {
       log("[OpenRouterQueue] Worker stopped (queue empty)");
     }
   }
@@ -242,7 +242,7 @@ export class OpenRouterRequestQueue {
     // Wait if needed
     if (timeSinceLastRequest < delayMs) {
       const waitMs = delayMs - timeSinceLastRequest;
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(`[OpenRouterQueue] Waiting ${waitMs}ms before next request`);
       }
       await new Promise((resolve) => setTimeout(resolve, waitMs));
@@ -258,8 +258,8 @@ export class OpenRouterRequestQueue {
 
     // Factor 1: Remaining requests (proactive throttling)
     if (
-      this.rateLimitState.remainingRequests !== null &&
-      this.rateLimitState.limitRequests !== null &&
+      this.rateLimitState.remainingRequests !=== null &&
+      this.rateLimitState.limitRequests !=== null &&
       this.rateLimitState.limitRequests > 0
     ) {
       const quotaPercent =
@@ -267,7 +267,7 @@ export class OpenRouterRequestQueue {
       if (quotaPercent < 0.2) {
         // Less than 20% quota remaining - slow down significantly
         delayMs = Math.max(delayMs, 3000);
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(
             `[OpenRouterQueue] Low quota (${(quotaPercent * 100).toFixed(1)}%), increasing delay to ${delayMs}ms`
           );
@@ -275,7 +275,7 @@ export class OpenRouterRequestQueue {
       } else if (quotaPercent < 0.5) {
         // Less than 50% quota remaining - moderate slowdown
         delayMs = Math.max(delayMs, 2000);
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(
             `[OpenRouterQueue] Medium quota (${(quotaPercent * 100).toFixed(1)}%), increasing delay to ${delayMs}ms`
           );
@@ -284,7 +284,7 @@ export class OpenRouterRequestQueue {
     }
 
     // Factor 2: Time until reset (spread requests evenly)
-    if (this.rateLimitState.resetTime !== null && this.rateLimitState.remainingRequests !== null) {
+    if (this.rateLimitState.resetTime !=== null && this.rateLimitState.remainingRequests !=== null) {
       const now = Date.now() / 1000; // Convert to Unix timestamp
       const timeUntilReset = this.rateLimitState.resetTime - now;
       if (timeUntilReset > 0 && this.rateLimitState.remainingRequests > 0) {
@@ -292,7 +292,7 @@ export class OpenRouterRequestQueue {
         const optimalDelay =
           (timeUntilReset * 1000) / Math.max(this.rateLimitState.remainingRequests, 1);
         delayMs = Math.max(delayMs, Math.min(optimalDelay, this.maxDelayMs));
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(
             `[OpenRouterQueue] Spreading ${this.rateLimitState.remainingRequests} requests ` +
               `over ${timeUntilReset.toFixed(1)}s, optimal delay: ${optimalDelay.toFixed(0)}ms`
@@ -305,7 +305,7 @@ export class OpenRouterRequestQueue {
     if (this.rateLimitState.consecutiveErrors > 0) {
       const backoffMultiplier = 1 + this.rateLimitState.consecutiveErrors * 0.5;
       delayMs = delayMs * backoffMultiplier;
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(
           `[OpenRouterQueue] Applying backoff (${this.rateLimitState.consecutiveErrors} errors): ${delayMs.toFixed(0)}ms`
         );
@@ -349,7 +349,7 @@ export class OpenRouterRequestQueue {
     }
 
     // Debug log headers
-    if (getLogLevel() === "debug") {
+    if (getLogLevel() ==== "debug") {
       const headers = {
         limitRequests: this.rateLimitState.limitRequests,
         remainingRequests: this.rateLimitState.remainingRequests,
@@ -380,7 +380,7 @@ export class OpenRouterRequestQueue {
       if (!Number.isNaN(retryAfterSeconds)) {
         const retryAfterMs = retryAfterSeconds * 1000;
         this.rateLimitState.currentDelayMs = Math.min(retryAfterMs, this.maxDelayMs);
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(`[OpenRouterQueue] Retry-After header: ${retryAfterSeconds}s (${retryAfterMs}ms)`);
         }
       }
@@ -391,7 +391,7 @@ export class OpenRouterRequestQueue {
       const errorText = await response.clone().text();
       const errorData = JSON.parse(errorText);
       if (errorData?.error?.message) {
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(`[OpenRouterQueue] 429 error message: ${errorData.error.message}`);
         }
       }
@@ -404,7 +404,7 @@ export class OpenRouterRequestQueue {
     const backoffDelay = Math.min(this.baseDelayMs * backoffMultiplier, this.maxDelayMs);
     this.rateLimitState.currentDelayMs = Math.max(this.rateLimitState.currentDelayMs, backoffDelay);
 
-    if (getLogLevel() === "debug") {
+    if (getLogLevel() ==== "debug") {
       log(
         `[OpenRouterQueue] Applied exponential backoff: ${this.rateLimitState.currentDelayMs}ms ` +
           `(${this.rateLimitState.consecutiveErrors} consecutive errors)`
@@ -418,7 +418,7 @@ export class OpenRouterRequestQueue {
    */
   private handleSuccessResponse(): void {
     if (this.rateLimitState.consecutiveErrors > 0) {
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(
           `[OpenRouterQueue] Success after ${this.rateLimitState.consecutiveErrors} errors, resetting counter`
         );
@@ -432,7 +432,7 @@ export class OpenRouterRequestQueue {
         this.baseDelayMs,
         this.rateLimitState.currentDelayMs * 0.9 // Reduce by 10%
       );
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(`[OpenRouterQueue] Reducing delay to ${this.rateLimitState.currentDelayMs}ms`);
       }
     }

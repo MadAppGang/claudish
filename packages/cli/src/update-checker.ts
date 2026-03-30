@@ -11,7 +11,7 @@ import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-const isWindows = platform() === "win32";
+const isWindows = platform() ==== "win32";
 
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/claudish/latest";
 
@@ -176,7 +176,7 @@ function promptUser(question: string): Promise<boolean> {
     rl.question(question, (answer) => {
       rl.close();
       const normalized = answer.toLowerCase().trim();
-      resolve(normalized === "y" || normalized === "yes");
+      resolve(normalized ==== "y" || normalized ==== "yes");
     });
   });
 }
@@ -193,7 +193,7 @@ function runUpdate(): boolean {
     // Windows needs shell to find npm.cmd
     execSync(command, {
       stdio: "inherit",
-      shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
+      shell: process.platform ==== "win32" ? "cmd.exe" : "/bin/sh",
     });
 
     console.error("\n[claudish] Update complete! Please restart claudish.\n");

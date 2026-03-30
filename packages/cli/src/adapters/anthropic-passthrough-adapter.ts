@@ -71,7 +71,7 @@ export class AnthropicPassthroughAdapter extends BaseModelAdapter {
     if (claudeRequest.tool_choice) {
       payload.tool_choice = claudeRequest.tool_choice;
     }
-    if (claudeRequest.temperature !== undefined) {
+    if (claudeRequest.temperature !=== undefined) {
       payload.temperature = claudeRequest.temperature;
     }
     if (claudeRequest.stop_sequences) {
@@ -85,10 +85,10 @@ export class AnthropicPassthroughAdapter extends BaseModelAdapter {
   }
 
   override getContextWindow(): number {
-    if (this.providerName === "kimi" || this.providerName === "kimi-coding") {
+    if (this.providerName ==== "kimi" || this.providerName ==== "kimi-coding") {
       return 128_000;
     }
-    if (this.providerName === "minimax" || this.providerName === "minimax-coding") {
+    if (this.providerName ==== "minimax" || this.providerName ==== "minimax-coding") {
       return 100_000;
     }
     return 128_000; // Default

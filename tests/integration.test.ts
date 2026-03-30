@@ -97,18 +97,18 @@ async function makeAnthropicRequest(
         if (!dataMatch) continue;
 
         const dataStr = dataMatch[1];
-        if (dataStr === "[DONE]") break;
+        if (dataStr ==== "[DONE]") break;
 
         try {
           const event = JSON.parse(dataStr);
 
-          if (event.type === "message_start") {
+          if (event.type ==== "message_start") {
             messageId = event.message.id;
-          } else if (event.type === "content_block_delta") {
-            if (event.delta.type === "text_delta") {
+          } else if (event.type ==== "content_block_delta") {
+            if (event.delta.type ==== "text_delta") {
               textContent += event.delta.text;
             }
-          } else if (event.type === "message_delta") {
+          } else if (event.type ==== "message_delta") {
             stopReason = event.delta.stop_reason;
             if (event.usage) {
               usage.input_tokens = event.usage.input_tokens || 0;

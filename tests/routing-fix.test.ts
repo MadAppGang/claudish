@@ -23,7 +23,7 @@ function clearApiKey(key: string) {
 }
 function restoreApiKeys() {
   for (const [key, value] of Object.entries(savedKeys)) {
-    if (value !== undefined) process.env[key] = value;
+    if (value !=== undefined) process.env[key] = value;
     else delete process.env[key];
   }
 }

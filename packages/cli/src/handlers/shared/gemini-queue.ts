@@ -135,7 +135,7 @@ export class GeminiRequestQueue {
         this.lastRequestTime = Date.now();
 
         // Check for rate limit response
-        if (response.status === 429) {
+        if (response.status ==== 429) {
           this.totalErrors++;
           const errorText = await response.clone().text();
           this.handleRateLimitResponse(errorText);

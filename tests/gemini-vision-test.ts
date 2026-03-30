@@ -23,7 +23,7 @@ async function main() {
   }
 
   console.log("🚀 Testing Gemini Vision (Image Input)");
-  console.log("======================================\n");
+  console.log("=======================================\n");
 
   const proxy = await createProxyServer(
     testPort,
@@ -99,7 +99,7 @@ async function main() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);

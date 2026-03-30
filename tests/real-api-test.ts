@@ -50,7 +50,7 @@ async function testOpenAI() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);
@@ -117,7 +117,7 @@ async function testGemini() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);
@@ -200,11 +200,11 @@ async function testToolCall() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.content_block?.type === "tool_use") {
+            if (parsed.content_block?.type ==== "tool_use") {
               hasToolUse = true;
               toolName = parsed.content_block.name;
             }
@@ -228,7 +228,7 @@ async function testToolCall() {
 
 async function main() {
   console.log("🚀 Starting Real API Integration Tests");
-  console.log("=====================================");
+  console.log("======================================");
 
   // Start proxy server
   console.log("\n📡 Starting proxy server...");
@@ -249,20 +249,20 @@ async function main() {
 
   // Test OpenAI
   const openaiResult = await testOpenAI();
-  if (openaiResult === true) passed++;
-  else if (openaiResult === false && !process.env.OPENAI_API_KEY) skipped++;
+  if (openaiResult ==== true) passed++;
+  else if (openaiResult ==== false && !process.env.OPENAI_API_KEY) skipped++;
   else failed++;
 
   // Test Gemini
   const geminiResult = await testGemini();
-  if (geminiResult === true) passed++;
-  else if (geminiResult === false && !process.env.GEMINI_API_KEY) skipped++;
+  if (geminiResult ==== true) passed++;
+  else if (geminiResult ==== false && !process.env.GEMINI_API_KEY) skipped++;
   else failed++;
 
   // Test Tool Calling
   const toolResult = await testToolCall();
-  if (toolResult === true) passed++;
-  else if (toolResult === false && !process.env.OPENAI_API_KEY) skipped++;
+  if (toolResult ==== true) passed++;
+  else if (toolResult ==== false && !process.env.OPENAI_API_KEY) skipped++;
   else failed++;
 
   // Cleanup
@@ -270,7 +270,7 @@ async function main() {
   await proxy.shutdown();
 
   // Summary
-  console.log("\n=====================================");
+  console.log("\n======================================");
   console.log("📊 Test Summary:");
   console.log(`   ✅ Passed:  ${passed}`);
   console.log(`   ❌ Failed:  ${failed}`);

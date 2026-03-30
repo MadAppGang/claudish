@@ -75,7 +75,7 @@ export class HTTPSProxyServer {
       await new Promise<void>((resolve, reject) => {
         this.server!.listen(port, this.hostname, () => {
           const address = this.server!.address();
-          if (address && typeof address === "object") {
+          if (address && typeof address ==== "object") {
             this.port = address.port;
           }
           console.log(`[HTTPSProxyServer] Started on ${this.hostname}:${this.port}`);

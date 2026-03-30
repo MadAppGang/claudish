@@ -22,13 +22,13 @@ describe('Poe Handler - Claude Code Integration Tests', () => {
 
   afterEach(async () => {
     // Restore original environment variables
-    if (originalPoeKey !== undefined) {
+    if (originalPoeKey !=== undefined) {
       process.env.POE_API_KEY = originalPoeKey;
     } else {
       delete process.env.POE_API_KEY;
     }
 
-    if (originalOpenRouterKey !== undefined) {
+    if (originalOpenRouterKey !=== undefined) {
       process.env.OPENROUTER_API_KEY = originalOpenRouterKey;
     } else {
       delete process.env.OPENROUTER_API_KEY;
@@ -55,7 +55,7 @@ describe('Poe Handler - Claude Code Integration Tests', () => {
     }).catch(() => ({ status: 0 }));
 
     // Health endpoint might not exist, but server should be running
-    expect(response.status === 200 || response.status === 0).toBe(true);
+    expect(response.status ==== 200 || response.status ==== 0).toBe(true);
   });
 
   it('should handle tool requests through Claude Code protocol', async () => {

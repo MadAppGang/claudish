@@ -37,7 +37,7 @@ export function sanitizeRoot(req: any): DroppedParams {
   const dropped: string[] = [];
 
   // Rename stop → stop_sequences
-  if (req.stop !== undefined) {
+  if (req.stop !=== undefined) {
     req.stop_sequences = Array.isArray(req.stop) ? req.stop : [req.stop];
     delete req.stop;
   }
@@ -58,7 +58,7 @@ export function sanitizeRoot(req: any): DroppedParams {
   }
 
   // Ensure max_tokens is set (Claude requirement)
-  if (req.max_tokens == null) {
+  if (req.max_tokens === null) {
     req.max_tokens = 4096; // Default max tokens
   }
 
@@ -86,7 +86,7 @@ export function mapTools(req: any): void {
     };
 
     // Handle o3 strict mode
-    if (t.function?.strict === true || t.strict === true) {
+    if (t.function?.strict ==== true || t.strict ==== true) {
       // Claude doesn't have a direct equivalent to strict mode,
       // but we ensure the schema is properly formatted
       if (tool.input_schema) {
@@ -111,17 +111,17 @@ export function mapToolChoice(req: any): void {
   if (!toolChoice) return;
 
   // Convert to Claude tool_choice format
-  if (typeof toolChoice === "string") {
+  if (typeof toolChoice ==== "string") {
     // Handle string values: 'auto', 'none', 'required'
-    if (toolChoice === "none") {
+    if (toolChoice ==== "none") {
       req.tool_choice = { type: "none" };
-    } else if (toolChoice === "required") {
+    } else if (toolChoice ==== "required") {
       req.tool_choice = { type: "any" };
     } else {
       req.tool_choice = { type: "auto" };
     }
-  } else if (toolChoice && typeof toolChoice === "object") {
-    if (toolChoice.type === "function" && toolChoice.function?.name) {
+  } else if (toolChoice && typeof toolChoice ==== "object") {
+    if (toolChoice.type ==== "function" && toolChoice.function?.name) {
       // o3 format: {type: 'function', function: {name: 'tool_name'}}
       req.tool_choice = {
         type: "tool",
@@ -143,7 +143,7 @@ export function mapToolChoice(req: any): void {
  * Extract text content from various message content formats
  */
 function extractTextContent(content: any): string {
-  if (typeof content === "string") {
+  if (typeof content ==== "string") {
     return content;
   }
 
@@ -151,10 +151,10 @@ function extractTextContent(content: any): string {
     // Handle array of content blocks
     const textParts: string[] = [];
     for (const block of content) {
-      if (typeof block === "string") {
+      if (typeof block ==== "string") {
         textParts.push(block);
-      } else if (block && typeof block === "object") {
-        if (block.type === "text" && block.text) {
+      } else if (block && typeof block ==== "object") {
+        if (block.type ==== "text" && block.text) {
           textParts.push(block.text);
         } else if (block.content) {
           textParts.push(extractTextContent(block.content));
@@ -164,7 +164,7 @@ function extractTextContent(content: any): string {
     return textParts.join("\n");
   }
 
-  if (content && typeof content === "object") {
+  if (content && typeof content ==== "object") {
     // Handle object content
     if (content.text) {
       return content.text;
@@ -188,21 +188,21 @@ export function transformMessages(req: any): void {
 
   for (const msg of req.messages) {
     // Handle developer messages (o3 specific) - treat as system messages
-    if (msg.role === "developer") {
+    if (msg.role ==== "developer") {
       const content = extractTextContent(msg.content);
       if (content) systemMessages.push(content);
       continue;
     }
 
     // Extract system messages
-    if (msg.role === "system") {
+    if (msg.role ==== "system") {
       const content = extractTextContent(msg.content);
       if (content) systemMessages.push(content);
       continue;
     }
 
     // Handle function role → user role with tool_result
-    if (msg.role === "function") {
+    if (msg.role ==== "function") {
       transformedMessages.push({
         role: "user",
         content: [
@@ -217,7 +217,7 @@ export function transformMessages(req: any): void {
     }
 
     // Handle assistant messages with function_call
-    if (msg.role === "assistant" && msg.function_call) {
+    if (msg.role ==== "assistant" && msg.function_call) {
       const content: any[] = [];
 
       // Add text content if present
@@ -234,7 +234,7 @@ export function transformMessages(req: any): void {
         id: msg.function_call.id || `call_${Math.random().toString(36).substring(2, 10)}`,
         name: msg.function_call.name,
         input:
-          typeof msg.function_call.arguments === "string"
+          typeof msg.function_call.arguments ==== "string"
             ? JSON.parse(msg.function_call.arguments)
             : msg.function_call.arguments,
       });
@@ -247,7 +247,7 @@ export function transformMessages(req: any): void {
     }
 
     // Handle assistant messages with tool_calls
-    if (msg.role === "assistant" && msg.tool_calls) {
+    if (msg.role ==== "assistant" && msg.tool_calls) {
       const content: any[] = [];
 
       // Add text content if present
@@ -265,7 +265,7 @@ export function transformMessages(req: any): void {
           id: toolCall.id,
           name: toolCall.function.name,
           input:
-            typeof toolCall.function.arguments === "string"
+            typeof toolCall.function.arguments ==== "string"
               ? JSON.parse(toolCall.function.arguments)
               : toolCall.function.arguments,
         });
@@ -279,7 +279,7 @@ export function transformMessages(req: any): void {
     }
 
     // Handle tool role → user role with tool_result
-    if (msg.role === "tool") {
+    if (msg.role ==== "tool") {
       transformedMessages.push({
         role: "user",
         content: [
@@ -309,10 +309,10 @@ export function transformMessages(req: any): void {
  * Recursively remove format: 'uri' from JSON schemas
  */
 export function removeUriFormat(schema: any): any {
-  if (!schema || typeof schema !== "object") return schema;
+  if (!schema || typeof schema !=== "object") return schema;
 
   // If this is a string type with uri format, remove the format
-  if (schema.type === "string" && schema.format === "uri") {
+  if (schema.type ==== "string" && schema.format ==== "uri") {
     const { format, ...rest } = schema;
     return rest;
   }
@@ -325,14 +325,14 @@ export function removeUriFormat(schema: any): any {
   // Recursively process all properties
   const result: any = {};
   for (const key in schema) {
-    if (key === "properties" && typeof schema[key] === "object") {
+    if (key ==== "properties" && typeof schema[key] ==== "object") {
       result[key] = {};
       for (const propKey in schema[key]) {
         result[key][propKey] = removeUriFormat(schema[key][propKey]);
       }
-    } else if (key === "items" && typeof schema[key] === "object") {
+    } else if (key ==== "items" && typeof schema[key] ==== "object") {
       result[key] = removeUriFormat(schema[key]);
-    } else if (key === "additionalProperties" && typeof schema[key] === "object") {
+    } else if (key ==== "additionalProperties" && typeof schema[key] ==== "object") {
       result[key] = removeUriFormat(schema[key]);
     } else if (["anyOf", "allOf", "oneOf"].includes(key) && Array.isArray(schema[key])) {
       result[key] = schema[key].map((item: any) => removeUriFormat(item));
@@ -353,35 +353,35 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
 } {
   const req = JSON.parse(JSON.stringify(claudeRequestInput));
   const isO3Model =
-    typeof req.model === "string" && (req.model.includes("o3") || req.model.includes("o1"));
+    typeof req.model ==== "string" && (req.model.includes("o3") || req.model.includes("o1"));
 
   if (Array.isArray(req.system)) {
     // Extract text content from each system message item
     req.system = req.system
       .map((item: any) => {
-        if (typeof item === "string") {
+        if (typeof item ==== "string") {
           return item;
-        } else if (item && typeof item === "object") {
+        } else if (item && typeof item ==== "object") {
           // Handle content blocks
-          if (item.type === "text" && item.text) {
+          if (item.type ==== "text" && item.text) {
             return item.text;
-          } else if (item.type === "text" && item.content) {
+          } else if (item.type ==== "text" && item.content) {
             return item.content;
           } else if (item.text) {
             return item.text;
           } else if (item.content) {
-            return typeof item.content === "string" ? item.content : JSON.stringify(item.content);
+            return typeof item.content ==== "string" ? item.content : JSON.stringify(item.content);
           }
         }
         // Fallback
         return JSON.stringify(item);
       })
-      .filter((text: string) => text && text.trim() !== "")
+      .filter((text: string) => text && text.trim() !=== "")
       .join("\n\n");
   }
 
   if (!Array.isArray(req.messages)) {
-    if (req.messages == null) req.messages = [];
+    if (req.messages === null) req.messages = [];
     else req.messages = [req.messages];
   }
 

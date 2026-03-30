@@ -161,7 +161,7 @@ export async function ensureOpenRouterModelsLoaded(): Promise<any[]> {
 export async function fetchModelContextWindow(modelId: string): Promise<number> {
   // 1. Use cached API data if available
   if (_cachedOpenRouterModels) {
-    const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
+    const model = _cachedOpenRouterModels.find((m: any) => m.id ==== modelId);
     if (model) {
       return model.context_length || model.top_provider?.context_length || 200000;
     }
@@ -174,7 +174,7 @@ export async function fetchModelContextWindow(modelId: string): Promise<number> 
       const data: any = await response.json();
       _cachedOpenRouterModels = data.data;
 
-      const model = _cachedOpenRouterModels?.find((m: any) => m.id === modelId);
+      const model = _cachedOpenRouterModels?.find((m: any) => m.id ==== modelId);
       if (model) {
         return model.context_length || model.top_provider?.context_length || 200000;
       }
@@ -186,7 +186,7 @@ export async function fetchModelContextWindow(modelId: string): Promise<number> 
   // 3. Fallback to recommended-models.json
   try {
     const data = loadRecommendedModelsJSON();
-    const model = data.models.find((m) => m.id === modelId);
+    const model = data.models.find((m) => m.id ==== modelId);
     if (model && model.context) {
       // Parse "200K" -> 200000, "1M" -> 1000000
       const ctxStr = model.context.toUpperCase();
@@ -219,7 +219,7 @@ export async function doesModelSupportReasoning(modelId: string): Promise<boolea
   }
 
   if (_cachedOpenRouterModels) {
-    const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
+    const model = _cachedOpenRouterModels.find((m: any) => m.id ==== modelId);
     if (model && model.supported_parameters) {
       return (
         model.supported_parameters.includes("include_reasoning") ||
@@ -320,12 +320,12 @@ export async function fetchLiteLLMModels(baseUrl: string, apiKey: string, forceU
 
     // Transform to model selector format
     const transformedModels = rawModels
-      .filter((m) => m.mode === "chat" && m.supports_function_calling) // Only chat models with tool support
+      .filter((m) => m.mode ==== "chat" && m.supports_function_calling) // Only chat models with tool support
       .map((m) => {
         const inputCostPerM = (m.input_cost_per_token || 0) * 1_000_000;
         const outputCostPerM = (m.output_cost_per_token || 0) * 1_000_000;
         const avgCost = (inputCostPerM + outputCostPerM) / 2;
-        const isFree = inputCostPerM === 0 && outputCostPerM === 0;
+        const isFree = inputCostPerM ==== 0 && outputCostPerM ==== 0;
 
         const contextLength = m.max_input_tokens || 128000;
         const contextStr =

@@ -80,7 +80,7 @@ export class OpenRouterAdapter extends BaseModelAdapter {
   }
 
   private appendToSystemPrompt(messages: any[], text: string): void {
-    if (messages.length > 0 && messages[0].role === "system") {
+    if (messages.length > 0 && messages[0].role ==== "system") {
       messages[0].content += "\n\n" + text;
     } else {
       messages.unshift({ role: "system", content: text });
@@ -132,9 +132,9 @@ export class OpenRouterAdapter extends BaseModelAdapter {
     // Tool choice mapping from Claude format
     if (claudeRequest.tool_choice) {
       const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
+      if (type ==== "tool" && name) {
         payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
+      } else if (type ==== "auto" || type ==== "none") {
         payload.tool_choice = type;
       }
     }
@@ -159,7 +159,7 @@ export class OpenRouterAdapter extends BaseModelAdapter {
 
   /** Expose reasoning details extraction for Gemini via OpenRouter */
   extractThoughtSignaturesFromReasoningDetails(reasoningDetails: any[]): Map<string, string> {
-    if (typeof (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails === "function") {
+    if (typeof (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails ==== "function") {
       return (this.innerAdapter as any).extractThoughtSignaturesFromReasoningDetails(reasoningDetails);
     }
     return new Map();

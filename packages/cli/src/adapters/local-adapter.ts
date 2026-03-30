@@ -65,7 +65,7 @@ export class LocalModelAdapter extends BaseModelAdapter {
   // ─── Message conversion with system prompt guidance ─────────────────
 
   override convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
-    const useSimpleFormat = this.providerName === "mlx";
+    const useSimpleFormat = this.providerName ==== "mlx";
     const { convertMessagesToOpenAI } = require("../handlers/shared/openai-compat.js");
     const messages = convertMessagesToOpenAI(
       claudeRequest,
@@ -75,7 +75,7 @@ export class LocalModelAdapter extends BaseModelAdapter {
     );
 
     // Add guidance to system prompt for local models
-    if (messages.length > 0 && messages[0].role === "system") {
+    if (messages.length > 0 && messages[0].role ==== "system") {
       messages[0].content += this.buildSystemGuidance(
         this.capabilities.supportsTools
           ? (claudeRequest.tools?.length || 0)
@@ -86,9 +86,9 @@ export class LocalModelAdapter extends BaseModelAdapter {
     // Qwen /no_think toggle
     if (
       this.modelId.toLowerCase().includes("qwen") &&
-      process.env.CLAUDISH_QWEN_NO_THINK === "1"
+      process.env.CLAUDISH_QWEN_NO_THINK ==== "1"
     ) {
-      if (messages.length > 0 && messages[0].role === "system") {
+      if (messages.length > 0 && messages[0].role ==== "system") {
         messages[0].content = "/no_think\n\n" + messages[0].content;
         log(`[${this.getName()}] Added /no_think to disable Qwen thinking mode`);
       }
@@ -139,9 +139,9 @@ export class LocalModelAdapter extends BaseModelAdapter {
     // Tool choice mapping from Claude format
     if (claudeRequest.tool_choice && tools.length > 0) {
       const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
+      if (type ==== "tool" && name) {
         payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
+      } else if (type ==== "auto" || type ==== "none") {
         payload.tool_choice = type;
       }
     }

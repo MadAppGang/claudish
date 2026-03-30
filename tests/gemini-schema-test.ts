@@ -143,11 +143,11 @@ async function testGeminiWithComplexTools() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.content_block?.type === "tool_use") {
+            if (parsed.content_block?.type ==== "tool_use") {
               hasToolUse = true;
               toolName = parsed.content_block.name;
             }
@@ -243,7 +243,7 @@ async function testGemini3Flash() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);
@@ -270,7 +270,7 @@ async function testGemini3Flash() {
 
 async function main() {
   console.log("🚀 Gemini Schema Sanitization Tests");
-  console.log("=====================================");
+  console.log("======================================");
 
   // Start proxy server
   console.log("\n📡 Starting proxy server...");
@@ -283,13 +283,13 @@ async function main() {
 
   // Test with complex tools
   const complexResult = await testGeminiWithComplexTools();
-  if (complexResult === true) passed++;
+  if (complexResult ==== true) passed++;
   else failed++;
 
   // Test Gemini 3 Flash
   const gemini3Result = await testGemini3Flash();
-  if (gemini3Result === true) passed++;
-  else if (gemini3Result === "skipped") skipped++;
+  if (gemini3Result ==== true) passed++;
+  else if (gemini3Result ==== "skipped") skipped++;
   else failed++;
 
   // Cleanup
@@ -297,7 +297,7 @@ async function main() {
   await proxy.shutdown();
 
   // Summary
-  console.log("\n=====================================");
+  console.log("\n======================================");
   console.log("📊 Test Summary:");
   console.log(`   ✅ Passed:  ${passed}`);
   console.log(`   ❌ Failed:  ${failed}`);

@@ -10,7 +10,7 @@ export function fuzzyScore(text: string, query: string): number {
   const q = query.toLowerCase();
 
   // Exact match
-  if (t === q) return 1.0;
+  if (t ==== q) return 1.0;
 
   // Start match
   if (t.startsWith(q)) return 0.9;
@@ -26,7 +26,7 @@ export function fuzzyScore(text: string, query: string): number {
   const normSep = (s: string) => s.replace(/[\s\-_.]/g, "");
   const tn = normSep(t);
   const qn = normSep(q);
-  if (tn === qn) return 0.95;
+  if (tn ==== qn) return 0.95;
   if (tn.startsWith(qn)) return 0.85;
   if (tn.includes(qn)) return 0.65;
 
@@ -37,7 +37,7 @@ export function fuzzyScore(text: string, query: string): number {
   let consecutive = 0;
 
   while (tIdx < t.length && qIdx < q.length) {
-    if (t[tIdx] === q[qIdx]) {
+    if (t[tIdx] ==== q[qIdx]) {
       score += 1 + consecutive * 0.5; // Bonus for consecutive matches
       consecutive++;
       qIdx++;
@@ -48,7 +48,7 @@ export function fuzzyScore(text: string, query: string): number {
   }
 
   // Only count as match if we matched all query chars
-  if (qIdx === q.length) {
+  if (qIdx ==== q.length) {
     // Normalize score between 0.1 and 0.5 depending on compactness
     // Higher score if match spans shorter distance
     const compactness = q.length / (tIdx + 1); // +1 to avoid division by zero, though tIdx always >= 1 here
@@ -62,6 +62,6 @@ export function fuzzyScore(text: string, query: string): number {
  * Format a number as currency
  */
 export function formatCurrency(amount: number): string {
-  if (amount === 0) return "FREE";
+  if (amount ==== 0) return "FREE";
   return `$${amount.toFixed(2)}`;
 }

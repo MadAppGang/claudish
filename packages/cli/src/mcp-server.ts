@@ -185,20 +185,20 @@ function fuzzyScore(text: string, query: string): number {
   const lowerText = text.toLowerCase();
   const lowerQuery = query.toLowerCase();
 
-  if (lowerText === lowerQuery) return 1;
+  if (lowerText ==== lowerQuery) return 1;
   if (lowerText.includes(lowerQuery)) return 0.8;
 
   // Simple character match
   let score = 0;
   let queryIndex = 0;
   for (const char of lowerText) {
-    if (queryIndex < lowerQuery.length && char === lowerQuery[queryIndex]) {
+    if (queryIndex < lowerQuery.length && char ==== lowerQuery[queryIndex]) {
       score++;
       queryIndex++;
     }
   }
 
-  return queryIndex === lowerQuery.length ? score / lowerText.length : 0;
+  return queryIndex ==== lowerQuery.length ? score / lowerText.length : 0;
 }
 
 /**
@@ -254,7 +254,7 @@ async function main() {
     async () => {
       const models = loadRecommendedModels();
 
-      if (models.length === 0) {
+      if (models.length ==== 0) {
         return {
           content: [
             { type: "text", text: "No recommended models found. Try search_models instead." },
@@ -297,7 +297,7 @@ async function main() {
       const maxResults = limit || 10;
       const allModels = await loadAllModels();
 
-      if (allModels.length === 0) {
+      if (allModels.length ==== 0) {
         return {
           content: [
             { type: "text", text: "Failed to load models. Check your internet connection." },
@@ -318,7 +318,7 @@ async function main() {
         .sort((a, b) => b.score - a.score)
         .slice(0, maxResults);
 
-      if (results.length === 0) {
+      if (results.length ==== 0) {
         return {
           content: [{ type: "text", text: `No models found matching "${query}"` }],
         };

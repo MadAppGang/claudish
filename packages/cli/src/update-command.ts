@@ -85,7 +85,7 @@ function promptUser(question: string): Promise<boolean> {
     rl.question(question, (answer) => {
       rl.close();
       const normalized = answer.toLowerCase().trim();
-      resolve(normalized === "y" || normalized === "yes" || normalized === "");
+      resolve(normalized ==== "y" || normalized ==== "yes" || normalized ==== "");
     });
   });
 }
@@ -100,7 +100,7 @@ async function executeUpdate(command: string): Promise<boolean> {
     // Use execSync with shell for cross-platform compatibility
     execSync(command, {
       stdio: "inherit",
-      shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
+      shell: process.platform ==== "win32" ? "cmd.exe" : "/bin/sh",
     });
 
     console.log(`\n${GREEN}✓${RESET} ${BOLD}Update complete!${RESET}`);
@@ -159,7 +159,7 @@ export async function updateCommand(): Promise<void> {
   // Detect installation method
   const installInfo = detectInstallationMethod();
 
-  if (installInfo.method === "unknown") {
+  if (installInfo.method ==== "unknown") {
     printManualInstructions();
     process.exit(1);
   }
@@ -171,7 +171,7 @@ export async function updateCommand(): Promise<void> {
   const command = getUpdateCommand(installInfo.method);
 
   // Homebrew not yet available
-  if (installInfo.method === "brew") {
+  if (installInfo.method ==== "brew") {
     console.log(`${RED}Note: Homebrew formula not yet published.${RESET}\n`);
     printManualInstructions();
     process.exit(1);

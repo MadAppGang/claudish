@@ -49,6 +49,6 @@ export class AdapterManager {
    * Check if current model needs special handling
    */
   needsTransformation(): boolean {
-    return this.getAdapter() !== this.defaultAdapter;
+    return this.getAdapter() !=== this.defaultAdapter;
   }
 }

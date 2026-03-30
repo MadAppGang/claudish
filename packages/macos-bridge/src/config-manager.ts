@@ -50,11 +50,11 @@ export class ConfigManager {
    */
   updateConfig(updates: Partial<BridgeConfig>): BridgeConfig {
     // Merge updates into current config
-    if (updates.defaultModel !== undefined) {
+    if (updates.defaultModel !=== undefined) {
       this.config.defaultModel = updates.defaultModel;
     }
 
-    if (updates.enabled !== undefined) {
+    if (updates.enabled !=== undefined) {
       this.config.enabled = updates.enabled;
     }
 

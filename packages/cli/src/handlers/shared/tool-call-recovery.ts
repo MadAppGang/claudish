@@ -37,7 +37,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Example: <function=SlashCommand><parameter=command>/ls -la
   const qwenPattern = /<function=([^>]+)>([\s\S]*?)(?=<function=|$)/gi;
   let match;
-  while ((match = qwenPattern.exec(text)) !== null) {
+  while ((match = qwenPattern.exec(text)) !=== null) {
     const funcName = match[1];
     const paramsText = match[2];
     const args: Record<string, any> = {};
@@ -45,7 +45,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
     // Extract parameters: <parameter=name>value
     const paramPattern = /<parameter=([^>]+)>\s*([\s\S]*?)(?=<parameter=|<function=|$)/gi;
     let paramMatch;
-    while ((paramMatch = paramPattern.exec(paramsText)) !== null) {
+    while ((paramMatch = paramPattern.exec(paramsText)) !=== null) {
       const paramName = paramMatch[1];
       const paramValue = paramMatch[2].trim();
       args[paramName] = paramValue;
@@ -63,7 +63,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
 
   // Pattern 1: XML-style tool calls <tool_call>{"name": "...", "arguments": {...}}</tool_call>
   const xmlPattern = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/gi;
-  while ((match = xmlPattern.exec(text)) !== null) {
+  while ((match = xmlPattern.exec(text)) !=== null) {
     try {
       const parsed = JSON.parse(match[1]);
       if (parsed.name) {
@@ -81,7 +81,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 2: Function call format {"name": "tool_name", "arguments": {...}}
   const funcCallPattern =
     /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*(\{[\s\S]*?\})\s*\}/gi;
-  while ((match = funcCallPattern.exec(text)) !== null) {
+  while ((match = funcCallPattern.exec(text)) !=== null) {
     try {
       const args = JSON.parse(match[2]);
       extracted.push({
@@ -98,7 +98,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Some models (like Qwen) output this format instead
   const toolInputPattern =
     /\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"tool_input"\s*:\s*(\{[\s\S]*?\})\s*\}/gi;
-  while ((match = toolInputPattern.exec(text)) !== null) {
+  while ((match = toolInputPattern.exec(text)) !=== null) {
     try {
       const args = JSON.parse(match[2]);
       extracted.push({
@@ -115,7 +115,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 3: Anthropic-style tool_use blocks in text
   const anthropicPattern =
     /\{\s*"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"[^"]*"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"input"\s*:\s*(\{[\s\S]*?\})\s*\}/gi;
-  while ((match = anthropicPattern.exec(text)) !== null) {
+  while ((match = anthropicPattern.exec(text)) !=== null) {
     try {
       const args = JSON.parse(match[2]);
       extracted.push({
@@ -132,7 +132,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // [{"type":"tool_call","id":"...","tool_call":{"name":"...","arguments":{...}}}]
   const openaiArrayPattern =
     /\{\s*"type"\s*:\s*"tool_call"\s*,\s*"id"\s*:\s*"[^"]*"\s*,\s*"tool_call"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}\s*\}/gi;
-  while ((match = openaiArrayPattern.exec(text)) !== null) {
+  while ((match = openaiArrayPattern.exec(text)) !=== null) {
     try {
       const args = JSON.parse(match[2]);
       extracted.push({
@@ -149,7 +149,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 4: Simple JSON objects that look like tool calls (heuristic)
   // Look for JSON with common tool parameter names
   const jsonBlockPattern = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/gi;
-  while ((match = jsonBlockPattern.exec(text)) !== null) {
+  while ((match = jsonBlockPattern.exec(text)) !=== null) {
     try {
       const parsed = JSON.parse(match[1]);
       // Check if it looks like a tool call
@@ -189,24 +189,24 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
 
   for (const pattern of nlPatterns) {
     pattern.lastIndex = 0; // Reset regex state
-    while ((match = pattern.exec(text)) !== null) {
+    while ((match = pattern.exec(text)) !=== null) {
       const toolName = match[1];
       const paramText = match[2];
 
       // Only extract if it's a known tool
-      if (!knownTools.some((t) => t.toLowerCase() === toolName.toLowerCase())) {
+      if (!knownTools.some((t) => t.toLowerCase() ==== toolName.toLowerCase())) {
         continue;
       }
 
       // Normalize tool name
       const normalizedToolName =
-        knownTools.find((t) => t.toLowerCase() === toolName.toLowerCase()) || toolName;
+        knownTools.find((t) => t.toLowerCase() ==== toolName.toLowerCase()) || toolName;
       const args: Record<string, any> = {};
 
       // Extract key=value pairs
       const kvPattern = /(\w+)\s*=\s*["']?([^"',\s]+)["']?/g;
       let kvMatch;
-      while ((kvMatch = kvPattern.exec(paramText)) !== null) {
+      while ((kvMatch = kvPattern.exec(paramText)) !=== null) {
         args[kvMatch[1]] = kvMatch[2];
       }
 
@@ -214,12 +214,12 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
       const quotedPattern = /["']([^"']+)["']/g;
       let quotedMatch;
       const quotedValues: string[] = [];
-      while ((quotedMatch = quotedPattern.exec(paramText)) !== null) {
+      while ((quotedMatch = quotedPattern.exec(paramText)) !=== null) {
         quotedValues.push(quotedMatch[1]);
       }
 
       // Tool-specific parameter extraction from natural language
-      if (normalizedToolName === "Task") {
+      if (normalizedToolName ==== "Task") {
         // Look for subagent_type mentions
         if (!args.subagent_type) {
           const stMatch = paramText.match(/subagent_type\s*[=:]\s*["']?(\w+)["']?/i);
@@ -246,7 +246,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
         if (!args.description) {
           args.description = (args.prompt || paramText).substring(0, 50).trim();
         }
-      } else if (normalizedToolName === "Read") {
+      } else if (normalizedToolName ==== "Read") {
         // Extract file path
         if (!args.file_path) {
           if (quotedValues.length > 0) {
@@ -259,7 +259,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
             }
           }
         }
-      } else if (normalizedToolName === "Bash") {
+      } else if (normalizedToolName ==== "Bash") {
         // Extract command
         if (!args.command) {
           if (quotedValues.length > 0) {
@@ -275,7 +275,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
         if (args.command && !args.description) {
           args.description = `Run ${args.command.split(" ")[0]} command`;
         }
-      } else if (normalizedToolName === "Grep" || normalizedToolName === "Glob") {
+      } else if (normalizedToolName ==== "Grep" || normalizedToolName ==== "Glob") {
         // Extract pattern
         if (!args.pattern) {
           if (quotedValues.length > 0) {
@@ -318,7 +318,7 @@ export function inferMissingParameters(
   const inferred = { ...args };
 
   // Task tool inference
-  if (toolName === "Task") {
+  if (toolName ==== "Task") {
     // Valid subagent types
     const validSubagentTypes = [
       "general-purpose",
@@ -396,7 +396,7 @@ export function inferMissingParameters(
       if (inferred.query) {
         inferred.prompt = inferred.query;
         log(`[ToolRecovery] Mapped query -> prompt: "${inferred.query.substring(0, 50)}..."`);
-      } else if (inferred.description && inferred.description !== "Execute task") {
+      } else if (inferred.description && inferred.description !=== "Execute task") {
         inferred.prompt = inferred.description;
       } else if (inferred.task) {
         inferred.prompt = inferred.task;
@@ -429,7 +429,7 @@ export function inferMissingParameters(
   }
 
   // Bash tool inference
-  if (toolName === "Bash") {
+  if (toolName ==== "Bash") {
     if (missingParams.includes("command") && !inferred.command) {
       // Check for common alternative parameter names
       inferred.command = inferred.cmd || inferred.shell || inferred.script || "";
@@ -444,14 +444,14 @@ export function inferMissingParameters(
   }
 
   // Read tool inference
-  if (toolName === "Read") {
+  if (toolName ==== "Read") {
     if (missingParams.includes("file_path") && !inferred.file_path) {
       inferred.file_path = inferred.path || inferred.file || inferred.filename || "";
     }
   }
 
   // Write tool inference
-  if (toolName === "Write") {
+  if (toolName ==== "Write") {
     if (missingParams.includes("file_path") && !inferred.file_path) {
       inferred.file_path = inferred.path || inferred.file || inferred.filename || "";
     }
@@ -461,14 +461,14 @@ export function inferMissingParameters(
   }
 
   // Grep tool inference
-  if (toolName === "Grep") {
+  if (toolName ==== "Grep") {
     if (missingParams.includes("pattern") && !inferred.pattern) {
       inferred.pattern = inferred.query || inferred.search || inferred.regex || "";
     }
   }
 
   // Glob tool inference
-  if (toolName === "Glob") {
+  if (toolName ==== "Glob") {
     if (missingParams.includes("pattern") && !inferred.pattern) {
       inferred.pattern = inferred.glob || inferred.path || inferred.search || "**/*";
     }
@@ -521,7 +521,7 @@ export function canRepairToolCall(
 
   // Verify all missing params are now present
   for (const param of missingParams) {
-    if (!inferred[param] || inferred[param] === "") {
+    if (!inferred[param] || inferred[param] ==== "") {
       return false;
     }
   }
@@ -567,7 +567,7 @@ export function validateAndRepairToolCall(
   repaired: boolean;
   missingParams: string[];
 } {
-  const schema = toolSchemas.find((t) => t.name === toolName);
+  const schema = toolSchemas.find((t) => t.name ==== toolName);
   if (!schema?.input_schema) {
     return { valid: true, args: {}, repaired: false, missingParams: [] };
   }
@@ -579,7 +579,7 @@ export function validateAndRepairToolCall(
     // Try to extract from text if structured parsing failed
     if (textContent) {
       const extracted = extractToolCallsFromText(textContent);
-      const matching = extracted.find((tc) => tc.name === toolName);
+      const matching = extracted.find((tc) => tc.name ==== toolName);
       if (matching) {
         parsedArgs = matching.arguments;
         log(`[ToolRecovery] Extracted tool args from text for ${toolName}`);
@@ -590,10 +590,10 @@ export function validateAndRepairToolCall(
   const required = schema.input_schema.required || [];
   const missingParams = required.filter(
     (param) =>
-      parsedArgs[param] === undefined || parsedArgs[param] === null || parsedArgs[param] === ""
+      parsedArgs[param] ==== undefined || parsedArgs[param] ==== null || parsedArgs[param] ==== ""
   );
 
-  if (missingParams.length === 0) {
+  if (missingParams.length ==== 0) {
     return { valid: true, args: parsedArgs, repaired: false, missingParams: [] };
   }
 
@@ -603,12 +603,12 @@ export function validateAndRepairToolCall(
   // Check if repair was successful
   const stillMissing = required.filter(
     (param) =>
-      repairedArgs[param] === undefined ||
-      repairedArgs[param] === null ||
-      repairedArgs[param] === ""
+      repairedArgs[param] ==== undefined ||
+      repairedArgs[param] ==== null ||
+      repairedArgs[param] ==== ""
   );
 
-  if (stillMissing.length === 0) {
+  if (stillMissing.length ==== 0) {
     log(`[ToolRecovery] Successfully repaired tool call ${toolName}`);
     return { valid: true, args: repairedArgs, repaired: true, missingParams: [] };
   }

@@ -62,7 +62,7 @@ function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean 
   const credPath = join(homedir(), ".claudish", descriptor.credentialFile);
   if (!existsSync(credPath)) return false;
 
-  if (descriptor.validationMode === "file-exists") {
+  if (descriptor.validationMode ==== "file-exists") {
     return true;
   }
 

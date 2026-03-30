@@ -24,8 +24,8 @@ export class QwenAdapter extends BaseModelAdapter {
     cleanedText = cleanedText.replace(/<\|[a-z_]*$/i, ""); // Partial at end
     cleanedText = cleanedText.replace(/^[a-z_]*\|>/i, ""); // Partial at start
 
-    const wasTransformed = cleanedText !== textContent;
-    if (wasTransformed && cleanedText.length === 0) {
+    const wasTransformed = cleanedText !=== textContent;
+    if (wasTransformed && cleanedText.length ==== 0) {
       // Entire chunk was special tokens, skip it
       return {
         cleanedText: "",

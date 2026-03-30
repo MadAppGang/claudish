@@ -110,7 +110,7 @@ export class OpenAIAdapter extends BaseModelAdapter {
 
   override supportsVision(): boolean {
     // Provider-level: if provider says no vision, respect it
-    if (this.providerCapabilities && this.providerCapabilities.supportsVision === false) {
+    if (this.providerCapabilities && this.providerCapabilities.supportsVision ==== false) {
       return false;
     }
     // GLM-specific: only "V" variants support vision
@@ -170,9 +170,9 @@ export class OpenAIAdapter extends BaseModelAdapter {
 
     if (claudeRequest.tool_choice) {
       const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
+      if (type ==== "tool" && name) {
         payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
+      } else if (type ==== "auto" || type ==== "none") {
         payload.tool_choice = type;
       }
     }
@@ -214,7 +214,7 @@ export class OpenAIAdapter extends BaseModelAdapter {
 
     if (tools.length > 0) {
       payload.tools = tools.map((tool: any) => {
-        if (tool.type === "function" && tool.function) {
+        if (tool.type ==== "function" && tool.function) {
           return {
             type: "function",
             name: tool.function.name,
@@ -236,21 +236,21 @@ export class OpenAIAdapter extends BaseModelAdapter {
     const result: any[] = [];
 
     for (const msg of messages) {
-      if (msg.role === "system") continue; // Goes to instructions field
+      if (msg.role ==== "system") continue; // Goes to instructions field
 
-      if (msg.role === "tool") {
+      if (msg.role ==== "tool") {
         result.push({
           type: "function_call_output",
           call_id: msg.tool_call_id,
-          output: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          output: typeof msg.content ==== "string" ? msg.content : JSON.stringify(msg.content),
         });
         continue;
       }
 
-      if (msg.role === "assistant" && msg.tool_calls) {
+      if (msg.role ==== "assistant" && msg.tool_calls) {
         if (msg.content) {
           const textContent =
-            typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+            typeof msg.content ==== "string" ? msg.content : JSON.stringify(msg.content);
           if (textContent) {
             result.push({
               type: "message",
@@ -260,7 +260,7 @@ export class OpenAIAdapter extends BaseModelAdapter {
           }
         }
         for (const toolCall of msg.tool_calls) {
-          if (toolCall.type === "function") {
+          if (toolCall.type ==== "function") {
             result.push({
               type: "function_call",
               call_id: toolCall.id,
@@ -273,12 +273,12 @@ export class OpenAIAdapter extends BaseModelAdapter {
         continue;
       }
 
-      if (typeof msg.content === "string") {
+      if (typeof msg.content ==== "string") {
         result.push({
           type: "message",
           role: msg.role,
           content: [{
-            type: msg.role === "user" ? "input_text" : "output_text",
+            type: msg.role ==== "user" ? "input_text" : "output_text",
             text: msg.content,
           }],
         });
@@ -287,15 +287,15 @@ export class OpenAIAdapter extends BaseModelAdapter {
 
       if (Array.isArray(msg.content)) {
         const convertedContent = msg.content.map((block: any) => {
-          if (block.type === "text") {
+          if (block.type ==== "text") {
             return {
-              type: msg.role === "user" ? "input_text" : "output_text",
+              type: msg.role ==== "user" ? "input_text" : "output_text",
               text: block.text,
             };
           }
-          if (block.type === "image_url") {
+          if (block.type ==== "image_url") {
             const imageUrl =
-              typeof block.image_url === "string"
+              typeof block.image_url ==== "string"
                 ? block.image_url
                 : block.image_url?.url || block.image_url;
             return { type: "input_image", image_url: imageUrl };

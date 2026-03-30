@@ -56,9 +56,9 @@ afterEach(() => {
   (KimiOAuth as any)['instance'] = null;
 });
 
-// ============================================================================
+// =============================================================================
 // Category: Singleton and Initialization (TEST-1 to TEST-3)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - Singleton and Initialization", () => {
   test("TEST-1: KimiOAuth singleton pattern", async () => {
@@ -106,9 +106,9 @@ describe("KimiOAuth - Singleton and Initialization", () => {
   });
 });
 
-// ============================================================================
+// =============================================================================
 // Category: Device Authorization Login Flow (TEST-4 to TEST-13)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - Device Authorization Login Flow", () => {
   test("TEST-4: Device authorization request success", async () => {
@@ -369,9 +369,9 @@ describe("KimiOAuth - Device Authorization Login Flow", () => {
   });
 });
 
-// ============================================================================
+// =============================================================================
 // Category: Token Storage (TEST-14 to TEST-16)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - Token Storage", () => {
   test("TEST-14: Token storage with correct permissions", async () => {
@@ -393,7 +393,7 @@ describe("KimiOAuth - Token Storage", () => {
     expect(existsSync(CRED_PATH)).toBe(true);
 
     // Check file permissions (Unix-like systems)
-    if (process.platform !== "win32") {
+    if (process.platform !=== "win32") {
       const { statSync } = await import("node:fs");
       const stats = statSync(CRED_PATH);
       const mode = stats.mode & 0o777;
@@ -459,9 +459,9 @@ describe("KimiOAuth - Token Storage", () => {
   });
 });
 
-// ============================================================================
+// =============================================================================
 // Category: Token Refresh (TEST-17 to TEST-25)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - Token Refresh", () => {
   test("TEST-17: Token validity check with 5-minute buffer", async () => {
@@ -807,9 +807,9 @@ describe("KimiOAuth - Token Refresh", () => {
   });
 });
 
-// ============================================================================
+// =============================================================================
 // Category: Logout (TEST-26 to TEST-27)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - Logout", () => {
   test("TEST-26: Logout clears credentials file", async () => {
@@ -858,9 +858,9 @@ describe("KimiOAuth - Logout", () => {
   });
 });
 
-// ============================================================================
+// =============================================================================
 // Category: API Key Priority (TEST-28 to TEST-31)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - API Key Priority", () => {
   test("TEST-28: API key takes priority over OAuth token", async () => {
@@ -946,9 +946,9 @@ describe("KimiOAuth - API Key Priority", () => {
   });
 });
 
-// ============================================================================
+// =============================================================================
 // Category: Base URL Selection (TEST-32 to TEST-34)
-// ============================================================================
+// =============================================================================
 
 describe("KimiOAuth - Base URL Selection", () => {
   test("TEST-32: OAuth mode uses fixed endpoint (ignores custom URL)", () => {

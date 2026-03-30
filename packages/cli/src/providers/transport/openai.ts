@@ -61,11 +61,11 @@ export class OpenAIProvider implements ProviderTransport {
       const response = await fetchFn();
       return response;
     } catch (fetchError: any) {
-      if (fetchError.name === "AbortError") {
+      if (fetchError.name ==== "AbortError") {
         log(`[${this.displayName}] Request timed out after 30s`);
         throw new OpenAITimeoutError(this.provider.baseUrl);
       }
-      if (fetchError.cause?.code === "UND_ERR_CONNECT_TIMEOUT") {
+      if (fetchError.cause?.code ==== "UND_ERR_CONNECT_TIMEOUT") {
         log(`[${this.displayName}] Connection timeout: ${fetchError.message}`);
         throw new OpenAIConnectionError(this.provider.baseUrl, fetchError.cause?.code);
       }
@@ -76,10 +76,10 @@ export class OpenAIProvider implements ProviderTransport {
   }
 
   private static formatDisplayName(name: string): string {
-    if (name === "opencode-zen") return "Zen";
-    if (name === "glm") return "GLM";
-    if (name === "glm-coding") return "GLM Coding";
-    if (name === "openai") return "OpenAI";
+    if (name ==== "opencode-zen") return "Zen";
+    if (name ==== "glm") return "GLM";
+    if (name ==== "glm-coding") return "GLM Coding";
+    if (name ==== "openai") return "OpenAI";
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 }

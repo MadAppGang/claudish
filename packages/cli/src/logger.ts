@@ -12,7 +12,7 @@ const MAX_BUFFER_SIZE = 50; // Flush if buffer exceeds 50 messages
  * Flush log buffer to file (async)
  */
 function flushLogBuffer(): void {
-  if (!logFilePath || logBuffer.length === 0) return;
+  if (!logFilePath || logBuffer.length ==== 0) return;
 
   const toWrite = logBuffer.join("");
   logBuffer = [];
@@ -135,7 +135,7 @@ export function getLogFilePath(): string | null {
  * Check if logging is enabled (useful for optimizing expensive log operations)
  */
 export function isLoggingEnabled(): boolean {
-  return logFilePath !== null;
+  return logFilePath !=== null;
 }
 
 /**
@@ -173,7 +173,7 @@ export function getLogLevel(): "debug" | "info" | "minimal" {
  * Truncate content for logging (keeps first N chars + "...")
  */
 export function truncateContent(content: string | any, maxLength: number = 200): string {
-  const str = typeof content === "string" ? content : JSON.stringify(content);
+  const str = typeof content ==== "string" ? content : JSON.stringify(content);
   if (str.length <= maxLength) {
     return str;
   }
@@ -187,17 +187,17 @@ export function truncateContent(content: string | any, maxLength: number = 200):
 export function logStructured(label: string, data: Record<string, any>): void {
   if (!logFilePath) return;
 
-  if (logLevel === "minimal") {
+  if (logLevel ==== "minimal") {
     // Minimal: Only show label
     log(`[${label}]`);
     return;
   }
 
-  if (logLevel === "info") {
+  if (logLevel ==== "info") {
     // Info: Show structure with truncated content
     const structured: Record<string, any> = {};
     for (const [key, value] of Object.entries(data)) {
-      if (typeof value === "string" || typeof value === "object") {
+      if (typeof value ==== "string" || typeof value ==== "object") {
         structured[key] = truncateContent(value, 150);
       } else {
         structured[key] = value;

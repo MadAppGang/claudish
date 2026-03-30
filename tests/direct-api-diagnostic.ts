@@ -67,7 +67,7 @@ async function testGeminiApi(): Promise<DiagnosticResult> {
   const apiKey = process.env.GEMINI_API_KEY;
 
   console.log("\n🟢 Gemini API Diagnostic");
-  console.log("========================");
+  console.log("=========================");
 
   // Test DNS
   console.log(`\n1. DNS Resolution for ${hostname}...`);
@@ -193,7 +193,7 @@ async function testOpenAIApi(): Promise<DiagnosticResult> {
   const apiKey = process.env.OPENAI_API_KEY;
 
   console.log("\n🔵 OpenAI API Diagnostic");
-  console.log("========================");
+  console.log("=========================");
 
   // Test DNS
   console.log(`\n1. DNS Resolution for ${hostname}...`);
@@ -313,7 +313,7 @@ async function testOpenAIApi(): Promise<DiagnosticResult> {
 
 async function main() {
   console.log("🔍 Direct API Connectivity Diagnostic");
-  console.log("=====================================");
+  console.log("======================================");
   console.log(`Timestamp: ${new Date().toISOString()}`);
   console.log(`Platform: ${process.platform}`);
   console.log(`Node: ${process.version}`);
@@ -334,9 +334,9 @@ async function main() {
   results.push(await testOpenAIApi());
 
   // Summary
-  console.log("\n=====================================");
+  console.log("\n======================================");
   console.log("📊 Diagnostic Summary:");
-  console.log("=====================================\n");
+  console.log("======================================\n");
 
   for (const result of results) {
     const status = result.apiResponded ? "✅ Working" : "❌ Failed";

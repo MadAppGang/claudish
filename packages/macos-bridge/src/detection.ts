@@ -120,12 +120,12 @@ export function detectUserAgent(userAgent: string): UserAgentDetection {
         let confidence = 0.8;
 
         // Claude Desktop has very specific UA, boost confidence
-        if (app.name === "Claude Desktop" && userAgent.includes("Claude/")) {
+        if (app.name ==== "Claude Desktop" && userAgent.includes("Claude/")) {
           confidence = 0.95;
         }
 
         // Generic Electron gets lower confidence
-        if (app.name === "Electron App") {
+        if (app.name ==== "Electron App") {
           confidence = 0.5;
         }
 
@@ -198,16 +198,16 @@ export function detectFromHeaders(headers: RequestHeaders): UserAgentDetection {
   const baseDetection = detectUserAgent(userAgent);
 
   // Enhance confidence for Claude Desktop if additional signals match
-  if (baseDetection.name === "Claude Desktop") {
+  if (baseDetection.name ==== "Claude Desktop") {
     let confidenceBoost = 0;
 
     // Origin header matches claude.ai
-    if (origin === "https://claude.ai") {
+    if (origin ==== "https://claude.ai") {
       confidenceBoost += 0.03;
     }
 
     // Host is a-api.anthropic.com (Claude Desktop specific)
-    if (host === "a-api.anthropic.com") {
+    if (host ==== "a-api.anthropic.com") {
       confidenceBoost += 0.02;
     }
 
@@ -219,9 +219,9 @@ export function detectFromHeaders(headers: RequestHeaders): UserAgentDetection {
 
   // Check for Claude Desktop based on origin + host even if UA doesn't match
   // This catches cases where User-Agent might be modified
-  if (origin === "https://claude.ai" && host === "a-api.anthropic.com") {
+  if (origin ==== "https://claude.ai" && host ==== "a-api.anthropic.com") {
     // Strong signal for Claude Desktop even without matching UA
-    if (baseDetection.name === "Unknown" || baseDetection.name === "Electron App") {
+    if (baseDetection.name ==== "Unknown" || baseDetection.name ==== "Electron App") {
       return {
         name: "Claude Desktop",
         confidence: 0.85,

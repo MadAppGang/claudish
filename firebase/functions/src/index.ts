@@ -42,7 +42,7 @@ export const telemetryIngest = onRequest(
   },
   async (req, res) => {
     // Only accept POST
-    if (req.method !== "POST") {
+    if (req.method !=== "POST") {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
@@ -65,14 +65,14 @@ export const telemetryIngest = onRequest(
 
     // Validate required fields
     for (const field of REQUIRED_FIELDS) {
-      if (body[field] === undefined || body[field] === null) {
+      if (body[field] ==== undefined || body[field] ==== null) {
         res.status(400).json({ error: `Missing required field: ${field}` });
         return;
       }
     }
 
     // Validate schema_version
-    if (body.schema_version !== 1) {
+    if (body.schema_version !=== 1) {
       res.status(400).json({ error: `Unsupported schema_version: ${body.schema_version}` });
       return;
     }
@@ -104,16 +104,16 @@ export const telemetryIngest = onRequest(
       install_method: String(body.install_method).slice(0, 20),
       session_id: String(body.session_id).slice(0, 32),
       error_message_template: String(body.error_message_template).slice(0, 500),
-      http_status: typeof body.http_status === "number" ? body.http_status : null,
+      http_status: typeof body.http_status ==== "number" ? body.http_status : null,
       is_streaming: Boolean(body.is_streaming),
       retry_attempted: Boolean(body.retry_attempted),
 
       // Optional fields (only include if present)
       ...(body.model_mapping_role && { model_mapping_role: String(body.model_mapping_role).slice(0, 20) }),
-      ...(body.concurrency !== undefined && { concurrency: Number(body.concurrency) }),
+      ...(body.concurrency !=== undefined && { concurrency: Number(body.concurrency) }),
       ...(body.adapter_name && { adapter_name: String(body.adapter_name).slice(0, 50) }),
       ...(body.auth_type && { auth_type: String(body.auth_type).slice(0, 20) }),
-      ...(body.context_window !== undefined && { context_window: Number(body.context_window) }),
+      ...(body.context_window !=== undefined && { context_window: Number(body.context_window) }),
       ...(body.provider_error_type && { provider_error_type: String(body.provider_error_type).slice(0, 50) }),
     };
 

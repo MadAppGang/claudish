@@ -54,7 +54,7 @@ function parseDataUrl(dataUrl: string): { mediaType: string; data: string } | nu
 
   const withoutPrefix = dataUrl.slice("data:".length);
   const semicolonIdx = withoutPrefix.indexOf(";");
-  if (semicolonIdx === -1) return null;
+  if (semicolonIdx ==== -1) return null;
 
   const mediaType = withoutPrefix.slice(0, semicolonIdx);
   const rest = withoutPrefix.slice(semicolonIdx + 1);
@@ -134,7 +134,7 @@ async function describeImage(
     }
 
     const json = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
-    const textBlock = json.content?.find((block) => block.type === "text");
+    const textBlock = json.content?.find((block) => block.type ==== "text");
     if (!textBlock || !textBlock.text) {
       log("[VisionProxy] No text content in response");
       return null;
@@ -143,7 +143,7 @@ async function describeImage(
     return textBlock.text;
   } catch (err: any) {
     clearTimeout(timeoutId);
-    if (err.name === "AbortError") {
+    if (err.name ==== "AbortError") {
       log(`[VisionProxy] Request timed out after ${TIMEOUT_MS}ms`);
     } else {
       log(`[VisionProxy] Fetch error: ${err.message}`);
@@ -165,12 +165,12 @@ export async function describeImages(
   images: OpenAIImageBlock[],
   auth: VisionProxyAuthHeaders
 ): Promise<string[] | null> {
-  if (images.length === 0) return [];
+  if (images.length ==== 0) return [];
 
   try {
     const results = await Promise.all(images.map((img) => describeImage(img, auth)));
     // If any result is null, return null to trigger fallback
-    if (results.some((r) => r === null)) {
+    if (results.some((r) => r ==== null)) {
       log("[VisionProxy] One or more image descriptions failed, falling back");
       return null;
     }

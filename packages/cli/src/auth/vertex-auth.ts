@@ -244,7 +244,7 @@ export function buildVertexOAuthEndpoint(
 
   // For Gemini models (publisher: google), use generateContent
   // For partner models (publisher: anthropic, mistral), use rawPredict
-  if (publisher === "google") {
+  if (publisher ==== "google") {
     // Add ?alt=sse for SSE streaming format
     const sseParam = streaming ? "?alt=sse" : "";
     return (
@@ -252,7 +252,7 @@ export function buildVertexOAuthEndpoint(
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/${publisher}/models/${model}:${method}${sseParam}`
     );
-  } else if (publisher === "mistralai") {
+  } else if (publisher ==== "mistralai") {
     // Mistral uses regional rawPredict/streamRawPredict endpoint
     const mistralMethod = streaming ? "streamRawPredict" : "rawPredict";
     return (

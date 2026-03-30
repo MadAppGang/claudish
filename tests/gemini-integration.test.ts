@@ -27,7 +27,7 @@ describe("Gemini Integration Workflow", () => {
                 {
                   id: "tool_Bash_ZOJxtsiJqi9njkBUmCeV",
                   type: "reasoning.encrypted",
-                  data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
+                  data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA===",
                   format: "google-gemini-v1",
                   index: 0,
                 },
@@ -66,7 +66,7 @@ describe("Gemini Integration Workflow", () => {
       expect(toolResultMsg.extra_content).toBeDefined();
       expect(toolResultMsg.extra_content.google).toBeDefined();
       expect(toolResultMsg.extra_content.google.thought_signature).toBe(
-        "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA=="
+        "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==="
       );
     });
 
@@ -203,7 +203,7 @@ describe("Gemini Integration Workflow", () => {
                   format: "google-gemini-v1",
                   index: 0,
                   type: "reasoning.encrypted",
-                  data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA==",
+                  data: "CiQB4/H/XsukhAagMavyI3vfZtzB0lQLRD5TIh1OQyfMar/wzqoKaQHj8f9e7azlSwPXjAxZ3Vy+SA3Lozr6JjvJah7yLoz34Z44orOB9T5IM3acsExG0w2M+LdYDxSm3WfUqbUJTvs4EmG098y5FWCKWhMG1aVaHNGuQ5uytp+21m8BOw0Qw+Q9mEqd7TYK7gpjAePx/16yxZM4eAE4YppB66hLqV6qjWd6vEJ9lGIMbmqi+t5t4Se/HkBPizrcgbdaOd3Fje5GXRfb1vqv+nhuxWwOx+hAFczJWwtd8d6H/YloE38JqTSNt98sb0odCShJcNnVCjgB4/H/XoJS5Xrj4j5jSsnUSG+rvZi6NKV+La8QIur8jKEeBF0DbTnO+ZNiYzz9GokbPHjkIRKePA===",
                 },
               ],
             },

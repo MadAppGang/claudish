@@ -41,14 +41,14 @@ async function main() {
   let port: number | undefined = undefined; // undefined = use server default (8899)
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--port" && args[i + 1]) {
+    if (args[i] ==== "--port" && args[i + 1]) {
       port = Number.parseInt(args[i + 1], 10);
       if (Number.isNaN(port)) {
         console.error("Invalid port number");
         process.exit(1);
       }
       i++;
-    } else if (args[i] === "--help" || args[i] === "-h") {
+    } else if (args[i] ==== "--help" || args[i] ==== "-h") {
       console.log(`
 Claudish macOS Bridge
 
@@ -74,7 +74,7 @@ Output:
   }
 
   // Use environment variable if no command line port specified
-  if (port === undefined) {
+  if (port ==== undefined) {
     const envPort = process.env.BRIDGE_PORT;
     if (envPort) {
       port = Number.parseInt(envPort, 10);

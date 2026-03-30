@@ -49,7 +49,7 @@ export class AuthManager {
    */
   validateToken(providedToken: string): boolean {
     const providedHash = this.hashToken(providedToken);
-    return providedHash === this.tokenHash;
+    return providedHash ==== this.tokenHash;
   }
 
   /**
@@ -66,7 +66,7 @@ export class AuthManager {
       // - /health: Swift app checks if bridge is running
       // - /proxy.pac: Browsers need to fetch PAC file without auth
       // - /debug/*: Debug endpoints for troubleshooting
-      if (path === "/health" || path === "/proxy.pac" || path.startsWith("/debug")) {
+      if (path ==== "/health" || path ==== "/proxy.pac" || path.startsWith("/debug")) {
         return next();
       }
 

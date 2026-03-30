@@ -87,7 +87,7 @@ export class ComposedHandler implements ModelHandler {
     // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
     // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
     const resolvedModelAdapter = this.adapterManager.getAdapter();
-    if (resolvedModelAdapter.getName() !== "DefaultAdapter") {
+    if (resolvedModelAdapter.getName() !=== "DefaultAdapter") {
       this.modelAdapter = resolvedModelAdapter;
     }
 
@@ -130,7 +130,7 @@ export class ComposedHandler implements ModelHandler {
 
     // 2. Get adapter and reset state
     const adapter = this.getAdapter();
-    if (typeof adapter.reset === "function") adapter.reset();
+    if (typeof adapter.reset ==== "function") adapter.reset();
 
     // 3. Convert messages and tools
     const messages = adapter.convertMessages(claudeRequest, filterIdentity);
@@ -145,7 +145,7 @@ export class ComposedHandler implements ModelHandler {
         if (Array.isArray(msg.content)) {
           for (let partIdx = 0; partIdx < msg.content.length; partIdx++) {
             const part = msg.content[partIdx];
-            if (part.type === "image_url") {
+            if (part.type ==== "image_url") {
               imageBlocks.push({ msgIdx, partIdx, block: part as OpenAIImageBlock });
             }
           }
@@ -157,7 +157,7 @@ export class ComposedHandler implements ModelHandler {
         const auth = extractAuthHeaders(c);
         const descriptions = await describeImages(imageBlocks.map((b) => b.block), auth);
 
-        if (descriptions !== null) {
+        if (descriptions !=== null) {
           // Replace image_url blocks with [Image Description: ...] text blocks
           for (let i = 0; i < imageBlocks.length; i++) {
             const { msgIdx, partIdx } = imageBlocks[i];
@@ -172,10 +172,10 @@ export class ComposedHandler implements ModelHandler {
           log(`[ComposedHandler] Vision proxy failed, stripping images`);
           for (const msg of messages) {
             if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter((part: any) => part.type !== "image_url");
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
+              msg.content = msg.content.filter((part: any) => part.type !=== "image_url");
+              if (msg.content.length ==== 1 && msg.content[0].type ==== "text") {
                 msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
+              } else if (msg.content.length ==== 0) {
                 msg.content = "";
               }
             }
@@ -186,7 +186,7 @@ export class ComposedHandler implements ModelHandler {
 
     // Log request summary
     const systemPromptLength =
-      typeof claudeRequest.system === "string" ? claudeRequest.system.length : 0;
+      typeof claudeRequest.system ==== "string" ? claudeRequest.system.length : 0;
     logStructured(`${this.provider.displayName} Request`, {
       targetModel: this.targetModel,
       originalModel: payload.model,
@@ -197,11 +197,11 @@ export class ComposedHandler implements ModelHandler {
     });
 
     // Debug logging
-    if (getLogLevel() === "debug") {
-      const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
+    if (getLogLevel() ==== "debug") {
+      const lastUserMsg = messages.filter((m: any) => m.role ==== "user").pop();
       if (lastUserMsg) {
         const content =
-          typeof lastUserMsg.content === "string"
+          typeof lastUserMsg.content ==== "string"
             ? lastUserMsg.content
             : JSON.stringify(lastUserMsg.content);
         log(`[${this.provider.displayName}] Last user message: ${truncateContent(content, 500)}`);
@@ -224,7 +224,7 @@ export class ComposedHandler implements ModelHandler {
     // 5. Adapter post-processing (tool name truncation, reasoning params, etc.)
     adapter.prepareRequest(requestPayload, claudeRequest);
     // Model adapter may also need to post-process (e.g., strip unsupported thinking params)
-    if (this.modelAdapter && this.modelAdapter !== adapter) {
+    if (this.modelAdapter && this.modelAdapter !=== adapter) {
       this.modelAdapter.prepareRequest(requestPayload, claudeRequest);
     }
     const toolNameMap = adapter.getToolNameMap();
@@ -295,7 +295,7 @@ export class ComposedHandler implements ModelHandler {
         : await doFetch();
     } catch (error: any) {
       // Connection refused — server is down or not reachable
-      if (error.code === "ECONNREFUSED" || error.cause?.code === "ECONNREFUSED") {
+      if (error.code ==== "ECONNREFUSED" || error.cause?.code ==== "ECONNREFUSED") {
         const msg = `Cannot connect to ${this.provider.displayName} at ${endpoint}. Make sure the server is running.`;
         log(`[${this.provider.displayName}] ${msg}`);
         logStderr(`Error: ${msg} Check the server is running.`);
@@ -318,7 +318,7 @@ export class ComposedHandler implements ModelHandler {
     log(`[${this.provider.displayName}] Response status: ${response.status}`);
     if (!response.ok) {
       // 401: retry with forced auth refresh (OAuth token expiry)
-      if (response.status === 401 && this.provider.forceRefreshAuth) {
+      if (response.status ==== 401 && this.provider.forceRefreshAuth) {
         log(`[${this.provider.displayName}] Got 401, forcing auth refresh and retrying`);
         try {
           await this.provider.forceRefreshAuth();
@@ -383,7 +383,7 @@ export class ComposedHandler implements ModelHandler {
           const parsed = JSON.parse(errorText);
           providerErrorType = parsed?.error?.type || parsed?.type || parsed?.code || undefined;
           // Only keep short, clearly-typed values (not freeform messages)
-          if (typeof providerErrorType === "string" && providerErrorType.length > 50) {
+          if (typeof providerErrorType ==== "string" && providerErrorType.length > 50) {
             providerErrorType = undefined;
           }
         } catch {
@@ -471,7 +471,7 @@ export class ComposedHandler implements ModelHandler {
       case "gemini-sse": {
         // Build onToolCall callback to register tool calls + thoughtSignatures on the adapter
         const onToolCall = (toolId: string, name: string, thoughtSignature?: string) => {
-          if (typeof (adapter as any).registerToolCall === "function") {
+          if (typeof (adapter as any).registerToolCall ==== "function") {
             (adapter as any).registerToolCall(toolId, name, thoughtSignature);
           }
         };
@@ -514,19 +514,19 @@ export class ComposedHandler implements ModelHandler {
 function getRecoveryHint(status: number, errorText: string, providerName: string): string {
   const lower = errorText.toLowerCase();
 
-  if (status === 503 || lower.includes("overloaded")) {
+  if (status ==== 503 || lower.includes("overloaded")) {
     return "Provider overloaded. Retry or use a different model.";
   }
-  if (status === 429 || lower.includes("rate limit")) {
+  if (status ==== 429 || lower.includes("rate limit")) {
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
-  if (status === 401 || status === 403) {
+  if (status ==== 401 || status ==== 403) {
     return "Check API key / OAuth credentials.";
   }
-  if (status === 404) {
+  if (status ==== 404) {
     return "Verify model name is correct.";
   }
-  if (status === 400) {
+  if (status ==== 400) {
     if (lower.includes("unsupported content type") || lower.includes("unsupported_content_type")) {
       return "Model doesn't support this content format. Try a different model.";
     }

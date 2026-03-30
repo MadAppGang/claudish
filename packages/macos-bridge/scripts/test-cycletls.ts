@@ -24,9 +24,9 @@ async function testClaudeBootstrap() {
     console.log(`   Status Text: ${response.statusText || 'N/A'}`);
     console.log(`   Body Length: ${response.body?.length || 0} bytes`);
 
-    if (response.status === 200) {
+    if (response.status ==== 200) {
       console.log('\n🎉 SUCCESS: Got 200 OK - Cloudflare bypass working!');
-    } else if (response.status === 403) {
+    } else if (response.status ==== 403) {
       console.log('\n❌ FAILED: Got 403 Forbidden - Cloudflare blocked the request');
     } else {
       console.log(`\n⚠️  Unexpected status code: ${response.status}`);
@@ -52,7 +52,7 @@ async function testClaudeBootstrap() {
 // Run the test
 testClaudeBootstrap()
   .then((status) => {
-    process.exit(status === 200 ? 0 : 1);
+    process.exit(status ==== 200 ? 0 : 1);
   })
   .catch((error) => {
     console.error('Fatal error:', error);

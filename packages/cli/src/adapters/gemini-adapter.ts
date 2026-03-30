@@ -83,10 +83,10 @@ export class GeminiAdapter extends BaseModelAdapter {
 
     if (claudeRequest.messages) {
       for (const msg of claudeRequest.messages) {
-        if (msg.role === "user") {
+        if (msg.role ==== "user") {
           const parts = this.convertUserParts(msg);
           if (parts.length > 0) messages.push({ role: "user", parts });
-        } else if (msg.role === "assistant") {
+        } else if (msg.role ==== "assistant") {
           const parts = this.convertAssistantParts(msg);
           if (parts.length > 0) messages.push({ role: "model", parts });
         }
@@ -101,16 +101,16 @@ export class GeminiAdapter extends BaseModelAdapter {
 
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
-        if (block.type === "text") {
+        if (block.type ==== "text") {
           parts.push({ text: block.text });
-        } else if (block.type === "image") {
+        } else if (block.type ==== "image") {
           parts.push({
             inlineData: {
               mimeType: block.source.media_type,
               data: block.source.data,
             },
           });
-        } else if (block.type === "tool_result") {
+        } else if (block.type ==== "tool_result") {
           const toolInfo = this.toolCallMap.get(block.tool_use_id);
           if (!toolInfo) {
             log(`[GeminiAdapter] Warning: No function name found for tool_use_id ${block.tool_use_id}`);
@@ -121,13 +121,13 @@ export class GeminiAdapter extends BaseModelAdapter {
               name: toolInfo.name,
               response: {
                 content:
-                  typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                  typeof block.content ==== "string" ? block.content : JSON.stringify(block.content),
               },
             },
           });
         }
       }
-    } else if (typeof msg.content === "string") {
+    } else if (typeof msg.content ==== "string") {
       parts.push({ text: msg.content });
     }
 
@@ -139,9 +139,9 @@ export class GeminiAdapter extends BaseModelAdapter {
 
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
-        if (block.type === "text") {
+        if (block.type ==== "text") {
           parts.push({ text: block.text });
-        } else if (block.type === "tool_use") {
+        } else if (block.type ==== "tool_use") {
           // Look up stored thoughtSignature for this tool call
           const toolInfo = this.toolCallMap.get(block.id);
           let thoughtSignature = toolInfo?.thoughtSignature;
@@ -173,7 +173,7 @@ export class GeminiAdapter extends BaseModelAdapter {
           parts.push(functionCallPart);
         }
       }
-    } else if (typeof msg.content === "string") {
+    } else if (typeof msg.content ==== "string") {
       parts.push({ text: msg.content });
     }
 
@@ -256,7 +256,7 @@ export class GeminiAdapter extends BaseModelAdapter {
   // ─── Text Processing (reasoning filter) ───────────────────────────
 
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
-    if (!textContent || textContent.trim() === "") {
+    if (!textContent || textContent.trim() ==== "") {
       return { cleanedText: textContent, extractedToolCalls: [], wasTransformed: false };
     }
 
@@ -348,7 +348,7 @@ export class GeminiAdapter extends BaseModelAdapter {
     if (!reasoningDetails || !Array.isArray(reasoningDetails)) return extracted;
 
     for (const detail of reasoningDetails) {
-      if (detail?.type === "reasoning.encrypted" && detail.id && detail.data) {
+      if (detail?.type ==== "reasoning.encrypted" && detail.id && detail.data) {
         this.toolCallMap.set(detail.id, {
           name: this.toolCallMap.get(detail.id)?.name || "",
           thoughtSignature: detail.data,

@@ -48,9 +48,9 @@ export class OllamaCloudAdapter extends BaseModelAdapter {
 
     if (claudeRequest.messages) {
       for (const msg of claudeRequest.messages) {
-        if (msg.role === "user") {
+        if (msg.role ==== "user") {
           messages.push(this.processUserMessage(msg));
-        } else if (msg.role === "assistant") {
+        } else if (msg.role ==== "assistant") {
           messages.push(this.processAssistantMessage(msg));
         }
       }
@@ -91,11 +91,11 @@ export class OllamaCloudAdapter extends BaseModelAdapter {
     if (Array.isArray(msg.content)) {
       const textParts: string[] = [];
       for (const block of msg.content) {
-        if (block.type === "text") {
+        if (block.type ==== "text") {
           textParts.push(block.text);
-        } else if (block.type === "tool_result") {
+        } else if (block.type ==== "tool_result") {
           const resultContent =
-            typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+            typeof block.content ==== "string" ? block.content : JSON.stringify(block.content);
           textParts.push(`[Tool Result]: ${resultContent}`);
         }
         // Skip images — OllamaCloud doesn't support vision
@@ -109,9 +109,9 @@ export class OllamaCloudAdapter extends BaseModelAdapter {
     if (Array.isArray(msg.content)) {
       const strings: string[] = [];
       for (const block of msg.content) {
-        if (block.type === "text") {
+        if (block.type ==== "text") {
           strings.push(block.text);
-        } else if (block.type === "tool_use") {
+        } else if (block.type ==== "tool_use") {
           strings.push(`[Tool Call: ${block.name}]: ${JSON.stringify(block.input)}`);
         }
       }

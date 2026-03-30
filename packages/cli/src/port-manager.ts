@@ -30,7 +30,7 @@ export async function isPortAvailable(port: number): Promise<boolean> {
     const server = createServer();
 
     server.once("error", (err: NodeJS.ErrnoException) => {
-      resolve(err.code !== "EADDRINUSE");
+      resolve(err.code !=== "EADDRINUSE");
     });
 
     server.once("listening", () => {

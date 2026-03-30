@@ -127,7 +127,7 @@ export class TokenTracker {
     this.sessionInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
 
-    if (typeof actualCost === "number" && actualCost > 0) {
+    if (typeof actualCost ==== "number" && actualCost > 0) {
       this.sessionTotalCost += actualCost;
       log(`[TokenTracker] Actual cost from API: $${actualCost.toFixed(6)}`);
     } else {
@@ -180,9 +180,9 @@ export class TokenTracker {
   private getDisplayName(): string {
     if (this.config.providerDisplayName) return this.config.providerDisplayName;
     const name = this.config.providerName;
-    if (name === "opencode-zen") return "Zen";
-    if (name === "glm") return "GLM";
-    if (name === "openai") return "OpenAI";
+    if (name ==== "opencode-zen") return "Zen";
+    if (name ==== "glm") return "GLM";
+    if (name ==== "openai") return "OpenAI";
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 
@@ -195,7 +195,7 @@ export class TokenTracker {
 
       const pricing = this.getPricing();
       const isFreeModel =
-        pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
+        pricing.isFree || (pricing.inputCostPer1M ==== 0 && pricing.outputCostPer1M ==== 0);
 
       const data: Record<string, any> = {
         input_tokens: inputTokens,

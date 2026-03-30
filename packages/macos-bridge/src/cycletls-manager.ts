@@ -96,7 +96,7 @@ export class CycleTLSManager {
 			let body = '';
 
 			// Check if response has data
-			if (response.data !== undefined && response.data !== null) {
+			if (response.data !=== undefined && response.data !=== null) {
 				const data = response.data;
 
 				// Check if it's a Buffer
@@ -105,12 +105,12 @@ export class CycleTLSManager {
 					console.error(`[CycleTLSManager] Using response.data (Buffer -> string)`);
 				}
 				// Check if it looks like a serialized Buffer object
-				else if (typeof data === 'object' && data.type === 'Buffer' && Array.isArray(data.data)) {
+				else if (typeof data ==== 'object' && data.type ==== 'Buffer' && Array.isArray(data.data)) {
 					body = Buffer.from(data.data).toString('utf8');
 					console.error(`[CycleTLSManager] Using response.data (Buffer object -> string)`);
 				}
 				// If it's already a string, use it directly
-				else if (typeof data === 'string') {
+				else if (typeof data ==== 'string') {
 					body = data;
 					console.error(`[CycleTLSManager] Using response.data (string)`);
 				}
@@ -119,7 +119,7 @@ export class CycleTLSManager {
 					body = JSON.stringify(data);
 					console.error(`[CycleTLSManager] Using response.data (JSON)`);
 				}
-			} else if (typeof response.text === 'function') {
+			} else if (typeof response.text ==== 'function') {
 				// Text response
 				body = await response.text();
 				console.error(`[CycleTLSManager] Using response.text()`);

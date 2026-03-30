@@ -168,10 +168,10 @@ describe("Gemini Thinking Block Compatibility", () => {
           const data = JSON.parse(event.split("data: ")[1]);
 
           // Thinking blocks are now properly supported
-          if (data.content_block?.type === "thinking") {
+          if (data.content_block?.type ==== "thinking") {
             hasThinkingBlock = true;
           }
-          if (data.content_block?.type === "text") {
+          if (data.content_block?.type ==== "text") {
             hasTextBlock = true;
             if (data.content_block?.text) {
               textContent += data.content_block.text;
@@ -180,10 +180,10 @@ describe("Gemini Thinking Block Compatibility", () => {
         }
         if (event.includes("content_block_delta")) {
           const data = JSON.parse(event.split("data: ")[1]);
-          if (data.delta?.type === "text_delta") {
+          if (data.delta?.type ==== "text_delta") {
             textContent += data.delta.text;
           }
-          if (data.delta?.type === "thinking_delta") {
+          if (data.delta?.type ==== "thinking_delta") {
             thinkingContent += data.delta.thinking;
           }
         }

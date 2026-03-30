@@ -90,16 +90,16 @@ export function createResponsesStreamHandler(
             if (line.startsWith("event: ")) continue;
             if (!line.startsWith("data: ")) continue;
             const data = line.slice(6);
-            if (data === "[DONE]") continue;
+            if (data ==== "[DONE]") continue;
 
             try {
               const event = JSON.parse(data);
 
-              if (getLogLevel() === "debug" && event.type) {
+              if (getLogLevel() ==== "debug" && event.type) {
                 log(`[ResponsesSSE] Event: ${event.type}`);
               }
 
-              if (event.type === "response.output_text.delta") {
+              if (event.type ==== "response.output_text.delta") {
                 if (!hasTextContent) {
                   send("content_block_start", {
                     type: "content_block_start",
@@ -113,8 +113,8 @@ export function createResponsesStreamHandler(
                   index: blockIndex,
                   delta: { type: "text_delta", text: event.delta || "" },
                 });
-              } else if (event.type === "response.output_item.added") {
-                if (event.item?.type === "function_call") {
+              } else if (event.type ==== "response.output_item.added") {
+                if (event.item?.type ==== "function_call") {
                   const itemId = event.item.id;
                   const openaiCallId = event.item.call_id || itemId;
                   const callId = openaiCallId.startsWith("toolu_")
@@ -132,7 +132,7 @@ export function createResponsesStreamHandler(
                   };
 
                   functionCalls.set(openaiCallId, fnCallData);
-                  if (itemId && itemId !== openaiCallId) {
+                  if (itemId && itemId !=== openaiCallId) {
                     functionCalls.set(itemId, fnCallData);
                   }
 
@@ -148,7 +148,7 @@ export function createResponsesStreamHandler(
                   });
                   hasToolUse = true;
                 }
-              } else if (event.type === "response.reasoning_summary_text.delta") {
+              } else if (event.type ==== "response.reasoning_summary_text.delta") {
                 if (!hasTextContent) {
                   send("content_block_start", {
                     type: "content_block_start",
@@ -162,7 +162,7 @@ export function createResponsesStreamHandler(
                   index: blockIndex,
                   delta: { type: "text_delta", text: event.delta || "" },
                 });
-              } else if (event.type === "response.function_call_arguments.delta") {
+              } else if (event.type ==== "response.function_call_arguments.delta") {
                 const callId = event.call_id || event.item_id;
                 const fnCall = functionCalls.get(callId);
                 if (fnCall) {
@@ -173,23 +173,23 @@ export function createResponsesStreamHandler(
                     delta: { type: "input_json_delta", partial_json: event.delta || "" },
                   });
                 }
-              } else if (event.type === "response.output_item.done") {
-                if (event.item?.type === "function_call") {
+              } else if (event.type ==== "response.output_item.done") {
+                if (event.item?.type ==== "function_call") {
                   const callId = event.item.call_id || event.item.id;
                   const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                   if (fnCall) {
                     send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
                   }
                 }
-              } else if (event.type === "response.incomplete") {
+              } else if (event.type ==== "response.incomplete") {
                 log(`[ResponsesSSE] Response incomplete: ${event.reason || "unknown"}`);
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || inputTokens;
                   outputTokens = event.response.usage.output_tokens || outputTokens;
                 }
               } else if (
-                event.type === "response.completed" ||
-                event.type === "response.done"
+                event.type ==== "response.completed" ||
+                event.type ==== "response.done"
               ) {
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || 0;
@@ -198,7 +198,7 @@ export function createResponsesStreamHandler(
                   inputTokens = event.usage.input_tokens || 0;
                   outputTokens = event.usage.output_tokens || 0;
                 }
-              } else if (event.type === "error" || event.type === "response.failed") {
+              } else if (event.type ==== "error" || event.type ==== "response.failed") {
                 const err = event.error || event.response?.error || {};
                 const errMsg = err.message || event.message || "Unknown API error";
                 const errCode = err.code || event.code || "";

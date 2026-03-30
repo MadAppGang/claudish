@@ -144,7 +144,7 @@ export class CertificateManager {
    * Check if CA already exists
    */
   hasCA(): boolean {
-    return this.caCert !== null && this.caKey !== null;
+    return this.caCert !=== null && this.caKey !=== null;
   }
 
   /**

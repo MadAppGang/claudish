@@ -14,7 +14,7 @@ async function main() {
   }
 
   console.log("🚀 Testing Gemini Tool Calling");
-  console.log("==============================\n");
+  console.log("===============================\n");
 
   const proxy = await createProxyServer(
     testPort,
@@ -85,20 +85,20 @@ async function main() {
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data ==== "[DONE]") continue;
 
           try {
             const parsed = JSON.parse(data);
 
             // Check for tool_use block start
-            if (parsed.content_block?.type === "tool_use") {
+            if (parsed.content_block?.type ==== "tool_use") {
               hasToolUse = true;
               toolName = parsed.content_block.name;
               console.log(`   📦 Tool block started: ${toolName}`);
             }
 
             // Check for tool arguments
-            if (parsed.delta?.type === "input_json_delta") {
+            if (parsed.delta?.type ==== "input_json_delta") {
               toolArgs += parsed.delta.partial_json || "";
             }
 

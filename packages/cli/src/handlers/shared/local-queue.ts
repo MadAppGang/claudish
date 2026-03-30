@@ -85,7 +85,7 @@ export class LocalModelQueue {
   private constructor() {
     this.defaultMaxParallel = this.getMaxParallelFromEnv();
     this.maxParallel = this.defaultMaxParallel;
-    if (getLogLevel() === "debug") {
+    if (getLogLevel() ==== "debug") {
       log(
         `[LocalQueue] Queue initialized with maxParallel=${this.maxParallel}, maxQueueSize=${this.maxQueueSize}`
       );
@@ -107,8 +107,8 @@ export class LocalModelQueue {
    */
   static isEnabled(): boolean {
     const enabled = process.env.CLAUDISH_LOCAL_QUEUE_ENABLED;
-    if (enabled === undefined || enabled === "") return true; // Default: enabled
-    return enabled !== "false" && enabled !== "0";
+    if (enabled ==== undefined || enabled ==== "") return true; // Default: enabled
+    return enabled !=== "false" && enabled !=== "0";
   }
 
   /**
@@ -129,19 +129,19 @@ export class LocalModelQueue {
     concurrencyOverride?: number
   ): Promise<Response> {
     // Handle concurrency override
-    if (concurrencyOverride !== undefined) {
-      if (concurrencyOverride === 0) {
+    if (concurrencyOverride !=== undefined) {
+      if (concurrencyOverride ==== 0) {
         // :0 means bypass queue entirely - execute directly
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(`[LocalQueue] Bypassing queue for ${providerId} (concurrency=0)`);
         }
         return fetchFn();
       }
 
       // Override max parallel for this session
-      if (concurrencyOverride !== this.maxParallel && concurrencyOverride > 0) {
+      if (concurrencyOverride !=== this.maxParallel && concurrencyOverride > 0) {
         const newMax = Math.min(concurrencyOverride, 8); // Cap at 8
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(
             `[LocalQueue] Overriding maxParallel: ${this.maxParallel} -> ${newMax} for ${providerId}`
           );
@@ -152,7 +152,7 @@ export class LocalModelQueue {
 
     // Check queue size limit
     if (this.queue.length >= this.maxQueueSize) {
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(
           `[LocalQueue] Queue full (${this.queue.length}/${this.maxQueueSize}), rejecting request`
         );
@@ -172,7 +172,7 @@ export class LocalModelQueue {
       };
 
       this.queue.push(queuedRequest);
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(
           `[LocalQueue] Request enqueued for ${providerId} (queue length: ${this.queue.length}, active: ${this.activeRequests}/${this.maxParallel})`
         );
@@ -195,7 +195,7 @@ export class LocalModelQueue {
       const request = this.queue.shift();
       if (!request) break;
 
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(
           `[LocalQueue] Processing request for ${request.providerId} (${this.queue.length} remaining in queue, ${this.activeRequests + 1}/${this.maxParallel} active)`
         );
@@ -203,7 +203,7 @@ export class LocalModelQueue {
 
       // Execute in parallel (don't await here) to allow concurrent processing
       this.executeRequest(request).catch((err) => {
-        if (getLogLevel() === "debug") {
+        if (getLogLevel() ==== "debug") {
           log(`[LocalQueue] Request execution failed: ${err}`);
         }
       });
@@ -223,11 +223,11 @@ export class LocalModelQueue {
       const response = await request.fetchFn();
 
       // Check for OOM error (GPU out of memory)
-      if (response.status === 500) {
+      if (response.status ==== 500) {
         const errorBody = await response.clone().text();
         if (this.isOOMError(errorBody)) {
           this.totalOOMErrors++;
-          if (getLogLevel() === "debug") {
+          if (getLogLevel() ==== "debug") {
             log(
               `[LocalQueue] GPU out-of-memory detected for ${request.providerId}. Consider reducing CLAUDISH_LOCAL_MAX_PARALLEL (current: ${this.maxParallel})`
             );
@@ -238,7 +238,7 @@ export class LocalModelQueue {
           const retryResponse = await request.fetchFn();
 
           // Check retry response
-          if (retryResponse.status === 500) {
+          if (retryResponse.status ==== 500) {
             const retryErrorBody = await retryResponse.clone().text();
             if (this.isOOMError(retryErrorBody)) {
               // OOM persisted after retry - fail with helpful message
@@ -261,7 +261,7 @@ export class LocalModelQueue {
     } catch (error) {
       // Network error or other exception
       this.totalErrors++;
-      if (getLogLevel() === "debug") {
+      if (getLogLevel() ==== "debug") {
         log(`[LocalQueue] Request failed for ${request.providerId}: ${error}`);
       }
       request.reject(error instanceof Error ? error : new Error(String(error)));

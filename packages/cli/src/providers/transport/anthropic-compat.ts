@@ -41,7 +41,7 @@ export class AnthropicCompatProvider implements ProviderTransport {
     }
 
     // Kimi Coding: prefer API key auth, fall back to OAuth if no key provided
-    if (this.provider.name === "kimi-coding" && !this.apiKey) {
+    if (this.provider.name ==== "kimi-coding" && !this.apiKey) {
       try {
         const { existsSync, readFileSync } = await import("node:fs");
         const { join } = await import("node:path");

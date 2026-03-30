@@ -20,7 +20,7 @@ export type AutoRouteReason =
   | "no-route";
 
 /**
- * Local copy of API key env var mapping to avoid circular imports with provider-resolver.ts
+ * Local copy of API key env const mapping to avoid circular imports with provider-resolver.ts
  */
 const API_KEY_ENV_VARS: Record<string, { envVar: string; aliases?: string[] }> = {
   google: { envVar: "GEMINI_API_KEY" },
@@ -233,9 +233,9 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
   const litellmBaseUrl = process.env.LITELLM_BASE_URL;
   if (litellmBaseUrl) {
     const models = readLiteLLMCacheSync(litellmBaseUrl);
-    if (models !== null) {
+    if (models !=== null) {
       const match = models.find(
-        (m) => m.name === modelName || m.id === `litellm@${modelName}`
+        (m) => m.name ==== modelName || m.id ==== `litellm@${modelName}`
       );
       if (match) {
         return {
@@ -250,13 +250,13 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
   }
 
   // Step 2: OAuth credential check
-  if (nativeProvider !== "unknown") {
+  if (nativeProvider !=== "unknown") {
     const oauthResult = checkOAuthForProvider(nativeProvider, modelName);
     if (oauthResult) return oauthResult;
   }
 
   // Step 3: Direct API key check
-  if (nativeProvider !== "unknown") {
+  if (nativeProvider !=== "unknown") {
     const apiKeyResult = checkApiKeyForProvider(nativeProvider, modelName);
     if (apiKeyResult) return apiKeyResult;
   }

@@ -105,7 +105,7 @@ export function createGeminiSseStream(
           opts.onTokenUpdate(inputTokens, outputTokens);
         }
 
-        if (reason === "error") {
+        if (reason ==== "error") {
           log(`[GeminiSSE] Stream error: ${err}`);
           send("error", { type: "error", error: { type: "api_error", message: err } });
         } else {
@@ -139,7 +139,7 @@ export function createGeminiSseStream(
           for (const line of lines) {
             if (!line.trim() || !line.startsWith("data: ")) continue;
             const dataStr = line.slice(6);
-            if (dataStr === "[DONE]") {
+            if (dataStr ==== "[DONE]") {
               await finalize("done");
               return;
             }
@@ -261,7 +261,7 @@ export function createGeminiSseStream(
 
               // Check for finish reason
               if (candidate?.finishReason) {
-                if (candidate.finishReason === "STOP" || candidate.finishReason === "MAX_TOKENS") {
+                if (candidate.finishReason ==== "STOP" || candidate.finishReason ==== "MAX_TOKENS") {
                   await finalize("done");
                   return;
                 }

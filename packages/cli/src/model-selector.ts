@@ -125,7 +125,7 @@ function toModelInfo(model: any): ModelInfo {
   const contextLen = model.context_length || model.top_provider?.context_length || 0;
   const promptPrice = parseFloat(model.pricing?.prompt || "0");
   const completionPrice = parseFloat(model.pricing?.completion || "0");
-  const isFree = promptPrice === 0 && completionPrice === 0;
+  const isFree = promptPrice ==== 0 && completionPrice ==== 0;
 
   // Format pricing
   let pricingStr = "N/A";
@@ -181,8 +181,8 @@ async function fetchZenFreeModels(): Promise<ModelInfo[]> {
     // Get free models with tool support
     return Object.entries(opencode.models)
       .filter(([_, m]: [string, any]) => {
-        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
-        const supportsTools = m.tool_call === true;
+        const isFree = m.cost?.input ==== 0 && m.cost?.output ==== 0;
+        const supportsTools = m.tool_call ==== true;
         return isFree && supportsTools;
       })
       .map(([id, m]: [string, any]) => {
@@ -480,8 +480,8 @@ async function fetchOpenAIModels(): Promise<ModelInfo[]> {
           },
           context: contextStr,
           contextLength,
-          supportsTools: m.tool_call === true,
-          supportsReasoning: m.reasoning === true,
+          supportsTools: m.tool_call ==== true,
+          supportsReasoning: m.reasoning ==== true,
           supportsVision,
           isFree: false,
           source: "OpenAI" as const,
@@ -515,7 +515,7 @@ async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
     if (!codingPlan?.models) return [];
 
     return Object.entries(codingPlan.models)
-      .filter(([_, m]: [string, any]) => m.tool_call === true)
+      .filter(([_, m]: [string, any]) => m.tool_call ==== true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
         const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
@@ -567,14 +567,14 @@ async function fetchGLMDirectModels(): Promise<ModelInfo[]> {
     if (!codingPlan?.models) return [];
 
     return Object.entries(codingPlan.models)
-      .filter(([_, m]: [string, any]) => m.tool_call === true)
+      .filter(([_, m]: [string, any]) => m.tool_call ==== true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
         const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
         const contextLength = m.limit?.context || 131072;
         const inputCost = m.cost?.input || 0;
         const outputCost = m.cost?.output || 0;
-        const isFree = inputCost === 0 && outputCost === 0;
+        const isFree = inputCost ==== 0 && outputCost ==== 0;
 
         return {
           id: `glm@${id}`,
@@ -622,7 +622,7 @@ async function fetchOllamaCloudModels(): Promise<ModelInfo[]> {
     if (!ollamaCloud?.models) return [];
 
     return Object.entries(ollamaCloud.models)
-      .filter(([_, m]: [string, any]) => m.tool_call === true)
+      .filter(([_, m]: [string, any]) => m.tool_call ==== true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
         const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
@@ -710,8 +710,8 @@ async function getFreeModels(): Promise<ModelInfo[]> {
 
   // Sort: Zen first, then by context window
   combined.sort((a, b) => {
-    if (a.source === "Zen" && b.source !== "Zen") return -1;
-    if (a.source !== "Zen" && b.source === "Zen") return 1;
+    if (a.source ==== "Zen" && b.source !=== "Zen") return -1;
+    if (a.source !=== "Zen" && b.source ==== "Zen") return 1;
     return (b.contextLength || 0) - (a.contextLength || 0);
   });
 
@@ -750,7 +750,7 @@ async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> 
   const fetchResults: Record<string, ModelInfo[]> = {};
   for (let i = 0; i < settled.length; i++) {
     const result = settled[i];
-    fetchResults[fetchEntries[i].name] = result.status === "fulfilled" ? result.value : [];
+    fetchResults[fetchEntries[i].name] = result.status ==== "fulfilled" ? result.value : [];
   }
 
   // Combine results: Zen first (free), then OllamaCloud, then direct providers, then LiteLLM, then OpenRouter
@@ -858,7 +858,7 @@ function parseProviderFilter(term: string): { provider: string | null; searchTer
 
   let prefix: string;
   let rest: string;
-  if (spaceIdx === -1) {
+  if (spaceIdx ==== -1) {
     prefix = withoutAt;
     rest = "";
   } else {
@@ -891,7 +891,7 @@ function fuzzyMatch(text: string, query: string): number {
   const lowerQuery = query.toLowerCase();
 
   // Exact match
-  if (lowerText === lowerQuery) return 1;
+  if (lowerText ==== lowerQuery) return 1;
 
   // Contains match
   if (lowerText.includes(lowerQuery)) return 0.8;
@@ -901,20 +901,20 @@ function fuzzyMatch(text: string, query: string): number {
   const normSep = (s: string) => s.replace(/[\s\-_.]/g, "");
   const tn = normSep(lowerText);
   const qn = normSep(lowerQuery);
-  if (tn === qn) return 0.95;
+  if (tn ==== qn) return 0.95;
   if (tn.includes(qn)) return 0.75;
 
   // Fuzzy character match
   let queryIdx = 0;
   let score = 0;
   for (let i = 0; i < lowerText.length && queryIdx < lowerQuery.length; i++) {
-    if (lowerText[i] === lowerQuery[queryIdx]) {
+    if (lowerText[i] ==== lowerQuery[queryIdx]) {
       score++;
       queryIdx++;
     }
   }
 
-  return queryIdx === lowerQuery.length ? (score / lowerQuery.length) * 0.6 : 0;
+  return queryIdx ==== lowerQuery.length ? (score / lowerQuery.length) * 0.6 : 0;
 }
 
 export interface ModelSelectorOptions {
@@ -934,7 +934,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
   if (freeOnly) {
     models = await getFreeModels();
-    if (models.length === 0) {
+    if (models.length ==== 0) {
       throw new Error("No free models available");
     }
   } else {
@@ -949,7 +949,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     models = [];
 
     // 1. Add Zen models first (they're free)
-    for (const m of allModels.filter((m) => m.source === "Zen")) {
+    for (const m of allModels.filter((m) => m.source ==== "Zen")) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
         models.push(m);
@@ -965,7 +965,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
 
     // 3. Add direct API models (xAI, Gemini, OpenAI, LiteLLM) - user has keys for these
-    for (const m of allModels.filter((m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter")) {
+    for (const m of allModels.filter((m) => m.source && m.source !=== "Zen" && m.source !=== "OpenRouter")) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
         models.push(m);
@@ -973,7 +973,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
 
     // 4. Add remaining OpenRouter models
-    for (const m of allModels.filter((m) => m.source === "OpenRouter")) {
+    for (const m of allModels.filter((m) => m.source ==== "OpenRouter")) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
         models.push(m);
@@ -1007,8 +1007,8 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       choices: providerChoices,
     });
 
-    if (selectedProvider !== "__all__") {
-      filteredModels = models.filter((m) => m.source === selectedProvider);
+    if (selectedProvider !=== "__all__") {
+      filteredModels = models.filter((m) => m.source ==== selectedProvider);
     }
   }
 
@@ -1036,7 +1036,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
       let pool = filteredModels;
       if (filterProvider) {
-        pool = models.filter((m) => m.source === filterProvider);
+        pool = models.filter((m) => m.source ==== filterProvider);
       }
 
       if (!searchTerm) {
@@ -1097,7 +1097,7 @@ const ALL_PROVIDER_CHOICES: Array<{ name: string; value: string; description: st
 
 /**
  * Get provider choices filtered by available env vars
- * Providers with envVar requirement are only shown when that env var is set
+ * Providers with envVar requirement are only shown when that env const is set
  */
 function getProviderChoices() {
   return ALL_PROVIDER_CHOICES.filter((choice) => !choice.envVar || process.env[choice.envVar]);
@@ -1211,7 +1211,7 @@ function getKnownModels(provider: string): ModelInfo[] {
 function filterModelsByProvider(allModels: ModelInfo[], provider: string): ModelInfo[] {
   const source = PROVIDER_SOURCE_FILTER[provider];
   if (source) {
-    return allModels.filter((m) => m.source === source);
+    return allModels.filter((m) => m.source ==== source);
   }
 
   const prefix = PROVIDER_MODEL_PREFIX[provider];
@@ -1247,7 +1247,7 @@ async function selectModelFromProvider(
   let providerModels = filterModelsByProvider(allModels, provider);
 
   // For OpenRouter, prioritize recommended models
-  if (provider === "openrouter") {
+  if (provider ==== "openrouter") {
     const seenIds = new Set<string>();
     const merged: ModelInfo[] = [];
     for (const m of recommendedModels) {
@@ -1277,7 +1277,7 @@ async function selectModelFromProvider(
   }
 
   // No models at all: fall back to text input
-  if (providerModels.length === 0) {
+  if (providerModels.length ==== 0) {
     const modelName = await input({
       message: `Enter ${provider} model name for ${tierName} (prefix ${prefix} will be added):`,
       validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
@@ -1329,7 +1329,7 @@ async function selectModelFromProvider(
     },
   });
 
-  if (selected === CUSTOM_VALUE) {
+  if (selected ==== CUSTOM_VALUE) {
     const modelName = await input({
       message: `Enter model name (will be prefixed with ${prefix}):`,
       validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
@@ -1378,14 +1378,14 @@ export async function selectModelsForProfile(): Promise<{
       default: lastProvider,
     });
 
-    if (provider === "skip") {
+    if (provider ==== "skip") {
       result[tier.key] = undefined;
       continue;
     }
 
     lastProvider = provider;
 
-    if (provider === "custom") {
+    if (provider ==== "custom") {
       const customModel = await input({
         message: `Enter custom model for ${tier.name} (e.g., provider@model):`,
         validate: (v) => (v.trim() ? true : "Model cannot be empty"),

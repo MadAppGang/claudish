@@ -116,9 +116,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     }
   }
 
-  // Check for tool summarization env var
-  const envSummarizeTools = process.env[ENV.CLAUDISH_SUMMARIZE_TOOLS];
-  if (envSummarizeTools === "true" || envSummarizeTools === "1") {
+  // Check for tool summarization env const const envSummarizeTools = process.env[ENV.CLAUDISH_SUMMARIZE_TOOLS];
+  if (envSummarizeTools ==== "true" || envSummarizeTools ==== "1") {
     config.summarizeTools = true;
   }
 
@@ -127,7 +126,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   while (i < args.length) {
     const arg = args[i];
 
-    if (arg === "--model" || arg === "-m") {
+    if (arg ==== "--model" || arg ==== "-m") {
       const modelArg = args[++i];
       if (!modelArg) {
         console.error("--model requires a value");
@@ -135,20 +134,20 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.model = modelArg; // Accept any model ID
-    } else if (arg === "--model-opus") {
+    } else if (arg ==== "--model-opus") {
       // Model mapping flags
       const val = args[++i];
       if (val) config.modelOpus = val;
-    } else if (arg === "--model-sonnet") {
+    } else if (arg ==== "--model-sonnet") {
       const val = args[++i];
       if (val) config.modelSonnet = val;
-    } else if (arg === "--model-haiku") {
+    } else if (arg ==== "--model-haiku") {
       const val = args[++i];
       if (val) config.modelHaiku = val;
-    } else if (arg === "--model-subagent") {
+    } else if (arg ==== "--model-subagent") {
       const val = args[++i];
       if (val) config.modelSubagent = val;
-    } else if (arg === "--port") {
+    } else if (arg ==== "--port") {
       const portArg = args[++i];
       if (!portArg) {
         console.error("--port requires a value");
@@ -160,72 +159,72 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.port = port;
-    } else if (arg === "--auto-approve" || arg === "-y") {
+    } else if (arg ==== "--auto-approve" || arg ==== "-y") {
       config.autoApprove = true;
-    } else if (arg === "--no-auto-approve") {
+    } else if (arg ==== "--no-auto-approve") {
       config.autoApprove = false;
-    } else if (arg === "--dangerous") {
+    } else if (arg ==== "--dangerous") {
       config.dangerous = true;
-    } else if (arg === "--interactive" || arg === "-i") {
+    } else if (arg ==== "--interactive" || arg ==== "-i") {
       config.interactive = true;
-    } else if (arg === "--debug" || arg === "-d") {
+    } else if (arg ==== "--debug" || arg ==== "-d") {
       config.debug = true;
       // Default to debug log level when --debug is enabled (can be overridden by --log-level)
-      if (config.logLevel === "info") {
+      if (config.logLevel ==== "info") {
         config.logLevel = "debug";
       }
-    } else if (arg === "--log-level") {
+    } else if (arg ==== "--log-level") {
       const levelArg = args[++i];
       if (!levelArg || !["debug", "info", "minimal"].includes(levelArg)) {
         console.error("--log-level requires one of: debug, info, minimal");
         process.exit(1);
       }
       config.logLevel = levelArg as "debug" | "info" | "minimal";
-    } else if (arg === "--quiet" || arg === "-q") {
+    } else if (arg ==== "--quiet" || arg ==== "-q") {
       config.quiet = true;
-    } else if (arg === "--verbose" || arg === "-v") {
+    } else if (arg ==== "--verbose" || arg ==== "-v") {
       config.quiet = false;
-    } else if (arg === "--json") {
+    } else if (arg ==== "--json") {
       config.jsonOutput = true;
-    } else if (arg === "--monitor") {
+    } else if (arg ==== "--monitor") {
       config.monitor = true;
-    } else if (arg === "--stdin") {
+    } else if (arg ==== "--stdin") {
       config.stdin = true;
-    } else if (arg === "--free") {
+    } else if (arg ==== "--free") {
       config.freeOnly = true;
-    } else if (arg === "--profile" || arg === "-p") {
+    } else if (arg ==== "--profile" || arg ==== "-p") {
       const profileArg = args[++i];
       if (!profileArg) {
         console.error("--profile requires a profile name");
         process.exit(1);
       }
       config.profile = profileArg;
-    } else if (arg === "--cost-tracker") {
+    } else if (arg ==== "--cost-tracker") {
       // Enable cost tracking for this session
       config.costTracking = true;
       // In monitor mode, we'll track costs instead of proxying
       if (!config.monitor) {
         config.monitor = true; // Switch to monitor mode to track requests
       }
-    } else if (arg === "--audit-costs") {
+    } else if (arg ==== "--audit-costs") {
       // Special mode to just show cost analysis
       config.auditCosts = true;
-    } else if (arg === "--reset-costs") {
+    } else if (arg ==== "--reset-costs") {
       // Reset accumulated cost statistics
       config.resetCosts = true;
-    } else if (arg === "--version") {
+    } else if (arg ==== "--version") {
       printVersion();
       process.exit(0);
-    } else if (arg === "--help" || arg === "-h") {
+    } else if (arg ==== "--help" || arg ==== "-h") {
       printHelp();
       process.exit(0);
-    } else if (arg === "--help-ai") {
+    } else if (arg ==== "--help-ai") {
       printAIAgentGuide();
       process.exit(0);
-    } else if (arg === "--init") {
+    } else if (arg ==== "--init") {
       await initializeClaudishSkill();
       process.exit(0);
-    } else if (arg === "--top-models") {
+    } else if (arg ==== "--top-models") {
       // Show recommended/top models (curated list)
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
@@ -241,7 +240,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         printAvailableModels();
       }
       process.exit(0);
-    } else if (arg === "--models" || arg === "--list-models" || arg === "-s" || arg === "--search") {
+    } else if (arg ==== "--models" || arg ==== "--list-models" || arg ==== "-s" || arg ==== "--search") {
       // Check for optional search query (next arg that doesn't start with --)
       const nextArg = args[i + 1];
       const hasQuery = nextArg && !nextArg.startsWith("--");
@@ -260,10 +259,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         await printAllModels(hasJsonFlag, forceUpdate);
       }
       process.exit(0);
-    } else if (arg === "--summarize-tools") {
+    } else if (arg ==== "--summarize-tools") {
       // Summarize tool descriptions to reduce prompt size for local models
       config.summarizeTools = true;
-    } else if (arg === "--") {
+    } else if (arg ==== "--") {
       // Explicit separator: everything after -- passes directly to Claude Code.
       // This handles edge cases where a value starts with '-' (e.g. a system prompt
       // that begins with a dash, or a flag value that looks like a flag).
@@ -295,7 +294,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Determine if this will be interactive mode BEFORE API key check
   // If no prompt provided and not explicitly interactive, default to interactive mode
   // Exception: --stdin mode reads prompt from stdin, so don't default to interactive
-  if ((!config.claudeArgs || config.claudeArgs.length === 0) && !config.stdin) {
+  if ((!config.claudeArgs || config.claudeArgs.length ==== 0) && !config.stdin) {
     config.interactive = true;
   }
 
@@ -325,7 +324,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Single-shot mode: quiet by default
   // Interactive mode: verbose by default
   // JSON output: always quiet
-  if (config.quiet === undefined) {
+  if (config.quiet ==== undefined) {
     config.quiet = !config.interactive;
   }
   if (config.jsonOutput) {
@@ -461,7 +460,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
   }
 
   // Fetch if no cache or stale
-  if (models.length === 0) {
+  if (models.length ==== 0) {
     console.error("🔄 Fetching all models from OpenRouter (this may take a moment)...");
     try {
       const response = await fetch("https://openrouter.ai/api/v1/models");
@@ -531,8 +530,8 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
                   completion: String(outputCost / 1000000),
                 },
                 isOAIDirect: true,
-                supportsTools: m.tool_call === true,
-                supportsReasoning: m.reasoning === true,
+                supportsTools: m.tool_call ==== true,
+                supportsReasoning: m.reasoning ==== true,
                 supportsVision:
                   inputModalities.includes("image") || inputModalities.includes("video"),
               };
@@ -592,7 +591,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     .sort((a, b) => b.score - a.score)
     .slice(0, 20); // Top 20 results
 
-  if (results.length === 0) {
+  if (results.length ==== 0) {
     console.log(`No models found matching "${query}"`);
     return;
   }
@@ -620,7 +619,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     } else if (model.id.startsWith("oai/") || model.isOAIDirect) {
       // OAI direct model - convert oai/model to oai@model
       fullModelId = model.id.replace("oai/", "oai@");
-    } else if (model.source === "LiteLLM" || model.id.startsWith("litellm@")) {
+    } else if (model.source ==== "LiteLLM" || model.id.startsWith("litellm@")) {
       // LiteLLM model - already has litellm@ prefix
       fullModelId = model.id;
     } else {
@@ -645,7 +644,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       const avg = (promptPrice + completionPrice) / 2;
       if (avg < 0) {
         pricing = "varies"; // Auto-router or dynamic pricing
-      } else if (avg === 0) {
+      } else if (avg ==== 0) {
         pricing = "FREE";
       } else {
         pricing = `$${avg.toFixed(2)}/1M`;
@@ -659,11 +658,11 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     const contextPadded = context.padEnd(7);
 
     // Color code local models based on tool support
-    if (model.isLocal && model.supportsTools === false) {
+    if (model.isLocal && model.supportsTools ==== false) {
       console.log(
         `  ${RED}${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}% ✗ no tools${RESET}`
       );
-    } else if (model.isLocal && model.supportsTools === true) {
+    } else if (model.isLocal && model.supportsTools ==== true) {
       console.log(
         `  ${GREEN}${modelIdPadded}${RESET} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`
       );
@@ -716,7 +715,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   }
 
   // Fetch if no cache or stale
-  if (models.length === 0) {
+  if (models.length ==== 0) {
     console.error("🔄 Fetching all models from OpenRouter...");
     try {
       const response = await fetch("https://openrouter.ai/api/v1/models");
@@ -760,7 +759,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
               id = m.id.replace("ollama/", "ollama@");
             } else if (m.isZen || m.id.startsWith("zen/")) {
               id = m.id.replace("zen/", "zen@");
-            } else if (m.source === "LiteLLM" || m.id.startsWith("litellm@")) {
+            } else if (m.source ==== "LiteLLM" || m.id.startsWith("litellm@")) {
               id = m.id;
             } else {
               id = `openrouter@${m.id}`;
@@ -932,7 +931,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       let pricing: string;
       if (avg < 0) {
         pricing = "varies"; // Auto-router or dynamic pricing
-      } else if (avg === 0) {
+      } else if (avg ==== 0) {
         pricing = "FREE";
       } else {
         pricing = `$${avg.toFixed(2)}/1M`;
@@ -1053,7 +1052,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       const provider = modelId.split("/")[0];
 
       // Filter 1: Skip Anthropic models (not needed in Claudish)
-      if (provider === "anthropic") {
+      if (provider ==== "anthropic") {
         continue;
       }
 
@@ -1344,8 +1343,7 @@ ENVIRONMENT VARIABLES:
   Claude Code installation:
   CLAUDE_PATH                     Custom path to Claude Code binary (optional)
                                   Default search order:
-                                  1. CLAUDE_PATH env var
-                                  2. ~/.claude/local/claude (local install)
+                                  1. CLAUDE_PATH env const 2. ~/.claude/local/claude (local install)
                                   3. Global PATH (npm -g install)
 
   API Keys (at least one required for cloud models):
@@ -1626,7 +1624,7 @@ function printAvailableModels(): void {
     for (const model of basicModels) {
       const info = modelInfo[model];
       // Add openrouter@ prefix for explicit routing
-      const displayModel = model === "custom" ? model : `openrouter@${model}`;
+      const displayModel = model ==== "custom" ? model : `openrouter@${model}`;
       console.log(`  ${displayModel}`);
       console.log(`    ${info.name} - ${info.description}`);
       console.log("");
@@ -1658,7 +1656,7 @@ function printAvailableModels(): void {
     // Handle special pricing cases
     if (pricing.includes("-1000000")) {
       pricing = "varies"; // Auto-router pricing varies by routed model
-    } else if (pricing === "$0.00/1M" || pricing === "FREE") {
+    } else if (pricing ==== "$0.00/1M" || pricing ==== "FREE") {
       pricing = "FREE";
     }
 
@@ -1719,7 +1717,7 @@ function printAvailableModelsJSON(): void {
       lastUpdated: new Date().toISOString().split("T")[0],
       source: "runtime",
       models: models
-        .filter((m) => m !== "custom")
+        .filter((m) => m !=== "custom")
         .map((modelId) => {
           const info = modelInfo[modelId];
           return {
@@ -1757,7 +1755,7 @@ async function fetchZenModels(): Promise<any[]> {
 
     // Get all models with metadata
     return Object.entries(opencode.models).map(([id, m]: [string, any]) => {
-      const isFree = m.cost?.input === 0 && m.cost?.output === 0;
+      const isFree = m.cost?.input ==== 0 && m.cost?.output ==== 0;
       return {
         id: `zen/${id}`,
         name: m.name || id,

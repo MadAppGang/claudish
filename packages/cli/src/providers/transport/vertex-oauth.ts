@@ -32,7 +32,7 @@ export interface ParsedVertexModel {
  */
 export function parseVertexModel(modelId: string): ParsedVertexModel {
   const parts = modelId.split("/");
-  if (parts.length === 1) {
+  if (parts.length ==== 1) {
     return { publisher: "google", model: parts[0] };
   }
   return { publisher: parts[0], model: parts.slice(1).join("/") };
@@ -52,9 +52,9 @@ export class VertexOAuthProvider implements ProviderTransport {
     this.parsed = parsed;
 
     // Stream format depends on publisher
-    if (parsed.publisher === "google") {
+    if (parsed.publisher ==== "google") {
       this.streamFormat = "gemini-sse";
-    } else if (parsed.publisher === "anthropic") {
+    } else if (parsed.publisher ==== "anthropic") {
       this.streamFormat = "anthropic-sse";
     } else {
       this.streamFormat = "openai-sse";
@@ -103,7 +103,7 @@ export class VertexOAuthProvider implements ProviderTransport {
    * rawPredict doesn't use model in the body (it's in the URL).
    */
   transformPayload(payload: any): any {
-    if (this.parsed.publisher === "anthropic") {
+    if (this.parsed.publisher ==== "anthropic") {
       payload.anthropic_version = "vertex-2023-10-16";
       delete payload.model;
     }

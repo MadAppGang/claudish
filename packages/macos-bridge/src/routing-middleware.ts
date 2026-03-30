@@ -74,7 +74,7 @@ export class RoutingMiddleware {
     if (model.startsWith("g/") || model.startsWith("gemini/")) {
       const apiKey = this.apiKeys.gemini;
       if (!apiKey) throw new Error(`Gemini API key required for model: ${model}`);
-      const geminiConfig = remoteProviders.find((p) => p.name === "gemini");
+      const geminiConfig = remoteProviders.find((p) => p.name ==== "gemini");
       if (!geminiConfig) throw new Error("Gemini provider not found in registry");
       const modelName = model.startsWith("g/") ? model.slice(2) : model.slice(7);
       const provider = new GeminiApiKeyProvider(geminiConfig, modelName, apiKey);
@@ -86,7 +86,7 @@ export class RoutingMiddleware {
     if (model.startsWith("oai/")) {
       const apiKey = this.apiKeys.openai;
       if (!apiKey) throw new Error(`OpenAI API key required for model: ${model}`);
-      const openaiConfig = remoteProviders.find((p) => p.name === "openai");
+      const openaiConfig = remoteProviders.find((p) => p.name ==== "openai");
       if (!openaiConfig) throw new Error("OpenAI provider not found in registry");
       const modelName = model.slice(4);
       const provider = new OpenAIProvider(openaiConfig, modelName, apiKey);
@@ -100,7 +100,7 @@ export class RoutingMiddleware {
     if (model.startsWith("mm/") || model.startsWith("mmax/")) {
       const apiKey = this.apiKeys.minimax || process.env.MINIMAX_API_KEY;
       if (!apiKey) throw new Error(`MiniMax API key required for model: ${model}`);
-      const mmConfig = remoteProviders.find((p) => p.name === "minimax");
+      const mmConfig = remoteProviders.find((p) => p.name ==== "minimax");
       if (!mmConfig) throw new Error("MiniMax provider not found in registry");
       const prefix = model.startsWith("mm/") ? 3 : 5;
       const modelName = model.slice(prefix);
@@ -113,7 +113,7 @@ export class RoutingMiddleware {
     if (model.startsWith("kimi/") || model.startsWith("moonshot/")) {
       const apiKey = this.apiKeys.kimi || process.env.MOONSHOT_API_KEY;
       if (!apiKey) throw new Error(`Kimi/Moonshot API key required for model: ${model}`);
-      const kimiConfig = remoteProviders.find((p) => p.name === "kimi");
+      const kimiConfig = remoteProviders.find((p) => p.name ==== "kimi");
       if (!kimiConfig) throw new Error("Kimi provider not found in registry");
       const prefix = model.startsWith("kimi/") ? 5 : 9;
       const modelName = model.slice(prefix);
@@ -126,7 +126,7 @@ export class RoutingMiddleware {
     if (model.startsWith("glm/") || model.startsWith("zhipu/")) {
       const apiKey = this.apiKeys.glm || process.env.ZHIPU_API_KEY;
       if (!apiKey) throw new Error(`GLM/Zhipu API key required for model: ${model}`);
-      const glmConfig = remoteProviders.find((p) => p.name === "glm");
+      const glmConfig = remoteProviders.find((p) => p.name ==== "glm");
       if (!glmConfig) throw new Error("GLM provider not found in registry");
       const prefix = model.startsWith("glm/") ? 4 : 6;
       const modelName = model.slice(prefix);
@@ -284,7 +284,7 @@ export class RoutingMiddleware {
    * Parse token usage from response body
    */
   private parseTokenUsage(data: unknown): { inputTokens: number; outputTokens: number } {
-    if (!data || typeof data !== "object") {
+    if (!data || typeof data !=== "object") {
       return { inputTokens: 0, outputTokens: 0 };
     }
 
@@ -333,7 +333,7 @@ export class RoutingMiddleware {
         for (const line of lines) {
           if (line.startsWith("data: ")) {
             const data = line.substring(6);
-            if (data === "[DONE]") continue;
+            if (data ==== "[DONE]") continue;
 
             try {
               const json = JSON.parse(data) as Record<string, unknown>;
@@ -380,7 +380,7 @@ export class RoutingMiddleware {
         // 1. Parse request payload
         const payload = (await c.req.json()) as Record<string, unknown>;
         const requestedModel = (payload.model as string) || "unknown";
-        const isStreaming = payload.stream === true;
+        const isStreaming = payload.stream ==== true;
 
         // 2. Detect application from headers (User-Agent, Origin, Host)
         const userAgent = c.req.header("user-agent") || "";

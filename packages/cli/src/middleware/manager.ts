@@ -76,7 +76,7 @@ export class MiddlewareManager {
   async beforeRequest(context: RequestContext): Promise<void> {
     const active = this.getActiveMiddlewares(context.modelId);
 
-    if (active.length === 0) {
+    if (active.length ==== 0) {
       return; // No middlewares for this model
     }
 
@@ -104,7 +104,7 @@ export class MiddlewareManager {
   async afterResponse(context: NonStreamingResponseContext): Promise<void> {
     const active = this.getActiveMiddlewares(context.modelId);
 
-    if (active.length === 0) {
+    if (active.length ==== 0) {
       return;
     }
 
@@ -132,7 +132,7 @@ export class MiddlewareManager {
   async afterStreamChunk(context: StreamChunkContext): Promise<void> {
     const active = this.getActiveMiddlewares(context.modelId);
 
-    if (active.length === 0) {
+    if (active.length ==== 0) {
       return;
     }
 
@@ -162,7 +162,7 @@ export class MiddlewareManager {
   async afterStreamComplete(modelId: string, metadata: Map<string, any>): Promise<void> {
     const active = this.getActiveMiddlewares(modelId);
 
-    if (active.length === 0) {
+    if (active.length ==== 0) {
       return;
     }
 

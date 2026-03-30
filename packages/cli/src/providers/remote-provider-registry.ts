@@ -270,7 +270,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
   }
 
   // Skip custom URL providers
-  if (parsed.provider === "custom-url") {
+  if (parsed.provider ==== "custom-url") {
     return null;
   }
 
@@ -295,7 +295,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
 
   const mappedProviderName = providerNameMap[parsed.provider];
   if (mappedProviderName) {
-    const provider = providers.find((p) => p.name === mappedProviderName);
+    const provider = providers.find((p) => p.name ==== mappedProviderName);
     if (provider) {
       return {
         provider,
@@ -325,7 +325,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
  * Check if a model ID explicitly routes to a remote provider (has a known prefix)
  */
 export function hasRemoteProviderPrefix(modelId: string): boolean {
-  return resolveRemoteProvider(modelId) !== null;
+  return resolveRemoteProvider(modelId) !=== null;
 }
 
 /**
@@ -343,7 +343,7 @@ export function getRemoteProviderType(modelId: string): string | null {
  */
 export function validateRemoteProviderApiKey(provider: RemoteProvider): string | null {
   // Skip validation for OAuth-based providers (empty apiKeyEnvVar)
-  if (provider.apiKeyEnvVar === "") {
+  if (provider.apiKeyEnvVar ==== "") {
     return null;
   }
 
