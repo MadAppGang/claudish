@@ -39,6 +39,7 @@ export const MODEL_CATALOG: ModelEntry[] = [
   { pattern: "grok", contextWindow: 131_072 },
 
   // ── GLM ─────────────────────────────────────────────
+  { pattern: "glm-5.1", contextWindow: 128_000, supportsVision: true },
   { pattern: "glm-5-turbo", contextWindow: 202_752 },
   { pattern: "glm-5", contextWindow: 80_000, supportsVision: true },
   { pattern: "glm-4.7-flash", contextWindow: 202_752 },

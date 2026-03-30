@@ -50,6 +50,13 @@ describe("Group 1: Model Catalog — lookupModel()", () => {
     expect(entry!.temperatureRange).toBeUndefined();
   });
 
+  test("glm-5.1 → contextWindow 128000, supportsVision true", () => {
+    const entry = lookupModel("glm-5.1");
+    expect(entry).toBeDefined();
+    expect(entry!.contextWindow).toBe(128_000);
+    expect(entry!.supportsVision).toBe(true);
+  });
+
   test("glm-5 → contextWindow 80000, supportsVision true", () => {
     const entry = lookupModel("glm-5");
     expect(entry).toBeDefined();
