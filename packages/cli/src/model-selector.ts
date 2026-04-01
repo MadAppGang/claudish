@@ -1254,6 +1254,7 @@ const ALL_PROVIDER_CHOICES: Array<{
   { name: "OpenCode Zen", value: "zen", description: "Free models, no API key needed", provider: "opencode-zen" },
   { name: "Google Gemini", value: "google", description: "Direct API", provider: "google" },
   { name: "OpenAI", value: "openai", description: "Direct API", provider: "openai" },
+  { name: "OpenAI OAuth", value: "openai-oauth", description: "ChatGPT subscription (oo@)", provider: "openai-oauth" },
   { name: "xAI / Grok", value: "xai", description: "Direct API", provider: "xai" },
   { name: "MiniMax", value: "minimax", description: "Direct API", provider: "minimax" },
   { name: "MiniMax Coding", value: "minimax-coding", description: "Coding subscription", provider: "minimax-coding" },
@@ -1304,6 +1305,7 @@ const PROVIDER_MODEL_PREFIX: Record<string, string> = {
   lmstudio: "lmstudio@",
   zen: "zen@",
   openrouter: "openrouter@",
+  "openai-oauth": "oo@",
 };
 
 /**
@@ -1323,6 +1325,7 @@ const PROVIDER_SOURCE_FILTER: Record<string, string> = {
   zai: "Z.AI",
   ollamacloud: "OllamaCloud",
   zen: "Zen",
+  "openai-oauth": "OpenAI OAuth",
 };
 
 /**
@@ -1360,6 +1363,15 @@ function getKnownModels(provider: string): ModelInfo[] {
       { id: "oai@o3", name: "o3", context: "200K", description: "Reasoning model" },
       { id: "oai@o4-mini", name: "o4-mini", context: "200K", description: "Fast reasoning model" },
       { id: "oai@gpt-4.1", name: "GPT-4.1", context: "1M", description: "Large context model" },
+    ],
+    "openai-oauth": [
+      { id: "oo@gpt-5.4", name: "GPT-5.4", context: "1050K", description: "Flagship — coding, reasoning, agentic" },
+      { id: "oo@gpt-5.4-mini", name: "GPT-5.4 Mini", context: "1050K", description: "Fast, lower-cost" },
+      { id: "oo@gpt-5.4-nano", name: "GPT-5.4 Nano", context: "1050K", description: "Fastest, cheapest" },
+      { id: "oo@gpt-5.3-codex", name: "GPT-5.3 Codex", context: "400K", description: "Best agentic coding model" },
+      { id: "oo@gpt-5.3-codex-spark", name: "GPT-5.3 Codex Spark", context: "400K", description: "Near-instant coding (Pro only)" },
+      { id: "oo@gpt-5-codex", name: "GPT-5 Codex", context: "200K", description: "Previous-gen coding model" },
+      { id: "oo@gpt-5-codex-mini", name: "GPT-5 Codex Mini", context: "200K", description: "Lighter coding model" },
     ],
     xai: [
       { id: "xai@grok-4", name: "Grok 4", context: "256K" },

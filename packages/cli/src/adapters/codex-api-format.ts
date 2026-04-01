@@ -13,6 +13,7 @@
 
 import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import { log } from "../logger.js";
 
 export class CodexAPIFormat extends BaseAPIFormat {
   constructor(modelId: string) {
@@ -59,6 +60,18 @@ export class CodexAPIFormat extends BaseAPIFormat {
 
     if (claudeRequest.max_tokens) {
       payload.max_output_tokens = Math.max(16, claudeRequest.max_tokens);
+    }
+
+    // Map thinking.budget_tokens -> reasoning_effort for reasoning models
+    if (claudeRequest.thinking) {
+      const { budget_tokens } = claudeRequest.thinking;
+      let effort = "medium";
+      if (budget_tokens < 4000) effort = "low";
+      else if (budget_tokens < 16000) effort = "medium";
+      else if (budget_tokens < 32000) effort = "high";
+      else effort = "high";
+      payload.reasoning = { effort };
+      log(`[CodexAPIFormat] Mapped budget ${budget_tokens} -> reasoning.effort: ${effort}`);
     }
 
     if (tools.length > 0) {

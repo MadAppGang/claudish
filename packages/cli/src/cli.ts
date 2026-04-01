@@ -969,6 +969,37 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     }
   }
 
+  // Print OpenAI OAuth models (static list — requires --openai-login)
+  {
+    const hasOAuthCreds = existsSync(join(homedir(), ".claudish", "openai-oauth.json"));
+    const oauthStatus = hasOAuthCreds ? `${GREEN}logged in${RESET}` : `${RED}not logged in${RESET}`;
+    const oauthModels = [
+      { id: "gpt-5.4",              context: "1050K", desc: "Flagship — coding, reasoning, agentic" },
+      { id: "gpt-5.4-mini",         context: "1050K", desc: "Fast, lower-cost option" },
+      { id: "gpt-5.4-nano",         context: "1050K", desc: "Fastest, cheapest option" },
+      { id: "gpt-5.3-codex",        context: "400K",  desc: "Best agentic coding model" },
+      { id: "gpt-5.3-codex-spark",  context: "400K",  desc: "Near-instant coding (Pro only)" },
+      { id: "gpt-5-codex",          context: "200K",  desc: "Previous-gen coding model" },
+      { id: "gpt-5-codex-mini",     context: "200K",  desc: "Lighter coding model" },
+    ];
+
+    console.log(`\n🔑 OPENAI OAUTH (${oauthModels.length} models — ${oauthStatus}):\n`);
+    console.log("    Model                          Context    Description");
+    console.log("  " + "─".repeat(68));
+
+    for (const m of oauthModels) {
+      const fullId = `oo@${m.id}`;
+      const modelIdPadded = fullId.padEnd(32);
+      const contextPadded = m.context.padEnd(10);
+      console.log(`    ${modelIdPadded} ${contextPadded} ${DIM}${m.desc}${RESET}`);
+    }
+    console.log("");
+    if (!hasOAuthCreds) {
+      console.log(`  ${DIM}Login first: claudish --openai-login${RESET}`);
+    }
+    console.log("  Use: claudish --model oo@<model-id>");
+  }
+
   // Group by provider
   const byProvider = new Map<string, any[]>();
   for (const model of models) {
@@ -1769,6 +1800,8 @@ AUTHENTICATION:
   --gemini-logout          Clear Gemini OAuth credentials
   --kimi-login             Login to Kimi/Moonshot AI via OAuth (for kc@ prefix)
   --kimi-logout            Clear Kimi OAuth credentials
+  --openai-login           Login to OpenAI via OAuth (for oo@ prefix)
+  --openai-logout          Clear OpenAI OAuth credentials
 
 MODEL MAPPING (per-role override):
   --model-opus <model>     Model for Opus role (planning, complex tasks)

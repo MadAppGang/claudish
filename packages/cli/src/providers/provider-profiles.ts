@@ -32,6 +32,7 @@ import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
+import { OpenAIOAuthProviderTransport } from "./transport/openai-oauth.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 import { DefaultAPIFormat } from "../adapters/base-api-format.js";
 import { OpenRouterProvider } from "./transport/openrouter.js";
@@ -107,6 +108,25 @@ const geminiCodeAssistProfile: ProviderProfile = {
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created Gemini Code Assist handler (composed): ${ctx.modelName}`);
+    return handler;
+  },
+};
+
+/**
+ * OpenAI OAuth — ChatGPT subscription via OAuth PKCE.
+ * Uses Responses API endpoint (chatgpt.com/backend-api/codex/responses)
+ * with CodexAPIFormat adapter.
+ */
+const openaiOAuthProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new OpenAIOAuthProviderTransport(ctx.modelName);
+    const adapter = new CodexAPIFormat(ctx.modelName);
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      tokenStrategy: "delta-aware",
+      ...ctx.sharedOpts,
+    });
+    log(`[Proxy] Created OpenAI OAuth handler (composed): ${ctx.modelName}`);
     return handler;
   },
 };
@@ -333,6 +353,7 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   gemini: geminiProfile,
   "gemini-codeassist": geminiCodeAssistProfile,
   openai: openaiProfile,
+  "openai-oauth": openaiOAuthProfile,
   minimax: anthropicCompatProfile,
   "minimax-coding": anthropicCompatProfile,
   kimi: anthropicCompatProfile,

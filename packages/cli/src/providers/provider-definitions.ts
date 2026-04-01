@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 
 export type TransportType =
   | "openai"
+  | "openai-oauth"
   | "anthropic"
   | "gemini"
   | "gemini-oauth"
@@ -159,6 +160,27 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "Direct OpenAI API (oai@)",
+  },
+
+  // ── OpenAI OAuth (ChatGPT subscription) ────────────────────────────
+  // Supported models: gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.4, gpt-5.4-mini,
+  // gpt-5.4-nano, gpt-5-codex, gpt-5-codex-mini, gpt-5.2-codex, gpt-5.1-codex,
+  // gpt-5.1-codex-max. Non-codex models (gpt-4o, gpt-5.3, o3) are NOT supported.
+  {
+    name: "openai-oauth",
+    displayName: "OpenAI OAuth",
+    transport: "openai-oauth",
+    baseUrl: "https://chatgpt.com",
+    apiPath: "/backend-api/codex/responses",
+    apiKeyEnvVar: "",
+    oauthFallback: "openai-oauth.json",
+    apiKeyDescription: "OpenAI OAuth (ChatGPT login)",
+    apiKeyUrl: "https://chatgpt.com",
+    shortcuts: ["oo"],
+    shortestPrefix: "oo",
+    legacyPrefixes: [{ prefix: "oo/", stripPrefix: true }],
+    isDirectApi: true,
+    description: "OpenAI OAuth (oo@)",
   },
 
   // ── OpenRouter ─────────────────────────────────────────────────────

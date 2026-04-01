@@ -13,7 +13,7 @@ interface OAuthProviderDescriptor {
  * Providers with working OAuth device authorization flows.
  *
  * Providers NOT listed here use API keys only (no public OAuth device-auth endpoint):
- *   - openai        (OPENAI_API_KEY) - OpenAI does not offer public OAuth device auth
+ *   - openai        (OPENAI_API_KEY) - API key only (OAuth available via openai-oauth provider)
  *   - minimax       (MINIMAX_API_KEY) - API key only
  *   - minimax-coding (MINIMAX_CODING_API_KEY) - API key only
  *   - glm           (ZHIPU_API_KEY) - API key only
@@ -52,6 +52,14 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
   },
   "gemini-codeassist": {
     credentialFile: "gemini-oauth.json",
+    validationMode: "check-expiry",
+    expiresAtField: "expires_at",
+    expiryBufferMs: 5 * 60 * 1000,
+  },
+  // OpenAI - OAuth2 PKCE flow (browser-based)
+  // Login via: claudish --openai-login
+  "openai-oauth": {
+    credentialFile: "openai-oauth.json",
     validationMode: "check-expiry",
     expiresAtField: "expires_at",
     expiryBufferMs: 5 * 60 * 1000,

@@ -64,6 +64,8 @@ const isGeminiLogin = args.includes("--gemini-login");
 const isGeminiLogout = args.includes("--gemini-logout");
 const isKimiLogin = args.includes("--kimi-login");
 const isKimiLogout = args.includes("--kimi-logout");
+const isOpenaiLogin = args.includes("--openai-login");
+const isOpenaiLogout = args.includes("--openai-logout");
 
 // Check for subcommands (can appear anywhere in args due to aliases like `claudish -y`)
 const isUpdateCommand = args.includes("update");
@@ -147,6 +149,39 @@ if (isMcpMode) {
       process.exit(0);
     } catch (error) {
       console.error("❌ Kimi OAuth logout failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+} else if (isOpenaiLogin) {
+  // OpenAI OAuth login (PKCE browser flow)
+  import("./auth/openai-oauth.js").then(async ({ OpenAIOAuth }) => {
+    try {
+      const oauth = OpenAIOAuth.getInstance();
+      await oauth.login();
+      console.log("\n✅ OpenAI OAuth login successful!");
+      console.log("You can now use OpenAI OAuth with: claudish --model oo@gpt-4o");
+      process.exit(0);
+    } catch (error) {
+      console.error(
+        "\n❌ OpenAI OAuth login failed:",
+        error instanceof Error ? error.message : error
+      );
+      process.exit(1);
+    }
+  });
+} else if (isOpenaiLogout) {
+  // OpenAI OAuth logout
+  import("./auth/openai-oauth.js").then(async ({ OpenAIOAuth }) => {
+    try {
+      const oauth = OpenAIOAuth.getInstance();
+      await oauth.logout();
+      console.log("✅ OpenAI OAuth credentials cleared.");
+      process.exit(0);
+    } catch (error) {
+      console.error(
+        "❌ OpenAI OAuth logout failed:",
+        error instanceof Error ? error.message : error
+      );
       process.exit(1);
     }
   });
