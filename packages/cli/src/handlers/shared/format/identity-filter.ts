@@ -10,6 +10,9 @@
  */
 export function filterIdentity(content: string): string {
   return content
+    // Strip Anthropic billing header — contains a per-turn hash (cch=) that
+    // breaks vLLM prefix caching by making the system prompt differ every turn
+    .replace(/x-anthropic-billing-header:[^\n]*\n?/g, "")
     .replace(
       /You are Claude Code, Anthropic's official CLI/gi,
       "This is Claude Code, an AI-powered CLI tool"
