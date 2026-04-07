@@ -143,7 +143,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     tokenStrategy: "delta-aware",
     baseUrl: "https://api.openai.com",
     baseUrlEnvVars: ["OPENAI_BASE_URL"],
-    apiPath: "/v1/chat/completions",
+    apiPath: "/chat/completions",
     apiKeyEnvVar: "OPENAI_API_KEY",
     apiKeyDescription: "OpenAI API Key",
     apiKeyUrl: "https://platform.openai.com/api-keys",
