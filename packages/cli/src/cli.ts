@@ -366,12 +366,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.claudeArgs.push(arg);
       if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         config.claudeArgs.push(args[++i]);
+        // The consumed value is a flag argument, not a positional prompt.
+        // Mark it so the interactive-mode detection below doesn't mistake it for one.
+        config._hasFlagValue = true;
       }
     } else {
       // Positional argument (prompt text): pass through to Claude Code in order.
       // Example: claudish --model grok "hello world"
       //          → claudeArgs = ['hello world']
       config.claudeArgs.push(arg);
+      config._hasPositionalPrompt = true;
     }
 
     i++;
@@ -380,7 +384,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Determine if this will be interactive mode BEFORE API key check
   // If no prompt provided and not explicitly interactive, default to interactive mode
   // Exception: --stdin mode reads prompt from stdin, so don't default to interactive
-  if ((!config.claudeArgs || config.claudeArgs.length === 0) && !config.stdin) {
+  // A "prompt" is a positional arg that appears outside of flag-value pairs.
+  // Flags like "--session-id uuid --dangerously-skip-permissions" have no prompt,
+  // so they should be interactive too.
+  if (!config._hasPositionalPrompt && !config.stdin) {
     config.interactive = true;
   }
 

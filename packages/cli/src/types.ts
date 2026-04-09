@@ -21,6 +21,8 @@ export interface ClaudishConfig {
   freeOnly?: boolean; // Show only free models in selector
   profile?: string; // Profile name to use for model mapping
   claudeArgs: string[];
+  _hasPositionalPrompt?: boolean; // Internal: true when a positional prompt arg was found (not a flag value)
+  _hasFlagValue?: boolean; // Internal: true when a flag consumed a value (not a prompt)
 
   // Model Mapping
   modelOpus?: string;
