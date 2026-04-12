@@ -37,13 +37,17 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
    * Handle request preparation — reasoning parameters and tool name truncation
    */
   override prepareRequest(request: any, originalRequest: any): any {
-    // Map thinking.budget_tokens -> reasoning_effort for o1/o3 models
+    // Map thinking.budget_tokens -> reasoning_effort for o1/o3/gpt-5.x reasoning models
+    // Valid levels per openai-python SDK (shared/reasoning_effort.py):
+    // none, minimal, low, medium, high, xhigh
+    // Issue #84: GPT-5.x models support xhigh but the previous mapping capped at high.
     if (originalRequest.thinking && this.isReasoningModel()) {
       const { budget_tokens } = originalRequest.thinking;
       let effort = "medium";
       if (budget_tokens < 4000) effort = "minimal";
       else if (budget_tokens < 16000) effort = "low";
-      else if (budget_tokens >= 32000) effort = "high";
+      else if (budget_tokens < 32000) effort = "high";
+      else effort = "xhigh";
 
       request.reasoning_effort = effort;
       delete request.thinking;
@@ -123,12 +127,14 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     }
 
     // Reasoning params handled in prepareRequest instead
+    // Same xhigh mapping as prepareRequest (issue #84)
     if (claudeRequest.thinking && this.isReasoningModel()) {
       const { budget_tokens } = claudeRequest.thinking;
       let effort = "medium";
       if (budget_tokens < 4000) effort = "minimal";
       else if (budget_tokens < 16000) effort = "low";
-      else if (budget_tokens >= 32000) effort = "high";
+      else if (budget_tokens < 32000) effort = "high";
+      else effort = "xhigh";
       payload.reasoning_effort = effort;
       log(
         `[OpenAIAPIFormat] Mapped thinking.budget_tokens ${budget_tokens} -> reasoning_effort: ${effort}`
