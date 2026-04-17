@@ -4,11 +4,18 @@
  * Uses @inquirer/search for fuzzy search model selection
  */
 
-import { search, select, input, confirm } from "@inquirer/prompts";
+import { confirm, input, search, select } from "@inquirer/prompts";
 import {
-  fetchLiteLLMModels,
-  getRecommendedModelsSync,
+  type ModelDoc,
+  type ProviderListEntry,
   type RecommendedModelEntry,
+  fetchLiteLLMModels,
+  getModelsByProvider,
+  getProviderList,
+  getRecommendedModels,
+  getTop100Models,
+  searchModels,
+  searchModelsByProvider,
 } from "./model-loader.js";
 import { getProviderByName, isProviderAvailable } from "./providers/provider-definitions.js";
 
@@ -20,6 +27,7 @@ export interface ModelInfo {
   name: string;
   description: string;
   provider: string;
+  providerSlug?: string;
   pricing?: {
     input: string;
     output: string;
@@ -31,44 +39,59 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
-  source?:
-    | "OpenRouter"
-    | "Zen"
-    | "xAI"
-    | "Gemini"
-    | "OpenAI"
-    | "OpenAI Codex"
-    | "GLM"
-    | "GLM Coding"
-    | "MiniMax"
-    | "MiniMax Coding"
-    | "Kimi"
-    | "Kimi Coding"
-    | "Z.AI"
-    | "OllamaCloud"
-    | "LiteLLM"
-    | "Recommended"; // Which platform the model is from
+  source?: string; // Which platform the model is from
+}
+
+const RECOMMENDED_PROVIDER_SOURCE_MAP: Record<
+  string,
+  string
+> = {
+  google: "Gemini",
+  openai: "OpenAI",
+  "x-ai": "xAI",
+  moonshotai: "Kimi",
+  minimax: "MiniMax",
+  "z-ai": "Z.AI",
+};
+
+const RECOMMENDED_PROVIDER_LABEL_MAP: Record<string, string> = {
+  google: "Gemini",
+  openai: "OpenAI",
+  "x-ai": "xAI",
+  moonshotai: "Kimi",
+  minimax: "MiniMax",
+  "z-ai": "Z.AI",
+};
+
+function getRecommendedModelSource(provider: string): ModelInfo["source"] {
+  return RECOMMENDED_PROVIDER_SOURCE_MAP[provider.toLowerCase()] || "Recommended";
+}
+
+function getRecommendedProviderLabel(provider: string): string {
+  return RECOMMENDED_PROVIDER_LABEL_MAP[provider.toLowerCase()] || provider;
 }
 
 /**
- * Load recommended models from the Firebase-backed loader.
- * Entries are stamped with source "Recommended" for the interactive picker.
+ * Load recommended models from Firebase for the interactive picker.
+ * Use the async loader so cold-start runs fetch the live catalog instead of
+ * falling straight to the tiny bundled fallback.
  */
-function loadRecommendedModels(): ModelInfo[] {
+async function loadRecommendedModels(forceRefresh = false): Promise<ModelInfo[]> {
   try {
-    const doc = getRecommendedModelsSync();
+    const doc = await getRecommendedModels({ forceRefresh });
     return doc.models.map((model: RecommendedModelEntry) => ({
       id: model.id,
       name: model.name,
       description: model.description,
-      provider: model.provider,
+      provider: getRecommendedProviderLabel(model.provider),
+      providerSlug: model.provider.toLowerCase(),
       pricing: model.pricing,
       context: model.context,
       contextLength: parseContextString(model.context),
       supportsTools: model.supportsTools,
       supportsReasoning: model.supportsReasoning,
       supportsVision: model.supportsVision,
-      source: "Recommended" as const,
+      source: getRecommendedModelSource(model.provider),
     }));
   } catch {
     return [];
@@ -79,10 +102,183 @@ function loadRecommendedModels(): ModelInfo[] {
 function parseContextString(ctx?: string): number {
   if (!ctx || ctx === "N/A") return 0;
   const upper = ctx.toUpperCase();
-  if (upper.endsWith("M")) return parseFloat(upper) * 1_000_000;
-  if (upper.endsWith("K")) return parseFloat(upper) * 1000;
-  const n = parseInt(upper, 10);
-  return isNaN(n) ? 0 : n;
+  if (upper.endsWith("M")) return Number.parseFloat(upper) * 1_000_000;
+  if (upper.endsWith("K")) return Number.parseFloat(upper) * 1000;
+  const n = Number.parseInt(upper, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+interface PickerProvider {
+  slug: string;
+  label: string;
+  count: number;
+}
+
+const FIREBASE_PROVIDER_LABEL_MAP: Record<string, string> = {
+  ai21: "AI21",
+  alibaba: "Alibaba",
+  anthropic: "Anthropic",
+  baidu: "Baidu",
+  "black-forest-labs": "Black Forest Labs",
+  bytedance: "ByteDance",
+  cohere: "Cohere",
+  deepseek: "DeepSeek",
+  google: "Gemini",
+  meta: "Meta",
+  "meta-llama": "Meta Llama",
+  minimax: "MiniMax",
+  mistralai: "Mistral AI",
+  moonshotai: "Kimi",
+  nvidia: "NVIDIA",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  perplexity: "Perplexity",
+  qwen: "Qwen",
+  tencent: "Tencent",
+  togethercomputer: "Together AI",
+  unknown: "Unknown",
+  "x-ai": "xAI",
+  "z-ai": "Z.AI",
+};
+
+function formatFirebaseProviderLabel(slug: string): string {
+  const lower = slug.toLowerCase();
+  if (FIREBASE_PROVIDER_LABEL_MAP[lower]) {
+    return FIREBASE_PROVIDER_LABEL_MAP[lower];
+  }
+
+  return lower
+    .split("-")
+    .map((part) => {
+      if (part === "ai") return "AI";
+      if (part.length <= 3) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(" ");
+}
+
+function formatContextLength(ctx?: number): string {
+  if (!ctx || ctx <= 0) return "N/A";
+  if (ctx >= 1_000_000) return `${Math.round(ctx / 1_000_000)}M`;
+  return `${Math.round(ctx / 1000)}K`;
+}
+
+function formatAveragePricing(pricing?: ModelDoc["pricing"]): ModelInfo["pricing"] | undefined {
+  if (!pricing) return undefined;
+
+  const input = pricing.input;
+  const output = pricing.output;
+  const inputStr =
+    typeof input === "number" ? (input === 0 ? "FREE" : `$${input.toFixed(2)}`) : "N/A";
+  const outputStr =
+    typeof output === "number" ? (output === 0 ? "FREE" : `$${output.toFixed(2)}`) : "N/A";
+
+  if (typeof input !== "number" && typeof output !== "number") {
+    return {
+      input: inputStr,
+      output: outputStr,
+      average: "N/A",
+    };
+  }
+
+  const avg = ((input || 0) + (output || 0)) / 2;
+  return {
+    input: inputStr,
+    output: outputStr,
+    average: avg === 0 ? "FREE" : `$${avg.toFixed(2)}/1M`,
+  };
+}
+
+function modelDocToModelInfo(model: ModelDoc): ModelInfo {
+  const providerLabel = formatFirebaseProviderLabel(model.provider || "unknown");
+  const contextLength = model.contextWindow || 0;
+
+  return {
+    id: model.modelId,
+    name: model.displayName || model.modelId,
+    description: model.description || `${providerLabel} model`,
+    provider: providerLabel,
+    providerSlug: model.provider,
+    pricing: formatAveragePricing(model.pricing),
+    context: formatContextLength(contextLength),
+    contextLength,
+    supportsTools: model.capabilities?.tools,
+    supportsReasoning: model.capabilities?.thinking,
+    supportsVision: model.capabilities?.vision,
+    source: providerLabel,
+  };
+}
+
+function dedupeModels(models: ModelInfo[]): ModelInfo[] {
+  const seen = new Set<string>();
+  const deduped: ModelInfo[] = [];
+  for (const model of models) {
+    if (seen.has(model.id)) continue;
+    seen.add(model.id);
+    deduped.push(model);
+  }
+  return deduped;
+}
+
+function buildPickerProviders(entries: ProviderListEntry[]): PickerProvider[] {
+  return entries.map((entry) => ({
+    slug: entry.slug,
+    label: formatFirebaseProviderLabel(entry.slug),
+    count: entry.count,
+  }));
+}
+
+function buildPickerProvidersFromModels(models: ModelInfo[]): PickerProvider[] {
+  const counts = new Map<string, PickerProvider>();
+  for (const model of models) {
+    const slug = model.providerSlug || model.source?.toLowerCase();
+    if (!slug) continue;
+
+    const existing = counts.get(slug);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+
+    counts.set(slug, {
+      slug,
+      label: model.source || model.provider,
+      count: 1,
+    });
+  }
+
+  return Array.from(counts.values()).sort((a, b) => b.count - a.count);
+}
+
+function matchesProvider(model: ModelInfo, providerSlug: string): boolean {
+  return model.providerSlug === providerSlug || model.source?.toLowerCase() === providerSlug;
+}
+
+function filterModelsLocally(
+  models: ModelInfo[],
+  providerSlug: string | null,
+  searchTerm: string
+): ModelInfo[] {
+  let pool = providerSlug ? models.filter((model) => matchesProvider(model, providerSlug)) : models;
+  if (!searchTerm) {
+    return pool;
+  }
+
+  pool = pool
+    .map((model) => ({
+      model,
+      score: Math.max(
+        fuzzyMatch(model.id, searchTerm),
+        fuzzyMatch(model.name, searchTerm),
+        fuzzyMatch(model.provider, searchTerm) * 0.5,
+        fuzzyMatch(model.providerSlug || "", searchTerm) * 0.5
+      ),
+    }))
+    .filter((result) => result.score > 0.1)
+    .sort((a, b) => b.score - a.score)
+    .map((result) => result.model);
+
+  return pool;
 }
 
 /**
@@ -270,7 +466,7 @@ async function fetchGeminiModels(): Promise<ModelInfo[]> {
         return {
           id: `google@${modelName}`,
           name: model.displayName || modelName,
-          description: model.description || `Google Gemini model`,
+          description: model.description || "Google Gemini model",
           provider: "Gemini",
           pricing: getGeminiPricing(modelName),
           context: "128K",
@@ -436,39 +632,38 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
 
 /**
  * Provider filter aliases for @prefix search syntax
- * Maps user-typed aliases to the ModelInfo.source value
+ * Maps user-typed aliases to Firebase provider slugs.
  */
 const PROVIDER_FILTER_ALIASES: Record<string, string> = {
-  // Full names
-  zen: "Zen",
-  openrouter: "OpenRouter",
-  or: "OpenRouter",
-  xai: "xAI",
-  gemini: "Gemini",
-  gem: "Gemini",
-  google: "Gemini",
-  openai: "OpenAI",
-  oai: "OpenAI",
-  cx: "OpenAI Codex",
-  codex: "OpenAI Codex",
-  "openai-codex": "OpenAI Codex",
-  glm: "GLM",
-  "glm-coding": "GLM Coding",
-  gc: "GLM Coding",
-  minimax: "MiniMax",
-  mm: "MiniMax",
-  mmc: "MiniMax Coding",
-  "minimax-coding": "MiniMax Coding",
-  kimi: "Kimi",
-  moon: "Kimi",
-  moonshot: "Kimi",
-  kc: "Kimi Coding",
-  "kimi-coding": "Kimi Coding",
-  zai: "Z.AI",
-  ollamacloud: "OllamaCloud",
-  oc: "OllamaCloud",
-  litellm: "LiteLLM",
-  ll: "LiteLLM",
+  anthropic: "anthropic",
+  claude: "anthropic",
+  openai: "openai",
+  oai: "openai",
+  google: "google",
+  gemini: "google",
+  gem: "google",
+  xai: "x-ai",
+  grok: "x-ai",
+  "x-ai": "x-ai",
+  minimax: "minimax",
+  mm: "minimax",
+  kimi: "moonshotai",
+  moon: "moonshotai",
+  moonshot: "moonshotai",
+  qwen: "qwen",
+  zai: "z-ai",
+  glm: "z-ai",
+  deepseek: "deepseek",
+  mistral: "mistralai",
+  mistralai: "mistralai",
+  llama: "meta-llama",
+  meta: "meta-llama",
+  nvidia: "nvidia",
+  cohere: "cohere",
+  perplexity: "perplexity",
+  together: "togethercomputer",
+  openrouter: "openrouter",
+  or: "openrouter",
 };
 
 /**
@@ -476,12 +671,15 @@ const PROVIDER_FILTER_ALIASES: Record<string, string> = {
  * Returns { provider: source string or null, searchTerm: remaining text }
  *
  * Examples:
- *   "@xai"        → { provider: "xAI", searchTerm: "" }
- *   "@xai grok"   → { provider: "xAI", searchTerm: "grok" }
- *   "@ll gemini"  → { provider: "LiteLLM", searchTerm: "gemini" }
+ *   "@xai"        → { provider: "x-ai", searchTerm: "" }
+ *   "@xai grok"   → { provider: "x-ai", searchTerm: "grok" }
+ *   "@openai gpt" → { provider: "openai", searchTerm: "gpt" }
  *   "grok"        → { provider: null, searchTerm: "grok" }
  */
-function parseProviderFilter(term: string): { provider: string | null; searchTerm: string } {
+function parseProviderFilter(
+  term: string,
+  providers: PickerProvider[] = []
+): { provider: string | null; searchTerm: string } {
   if (!term.startsWith("@")) {
     return { provider: null, searchTerm: term };
   }
@@ -504,12 +702,29 @@ function parseProviderFilter(term: string): { provider: string | null; searchTer
     return { provider: source, searchTerm: rest };
   }
 
+  const exactMatch = providers.find(
+    (provider) =>
+      provider.slug === prefix.toLowerCase() || provider.label.toLowerCase() === prefix.toLowerCase()
+  );
+  if (exactMatch) {
+    return { provider: exactMatch.slug, searchTerm: rest };
+  }
+
   // Partial match: find aliases that start with the typed prefix
   const partialMatch = Object.entries(PROVIDER_FILTER_ALIASES).find(([alias]) =>
     alias.startsWith(prefix.toLowerCase())
   );
   if (partialMatch) {
     return { provider: partialMatch[1], searchTerm: rest };
+  }
+
+  const partialProvider = providers.find(
+    (provider) =>
+      provider.slug.startsWith(prefix.toLowerCase()) ||
+      provider.label.toLowerCase().startsWith(prefix.toLowerCase())
+  );
+  if (partialProvider) {
+    return { provider: partialProvider.slug, searchTerm: rest };
   }
 
   // No match — treat the whole thing as a regular search term
@@ -564,6 +779,8 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   const { freeOnly = false, recommended = true, message, forceUpdate = false } = options;
 
   let models: ModelInfo[];
+  let pickerProviders: PickerProvider[] = [];
+  const remoteQueryCache = new Map<string, Promise<ModelInfo[]>>();
 
   if (freeOnly) {
     models = await getFreeModels();
@@ -571,48 +788,69 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       throw new Error("No free models available");
     }
   } else {
-    // Fetch all models from all providers (xAI, Gemini, OpenAI, LiteLLM, etc.)
-    const [allModels, recommendedModels] = await Promise.all([
-      getAllModelsForSearch(forceUpdate),
-      Promise.resolve(recommended ? loadRecommendedModels() : []),
+    const [top100Result, providerListResult, recommendedResult] = await Promise.allSettled([
+      getTop100Models(),
+      getProviderList(),
+      recommended ? loadRecommendedModels(forceUpdate) : Promise.resolve([]),
     ]);
 
-    // Build prioritized list: Recommended (Firebase) -> direct API -> OpenRouter
-    const seenIds = new Set<string>();
-    models = [];
+    const topModels =
+      top100Result.status === "fulfilled"
+        ? dedupeModels(top100Result.value.models.map(modelDocToModelInfo))
+        : [];
+    const recommendedModels = recommendedResult.status === "fulfilled" ? recommendedResult.value : [];
 
-    // 1. Add recommended models first (Firebase curated catalog)
-    for (const m of recommendedModels) {
-      if (!seenIds.has(m.id)) {
-        seenIds.add(m.id);
-        models.push(m);
-      }
+    models = topModels.length > 0 ? topModels : recommendedModels;
+
+    if (models.length === 0) {
+      models = dedupeModels(await getAllModelsForSearch(forceUpdate));
     }
 
-    // 2. Add direct API models (xAI, Gemini, OpenAI, LiteLLM) - user has keys for these
-    for (const m of allModels.filter((m) => m.source && m.source !== "OpenRouter")) {
-      if (!seenIds.has(m.id)) {
-        seenIds.add(m.id);
-        models.push(m);
-      }
-    }
-
-    // 4. Add remaining OpenRouter models
-    for (const m of allModels.filter((m) => m.source === "OpenRouter")) {
-      if (!seenIds.has(m.id)) {
-        seenIds.add(m.id);
-        models.push(m);
-      }
-    }
+    pickerProviders =
+      providerListResult.status === "fulfilled"
+        ? buildPickerProviders(providerListResult.value)
+        : buildPickerProvidersFromModels(models);
   }
 
-  // Build provider filter choices from actually loaded models
-  const providerCounts = new Map<string, number>();
-  for (const m of models) {
-    if (m.source) {
-      providerCounts.set(m.source, (providerCounts.get(m.source) || 0) + 1);
+  const loadRemoteModels = async (
+    providerSlug: string | null,
+    searchTerm: string
+  ): Promise<ModelInfo[]> => {
+    const cacheKey = `${providerSlug || "__all__"}::${searchTerm}`;
+    const cached = remoteQueryCache.get(cacheKey);
+    if (cached) {
+      return cached;
     }
-  }
+
+    const request = (async () => {
+      if (freeOnly) {
+        return filterModelsLocally(models, providerSlug, searchTerm);
+      }
+
+      try {
+        if (providerSlug && searchTerm) {
+          return dedupeModels(
+            (await searchModelsByProvider(providerSlug, searchTerm, 100)).map(modelDocToModelInfo)
+          );
+        }
+
+        if (providerSlug) {
+          return dedupeModels((await getModelsByProvider(providerSlug, 500)).map(modelDocToModelInfo));
+        }
+
+        if (searchTerm) {
+          return dedupeModels((await searchModels(searchTerm, 100)).map(modelDocToModelInfo));
+        }
+
+        return models;
+      } catch {
+        return filterModelsLocally(models, providerSlug, searchTerm);
+      }
+    })();
+
+    remoteQueryCache.set(cacheKey, request);
+    return request;
+  };
 
   // Allow Escape key to cleanly exit prompts
   const ac = new AbortController();
@@ -626,15 +864,16 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
   try {
     // Provider selection step (skip if freeOnly or custom message — those are special flows)
-    let filteredModels = models;
-    if (!freeOnly && !message && providerCounts.size > 1) {
+    let selectedProviderSlug: string | null = null;
+    if (!freeOnly && !message && pickerProviders.length > 1) {
+      const totalCount = pickerProviders.reduce((sum, provider) => sum + provider.count, 0);
       const providerChoices = [
-        { name: `All providers (${models.length} models)`, value: "__all__" },
-        ...Array.from(providerCounts.entries())
-          .sort((a, b) => b[1] - a[1]) // Sort by model count descending
-          .map(([source, count]) => ({
-            name: `${source} (${count})`,
-            value: source,
+        { name: `All providers (${totalCount} models)`, value: "__all__" },
+        ...pickerProviders
+          .sort((a, b) => b.count - a.count)
+          .map((provider) => ({
+            name: `${provider.label} (${provider.count})`,
+            value: provider.slug,
           })),
       ];
 
@@ -647,61 +886,34 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       );
 
       if (selectedProvider !== "__all__") {
-        filteredModels = models.filter((m) => m.source === selectedProvider);
+        selectedProviderSlug = selectedProvider;
       }
     }
 
     const promptMessage =
-      message || (freeOnly ? "Select a FREE model:" : "Select a model (type to search):");
+      message ||
+      (freeOnly ? "Select a FREE model:" : "Select a model (live Firebase search):");
 
     const selected = await search<string>(
       {
         message: promptMessage,
         pageSize: 20,
         source: async (term) => {
-          if (!term) {
-            // Show all/top models when no search term (up to 30)
-            return filteredModels.slice(0, 30).map((m) => ({
-              name: formatModelChoice(m, true), // Always show source
-              value: m.id,
-              description: m.description?.slice(0, 80),
-            }));
-          }
-
           // Also support @provider prefix as power-user shortcut
-          const { provider: filterProvider, searchTerm } = parseProviderFilter(term);
+          const normalizedTerm = term?.trim() || "";
+          const { provider: filterProvider, searchTerm } = parseProviderFilter(
+            normalizedTerm,
+            pickerProviders
+          );
+          const effectiveProvider = filterProvider || selectedProviderSlug;
+          const remoteModels = await loadRemoteModels(effectiveProvider, searchTerm);
+          const localFallback = filterModelsLocally(models, effectiveProvider, searchTerm);
+          const visibleModels = remoteModels.length > 0 ? remoteModels : localFallback;
 
-          let pool = filteredModels;
-          if (filterProvider) {
-            pool = models.filter((m) => m.source === filterProvider);
-          }
-
-          if (!searchTerm) {
-            return pool.slice(0, 30).map((m) => ({
-              name: formatModelChoice(m, true),
-              value: m.id,
-              description: m.description?.slice(0, 80),
-            }));
-          }
-
-          // Fuzzy search within the (possibly filtered) pool
-          const results = pool
-            .map((m) => ({
-              model: m,
-              score: Math.max(
-                fuzzyMatch(m.id, searchTerm),
-                fuzzyMatch(m.name, searchTerm),
-                fuzzyMatch(m.provider, searchTerm) * 0.5
-              ),
-            }))
-            .filter((r) => r.score > 0.1)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 30);
-
-          return results.map((r) => ({
-            name: formatModelChoice(r.model, true), // Always show source
-            value: r.model.id,
-            description: r.model.description?.slice(0, 80),
+          return visibleModels.slice(0, 100).map((model) => ({
+            name: formatModelChoice(model, true),
+            value: model.id,
+            description: model.description?.slice(0, 160),
           }));
         },
       },
@@ -1197,7 +1409,7 @@ export async function selectModelsForProfile(): Promise<{
   console.log("\nLoading available models...");
   const [fetchedModels, recommendedModels] = await Promise.all([
     getAllModelsForSearch(),
-    Promise.resolve(loadRecommendedModels()),
+    loadRecommendedModels(),
   ]);
 
   const tiers = [

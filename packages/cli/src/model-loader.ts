@@ -482,6 +482,30 @@ export async function searchModels(query: string, limit = 50): Promise<ModelDoc[
 }
 
 /**
+ * Provider-scoped substring search across Firebase's model catalog.
+ * Uses the same queryModels endpoint but narrows results to one provider slug.
+ */
+export async function searchModelsByProvider(
+  provider: string,
+  query: string,
+  limit = 50
+): Promise<ModelDoc[]> {
+  const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
+    provider
+  )}&search=${encodeURIComponent(query)}&limit=${limit}&status=active`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Firebase provider search returned ${response.status} ${response.statusText}`
+    );
+  }
+  const data = (await response.json()) as { models?: ModelDoc[]; total?: number };
+  return data.models ?? [];
+}
+
+/**
  * Look up a single model by its canonical ID (or alias) via Firebase search.
  * Returns null if not found, throws on network error.
  */
