@@ -15,6 +15,29 @@ import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-ap
 import type { StreamFormat } from "../providers/transport/types.js";
 import { lookupModel } from "./model-catalog.js";
 
+/**
+ * Normalize model name for ChatGPT backend API.
+ *
+ * The ChatGPT backend accepts most model names directly. This function only
+ * strips provider prefixes to avoid passing "cx@gpt-5" or "openai/gpt-5" style
+ * names to the API.
+ *
+ * @param modelId - Original model name (e.g., "gpt-4.5", "cx@gpt-4.5", "openai/gpt-5-codex")
+ * @returns Normalized model name for the ChatGPT backend
+ */
+export function normalizeCodexModel(modelId: string | undefined): string {
+  if (!modelId) return "gpt-5.2";
+
+  // Strip provider prefix if present (e.g., "cx@gpt-4.5" → "gpt-4.5", "openai/gpt-5-codex" → "gpt-5-codex")
+  const strippedModel = modelId.includes("@")
+    ? modelId.split("@").pop()!
+    : modelId.includes("/")
+      ? modelId.split("/").pop()!
+      : modelId;
+
+  return strippedModel.trim();
+}
+
 export class CodexAPIFormat extends BaseAPIFormat {
   constructor(modelId: string) {
     super(modelId);
@@ -46,11 +69,27 @@ export class CodexAPIFormat extends BaseAPIFormat {
 
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
     const convertedMessages = this.convertMessagesToResponsesAPI(messages);
+    const normalizedModel = normalizeCodexModel(this.modelId);
+
+    // Strip IDs from message items (stateless mode doesn't support server-side state)
+    const strippedMessages = convertedMessages.map((item: any) => {
+      const { id, ...rest } = item;
+      return rest;
+    });
 
     const payload: any = {
-      model: this.modelId,
-      input: convertedMessages,
+      model: normalizedModel,
+      input: strippedMessages,
       stream: true,
+      store: false,
+      include: ["reasoning.encrypted_content"],
+      reasoning: {
+        effort: "medium",
+        summary: "auto",
+      },
+      text: {
+        verbosity: "medium",
+      },
     };
 
     if (claudeRequest.system) {
@@ -58,7 +97,8 @@ export class CodexAPIFormat extends BaseAPIFormat {
     }
 
     if (claudeRequest.max_tokens) {
-      payload.max_output_tokens = Math.max(16, claudeRequest.max_tokens);
+      // Codex API doesn't support max_tokens - use default
+      // payload.max_tokens = Math.max(16, claudeRequest.max_tokens);
     }
 
     if (tools.length > 0) {
