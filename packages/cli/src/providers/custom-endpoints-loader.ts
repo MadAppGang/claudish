@@ -65,7 +65,7 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
       const validated = CustomEndpointSchema.parse(entry);
       validateResolvedApiKey(name, validated);
       const def = buildProviderDefinition(name, validated);
-      const profile = buildProviderProfile(validated);
+      const profile = buildProviderProfile(name, validated);
       registerRuntimeProvider(def);
       registerRuntimeProfile(name, profile);
       result.registered++;
@@ -134,9 +134,16 @@ function buildProviderDefinition(
  * Build a ProviderProfile for a custom endpoint that creates a ComposedHandler
  * on demand. Modeled after litellmProfile in provider-profiles.ts.
  */
-function buildProviderProfile(ep: CustomEndpoint): ProviderProfile {
+function buildProviderProfile(name: string, ep: CustomEndpoint): ProviderProfile {
   return {
     createHandler(ctx: ProfileContext): ModelHandler | null {
+      if (!isAllowedModel(ep, ctx.modelName)) {
+        console.error(
+          `[claudish] Custom endpoint '${name}' does not allow model '${ctx.modelName}'.`
+        );
+        return null;
+      }
+
       const apiKey = resolveCustomEndpointApiKey(ep);
       if (ep.kind === "simple") {
         return buildSimpleHandler(ep, ctx, apiKey);
@@ -276,6 +283,10 @@ function validateResolvedApiKey(name: string, ep: CustomEndpoint): void {
   if (apiKey.length === 0) {
     throw new Error(`apiKey for custom endpoint '${name}' resolved to an empty value`);
   }
+}
+
+function isAllowedModel(ep: CustomEndpoint, modelName: string): boolean {
+  return !ep.models || ep.models.length === 0 || ep.models.includes(modelName);
 }
 
 function stripTrailingSlash(url: string): string {

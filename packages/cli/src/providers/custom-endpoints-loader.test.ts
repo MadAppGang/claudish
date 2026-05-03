@@ -14,6 +14,7 @@ import {
   getRuntimeProfiles,
 } from "./runtime-providers.js";
 import { resolveModelProvider } from "./provider-resolver.js";
+import { toRemoteProvider } from "./provider-definitions.js";
 
 // Minimal ClaudishProfileConfig stub — only the fields the loader reads.
 function makeConfig(
@@ -191,6 +192,45 @@ describe("custom-endpoints-loader", () => {
         process.env.CUSTOM_MY_VLLM_KEY = original;
       }
     }
+  });
+
+  test("custom endpoint models restrict handler creation", () => {
+    const result = loadCustomEndpoints(
+      makeConfig({
+        limited: {
+          kind: "simple",
+          url: "https://api.example.com/v1",
+          format: "openai",
+          apiKey: "stored-key",
+          models: ["allowed-model"],
+        },
+      })
+    );
+
+    expect(result.registered).toBe(1);
+    const def = getRuntimeProviders().get("limited");
+    const profile = getRuntimeProfiles().get("limited");
+    expect(def).toBeDefined();
+    expect(profile).toBeDefined();
+
+    const provider = toRemoteProvider(def!);
+    const baseCtx = {
+      provider,
+      apiKey: "",
+      targetModel: "limited@allowed-model",
+      port: 39999,
+      sharedOpts: {},
+    };
+
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      expect(profile!.createHandler({ ...baseCtx, modelName: "blocked-model" })).toBeNull();
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(profile!.createHandler({ ...baseCtx, modelName: "allowed-model" })).not.toBeNull();
   });
 
   describe("resolveCustomEndpointApiKey env var expansion", () => {
