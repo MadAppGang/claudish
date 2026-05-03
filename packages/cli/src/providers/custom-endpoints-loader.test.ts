@@ -13,6 +13,7 @@ import {
   getRuntimeProviders,
   getRuntimeProfiles,
 } from "./runtime-providers.js";
+import { resolveModelProvider } from "./provider-resolver.js";
 
 // Minimal ClaudishProfileConfig stub — only the fields the loader reads.
 function makeConfig(
@@ -59,6 +60,7 @@ describe("custom-endpoints-loader", () => {
     expect(def?.name).toBe("my-vllm");
     expect(def?.transport).toBe("openai");
     expect(def?.baseUrl).toBe("http://gpu-box:8000/v1");
+    expect(def?.apiKeyEnvVar).toBe("");
     expect(def?.isDirectApi).toBe(true);
 
     expect(getRuntimeProfiles().get("my-vllm")).toBeDefined();
@@ -87,6 +89,7 @@ describe("custom-endpoints-loader", () => {
     expect(def?.transport).toBe("litellm");
     expect(def?.baseUrl).toBe("https://litellm.corp.example.com");
     expect(def?.apiPath).toBe("/v1/chat/completions");
+    expect(def?.apiKeyEnvVar).toBe("");
   });
 
   test("invalid simple (missing url): not registered, error reported", () => {
@@ -160,6 +163,36 @@ describe("custom-endpoints-loader", () => {
     expect(getRuntimeProviders().get("bad")).toBeUndefined();
   });
 
+  test("custom endpoint apiKey satisfies resolver without synthetic env var", () => {
+    const original = process.env.CUSTOM_MY_VLLM_KEY;
+    delete process.env.CUSTOM_MY_VLLM_KEY;
+
+    try {
+      const result = loadCustomEndpoints(
+        makeConfig({
+          "my-vllm": {
+            kind: "simple",
+            url: "https://api.example.com/v1",
+            format: "openai",
+            apiKey: "stored-key",
+          },
+        })
+      );
+
+      expect(result.registered).toBe(1);
+      const resolution = resolveModelProvider("my-vllm@llama-3");
+      expect(resolution.category).toBe("direct-api");
+      expect(resolution.requiredApiKeyEnvVar).toBeNull();
+      expect(resolution.apiKeyAvailable).toBe(true);
+    } finally {
+      if (original === undefined) {
+        delete process.env.CUSTOM_MY_VLLM_KEY;
+      } else {
+        process.env.CUSTOM_MY_VLLM_KEY = original;
+      }
+    }
+  });
+
   describe("resolveCustomEndpointApiKey env var expansion", () => {
     const ORIGINAL_ENV = process.env.TEST_LOADER_KEY;
 
@@ -191,6 +224,35 @@ describe("custom-endpoints-loader", () => {
         apiKey: "literal-value",
       });
       expect(resolved).toBe("literal-value");
+    });
+
+    test("missing ${VAR} endpoint is skipped with validation error", () => {
+      const original = process.env.TEST_LOADER_MISSING_KEY;
+      delete process.env.TEST_LOADER_MISSING_KEY;
+
+      try {
+        const result = loadCustomEndpoints(
+          makeConfig({
+            missing: {
+              kind: "simple",
+              url: "https://x.example.com/v1",
+              format: "openai",
+              apiKey: "${TEST_LOADER_MISSING_KEY}",
+            },
+          })
+        );
+
+        expect(result.registered).toBe(0);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0].name).toBe("missing");
+        expect(result.errors[0].message).toContain("resolved to an empty value");
+      } finally {
+        if (original === undefined) {
+          delete process.env.TEST_LOADER_MISSING_KEY;
+        } else {
+          process.env.TEST_LOADER_MISSING_KEY = original;
+        }
+      }
     });
   });
 
