@@ -9,6 +9,7 @@ Claude Code uses different model "tiers" internally:
 - **Subagent** - When Claude spawns child agents
 
 With model mapping, you can route each tier to a different model.
+Claudish forwards these mappings to Claude Code using Claude Code's standard role-model environment variables, including `CLAUDE_CODE_SUBAGENT_MODEL` for sub-agents.
 
 ---
 
@@ -103,6 +104,7 @@ export CLAUDISH_MODEL_SUBAGENT='minimax/minimax-m2'
 ```
 
 This is especially useful for parallel multi-agent workflows. Cheap models for workers, premium for the orchestrator.
+The same mapping can be set with `--model-subagent` or a profile `models.subagent` entry.
 
 ---
 
@@ -111,7 +113,7 @@ This is especially useful for parallel multi-agent workflows. Cheap models for w
 When multiple sources set the same model:
 
 1. **CLI flags** (highest priority)
-   - `--model-opus`, `--model-sonnet`, etc.
+   - `--model-opus`, `--model-sonnet`, `--model-haiku`, `--model-subagent`
 2. **CLAUDISH_MODEL_*** environment variables
 3. **ANTHROPIC_DEFAULT_*** environment variables (lowest)
 

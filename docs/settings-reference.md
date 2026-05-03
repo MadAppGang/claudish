@@ -430,7 +430,7 @@ The fallback chain is **configurable** via the `defaultProvider` setting. Set it
 5. `OPENROUTER_API_KEY` present → OpenRouter
 6. Hardcoded `"openrouter"`
 
-Valid values: any built-in provider name (`"openrouter"`, `"litellm"`, `"openai"`, `"anthropic"`, `"google"`) or a custom endpoint name from `customEndpoints`.
+Valid values: any built-in provider name (`"openrouter"`, `"litellm"`, `"openai"`, `"anthropic"`, `"google"`) or a custom endpoint name from `customEndpoints`. Provider shortcuts such as `"or"` and `"ll"` are accepted and normalized before routing.
 
 ### 6.2 Default chain (no `defaultProvider` set)
 
@@ -543,9 +543,9 @@ For OpenAI- or Anthropic-compatible servers:
 | `kind` | `"simple"` | yes | Discriminator |
 | `url` | string | yes | Base URL of the server |
 | `format` | `"openai"` or `"anthropic"` | yes | Wire format |
-| `apiKey` | string | no | API key; supports `${VAR}` env expansion |
+| `apiKey` | string | yes | API key; supports `${VAR}` env expansion. The configured value is used directly; no extra `CUSTOM_*_KEY` env var is required |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
-| `models` | string[] | no | Restrict to listed models; omit to allow any |
+| `models` | string[] | no | Restrict to listed unprefixed model names; omit to allow any. Checked before `modelPrefix` is applied |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
 
@@ -580,12 +580,12 @@ Full control over transport, auth, headers, and stream format:
 | `transport` | string | yes | Transport type (e.g., `"openai"`, `"anthropic"`) |
 | `baseUrl` | string | yes | Server base URL |
 | `apiPath` | string | no | Custom API path (overrides default for transport) |
-| `apiKey` | string | no | API key; supports `${VAR}` env expansion |
+| `apiKey` | string | yes | API key; supports `${VAR}` env expansion. The configured value is used directly; no extra `CUSTOM_*_KEY` env var is required |
 | `authScheme` | string | no | Auth header scheme (default: `Bearer`; use `X-Api-Key` for header-name auth) |
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
-| `models` | string[] | no | Restrict to listed models |
+| `models` | string[] | no | Restrict to listed unprefixed model names; omit to allow any. Checked before `modelPrefix` is applied |
 
 ### Environment variable expansion
 
@@ -594,6 +594,8 @@ The `apiKey` field supports `${VAR_NAME}` syntax. Claudish expands it from `proc
 ```json
 "apiKey": "${MY_CUSTOM_API_KEY}"
 ```
+
+If the referenced environment variable is unset or expands to an empty string, the endpoint is skipped with a validation warning instead of being registered with an empty key.
 
 ### Validation
 
@@ -604,7 +606,7 @@ Claudish validates all `customEndpoints` entries with Zod at proxy startup. Inva
 
 ### Runtime registration
 
-Each valid custom endpoint calls `registerRuntimeProvider()` (injects into the provider resolver) and `registerRuntimeProfile()` (injects into the transport layer). The endpoint name becomes a valid provider shortcut immediately.
+Each valid custom endpoint calls `registerRuntimeProvider()` (injects into the provider resolver) and `registerRuntimeProfile()` (injects into the transport layer). The endpoint name becomes a valid provider shortcut immediately and can also be used as `defaultProvider` for bare model names.
 
 ---
 
