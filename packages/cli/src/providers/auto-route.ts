@@ -210,10 +210,13 @@ export interface FallbackRoute {
 }
 
 import {
-  getShortestPrefix,
-  getDisplayName as _getDisplayName,
   getAllProviders,
+  getDisplayName,
+  getProviderByName,
+  getShortestPrefix,
+  getShortcuts,
 } from "./provider-definitions.js";
+import { getRuntimeProviders } from "./runtime-providers.js";
 
 /** Reverse mapping: canonical provider name → shortest @ prefix for handler creation.
  *  Derived from BUILTIN_PROVIDERS. */
@@ -412,14 +415,16 @@ function hasProviderCredentials(provider: string): boolean {
  * (e.g., native-API providers — openai/anthropic/google — have their own
  * native-API step in {@link getFallbackChain} that handles them).
  *
- * Phase 2 supports the builtin defaults: litellm, openrouter.
- * Custom endpoint defaults are wired in Phase 3.
+ * Supports builtin defaults plus runtime custom endpoint defaults.
  */
 export function getDefaultProviderRoute(
   modelName: string,
   defaultProvider: string
 ): FallbackRoute | null {
-  switch (defaultProvider) {
+  const normalizedProvider =
+    getShortcuts()[defaultProvider.toLowerCase()] ?? defaultProvider.toLowerCase();
+
+  switch (normalizedProvider) {
     case "litellm": {
       // Preserves the current implicit behavior — only emits a route when
       // both LITELLM env vars are set.
@@ -452,9 +457,25 @@ export function getDefaultProviderRoute(
       return null;
     }
     default:
-      // Custom endpoint name — Phase 3 territory. Return null for now.
-      return null;
+      break;
   }
+
+  const def = getProviderByName(normalizedProvider);
+  if (!def || !def.isDirectApi || !def.baseUrl) {
+    return null;
+  }
+
+  const isRuntimeProvider = getRuntimeProviders().has(def.name);
+  if (!isRuntimeProvider && !hasProviderCredentials(def.name)) {
+    return null;
+  }
+
+  const prefix = getShortestPrefix(def.name);
+  return {
+    provider: def.name,
+    modelSpec: `${prefix}@${modelName}`,
+    displayName: getDisplayName(def.name),
+  };
 }
 
 /**

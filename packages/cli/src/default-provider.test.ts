@@ -32,6 +32,16 @@ describe("resolveDefaultProvider precedence", () => {
     expect(result.legacyAutoPromoted).toBe(false);
   });
 
+  test("CLI flag shortcut is canonicalized", () => {
+    const env: NodeJS.ProcessEnv = {};
+    const config = makeConfig();
+
+    const result = resolveDefaultProvider({ cliFlag: "ll", config, env });
+
+    expect(result.provider).toBe("litellm");
+    expect(result.source).toBe("cli-flag");
+  });
+
   test("env var wins over config and legacy", () => {
     const env: NodeJS.ProcessEnv = {
       CLAUDISH_DEFAULT_PROVIDER: "from-env",
@@ -45,6 +55,16 @@ describe("resolveDefaultProvider precedence", () => {
     expect(result.provider).toBe("from-env");
     expect(result.source).toBe("env-var");
     expect(result.legacyAutoPromoted).toBe(false);
+  });
+
+  test("env var shortcut is canonicalized", () => {
+    const env: NodeJS.ProcessEnv = { CLAUDISH_DEFAULT_PROVIDER: "or" };
+    const config = makeConfig();
+
+    const result = resolveDefaultProvider({ config, env });
+
+    expect(result.provider).toBe("openrouter");
+    expect(result.source).toBe("env-var");
   });
 
   test("config wins over legacy", () => {
