@@ -24,6 +24,28 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   return models.some((m) => m && parseModelSpec(m).provider === "native-anthropic");
 }
 
+/**
+ * Propagate resolved Claudish role mappings to Claude Code's standard model env vars.
+ *
+ * Claudish also keeps modelMap in the proxy as a compatibility fallback, but Claude
+ * Code owns sub-agent process selection. In particular, sub-agent routing only works
+ * reliably when CLAUDE_CODE_SUBAGENT_MODEL is present in the child environment.
+ */
+export function applyModelMappingEnv(env: Record<string, string>, config: ClaudishConfig): void {
+  if (config.modelOpus) {
+    env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL] = config.modelOpus;
+  }
+  if (config.modelSonnet) {
+    env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL] = config.modelSonnet;
+  }
+  if (config.modelHaiku) {
+    env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL] = config.modelHaiku;
+  }
+  if (config.modelSubagent) {
+    env[ENV.CLAUDE_CODE_SUBAGENT_MODEL] = config.modelSubagent;
+  }
+}
+
 // Use process.platform directly to ensure runtime evaluation
 // (module-level constants can be inlined by bundlers at build time)
 function isWindows(): boolean {
@@ -348,6 +370,8 @@ export async function runClaudeWithProxy(
   // and causes the child Claude Code to refuse to start. Since claudish makes
   // independent API calls through a proxy (not nesting sessions), this is safe.
   delete env.CLAUDECODE;
+
+  applyModelMappingEnv(env, config);
 
   // Handle API key and model based on mode
   if (config.monitor) {

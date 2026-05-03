@@ -11,6 +11,7 @@
  */
 
 import type { ClaudishProfileConfig } from "./profile-config.js";
+import { getShortcuts } from "./providers/provider-definitions.js";
 
 export type DefaultProviderSource =
   | "cli-flag"
@@ -35,6 +36,11 @@ export interface ResolveOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+function normalizeProviderName(provider: string): string {
+  const normalized = provider.trim().toLowerCase();
+  return getShortcuts()[normalized] ?? normalized;
+}
+
 /**
  * Resolve the effective default provider using the precedence chain:
  *   1. --default-provider CLI flag
@@ -49,17 +55,25 @@ export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultPro
   const env = opts.env ?? process.env;
 
   if (opts.cliFlag && opts.cliFlag.length > 0) {
-    return { provider: opts.cliFlag, source: "cli-flag", legacyAutoPromoted: false };
+    return {
+      provider: normalizeProviderName(opts.cliFlag),
+      source: "cli-flag",
+      legacyAutoPromoted: false,
+    };
   }
 
   const envVal = env.CLAUDISH_DEFAULT_PROVIDER;
   if (envVal && envVal.length > 0) {
-    return { provider: envVal, source: "env-var", legacyAutoPromoted: false };
+    return {
+      provider: normalizeProviderName(envVal),
+      source: "env-var",
+      legacyAutoPromoted: false,
+    };
   }
 
   if (opts.config.defaultProvider && opts.config.defaultProvider.length > 0) {
     return {
-      provider: opts.config.defaultProvider,
+      provider: normalizeProviderName(opts.config.defaultProvider),
       source: "config-file",
       legacyAutoPromoted: false,
     };

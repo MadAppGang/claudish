@@ -163,6 +163,23 @@ export async function createProxyServer(
     return model.startsWith("poe:");
   };
 
+  const getExplicitProviderErrorHandler = (
+    targetModel: string,
+    providerName: string
+  ): ModelHandler => ({
+    async handle(c: any): Promise<Response> {
+      return c.json(
+        wrapAnthropicError(
+          400,
+          `Explicit provider "${providerName}" could not be routed for model "${targetModel}". Check the provider name, API key, endpoint configuration, and model availability.`,
+          "invalid_request_error"
+        ),
+        400 as any
+      );
+    },
+    async shutdown(): Promise<void> {},
+  });
+
   // Helper to get or create Local Provider handler for a target model
   const getLocalProviderHandler = (
     targetModel: string,
@@ -473,10 +490,18 @@ export async function createProxyServer(
     if (localHandler) return localHandler;
 
     // 6. Native vs OpenRouter Decision
-    // Models with explicit provider prefix (@) should never fall to native Anthropic handler.
-    // They were explicitly routed to a provider - if the handler wasn't created above,
-    // it's because the API key is missing, not because it's a native model.
-    const hasExplicitProvider = target.includes("@");
+    // Models with explicit provider prefix (@) should never fall through to a different
+    // provider. If handler creation failed, return a direct routing error instead of
+    // silently trying OpenRouter.
+    const parsedExplicitTarget = parseModelSpec(target);
+    const hasExplicitProvider = parsedExplicitTarget.isExplicitProvider;
+    if (hasExplicitProvider) {
+      if (parsedExplicitTarget.provider === "openrouter") {
+        return getOpenRouterHandler(target, invocationMode);
+      }
+      return getExplicitProviderErrorHandler(target, parsedExplicitTarget.provider);
+    }
+
     const isNative = !target.includes("/") && !hasExplicitProvider;
 
     if (isNative) {

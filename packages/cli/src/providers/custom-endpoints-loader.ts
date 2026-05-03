@@ -63,8 +63,9 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
   for (const [name, entry] of Object.entries(raw)) {
     try {
       const validated = CustomEndpointSchema.parse(entry);
+      validateResolvedApiKey(name, validated);
       const def = buildProviderDefinition(name, validated);
-      const profile = buildProviderProfile(validated);
+      const profile = buildProviderProfile(name, validated);
       registerRuntimeProvider(def);
       registerRuntimeProfile(name, profile);
       result.registered++;
@@ -98,7 +99,7 @@ function buildProviderDefinition(
       transport: ep.format as TransportType,
       baseUrl: stripTrailingSlash(ep.url),
       apiPath: "/chat/completions",
-      apiKeyEnvVar: `CUSTOM_${sanitizeEnvName(name)}_KEY`,
+      apiKeyEnvVar: "",
       apiKeyDescription: `${name} (custom endpoint)`,
       apiKeyUrl: "",
       shortcuts: [name],
@@ -116,7 +117,7 @@ function buildProviderDefinition(
     transport: ep.transport as TransportType,
     baseUrl: stripTrailingSlash(ep.baseUrl),
     apiPath: ep.apiPath ?? "/v1/chat/completions",
-    apiKeyEnvVar: `CUSTOM_${sanitizeEnvName(name)}_KEY`,
+    apiKeyEnvVar: "",
     apiKeyDescription: `${ep.displayName} (custom endpoint)`,
     apiKeyUrl: "",
     shortcuts: [name],
@@ -133,9 +134,16 @@ function buildProviderDefinition(
  * Build a ProviderProfile for a custom endpoint that creates a ComposedHandler
  * on demand. Modeled after litellmProfile in provider-profiles.ts.
  */
-function buildProviderProfile(ep: CustomEndpoint): ProviderProfile {
+function buildProviderProfile(name: string, ep: CustomEndpoint): ProviderProfile {
   return {
     createHandler(ctx: ProfileContext): ModelHandler | null {
+      if (!isAllowedModel(ep, ctx.modelName)) {
+        console.error(
+          `[claudish] Custom endpoint '${name}' does not allow model '${ctx.modelName}'.`
+        );
+        return null;
+      }
+
       const apiKey = resolveCustomEndpointApiKey(ep);
       if (ep.kind === "simple") {
         return buildSimpleHandler(ep, ctx, apiKey);
@@ -270,10 +278,17 @@ export function resolveCustomEndpointApiKey(ep: CustomEndpoint): string {
   return process.env[match[1]] ?? "";
 }
 
-function stripTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, "");
+function validateResolvedApiKey(name: string, ep: CustomEndpoint): void {
+  const apiKey = resolveCustomEndpointApiKey(ep);
+  if (apiKey.length === 0) {
+    throw new Error(`apiKey for custom endpoint '${name}' resolved to an empty value`);
+  }
 }
 
-function sanitizeEnvName(name: string): string {
-  return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+function isAllowedModel(ep: CustomEndpoint, modelName: string): boolean {
+  return !ep.models || ep.models.length === 0 || ep.models.includes(modelName);
+}
+
+function stripTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, "");
 }

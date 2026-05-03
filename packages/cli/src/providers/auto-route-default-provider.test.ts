@@ -11,15 +11,19 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getDefaultProviderRoute, getFallbackChain } from "./auto-route.js";
+import { loadCustomEndpoints } from "./custom-endpoints-loader.js";
+import { clearRuntimeRegistry } from "./runtime-providers.js";
 
 const originalEnv = { ...process.env };
 
 describe("getDefaultProviderRoute", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
+    clearRuntimeRegistry();
   });
   afterEach(() => {
     process.env = { ...originalEnv };
+    clearRuntimeRegistry();
   });
 
   test("returns litellm route when default='litellm' and both LITELLM env vars set", () => {
@@ -50,17 +54,51 @@ describe("getDefaultProviderRoute", () => {
     expect(getDefaultProviderRoute("foo-model", "google")).toBeNull();
   });
 
-  test("returns null for unknown/custom default provider name", () => {
-    expect(getDefaultProviderRoute("foo-model", "my-custom-endpoint")).toBeNull();
+  test("returns null for unknown default provider name", () => {
+    expect(getDefaultProviderRoute("foo-model", "my-unknown-endpoint")).toBeNull();
+  });
+
+  test("returns custom endpoint route when default provider is registered", () => {
+    const result = loadCustomEndpoints({
+      version: "1.0.0",
+      defaultProfile: "default",
+      profiles: {},
+      customEndpoints: {
+        "my-custom-endpoint": {
+          kind: "simple",
+          url: "https://api.example.com/v1",
+          format: "openai",
+          apiKey: "stored-key",
+        },
+      },
+    });
+
+    expect(result.registered).toBe(1);
+    const route = getDefaultProviderRoute("foo-model", "my-custom-endpoint");
+    expect(route).not.toBeNull();
+    expect(route!.provider).toBe("my-custom-endpoint");
+    expect(route!.modelSpec).toBe("my-custom-endpoint@foo-model");
+    expect(route!.displayName).toBe("my-custom-endpoint");
+  });
+
+  test("canonicalizes default provider shortcut before building route", () => {
+    process.env.LITELLM_BASE_URL = "http://example.invalid:4000";
+    process.env.LITELLM_API_KEY = "test-key";
+    const route = getDefaultProviderRoute("foo-model", "ll");
+    expect(route).not.toBeNull();
+    expect(route!.provider).toBe("litellm");
+    expect(route!.modelSpec).toBe("litellm@foo-model");
   });
 });
 
 describe("getFallbackChain — default provider seeding", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
+    clearRuntimeRegistry();
   });
   afterEach(() => {
     process.env = { ...originalEnv };
+    clearRuntimeRegistry();
   });
 
   test("case 1: default='litellm' with LITELLM env vars puts litellm first", () => {
