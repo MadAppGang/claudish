@@ -94,6 +94,7 @@ export class SessionManager {
           model: entry.info.model,
           content: data.content ?? "",
           elapsedSeconds: entry.info.elapsedSeconds,
+          createdAt: entry.info.startedAt,
           extraMeta: {
             ...(data.toolName ? { tool: data.toolName } : {}),
             ...(data.toolCount ? { tool_count: String(data.toolCount) } : {}),

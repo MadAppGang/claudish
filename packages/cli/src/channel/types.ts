@@ -45,6 +45,12 @@ export interface ChannelEvent {
   model: string;
   content: string;
   elapsedSeconds: number;
+  /**
+   * ISO-8601 timestamp of session creation. Populated by SessionManager from
+   * `entry.info.startedAt`. Used by the bridge to populate SEP-1686-shaped
+   * `meta.created_at` for forward-compat with notifications/tasks/status.
+   */
+  createdAt: string;
   extraMeta?: Record<string, string>;
 }
 

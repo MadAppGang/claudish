@@ -27,6 +27,7 @@ import {
   validateSessionPath,
 } from "./team-orchestrator.js";
 import { SessionManager } from "./channel/index.js";
+import { wrapStateChange, watchNotificationResult, installWireTap } from "./channel/diagnostics.js";
 import { createProxyServer } from "./proxy-server.js";
 import { findAvailablePort } from "./port-manager.js";
 import type { ProxyServer } from "./types.js";
@@ -1041,6 +1042,26 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
   }
 }
 
+// ─── SEP-1686 status mapping ─────────────────────────────────────────────────
+// Maps Claudish's 7-value `event` enum to SEP-1686's 5-value `TaskStatus`.
+// See: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
+// Migration plan: ai-docs/sessions/.../sep-1686-migration-schema.md
+type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
+
+const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>([
+  ["starting", "working"],
+  ["running", "working"],
+  ["tool_executing", "working"],
+  ["waiting_for_input", "input_required"],
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["cancelled", "cancelled"],
+]);
+
+function mapEventToTaskStatus(event: string): TaskStatus {
+  return EVENT_TO_TASK_STATUS.get(event) ?? "working";
+}
+
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1059,14 +1080,25 @@ async function main() {
     }
   );
 
-  // Create session manager with channel notification bridge
+  // Create session manager with channel notification bridge.
+  // The bridge translates SessionManager events into MCP notifications.
+  // When CLAUDISH_CHANNEL_TRACE=1 is set, the diagnostics module wraps the
+  // callback to log each step of the producer→bridge→wire pipeline.
+  //
+  // Wire format aligns with SEP-1686 (Tasks) for forward-compat: each
+  // notification carries both Claudish-specific fields (`session_id`, `event`)
+  // and SEP-1686-shaped fields (`task_id`, `status`, `created_at`,
+  // `last_updated_at`). When Claude Code ships notifications/tasks/status
+  // receiver support, the migration is a method-name swap + payload restructure
+  // (no semantic changes).
+  // See: ai-docs/sessions/.../sep-1686-migration-schema.md
   const sessionManager = new SessionManager({
-    onStateChange: (sessionId, event) => {
+    onStateChange: wrapStateChange((sessionId, event) => {
       const notificationContent =
         event.type === "failed"
           ? `${event.content}\n\nTo report this error, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
           : event.content;
-      server.notification({
+      const result = server.notification({
         method: "notifications/claude/channel",
         params: {
           content: notificationContent,
@@ -1075,11 +1107,18 @@ async function main() {
             event: event.type,
             model: event.model,
             elapsed_seconds: String(event.elapsedSeconds),
+            // SEP-1686 forward-compat fields (additive, do not break consumers
+            // of the existing fields above):
+            task_id: sessionId,
+            status: mapEventToTaskStatus(event.type),
+            created_at: event.createdAt,
+            last_updated_at: new Date().toISOString(),
             ...event.extraMeta,
           },
         },
       });
-    },
+      watchNotificationResult(result, { sessionId, eventType: event.type });
+    }),
   });
 
   // Build tool registry
@@ -1123,8 +1162,11 @@ async function main() {
     }
   });
 
-  // Connect via stdio transport
+  // Connect via stdio transport. installWireTap() is a no-op unless
+  // CLAUDISH_CHANNEL_TRACE=1 is set; when active it mirrors outbound channel
+  // notification frames to stderr so we can confirm wire-level delivery.
   const transport = new StdioServerTransport();
+  installWireTap();
   await server.connect(transport);
 
   // Cleanup on shutdown
