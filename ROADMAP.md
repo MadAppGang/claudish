@@ -41,21 +41,20 @@ Default to `notifications/tasks/status`. Keep emitting `notifications/claude/cha
 
 ---
 
-## Optional: `notifications/progress` as a secondary CLI-UI signal
+## ~~Optional: `notifications/progress` as a secondary CLI-UI signal~~ — Parked
 
-Status: empirically validated as safe. Not started. Low priority.
+Status: **investigated and parked**. Not implementing.
 
-Today the `team` tool blocks the orchestrator agent until all children finish. Channels surface intermediate completions to **agent context**. But the **terminal UI** shows nothing until the call returns.
+We considered emitting `notifications/progress` from `team`'s child-completion callback as a richer terminal UI signal. Empirical validation on 2026-05-09 against Claude Code 2.1.133 found:
 
-The `notifications/progress` primitive (already in the MCP spec) renders to Claude Code's CLI progress display. Per Anthropic-attributed comment on `anthropics/claude-code#4157`: *"Claude Code doesn't currently have a generic UI for displaying real-time progress from custom MCP servers, though the protocol fully supports it."* — meaning there's no generic surface, but the primitive itself works.
+- ✅ The earlier transport-kill regression (`anthropics/claude-code#53617`, `#47378`) is no longer reproducible. Stdio servers can safely emit `notifications/progress` without crashing the transport. Verified with `progress-regression-mock.ts`'s `slow_ping_with_progress` + `simple_ping` sequence.
+- ❌ Claude Code 2.1.133 does **not render** progress notifications anywhere observable. Verified with `progress-regression-mock.ts`'s `slow_with_many_progress` tool emitting 5 distinct progress messages over ~10s. Mid-flight pane capture showed no terminal-UI rendering. The agent reported verbatim: *"I did not observe any progress messages during the call... nothing was surfaced to the agent context."* This matches the Anthropic-attributed comment on `anthropics/claude-code#4157`: *"Claude Code doesn't currently have a generic UI for displaying real-time progress from custom MCP servers."*
 
-Earlier a regression (`anthropics/claude-code#53617`, `#47378`) caused stdio servers emitting `notifications/progress` to be killed mid-call. **This regression is no longer reproducible on Claude Code 2.1.133** (verified 2026-05-09 with `progress-regression-mock.ts` — the second tool call after a progress emission survives cleanly).
+Implementing this today would add code that fires notifications into a void. Not worth doing.
 
-If we ever want a richer terminal UI for `team` runs, we could emit `notifications/progress` from the same callback that fires channel events. Strictly additive; doesn't replace channels. Costs maybe an hour of work.
+**Trigger condition for un-parking**: Claude Code releases a CHANGELOG entry mentioning UI/agent rendering of `notifications/progress` from custom MCP servers — at which point this becomes a one-hour additive change in the bridge callback.
 
-**Trigger condition**: a user (or you) reports the lack of mid-call CLI feedback for `team` as friction.
-
-Reference: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`
+Reference: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`. Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`.
 
 ---
 

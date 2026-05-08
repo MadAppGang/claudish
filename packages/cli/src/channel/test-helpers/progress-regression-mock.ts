@@ -70,6 +70,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "Returns 'pong' immediately. Used as a follow-up to detect transport death.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
       },
+      {
+        name: "slow_with_many_progress",
+        description:
+          "Runs for ~10 seconds, emitting 5 distinct notifications/progress along the way. " +
+          "Used to observe whether Claude Code 2.1.133 renders progress notifications in " +
+          "the terminal UI or surfaces them to the agent context.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      },
     ],
   };
 });
@@ -82,6 +90,44 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "simple_ping") {
     log({ event: "simple_ping.responding" });
     return { content: [{ type: "text", text: "pong" }] };
+  }
+
+  if (name === "slow_with_many_progress") {
+    if (progressToken === undefined) {
+      log({ event: "warn.no_progress_token", note: "client did not send progressToken; emitting nothing" });
+    } else {
+      const steps = [
+        { message: "Step 1 of 5: scanning files" },
+        { message: "Step 2 of 5: parsing AST" },
+        { message: "Step 3 of 5: running checks" },
+        { message: "Step 4 of 5: aggregating results" },
+        { message: "Step 5 of 5: writing output" },
+      ];
+      for (let i = 0; i < steps.length; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const params = {
+          progressToken,
+          progress: i + 1,
+          total: steps.length,
+          message: steps[i].message,
+        };
+        log({ event: "emit.notification.progress", ...params });
+        try {
+          await server.notification({ method: "notifications/progress", params });
+        } catch (err) {
+          log({ event: "error.progress_emit_failed", err: (err as Error).message });
+        }
+      }
+    }
+    log({ event: "slow_with_many_progress.responding" });
+    return {
+      content: [
+        {
+          type: "text",
+          text: "slow_with_many_progress completed (5 progress notifications emitted)",
+        },
+      ],
+    };
   }
 
   if (name === "slow_ping_with_progress") {
