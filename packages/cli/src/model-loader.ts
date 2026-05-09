@@ -469,7 +469,7 @@ export function getRecommendedModelsSync(): RecommendedModelsDoc {
       const cacheData = JSON.parse(
         readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
       ) as RecommendedModelsDoc;
-      if (cacheData.models && cacheData.models.length > 0) {
+      if (cacheData.models && cacheData.models.length > 0 && isFreshEnough(cacheData)) {
         _cachedRecommendedModels = cacheData;
         return cacheData;
       }
