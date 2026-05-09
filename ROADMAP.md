@@ -43,18 +43,24 @@ Default to `notifications/tasks/status`. Keep emitting `notifications/claude/cha
 
 ## ~~Optional: `notifications/progress` as a secondary CLI-UI signal~~ — Parked
 
-Status: **investigated and parked**. Not implementing.
+Status: **investigated, decisively parked, with a corrected rationale**. Not implementing.
 
-We considered emitting `notifications/progress` from `team`'s child-completion callback as a richer terminal UI signal. Empirical validation on 2026-05-09 against Claude Code 2.1.133 found:
+We considered emitting `notifications/progress` from `team`'s child-completion callback as a richer terminal UI signal. Two issues, one of which we initially got wrong:
 
-- ✅ The earlier transport-kill regression (`anthropics/claude-code#53617`, `#47378`) is no longer reproducible. Stdio servers can safely emit `notifications/progress` without crashing the transport. Verified with `progress-regression-mock.ts`'s `slow_ping_with_progress` + `simple_ping` sequence.
-- ❌ Claude Code 2.1.133 does **not render** progress notifications anywhere observable. Verified with `progress-regression-mock.ts`'s `slow_with_many_progress` tool emitting 5 distinct progress messages over ~10s. Mid-flight pane capture showed no terminal-UI rendering. The agent reported verbatim: *"I did not observe any progress messages during the call... nothing was surfaced to the agent context."* This matches the Anthropic-attributed comment on `anthropics/claude-code#4157`: *"Claude Code doesn't currently have a generic UI for displaying real-time progress from custom MCP servers."*
+- ❌ **Claude Code does not render progress notifications anywhere observable.** Verified 2026-05-09 against Claude Code 2.1.133 with `progress-regression-mock.ts`'s `slow_with_many_progress` tool emitting 5 distinct progress messages over ~10s. Mid-flight pane capture showed no terminal-UI rendering. The agent reported verbatim: *"I did not observe any progress messages during the call... nothing was surfaced to the agent context."* Matches the Anthropic-attributed comment on `anthropics/claude-code#4157`: *"Claude Code doesn't currently have a generic UI for displaying real-time progress from custom MCP servers."*
+- ❌ **The transport-kill regression is NOT fixed in 2.1.133 — earlier note that it was, was wrong.** A first test on 2026-05-09 (`progress-regression-mock.ts`'s `slow_ping_with_progress` + `simple_ping`) reported the regression resolved. **That test was insufficient.** It used sequential `await` ordering, putting all progress notifications strictly *before* the tool response, which avoids the race. The actual trigger documented in `GLips/Figma-Context-MCP#362` is **concurrent or quick-succession tool calls** where a progress notification arrives at the client *after* its `progressToken` cleanup has run. The MCP SDK then treats it as a protocol violation (`"Connection error: Received a progress notification for an unknown token"`) and tears down stdio. This bug is documented as still affecting Claude Code 2.1.x in the field. **The `team` use case (N concurrent child sessions, each with its own `progressToken`) is the exact pattern that triggers the bug.**
 
-Implementing this today would add code that fires notifications into a void. Not worth doing.
+So implementing this not only adds code that fires into a void — it would actively destabilize `team`. Two independent reasons not to do it.
 
-**Trigger condition for un-parking**: Claude Code releases a CHANGELOG entry mentioning UI/agent rendering of `notifications/progress` from custom MCP servers — at which point this becomes a one-hour additive change in the bridge callback.
+**Trigger condition for un-parking** (both must hold):
+1. Claude Code's MCP SDK fixes the strict-token-validation bug (the underlying cause of `Figma-Context-MCP#362`); look for changes in `@modelcontextprotocol/sdk` Client to ignore unknown progress tokens instead of treating them as fatal.
+2. Claude Code ships UI/agent rendering for progress notifications from custom MCP servers (issue `anthropics/claude-code#4157`).
 
-Reference: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`. Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`.
+**References**:
+- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`
+- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/`
+- Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`
+- Field evidence of the still-active bug: <https://github.com/GLips/Figma-Context-MCP/issues/362>
 
 ---
 
