@@ -33,6 +33,7 @@ import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
+import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 
 export interface ProxyServerOptions {
@@ -41,6 +42,7 @@ export interface ProxyServerOptions {
   isInteractive?: boolean; // Whether the current session is interactive (gates consent prompt)
   advisorModels?: string[]; // Advisor models from --advisor flag
   advisorCollector?: string | null; // Collector model (null = no synthesis)
+  hostname?: string; // Bind address (default: "127.0.0.1", use "0.0.0.0" for Docker)
 }
 
 export async function createProxyServer(
@@ -233,7 +235,9 @@ export async function createProxyServer(
       resolution.wasAutoRouted && resolution.fullModelId ? resolution.fullModelId : targetModel;
 
     // If resolver says use direct-api and key is available, create handler
-    if (resolution.category === "direct-api" && resolution.apiKeyAvailable) {
+    // Custom endpoints registered at runtime always have credentials (resolved from config)
+    const isRuntimeProvider = getRuntimeProviders().has(resolution.parsed?.provider ?? "");
+    if (resolution.category === "direct-api" && (resolution.apiKeyAvailable || isRuntimeProvider)) {
       const resolved = resolveRemoteProvider(resolveTarget);
       if (!resolved) return null;
 
@@ -459,6 +463,31 @@ export async function createProxyServer(
   const app = new Hono();
   app.use("*", cors());
 
+  // Proxy auth: validate standard Anthropic auth headers against the proxy key.
+  // Claude Code sends ANTHROPIC_AUTH_TOKEN as "authorization: Bearer <token>" or
+  // "x-api-key: <token>". We check all three headers so the proxy key doubles as
+  // the auth token — no custom headers needed.
+  // Health/status endpoints are exempt for Docker healthcheck compatibility.
+  const proxyKey = process.env.CLAUDISH_PROXY_KEY || loadConfig().proxyKey;
+  if (proxyKey) {
+    app.use("/v1/*", async (c, next) => {
+      const authHeader = c.req.header("authorization");
+      const apiKeyHeader = c.req.header("x-api-key");
+      const proxyKeyHeader = c.req.header("x-proxy-key");
+
+      const bearerToken = authHeader?.startsWith("Bearer ")
+        ? authHeader.slice(7)
+        : authHeader;
+
+      const provided = proxyKeyHeader || apiKeyHeader || bearerToken;
+      if (!provided || provided !== proxyKey) {
+        return c.json(wrapAnthropicError(401, "invalid proxy authentication"), 401);
+      }
+      await next();
+    });
+    log("[Proxy] Authentication enabled (proxy key required via authorization/x-api-key/x-proxy-key)");
+  }
+
   app.get("/", (c) =>
     c.json({
       status: "ok",
@@ -514,7 +543,8 @@ export async function createProxyServer(
     }
   });
 
-  const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" });
+  const bindHost = options.hostname ?? "127.0.0.1";
+  const server = serve({ fetch: app.fetch, port, hostname: bindHost });
 
   // Port resolution
   const addr = server.address();
@@ -538,7 +568,7 @@ export async function createProxyServer(
 
   return {
     port,
-    url: `http://127.0.0.1:${port}`,
+    url: `http://${bindHost}:${port}`,
     shutdown: async () => {
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },

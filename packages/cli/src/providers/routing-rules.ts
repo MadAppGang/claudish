@@ -12,6 +12,7 @@ import {
   isProviderAvailable,
 } from "./provider-definitions.js";
 import { buildCredentialHint } from "./routing-hints.js";
+import { getRuntimeProviders } from "./runtime-providers.js";
 
 /**
  * Pure merge — defaults < global < local. Exposed for testability so callers
@@ -185,6 +186,10 @@ export type RoutePlan =
  */
 function hasCredentialsForProvider(provider: string): boolean {
   if (isLocalTransport(provider)) return true;
+
+  // Custom endpoints registered at runtime always have credentials —
+  // the loader validates apiKey presence before registration.
+  if (getRuntimeProviders().has(provider)) return true;
 
   if (provider === "native-anthropic") {
     return !!process.env.ANTHROPIC_API_KEY || !!process.env.ANTHROPIC_AUTH_TOKEN;

@@ -145,12 +145,13 @@ export class NativeHandler implements ModelHandler {
       "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
     };
 
-    // Pass through auth headers as-is
-    if (originalHeaders["authorization"]) {
-      headers["authorization"] = originalHeaders["authorization"];
-    }
-    if (originalHeaders["x-api-key"]) {
-      headers["x-api-key"] = originalHeaders["x-api-key"];
+    // Auth: pass through client headers, or fall back to stored API key
+    const clientAuth = originalHeaders["authorization"] || originalHeaders["x-api-key"];
+    if (clientAuth) {
+      if (originalHeaders["authorization"]) headers["authorization"] = originalHeaders["authorization"];
+      if (originalHeaders["x-api-key"]) headers["x-api-key"] = originalHeaders["x-api-key"];
+    } else if (this.apiKey) {
+      headers["x-api-key"] = this.apiKey;
     }
     if (originalHeaders["anthropic-beta"]) {
       const incomingBeta = originalHeaders["anthropic-beta"];
