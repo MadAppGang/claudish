@@ -54,6 +54,9 @@ export async function createProxyServer(
   modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
   options: ProxyServerOptions = {}
 ): Promise<ProxyServer> {
+  // Resolve proxy key early — needed for both auth middleware and NativeHandler
+  const proxyKey = process.env.CLAUDISH_PROXY_KEY || loadConfig().proxyKey;
+
   // Load user-declared custom endpoints from ~/.claudish/config.json and
   // register them in the runtime provider registry so they appear in lookups
   // and handler creation. Runs once per proxy lifetime; idempotent.
@@ -76,7 +79,7 @@ export async function createProxyServer(
   }
 
   // Define handlers for different roles
-  const nativeHandler = new NativeHandler(anthropicApiKey, options.advisorModels, options.advisorCollector);
+  const nativeHandler = new NativeHandler(anthropicApiKey, options.advisorModels, options.advisorCollector, proxyKey);
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
@@ -468,7 +471,6 @@ export async function createProxyServer(
   // "x-api-key: <token>". We check all three headers so the proxy key doubles as
   // the auth token — no custom headers needed.
   // Health/status endpoints are exempt for Docker healthcheck compatibility.
-  const proxyKey = process.env.CLAUDISH_PROXY_KEY || loadConfig().proxyKey;
   if (proxyKey) {
     app.use("/v1/*", async (c, next) => {
       const authHeader = c.req.header("authorization");
@@ -512,7 +514,13 @@ export async function createProxyServer(
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
         const headers: any = { "Content-Type": "application/json" };
-        if (anthropicApiKey) headers["x-api-key"] = anthropicApiKey;
+        if (anthropicApiKey) {
+          if (anthropicApiKey.startsWith("sk-ant-oat")) {
+            headers["authorization"] = `Bearer ${anthropicApiKey}`;
+          } else {
+            headers["x-api-key"] = anthropicApiKey;
+          }
+        }
 
         const res = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
           method: "POST",

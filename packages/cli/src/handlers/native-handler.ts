@@ -19,13 +19,14 @@ export class NativeHandler implements ModelHandler {
   private baseUrl: string;
   private advisorModels?: string[];
   private advisorCollector?: string | null;
+  private proxyKey?: string;
 
-  constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
+  constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null, proxyKey?: string) {
     this.apiKey = apiKey;
-    // Always forward to real Anthropic API
     this.baseUrl = "https://api.anthropic.com";
     this.advisorModels = advisorModels;
     this.advisorCollector = advisorCollector;
+    this.proxyKey = proxyKey;
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
@@ -145,13 +146,28 @@ export class NativeHandler implements ModelHandler {
       "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
     };
 
-    // Auth: pass through client headers, or fall back to stored API key
-    const clientAuth = originalHeaders["authorization"] || originalHeaders["x-api-key"];
-    if (clientAuth) {
-      if (originalHeaders["authorization"]) headers["authorization"] = originalHeaders["authorization"];
+    // Auth: pass through client headers unless they contain the proxy key,
+    // in which case fall back to stored API key (proxy key is for the local
+    // proxy only, not for api.anthropic.com).
+    const bearerToken = originalHeaders["authorization"]?.startsWith("Bearer ")
+      ? originalHeaders["authorization"].slice(7)
+      : originalHeaders["authorization"];
+    const clientAuthToken = originalHeaders["x-api-key"] || bearerToken;
+    const isProxyKey = this.proxyKey && clientAuthToken === this.proxyKey;
+
+    if (!isProxyKey && clientAuthToken) {
+      // Genuine client auth (OAuth token, API key) — pass through
       if (originalHeaders["x-api-key"]) headers["x-api-key"] = originalHeaders["x-api-key"];
+      else if (originalHeaders["authorization"]) headers["authorization"] = originalHeaders["authorization"];
     } else if (this.apiKey) {
-      headers["x-api-key"] = this.apiKey;
+      // Proxy key detected or no auth — use stored Anthropic key.
+      // OAuth tokens (sk-ant-oat01-) MUST be sent as authorization: Bearer,
+      // not as x-api-key — Anthropic rejects them in the latter header.
+      if (this.apiKey.startsWith("sk-ant-oat")) {
+        headers["authorization"] = `Bearer ${this.apiKey}`;
+      } else {
+        headers["x-api-key"] = this.apiKey;
+      }
     }
     if (originalHeaders["anthropic-beta"]) {
       const incomingBeta = originalHeaders["anthropic-beta"];
