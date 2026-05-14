@@ -140,56 +140,65 @@ export class NativeHandler implements ModelHandler {
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 
-    // Build headers - pass through auth headers exactly as received
+    // Transparent passthrough: forward ALL incoming headers to api.anthropic.com.
+    // This is essential for Max subscription auth — Claude Code sends internal
+    // headers that make the subscription work for Opus/Sonnet, and we must not
+    // drop any of them.
+    //
+    // Skip hop-by-hop headers and Hono-internal headers that must not be
+    // forwarded to an upstream API.
+    const HOP_BY_HOP = new Set([
+      "host", "connection", "keep-alive", "transfer-encoding", "te",
+      "trailer", "upgrade", "content-length",
+    ]);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
     };
+    for (const [key, value] of Object.entries(originalHeaders)) {
+      if (HOP_BY_HOP.has(key.toLowerCase())) continue;
+      if (typeof value !== "string") continue;
+      headers[key] = value;
+    }
 
-    // Auth: pass through client headers unless they contain the proxy key,
-    // in which case fall back to stored API key (proxy key is for the local
-    // proxy only, not for api.anthropic.com).
-    const bearerToken = originalHeaders["authorization"]?.startsWith("Bearer ")
-      ? originalHeaders["authorization"].slice(7)
-      : originalHeaders["authorization"];
-    const clientAuthToken = originalHeaders["x-api-key"] || bearerToken;
-    const isProxyKey = this.proxyKey && clientAuthToken === this.proxyKey;
-
-    if (!isProxyKey && clientAuthToken) {
-      // Genuine client auth (OAuth token, API key) — pass through
-      if (originalHeaders["x-api-key"]) headers["x-api-key"] = originalHeaders["x-api-key"];
-      else if (originalHeaders["authorization"]) headers["authorization"] = originalHeaders["authorization"];
-    } else if (this.apiKey) {
-      // Proxy key detected or no auth — use stored Anthropic key.
-      // OAuth tokens (sk-ant-oat01-) MUST be sent as authorization: Bearer,
-      // not as x-api-key — Anthropic rejects them in the latter header.
-      if (this.apiKey.startsWith("sk-ant-oat")) {
-        headers["authorization"] = `Bearer ${this.apiKey}`;
-      } else {
-        headers["x-api-key"] = this.apiKey;
+    // Proxy key override: if the client auth matches our proxy key, replace it
+    // with the stored Anthropic key (proxy key is for the local proxy only,
+    // not for api.anthropic.com). When no proxy key is configured (pass-through
+    // mode), everything flows through unmodified.
+    if (this.proxyKey) {
+      const bearerToken = originalHeaders["authorization"]?.startsWith("Bearer ")
+        ? originalHeaders["authorization"].slice(7)
+        : originalHeaders["authorization"];
+      const clientAuthToken = originalHeaders["x-api-key"] || bearerToken;
+      if (clientAuthToken === this.proxyKey) {
+        // Strip proxy key from forwarded headers
+        delete headers["x-api-key"];
+        delete headers["authorization"];
+        if (this.apiKey) {
+          if (this.apiKey.startsWith("sk-ant-oat")) {
+            headers["authorization"] = `Bearer ${this.apiKey}`;
+          } else {
+            headers["x-api-key"] = this.apiKey;
+          }
+        }
       }
     }
-    if (originalHeaders["anthropic-beta"]) {
+
+    // Advisor-swap: strip advisor beta flag when we swapped the tool
+    if (advisorSwapped && originalHeaders["anthropic-beta"]) {
       const incomingBeta = originalHeaders["anthropic-beta"];
-      if (advisorSwapped) {
-        // When we swap the advisor tool we must also strip the matching beta
-        // flag; otherwise Anthropic rejects the request (beta enabled but no
-        // matching server tool declared).
-        const { stripped, changed } = stripAdvisorBeta(incomingBeta);
-        if (changed) {
-          log(
-            `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
-          );
-          logAdvisorEvent(advisorCfg, {
-            kind: "beta_stripped",
-            before: incomingBeta,
-            after: stripped ?? "",
-          });
-        }
-        if (stripped) headers["anthropic-beta"] = stripped;
-      } else {
-        headers["anthropic-beta"] = incomingBeta;
+      const { stripped, changed } = stripAdvisorBeta(incomingBeta);
+      if (changed) {
+        log(
+          `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
+        );
+        logAdvisorEvent(advisorCfg, {
+          kind: "beta_stripped",
+          before: incomingBeta,
+          after: stripped ?? "",
+        });
       }
+      if (stripped) headers["anthropic-beta"] = stripped;
+      else delete headers["anthropic-beta"];
     }
 
     // Execute fetch
