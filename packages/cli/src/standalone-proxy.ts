@@ -61,13 +61,12 @@ if (hostIdx !== -1 && args[hostIdx + 1]) {
 }
 
 import { createProxyServer } from "./proxy-server.js";
-import { loadConfig, getModelMapping } from "./profile-config.js";
+import { loadConfig } from "./profile-config.js";
 
-// Read active profile's model mapping for role-based routing
-// (opus/sonnet/haiku role remapping from config)
-const cfg = loadConfig();
-const modelMap = getModelMapping(cfg.defaultProfile);
-const activeProfile = cfg.profiles[cfg.defaultProfile];
+// No modelMap — the proxy is a transparent router. Every model name routes
+// to its provider via config.json routing rules:
+//   claude-opus-4-7 → anthropic, glm-5.1 → z.ai, qwen3.6-35b-a3b → vllm-myia
+// Any model can be used directly; no role remapping.
 
 const server = await createProxyServer(
   port,
@@ -75,16 +74,11 @@ const server = await createProxyServer(
   undefined,
   false,
   process.env.ANTHROPIC_API_KEY,
-  modelMap.opus || modelMap.sonnet || modelMap.haiku ? modelMap : undefined,
+  undefined,
   { quiet: false, hostname }
 );
 
-const mappingInfo = modelMap.opus
-  ? ` (opus→${modelMap.opus}, sonnet→${modelMap.sonnet || "passthrough"}, haiku→${modelMap.haiku || "passthrough"})`
-  : " (passthrough — no profile mapping)";
 console.log(`[claudish-proxy] Standalone proxy running on http://${hostname}:${port}`);
-console.log(`[claudish-proxy] Profile: ${cfg.defaultProfile}${activeProfile ? ` — ${activeProfile.description ?? ""}` : ""}`);
-console.log(`[claudish-proxy] Role mapping: ${modelMap.opus ? `opus=${modelMap.opus}, sonnet=${modelMap.sonnet ?? "passthrough"}, haiku=${modelMap.haiku ?? "passthrough"}` : "none (all models passthrough)"}`);
 console.log(`[claudish-proxy] Config: ~/.claudish/config.json`);
 console.log(`[claudish-proxy] Press Ctrl+C to stop`);
 
