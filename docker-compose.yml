@@ -1,0 +1,22 @@
+services:
+  claudish-proxy:
+    build: .
+    container_name: claudish-proxy
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount config from host (contains API keys, routing, profiles)
+      - type: bind
+        source: C:\Users\jsboi\.claudish
+        target: /root/.claudish
+        read_only: true
+    environment:
+      - NODE_ENV=production
+    command: ["--port", "3000", "--host", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

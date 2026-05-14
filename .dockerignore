@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+logs
+*.log
+.claude
+.claudish
+ai-docs
+test-fixtures
+*.md
+!packages/cli/README.md
+.startup-shortcut-created
+Dockerfile
+docker-compose.yml
