@@ -177,7 +177,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 |----------|----------|---------|
 | `GEMINI_BASE_URL` | Google Gemini API | `https://generativelanguage.googleapis.com` |
 | `OPENAI_BASE_URL` | OpenAI API (also for Azure-compatible) | `https://api.openai.com` |
-| `MINIMAX_BASE_URL` | MiniMax API | `https://api.minimax.io` |
+| `MINIMAX_BASE_URL` | MiniMax API | `https://api.minimaxi.com` |
 | `MINIMAX_CODING_BASE_URL` | MiniMax Coding Plan endpoint | `https://api.minimax.io` |
 | `MOONSHOT_BASE_URL` | Kimi/Moonshot API | `https://api.moonshot.ai` |
 | `KIMI_BASE_URL` | Alias for `MOONSHOT_BASE_URL` | |

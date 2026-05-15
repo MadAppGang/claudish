@@ -372,7 +372,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 |----------|----------|---------|
 | `GEMINI_BASE_URL` | Gemini API | `https://generativelanguage.googleapis.com` |
 | `OPENAI_BASE_URL` | OpenAI/Azure | `https://api.openai.com` |
-| `MINIMAX_BASE_URL` | MiniMax | `https://api.minimax.io` |
+| `MINIMAX_BASE_URL` | MiniMax | `https://api.minimaxi.com` |
 | `MOONSHOT_BASE_URL` | Kimi/Moonshot | `https://api.moonshot.ai` |
 | `ZHIPU_BASE_URL` | GLM/Zhipu | `https://open.bigmodel.cn` |
 | `ZAI_BASE_URL` | Z.AI | `https://api.z.ai` |
