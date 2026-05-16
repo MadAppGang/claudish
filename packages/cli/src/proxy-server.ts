@@ -487,8 +487,6 @@ export async function createProxyServer(
   app.get("/v1/probe-discover", async (c) => {
     const provider = c.req.query("provider");
     if (!provider) return c.json({ error: "missing provider query" }, 400);
-    // Optional exclude list — TUI's probe loop passes models that already
-    // failed so discovery returns the next candidate. Format: comma-separated.
     const excludeQuery = c.req.query("exclude") ?? "";
     const exclude = new Set(
       excludeQuery
@@ -496,13 +494,7 @@ export async function createProxyServer(
         .map((s) => s.trim())
         .filter(Boolean)
     );
-    // Use a sentinel model name — the handler factory needs one, but
-    // discoverProbeModel doesn't consult the modelName field.
     const targetModel = `${provider}@<discover>`;
-    // Try local providers first (ollama, lmstudio, vllm, mlx). They're
-    // filtered out of the remote registry by design, so getRemoteProviderHandler
-    // returns null for them and we'd otherwise report "transport does not
-    // support discovery" even though LocalTransport DOES implement it.
     const handler =
       getLocalProviderHandler(targetModel) ?? getRemoteProviderHandler(targetModel);
     const transport = (handler as unknown as { provider?: ProviderTransport })?.provider;
@@ -531,6 +523,76 @@ export async function createProxyServer(
         500
       );
     }
+  });
+
+  // Model discovery — Claude Code uses this when
+  // CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 is set.
+  app.get("/v1/models", (c) => {
+    const seen = new Set<string>();
+    const models: { id: string; display_name: string; created_at: string }[] = [];
+
+    // From routing rules (each key is a model name pattern)
+    for (const modelName of Object.keys(effectiveRoutingRules)) {
+      if (modelName === "*") continue; // skip catch-all
+      if (!seen.has(modelName)) {
+        seen.add(modelName);
+        models.push({
+          id: modelName,
+          display_name: modelName,
+          created_at: "2026-01-01T00:00:00Z",
+        });
+      }
+    }
+
+    // From model role mappings (opus/sonnet/haiku/subagent)
+    if (modelMap) {
+      for (const mapped of Object.values(modelMap)) {
+        if (mapped && !seen.has(mapped)) {
+          seen.add(mapped);
+          models.push({
+            id: mapped,
+            display_name: mapped,
+            created_at: "2026-01-01T00:00:00Z",
+          });
+        }
+      }
+    }
+
+    // From custom endpoints
+    try {
+      const cfg = loadConfig();
+      if (cfg.customEndpoints) {
+        for (const ep of Object.values(cfg.customEndpoints)) {
+          const endpoint = ep as { models?: string[] };
+          if (endpoint.models) {
+            for (const m of endpoint.models) {
+              if (!seen.has(m)) {
+                seen.add(m);
+                models.push({
+                  id: m,
+                  display_name: m,
+                  created_at: "2026-01-01T00:00:00Z",
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Config read failure — skip custom models
+    }
+
+    // From default --model flag
+    if (model && !seen.has(model)) {
+      seen.add(model);
+      models.push({
+        id: model,
+        display_name: model,
+        created_at: "2026-01-01T00:00:00Z",
+      });
+    }
+
+    return c.json({ object: "list", data: models });
   });
 
   // Token counting
