@@ -571,6 +571,29 @@ export async function createProxyServer(
       const body = await c.req.json();
       const handler = await getHandlerForRequest(body.model);
 
+      // Strip Claude Code billing header from system prompt for non-Anthropic
+      // providers. Claude Code injects `x-anthropic-billing-header: cc_version=...; cch=XXXXX;`
+      // into the prompt body — the `cch=` token changes every request, breaking
+      // prefix caching on self-hosted inference (vLLM, Ollama). Only Anthropic
+      // needs this header.
+      if (!(handler instanceof NativeHandler)) {
+        if (typeof body.system === "string") {
+          body.system = body.system.replace(
+            /x-anthropic-billing-header: cc_version=[^\n]*\n?/g,
+            ""
+          );
+        } else if (Array.isArray(body.system)) {
+          for (const block of body.system) {
+            if (block.type === "text" && typeof block.text === "string") {
+              block.text = block.text.replace(
+                /x-anthropic-billing-header: cc_version=[^\n]*\n?/g,
+                ""
+              );
+            }
+          }
+        }
+      }
+
       // Route
       return handler.handle(c, body);
     } catch (e) {
