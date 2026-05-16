@@ -74,6 +74,22 @@ export function createAnthropicPassthroughStream(
           /** How many thinking blocks have been suppressed so far. */
           let thinkingBlocksSuppressed = 0;
 
+          // Content block index tracking — detect out-of-range indices
+          // that would cause "Content block not found" on the client side.
+          let highestSeenIndex = -1;
+          const clampIndex = (idx: number, context: string): number => {
+            if (idx > highestSeenIndex + 1) {
+              log(
+                `[AnthropicSSE] Index jump detected: ${idx} but expected <=${highestSeenIndex + 1} (${context}) — clamping to ${highestSeenIndex + 1}`
+              );
+              return highestSeenIndex + 1;
+            }
+            return idx;
+          };
+          const trackIndex = (idx: number) => {
+            if (idx > highestSeenIndex) highestSeenIndex = idx;
+          };
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -141,8 +157,10 @@ export function createAnthropicPassthroughStream(
                   // After suppressing N thinking blocks, subtract N from the index
                   if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
                     const reindexed = data.index - thinkingBlocksSuppressed;
+                    const clamped = clampIndex(reindexed, `${data.type} (filtered, orig=${data.index})`);
+                    trackIndex(clamped);
                     const modifiedLine =
-                      "data: " + JSON.stringify({ ...data, index: reindexed });
+                      "data: " + JSON.stringify({ ...data, index: clamped });
 
                     if (!isClosed) {
                       controller.enqueue(encoder.encode(modifiedLine + "\n"));
@@ -150,7 +168,23 @@ export function createAnthropicPassthroughStream(
 
                     // Still do usage tracking below with the ORIGINAL data
                   } else {
-                    // No filtering needed — pass through as-is
+                    // No filtering needed — track and pass through
+                    if (typeof data.index === "number") {
+                      if (data.type === "content_block_start") {
+                        trackIndex(data.index);
+                      } else {
+                        const clamped = clampIndex(data.index, `${data.type} (unfiltered)`);
+                        if (clamped !== data.index) {
+                          const modifiedLine =
+                            "data: " + JSON.stringify({ ...data, index: clamped });
+                          if (!isClosed) {
+                            controller.enqueue(encoder.encode(modifiedLine + "\n"));
+                          }
+                          // Skip original enqueue below
+                          continue;
+                        }
+                      }
+                    }
                     if (!isClosed) {
                       controller.enqueue(encoder.encode(line + "\n"));
                     }
@@ -189,9 +223,47 @@ export function createAnthropicPassthroughStream(
                       return; // stop processing further lines
                     }
 
-                    // No error — pass through the line
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(line + "\n"));
+                    // No error — check index bounds before passing through
+                    if (typeof data.index === "number") {
+                      if (data.type === "content_block_start") {
+                        // z.ai sometimes sends content_block_start with an index
+                        // that jumps (e.g., 0 → 2, skipping 1). This causes
+                        // "Content block not found" on the client. Remap to
+                        // sequential indices to keep the client happy.
+                        const expected = highestSeenIndex + 1;
+                        if (data.index !== expected) {
+                          log(
+                            `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
+                          );
+                          const remapped = { ...data, index: expected };
+                          if (!isClosed) {
+                            controller.enqueue(encoder.encode("data: " + JSON.stringify(remapped) + "\n"));
+                          }
+                        } else {
+                          if (!isClosed) {
+                            controller.enqueue(encoder.encode(line + "\n"));
+                          }
+                        }
+                        trackIndex(expected);
+                      } else {
+                        // delta / stop — clamp to highestSeenIndex
+                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
+                        if (clamped !== data.index) {
+                          const modified = { ...data, index: clamped };
+                          if (!isClosed) {
+                            controller.enqueue(encoder.encode("data: " + JSON.stringify(modified) + "\n"));
+                          }
+                        } else {
+                          if (!isClosed) {
+                            controller.enqueue(encoder.encode(line + "\n"));
+                          }
+                        }
+                      }
+                    } else {
+                      // No index field — pass through as-is
+                      if (!isClosed) {
+                        controller.enqueue(encoder.encode(line + "\n"));
+                      }
                     }
 
                     // Usage/debug tracking
@@ -273,6 +345,22 @@ export function createAnthropicPassthroughStream(
 
           if (opts.onTokenUpdate) {
             opts.onTokenUpdate(inputTokens, outputTokens);
+          }
+
+          // Finalization: if the upstream stream ended without sending
+          // message_stop, emit it ourselves. Claude Code requires
+          // message_stop as the terminal event — without it, the client
+          // reports "API returned an empty or malformed response (HTTP 200)".
+          if (!isClosed && !stopReason) {
+            log(`[AnthropicSSE] Stream ended without message_stop — emitting synthetic finalization`);
+            controller.enqueue(encoder.encode(
+              "event: message_delta\n" +
+              `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`
+            ));
+            controller.enqueue(encoder.encode(
+              "event: message_stop\n" +
+              `data: {"type":"message_stop"}\n\n`
+            ));
           }
 
           if (!isClosed) {

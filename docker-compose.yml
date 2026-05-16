@@ -13,6 +13,7 @@ services:
         read_only: true
     environment:
       - NODE_ENV=production
+      - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
     command: ["--port", "3000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]
