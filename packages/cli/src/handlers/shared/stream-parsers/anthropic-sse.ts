@@ -330,6 +330,31 @@ export function createAnthropicPassthroughStream(
           /** A frame was just dropped — swallow its trailing blank separator too. */
           let suppressedFrame = false;
 
+          // Content block index tracking — detect out-of-range indices
+          // that would cause "Content block not found" on the client side.
+          let highestSeenIndex = -1;
+          /**
+           * Original → remapped index for blocks whose content_block_start
+           * index jumped (e.g. z.ai 0 → 2). Every later frame of that block
+           * (deltas, stop) still carries the original index, so the remap
+           * must follow the block until it closes.
+           */
+          const remappedBlocks = new Map<number, number>();
+          const clampIndex = (idx: number, context: string): number => {
+            const remapped = remappedBlocks.get(idx);
+            if (remapped !== undefined) return remapped;
+            if (idx > highestSeenIndex + 1) {
+              log(
+                `[AnthropicSSE] Index jump detected: ${idx} but expected <=${highestSeenIndex + 1} (${context}) — clamping to ${highestSeenIndex + 1}`
+              );
+              return highestSeenIndex + 1;
+            }
+            return idx;
+          };
+          const trackIndex = (idx: number) => {
+            if (idx > highestSeenIndex) highestSeenIndex = idx;
+          };
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -407,7 +432,12 @@ export function createAnthropicPassthroughStream(
                   // Re-index non-thinking content blocks
                   // After suppressing N thinking blocks, subtract N from the index
                   if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
-                    const reindexed = data.index - thinkingBlocksSuppressed;
+                    const clamped = clampIndex(
+                      data.index - thinkingBlocksSuppressed,
+                      `${data.type} (filtered, orig=${data.index})`
+                    );
+                    trackIndex(clamped);
+                    const reindexed = clamped;
                     const modifiedLine = `data: ${JSON.stringify({ ...data, index: reindexed })}`;
 
                     if (!isClosed) {
@@ -421,8 +451,22 @@ export function createAnthropicPassthroughStream(
 
                     // Still do usage tracking below with the ORIGINAL data
                   } else {
-                    // No filtering needed — pass through (via the tool interceptor,
-                    // which is a no-op unless a rule asked for this tool).
+                    // No filtering needed — track the index, clamp if it jumps,
+                    // and pass through via the tool interceptor (a no-op unless
+                    // a rule asked for this tool).
+                    if (
+                      typeof data.index === "number" &&
+                      data.type === "content_block_start"
+                    ) {
+                      trackIndex(data.index);
+                    } else if (typeof data.index === "number") {
+                      const clamped = clampIndex(data.index, `${data.type} (filtered stream)`);
+                      if (clamped !== data.index) {
+                        const modified = { ...data, index: clamped };
+                        enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
+                        continue;
+                      }
+                    }
                     enqueueData(controller, data, line);
                   }
                 } catch {
@@ -462,9 +506,51 @@ export function createAnthropicPassthroughStream(
                       return; // stop processing further lines
                     }
 
-                    // No error — pass through (via the tool interceptor, which is
-                    // a no-op unless a rule asked for this tool).
-                    enqueueData(controller, data, line);
+                    // No error — check index bounds before passing through
+                    // (still via the tool interceptor, which is a no-op unless
+                    // a rule asked for this tool).
+                    if (typeof data.index === "number") {
+                      if (data.type === "content_block_start") {
+                        // z.ai sometimes sends content_block_start with an index
+                        // that jumps (e.g., 0 → 2, skipping 1). This causes
+                        // "Content block not found" on the client. Remap to
+                        // sequential indices and remember the mapping so the
+                        // block's later frames follow it.
+                        const expected = highestSeenIndex + 1;
+                        if (data.index !== expected) {
+                          log(
+                            `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
+                          );
+                          remappedBlocks.set(data.index, expected);
+                          const remapped = { ...data, index: expected };
+                          enqueueData(controller, remapped, `data: ${JSON.stringify(remapped)}`);
+                        } else {
+                          enqueueData(controller, data, line);
+                        }
+                        trackIndex(expected);
+                      } else if (data.type === "content_block_stop") {
+                        // delta / stop — follow an existing remap, clamp otherwise
+                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
+                        remappedBlocks.delete(data.index);
+                        if (clamped !== data.index) {
+                          const modified = { ...data, index: clamped };
+                          enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
+                        } else {
+                          enqueueData(controller, data, line);
+                        }
+                      } else {
+                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
+                        if (clamped !== data.index) {
+                          const modified = { ...data, index: clamped };
+                          enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
+                        } else {
+                          enqueueData(controller, data, line);
+                        }
+                      }
+                    } else {
+                      // No index field — pass through as-is
+                      enqueueData(controller, data, line);
+                    }
 
                     // Usage/debug tracking
                     if (data.message?.usage) {
