@@ -35,6 +35,7 @@ import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
+import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -42,7 +43,7 @@ export interface ProxyServerOptions {
   isInteractive?: boolean; // Whether the current session is interactive (gates consent prompt)
   advisorModels?: string[]; // Advisor models from --advisor flag
   advisorCollector?: string | null; // Collector model (null = no synthesis)
-  hostname?: string; // Bind address (default: "127.0.0.1", use "0.0.0.0" for Docker)
+  hostname?: string; // Bind address (default: "127.0.0.1", use "0.0.0.0" for Docker) — fork extension
 }
 
 export async function createProxyServer(
@@ -463,56 +464,14 @@ export async function createProxyServer(
     return getOpenRouterHandler(target, invocationMode);
   };
 
+  // Fork extension: hostname binding + remote address tracking
+  const hostnameConfig = createHostnameConfig(options.hostname);
+
   const app = new Hono();
   app.use("*", cors());
 
-  // Model-aware proxy auth: Anthropic pass-through is exempt (OAuth or proxy-key
-  // swap handled by NativeHandler). Non-Anthropic providers require the proxy key
-  // in x-api-key / authorization / x-proxy-key. GET requests and health endpoints
-  // are exempt for Docker healthcheck and model discovery compatibility.
-  if (proxyKey) {
-    app.use("/v1/*", async (c, next) => {
-      if (c.req.method === "GET") {
-        return await next();
-      }
-
-      // Peek at body.model to determine target provider.
-      // Hono caches parsed JSON — safe to call again from the route handler.
-      let model: string | undefined;
-      try {
-        const body = await c.req.json();
-        model = body?.model;
-      } catch {
-        return await next(); // Malformed body — let handler return 400
-      }
-
-      // Anthropic pass-through: skip proxy key validation entirely.
-      // NativeHandler will either swap proxyKey → stored Anthropic key,
-      // or pass the client's OAuth token through unchanged.
-      if (model) {
-        const spec = parseModelSpec(model);
-        if (spec.provider === "native-anthropic") {
-          return await next();
-        }
-      }
-
-      // Non-Anthropic: enforce proxy key
-      const authHeader = c.req.header("authorization");
-      const apiKeyHeader = c.req.header("x-api-key");
-      const proxyKeyHeader = c.req.header("x-proxy-key");
-
-      const bearerToken = authHeader?.startsWith("Bearer ")
-        ? authHeader.slice(7)
-        : authHeader;
-
-      const provided = proxyKeyHeader || apiKeyHeader || bearerToken;
-      if (!provided || provided !== proxyKey) {
-        return c.json(wrapAnthropicError(401, "invalid proxy authentication"), 401);
-      }
-      await next();
-    });
-    log("[Proxy] Authentication enabled (Anthropic pass-through; proxy key required for other providers)");
-  }
+  // Fork extensions: proxy auth + model discovery
+  registerForkExtensions(app, { proxyKey });
 
   app.get("/", (c) =>
     c.json({
@@ -522,53 +481,6 @@ export async function createProxyServer(
     })
   );
   app.get("/health", (c) => c.json({ status: "ok" }));
-
-  // Model discovery endpoint — Claude Code queries /v1/models when
-  // CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 is set. Returns all
-  // routable models from config.json routing rules + custom endpoints.
-  app.get("/v1/models", (c) => {
-    const cfg = loadConfig();
-    const seen = new Set<string>();
-    const models: { id: string; display_name: string; created_at: string }[] = [];
-
-    // From routing rules — each key is a model name
-    if (cfg.routing) {
-      for (const modelName of Object.keys(cfg.routing)) {
-        if (!seen.has(modelName)) {
-          seen.add(modelName);
-          models.push({
-            id: modelName,
-            display_name: modelName,
-            created_at: "2026-01-01T00:00:00Z",
-          });
-        }
-      }
-    }
-
-    // From custom endpoints — each declared model
-    if (cfg.customEndpoints) {
-      for (const [, ep] of Object.entries(cfg.customEndpoints)) {
-        const endpoint = ep as { models?: string[] };
-        if (endpoint.models) {
-          for (const m of endpoint.models) {
-            if (!seen.has(m)) {
-              seen.add(m);
-              models.push({
-                id: m,
-                display_name: m,
-                created_at: "2026-01-01T00:00:00Z",
-              });
-            }
-          }
-        }
-      }
-    }
-
-    return c.json({
-      object: "list",
-      data: models,
-    });
-  });
 
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {
@@ -631,32 +543,8 @@ export async function createProxyServer(
     try {
       const body = await c.req.json();
       const handler = await getHandlerForRequest(body.model);
-      const xff = c.req.header("x-forwarded-for") || "";
-      const xrip = c.req.header("x-real-ip") || "";
-      const ua = c.req.header("user-agent") || "";
-      const directIp = remoteAddrMap.get(c.req.raw) || "";
-      const src = xff || xrip || directIp || "direct";
-      console.log(`[claudish] [Request] model=${body.model ?? "(none)"} handler=${handler.constructor.name} src=${src} ua=${ua.slice(0, 60)}`);
-
-      // Strip Claude Code billing header from system prompt for non-Anthropic
-      // providers. Claude Code injects `x-anthropic-billing-header: cc_version=...; cch=XXXXX;`
-      // into the prompt body — the `cch=` token changes every request, which breaks
-      // vLLM prefix caching (strict hash). Only Anthropic needs this; strip for others.
-      if (!(handler instanceof NativeHandler) && typeof body.system === "string") {
-        body.system = body.system.replace(
-          /x-anthropic-billing-header: cc_version=[^\n]*\n?/g,
-          ""
-        );
-      } else if (!(handler instanceof NativeHandler) && Array.isArray(body.system)) {
-        for (const block of body.system) {
-          if (block.type === "text" && typeof block.text === "string") {
-            block.text = block.text.replace(
-              /x-anthropic-billing-header: cc_version=[^\n]*\n?/g,
-              ""
-            );
-          }
-        }
-      }
+      logRequest(body, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
+      stripBillingHeaderFromBody(body, handler instanceof NativeHandler);
 
       // Route
       return handler.handle(c, body);
@@ -666,22 +554,17 @@ export async function createProxyServer(
     }
   });
 
-  const bindHost = options.hostname ?? "127.0.0.1";
-  // Store remote addresses for direct connections (no IIS/proxy).
-  // Hono middleware can't access the socket, so we intercept at the
-  // serve() level and pass the IP through the Request headers.
-  const remoteAddrMap = new WeakMap<Request, string>();
   const server = serve({
     fetch(req, env, ctx) {
       if (!req.headers.get("x-forwarded-for") && !req.headers.get("x-real-ip")) {
         // @ts-expect-error — Bun injects remoteAddress on the server info object
         const addr = ctx?.remoteAddress?.address as string | undefined;
-        if (addr) remoteAddrMap.set(req, addr);
+        if (addr) hostnameConfig.remoteAddrMap.set(req, addr);
       }
       return app.fetch(req, env, ctx);
     },
     port,
-    hostname: bindHost,
+    hostname: hostnameConfig.hostname,
   });
 
   // Port resolution
@@ -706,7 +589,7 @@ export async function createProxyServer(
 
   return {
     port,
-    url: `http://${bindHost}:${port}`,
+    url: `http://${hostnameConfig.hostname}:${port}`,
     shutdown: async () => {
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },

@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 /**
- * Claudish Standalone Proxy Server
+ * Claudish Standalone Proxy Server (fork extension)
  *
  * Starts the proxy server without wrapping Claude Code.
  * Used for cluster deployments where other machines route LLM requests
  * through this proxy.
  *
- * Usage: bun packages/cli/src/standalone-proxy.ts [--port 3000]
+ * Usage: bun packages/cli/src/fork/server/standalone-proxy.ts [--port 3000]
  */
 
 import { config } from "dotenv";
@@ -60,8 +60,8 @@ if (hostIdx !== -1 && args[hostIdx + 1]) {
   hostname = args[hostIdx + 1];
 }
 
-import { createProxyServer } from "./proxy-server.js";
-import { loadConfig } from "./profile-config.js";
+import { createProxyServer } from "../../proxy-server.js";
+import { loadConfig } from "../../profile-config.js";
 
 // No modelMap — the proxy is a transparent router. Every model name routes
 // to its provider via config.json routing rules:

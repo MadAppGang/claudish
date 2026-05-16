@@ -31,8 +31,8 @@ if ($existing) {
 }
 
 # Start the proxy
-Write-Log "Starting: bun packages/cli/src/standalone-proxy.ts --port 3000"
-bun packages/cli/src/standalone-proxy.ts --port 3000 2>&1 | ForEach-Object {
+Write-Log "Starting: bun packages/cli/src/fork/server/standalone-proxy.ts --port 3000"
+bun packages/cli/src/fork/server/standalone-proxy.ts --port 3000 2>&1 | ForEach-Object {
     Write-Log $_
 }
 Write-Log "Claudish proxy exited."
