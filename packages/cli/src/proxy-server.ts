@@ -466,13 +466,37 @@ export async function createProxyServer(
   const app = new Hono();
   app.use("*", cors());
 
-  // Proxy auth: validate standard Anthropic auth headers against the proxy key.
-  // Claude Code sends ANTHROPIC_AUTH_TOKEN as "authorization: Bearer <token>" or
-  // "x-api-key: <token>". We check all three headers so the proxy key doubles as
-  // the auth token — no custom headers needed.
-  // Health/status endpoints are exempt for Docker healthcheck compatibility.
+  // Model-aware proxy auth: Anthropic pass-through is exempt (OAuth or proxy-key
+  // swap handled by NativeHandler). Non-Anthropic providers require the proxy key
+  // in x-api-key / authorization / x-proxy-key. GET requests and health endpoints
+  // are exempt for Docker healthcheck and model discovery compatibility.
   if (proxyKey) {
     app.use("/v1/*", async (c, next) => {
+      if (c.req.method === "GET") {
+        return await next();
+      }
+
+      // Peek at body.model to determine target provider.
+      // Hono caches parsed JSON — safe to call again from the route handler.
+      let model: string | undefined;
+      try {
+        const body = await c.req.json();
+        model = body?.model;
+      } catch {
+        return await next(); // Malformed body — let handler return 400
+      }
+
+      // Anthropic pass-through: skip proxy key validation entirely.
+      // NativeHandler will either swap proxyKey → stored Anthropic key,
+      // or pass the client's OAuth token through unchanged.
+      if (model) {
+        const spec = parseModelSpec(model);
+        if (spec.provider === "native-anthropic") {
+          return await next();
+        }
+      }
+
+      // Non-Anthropic: enforce proxy key
       const authHeader = c.req.header("authorization");
       const apiKeyHeader = c.req.header("x-api-key");
       const proxyKeyHeader = c.req.header("x-proxy-key");
@@ -487,7 +511,7 @@ export async function createProxyServer(
       }
       await next();
     });
-    log("[Proxy] Authentication enabled (proxy key required via authorization/x-api-key/x-proxy-key)");
+    log("[Proxy] Authentication enabled (Anthropic pass-through; proxy key required for other providers)");
   }
 
   app.get("/", (c) =>
@@ -607,6 +631,12 @@ export async function createProxyServer(
     try {
       const body = await c.req.json();
       const handler = await getHandlerForRequest(body.model);
+      const xff = c.req.header("x-forwarded-for") || "";
+      const xrip = c.req.header("x-real-ip") || "";
+      const ua = c.req.header("user-agent") || "";
+      const directIp = remoteAddrMap.get(c.req.raw) || "";
+      const src = xff || xrip || directIp || "direct";
+      console.log(`[claudish] [Request] model=${body.model ?? "(none)"} handler=${handler.constructor.name} src=${src} ua=${ua.slice(0, 60)}`);
 
       // Strip Claude Code billing header from system prompt for non-Anthropic
       // providers. Claude Code injects `x-anthropic-billing-header: cc_version=...; cch=XXXXX;`
@@ -637,7 +667,22 @@ export async function createProxyServer(
   });
 
   const bindHost = options.hostname ?? "127.0.0.1";
-  const server = serve({ fetch: app.fetch, port, hostname: bindHost });
+  // Store remote addresses for direct connections (no IIS/proxy).
+  // Hono middleware can't access the socket, so we intercept at the
+  // serve() level and pass the IP through the Request headers.
+  const remoteAddrMap = new WeakMap<Request, string>();
+  const server = serve({
+    fetch(req, env, ctx) {
+      if (!req.headers.get("x-forwarded-for") && !req.headers.get("x-real-ip")) {
+        // @ts-expect-error — Bun injects remoteAddress on the server info object
+        const addr = ctx?.remoteAddress?.address as string | undefined;
+        if (addr) remoteAddrMap.set(req, addr);
+      }
+      return app.fetch(req, env, ctx);
+    },
+    port,
+    hostname: bindHost,
+  });
 
   // Port resolution
   const addr = server.address();
