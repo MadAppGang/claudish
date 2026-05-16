@@ -139,40 +139,42 @@ export class NativeHandler implements ModelHandler {
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 
-    // Build headers - pass through auth headers exactly as received
+    // Transparent passthrough: forward ALL incoming headers to api.anthropic.com.
+    // This is essential for Max subscription auth — Claude Code sends internal
+    // headers that make the subscription work for Opus/Sonnet, and we must not
+    // drop any of them.
+    //
+    // Skip hop-by-hop headers (per RFC 2616 §13.5.1) and content-length (the
+    // body is re-serialized below).
+    const HOP_BY_HOP = new Set([
+      "host", "connection", "keep-alive", "transfer-encoding", "te",
+      "trailer", "upgrade", "content-length",
+    ]);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
     };
+    for (const [key, value] of Object.entries(originalHeaders)) {
+      if (HOP_BY_HOP.has(key.toLowerCase())) continue;
+      if (typeof value !== "string") continue;
+      headers[key] = value;
+    }
 
-    // Pass through auth headers as-is
-    if (originalHeaders["authorization"]) {
-      headers["authorization"] = originalHeaders["authorization"];
-    }
-    if (originalHeaders["x-api-key"]) {
-      headers["x-api-key"] = originalHeaders["x-api-key"];
-    }
-    if (originalHeaders["anthropic-beta"]) {
+    // Advisor-swap: strip advisor beta flag when we swapped the tool
+    if (advisorSwapped && originalHeaders["anthropic-beta"]) {
       const incomingBeta = originalHeaders["anthropic-beta"];
-      if (advisorSwapped) {
-        // When we swap the advisor tool we must also strip the matching beta
-        // flag; otherwise Anthropic rejects the request (beta enabled but no
-        // matching server tool declared).
-        const { stripped, changed } = stripAdvisorBeta(incomingBeta);
-        if (changed) {
-          log(
-            `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
-          );
-          logAdvisorEvent(advisorCfg, {
-            kind: "beta_stripped",
-            before: incomingBeta,
-            after: stripped ?? "",
-          });
-        }
-        if (stripped) headers["anthropic-beta"] = stripped;
-      } else {
-        headers["anthropic-beta"] = incomingBeta;
+      const { stripped, changed } = stripAdvisorBeta(incomingBeta);
+      if (changed) {
+        log(
+          `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
+        );
+        logAdvisorEvent(advisorCfg, {
+          kind: "beta_stripped",
+          before: incomingBeta,
+          after: stripped ?? "",
+        });
       }
+      if (stripped) headers["anthropic-beta"] = stripped;
+      else delete headers["anthropic-beta"];
     }
 
     // Execute fetch

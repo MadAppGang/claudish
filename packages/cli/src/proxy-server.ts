@@ -545,14 +545,21 @@ export async function createProxyServer(
       }
       const handler = await getHandlerForRequest(body.model);
 
-      // If native, we just forward. OpenRouter needs estimation.
+      // If native, forward transparently (all client headers passthrough).
       if (handler instanceof NativeHandler) {
-        const headers: any = { "Content-Type": "application/json" };
-        if (anthropicApiKey) headers["x-api-key"] = anthropicApiKey;
+        const HOP_BY_HOP = new Set([
+          "host", "connection", "keep-alive", "transfer-encoding", "te",
+          "trailer", "upgrade", "content-length",
+        ]);
+        const reqHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        for (const [key, value] of Object.entries(c.req.header())) {
+          if (HOP_BY_HOP.has(key.toLowerCase()) || typeof value !== "string") continue;
+          reqHeaders[key] = value;
+        }
 
         const res = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
           method: "POST",
-          headers,
+          headers: reqHeaders,
           body: JSON.stringify(body),
         });
         return c.json(await res.json());
