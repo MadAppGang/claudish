@@ -62,7 +62,7 @@ export function createGeminiSseStream(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: { input_tokens: 0, output_tokens: 0 },
         },
       });
       send("ping", { type: "ping" });
@@ -113,7 +113,7 @@ export function createGeminiSseStream(
           send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn", stop_sequence: null },
-            usage: { output_tokens: outputTokens },
+            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
           });
           send("message_stop", { type: "message_stop" });
         }
