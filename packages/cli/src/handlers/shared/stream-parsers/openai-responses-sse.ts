@@ -66,7 +66,7 @@ export function createResponsesStreamHandler(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: { input_tokens: 0, output_tokens: 0 },
         },
       });
       send("ping", { type: "ping" });

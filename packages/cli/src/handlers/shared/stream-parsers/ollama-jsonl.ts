@@ -50,7 +50,7 @@ export function createOllamaJsonlStream(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: { input_tokens: 0, output_tokens: 0 },
         },
       });
       send("ping", { type: "ping" });
@@ -75,7 +75,7 @@ export function createOllamaJsonlStream(
           send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: "end_turn", stop_sequence: null },
-            usage: { output_tokens: completionTokens },
+            usage: { input_tokens: promptTokens, output_tokens: completionTokens },
           });
           send("message_stop", { type: "message_stop" });
         }
