@@ -68,6 +68,7 @@ export function createAnthropicPassthroughStream(
           let textChunks = 0;
           let toolUseBlocks = 0;
           let stopReason: string | null = null;
+          let sawMessageStop = false;
 
           // Thinking-block filtering state
           let insideThinkingBlock = false;
@@ -292,6 +293,9 @@ export function createAnthropicPassthroughStream(
                     if (data.type === "message_delta" && data.delta?.stop_reason) {
                       stopReason = data.delta.stop_reason;
                     }
+                    if (data.type === "message_stop") {
+                      sawMessageStop = true;
+                    }
                   } catch {
                     // Unparseable data line — pass through
                     if (!isClosed) {
@@ -333,6 +337,9 @@ export function createAnthropicPassthroughStream(
                   if (data.type === "message_delta" && data.delta?.stop_reason) {
                     stopReason = data.delta.stop_reason;
                   }
+                  if (data.type === "message_stop") {
+                    sawMessageStop = true;
+                  }
                 } catch {}
               }
             }
@@ -351,12 +358,14 @@ export function createAnthropicPassthroughStream(
           // message_stop, emit it ourselves. Claude Code requires
           // message_stop as the terminal event — without it, the client
           // reports "API returned an empty or malformed response (HTTP 200)".
-          if (!isClosed && !stopReason) {
-            log(`[AnthropicSSE] Stream ended without message_stop — emitting synthetic finalization`);
-            controller.enqueue(encoder.encode(
-              "event: message_delta\n" +
-              `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`
-            ));
+          if (!isClosed && !sawMessageStop) {
+            log(`[AnthropicSSE] Stream ended without message_stop (stopReason=${stopReason}) — emitting synthetic finalization`);
+            if (!stopReason) {
+              controller.enqueue(encoder.encode(
+                "event: message_delta\n" +
+                `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`
+              ));
+            }
             controller.enqueue(encoder.encode(
               "event: message_stop\n" +
               `data: {"type":"message_stop"}\n\n`
