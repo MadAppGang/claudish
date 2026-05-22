@@ -162,6 +162,29 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Direct OpenAI API (oai@)",
   },
 
+  // ── Tuning Engines (OpenAI-compatible governed AI gateway) ─────────
+  {
+    name: "tuningengines",
+    displayName: "Tuning Engines",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.tuningengines.com",
+    baseUrlEnvVars: ["TUNING_ENGINES_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "TUNING_ENGINES_API_KEY",
+    apiKeyDescription: "Tuning Engines API Key",
+    apiKeyUrl: "https://app.tuningengines.com/inference/keys",
+    shortcuts: ["te", "tuning"],
+    shortestPrefix: "te",
+    legacyPrefixes: [
+      { prefix: "te/", stripPrefix: true },
+      { prefix: "tuningengines/", stripPrefix: true },
+    ],
+    nativeModelPatterns: [{ pattern: /^tuningengines\//i }, { pattern: /^te\//i }],
+    isDirectApi: true,
+    description: "Tuning Engines gateway (te@, tuningengines@)",
+  },
+
   // ── OpenAI Codex (Responses API — ChatGPT Plus/Pro subscription) ────
   {
     name: "openai-codex",

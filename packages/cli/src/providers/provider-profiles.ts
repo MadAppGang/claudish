@@ -352,6 +352,7 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   gemini: geminiProfile,
   "gemini-codeassist": geminiCodeAssistProfile,
   openai: openaiProfile,
+  tuningengines: openaiProfile,
   "openai-codex": openaiCodexProfile,
   minimax: anthropicCompatProfile,
   "minimax-coding": anthropicCompatProfile,

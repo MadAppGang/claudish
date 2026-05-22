@@ -19,7 +19,7 @@
 **Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server.
 
 **Supported Providers:**
-- **Cloud:** OpenRouter (580+ models), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, OllamaCloud, OpenCode Zen
+- **Cloud:** OpenRouter (580+ models), Google Gemini, OpenAI, Tuning Engines, MiniMax, Kimi, GLM, Z.AI, OllamaCloud, OpenCode Zen
 - **Local:** Ollama, LM Studio, vLLM, MLX
 - **Enterprise:** Vertex AI (Google Cloud)
 
@@ -322,6 +322,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `OPENROUTER_API_KEY` | OpenRouter (default backend, 580+ models) | |
 | `GEMINI_API_KEY` | Google Gemini (`g@`, `google@`) | |
 | `OPENAI_API_KEY` | OpenAI (`oai@`) | |
+| `TUNING_ENGINES_API_KEY` | Tuning Engines (`te@`, `tuningengines@`) | |
 | `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | |
 | `MINIMAX_CODING_API_KEY` | MiniMax Coding Plan (`mmc@`) | |
 | `MOONSHOT_API_KEY` | Kimi/Moonshot (`kimi@`) | `KIMI_API_KEY` |
@@ -372,6 +373,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 |----------|----------|---------|
 | `GEMINI_BASE_URL` | Gemini API | `https://generativelanguage.googleapis.com` |
 | `OPENAI_BASE_URL` | OpenAI/Azure | `https://api.openai.com` |
+| `TUNING_ENGINES_BASE_URL` | Tuning Engines | `https://api.tuningengines.com` |
 | `MINIMAX_BASE_URL` | MiniMax | `https://api.minimax.io` |
 | `MOONSHOT_BASE_URL` | Kimi/Moonshot | `https://api.moonshot.ai` |
 | `ZHIPU_BASE_URL` | GLM/Zhipu | `https://open.bigmodel.cn` |
@@ -460,6 +462,7 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 |----------|----------|---------|---------|
 | `g@`, `google@` | Google Gemini | `GEMINI_API_KEY` | `g@gemini-2.0-flash` |
 | `oai@` | OpenAI Direct | `OPENAI_API_KEY` | `oai@gpt-4o` |
+| `te@`, `tuningengines@` | Tuning Engines | `TUNING_ENGINES_API_KEY` | `te@llama-3.3-70b-fp8` |
 | `or@`, `openrouter@` | OpenRouter | `OPENROUTER_API_KEY` | `or@deepseek/deepseek-r1` |
 | `mm@`, `mmax@` | MiniMax Direct | `MINIMAX_API_KEY` | `mm@MiniMax-M2.1` |
 | `kimi@`, `moon@` | Kimi Direct | `MOONSHOT_API_KEY` | `kimi@kimi-k2` |
