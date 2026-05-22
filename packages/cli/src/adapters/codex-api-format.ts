@@ -11,8 +11,9 @@
  * This format handles Codex models only. All other OpenAI models use OpenAIAPIFormat.
  */
 
-import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import { type AdapterResult, BaseAPIFormat, matchesModelFamily } from "./base-api-format.js";
+import { getCodexReasoningEffortFromClaudeRequest } from "./openai-reasoning-effort.js";
 
 /**
  * Normalize model name for ChatGPT backend API.
@@ -38,10 +39,6 @@ export function normalizeCodexModel(modelId: string | undefined): string {
 }
 
 export class CodexAPIFormat extends BaseAPIFormat {
-  constructor(modelId: string) {
-    super(modelId);
-  }
-
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
@@ -51,7 +48,8 @@ export class CodexAPIFormat extends BaseAPIFormat {
   }
 
   shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "codex");
+    const model = normalizeCodexModel(modelId).toLowerCase();
+    return matchesModelFamily(modelId, "codex") || model.includes("codex");
   }
 
   getName(): string {
@@ -65,6 +63,7 @@ export class CodexAPIFormat extends BaseAPIFormat {
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
     const convertedMessages = this.convertMessagesToResponsesAPI(messages);
     const normalizedModel = normalizeCodexModel(this.modelId);
+    const effort = getCodexReasoningEffortFromClaudeRequest(claudeRequest, normalizedModel);
 
     // Strip IDs from message items (stateless mode doesn't support server-side state)
     const strippedMessages = convertedMessages.map((item: any) => {
@@ -79,7 +78,7 @@ export class CodexAPIFormat extends BaseAPIFormat {
       store: false,
       include: ["reasoning.encrypted_content"],
       reasoning: {
-        effort: "medium",
+        effort,
         summary: "auto",
       },
       text: {

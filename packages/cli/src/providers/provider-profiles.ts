@@ -116,7 +116,10 @@ const geminiCodeAssistProfile: ProviderProfile = {
 const openaiProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
-    const adapter = new OpenAIAPIFormat(ctx.modelName);
+    const isCodexModel = ctx.modelName.toLowerCase().includes("codex");
+    const adapter = isCodexModel
+      ? new CodexAPIFormat(ctx.modelName)
+      : new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
       tokenStrategy: "delta-aware",

@@ -467,3 +467,22 @@ describe("OpenCode Zen — model routing", () => {
     expect(adapter.getStreamFormat()).toBe("openai-responses-sse");
   });
 });
+
+describe("OpenAI profile — Codex model routing", () => {
+  const openAIBaseProvider = BUILTIN_PROVIDERS.find((p) => p.name === "openai")!;
+  const sharedCtx = {
+    provider: openAIBaseProvider as any,
+    apiKey: "test-key",
+    targetModel: "oai@gpt-5-codex",
+    port: 4000,
+    sharedOpts: { isInteractive: false as const, invocationMode: "explicit-model" as const },
+  };
+
+  test("direct OpenAI Codex models use CodexAPIFormat", () => {
+    const profile = PROVIDER_PROFILES["openai"];
+    const handler = profile.createHandler({ ...sharedCtx, modelName: "gpt-5-codex" }) as any;
+
+    expect(handler).not.toBeNull();
+    expect(handler.explicitAdapter).toBeInstanceOf(CodexAPIFormat);
+  });
+});

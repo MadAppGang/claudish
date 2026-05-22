@@ -551,10 +551,10 @@ describe("Model Adapter Quirks", () => {
     expect(request.temperature).toBe(0.7);
   });
 
-  test("MiniMaxModelDialect: unknown minimax model → context window 0", async () => {
+  test("MiniMaxModelDialect: known minimax model → catalog context window", async () => {
     const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
     const adapter = new MiniMaxModelDialect("minimax-m2.5");
-    expect(adapter.getContextWindow()).toBe(0);
+    expect(adapter.getContextWindow()).toBe(204800);
   });
 
   test("MiniMaxModelDialect: supportsVision returns false", async () => {
@@ -573,6 +573,215 @@ describe("Model Adapter Quirks", () => {
     adapter.prepareRequest(request, original);
     expect(request.reasoning_effort).toBe("high");
     expect(request.thinking).toBeUndefined();
+  });
+
+  test("OpenAIAPIFormat: output_config.effort → reasoning_effort for GPT-5 reasoning models", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.2");
+
+    const request: any = { model: "gpt-5.2", messages: [], thinking: { type: "adaptive" } };
+    const original = { thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("xhigh");
+    expect(request.thinking).toBeUndefined();
+  });
+
+  test("OpenAIAPIFormat: max Claude effort caps to high for GPT-5 models without xhigh", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+
+    for (const model of ["gpt-5", "gpt-5.1", "gpt-5.3"]) {
+      const adapter = new OpenAIAPIFormat(model);
+      const request: any = { model, messages: [], thinking: { type: "adaptive" } };
+      const original = { thinking: { type: "adaptive" }, output_config: { effort: "max" } };
+
+      adapter.prepareRequest(request, original);
+      expect(request.reasoning_effort).toBe("high");
+      expect(request.thinking).toBeUndefined();
+    }
+  });
+
+  test("OpenAIAPIFormat: max Claude effort maps to xhigh for supported and newer GPT-5 models", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+
+    for (const model of ["gpt-5.2", "gpt-5.4", "gpt-5.5", "gpt-5.6"]) {
+      const adapter = new OpenAIAPIFormat(model);
+      const request: any = { model, messages: [], thinking: { type: "adaptive" } };
+      const original = { thinking: { type: "adaptive" }, output_config: { effort: "max" } };
+
+      adapter.prepareRequest(request, original);
+      expect(request.reasoning_effort).toBe("xhigh");
+      expect(request.thinking).toBeUndefined();
+    }
+  });
+
+  test("OpenAIAPIFormat: legacy thinking budget does not emit minimal for GPT-5.2", async () => {
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const adapter = new OpenAIAPIFormat("gpt-5.2");
+
+    const request: any = { model: "gpt-5.2", messages: [], thinking: { budget_tokens: 1000 } };
+    const original = { thinking: { budget_tokens: 1000 } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.reasoning_effort).toBe("low");
+    expect(request.thinking).toBeUndefined();
+  });
+
+  test("CodexAPIFormat: output_config.effort controls Responses API reasoning effort", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5-codex");
+
+    const payload = adapter.buildPayload(
+      {
+        system: "system",
+        max_tokens: 1024,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+      },
+      [{ role: "user", content: "hello" }],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "high", summary: "auto" });
+  });
+
+  test("CodexAPIFormat: max Claude effort caps to high for GPT-5 Codex models without xhigh", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+
+    for (const model of [
+      "gpt-5-codex",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-mini",
+    ]) {
+      const adapter = new CodexAPIFormat(model);
+      const payload = adapter.buildPayload(
+        {
+          system: "system",
+          max_tokens: 1024,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "max" },
+        },
+        [{ role: "user", content: "hello" }],
+        []
+      );
+
+      expect(payload.reasoning).toEqual({ effort: "high", summary: "auto" });
+    }
+  });
+
+  test("CodexAPIFormat: max Claude effort caps to high for GPT-5.1", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5.1");
+
+    const payload = adapter.buildPayload(
+      {
+        system: "system",
+        max_tokens: 1024,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "max" },
+      },
+      [{ role: "user", content: "hello" }],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "high", summary: "auto" });
+  });
+
+  test("CodexAPIFormat: max Claude effort maps to xhigh for GPT-5.2 and GPT-5.5", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+
+    for (const model of ["gpt-5.2", "gpt-5.5"]) {
+      const adapter = new CodexAPIFormat(model);
+      const payload = adapter.buildPayload(
+        {
+          system: "system",
+          max_tokens: 1024,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "max" },
+        },
+        [{ role: "user", content: "hello" }],
+        []
+      );
+
+      expect(payload.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    }
+  });
+
+  test("CodexAPIFormat: max Claude effort maps to xhigh for supported Codex model IDs", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+
+    for (const model of [
+      "gpt-5.1-codex-max",
+      "gpt-5.2-codex",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "gpt-5.4-codex",
+      "gpt-5.6-codex",
+    ]) {
+      const adapter = new CodexAPIFormat(model);
+      const payload = adapter.buildPayload(
+        {
+          system: "system",
+          max_tokens: 1024,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "max" },
+        },
+        [{ role: "user", content: "hello" }],
+        []
+      );
+
+      expect(payload.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    }
+  });
+
+  test("CodexAPIFormat: low Claude effort maps to Codex-supported low effort", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5-codex");
+
+    const payload = adapter.buildPayload(
+      {
+        system: "system",
+        max_tokens: 1024,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "low" },
+      },
+      [{ role: "user", content: "hello" }],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "low", summary: "auto" });
+  });
+
+  test("CodexAPIFormat: defaults to medium reasoning effort without thinking budget", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const adapter = new CodexAPIFormat("gpt-5-codex");
+
+    const payload = adapter.buildPayload(
+      { system: "system", max_tokens: 1024 },
+      [{ role: "user", content: "hello" }],
+      []
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "medium", summary: "auto" });
+  });
+
+  test("OpenAIAPIFormat dialect does not add reasoning_effort to Codex Responses payloads", async () => {
+    const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
+    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
+    const codexAdapter = new CodexAPIFormat("gpt-5.5");
+    const openAIDialect = new OpenAIAPIFormat("gpt-5.5");
+    const original = {
+      system: "system",
+      max_tokens: 1024,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "xhigh" },
+    };
+
+    const payload = codexAdapter.buildPayload(original, [{ role: "user", content: "hello" }], []);
+    openAIDialect.prepareRequest(payload, original);
+
+    expect(payload.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(payload.reasoning_effort).toBeUndefined();
   });
 
   test("GLMAdapter: strips thinking params", async () => {
@@ -642,6 +851,7 @@ describe("CodexAdapter", () => {
     const { CodexAPIFormat } = await import("./adapters/codex-api-format.js");
     expect(new CodexAPIFormat("codex-mini").shouldHandle("codex-mini")).toBe(true);
     expect(new CodexAPIFormat("codex-mini").shouldHandle("codex-davinci-002")).toBe(true);
+    expect(new CodexAPIFormat("gpt-5-codex").shouldHandle("gpt-5-codex")).toBe(true);
   });
 
   test("shouldHandle returns false for non-codex models", async () => {
@@ -663,6 +873,7 @@ describe("CodexAdapter", () => {
   test("AdapterManager selects CodexAPIFormat for codex-mini", async () => {
     const { DialectManager } = await import("./adapters/dialect-manager.js");
     expect(new DialectManager("codex-mini").getAdapter().getName()).toBe("CodexAPIFormat");
+    expect(new DialectManager("gpt-5-codex").getAdapter().getName()).toBe("CodexAPIFormat");
   });
 });
 
