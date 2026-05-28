@@ -8,17 +8,27 @@ const { execFileSync, execSync } = require("child_process");
 const { resolve } = require("path");
 
 function findBun() {
+  const isWin = process.platform === "win32";
+  // PATH lookup — "which" is POSIX-only; Windows uses "where".
   try {
-    const path = execSync("which bun", { encoding: "utf-8" }).trim();
-    if (path) return path;
+    const out = execSync(isWin ? "where bun" : "which bun", { encoding: "utf-8" }).trim();
+    const first = out.split(/\r?\n/).map((l) => l.trim()).find(Boolean);
+    if (first) return first;
   } catch {}
   // Common install locations
-  const candidates = [
-    process.env.HOME + "/.bun/bin/bun",
-    "/usr/local/bin/bun",
-    "/opt/homebrew/bin/bun",
-  ];
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const candidates = isWin
+    ? [
+        home && resolve(home, ".bun", "bin", "bun.exe"),
+        home && resolve(home, ".bun", "bin", "bun"),
+      ]
+    : [
+        home && home + "/.bun/bin/bun",
+        "/usr/local/bin/bun",
+        "/opt/homebrew/bin/bun",
+      ];
   for (const c of candidates) {
+    if (!c) continue;
     try {
       execFileSync(c, ["--version"], { stdio: "ignore" });
       return c;
@@ -29,10 +39,14 @@ function findBun() {
 
 const bun = findBun();
 if (!bun) {
+  const installCmd =
+    process.platform === "win32"
+      ? 'powershell -c "irm bun.sh/install.ps1 | iex"'
+      : "curl -fsSL https://bun.sh/install | bash";
   console.error(`claudish requires the Bun runtime but it was not found.
 
 Install Bun (one command):
-  curl -fsSL https://bun.sh/install | bash
+  ${installCmd}
 
 Then retry:
   claudish --version
