@@ -69,6 +69,8 @@ export function createAnthropicPassthroughStream(
           let toolUseBlocks = 0;
           let stopReason: string | null = null;
           let sawMessageStop = false;
+          let sawMessageStart = false;
+          let suppressedServerTools = 0;
 
           // Thinking-block filtering state
           let insideThinkingBlock = false;
@@ -283,12 +285,29 @@ export function createAnthropicPassthroughStream(
                         `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
                       );
                     }
-                    if (
-                      data.type === "content_block_start" &&
-                      data.content_block?.type === "tool_use"
-                    ) {
-                      toolUseBlocks++;
-                      log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
+                                        if (
+                                          data.type === "content_block_start" &&
+                                          data.content_block?.type === "tool_use"
+                                        ) {
+                                          toolUseBlocks++;
+                                          log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
+                                        }
+                                        // Suppress server_tool_use blocks (Z.AI built-in tools)
+                                        if (
+                                          data.type === "content_block_start" &&
+                                          data.content_block?.type === "server_tool_use"
+                                        ) {
+                                          suppressedServerTools++;
+                                          log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
+                                          continue;
+                                        }
+                                        if (data.type === "content_block_stop" && suppressedServerTools > 0) {
+                                          suppressedServerTools--;
+                                          continue;
+                                        }
+                                        if (data.type === "message_start") {
+                                          sawMessageStart = true;
+
                     }
                     if (data.type === "message_delta" && data.delta?.stop_reason) {
                       stopReason = data.delta.stop_reason;
@@ -337,6 +356,9 @@ export function createAnthropicPassthroughStream(
                   if (data.type === "message_delta" && data.delta?.stop_reason) {
                     stopReason = data.delta.stop_reason;
                   }
+                  if (data.type === "message_start") {
+                    sawMessageStart = true;
+                  }
                   if (data.type === "message_stop") {
                     sawMessageStop = true;
                   }
@@ -360,6 +382,25 @@ export function createAnthropicPassthroughStream(
           // reports "API returned an empty or malformed response (HTTP 200)".
           if (!isClosed && !sawMessageStop) {
             log(`[AnthropicSSE] Stream ended without message_stop (stopReason=${stopReason}) — emitting synthetic finalization`);
+            if (!sawMessageStart) {
+              const synthId = `msg_${Date.now()}`;
+              controller.enqueue(encoder.encode(
+                "event: message_start\n" +
+                `data: {"type":"message_start","message":{"id":"${synthId}","type":"message","role":"assistant","model":"${opts.modelName}","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: content_block_start\n" +
+                `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: content_block_delta\n" +
+                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. Try compacting the conversation or reducing the context size.]"}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: content_block_stop\n" +
+                `data: {"type":"content_block_stop","index":0}\n\n`
+              ));
+            }
             if (!stopReason) {
               controller.enqueue(encoder.encode(
                 "event: message_delta\n" +
