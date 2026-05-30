@@ -68,6 +68,9 @@ export function createAnthropicPassthroughStream(
           let textChunks = 0;
           let toolUseBlocks = 0;
           let stopReason: string | null = null;
+          let sawMessageStart = false;
+          let sawMessageStop = false;
+          let suppressedServerTools = 0;
 
           // Thinking-block filtering state
           let insideThinkingBlock = false;
@@ -137,6 +140,20 @@ export function createAnthropicPassthroughStream(
                     continue;
                   }
 
+                  // Suppress server_tool_use blocks (Z.AI built-in tools)
+                  if (
+                    data.type === "content_block_start" &&
+                    data.content_block?.type === "server_tool_use"
+                  ) {
+                    suppressedServerTools++;
+                    log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
+                    continue;
+                  }
+                  if (data.type === "content_block_stop" && suppressedServerTools > 0) {
+                    suppressedServerTools--;
+                    continue;
+                  }
+
                   // Re-index non-thinking content blocks
                   // After suppressing N thinking blocks, subtract N from the index
                   if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
@@ -189,6 +206,20 @@ export function createAnthropicPassthroughStream(
                       return; // stop processing further lines
                     }
 
+                    // Suppress server_tool_use blocks (Z.AI built-in tools)
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "server_tool_use"
+                    ) {
+                      suppressedServerTools++;
+                      log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
+                      continue;
+                    }
+                    if (data.type === "content_block_stop" && suppressedServerTools > 0) {
+                      suppressedServerTools--;
+                      continue;
+                    }
+
                     // No error — pass through the line
                     if (!isClosed) {
                       controller.enqueue(encoder.encode(line + "\n"));
@@ -219,6 +250,12 @@ export function createAnthropicPassthroughStream(
                     }
                     if (data.type === "message_delta" && data.delta?.stop_reason) {
                       stopReason = data.delta.stop_reason;
+                    }
+                    if (data.type === "message_stop") {
+                      sawMessageStop = true;
+                    }
+                    if (data.type === "message_start") {
+                      sawMessageStart = true;
                     }
                   } catch {
                     // Unparseable data line — pass through
@@ -261,6 +298,12 @@ export function createAnthropicPassthroughStream(
                   if (data.type === "message_delta" && data.delta?.stop_reason) {
                     stopReason = data.delta.stop_reason;
                   }
+                  if (data.type === "message_stop") {
+                    sawMessageStop = true;
+                  }
+                  if (data.type === "message_start") {
+                    sawMessageStart = true;
+                  }
                 } catch {}
               }
             }
@@ -276,6 +319,41 @@ export function createAnthropicPassthroughStream(
           }
 
           if (!isClosed) {
+            // Handle empty responses — providers sometimes return no content blocks at all.
+            // Emit a synthetic message so downstream doesn't hang waiting for content.
+            if (!sawMessageStart) {
+              const synthId = `msg_${Date.now()}`;
+              log(`[AnthropicSSE] No message_start received — emitting synthetic empty response`);
+              controller.enqueue(encoder.encode(
+                "event: message_start\n" +
+                `data: {"type":"message_start","message":{"id":"${synthId}","type":"message","role":"assistant","model":"${opts.modelName}","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: content_block_start\n" +
+                `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: content_block_delta\n" +
+                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. Try compacting the conversation or reducing the context size.]"}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: content_block_stop\n" +
+                `data: {"type":"content_block_stop","index":0}\n\n`
+              ));
+            }
+
+            // Emit synthetic message_stop if the provider omitted it
+            if (!sawMessageStop) {
+              controller.enqueue(encoder.encode(
+                "event: message_delta\n" +
+                `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`
+              ));
+              controller.enqueue(encoder.encode(
+                "event: message_stop\n" +
+                `data: {"type":"message_stop"}\n\n`
+              ));
+            }
+
             isClosed = true;
             if (pingInterval) {
               clearInterval(pingInterval);
