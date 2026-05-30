@@ -35,6 +35,130 @@ import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getApiKey, loadConfig } from "./profile-config.js";
+import { executeWebSearch } from "./handlers/shared/web-search-executor.js";
+
+/**
+ * Intercept WebSearch/WebFetch tool calls and execute them via SearXNG instead
+ * of forwarding to the provider. Returns a streaming response with SearXNG results.
+ *
+ * Claude Code's WebSearch tool sends a sub-agent request with a single user message:
+ *   "Perform a web search for the query: <query>"
+ * We intercept this, execute SearXNG, and return the results as text.
+ */
+async function interceptWebTools(c: any, body: any): Promise<Response | null> {
+  const messages = body.messages || [];
+  const isStreaming = body.stream === true;
+
+  // Case 1: Sub-agent web search request (1 message, user role, starts with "Perform a web search")
+  if (messages.length === 1 && messages[0].role === "user") {
+    const text = typeof messages[0].content === "string"
+      ? messages[0].content
+      : Array.isArray(messages[0].content)
+        ? messages[0].content.map((b: any) => b.text || "").join("")
+        : "";
+
+    const searchMatch = text.match(/^Perform a web search for the query:\s*(.+)$/s);
+    if (searchMatch) {
+      const query = searchMatch[1].trim();
+      log(`[WebTools] Intercepted sub-agent web search: "${query}"`);
+      const results = await executeWebSearch(query, 5000);
+      return buildTextResponse(body.model || "unknown", results, isStreaming);
+    }
+
+    const fetchMatch = text.match(/^Perform a web fetch for the URL:\s*(.+)$/s);
+    if (fetchMatch) {
+      const url = fetchMatch[1].trim();
+      log(`[WebTools] Intercepted sub-agent web fetch: "${url}"`);
+      let resultText: string;
+      try {
+        const searxngUrl = `${process.env.SEARXNG_URL || "http://search.myia.io"}/search?q=${encodeURIComponent(url)}&format=json&categories=general`;
+        const resp = await fetch(searxngUrl, { signal: AbortSignal.timeout(5000) });
+        const data = await resp.json() as any;
+        const results = (data.results || []).slice(0, 3);
+        resultText = results.length > 0
+          ? results.map((r: any) => `**${r.title}**\n${r.url}\n${r.content || ""}`).join("\n\n")
+          : `[No results found for URL: ${url}]`;
+      } catch (err: any) {
+        resultText = `[Web fetch for "${url}" failed: ${err.message}]`;
+      }
+      return buildTextResponse(body.model || "unknown", resultText, isStreaming);
+    }
+  }
+
+  return null;
+}
+
+function buildTextResponse(model: string, text: string, streaming: boolean): Response {
+  const encoder = new TextEncoder();
+  const send = (event: string, data: any) =>
+    encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  if (!streaming) {
+    return new Response(JSON.stringify({
+      id: `msg_webtools_${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      model,
+      content: [{ type: "text", text }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    }), {
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+    });
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(send("message_start", {
+        type: "message_start",
+        message: {
+          id: `msg_webtools_${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }));
+      controller.enqueue(send("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }));
+      controller.enqueue(send("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text },
+      }));
+      controller.enqueue(send("content_block_stop", {
+        type: "content_block_stop",
+        index: 0,
+      }));
+      controller.enqueue(send("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { input_tokens: 0, output_tokens: 0 },
+      }));
+      controller.enqueue(send("message_stop", { type: "message_stop" }));
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "anthropic-version": "2023-06-01",
+    },
+  });
+}
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -569,6 +693,18 @@ export async function createProxyServer(
   app.post("/v1/messages", async (c) => {
     try {
       const body = await c.req.json();
+
+      // Intercept web search/fetch sub-agent requests before handler selection.
+      // When Claude Code's WebSearch tool fires a sub-agent, the request contains
+      // a single user message like "Perform a web search for the query: X".
+      // We intercept it and execute via SearXNG instead of forwarding to the model.
+      try {
+        const webToolResponse = await interceptWebTools(c, body);
+        if (webToolResponse) return webToolResponse;
+      } catch (e: any) {
+        log(`[WebTools] Intercept error (falling through to normal handler): ${e.message}`);
+      }
+
       const handler = await getHandlerForRequest(body.model);
 
       // Route

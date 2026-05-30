@@ -16,6 +16,7 @@ import {
   type ToolSchema,
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
+import { executeWebSearch, extractSearchQuery } from "../web-search-executor.js";
 
 export interface StreamingState {
   usage: any;
@@ -39,6 +40,7 @@ export interface ToolState {
   closed: boolean;
   arguments: string; // Accumulated JSON arguments string
   buffered: boolean; // Whether we're buffering args until tool call completes
+  suppressed?: boolean; // Whether this tool call was suppressed (e.g. web search intercepted)
 }
 
 /**
@@ -195,11 +197,76 @@ export function createStreamingResponseHandler(
             }
           }
 
+          // Detect GLM <searchWeb> tags in accumulated text and execute via SearXNG.
+          // GLM models emit <searchWeb>query</searchWeb> when they want to search.
+          const searchWebRegex = /<searchWeb>([\s\S]*?)<\/searchWeb>/g;
+          let searchMatch: RegExpExecArray | null;
+          const searchQueries: string[] = [];
+          let cleanText = state.accumulatedText;
+          while ((searchMatch = searchWebRegex.exec(state.accumulatedText)) !== null) {
+            searchQueries.push(searchMatch[1].trim());
+          }
+          if (searchQueries.length > 0) {
+            log(`[Streaming] Found ${searchQueries.length} <searchWeb> tag(s) in text`);
+            cleanText = state.accumulatedText.replace(searchWebRegex, "").trim();
+            // Strip the search tags from output if text block is still open
+            // Results will be appended after the search queries
+          }
+
           if (state.reasoningStarted) {
             send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
           }
           if (state.textStarted) {
             send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+          }
+
+          // Handle suppressed web search tool calls — execute via SearXNG and inject results as text.
+          for (const t of Array.from(state.tools.values())) {
+            if (t.suppressed && !t.closed) {
+              const query = extractSearchQuery(t.arguments);
+              log(`[Streaming] Executing suppressed web search: "${query}"`);
+              const results = await executeWebSearch(query);
+              log(`[Streaming] Web search results: ${results.length} chars`);
+
+              // Inject results as a text block
+              if (!state.textStarted) {
+                state.textIdx = state.curIdx++;
+                send("content_block_start", {
+                  type: "content_block_start",
+                  index: state.textIdx,
+                  content_block: { type: "text", text: "" },
+                });
+                state.textStarted = true;
+              }
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: state.textIdx,
+                delta: { type: "text_delta", text: results },
+              });
+              t.closed = true;
+            }
+          }
+
+          // Execute <searchWeb> queries found in accumulated text
+          if (searchQueries.length > 0) {
+            for (const query of searchQueries) {
+              log(`[Streaming] Executing <searchWeb> query: "${query}"`);
+              const results = await executeWebSearch(query);
+              if (!state.textStarted) {
+                state.textIdx = state.curIdx++;
+                send("content_block_start", {
+                  type: "content_block_start",
+                  index: state.textIdx,
+                  content_block: { type: "text", text: "" },
+                });
+                state.textStarted = true;
+              }
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: state.textIdx,
+                delta: { type: "text_delta", text: results },
+              });
+            }
           }
 
           // Handle buffered-but-unsent structured tool calls.
@@ -277,6 +344,27 @@ export function createStreamingResponseHandler(
               send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
               t.closed = true;
             }
+          }
+
+          // Handle empty response — no text blocks and no tool calls were started.
+          // This can happen with some providers that return no content at all.
+          if (!state.textStarted && !Array.from(state.tools.values()).some((t) => t.started)) {
+            log(`[Streaming] Empty response — no text or tool blocks started, injecting error message`);
+            const emptyIdx = state.curIdx++;
+            send("content_block_start", {
+              type: "content_block_start",
+              index: emptyIdx,
+              content_block: { type: "text", text: "" },
+            });
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index: emptyIdx,
+              delta: {
+                type: "text_delta",
+                text: "[Error: The model returned an empty response. Try compacting the conversation or reducing the context size.]",
+              },
+            });
+            send("content_block_stop", { type: "content_block_stop", index: emptyIdx });
           }
 
           if (middlewareManager) {
@@ -506,7 +594,9 @@ export function createStreamingResponseHandler(
                           };
                           state.tools.set(idx, t);
                           if (isWebSearchToolCall(restoredName)) {
-                            warnWebSearchUnsupported(restoredName, target);
+                            log(`[Streaming] Web search tool call '${restoredName}' detected — intercepting via SearXNG`);
+                            t.suppressed = true;
+                            t.buffered = true;
                           }
                         }
                         // Only send content_block_start immediately if NOT buffering
