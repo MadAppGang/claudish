@@ -83,3 +83,12 @@ validation/
 .mnemex/
 gtd/sessions/
 .agents/
+
+# Diagnostic capture (temporary, activated via CLAUDISH_CAPTURE_DIR env)
+capture/
+
+# Session artifacts (traces, deploy notes, monitoring scripts)
+trace-*.json
+kv-cache-traces.md
+monitor-traffic.sh
+deploy-notes-*.md

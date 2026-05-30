@@ -14,7 +14,7 @@ services:
     environment:
       - NODE_ENV=production
       - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
-      - SEARXNG_URL=http://192.168.0.47:8181
+      - SEARXNG_URL=http://search.myia.io
     command: ["--port", "3000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]
