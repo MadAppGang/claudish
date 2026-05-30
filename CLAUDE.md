@@ -213,6 +213,42 @@ Located in `handlers/shared/stream-parsers/`:
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
 - `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex)
 
+## Web Search Interception (v7.1+)
+
+When providers emit web search tool calls (WebSearch/WebFetch) or GLM's `<searchWeb>` tags, claudish intercepts them and executes via a local **SearXNG** instance instead of forwarding to the provider (which would fail for non-Anthropic providers).
+
+### Architecture
+
+Two interception paths, both in the stream parsers:
+
+1. **Structured tool_call** (`openai-sse.ts`): WebSearch/WebFetch tool calls are flagged as `suppressed` in `ToolState`. At finalize, SearXNG is called and results are injected as a text block replacing the tool call. The `suppressed` flag prevents the tool_use content_block from reaching the client.
+
+2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, these tags are detected, SearXNG is called, tags are stripped from text, and results are appended as a separate text block.
+
+3. **Sub-agent requests** (`proxy-server.ts`): Claude Code sometimes sends web search/fetch as a single user message ("Perform a web search for the query: X"). These are intercepted at the proxy level before handler selection.
+
+### Configuration
+
+- **`SEARXNG_URL`** env var (required): URL of the SearXNG instance (e.g. `http://search.myia.io`). When unset, web search interception falls through gracefully with a fallback message.
+- **`SEARXNG_AVAILABLE`** flag: detected at startup from `SEARXNG_URL` presence.
+- **Deadline**: 3s default for SearXNG calls (5s for sub-agent path). Non-blocking — races against timeout.
+
+### Components
+
+- `handlers/shared/web-search-executor.ts` — SearXNG fetch, result formatting, query extraction
+- `handlers/shared/stream-parsers/openai-sse.ts` — tool_call suppression + `<searchWeb>` tag detection
+- `proxy-server.ts` — sub-agent request interception
+
+### Inline System Message Handling
+
+Claude Code v2.1.153+ injects `role: "system"` messages inline (e.g. system-reminders). Anthropic-compatible providers (Z.AI, MiniMax, Kimi) reject these — only "user"/"assistant" accepted. The fix:
+- `composed-handler.ts`: strips inline system messages from `requestPayload.messages` for `anthropic-sse` transport, merges into top-level `system` field
+- `openai-messages.ts`: same strip for the OpenAI format path
+
+### Diagnostic Body Capture
+
+Set `CLAUDISH_CAPTURE_DIR` env var to enable full request body capture for offline reproduction of hangs or malformed responses. Disabled by default (no-op when unset). Files written as JSON with metadata (timestamp, source IP, model, PID).
+
 ## Debug Logging
 
 Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It's disabled by default.
