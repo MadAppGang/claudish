@@ -8,14 +8,17 @@
  */
 
 import type { Context } from "hono";
-import { log } from "../../../logger.js";
+import { log, logStderr } from "../../../logger.js";
+
+const SEARXNG_AVAILABLE = !!process.env.SEARXNG_URL;
 import {
   validateAndRepairToolCall,
   inferMissingParameters,
   extractToolCallsFromText,
   type ToolSchema,
 } from "../tool-call-recovery.js";
-import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
+import { isWebSearchToolCall } from "../web-search-detector.js";
+import { executeWebSearch, extractSearchQuery } from "../web-search-executor.js";
 
 export interface StreamingState {
   usage: any;
@@ -37,6 +40,7 @@ export interface ToolState {
   blockIndex: number;
   started: boolean; // Whether content_block_start has been sent
   closed: boolean;
+  suppressed: boolean; // Web search tools — drop from stream, replace with text
   arguments: string; // Accumulated JSON arguments string
   buffered: boolean; // Whether we're buffering args until tool call completes
 }
@@ -152,6 +156,9 @@ export function createStreamingResponseHandler(
         const finalize = async (reason: string, err?: string) => {
           if (state.finalized) return;
           state.finalized = true;
+          const toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
+          log(`[Stream] reason=${reason} model=${opts.modelName} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
+          logStderr(`[Stream] ${opts.modelName} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
 
           // Debug: Log accumulated text for analysis
           if (state.accumulatedText.length > 0) {
@@ -159,6 +166,27 @@ export function createStreamingResponseHandler(
             log(
               `[Streaming] Accumulated text (${state.accumulatedText.length} chars): ${preview}...`
             );
+          }
+
+          // Check for text-based web search tags (GLM emits <searchWeb><query>...</query></searchWeb>)
+          // These must be intercepted before text-based tool call extraction, since we want to
+          // execute SearXNG and replace the search tags with results, not pass them through.
+          let searchWebResults: string | null = null;
+          let cleanedText = state.accumulatedText;
+          const searchWebMatch = state.accumulatedText.match(/<searchWeb>\s*<query>([\s\S]*?)<\/query>\s*<\/searchWeb>/i);
+          if (searchWebMatch) {
+            const searchQuery = searchWebMatch[1].trim();
+            log(`[Stream] GLM searchWeb detected: "${searchQuery}" — intercepting via SearXNG`);
+            if (searchQuery && SEARXNG_AVAILABLE) {
+              searchWebResults = await executeWebSearch(searchQuery);
+            } else {
+              searchWebResults = searchQuery
+                ? `[Web search for "${searchQuery}" could not be executed. SearXNG is not configured.]`
+                : `[Web search was requested but no query was provided.]`;
+            }
+            // Remove the search tags from accumulated text so they don't appear in output
+            cleanedText = state.accumulatedText.replace(/<searchWeb>[\s\S]*?<\/searchWeb>/i, "").trim();
+            state.accumulatedText = cleanedText;
           }
 
           // Check for text-based tool calls before finalizing
@@ -200,6 +228,23 @@ export function createStreamingResponseHandler(
           }
           if (state.textStarted) {
             send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+          }
+
+          // Inject SearXNG results if we intercepted GLM <searchWeb> tags.
+          // Sent as a separate text block after the (now-cleaned) model output.
+          if (searchWebResults) {
+            const srchIdx = state.curIdx++;
+            send("content_block_start", {
+              type: "content_block_start",
+              index: srchIdx,
+              content_block: { type: "text", text: "" },
+            });
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index: srchIdx,
+              delta: { type: "text_delta", text: searchWebResults },
+            });
+            send("content_block_stop", { type: "content_block_stop", index: srchIdx });
           }
 
           // Handle buffered-but-unsent structured tool calls.
@@ -286,8 +331,27 @@ export function createStreamingResponseHandler(
           if (reason === "error") {
             send("error", { type: "error", error: { type: "api_error", message: err } });
           } else {
+            // Ensure at least one content block exists — some providers (z.ai, GLM)
+            // return empty responses (finish_reason without content). The Anthropic
+            // SDK treats messages with content:[] as malformed.
+            const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
+            const hasContent = state.textStarted || state.reasoningStarted || hasStructuredTools || textToolCalls.length > 0;
+            if (!hasContent) {
+              // Send a proper Anthropic error event so the SDK triggers its retry logic.
+              // Injecting fake text would be silently accepted but not trigger recovery.
+              const emptyMsg = `The model returned an empty response. This usually happens when the conversation context is too large. Try compacting the conversation or reducing the context size.`;
+              send("error", {
+                type: "error",
+                error: {
+                  type: "api_error",
+                  message: emptyMsg,
+                },
+              });
+              logStderr(`[Stream] EMPTY RESPONSE from ${opts.modelName} — sent api_error to client (context overflow?)`);
+              log(`[Stream] Empty response from provider (context overflow?) — sent api_error event`);
+            }
+
             // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
-            const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started);
             const stopReason =
               textToolCalls.length > 0 || hasStructuredTools ? "tool_use" : "end_turn";
             send("message_delta", {
@@ -498,20 +562,24 @@ export function createStreamingResponseHandler(
                           // Restore truncated tool name to original if mapping exists
                           const rawName = tc.function.name;
                           const restoredName = toolNameMap?.get(rawName) || rawName;
+                          const isWebSearch = isWebSearchToolCall(restoredName);
+                          if (isWebSearch) {
+                            log(`[Stream] Web search tool call detected: "${restoredName}" — intercepting via SearXNG (available=${SEARXNG_AVAILABLE})`);
+                          }
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
                             name: restoredName,
                             blockIndex: state.curIdx++,
                             started: false,
                             closed: false,
+                            suppressed: isWebSearch,
                             arguments: "", // Initialize arguments accumulator
-                            buffered: !!toolSchemas && toolSchemas.length > 0, // Buffer if we have schemas to validate
+                            buffered: !!toolSchemas && toolSchemas.length > 0 && !isWebSearch,
                           };
                           state.tools.set(idx, t);
-                          if (isWebSearchToolCall(restoredName)) {
-                            warnWebSearchUnsupported(restoredName, target);
-                          }
                         }
+                        // Skip suppressed tools entirely
+                        if (t.suppressed) continue;
                         // Only send content_block_start immediately if NOT buffering
                         if (!t.started && !t.buffered) {
                           send("content_block_start", {
@@ -522,7 +590,7 @@ export function createStreamingResponseHandler(
                           t.started = true;
                         }
                       }
-                      if (tc.function?.arguments && t) {
+                      if (tc.function?.arguments && t && !t.suppressed) {
                         // Always accumulate arguments
                         t.arguments += tc.function.arguments;
                         // Only stream immediately if NOT buffering
@@ -543,6 +611,36 @@ export function createStreamingResponseHandler(
 
                 if (chunk.choices?.[0]?.finish_reason === "tool_calls") {
                   for (const t of Array.from(state.tools.values())) {
+                    if (t.suppressed) {
+                      // Execute web search via SearXNG and inject results
+                      if (!t.closed) {
+                        const query = extractSearchQuery(t.arguments);
+                        let resultText: string;
+                        if (query && SEARXNG_AVAILABLE) {
+                          resultText = await executeWebSearch(query);
+                        } else {
+                          resultText = query
+                            ? `[Web search for "${query}" could not be executed. The search service (SearXNG) is not configured. Set SEARXNG_URL env var to enable.]`
+                            : `[Web search was requested but no query was provided.]`;
+                        }
+                        send("content_block_start", {
+                          type: "content_block_start",
+                          index: t.blockIndex,
+                          content_block: { type: "text", text: "" },
+                        });
+                        send("content_block_delta", {
+                          type: "content_block_delta",
+                          index: t.blockIndex,
+                          delta: { type: "text_delta", text: resultText },
+                        });
+                        send("content_block_stop", {
+                          type: "content_block_stop",
+                          index: t.blockIndex,
+                        });
+                        t.closed = true;
+                      }
+                      continue;
+                    }
                     if (!t.closed) {
                       // Validate and potentially repair tool arguments
                       if (toolSchemas && toolSchemas.length > 0) {
