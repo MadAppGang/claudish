@@ -39,6 +39,20 @@ export function convertMessagesToOpenAI(
     for (const msg of req.messages) {
       if (msg.role === "user") processUserMessage(msg, messages, simpleFormat);
       else if (msg.role === "assistant") processAssistantMessage(msg, messages, simpleFormat);
+      else if (msg.role === "system") {
+        const content = typeof msg.content === "string"
+          ? msg.content
+          : Array.isArray(msg.content)
+            ? msg.content.map((c: any) => c.text || "").join("\n")
+            : "";
+        if (content) {
+          if (messages.length > 0 && messages[0].role === "system") {
+            messages[0].content += "\n\n" + content;
+          } else {
+            messages.unshift({ role: "system", content });
+          }
+        }
+      }
     }
   }
 
