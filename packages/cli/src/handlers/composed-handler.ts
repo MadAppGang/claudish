@@ -301,7 +301,37 @@ export class ComposedHandler implements ModelHandler {
     // 4. Build request payload
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
 
-    // Merge provider-specific extra fields
+    // 4b. Strip inline system messages from messages[] for Anthropic-transport providers.
+    // Claude Code v2.1.153+ injects system messages inline (e.g. system-reminders).
+    // Providers like Z.AI reject role:"system" in messages — only role:"user"/"assistant" accepted.
+    // Merge them into the top-level system field instead.
+    if (this.provider.streamFormat === "anthropic-sse" && requestPayload.messages) {
+      const inlineSystemTexts: string[] = [];
+      requestPayload.messages = requestPayload.messages.filter((msg: any) => {
+        if (msg.role === "system") {
+          const text = typeof msg.content === "string"
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content.map((c: any) => c.text || "").join("\n")
+              : "";
+          if (text) inlineSystemTexts.push(text);
+          return false;
+        }
+        return true;
+      });
+      if (inlineSystemTexts.length > 0) {
+        const merged = inlineSystemTexts.join("\n\n");
+        if (requestPayload.system) {
+          const existing = Array.isArray(requestPayload.system)
+            ? requestPayload.system.map((s: any) => s.text || s).join("\n\n")
+            : requestPayload.system;
+          requestPayload.system = existing + "\n\n" + merged;
+        } else {
+          requestPayload.system = merged;
+        }
+        log(`[ComposedHandler] Merged ${inlineSystemTexts.length} inline system message(s) into system prompt for ${this.provider.displayName}`);
+      }
+    }
     const extraFields = this.provider.getExtraPayloadFields?.();
     if (extraFields) {
       Object.assign(requestPayload, extraFields);
