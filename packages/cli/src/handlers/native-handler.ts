@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import { log, maskCredential } from "../logger.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import { createResponseCapture } from "./shared/response-capture.js";
 import {
   fetchMultiModelAdvice,
   findPendingAdvisorToolResults,
@@ -214,6 +215,7 @@ export class NativeHandler implements ModelHandler {
       // Handle streaming
       if (contentType.includes("text/event-stream")) {
         log("[Native] Streaming response detected");
+        const cap = createResponseCapture("native", target);
         return c.body(
           new ReadableStream({
             async start(controller) {
@@ -229,6 +231,7 @@ export class NativeHandler implements ModelHandler {
                   const { done, value } = await reader.read();
                   if (done) break;
 
+                  cap.tap(value);
                   controller.enqueue(value);
 
                   // Basic logging
@@ -242,9 +245,13 @@ export class NativeHandler implements ModelHandler {
                   for (const line of lines) if (line.trim()) eventLog += line + "\n";
                 }
                 if (eventLog) log(eventLog);
+                cap.note("reader done");
+                cap.done({ closed: true, reason: "done" });
                 controller.close();
               } catch (e) {
                 log(`[Native] Stream Error: ${e}`);
+                cap.note(`stream error: ${String(e)}`);
+                cap.done({ closed: true, reason: "error", err: String(e) });
                 controller.close();
               }
             },

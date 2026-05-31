@@ -19,6 +19,7 @@ import {
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall } from "../web-search-detector.js";
 import { executeWebSearch, extractSearchQuery } from "../web-search-executor.js";
+import { createResponseCapture } from "../response-capture.js";
 
 export interface StreamingState {
   usage: any;
@@ -120,9 +121,19 @@ export function createStreamingResponseHandler(
   const decoder = new TextDecoder();
   const streamMetadata = new Map<string, any>();
 
+  const cap = createResponseCapture("openai", target);
+
   return c.body(
     new ReadableStream({
       async start(controller) {
+        // Diagnostic tap (no-op unless CLAUDISH_CAPTURE_DIR set): mirror every
+        // outgoing byte to the response capture so a hung stream is visible offline.
+        const _origEnqueue = controller.enqueue.bind(controller);
+        controller.enqueue = ((chunk: any) => {
+          cap.tap(chunk);
+          return _origEnqueue(chunk);
+        }) as any;
+
         const send = (e: string, d: any) => {
           if (!isClosed) {
             controller.enqueue(encoder.encode(`event: ${e}\ndata: ${JSON.stringify(d)}\n\n`));
@@ -157,8 +168,8 @@ export function createStreamingResponseHandler(
           if (state.finalized) return;
           state.finalized = true;
           const toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
-          log(`[Stream] reason=${reason} model=${opts.modelName} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
-          logStderr(`[Stream] ${opts.modelName} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
+          log(`[Stream] reason=${reason} model=${target} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
+          logStderr(`[Stream] ${target} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
 
           // Debug: Log accumulated text for analysis
           if (state.accumulatedText.length > 0) {
@@ -347,7 +358,7 @@ export function createStreamingResponseHandler(
                   message: emptyMsg,
                 },
               });
-              logStderr(`[Stream] EMPTY RESPONSE from ${opts.modelName} — sent api_error to client (context overflow?)`);
+              logStderr(`[Stream] EMPTY RESPONSE from ${target} — sent api_error to client (context overflow?)`);
               log(`[Stream] Empty response from provider (context overflow?) — sent api_error event`);
             }
 
@@ -390,6 +401,8 @@ export function createStreamingResponseHandler(
             controller.close();
             isClosed = true;
             if (ping) clearInterval(ping);
+            cap.note(`close reason=${reason}`);
+            cap.done({ closed: true, reason, tools: toolCount, text_len: state.accumulatedText.length, err: err ?? null });
           }
         };
 

@@ -12,6 +12,7 @@
 import type { Context } from "hono";
 import { log } from "../../../logger.js";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
+import { createResponseCapture } from "../response-capture.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -41,9 +42,17 @@ export function createAnthropicPassthroughStream(
 
   const filterThinking = opts.adapter?.shouldFilterThinking() ?? false;
 
+  const cap = createResponseCapture("anthropic", opts.modelName);
+
   return c.body(
     new ReadableStream({
       async start(controller) {
+        // Diagnostic tap: mirror every outgoing byte into the response capture.
+        const _origEnqueue = controller.enqueue.bind(controller);
+        controller.enqueue = ((chunk: any) => {
+          cap.tap(chunk);
+          return _origEnqueue(chunk);
+        }) as typeof controller.enqueue;
         const sendPing = () => {
           if (!isClosed) {
             controller.enqueue(encoder.encode("event: ping\ndata: {\"type\":\"ping\"}\n\n"));
@@ -128,6 +137,8 @@ export function createAnthropicPassthroughStream(
                         clearInterval(pingInterval);
                         pingInterval = null;
                       }
+                      cap.note("in-stream-error(filtered)");
+                      cap.done({ closed: true, stop_reason: "error", path: "in-stream-error-filtered" });
                       controller.close();
                     }
                     return; // stop processing further lines
@@ -221,6 +232,8 @@ export function createAnthropicPassthroughStream(
                           clearInterval(pingInterval);
                           pingInterval = null;
                         }
+                        cap.note("in-stream-error");
+                        cap.done({ closed: true, stop_reason: "error", path: "in-stream-error" });
                         controller.close();
                       }
                       return; // stop processing further lines
@@ -371,6 +384,7 @@ export function createAnthropicPassthroughStream(
             `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}` +
               (filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : "")
           );
+          cap.note(`upstream-done sawMessageStop=${sawMessageStop} stop_reason=${stopReason} toolUse=${toolUseBlocks}`);
 
           if (opts.onTokenUpdate) {
             opts.onTokenUpdate(inputTokens, outputTokens);
@@ -419,21 +433,30 @@ export function createAnthropicPassthroughStream(
               clearInterval(pingInterval);
               pingInterval = null;
             }
+            cap.done({ closed: true, stop_reason: stopReason, sawMessageStop, path: "normal" });
             controller.close();
+          } else {
+            cap.done({ closed: true, stop_reason: stopReason, sawMessageStop, path: "already-closed" });
           }
         } catch (e) {
           log(`[AnthropicSSE] Stream error: ${e}`);
+          cap.note(`stream-exception ${String(e)}`);
           if (!isClosed) {
             isClosed = true;
             if (pingInterval) {
               clearInterval(pingInterval);
               pingInterval = null;
             }
+            cap.done({ closed: true, stop_reason: "exception", path: "catch", error: String(e) });
             controller.close();
+          } else {
+            cap.done({ closed: true, stop_reason: "exception", path: "catch-already-closed", error: String(e) });
           }
         }
       },
-      cancel() {
+      cancel(reason?: unknown) {
+        cap.note(`client-cancel ${reason !== undefined ? String(reason) : ""}`);
+        cap.done({ closed: false, stop_reason: "client-cancel", path: "cancel" });
         isClosed = true;
         if (pingInterval) {
           clearInterval(pingInterval);

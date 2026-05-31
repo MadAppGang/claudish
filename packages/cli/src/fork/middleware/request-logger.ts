@@ -67,8 +67,10 @@ export function logRequest(
   const msgs = Array.isArray(body.messages) ? body.messages.length : 0;
   const stream = body.stream === true ? "stream" : "sync";
   const maxTokens = body.max_tokens ?? "-";
+  const machine = req.headers.get("x-claudish-machine") || "";
+  const machineTag = machine ? ` machine=${machine}` : "";
   process.stdout.write(
-    `[claudish] [Request] model=${model} handler=${handlerName} src=${src} ${stream} msgs=${msgs} max_tokens=${maxTokens} ua=${ua.slice(0, 80)}\n`
+    `[claudish] [Request] model=${model} handler=${handlerName} src=${src} ${stream} msgs=${msgs} max_tokens=${maxTokens}${machineTag} ua=${ua.slice(0, 80)}\n`
   );
 
   // System prompt excerpt (first 300 chars)
