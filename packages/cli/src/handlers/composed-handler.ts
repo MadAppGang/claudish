@@ -332,6 +332,26 @@ export class ComposedHandler implements ModelHandler {
         log(`[ComposedHandler] Merged ${inlineSystemTexts.length} inline system message(s) into system prompt for ${this.provider.displayName}`);
       }
     }
+
+    // Strip thinking blocks from message history for non-native providers.
+    // ComposedHandler is never used for native Anthropic (that's NativeHandler),
+    // so every request here goes to a provider that doesn't understand Anthropic
+    // thinking signatures. Without this strip, Opus thinking blocks (with signatures)
+    // flow through to Z.AI/GLM/MiniMax/etc., which either ignore or corrupt them.
+    if (requestPayload.messages) {
+      let stripped = 0;
+      for (const msg of requestPayload.messages) {
+        if (msg.role === "assistant" && Array.isArray(msg.content)) {
+          const before = msg.content.length;
+          msg.content = msg.content.filter((block: any) => block.type !== "thinking");
+          stripped += before - msg.content.length;
+        }
+      }
+      if (stripped > 0) {
+        log(`[ComposedHandler] Stripped ${stripped} thinking block(s) from message history for ${this.provider.displayName}`);
+      }
+    }
+
     const extraFields = this.provider.getExtraPayloadFields?.();
     if (extraFields) {
       Object.assign(requestPayload, extraFields);
