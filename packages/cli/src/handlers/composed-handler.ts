@@ -41,6 +41,7 @@ import {
 import { reportError, classifyError } from "../telemetry.js";
 import { recordStats } from "../stats.js";
 import { wrapAnthropicError, ensureAnthropicErrorFormat } from "./shared/anthropic-error.js";
+import { peekStreamStart } from "./shared/stream-peek.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -673,6 +674,103 @@ export class ComposedHandler implements ModelHandler {
           errorBody = { error: { type: "api_error", message: errorText } };
         }
         return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
+      }
+    }
+
+    // ── In-stream rate-limit handling (temporize, then fall back) ──────────
+    // Some anthropic-sse providers (notably Z.AI) deliver their burst / RPM
+    // limit as HTTP 200 + an in-stream SSE error ([1302]) with no message
+    // envelope. That escapes `response.ok` above and FallbackHandler (both key
+    // off HTTP status), so it used to reach the client as a bare error and
+    // crash the turn. We peek the first bytes (the error arrives in 0-4ms, so a
+    // short window catches it without delaying slow-but-healthy big-context
+    // responses), temporize with a jittered backoff + retry the SAME provider
+    // (the sustained quota has headroom — only the instantaneous burst limit is
+    // hit), and on persistence return a 429 so FallbackHandler switches to the
+    // next provider in the chain (e.g. GLM Coding — a separate quota).
+    //
+    // The whole block is fail-open: peekStreamStart() only ever returns a
+    // usable Response, and any classification other than "rate-limit" flows
+    // straight through to handleStream() unchanged.
+    {
+      const peekFormat =
+        this.provider.overrideStreamFormat?.() ??
+        (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
+        this.getAdapter().getStreamFormat();
+      if (peekFormat === "anthropic-sse") {
+        const maxRlRetries = 3;
+        let rlAttempt = 0;
+        let peeked = await peekStreamStart(response);
+        while (peeked.cls === "rate-limit" && rlAttempt < maxRlRetries) {
+          // Jittered exponential backoff: 1s, 2s, 4s (+0-750ms). The cluster
+          // shares one key per provider, so jitter prevents synchronized
+          // retries from re-colliding on the burst limit.
+          const backoffMs =
+            Math.min(1000 * 2 ** rlAttempt, 8000) + Math.floor(Math.random() * 750);
+          log(
+            `[${this.provider.displayName}] in-stream rate-limit (HTTP 200), temporizing — retry ${rlAttempt + 1}/${maxRlRetries} in ${(backoffMs / 1000).toFixed(1)}s${peeked.detail ? `: ${peeked.detail}` : ""}`
+          );
+          await new Promise((r) => setTimeout(r, backoffMs));
+          rlAttempt++;
+          let retryResp: Response;
+          try {
+            retryResp = this.provider.enqueueRequest
+              ? await this.provider.enqueueRequest(doFetch)
+              : await doFetch();
+          } catch (e: any) {
+            log(`[${this.provider.displayName}] rate-limit retry fetch failed: ${e?.message ?? e}`);
+            break;
+          }
+          if (!retryResp.ok) {
+            // A genuine HTTP error this time — surface it for fallback below.
+            response = retryResp;
+            peeked = { cls: "rate-limit", response: retryResp };
+            break;
+          }
+          response = retryResp;
+          peeked = await peekStreamStart(response);
+        }
+        if (peeked.cls === "rate-limit") {
+          log(
+            `[${this.provider.displayName}] in-stream rate-limit persisted after ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} → returning 429 for cross-provider fallback`
+          );
+          try {
+            const { error_class, error_code } = classifyError(
+              new Error("in-stream rate limit"),
+              429,
+              peeked.detail
+            );
+            recordStats({
+              model_id: this.targetModel,
+              provider_name: this.provider.name,
+              stream_format: this.provider.streamFormat,
+              latency_ms: Math.round(performance.now() - startTime),
+              success: false,
+              http_status: 429,
+              error_class,
+              error_code,
+              token_strategy: this.options.tokenStrategy ?? "standard",
+              adapter_name: this.getActiveAdapterName(),
+              middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+              fallback_used: fallbackMeta !== undefined,
+              fallback_chain: fallbackMeta?.chain,
+              fallback_attempts: fallbackMeta?.attempts,
+              invocation_mode: this.options.invocationMode ?? "auto-route",
+            });
+          } catch {
+            // Stats must never crash claudish
+          }
+          return c.json(
+            wrapAnthropicError(
+              429,
+              `${this.provider.displayName} rate limited (in-stream burst limit); ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} exhausted`,
+              "rate_limit_error"
+            ),
+            429 as any
+          );
+        }
+        // healthy or other-error → use the peeked (tee'd, full) stream below.
+        response = peeked.response;
       }
     }
 

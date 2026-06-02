@@ -80,6 +80,27 @@ Reference: research findings under `ai-docs/sessions/dev-research-channel-config
 
 ---
 
+## Adaptive / shared backoff pacer for burst rate-limits
+
+Status: not started. Deliberately deferred — current per-request backoff is judged sufficient for the present load.
+
+**What ships today** (the in-stream rate-limit fix): when an `anthropic-sse` provider (notably Z.AI) delivers its burst/RPM limit as HTTP 200 + an in-stream `[1302]` SSE error, ComposedHandler peeks the stream start, detects it, and **temporizes with a per-request jittered exponential backoff** (1s/2s/4s + 0–750ms), retrying the same provider up to 3× before returning 429 so FallbackHandler switches providers (e.g. Z.AI → GLM Coding, a separate quota). The transport layer (`AnthropicProviderTransport.enqueueRequest`) adds a second jittered backoff on genuine HTTP 429. Both are **per-request and independent** — there is no shared, cross-request pressure gauge.
+
+This produces *implicit* aggregate self-throttling: under a storm, more requests hit 429 → more requests back off → offered load drops. It does not, however, make *new arrivals* probe more cautiously while a storm is in progress — each new request still fires at full rate on its first attempt. With the stated load (≤50% of the 5h sustained quota even at peak; only the instantaneous burst limit is hit occasionally, and the cluster shares one key per provider), that residual gap is acceptable and a coordinated pacer would be over-engineering.
+
+**What this item would add**: a shared per-provider pressure gauge (e.g. AIMD — additive-increase/multiplicative-decrease — with time decay) that admission-paces *new* requests as the recent error rate climbs, so the fleet spreads requests **more** under a sustained storm rather than only after each individual request fails. This is the "écarter encore plus les requêtes quand le taux d'erreurs augmente" idea — correct in principle, but only worth the complexity (shared state across 6 machines, or per-process approximation; tuning; new failure modes) if the simpler per-request backoff proves insufficient.
+
+**Trigger conditions** (any one):
+- Sustained-quota utilization regularly approaches its ceiling (not just the instantaneous burst limit) — i.e. the "we have headroom" premise stops holding.
+- Capture/telemetry shows the in-stream-rate-limit fix's 3-retry budget is frequently exhausted (turns still failing over to fallback or to the client) despite the backoff — meaning synchronized full-rate probing during storms is the dominant remaining failure.
+- The cluster grows enough that uncoordinated per-request backoff visibly re-collides on the burst limit even with jitter.
+
+**Effort**: medium. A per-process AIMD gauge is small; a genuinely *shared* cross-machine gauge needs a coordination point (shared store or a designated pacer) and is the bulk of the cost.
+
+**Reference**: in-stream rate-limit fix — `packages/cli/src/handlers/shared/stream-peek.ts`, `composed-handler.ts` (peek+retry block), `providers/transport/anthropic-compat.ts` (`enqueueRequest`). Root-cause analysis in this session's capture diagnosis.
+
+---
+
 ## Adding a new roadmap item
 
 Each item should follow the structure above:

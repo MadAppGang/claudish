@@ -11,10 +11,10 @@
 // and is not part of the Anthropic public API spec — Kimi rejects it with HTTP 400.
 // Fix: stripUnsupportedContentTypes() filters tool_reference from tool_result content arrays.
 
-import { describe, it, expect } from "bun:test";
-import { AnthropicCompatProvider } from "./anthropic-compat.js";
+import { describe, it, test, expect } from "bun:test";
+import { AnthropicCompatProvider, AnthropicProviderTransport } from "./anthropic-compat.js";
 import { AnthropicAPIFormat } from "../../adapters/anthropic-api-format.js";
-import type { RemoteProvider } from "../../../handlers/shared/remote-provider-types.js";
+import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 
 const TEST_API_KEY = "test-key-abc123";
 
@@ -71,6 +71,45 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);
     expect(headers["Authorization"]).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
+  });
+});
+
+describe("AnthropicProviderTransport.enqueueRequest 429 retry (+ jitter)", () => {
+  const provider: RemoteProvider = {
+    name: "zai",
+    baseUrl: "https://api.z.ai",
+    apiPath: "/anthropic/v1/messages",
+    apiKeyEnvVar: "ZAI_API_KEY",
+    prefixes: ["zai@"],
+  };
+
+  test("retries on HTTP 429 then returns the eventual success", async () => {
+    const transport = new AnthropicProviderTransport(provider, "test-key");
+    let callCount = 0;
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      if (callCount <= 2) {
+        return Promise.resolve(new Response('{"error":"rate limited"}', { status: 429 }));
+      }
+      return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+    });
+
+    expect(response.status).toBe(200);
+    expect(callCount).toBe(3); // 2 retries + 1 success
+  }, 15000); // 2s + 4s backoff (+ up to 2s jitter)
+
+  test("does not retry non-429 responses", async () => {
+    const transport = new AnthropicProviderTransport(provider, "test-key");
+    let callCount = 0;
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      return Promise.resolve(new Response('{"error":"bad request"}', { status: 400 }));
+    });
+
+    expect(response.status).toBe(400);
+    expect(callCount).toBe(1); // No retry
   });
 });
 

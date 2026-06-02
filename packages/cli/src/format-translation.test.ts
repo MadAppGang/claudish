@@ -1535,10 +1535,15 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
     return mod.createAnthropicPassthroughStream;
   }
 
-  test("in-stream error payload emits proper error event instead of crashing (non-filtering path)", async () => {
-    // REGRESSION: Z.AI returns HTTP 200 with {"error":{"code":"1305","message":"..."}} in-stream.
-    // Before fix: raw error payload passed through, Claude Code crashes with "undefined is not an object"
-    // because it expects a `type` field. Fixed in /dev:fix session dev-fix-20260417-224919-72cb371e
+  test("mid-stream error finalizes gracefully with message_stop instead of a bare error event (non-filtering path)", async () => {
+    // REGRESSION (#106 → no-crash hardening): Z.AI returns HTTP 200 with
+    // {"error":{"code":"1305","message":"..."}} in-stream. The original fix
+    // forwarded a Claude-shaped `error` event, but Claude Code still treats a
+    // turn that ends on a bare `error` event (no message_stop) as "empty or
+    // malformed response (HTTP 200)" and crashes. The hardened contract:
+    // ALWAYS emit a valid terminal message. Mid-stream (text already sent), we
+    // close the open block and emit message_delta + message_stop — preserving
+    // the partial text and ending the turn cleanly.
     const createAnthropicPassthroughStream = await getParser();
     const fixture = fixtureToResponse(join(FIXTURES_DIR, "regression-zai-glm5-instream-error.sse"));
     const ctx = createMockContext();
@@ -1549,23 +1554,27 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
 
     const events = await parseClaudeSseStream(response);
 
-    // Should have received text content before the error
+    // Partial text received before the error is preserved.
     const text = extractText(events);
     expect(text).toContain("Hello");
 
-    // Should have an error event with proper structure
+    // No bare `error` event reaches the client — that is what crashes the turn.
     const errorEvent = events.find((e) => e.data?.type === "error");
-    expect(errorEvent).toBeDefined();
-    expect(errorEvent?.data?.error?.type).toBe("api_error");
-    expect(errorEvent?.data?.error?.message).toContain("temporarily overloaded");
+    expect(errorEvent).toBeUndefined();
 
-    // Should NOT have a message_stop (stream was terminated by error)
+    // The open content block is closed.
+    const blockStop = events.find((e) => e.data?.type === "content_block_stop");
+    expect(blockStop).toBeDefined();
+
+    // The turn ends cleanly with message_delta + message_stop.
+    const msgDelta = events.find((e) => e.data?.type === "message_delta");
+    expect(msgDelta?.data?.delta?.stop_reason).toBe("end_turn");
     const msgStop = events.find((e) => e.data?.type === "message_stop");
-    expect(msgStop).toBeUndefined();
+    expect(msgStop).toBeDefined();
   });
 
-  test("in-stream error payload handled in filtering path (adapter present)", async () => {
-    // Same scenario but with filterThinking enabled (MiniMax, Kimi)
+  test("mid-stream error finalizes gracefully in the filtering path (adapter present)", async () => {
+    // Same scenario with filterThinking enabled (MiniMax, Kimi).
     const createAnthropicPassthroughStream = await getParser();
     const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
     const adapter = new MiniMaxModelDialect("minimax-m2.5");
@@ -1580,9 +1589,42 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
 
     const events = await parseClaudeSseStream(response);
 
-    // Should have an error event
+    // No bare error event; the turn terminates with message_stop.
     const errorEvent = events.find((e) => e.data?.type === "error");
-    expect(errorEvent).toBeDefined();
-    expect(errorEvent?.data?.error?.message).toContain("temporarily overloaded");
+    expect(errorEvent).toBeUndefined();
+    const msgStop = events.find((e) => e.data?.type === "message_stop");
+    expect(msgStop).toBeDefined();
+  });
+
+  test("start-of-stream rate-limit emits a synthetic message with a rate-limit notice (no message_start yet)", async () => {
+    // The burst-limit ([1302]) case: the provider sends a ping then an error
+    // BEFORE any message envelope. finalizeWithError must synthesize the whole
+    // message (message_start + a user-visible notice + message_stop) so the
+    // client renders a clean turn rather than crashing on an empty 200.
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "regression-zai-glm5-startofstream-ratelimit.sse")
+    );
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5.1",
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // A synthetic message envelope is produced even though upstream sent none.
+    const msgStart = events.find((e) => e.data?.type === "message_start");
+    expect(msgStart).toBeDefined();
+
+    // The notice is rate-limit-aware (mentions retrying / a moment), not a raw dump.
+    const text = extractText(events);
+    expect(text.toLowerCase()).toContain("rate limited");
+
+    // No bare error event; the turn ends with message_stop.
+    const errorEvent = events.find((e) => e.data?.type === "error");
+    expect(errorEvent).toBeUndefined();
+    const msgStop = events.find((e) => e.data?.type === "message_stop");
+    expect(msgStop).toBeDefined();
   });
 });
