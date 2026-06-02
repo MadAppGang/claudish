@@ -173,6 +173,12 @@ export function createAnthropicPassthroughStream(
             }
             cap.note(`in-stream-error->graceful: ${errMsg.slice(0, 80)}`);
             cap.done({ closed: true, stop_reason: "error-graceful", path });
+            // Surface to stdout (visible without --debug) so a mid-stream burst
+            // that bypassed the start-of-stream peek is still observable live.
+            log(
+              `[RateLimit] safety-net finalized stream gracefully (${path}): ${errMsg.slice(0, 120)}`,
+              true
+            );
             try {
               controller.close();
             } catch {

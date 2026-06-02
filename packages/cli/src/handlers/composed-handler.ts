@@ -708,7 +708,8 @@ export class ComposedHandler implements ModelHandler {
           const backoffMs =
             Math.min(1000 * 2 ** rlAttempt, 8000) + Math.floor(Math.random() * 750);
           log(
-            `[${this.provider.displayName}] in-stream rate-limit (HTTP 200), temporizing — retry ${rlAttempt + 1}/${maxRlRetries} in ${(backoffMs / 1000).toFixed(1)}s${peeked.detail ? `: ${peeked.detail}` : ""}`
+            `[RateLimit] [${this.provider.displayName}] in-stream rate-limit (HTTP 200), temporizing — retry ${rlAttempt + 1}/${maxRlRetries} in ${(backoffMs / 1000).toFixed(1)}s${peeked.detail ? `: ${peeked.detail}` : ""}`,
+            true // forceConsole — operational event, must be visible without --debug
           );
           await new Promise((r) => setTimeout(r, backoffMs));
           rlAttempt++;
@@ -718,7 +719,10 @@ export class ComposedHandler implements ModelHandler {
               ? await this.provider.enqueueRequest(doFetch)
               : await doFetch();
           } catch (e: any) {
-            log(`[${this.provider.displayName}] rate-limit retry fetch failed: ${e?.message ?? e}`);
+            log(
+              `[RateLimit] [${this.provider.displayName}] rate-limit retry fetch failed: ${e?.message ?? e}`,
+              true
+            );
             break;
           }
           if (!retryResp.ok) {
@@ -732,7 +736,8 @@ export class ComposedHandler implements ModelHandler {
         }
         if (peeked.cls === "rate-limit") {
           log(
-            `[${this.provider.displayName}] in-stream rate-limit persisted after ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} → returning 429 for cross-provider fallback`
+            `[RateLimit] [${this.provider.displayName}] in-stream rate-limit persisted after ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} → returning 429 for cross-provider fallback`,
+            true // forceConsole — operational event, must be visible without --debug
           );
           try {
             const { error_class, error_code } = classifyError(
