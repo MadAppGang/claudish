@@ -102,6 +102,90 @@ export function createAnthropicPassthroughStream(
             if (idx > highestSeenIndex) highestSeenIndex = idx;
           };
 
+          // ── Graceful in-stream error finalization ─────────────────────
+          // Some anthropic-compat providers (Z.AI, MiniMax, Kimi) return HTTP 200
+          // and then inject an SSE error (e.g. Z.AI's [1302] rate limit) with NO
+          // valid message envelope. Forwarding a bare `event: error` makes Claude
+          // Code report "empty or malformed response (HTTP 200)" and crash the turn.
+          // Instead we ALWAYS emit a valid, terminal Claude message so the client
+          // ends the turn cleanly (no crash, no corruption):
+          //   - before any content → synthetic message_start + short notice + stop
+          //   - mid-stream         → close the open block + message_delta + stop
+          // ComposedHandler's peek/retry catches most start-of-stream rate limits
+          // before they reach here (it retries + falls back to a second provider);
+          // this is the last-resort safety net for whatever still slips through.
+          const finalizeWithError = (errMsg: string, path: string) => {
+            if (!isClosed) {
+              if (!sawMessageStart) {
+                const isRateLimit =
+                  /rate.?limit|\b1302\b|\b429\b|too many requests|overloaded/i.test(errMsg);
+                const notice = isRateLimit
+                  ? "[The model provider is rate limited right now. The proxy retried and exhausted fallback capacity — please try again in a moment.]"
+                  : `[Upstream provider error: ${errMsg}]`;
+                const synthId = `msg_${Date.now()}`;
+                controller.enqueue(
+                  encoder.encode(
+                    "event: message_start\n" +
+                      `data: {"type":"message_start","message":{"id":"${synthId}","type":"message","role":"assistant","model":"${opts.modelName}","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}\n\n`
+                  )
+                );
+                controller.enqueue(
+                  encoder.encode(
+                    "event: content_block_start\n" +
+                      `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+                  )
+                );
+                controller.enqueue(
+                  encoder.encode(
+                    "event: content_block_delta\n" +
+                      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: notice } })}\n\n`
+                  )
+                );
+                controller.enqueue(
+                  encoder.encode(
+                    "event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}\n\n`
+                  )
+                );
+              } else if (highestSeenIndex >= 0) {
+                // Mid-stream: close whatever content block was open when the error hit,
+                // otherwise the client sees an unterminated block.
+                controller.enqueue(
+                  encoder.encode(
+                    "event: content_block_stop\n" +
+                      `data: {"type":"content_block_stop","index":${highestSeenIndex}}\n\n`
+                  )
+                );
+              }
+              controller.enqueue(
+                encoder.encode(
+                  "event: message_delta\n" +
+                    `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}\n\n`
+                )
+              );
+              controller.enqueue(
+                encoder.encode("event: message_stop\n" + `data: {"type":"message_stop"}\n\n`)
+              );
+            }
+            isClosed = true;
+            if (pingInterval) {
+              clearInterval(pingInterval);
+              pingInterval = null;
+            }
+            cap.note(`in-stream-error->graceful: ${errMsg.slice(0, 80)}`);
+            cap.done({ closed: true, stop_reason: "error-graceful", path });
+            // Surface to stdout (visible without --debug) so a mid-stream burst
+            // that bypassed the start-of-stream peek is still observable live.
+            log(
+              `[RateLimit] safety-net finalized stream gracefully (${path}): ${errMsg.slice(0, 120)}`,
+              true
+            );
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          };
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -125,22 +209,7 @@ export function createAnthropicPassthroughStream(
                   if (data.error) {
                     const errMsg = data.error.message || JSON.stringify(data.error);
                     log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(
-                        `event: error\ndata: ${JSON.stringify({
-                          type: "error",
-                          error: { type: "api_error", message: errMsg },
-                        })}\n\n`
-                      ));
-                      isClosed = true;
-                      if (pingInterval) {
-                        clearInterval(pingInterval);
-                        pingInterval = null;
-                      }
-                      cap.note("in-stream-error(filtered)");
-                      cap.done({ closed: true, stop_reason: "error", path: "in-stream-error-filtered" });
-                      controller.close();
-                    }
+                    finalizeWithError(errMsg, "in-stream-error-filtered");
                     return; // stop processing further lines
                   }
 
@@ -220,22 +289,7 @@ export function createAnthropicPassthroughStream(
                     if (data.error) {
                       const errMsg = data.error.message || JSON.stringify(data.error);
                       log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
-                      if (!isClosed) {
-                        controller.enqueue(encoder.encode(
-                          `event: error\ndata: ${JSON.stringify({
-                            type: "error",
-                            error: { type: "api_error", message: errMsg },
-                          })}\n\n`
-                        ));
-                        isClosed = true;
-                        if (pingInterval) {
-                          clearInterval(pingInterval);
-                          pingInterval = null;
-                        }
-                        cap.note("in-stream-error");
-                        cap.done({ closed: true, stop_reason: "error", path: "in-stream-error" });
-                        controller.close();
-                      }
+                      finalizeWithError(errMsg, "in-stream-error");
                       return; // stop processing further lines
                     }
 
@@ -298,29 +352,28 @@ export function createAnthropicPassthroughStream(
                         `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
                       );
                     }
-                                        if (
-                                          data.type === "content_block_start" &&
-                                          data.content_block?.type === "tool_use"
-                                        ) {
-                                          toolUseBlocks++;
-                                          log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
-                                        }
-                                        // Suppress server_tool_use blocks (Z.AI built-in tools)
-                                        if (
-                                          data.type === "content_block_start" &&
-                                          data.content_block?.type === "server_tool_use"
-                                        ) {
-                                          suppressedServerTools++;
-                                          log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
-                                          continue;
-                                        }
-                                        if (data.type === "content_block_stop" && suppressedServerTools > 0) {
-                                          suppressedServerTools--;
-                                          continue;
-                                        }
-                                        if (data.type === "message_start") {
-                                          sawMessageStart = true;
-
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "tool_use"
+                    ) {
+                      toolUseBlocks++;
+                      log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
+                    }
+                    // Suppress server_tool_use blocks (Z.AI built-in tools)
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "server_tool_use"
+                    ) {
+                      suppressedServerTools++;
+                      log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
+                      continue;
+                    }
+                    if (data.type === "content_block_stop" && suppressedServerTools > 0) {
+                      suppressedServerTools--;
+                      continue;
+                    }
+                    if (data.type === "message_start") {
+                      sawMessageStart = true;
                     }
                     if (data.type === "message_delta" && data.delta?.stop_reason) {
                       stopReason = data.delta.stop_reason;
@@ -335,7 +388,15 @@ export function createAnthropicPassthroughStream(
                     }
                   }
                 } else {
-                  // Non-data lines (event: lines, blank lines) — pass through
+                  // Non-data lines (event: lines, blank lines).
+                  // Suppress a bare `event: error` line: the matching `data:` line
+                  // that follows carries the payload and triggers finalizeWithError().
+                  // Forwarding `event: error` verbatim is itself what makes Claude Code
+                  // report "empty or malformed response (HTTP 200)" and crash, and it
+                  // produced the double `event: error` seen in production captures.
+                  if (line.trimStart().startsWith("event: error")) {
+                    continue;
+                  }
                   if (!isClosed) {
                     controller.enqueue(encoder.encode(line + "\n"));
                   }

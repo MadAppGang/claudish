@@ -1,0 +1,6 @@
+event: ping
+data: {"type":"ping"}
+
+event: error
+data: {"error":{"code":"1302","message":"Your account has reached its rate limit (concurrency/RPM). Please try again later."},"request_id":"20260602xstartofstreamratelimit"}
+

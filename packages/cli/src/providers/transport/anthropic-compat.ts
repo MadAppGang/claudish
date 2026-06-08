@@ -76,6 +76,56 @@ export class AnthropicProviderTransport implements ProviderTransport {
     return headers;
   }
 
+  /**
+   * Retry HTTP 429 responses with jittered exponential backoff.
+   *
+   * The anthropic-compat providers (Z.AI, MiniMax, Kimi) previously had NO
+   * transport-level retry at all — a bare 429 propagated straight up. This
+   * mirrors OpenAIProviderTransport's retry but ADDS jitter: the whole cluster
+   * shares a single key per provider, so without jitter every machine retries
+   * on the same 2s/4s/8s boundary and re-collides on the burst limit. The
+   * jitter spreads those retries out.
+   *
+   * Note: this only covers errors the provider returns as an HTTP 429. Z.AI's
+   * burst limit is frequently delivered as HTTP 200 + an in-stream SSE error
+   * ([1302]); that variant is handled one layer up in ComposedHandler (peek +
+   * backoff-retry + cross-provider fallback), since it isn't visible from the
+   * Response status alone.
+   */
+  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+    const maxRetries = 5;
+    let lastResponse: Response | null = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const response = await fetchFn();
+
+      if (response.status === 429 && attempt < maxRetries) {
+        lastResponse = response;
+        const retryAfter = response.headers.get("Retry-After");
+        let delayMs: number;
+        if (retryAfter && !Number.isNaN(Number(retryAfter))) {
+          delayMs = Math.min(Number(retryAfter) * 1000, 30000);
+        } else {
+          // Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
+          delayMs = Math.min(2000 * Math.pow(2, attempt), 30000);
+        }
+        // Jitter: spread cluster-wide synchronized retries off the same boundary.
+        const jitterMs = Math.floor(Math.random() * 1000);
+        const totalMs = delayMs + jitterMs;
+        log(
+          `[${this.displayName}] 429 rate limited, retry ${attempt + 1}/${maxRetries} in ${(totalMs / 1000).toFixed(1)}s`
+        );
+        await new Promise((resolve) => setTimeout(resolve, totalMs));
+        continue;
+      }
+
+      return response;
+    }
+
+    // All retries exhausted — return the last 429 response
+    return lastResponse!;
+  }
+
   private static formatDisplayName(name: string): string {
     const map: Record<string, string> = {
       minimax: "MiniMax",
