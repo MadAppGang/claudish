@@ -348,18 +348,25 @@ export function createStreamingResponseHandler(
             const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
             const hasContent = state.textStarted || state.reasoningStarted || hasStructuredTools || textToolCalls.length > 0;
             if (!hasContent) {
-              // Send a proper Anthropic error event so the SDK triggers its retry logic.
-              // Injecting fake text would be silently accepted but not trigger recovery.
+              // Inject a text content block with the error message.
+              // Previously we sent event: error, but Claude Code does not handle
+              // raw error events in-stream — it reports "empty or malformed response".
+              // A content block with the error text is properly parsed and surfaced.
               const emptyMsg = `The model returned an empty response. This usually happens when the conversation context is too large. Try compacting the conversation or reducing the context size.`;
-              send("error", {
-                type: "error",
-                error: {
-                  type: "api_error",
-                  message: emptyMsg,
-                },
+              const blockIdx = state.curIdx++;
+              send("content_block_start", {
+                type: "content_block_start",
+                index: blockIdx,
+                content_block: { type: "text", text: "" },
               });
-              logStderr(`[Stream] EMPTY RESPONSE from ${target} — sent api_error to client (context overflow?)`);
-              log(`[Stream] Empty response from provider (context overflow?) — sent api_error event`);
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: blockIdx,
+                delta: { type: "text_delta", text: `[Error: ${emptyMsg}]` },
+              });
+              send("content_block_stop", { type: "content_block_stop", index: blockIdx });
+              logStderr(`[Stream] EMPTY RESPONSE from ${target} — injected error text block (context overflow?)`);
+              log(`[Stream] Empty response from provider (context overflow?) — injected error text block`);
             }
 
             // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)

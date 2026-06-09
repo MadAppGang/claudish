@@ -249,6 +249,24 @@ Claude Code v2.1.153+ injects `role: "system"` messages inline (e.g. system-remi
 
 Set `CLAUDISH_CAPTURE_DIR` env var to enable full request body capture for offline reproduction of hangs or malformed responses. Disabled by default (no-op when unset). Files written as JSON with metadata (timestamp, source IP, model, PID).
 
+### Opus Leak Diagnostics
+
+When VS Code displays "sonnet" or "glm" but the proxy shows `claude-opus-4-8` requests from that machine, the cause is almost always **sub-agents**, not the main session. The Agent tool spawns sub-agents that default to Opus.
+
+**Quick check:**
+```bash
+# Are there Opus requests from a specific machine?
+docker logs claudish-proxy --since 1h 2>&1 | grep "machine=HOST.*claude-opus" | head -5
+
+# Is it sub-agents? Check billing header in captures:
+docker exec -i claudish-proxy sh -c "head -c 500 /captures/req-1-NNNN-*.json"
+# Look for: cc_is_subagent=true
+```
+
+**Root cause:** Claude Code's Agent tool selects the "best available model" for sub-agents. On Anthropic direct, that's Opus. This is client-side behavior — not fixable in the proxy.
+
+**Fix:** Add a global rule in `~/.claude/rules/` instructing the model to always specify `model: "sonnet"` (or equivalent) when spawning sub-agents, and reserve Opus for genuinely complex tasks.
+
 ## Debug Logging
 
 Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It's disabled by default.
