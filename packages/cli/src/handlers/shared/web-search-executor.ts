@@ -4,15 +4,21 @@
  *
  * When a provider model requests web_search, claudish:
  * 1. Extracts the search query from tool arguments
- * 2. Calls the local SearXNG instance
+ * 2. Calls the SearXNG MCP server (when SEARXNG_MCP_URL is set),
+ *    falling back to the direct SearXNG HTTP API
  * 3. Returns formatted results as a text block in the stream
  *
- * IMPORTANT: executeWebSearchSync must not block the SSE stream.
- * It races SearXNG against a 3-second deadline and returns a
- * fallback message immediately if SearXNG is unreachable.
+ * Fallback chains (HARD constraint: a failed search/fetch must NEVER
+ * stop the agent — every path ends in well-formed text, never a throw):
+ *   search: MCP searxng_web_search → direct HTTP /search → error text
+ *   fetch:  MCP web_url_read → MCP via r.jina.ai prefix → direct HTTP → error text
+ *
+ * IMPORTANT: these executors must not block the SSE stream.
+ * Every network call is bounded by a strict deadline.
  */
 
 import { log } from "../../logger.js";
+import { isMcpSearxngAvailable, mcpWebSearch, mcpUrlRead } from "./mcp-searxng-client.js";
 
 const SEARXNG_URL = process.env.SEARXNG_URL || "http://search.myia.io";
 
@@ -53,10 +59,19 @@ async function fetchFromSearXNG(query: string, maxResults = 5): Promise<SearchRe
 }
 
 /**
- * Stream-safe web search: races SearXNG against a short deadline.
+ * Stream-safe web search: MCP searxng_web_search first (when configured),
+ * then the direct SearXNG HTTP API, each bounded by a deadline.
  * Returns formatted results text, never throws, never blocks > deadline.
  */
 export async function executeWebSearch(query: string, deadlineMs = 3000): Promise<string> {
+  if (isMcpSearxngAvailable()) {
+    const mcp = await mcpWebSearch(query, Math.max(deadlineMs, 5000));
+    if (mcp.ok) {
+      return `[Web search results for "${query}"]\n\n${mcp.text}`;
+    }
+    log(`[WebSearch] MCP route failed (${mcp.error}), falling back to direct HTTP`);
+  }
+
   try {
     const results = await Promise.race([
       fetchFromSearXNG(query),
@@ -111,11 +126,47 @@ const MAX_FETCH_BYTES = 500_000;
 const MAX_HTML_INPUT_CHARS = 100_000;
 
 /**
- * Fetch a URL and convert HTML to readable text.
+ * Fetch a URL with graceful degradation. Never throws.
+ *
+ * Chain: MCP web_url_read (server-side fetch + markdown) → MCP web_url_read
+ * with the r.jina.ai reader prefix (bypasses 403s on bot-hostile hosts) →
+ * direct streaming HTTP fetch → error text.
+ */
+export async function executeWebFetch(url: string, deadlineMs = 10_000): Promise<string> {
+  if (isMcpSearxngAvailable()) {
+    const direct = await mcpUrlRead(url, 12_000);
+    if (direct.ok && isUsefulFetchResult(direct.text)) {
+      return truncateContent(direct.text, 15000);
+    }
+    log(`[WebFetch] MCP web_url_read failed for "${url}" (${direct.ok ? "low-content result" : direct.error}), trying r.jina.ai prefix`);
+
+    const viaJina = await mcpUrlRead(`https://r.jina.ai/${url}`, 12_000);
+    if (viaJina.ok && isUsefulFetchResult(viaJina.text)) {
+      return truncateContent(viaJina.text, 15000);
+    }
+    log(`[WebFetch] MCP via r.jina.ai failed for "${url}" (${viaJina.ok ? "low-content result" : viaJina.error}), falling back to direct HTTP`);
+  }
+
+  return fetchViaHttp(url, deadlineMs);
+}
+
+/**
+ * Heuristic: an MCP fetch result that is empty or a bare error/denial page
+ * should trigger the next fallback instead of being returned to the model.
+ */
+function isUsefulFetchResult(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 50) return false;
+  if (/^(error|403|404|access denied|forbidden)/i.test(trimmed) && trimmed.length < 300) return false;
+  return true;
+}
+
+/**
+ * Direct HTTP fetch of a URL with HTML → readable text conversion.
  * Uses streaming with a byte cap to avoid loading multi-MB pages into memory,
  * and pre-truncates HTML before regex to prevent event-loop blocking.
  */
-export async function executeWebFetch(url: string, deadlineMs = 10_000): Promise<string> {
+async function fetchViaHttp(url: string, deadlineMs = 10_000): Promise<string> {
   try {
     log(`[WebFetch] Fetching: "${url}"`);
     const response = await fetch(url, {

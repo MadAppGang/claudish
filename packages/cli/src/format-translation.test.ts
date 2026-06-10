@@ -1628,3 +1628,172 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
     expect(msgStop).toBeDefined();
   });
 });
+
+// ─── Regression: web search remap (agentic blocking fix) ───────────────────
+//
+// CoursIA incident 2026-06-10: provider-side web search (web_search tool call
+// or GLM <searchWeb> tag) was suppressed and replaced with a text block +
+// stop_reason "end_turn" — the agent ended its turn on raw search results and
+// the agentic loop stalled. The fix remaps these to a synthetic WebSearch
+// tool_use (stop_reason "tool_use") whenever the client declared WebSearch,
+// so Claude Code runs its own WebSearch and the conversation continues.
+
+describe("Regression: web search remap to client WebSearch tool_use", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getDefaultAdapter() {
+    const mod = await import("./adapters/base-api-format.js");
+    return new mod.DefaultAPIFormat("test-model");
+  }
+
+  function sseToResponse(content: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(content));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  const WEBSEARCH_SCHEMA = {
+    name: "WebSearch",
+    description: "Search the web",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  };
+  const READ_SCHEMA = {
+    name: "Read",
+    description: "Read a file",
+    input_schema: {
+      type: "object",
+      properties: { file_path: { type: "string" } },
+      required: ["file_path"],
+    },
+  };
+
+  // Provider emits a structured web_search tool call (GLM/z.ai dialect)
+  const WEB_SEARCH_TOOLCALL_SSE = [
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me look that up."},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ws_1","type":"function","function":{"name":"web_search","arguments":""}}]},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"query\\":\\"chatterbox tts docker compose\\"}"}}]},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":7}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  test("web_search tool call + WebSearch declared → remapped tool_use, stop_reason=tool_use", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(WEB_SEARCH_TOOLCALL_SSE),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      [WEBSEARCH_SCHEMA, READ_SCHEMA]
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // The provider tool call is remapped to the client's WebSearch tool
+    const tools = extractToolNames(events);
+    expect(tools).toContain("WebSearch");
+
+    // The remapped input carries the original query
+    const inputJson = events
+      .filter((e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "input_json_delta")
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    expect(JSON.parse(inputJson)).toEqual({ query: "chatterbox tts docker compose" });
+
+    // THE fix: the turn must continue, not end on injected text
+    expect(extractStopReason(events)).toBe("tool_use");
+
+    // No raw search-results text block injected
+    expect(extractText(events)).not.toContain("[Web search");
+  });
+
+  test("web_search tool call WITHOUT WebSearch declared → suppression fallback, stop_reason=end_turn", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(WEB_SEARCH_TOOLCALL_SSE),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      [READ_SCHEMA] // no WebSearch in the request
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // No tool_use leaks through (web_search must not reach the client)
+    expect(extractToolNames(events)).toHaveLength(0);
+
+    // Results (or a graceful degradation notice) are injected as text
+    expect(extractText(events)).toContain("[Web search");
+
+    // Legitimate end_turn: without WebSearch declared the client could not
+    // execute a remapped tool anyway (e.g. sub-agents without web tools).
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
+
+  test("GLM <searchWeb> tag + WebSearch declared → remapped tool_use, stop_reason=tool_use", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const glmSse = [
+      `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"<searchWeb><query>devnen Chatterbox-TTS-Server docker run</query></searchWeb>"},"finish_reason":null}]}`,
+      ``,
+      `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}`,
+      ``,
+      `data: [DONE]`,
+      ``,
+    ].join("\n");
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(glmSse),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      [WEBSEARCH_SCHEMA, READ_SCHEMA]
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    const tools = extractToolNames(events);
+    expect(tools).toContain("WebSearch");
+
+    const inputJson = events
+      .filter((e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "input_json_delta")
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    expect(JSON.parse(inputJson)).toEqual({ query: "devnen Chatterbox-TTS-Server docker run" });
+
+    expect(extractStopReason(events)).toBe("tool_use");
+  });
+});

@@ -215,28 +215,44 @@ Located in `handlers/shared/stream-parsers/`:
 
 ## Web Search Interception (v7.1+)
 
-When providers emit web search tool calls (WebSearch/WebFetch) or GLM's `<searchWeb>` tags, claudish intercepts them and executes via a local **SearXNG** instance instead of forwarding to the provider (which would fail for non-Anthropic providers).
+When providers emit web search tool calls (`web_search`, `brave_web_search`, `tavily_search`) or GLM's `<searchWeb>` tags, claudish intercepts them instead of forwarding to the provider (which would fail for non-Anthropic providers).
+
+**HARD constraint**: a failed search/fetch must NEVER stop the agent. Every path degrades gracefully to well-formed text — no throws, no hung streams.
 
 ### Architecture
 
-Two interception paths, both in the stream parsers:
+Three interception paths:
 
-1. **Structured tool_call** (`openai-sse.ts`): WebSearch/WebFetch tool calls are flagged as `suppressed` in `ToolState`. At finalize, SearXNG is called and results are injected as a text block replacing the tool call. The `suppressed` flag prevents the tool_use content_block from reaching the client.
+1. **Structured tool_call** (`openai-sse.ts`): provider web search tool calls are detected via `web-search-detector.ts`. **If the client declared a `WebSearch` tool in the request** (checked against `toolSchemas`), the call is **remapped** to a synthetic `WebSearch` tool_use block with `stop_reason: "tool_use"` — Claude Code then executes its own WebSearch (which arrives as a sub-agent request, path 3) and the agentic loop continues. If WebSearch is NOT declared (e.g. sub-agents without web tools), the call is `suppressed` and results are injected as a text block with `end_turn` (legitimate there).
 
-2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, these tags are detected, SearXNG is called, tags are stripped from text, and results are appended as a separate text block.
+2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, same remap logic: WebSearch declared → synthetic tool_use; otherwise SearXNG is called and results are appended as a text block.
 
-3. **Sub-agent requests** (`proxy-server.ts`): Claude Code sometimes sends web search/fetch as a single user message ("Perform a web search for the query: X"). These are intercepted at the proxy level before handler selection.
+3. **Sub-agent requests** (`proxy-server.ts`): Claude Code's own WebSearch/WebFetch tools send a single user message ("Perform a web search for the query: X" / "Perform a web fetch for the URL: X"). Intercepted at the proxy level before handler selection; results returned as text with `end_turn` (correct — the sub-agent's job is to return text).
+
+**Why the remap matters (CoursIA incident 2026-06-10)**: suppress + inject-text + `end_turn` ends the assistant turn on raw search results — the agent stalls instead of using them. Remapping to the client's WebSearch keeps `stop_reason: "tool_use"`, so results come back as a tool_result and the loop continues. Regression tests: `format-translation.test.ts` ("web search remap").
+
+### Execution backends (fallback chains)
+
+`web-search-executor.ts` resolves each search/fetch through a chain; the first usable result wins:
+
+- **Search**: MCP `searxng_web_search` (if `SEARXNG_MCP_URL` set, 5s deadline) → direct HTTP `{SEARXNG_URL}/search?format=json` (3s) → error text.
+- **Fetch**: MCP `web_url_read` (12s, real fetch + markdown) → MCP `web_url_read` with `https://r.jina.ai/<url>` prefix (bypasses 403 on bot-hostile hosts, e.g. npmjs) → direct streaming HTTP with 500KB byte cap → error text.
+
+The MCP client (`handlers/shared/mcp-searxng-client.ts`) is a minimal JSON-RPC streamable-http client (no SDK, no stdio): handles both `application/json` and `text/event-stream` response formats, lazy `initialize` handshake with `mcp-session-id` caching when the server demands a session, strict `AbortSignal.timeout` deadlines, and a non-throwing `{ ok, text|error }` contract. Per-call duration is logged as `[MCP-SearXNG] tools/call <name> <ms>ms ok=<bool>` for overhead measurement vs direct HTTP.
 
 ### Configuration
 
-- **`SEARXNG_URL`** env var (required): URL of the SearXNG instance (e.g. `http://search.myia.io`). When unset, web search interception falls through gracefully with a fallback message.
-- **`SEARXNG_AVAILABLE`** flag: detected at startup from `SEARXNG_URL` presence.
-- **Deadline**: 3s default for SearXNG calls (5s for sub-agent path). Non-blocking — races against timeout.
+- **`SEARXNG_MCP_URL`** env var (optional): URL of the MCP searxng endpoint (e.g. `https://mcp-tools.myia.io/searxng/mcp`). When unset, the MCP layer is skipped entirely — zero behavior change for existing deployments.
+- **`MCP_AUTH`** or **`SEARXNG_MCP_TOKEN`** env var: bearer token for the MCP endpoint. Never hardcode; provisioned via RooSync.
+- **`SEARXNG_URL`** env var: URL of the SearXNG instance (e.g. `http://search.myia.io`) for the direct HTTP fallback. When unset, interception falls through gracefully with a fallback message.
+- **Deadlines**: MCP search 5s, MCP fetch 12s, direct HTTP search 3s (5s sub-agent path), direct fetch 10s. Non-blocking — every call races a timeout.
 
 ### Components
 
-- `handlers/shared/web-search-executor.ts` — SearXNG fetch, result formatting, query extraction
-- `handlers/shared/stream-parsers/openai-sse.ts` — tool_call suppression + `<searchWeb>` tag detection
+- `handlers/shared/mcp-searxng-client.ts` — MCP streamable-http JSON-RPC client (non-throwing)
+- `handlers/shared/web-search-executor.ts` — fallback chains, result formatting, query extraction
+- `handlers/shared/web-search-detector.ts` — provider web-search tool name detection
+- `handlers/shared/stream-parsers/openai-sse.ts` — remap/suppression + `<searchWeb>` tag detection
 - `proxy-server.ts` — sub-agent request interception
 
 ### Inline System Message Handling
