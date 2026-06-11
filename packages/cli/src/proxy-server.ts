@@ -36,7 +36,7 @@ import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
-import { executeWebSearch, executeWebFetch } from "./handlers/shared/web-search-executor.js";
+import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFromWebContent, cleanRawWebContent } from "./handlers/shared/web-search-executor.js";
 
 /**
  * Intercept WebSearch/WebFetch tool calls and execute them via SearXNG instead
@@ -75,6 +75,30 @@ async function interceptWebTools(c: any, body: any): Promise<Response | null> {
       // MCP web_url_read → MCP via r.jina.ai → direct HTTP → error text.
       const resultText = await executeWebFetch(url, 10_000);
       return buildTextResponse(body.model || "unknown", resultText, isStreaming);
+    }
+
+    // Case 3: Claude Code already fetched the page and sends raw HTML/markdown
+    // to a sub-agent for analysis. Format: "Web page content:\n---\n<content>"
+    // This happens when Claude Code's native WebFetch tool fetches the page
+    // itself, converts to markdown poorly, and delegates to a sub-agent.
+    const webContentMatch = text.match(/^Web page content:\s*\n---\n([\s\S]+)$/);
+    if (webContentMatch) {
+      const rawContent = webContentMatch[1];
+      if (isLowQualityWebContent(rawContent)) {
+        log(`[WebTools] Detected low-quality web content in sub-agent, attempting re-fetch`);
+        const url = extractUrlFromWebContent(rawContent);
+        if (url) {
+          log(`[WebTools] Re-fetching "${url}" via clean pipeline`);
+          const cleanContent = await executeWebFetch(url, 10_000);
+          return buildTextResponse(body.model || "unknown", cleanContent, isStreaming);
+        }
+        // No URL extractable — clean the raw content as best we can
+        log(`[WebTools] No URL found, cleaning raw web content`);
+        const cleaned = cleanRawWebContent(rawContent);
+        return buildTextResponse(body.model || "unknown", cleaned, isStreaming);
+      }
+      // Content looks reasonable — let it through to the normal handler
+      return null;
     }
   }
 

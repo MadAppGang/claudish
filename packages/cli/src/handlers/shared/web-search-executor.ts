@@ -236,7 +236,8 @@ async function fetchViaHttp(url: string, deadlineMs = 10_000): Promise<string> {
 
 /**
  * Basic HTML → plain text conversion.
- * Strips tags, decodes common entities, normalizes whitespace.
+ * Strips tags, decodes entities, normalizes whitespace.
+ * Enhanced: extracts main content when possible, removes navigation chrome.
  */
 function htmlToText(html: string): string {
   let text = html;
@@ -245,9 +246,30 @@ function htmlToText(html: string): string {
   text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
 
+  // Remove SVG blocks (common in GitHub navigation chrome)
+  text = text.replace(/<svg[\s\S]*?<\/svg>/gi, "");
+  text = text.replace(/<path\b[^>]*>/gi, "");
+
+  // Try to extract main content area before stripping tags.
+  // Many sites (GitHub, docs) use <main>, <article>, or role="main".
+  const mainContent =
+    text.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1] ||
+    text.match(/<article[^>]*>([\s\S]*?)<\/article>/i)?.[1] ||
+    text.match(/<[^>]+role=["']main["'][^>]*>([\s\S]*?)<\/\w+>/i)?.[1];
+  if (mainContent && mainContent.length > 200) {
+    text = mainContent;
+  }
+
+  // Remove <nav>, <header>, <footer> blocks (navigation chrome)
+  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
+  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
+  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
+
   // Convert common block elements to newlines
   text = text.replace(/<\/(p|div|h[1-6]|li|br|tr|blockquote)>/gi, "\n");
   text = text.replace(/<br\s*\/?>/gi, "\n");
+  // Add newlines before headings for better readability
+  text = text.replace(/<h[1-6][^>]*>/gi, "\n\n");
 
   // Remove all remaining HTML tags
   text = text.replace(/<[^>]+>/g, "");
@@ -266,6 +288,96 @@ function htmlToText(html: string): string {
   text = text.replace(/[ \t]+/g, " ");
 
   return text.trim();
+}
+
+/**
+ * Heuristic: detect low-quality web content that is mostly navigation chrome
+ * rather than useful page content. Used to decide whether to re-fetch via MCP
+ * or at least clean up the content.
+ */
+export function isLowQualityWebContent(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 100) return false;
+
+  // Known navigation chrome markers (GitHub, docs sites, etc.)
+  const chromeMarkers = [
+    "Skip to content",
+    "Navigation Menu",
+    "Toggle navigation",
+    "Appearance settings",
+    "Sign in",
+    "PlatformAI",
+    "DEVELOPER WORKFLOWS",
+    "APPLICATION SECURITY",
+    "EXPLORE BY TOPIC",
+    "SUPPORT & SERVICES",
+  ];
+  const chromeHits = chromeMarkers.filter(m => trimmed.includes(m)).length;
+  if (chromeHits >= 3) return true;
+
+  // SVG path data (indicates raw HTML rendering artifacts)
+  if (/M\d+\.\d+ \d+\.\d+[a-z]\d+/.test(trimmed)) return true;
+
+  // High ratio of markdown links to text — many `[text](url)` patterns
+  const linkCount = (trimmed.match(/\[([^\]]{1,50})\]\([^)]+\)/g) || []).length;
+  const lineCount = trimmed.split("\n").filter(l => l.trim().length > 0).length;
+  if (linkCount > 20 && linkCount / lineCount > 0.4) return true;
+
+  return false;
+}
+
+/**
+ * Extract the original URL from web content that Claude Code fetched.
+ * Looks for the first identifiable URL pattern in the content.
+ */
+export function extractUrlFromWebContent(text: string): string | null {
+  // Try to find a URL in the first 500 chars (often near the title)
+  const head = text.substring(0, 500);
+
+  // GitHub pattern: the title line often contains the repo URL
+  const githubMatch = head.match(/github\.com\/[\w.-]+\/[\w.-]+/);
+  if (githubMatch) return `https://${githubMatch[0]}`;
+
+  // Generic URL: first http(s) link
+  const urlMatch = head.match(/https?:\/\/[^\s)\]"']+/);
+  if (urlMatch) return urlMatch[0];
+
+  // Search entire content for a markdown link that looks like the page URL
+  const mdLink = text.match(/\]\((https?:\/\/[^\s)]+)\)/);
+  if (mdLink) return mdLink[1];
+
+  return null;
+}
+
+/**
+ * Clean raw web content that arrived as poorly-converted HTML/markdown.
+ * Strips navigation chrome, normalizes structure, keeps only useful text.
+ */
+export function cleanRawWebContent(text: string): string {
+  let cleaned = text;
+
+  // Remove common navigation chrome sections (markdown form)
+  // GitHub-specific: the long navigation block at the top
+  cleaned = cleaned.replace(/Skip to content[\s\S]*?(?=##|\n[A-Z][a-z])/i, "");
+
+  // Remove SVG path data lines
+  cleaned = cleaned.replace(/^[ \t]*M\d+\.\d+.*$/gm, "");
+
+  // Remove lines that are just navigation links (short lines with markdown links)
+  const lines = cleaned.split("\n");
+  const filtered = lines.filter(line => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return true;
+    if (trimmed.length < 3) return false;
+    if (/^\[.+\]\(.*\)$/.test(trimmed) && trimmed.length < 60) return false;
+    if (/^-{3,}$/.test(trimmed)) return false;
+    return true;
+  });
+
+  cleaned = filtered.join("\n");
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+
+  return truncateContent(cleaned.trim(), 15000);
 }
 
 /**

@@ -79,7 +79,6 @@ export function createAnthropicPassthroughStream(
           let stopReason: string | null = null;
           let sawMessageStop = false;
           let sawMessageStart = false;
-          let suppressedServerTools = 0;
 
           // Thinking-block filtering state
           let insideThinkingBlock = false;
@@ -359,18 +358,17 @@ export function createAnthropicPassthroughStream(
                       toolUseBlocks++;
                       log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
                     }
-                    // Suppress server_tool_use blocks (Z.AI built-in tools)
+                    // Z.AI built-in tools (server_tool_use): pass through instead of suppressing.
+                    // Previous suppression caused index desync — the matching tool_result block
+                    // would arrive without its tool_use, breaking the stream for the client.
+                    // Claude Code handles server_tool_use natively. If the built-in tool errors
+                    // (e.g. file:// URI to analyze_image), the error comes back as tool_result
+                    // text and the model continues its turn naturally.
                     if (
                       data.type === "content_block_start" &&
                       data.content_block?.type === "server_tool_use"
                     ) {
-                      suppressedServerTools++;
-                      log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
-                      continue;
-                    }
-                    if (data.type === "content_block_stop" && suppressedServerTools > 0) {
-                      suppressedServerTools--;
-                      continue;
+                      log(`[AnthropicSSE] server_tool_use at index ${data.index}: ${data.content_block.name || "(unnamed)"}`);
                     }
                     if (data.type === "message_start") {
                       sawMessageStart = true;
