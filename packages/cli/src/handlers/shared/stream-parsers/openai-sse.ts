@@ -420,14 +420,61 @@ export function createStreamingResponseHandler(
             await middlewareManager.afterStreamComplete(target, streamMetadata);
           }
 
+          // Determine whether the stream produced any usable content
+          const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
+          const hasContent = state.textStarted || state.reasoningStarted || hasStructuredTools || textToolCalls.length > 0;
+
           if (reason === "error") {
-            send("error", { type: "error", error: { type: "api_error", message: err } });
+            // Socket close, network error, or other fetch failure mid-stream.
+            // Previously we sent event: error, but Claude Code surfaces raw SSE error
+            // events as "API Error: <message>" without closing the turn cleanly.
+            // Instead, close any open blocks and inject the error as a text block
+            // so the turn ends gracefully with end_turn.
+            log(`[Stream] Stream error from ${target}: ${err}`);
+            logStderr(`[Stream] Stream error from ${target}: ${err?.substring(0, 120)}`);
+
+            // Close reasoning if still open
+            if (state.reasoningStarted) {
+              send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
+              state.reasoningStarted = false;
+            }
+            // Close text if still open
+            if (state.textStarted) {
+              send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+              state.textStarted = false;
+            }
+
+            // Inject error as a text block (or replace if no content was produced)
+            const isSocketClose = /socket.*closed|connection was closed|ECONNRESET/i.test(err || "");
+            const errorNotice = isSocketClose
+              ? `[The connection to the model provider was interrupted. This is usually temporary — please retry.]`
+              : `[Upstream stream error: ${(err || "unknown").substring(0, 200)}]`;
+            const errorIdx = state.curIdx++;
+            send("content_block_start", {
+              type: "content_block_start",
+              index: errorIdx,
+              content_block: { type: "text", text: "" },
+            });
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index: errorIdx,
+              delta: { type: "text_delta", text: errorNotice },
+            });
+            send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: {
+                input_tokens: state.usage?.prompt_tokens || 0,
+                output_tokens: state.usage?.completion_tokens || 0,
+              },
+            });
+            send("message_stop", { type: "message_stop" });
           } else {
             // Ensure at least one content block exists — some providers (z.ai, GLM)
             // return empty responses (finish_reason without content). The Anthropic
             // SDK treats messages with content:[] as malformed.
-            const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
-            const hasContent = state.textStarted || state.reasoningStarted || hasStructuredTools || textToolCalls.length > 0;
             if (!hasContent) {
               // Inject a text content block with the error message.
               // Previously we sent event: error, but Claude Code does not handle
