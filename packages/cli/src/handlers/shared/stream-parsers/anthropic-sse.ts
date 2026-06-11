@@ -88,6 +88,10 @@ export function createAnthropicPassthroughStream(
           // Content block index tracking — detect out-of-range indices
           // that would cause "Content block not found" on the client side.
           let highestSeenIndex = -1;
+          // Track whether the last content block is still open (started but not stopped).
+          // Without this, finalizeWithError() may emit a duplicate content_block_stop
+          // for a block that the provider already closed, causing "Content block not found".
+          let lastBlockOpen = false;
           const clampIndex = (idx: number, context: string): number => {
             if (idx > highestSeenIndex + 1) {
               log(
@@ -145,9 +149,12 @@ export function createAnthropicPassthroughStream(
                     "event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}\n\n`
                   )
                 );
-              } else if (highestSeenIndex >= 0) {
+              } else if (highestSeenIndex >= 0 && lastBlockOpen) {
                 // Mid-stream: close whatever content block was open when the error hit,
                 // otherwise the client sees an unterminated block.
+                // Only emit if the block is actually still open — if the provider
+                // already sent a content_block_stop, a duplicate would cause
+                // "Content block not found" on the client.
                 controller.enqueue(
                   encoder.encode(
                     "event: content_block_stop\n" +
@@ -219,6 +226,7 @@ export function createAnthropicPassthroughStream(
                   ) {
                     insideThinkingBlock = true;
                     thinkingBlocksSuppressed++;
+                    // Thinking blocks are suppressed — don't count them as open.
                     log(`[AnthropicSSE] Filtering thinking block at index ${data.index}`);
                     continue; // suppress this line
                   }
@@ -241,6 +249,9 @@ export function createAnthropicPassthroughStream(
                     const reindexed = data.index - thinkingBlocksSuppressed;
                     const clamped = clampIndex(reindexed, `${data.type} (filtered, orig=${data.index})`);
                     trackIndex(clamped);
+                    // Track block open/close state for finalizeWithError
+                    if (data.type === "content_block_start") lastBlockOpen = true;
+                    if (data.type === "content_block_stop") lastBlockOpen = false;
                     const modifiedLine =
                       "data: " + JSON.stringify({ ...data, index: clamped });
 
@@ -254,8 +265,10 @@ export function createAnthropicPassthroughStream(
                     if (typeof data.index === "number") {
                       if (data.type === "content_block_start") {
                         trackIndex(data.index);
+                        lastBlockOpen = true;
                       } else {
                         const clamped = clampIndex(data.index, `${data.type} (unfiltered)`);
+                        if (data.type === "content_block_stop") lastBlockOpen = false;
                         if (clamped !== data.index) {
                           const modifiedLine =
                             "data: " + JSON.stringify({ ...data, index: clamped });
@@ -295,6 +308,7 @@ export function createAnthropicPassthroughStream(
                     // No error — check index bounds before passing through
                     if (typeof data.index === "number") {
                       if (data.type === "content_block_start") {
+                        lastBlockOpen = true;
                         // z.ai sometimes sends content_block_start with an index
                         // that jumps (e.g., 0 → 2, skipping 1). This causes
                         // "Content block not found" on the client. Remap to
@@ -316,6 +330,7 @@ export function createAnthropicPassthroughStream(
                         trackIndex(expected);
                       } else {
                         // delta / stop — clamp to highestSeenIndex
+                        if (data.type === "content_block_stop") lastBlockOpen = false;
                         const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
                         if (clamped !== data.index) {
                           const modified = { ...data, index: clamped };

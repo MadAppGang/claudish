@@ -261,6 +261,19 @@ export function createStreamingResponseHandler(
             state.accumulatedText = cleanedText;
           }
 
+          // Close any open reasoning/text blocks BEFORE emitting new blocks below.
+          // If we don't, new tool_use blocks (higher indices) get fully opened/closed
+          // before the reasoning block (lower index) is stopped — the Anthropic client
+          // rejects this out-of-order lifecycle as "Content block not found".
+          if (state.reasoningStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
+            state.reasoningStarted = false;
+          }
+          if (state.textStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+            state.textStarted = false;
+          }
+
           // Check for text-based tool calls before finalizing
           // Some models (like Qwen) output tool calls as text instead of structured tool_calls
           const textToolCalls = extractToolCallsFromText(state.accumulatedText);
@@ -269,12 +282,6 @@ export function createStreamingResponseHandler(
             log(
               `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
             );
-
-            // Close any open text block first
-            if (state.textStarted) {
-              send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
-              state.textStarted = false;
-            }
 
             // Send each extracted tool call as a proper tool_use block
             for (const tc of textToolCalls) {
@@ -293,13 +300,6 @@ export function createStreamingResponseHandler(
               });
               send("content_block_stop", { type: "content_block_stop", index: toolIdx });
             }
-          }
-
-          if (state.reasoningStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
-          }
-          if (state.textStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
           }
 
           // GLM <searchWeb> remapped to the client's WebSearch tool —
@@ -825,6 +825,29 @@ export function createStreamingResponseHandler(
                             t.closed = true;
                             continue;
                           }
+
+                          // Non-buffered and never started — emit repaired tool at a new index
+                          const fallbackIdx = state.curIdx++;
+                          const fallbackId = `tool_repaired_${Date.now()}_${fallbackIdx}`;
+                          log(
+                            `[Streaming] Emitting repaired tool ${t.name} (non-buffered, not started) at fallback index ${fallbackIdx}`
+                          );
+                          send("content_block_start", {
+                            type: "content_block_start",
+                            index: fallbackIdx,
+                            content_block: { type: "tool_use", id: fallbackId, name: t.name },
+                          });
+                          send("content_block_delta", {
+                            type: "content_block_delta",
+                            index: fallbackIdx,
+                            delta: { type: "input_json_delta", partial_json: repairedJson },
+                          });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: fallbackIdx,
+                          });
+                          t.closed = true;
+                          continue;
                         }
 
                         if (!validation.valid) {
@@ -832,6 +855,14 @@ export function createStreamingResponseHandler(
                           log(
                             `[Streaming] Tool call ${t.name} validation failed: ${validation.missingParams.join(", ")}`
                           );
+                          // Close the original tool block FIRST (lower index) so that
+                          // the error text block (higher index) doesn't open/close out of order.
+                          if (t.started && !t.buffered && !t.closed) {
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: t.blockIndex,
+                            });
+                          }
                           const errorIdx = t.buffered ? t.blockIndex : state.curIdx++;
                           const errorMsg = `\n\n⚠️ Tool call "${t.name}" failed: missing required parameters: ${validation.missingParams.join(", ")}. Local models sometimes generate incomplete tool calls. Please try again or use a model with better tool support.`;
                           send("content_block_start", {
@@ -848,13 +879,6 @@ export function createStreamingResponseHandler(
                             type: "content_block_stop",
                             index: errorIdx,
                           });
-                          // Close the invalid tool if it was already started
-                          if (t.started && !t.buffered) {
-                            send("content_block_stop", {
-                              type: "content_block_stop",
-                              index: t.blockIndex,
-                            });
-                          }
                           t.closed = true;
                           continue;
                         }
