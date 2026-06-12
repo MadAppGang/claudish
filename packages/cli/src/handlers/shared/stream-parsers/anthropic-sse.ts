@@ -482,7 +482,7 @@ export function createAnthropicPassthroughStream(
               ));
               controller.enqueue(encoder.encode(
                 "event: content_block_delta\n" +
-                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. Try compacting the conversation or reducing the context size.]"}}\n\n`
+                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly on a very large conversation, then try /compact.]"}}\n\n`
               ));
               controller.enqueue(encoder.encode(
                 "event: content_block_stop\n" +

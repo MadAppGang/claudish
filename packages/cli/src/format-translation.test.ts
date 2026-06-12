@@ -1797,3 +1797,142 @@ describe("Regression: web search remap to client WebSearch tool_use", () => {
     expect(extractStopReason(events)).toBe("tool_use");
   });
 });
+
+// ─── Regression: empty-response cause classification (no destructive /compact) ─
+// Providers (GLM, qwen) sometimes return finish_reason with zero content. The
+// old code injected a blanket "context too large → compact" message for every
+// empty response, pushing agents into a destructive /compact on transient
+// empties (sub-agents with tiny contexts) — discarding context mid-task.
+// The fix classifies by finish_reason + prompt_tokens and leads transient
+// empties with "retry, NOT a context problem".
+describe("Regression: empty-response cause classification", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getDefaultAdapter() {
+    const mod = await import("./adapters/base-api-format.js");
+    return new mod.DefaultAPIFormat("test-model");
+  }
+
+  function sseToResponse(content: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(content));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  // finish_reason "stop", tiny context → TRANSIENT (must NOT push /compact)
+  const EMPTY_STOP_SMALL = [
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":0}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  // finish_reason "length" → OVERFLOW (mentions /compact)
+  const EMPTY_LENGTH = [
+    `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5000,"completion_tokens":0}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  // finish_reason "content_filter" → CONTENT-FILTER message
+  const EMPTY_FILTER = [
+    `data: {"id":"c3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":20,"completion_tokens":0}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  test("empty + finish_reason=stop + small context → transient message (no /compact push)", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(EMPTY_STOP_SMALL),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    // Transient empties lead with retry guidance, NOT compact.
+    expect(text).toMatch(/transient/i);
+    expect(text).toMatch(/retry/i);
+    expect(text).toMatch(/NOT a context-size problem/i);
+    // Must NOT be the old blanket "context is too large → compact" framing.
+    expect(text).not.toMatch(/This usually happens when the conversation context is too large/);
+
+    // Still terminates cleanly so the agent's turn ends gracefully.
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
+
+  test("empty + finish_reason=length → overflow message (mentions /compact)", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(EMPTY_LENGTH),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    // A genuine length/overflow empty correctly advises /compact.
+    expect(text).toMatch(/context is very large|\/compact/i);
+    // And surfaces the real finish_reason.
+    expect(text).toMatch(/length/);
+  });
+
+  test("empty + finish_reason=content_filter → content-filter message (not context)", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(EMPTY_FILTER),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    expect(text).toMatch(/content policy|filtered/i);
+    // A content filter is NOT a context-size problem.
+    expect(text).not.toMatch(/context is very large/i);
+  });
+});

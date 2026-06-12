@@ -33,6 +33,7 @@ export interface StreamingState {
   toolIds: Set<string>;
   lastActivity: number;
   accumulatedText: string; // Accumulated text for potential tool call extraction
+  lastFinishReason: string | null; // Last finish_reason seen (stop/length/content_filter) — diagnoses empty responses
 }
 
 export interface ToolState {
@@ -112,6 +113,7 @@ export function createStreamingState(): StreamingState {
     toolIds: new Set(),
     lastActivity: Date.now(),
     accumulatedText: "",
+    lastFinishReason: null,
   };
 }
 
@@ -480,7 +482,25 @@ export function createStreamingResponseHandler(
               // Previously we sent event: error, but Claude Code does not handle
               // raw error events in-stream — it reports "empty or malformed response".
               // A content block with the error text is properly parsed and surfaced.
-              const emptyMsg = `The model returned an empty response. This usually happens when the conversation context is too large. Try compacting the conversation or reducing the context size.`;
+              //
+              // Cause classification (was: always blamed "context too large"):
+              //   - finish_reason "length"        → genuine context/max_tokens overflow → compact
+              //   - finish_reason "content_filter"→ provider content filter → not a context issue
+              //   - otherwise (stop/null)         → almost always transient (provider load /
+              //                                       momentary rate limit) → RETRY, do NOT compact
+              // The old blanket "compact" message pushed agents into a destructive /compact on
+              // transient empties (the majority — sub-agents with tiny contexts), discarding
+              // context mid-task. Lead with "transient, retry"; mention compact only when the
+              // cause is actually length/overflow.
+              const fr = state.lastFinishReason;
+              const promptTokens = state.usage?.prompt_tokens ?? 0;
+              const isOverflow = fr === "length" || promptTokens > 100_000;
+              const emptyMsg =
+                fr === "content_filter"
+                  ? `The model's response was filtered by the provider's content policy. This is usually transient — please retry, or rephrase the request.`
+                  : isOverflow
+                    ? `The model returned an empty response and the conversation context is very large (finish_reason: ${fr || "stop"}, ~${promptTokens} input tokens). Try /compact to reduce the context size, or retry.`
+                    : `The model returned an empty response (finish_reason: ${fr || "stop"}). This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly, then try /compact.`;
               const blockIdx = state.curIdx++;
               send("content_block_start", {
                 type: "content_block_start",
@@ -493,8 +513,13 @@ export function createStreamingResponseHandler(
                 delta: { type: "text_delta", text: `[Error: ${emptyMsg}]` },
               });
               send("content_block_stop", { type: "content_block_stop", index: blockIdx });
-              logStderr(`[Stream] EMPTY RESPONSE from ${target} — injected error text block (context overflow?)`);
-              log(`[Stream] Empty response from provider (context overflow?) — injected error text block`);
+              const cls = fr === "content_filter" ? "content-filter" : isOverflow ? "overflow" : "transient";
+              logStderr(
+                `[Stream] EMPTY RESPONSE from ${target} — finish_reason=${fr || "null"} prompt_tokens=${promptTokens} → ${cls} (injected ${cls} message)`
+              );
+              log(
+                `[Stream] Empty response from provider (finish_reason=${fr || "null"}, prompt_tokens=${promptTokens}) — classified as ${cls}, injected guidance`
+              );
             }
 
             // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
@@ -572,6 +597,13 @@ export function createStreamingResponseHandler(
 
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
+
+                // Track the last non-null finish_reason so the empty-response
+                // fallback (finalize) can diagnose the cause instead of guessing
+                // "context overflow" for every empty response.
+                if (finishReason) {
+                  state.lastFinishReason = finishReason;
+                }
 
                 // Debug: Log chunk details for troubleshooting early termination
                 if (delta?.content || finishReason) {
