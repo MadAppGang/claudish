@@ -13,6 +13,7 @@ import type { Context } from "hono";
 import { log } from "../../../logger.js";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { createResponseCapture } from "../response-capture.js";
+import { executeWebFetch } from "../web-search-executor.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -67,6 +68,48 @@ export function createAnthropicPassthroughStream(
           }
         }, 1000);
 
+        // Execute a suppressed server_tool_use (webReader) and inject the result
+        // as a text block. Non-blocking — errors degrade to a short notice.
+        const handleServerToolResult = async (
+          toolName: string,
+          rawInput: string,
+          currentHighestIdx: number,
+        ) => {
+          const textIdx = currentHighestIdx + 1;
+          let resultText: string;
+          try {
+            const input = JSON.parse(rawInput || "{}");
+            const url = input.url;
+            if (url && (toolName === "webReader" || toolName === "web_search_preview")) {
+              log(`[AnthropicSSE] Executing suppressed server_tool_use webReader for ${url}`);
+              const result = await executeWebFetch(url);
+              resultText = result.ok
+                ? result.text
+                : `[Web fetch for ${url} failed: ${result.error}]`;
+            } else {
+              resultText = `[Server tool "${toolName}" was executed by the provider (result not available locally).]`;
+            }
+          } catch {
+            resultText = `[Server tool "${toolName}" was executed by the provider (result not available locally).]`;
+          }
+          // Truncate very long results to avoid blowing up the context
+          if (resultText.length > 8000) {
+            resultText = resultText.slice(0, 8000) + "\n[...truncated]";
+          }
+          if (!isClosed) {
+            controller.enqueue(encoder.encode(
+              `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: textIdx, content_block: { type: "text", text: "" } })}\n\n`
+            ));
+            controller.enqueue(encoder.encode(
+              `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: textIdx, delta: { type: "text_delta", text: resultText } })}\n\n`
+            ));
+            controller.enqueue(encoder.encode(
+              `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: textIdx })}\n\n`
+            ));
+            highestSeenIndex = textIdx;
+          }
+        };
+
         try {
           const reader = response.body!.getReader();
           let buffer = "";
@@ -84,6 +127,16 @@ export function createAnthropicPassthroughStream(
           let insideThinkingBlock = false;
           /** How many thinking blocks have been suppressed so far. */
           let thinkingBlocksSuppressed = 0;
+
+          // server_tool_use suppression state.
+          // Z.AI built-in tools (webReader, web_search) emit server_tool_use blocks
+          // that Claude Code doesn't support — "Unsupported content type: server_tool_use"
+          // followed by "Content block not found" (index desync). Suppress them and
+          // execute web fetches ourselves, injecting results as text blocks.
+          let insideServerToolBlock = false;
+          let serverToolName = "";
+          let serverToolInput = "";
+          let serverToolsSuppressed = 0;
 
           // Content block index tracking — detect out-of-range indices
           // that would cause "Content block not found" on the client side.
@@ -244,9 +297,11 @@ export function createAnthropicPassthroughStream(
                   }
 
                   // Re-index non-thinking content blocks
-                  // After suppressing N thinking blocks, subtract N from the index
-                  if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
-                    const reindexed = data.index - thinkingBlocksSuppressed;
+                  // After suppressing N thinking blocks + M server_tool_use blocks,
+                  // subtract N+M from the index to keep it sequential.
+                  const totalSuppressed = thinkingBlocksSuppressed + serverToolsSuppressed;
+                  if (typeof data.index === "number" && totalSuppressed > 0) {
+                    const reindexed = data.index - totalSuppressed;
                     const clamped = clampIndex(reindexed, `${data.type} (filtered, orig=${data.index})`);
                     trackIndex(clamped);
                     // Track block open/close state for finalizeWithError
@@ -373,17 +428,38 @@ export function createAnthropicPassthroughStream(
                       toolUseBlocks++;
                       log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
                     }
-                    // Z.AI built-in tools (server_tool_use): pass through instead of suppressing.
-                    // Previous suppression caused index desync — the matching tool_result block
-                    // would arrive without its tool_use, breaking the stream for the client.
-                    // Claude Code handles server_tool_use natively. If the built-in tool errors
-                    // (e.g. file:// URI to analyze_image), the error comes back as tool_result
-                    // text and the model continues its turn naturally.
+                    // ── server_tool_use suppression ──────────────────────────────
+                    // Z.AI built-in tools (webReader, web_search_preview) emit
+                    // server_tool_use blocks that Claude Code doesn't understand:
+                    //   "Unsupported content type: server_tool_use" + "Content block not found"
+                    // We suppress the entire block lifecycle (start → deltas → stop),
+                    // execute web fetches ourselves, and inject results as text.
                     if (
                       data.type === "content_block_start" &&
                       data.content_block?.type === "server_tool_use"
                     ) {
-                      log(`[AnthropicSSE] server_tool_use at index ${data.index}: ${data.content_block.name || "(unnamed)"}`);
+                      insideServerToolBlock = true;
+                      serverToolName = data.content_block.name || "(unnamed)";
+                      serverToolInput = "";
+                      serverToolsSuppressed++;
+                      log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}: ${serverToolName}`);
+                      continue; // drop this start event
+                    }
+                    if (insideServerToolBlock) {
+                      // Accumulate input_json_delta inside the suppressed block
+                      if (data.type === "content_block_delta" && data.delta?.type === "input_json_delta") {
+                        serverToolInput += data.delta.partial_json || "";
+                      }
+                      // On stop: block is complete — execute and inject result
+                      if (data.type === "content_block_stop") {
+                        insideServerToolBlock = false;
+                        log(`[AnthropicSSE] server_tool_use "${serverToolName}" complete, input=${serverToolInput.length} chars`);
+                        // Fire-and-forget: execute the web fetch and inject as text
+                        handleServerToolResult(serverToolName, serverToolInput, highestSeenIndex);
+                        serverToolName = "";
+                        serverToolInput = "";
+                      }
+                      continue; // drop all events inside the suppressed block
                     }
                     if (data.type === "message_start") {
                       sawMessageStart = true;
