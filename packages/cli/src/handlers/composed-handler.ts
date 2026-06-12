@@ -32,6 +32,7 @@ import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-res
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
+import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
   describeImages,
@@ -819,7 +820,30 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    return this.handleStream(c, response, adapter, claudeRequest, toolNameMap, onStreamComplete);
+    const streamResponse = this.handleStream(
+      c,
+      response,
+      adapter,
+      claudeRequest,
+      toolNameMap,
+      onStreamComplete
+    );
+
+    // Non-streaming clients (notably Claude Code's `/compact`, and any caller that
+    // sent `stream: false`) expect a single JSON `message` body, NOT SSE. Every
+    // adapter drives the upstream provider in streaming mode and the whole pipeline
+    // emits Claude SSE, so we buffer that translated SSE back into one Anthropic
+    // message here. Mirrors request-logger.ts's `stream` definition exactly
+    // (`body.stream === true` ⇒ streaming; anything else ⇒ sync). NativeHandler
+    // already honors this for Anthropic-direct; this closes the same gap for every
+    // proxied/composed model. See collect-sse-message.ts.
+    const wantsStreaming = payload?.stream === true;
+    if (wantsStreaming) return streamResponse;
+
+    const message = await collectAnthropicSseToMessage(streamResponse, this.bareModelName);
+    return c.json(message, {
+      headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
+    });
   }
 
   private handleStream(

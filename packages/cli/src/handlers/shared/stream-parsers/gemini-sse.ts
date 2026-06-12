@@ -77,56 +77,81 @@ export function createGeminiSseStream(
         if (finalized) return;
         finalized = true;
 
-        if (thinkingStarted) {
-          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
-        }
-        if (textStarted) {
-          send("content_block_stop", { type: "content_block_stop", index: textIdx });
-        }
-        for (const t of toolCalls.values()) {
-          if (t.started && !t.closed) {
-            send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
-            t.closed = true;
+        // HARD never-hang invariant: the cleanup in `finally` (clearInterval +
+        // controller.close) MUST run on every exit path, including a throw mid-body
+        // (e.g. middleware afterStreamComplete rejecting). A re-entrancy guard alone
+        // is not enough: the outer catch re-calls finalize(), which no-ops because
+        // `finalized` is already true — leaving the first call's cleanup undone and
+        // the ping interval leaking forever (= hung stream). See never-hang-priority.
+        try {
+          if (thinkingStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
           }
-        }
-
-        if (opts.middlewareManager) {
-          await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
-        }
-
-        const inputTokens = usage?.promptTokenCount || 0;
-        const outputTokens = usage?.candidatesTokenCount || 0;
-
-        if (usage) {
-          log(`[GeminiSSE] Usage: prompt=${inputTokens}, completion=${outputTokens}`);
-        }
-
-        if (opts.onTokenUpdate) {
-          opts.onTokenUpdate(inputTokens, outputTokens);
-        }
-
-        if (reason === "error") {
-          log(`[GeminiSSE] Stream error: ${err}`);
-          send("error", { type: "error", error: { type: "api_error", message: err } });
-        } else {
-          const hasToolCalls = toolCalls.size > 0;
-          send("message_delta", {
-            type: "message_delta",
-            delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn", stop_sequence: null },
-            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-          });
-          send("message_stop", { type: "message_stop" });
-        }
-
-        if (!isClosed) {
-          isClosed = true;
-          if (pingInterval) {
-            clearInterval(pingInterval);
-            pingInterval = null;
+          if (textStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: textIdx });
           }
+          for (const t of toolCalls.values()) {
+            if (t.started && !t.closed) {
+              send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+              t.closed = true;
+            }
+          }
+
+          if (opts.middlewareManager) {
+            try {
+              await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
+            } catch (mwErr) {
+              log(`[GeminiSSE] afterStreamComplete threw (ignored): ${mwErr}`);
+            }
+          }
+
+          const inputTokens = usage?.promptTokenCount || 0;
+          const outputTokens = usage?.candidatesTokenCount || 0;
+
+          if (usage) {
+            log(`[GeminiSSE] Usage: prompt=${inputTokens}, completion=${outputTokens}`);
+          }
+
+          if (opts.onTokenUpdate) {
+            try {
+              opts.onTokenUpdate(inputTokens, outputTokens);
+            } catch {}
+          }
+
+          if (reason === "error") {
+            log(`[GeminiSSE] Stream error: ${err}`);
+            send("error", { type: "error", error: { type: "api_error", message: err } });
+          } else {
+            const hasToolCalls = toolCalls.size > 0;
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn", stop_sequence: null },
+              usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+            });
+            send("message_stop", { type: "message_stop" });
+          }
+        } catch (finalizeErr) {
+          // Last-ditch terminal pair so the client never hangs waiting for the end.
+          log(`[GeminiSSE] finalize() body threw: ${finalizeErr}`);
           try {
-            controller.close();
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: { input_tokens: 0, output_tokens: 0 },
+            });
+            send("message_stop", { type: "message_stop" });
           } catch {}
+        } finally {
+          if (!isClosed) {
+            isClosed = true;
+            if (pingInterval) {
+              clearInterval(pingInterval);
+              pingInterval = null;
+            }
+            try {
+              controller.close();
+            } catch {}
+          }
         }
       };
 
