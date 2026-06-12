@@ -278,6 +278,15 @@ export function createStreamingResponseHandler(
           // If we don't, new tool_use blocks (higher indices) get fully opened/closed
           // before the reasoning block (lower index) is stopped — the Anthropic client
           // rejects this out-of-order lifecycle as "Content block not found".
+          //
+          // Snapshot BEFORE clearing the flags: hasContent (below) must know whether
+          // text/reasoning was EVER produced, not whether a block is still open.
+          // Reading state.textStarted after this close block made hasContent always
+          // false for pure-text responses — a spurious "[Error: empty response …
+          // try /compact]" was appended after every valid text answer (cluster-wide
+          // false-compact incident, 2026-06-12).
+          const producedText = state.textStarted;
+          const producedReasoning = state.reasoningStarted;
           if (state.reasoningStarted) {
             send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
             state.reasoningStarted = false;
@@ -442,8 +451,9 @@ export function createStreamingResponseHandler(
           // "[Error: empty response]" being appended after valid search results.
           const hasSuppressedWebText = Array.from(state.tools.values()).some((t) => t.suppressed && t.closed);
           const hasContent =
-            state.textStarted ||
-            state.reasoningStarted ||
+            producedText ||
+            producedReasoning ||
+            state.accumulatedText.length > 0 ||
             hasStructuredTools ||
             textToolCalls.length > 0 ||
             hasSuppressedWebText ||

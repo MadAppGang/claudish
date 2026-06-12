@@ -1935,4 +1935,45 @@ describe("Regression: empty-response cause classification", () => {
     // A content filter is NOT a context-size problem.
     expect(text).not.toMatch(/context is very large/i);
   });
+
+  // A normal response WITH text content must never get the empty-response error
+  // appended. Broken by the a519a95 reorder: finalize() cleared state.textStarted
+  // when closing the text block BEFORE hasContent read it, so every pure-text
+  // response was misclassified as empty — clients saw their real answer followed
+  // by "[Error: ... Try /compact ...]" and large-context sessions ran destructive
+  // compactions in a loop (cluster-wide incident, 2026-06-12).
+  const TEXT_THEN_STOP = [
+    `data: {"id":"c4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello, here is my answer."},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":150000,"completion_tokens":7}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  test("response with real text content must NOT get an empty-response error appended", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(TEXT_THEN_STOP),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    expect(text).toContain("Hello, here is my answer.");
+    // The empty-response guidance must NOT appear after valid content —
+    // even with a very large prompt (150k tokens would classify as overflow).
+    expect(text).not.toMatch(/empty response/i);
+    expect(text).not.toMatch(/\/compact/);
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
 });
