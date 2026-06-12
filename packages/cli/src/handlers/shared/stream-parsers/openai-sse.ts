@@ -222,7 +222,18 @@ export function createStreamingResponseHandler(
         const finalize = async (reason: string, err?: string) => {
           if (state.finalized) return;
           state.finalized = true;
-          const toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
+          // Hang-guard: the body below performs awaits and send()s that can throw
+          // (a controller errored by a client-disconnect race, a callback failure).
+          // If a throw escaped, the outer read-loop catch would re-call finalize() —
+          // now a no-op (finalized=true) — leaving the stream with no message_stop
+          // and a leaked ping interval: a hung HTTP 200 the client reports as "empty
+          // or malformed response", and an agent blocked forever (the worst proxy
+          // failure mode). The try/catch/finally GUARANTEES terminal events +
+          // controller.close() + clearInterval(ping) on every exit path.
+          let terminalSent = false;
+          let toolCount = 0;
+          try {
+          toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
           log(`[Stream] reason=${reason} model=${target} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
           logStderr(`[Stream] ${target} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
 
@@ -422,9 +433,21 @@ export function createStreamingResponseHandler(
             await middlewareManager.afterStreamComplete(target, streamMetadata);
           }
 
-          // Determine whether the stream produced any usable content
+          // Determine whether the stream produced any usable content.
           const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
-          const hasContent = state.textStarted || state.reasoningStarted || hasStructuredTools || textToolCalls.length > 0;
+          // A suppressed web-search tool that reached `closed` emitted its SearXNG
+          // result as a real text block (see the suppression path) — that IS content,
+          // even though the tool is suppressed and never set textStarted. Likewise the
+          // GLM <searchWeb> SearXNG injection. Counting these prevents a spurious
+          // "[Error: empty response]" being appended after valid search results.
+          const hasSuppressedWebText = Array.from(state.tools.values()).some((t) => t.suppressed && t.closed);
+          const hasContent =
+            state.textStarted ||
+            state.reasoningStarted ||
+            hasStructuredTools ||
+            textToolCalls.length > 0 ||
+            hasSuppressedWebText ||
+            searchWebResults !== null;
 
           if (reason === "error") {
             // Socket close, network error, or other fetch failure mid-stream.
@@ -473,6 +496,7 @@ export function createStreamingResponseHandler(
               },
             });
             send("message_stop", { type: "message_stop" });
+            terminalSent = true;
           } else {
             // Ensure at least one content block exists — some providers (z.ai, GLM)
             // return empty responses (finish_reason without content). The Anthropic
@@ -534,6 +558,7 @@ export function createStreamingResponseHandler(
               },
             });
             send("message_stop", { type: "message_stop" });
+            terminalSent = true;
           }
 
           // Update token counts - use actual usage if available, otherwise estimate
@@ -554,15 +579,44 @@ export function createStreamingResponseHandler(
             }
           }
 
-          if (!isClosed) {
-            try {
-              controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
-            } catch (e) {}
-            controller.close();
-            isClosed = true;
-            if (ping) clearInterval(ping);
-            cap.note(`close reason=${reason}`);
-            cap.done({ closed: true, reason, tools: toolCount, text_len: state.accumulatedText.length, err: err ?? null });
+          } catch (finalizeErr) {
+            // finalize() body threw before completing (controller enqueue raced a
+            // disconnect, a callback failed, etc.). Force terminal events so the
+            // client never hangs on an un-terminated 200.
+            logStderr(
+              `[Stream] finalize() threw for ${target}: ${String(finalizeErr).slice(0, 160)} — forcing terminal events`
+            );
+            if (!terminalSent) {
+              try {
+                send("message_delta", {
+                  type: "message_delta",
+                  delta: { stop_reason: "end_turn", stop_sequence: null },
+                  usage: {
+                    input_tokens: state.usage?.prompt_tokens || 0,
+                    output_tokens: state.usage?.completion_tokens || 0,
+                  },
+                });
+                send("message_stop", { type: "message_stop" });
+                terminalSent = true;
+              } catch {}
+            }
+          } finally {
+            // ALWAYS terminate the HTTP stream and free the ping timer, on every
+            // exit path (success, empty, error, or a throw inside finalize).
+            if (!isClosed) {
+              try {
+                controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
+              } catch {}
+              try {
+                controller.close();
+              } catch {}
+              isClosed = true;
+              if (ping) clearInterval(ping);
+              try {
+                cap.note(`close reason=${reason}`);
+                cap.done({ closed: true, reason, tools: toolCount, text_len: state.accumulatedText.length, err: err ?? null });
+              } catch {}
+            }
           }
         };
 
