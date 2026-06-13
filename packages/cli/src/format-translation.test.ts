@@ -259,6 +259,67 @@ describe("Anthropic SSE Passthrough (createAnthropicPassthroughStream)", () => {
     expect(tokenInput).toBe(50);
     expect(tokenOutput).toBe(5);
   });
+
+  // never-hang regression: Z.AI / GLM Coding close the socket mid-stream under
+  // load. Before the fix, the reader.read() throw escaped to a catch that did a
+  // bare controller.close() with NO terminal message_stop, so Claude Code saw
+  // "socket connection was closed unexpectedly" and froze the turn.
+  test("never-hang: upstream socket close mid-stream still emits terminal message_stop", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const encoder = new TextEncoder();
+    // Fixture: a few valid events, then the upstream body ERRORS (socket close).
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            "event: message_start\n" +
+              `data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"glm-5.1","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n`
+          )
+        );
+        controller.enqueue(
+          encoder.encode(
+            "event: content_block_start\n" +
+              `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+          )
+        );
+        controller.enqueue(
+          encoder.encode(
+            "event: content_block_delta\n" +
+              `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial answer before cutoff"}}\n\n`
+          )
+        );
+        // Simulate the upstream TCP socket dying mid-stream — deferred so the
+        // enqueued chunks are read first (a real close arrives after a network
+        // round-trip, not synchronously in the same tick as the writes).
+        setTimeout(
+          () => controller.error(new Error("The socket connection was closed unexpectedly.")),
+          5
+        );
+      },
+    });
+    const fixture = new Response(upstream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5.1",
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Partial content must survive (not lost to the cutoff).
+    expect(extractText(events)).toContain("Partial answer before cutoff");
+
+    // CRITICAL: a terminal message_stop MUST be present so Claude Code ends the
+    // turn cleanly instead of freezing. This is the assertion that failed
+    // before the fix.
+    expect(events.some((e) => e.data?.type === "message_stop")).toBe(true);
+
+    // Synthesized stop_reason so the client treats it as a completed turn.
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
 });
 
 // ─── Adapter Message Conversion Tests ───────────────────────────────────────

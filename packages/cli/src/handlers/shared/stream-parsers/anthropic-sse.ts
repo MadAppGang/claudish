@@ -245,6 +245,13 @@ export function createAnthropicPassthroughStream(
             }
           };
 
+          // Wrap the read loop so a mid-stream upstream socket close (Z.AI / GLM
+          // Coding connection reset) is caught HERE — where finalizeWithError is
+          // in scope — instead of escaping to the outer catch which can only do a
+          // bare controller.close() with NO terminal message_stop. Without that
+          // terminal event, Claude Code reports "socket connection was closed
+          // unexpectedly" and freezes the turn. See never-hang-priority.
+          try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -528,6 +535,18 @@ export function createAnthropicPassthroughStream(
                 } catch {}
               }
             }
+          }
+          } catch (readErr) {
+            // Upstream socket closed mid-stream (Z.AI / GLM Coding connection
+            // reset). finalizeWithError() emits the terminal message_stop so the
+            // client ends the turn cleanly instead of freezing. In scope here
+            // because finalizeWithError is declared above in the same outer try.
+            log(
+              `[AnthropicSSE] Upstream read error for ${opts.modelName}: ${String(readErr).slice(0, 200)} — finalizing gracefully`,
+              true
+            );
+            finalizeWithError(`upstream read error: ${String(readErr)}`, "reader-exception");
+            return; // skip normal finalization — already terminated
           }
 
           log(
