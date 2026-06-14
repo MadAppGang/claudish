@@ -303,6 +303,42 @@ export class ComposedHandler implements ModelHandler {
     // 4. Build request payload
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
 
+    // 4a. Fallback de-escalation system message (cost control).
+    // When a low-capability local model is reached ONLY via provider fallback —
+    // i.e. the primary model (GLM) failed on every upstream provider (zai, gc)
+    // — instruct the fallback model to behave conservatively: keep the session
+    // alive with simple, safe responses rather than attempting complex work the
+    // primary model would have to redo. This preserves the agent without burning
+    // metered tokens on ambitious-but-low-quality output.
+    //
+    // Gated on `fallbackMeta.attempts > 0` so DIRECT calls to the same model are
+    // unaffected (explicit qwen usage keeps full capability). Generalize the
+    // model match to a configurable set if more economy-fallback models are added.
+    if (
+      fallbackMeta &&
+      fallbackMeta.attempts > 0 &&
+      this.bareModelName === "qwen3.6-35b-a3b"
+    ) {
+      const FALLBACK_NOTICE =
+        "You are operating in TEMPORARY FALLBACK mode because the primary model is temporarily unavailable (the proxy fell back to you after all upstream providers failed). Behave conservatively: avoid complex multi-step reasoning, risky operations, destructive commands, and large refactors. Prioritize keeping the session alive with a safe, simple response. Do NOT attempt ambitious work — the primary model will resume shortly and any complex work you start would need to be redone. If a task is too complex for conservative execution, say so briefly rather than attempting it.";
+      const msgs = requestPayload.messages;
+      if (Array.isArray(msgs) && msgs.length > 0 && msgs[0]?.role === "system") {
+        const existing = msgs[0];
+        const existingText =
+          typeof existing.content === "string"
+            ? existing.content
+            : Array.isArray(existing.content)
+              ? existing.content.map((c: any) => c.text || "").join("\n")
+              : "";
+        msgs[0] = { ...existing, content: FALLBACK_NOTICE + "\n\n" + existingText };
+      } else if (Array.isArray(msgs)) {
+        msgs.unshift({ role: "system", content: FALLBACK_NOTICE });
+      }
+      logStderr(
+        `[Fallback] ${this.provider.displayName} reached as fallback (attempts=${fallbackMeta.attempts}) — injected conservative-mode system message`
+      );
+    }
+
     // 4b. Strip inline system messages from messages[] for Anthropic-transport providers.
     // Claude Code v2.1.153+ injects system messages inline (e.g. system-reminders).
     // Providers like Z.AI reject role:"system" in messages — only role:"user"/"assistant" accepted.
