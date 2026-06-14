@@ -1688,6 +1688,51 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
     const msgStop = events.find((e) => e.data?.type === "message_stop");
     expect(msgStop).toBeDefined();
   });
+
+  test("server_tool_use block does not crash the proxy (scope bug: highestSeenIndex ReferenceError)", async () => {
+    // REGRESSION (po-2025 freeze, 2026-06-14): Z.AI emits a real server_tool_use
+    // block (webReader). The suppression handler `handleServerToolResult` is an
+    // async closure that writes `highestSeenIndex`. That variable was declared
+    // inside the inner read-loop `try {}` block, while the closure lived in the
+    // outer `start()` scope — two separate block scopes. When a real
+    // server_tool_use fired the handler, the closure hit a ReferenceError and
+    // CRASHED the proxy process (client then saw "socket closed" / "Content block
+    // not found"). Fix: hoist highestSeenIndex (and friends) into the shared
+    // start() scope. This test replays a server_tool_use stream end-to-end; it
+    // must NOT throw and must emit a clean terminal message_stop.
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "regression-zai-server-tool-use.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5.2",
+    });
+
+    // Drain the full stream into a single buffer. The bug threw inside stream
+    // consumption — this must complete without throwing or rejecting.
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+    }
+    // Allow the async handleServerToolResult (web fetch) to settle before
+    // asserting — its injected text block lands after the read loop closes.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The pre-server_tool text block is preserved.
+    expect(raw).toContain('"text":"Let me look that up."');
+
+    // server_tool_use blocks are suppressed — no content_block with that type
+    // reaches the client (which cannot render it).
+    expect(raw).not.toContain('"type":"server_tool_use"');
+
+    // The turn terminates cleanly with message_stop (proves no proxy crash /
+    // unterminated stream, which is the never-hang-priority contract).
+    expect(raw).toContain('"type":"message_stop"');
+  });
 });
 
 // ─── Regression: web search remap (agentic blocking fix) ───────────────────
