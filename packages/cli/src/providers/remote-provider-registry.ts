@@ -49,7 +49,13 @@ const getRemoteProviders = (): RemoteProvider[] => {
         // (static baseUrl: "", populated via LITELLM_BASE_URL) aren't filtered
         // out. Without this, resolveRemoteProvider("litellm@...") returns null
         // and probe-discovery / runtime routing both fail.
-        getEffectiveBaseUrl(def) !== "" &&
+        //
+        // Vertex AI also has a static baseUrl of "" because its endpoint is
+        // constructed per-region/publisher in the vertex transport (see
+        // buildVertexOAuthEndpoint). Keep it regardless of baseUrl, otherwise
+        // resolveRemoteProvider("v@...") returns null and every Vertex request
+        // silently falls through to the OpenRouter default → HTTP 401.
+        (getEffectiveBaseUrl(def) !== "" || def.transport === "vertex") &&
         def.name !== "qwen" &&
         def.name !== "native-anthropic"
     )

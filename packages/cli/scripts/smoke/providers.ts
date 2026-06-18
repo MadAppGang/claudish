@@ -8,6 +8,7 @@
 
 import type { RemoteProvider } from "../../src/handlers/shared/remote-provider-types.js";
 import { getRegisteredRemoteProviders } from "../../src/providers/remote-provider-registry.js";
+import { vertexApiHost } from "../../src/auth/vertex-auth.js";
 import type { SmokeProviderConfig, WireFormat } from "./types.js";
 
 // Providers to skip in v1 smoke tests
@@ -142,7 +143,7 @@ function getApiPath(provider: RemoteProvider): string {
 function getBaseUrl(provider: RemoteProvider): string {
   if (provider.name === "vertex") {
     const location = process.env.VERTEX_LOCATION || "us-central1";
-    return `https://${location}-aiplatform.googleapis.com`;
+    return `https://${vertexApiHost(location)}`;
   }
   return provider.baseUrl;
 }

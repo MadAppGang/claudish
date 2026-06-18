@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **vertex**: fix `v@`/`vertex@` models silently falling through to the OpenRouter default (HTTP 401). Vertex has a static `baseUrl: ""` (its endpoint is built per-region in the vertex transport), so the empty-baseUrl filter in `getRemoteProviders()` dropped it from the registry and `resolveRemoteProvider()` returned null. Keep Vertex regardless of its empty static baseUrl.
+
+### New Features
+
+- **vertex**: support EU/US data-residency multi-region (`aiplatform.<loc>.rep.googleapis.com`) and `global` endpoints via `VERTEX_LOCATION=eu|us|global`. Enables Gemini models published only on the REP endpoint, such as `gemini-3.5-flash` with EU data residency.
+
 ## [7.5.0] - 2026-06-10
 
 ### Documentation

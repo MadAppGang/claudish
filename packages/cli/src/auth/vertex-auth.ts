@@ -232,6 +232,31 @@ export function validateVertexOAuthConfig(): string | null {
 }
 
 /**
+ * Resolve the Vertex AI API host for a given location.
+ *
+ * Vertex exposes Gemini through three host families, each with a different
+ * shape — picking the wrong one yields a 404, so we can't always prefix with
+ * `<location>-`:
+ *   - `global`            -> aiplatform.googleapis.com            (highest
+ *                            availability, NO data-residency guarantee)
+ *   - `eu` / `us`         -> aiplatform.<loc>.rep.googleapis.com  (data-residency
+ *                            multi-region "REP" endpoints; some newer models
+ *                            such as gemini-3.5-flash are published ONLY here)
+ *   - any other region    -> <location>-aiplatform.googleapis.com (classic
+ *                            single-region endpoint, e.g. europe-west4)
+ *
+ * The `locations/<location>` path segment is unchanged in every case.
+ * See: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations
+ */
+export function vertexApiHost(location: string): string {
+  if (location === "global") return "aiplatform.googleapis.com";
+  if (location === "eu" || location === "us") {
+    return `aiplatform.${location}.rep.googleapis.com`;
+  }
+  return `${location}-aiplatform.googleapis.com`;
+}
+
+/**
  * Build Vertex AI endpoint URL for OAuth mode
  */
 export function buildVertexOAuthEndpoint(
@@ -241,6 +266,7 @@ export function buildVertexOAuthEndpoint(
   streaming: boolean = true
 ): string {
   const method = streaming ? "streamGenerateContent" : "generateContent";
+  const host = vertexApiHost(config.location);
 
   // For Gemini models (publisher: google), use generateContent
   // For partner models (publisher: anthropic, mistral), use rawPredict
@@ -248,7 +274,7 @@ export function buildVertexOAuthEndpoint(
     // Add ?alt=sse for SSE streaming format
     const sseParam = streaming ? "?alt=sse" : "";
     return (
-      `https://${config.location}-aiplatform.googleapis.com/v1/` +
+      `https://${host}/v1/` +
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/${publisher}/models/${model}:${method}${sseParam}`
     );
@@ -256,7 +282,7 @@ export function buildVertexOAuthEndpoint(
     // Mistral uses regional rawPredict/streamRawPredict endpoint
     const mistralMethod = streaming ? "streamRawPredict" : "rawPredict";
     return (
-      `https://${config.location}-aiplatform.googleapis.com/v1/` +
+      `https://${host}/v1/` +
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/mistralai/models/${model}:${mistralMethod}`
     );

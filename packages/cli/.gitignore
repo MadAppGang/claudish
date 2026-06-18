@@ -1,1 +1,5 @@
 .claudish-team-*
+
+# Build artifacts
+claudish
+*.bun-build

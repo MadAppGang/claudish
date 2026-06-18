@@ -161,7 +161,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `POE_API_KEY` | Poe (`poe@`) | | https://poe.com/ |
 | `VERTEX_API_KEY` | Vertex AI Express mode (`v@`, `vertex@`) | | https://console.cloud.google.com/vertex-ai |
 | `VERTEX_PROJECT` | Vertex AI OAuth mode — GCP project ID | `GOOGLE_CLOUD_PROJECT` | GCP Console |
-| `VERTEX_LOCATION` | Vertex AI region | `us-central1` | |
+| `VERTEX_LOCATION` | Vertex AI region. A normal region (e.g. `europe-west4`) hits `<region>-aiplatform.googleapis.com`. `eu`/`us` hit the data-residency multi-region endpoint `aiplatform.<loc>.rep.googleapis.com` (required for models published only there, e.g. `gemini-3.5-flash`). `global` hits `aiplatform.googleapis.com` (max availability, no data-residency guarantee). | `us-central1` | |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON file (Vertex OAuth) | | GCP Console |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID (also used by Gemini Code Assist OAuth) | `GOOGLE_CLOUD_PROJECT_ID` | |
 
