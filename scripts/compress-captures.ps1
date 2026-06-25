@@ -60,7 +60,15 @@ param(
   [string]$CaptureDir = "D:\claudish-captures",
   [string]$ArchiveDir = "",
   [string]$SevenZip   = "D:\Apps\PortableApps\7-ZipPortable\App\7-Zip64\7z.exe",
-  [int]   $KeepDays   = 1
+  [int]   $KeepDays   = 1,
+  # Off-site backup via Google Drive Desktop (mounted drive, no API/auth).
+  # Empty = skip GDrive entirely (local compaction only). The path is the local
+  # mount point of the Drive, so this is just a Windows file copy.
+  [string]$GDriveDir  = "G:\Mon Drive\MyIA\backups\claudish-captures",
+  # Local retention: archives older than this (in days) are purged from the
+  # local ArchiveDir, BUT only after confirming the copy exists on GDrive.
+  # GDrive keeps everything; this only bounds local disk usage.
+  [int]   $KeepLocalDays = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -135,10 +143,64 @@ foreach ($day in $daysToArchive) {
       Log ("OK  {0}: {1} files, {2:N1} MB -> {3:N1} MB ({4}:1), loose deleted" -f `
            $day, $files.Count, ($rawBytes/1MB), ($archBytes/1MB), $ratio)
       $totalRaw += $rawBytes; $totalArch += $archBytes; $totalFiles += $files.Count
+
+      # --- off-site backup (Google Drive Desktop mount, plain file copy) ------
+      # Non-fatal: if the Drive isn't mounted (laptop offline, G: missing) or
+      # the copy fails, we log a WARN and continue. The local archive already
+      # exists (verified), so we never lose data — only the off-site copy is
+      # deferred. The purge-30d block below will NOT delete local archives that
+      # aren't confirmed on GDrive, so a missed upload retries the next night.
+      if ($GDriveDir) {
+        if (Test-Path -LiteralPath $GDriveDir) {
+          try {
+            Copy-Item -LiteralPath $archivePath -Destination $GDriveDir -Force -ErrorAction Stop
+            # Confirm the copy landed with matching size before trusting it.
+            $dest = Join-Path $GDriveDir (Split-Path $archivePath -Leaf)
+            if ((Test-Path -LiteralPath $dest) -and (Get-Item -LiteralPath $dest).Length -eq $archBytes) {
+              Log ("GDRIVE {0}: uploaded ({1:N1} MB)" -f $day, ($archBytes/1MB))
+            } else {
+              $errors++
+              Log ("WARN  {0}: GDrive copy size mismatch -> local kept, retry next run" -f $day)
+            }
+          } catch {
+            $errors++
+            Log ("WARN  {0}: GDrive copy failed: {1} -> local kept, retry next run" -f $day, $_.Exception.Message)
+          }
+        } else {
+          Log ("WARN  GDriveDir not mounted ({0}) -> off-site deferred, local kept" -f $GDriveDir)
+        }
+      }
     } else {
       $errors++
       Log ("ERROR {0}: 7z add rc={1} test rc={2} -> KEEPING loose files (not deleted)" -f $day, $addRc, $testRc)
     }
+  }
+}
+
+# --- local retention purge: delete archives older than KeepLocalDays, ONLY if
+# confirmed present (and same size) on GDrive. This bounds local disk; GDrive
+# keeps the full history. If GDriveDir is unset or not mounted, purge is
+# skipped entirely (safe default — never delete without an off-site copy).
+if ($KeepLocalDays -gt 0 -and $GDriveDir -and (Test-Path -LiteralPath $ArchiveDir) -and (Test-Path -LiteralPath $GDriveDir)) {
+  $purgeCutoff = (Get-Date).ToUniversalTime().Date.AddDays(-$KeepLocalDays)
+  $purged = 0; $purgeSkipped = 0
+  foreach ($arch in (Get-ChildItem -LiteralPath $ArchiveDir -Filter 'captures-*.7z' -File)) {
+    if ($arch.Name -notmatch 'captures-(\d{4}-\d{2}-\d{2})\.7z') { continue }
+    $dayDate = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd', $null)
+    if ($dayDate -ge $purgeCutoff) { continue }   # within retention window
+    $dest = Join-Path $GDriveDir $arch.Name
+    # Require off-site copy to exist AND match local size before deleting.
+    if ((Test-Path -LiteralPath $dest) -and (Get-Item -LiteralPath $dest).Length -eq $arch.Length) {
+      if ($PSCmdlet.ShouldProcess($arch.FullName, "purge local (>{0}d, confirmed on GDrive)" -f $KeepLocalDays)) {
+        Remove-Item -LiteralPath $arch.FullName -Force
+        $purged++
+      }
+    } else {
+      $purgeSkipped++
+    }
+  }
+  if ($purged -gt 0 -or $purgeSkipped -gt 0) {
+    Log ("PURGE >{0}d: {1} local archive(s) deleted, {2} kept (not yet on GDrive)" -f $KeepLocalDays, $purged, $purgeSkipped)
   }
 }
 

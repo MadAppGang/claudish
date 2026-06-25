@@ -32,7 +32,7 @@ function Test-ProxyWithTools {
     # GLM will respond with tool_use or text — either way the stream must complete.
     # This exercises the exact code path (openai-sse tool_call handling) that hangs.
     $body = @{
-        model = "glm-5.1"
+        model = "glm-5.2"
         max_tokens = 100
         stream = $true
         tools = @(
