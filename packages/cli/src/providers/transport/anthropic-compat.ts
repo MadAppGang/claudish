@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import { KimiOAuth } from "../../auth/kimi-oauth.js";
 
@@ -21,12 +22,20 @@ export class AnthropicProviderTransport implements ProviderTransport {
 
   private provider: RemoteProvider;
   private apiKey: string;
+  private maxConcurrency?: number;
 
-  constructor(provider: RemoteProvider, apiKey: string) {
+  constructor(provider: RemoteProvider, apiKey: string, maxConcurrency?: number) {
     this.provider = provider;
     this.apiKey = apiKey;
     this.name = provider.name;
+    this.maxConcurrency = maxConcurrency;
     this.displayName = AnthropicProviderTransport.formatDisplayName(provider.name);
+
+    if (this.maxConcurrency !== undefined) {
+      log(
+        `[${this.displayName}] Concurrency: ${this.maxConcurrency === 0 ? "unlimited" : this.maxConcurrency}`
+      );
+    }
   }
 
   getEndpoint(): string {
@@ -93,37 +102,47 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * Response status alone.
    */
   async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
-    const maxRetries = 5;
-    let lastResponse: Response | null = null;
+    const runWith429Retry = async (): Promise<Response> => {
+      const maxRetries = 5;
+      let lastResponse: Response | null = null;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await fetchFn();
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const response = await fetchFn();
 
-      if (response.status === 429 && attempt < maxRetries) {
-        lastResponse = response;
-        const retryAfter = response.headers.get("Retry-After");
-        let delayMs: number;
-        if (retryAfter && !Number.isNaN(Number(retryAfter))) {
-          delayMs = Math.min(Number(retryAfter) * 1000, 30000);
-        } else {
-          // Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
-          delayMs = Math.min(2000 * Math.pow(2, attempt), 30000);
+        if (response.status === 429 && attempt < maxRetries) {
+          lastResponse = response;
+          const retryAfter = response.headers.get("Retry-After");
+          let delayMs: number;
+          if (retryAfter && !Number.isNaN(Number(retryAfter))) {
+            delayMs = Math.min(Number(retryAfter) * 1000, 30000);
+          } else {
+            // Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
+            delayMs = Math.min(2000 * Math.pow(2, attempt), 30000);
+          }
+          // Jitter: spread cluster-wide synchronized retries off the same boundary.
+          const jitterMs = Math.floor(Math.random() * 1000);
+          const totalMs = delayMs + jitterMs;
+          log(
+            `[${this.displayName}] 429 rate limited, retry ${attempt + 1}/${maxRetries} in ${(totalMs / 1000).toFixed(1)}s`
+          );
+          await new Promise((resolve) => setTimeout(resolve, totalMs));
+          continue;
         }
-        // Jitter: spread cluster-wide synchronized retries off the same boundary.
-        const jitterMs = Math.floor(Math.random() * 1000);
-        const totalMs = delayMs + jitterMs;
-        log(
-          `[${this.displayName}] 429 rate limited, retry ${attempt + 1}/${maxRetries} in ${(totalMs / 1000).toFixed(1)}s`
-        );
-        await new Promise((resolve) => setTimeout(resolve, totalMs));
-        continue;
+
+        return response;
       }
 
-      return response;
-    }
+      // All retries exhausted — return the last 429 response
+      return lastResponse!;
+    };
 
-    // All retries exhausted — return the last 429 response
-    return lastResponse!;
+    // Capacity-limited backend — serialize through the queue so parallel large
+    // prefills can't wedge the engine. See OpenAIProviderTransport for the
+    // same pattern. Unset maxConcurrency = unbounded (unchanged behavior).
+    if (this.maxConcurrency !== undefined && LocalModelQueue.isEnabled()) {
+      return LocalModelQueue.getInstance().enqueue(runWith429Retry, this.name, this.maxConcurrency);
+    }
+    return runWith429Retry();
   }
 
   private static formatDisplayName(name: string): string {
