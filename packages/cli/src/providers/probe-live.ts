@@ -256,6 +256,21 @@ function classifyHttpError(
       errorMessage: extractErrorMessage(body) || "Rate limited",
     };
   }
+  // 402 Payment Required: the credential reached the provider but the
+  // account/plan can't be billed — typically an expired subscription or no
+  // credit (e.g. a lapsed Kimi Coding plan). NOT an auth bug: the request was
+  // authenticated, just not entitled. Keep the generic "error" state but, when
+  // the provider sends no message, default to a clear cause instead of a bare
+  // "HTTP 402" (the provider's own message still wins when present).
+  if (status === 402) {
+    return {
+      state: "error",
+      latencyMs,
+      httpStatus: status,
+      errorMessage:
+        extractErrorMessage(body) || "Payment required — subscription expired or no credit",
+    };
+  }
   if (status >= 500) {
     return {
       state: "server-error",

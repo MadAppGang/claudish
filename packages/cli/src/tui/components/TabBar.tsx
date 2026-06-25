@@ -14,6 +14,7 @@ export function TabBar({ activeTab, statusMsg }: TabBarProps) {
     { label: "Profiles", value: "profiles", num: "2" },
     { label: "Routing", value: "routing", num: "3" },
     { label: "Privacy", value: "privacy", num: "4" },
+    { label: "1Password", value: "onepassword", num: "5" },
   ];
 
   // Collapse newlines + extra whitespace so the status message stays one
@@ -71,7 +72,8 @@ export function TabBar({ activeTab, statusMsg }: TabBarProps) {
                 statusMsg.startsWith("Usage") ||
                 statusMsg.startsWith("Stats buffer") ||
                 statusMsg.startsWith("Profile") ||
-                statusMsg.startsWith("Key removed")
+                statusMsg.startsWith("Key removed") ||
+                statusMsg.startsWith("1Password")
                   ? C.green
                   : C.yellow
               }

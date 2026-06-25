@@ -112,6 +112,45 @@ export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps
       [C.blue, "Tab", "section"],
       [C.dim, "q", "quit"],
     ];
+  } else if (activeTab === "onepassword" && mode === "input_op_env") {
+    // Env input — two-Enter NAME preview (preview, then save). The dialog's own
+    // hint carries the preview/save distinction; the footer stays generic.
+    keys = [
+      [C.green, "Enter", "preview / save"],
+      [C.red, "Esc", "cancel"],
+    ];
+  } else if (activeTab === "onepassword" && mode === "input_op_account") {
+    // Account URL input — Enter advances to the scope picker.
+    keys = [
+      [C.green, "Enter", "save"],
+      [C.red, "Esc", "cancel"],
+    ];
+  } else if (
+    activeTab === "onepassword" &&
+    (mode === "pick_op_kind" ||
+      mode === "pick_op_scope" ||
+      mode === "pick_op_account" ||
+      mode === "pick_op_vault" ||
+      mode === "pick_op_item" ||
+      mode === "pick_op_field")
+  ) {
+    // 1Password picker modes — Enter selects the highlighted option; Esc steps
+    // back one level (or cancels at the first step).
+    keys = [
+      [C.blue, "↑↓", "move"],
+      [C.green, "Enter", "select"],
+      [C.red, "Esc", "back"],
+    ];
+  } else if (activeTab === "onepassword") {
+    keys = [
+      [C.blue, "↑↓", "navigate"],
+      [C.green, "a", "add"],
+      [C.cyan, "t", "test"],
+      [C.green, "o", "account"],
+      [C.red, "x", "remove"],
+      [C.blue, "Tab", "section"],
+      [C.dim, "q", "quit"],
+    ];
   } else {
     keys = [
       [C.green, "t", "telemetry"],

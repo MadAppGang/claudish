@@ -27,6 +27,7 @@ import {
   globToRegExp,
   isGlobImport,
   isOpReference,
+  isTransientSdkError,
   maskSecret,
   parseGlobImport,
   parseOpFlag,
@@ -35,6 +36,7 @@ import {
   resolveGlobImport,
   resolveSdkAuth,
   resolveSecrets,
+  withSdkRetry,
 } from "./onepassword.js";
 
 describe("isOpReference / OP_REF_RE", () => {
@@ -306,7 +308,7 @@ describe("resolveSdkAuth", () => {
   });
 
   test("multiple + interactive + picker aborts → throws", async () => {
-    await expect(
+    expect(
       resolveSdkAuth({
         env: {},
         interactive: true,
@@ -317,13 +319,13 @@ describe("resolveSdkAuth", () => {
   });
 
   test("multiple + non-interactive → throws actionable error", async () => {
-    await expect(
+    expect(
       resolveSdkAuth({ env: {}, interactive: false, opAccountLister: lister([ACCT_A, ACCT_B]) })
     ).rejects.toThrow(/OP_ACCOUNT|multiple/i);
   });
 
   test("op absent → throws", async () => {
-    await expect(resolveSdkAuth({ env: {}, opAccountLister: lister(null) })).rejects.toThrow(
+    expect(resolveSdkAuth({ env: {}, opAccountLister: lister(null) })).rejects.toThrow(
       /OP_SERVICE_ACCOUNT_TOKEN|OP_ACCOUNT/i
     );
   });
@@ -385,14 +387,14 @@ describe("resolveSecrets", () => {
         },
       }),
     });
-    await expect(
+    expect(
       resolveSecrets({ A: "op://v/i/a", B: "op://v/i/b" }, { auth, sdkFactory: makeFakeSdkFactory(client) })
     ).rejects.toThrow(/B.*fieldNotFound|could not resolve/i);
   });
 
   test("no SDK auth → hard-fails with an actionable error (no CLI fallback)", async () => {
     const spy = { called: false } as { called: boolean; auth?: SdkAuth };
-    await expect(
+    expect(
       resolveSecrets(
         { A: "op://v/i/a" },
         {
@@ -423,7 +425,7 @@ describe("readEnvironment", () => {
 
   test("empty id throws a usage error without touching the SDK", async () => {
     const spy = { called: false } as { called: boolean; auth?: SdkAuth };
-    await expect(
+    expect(
       readEnvironment("   ", { auth, sdkFactory: makeFakeSdkFactory(makeFakeSdkClient({}), spy) })
     ).rejects.toThrow(/empty|usage/i);
     expect(spy.called).toBe(false);
@@ -431,20 +433,20 @@ describe("readEnvironment", () => {
 
   test("no variables → throws", async () => {
     const client = makeFakeSdkClient({ getVariables: () => ({ variables: [] }) });
-    await expect(
+    expect(
       readEnvironment("env-1", { auth, sdkFactory: makeFakeSdkFactory(client) })
     ).rejects.toThrow(/no variables/i);
   });
 
   test("SDK without environments API → actionable beta hint", async () => {
     const client = makeFakeSdkClient({ noEnvironments: true });
-    await expect(
+    expect(
       readEnvironment("env-1", { auth, sdkFactory: makeFakeSdkFactory(client) })
     ).rejects.toThrow(/0\.4\.1-beta\.1|environments API/i);
   });
 
   test("no SDK auth → hard-fails", async () => {
-    await expect(
+    expect(
       readEnvironment("env-1", { env: {}, sdkFactory: makeFakeSdkFactory(makeFakeSdkClient({})) })
     ).rejects.toThrow(/SDK auth is required|OP_SERVICE_ACCOUNT_TOKEN/i);
   });
@@ -670,6 +672,15 @@ describe("parseGlobImport", () => {
       fieldGlob: "*",
     });
   });
+  test("lone ** → whole-item match-all", () => {
+    expect(parseGlobImport("op://Jack/My Item/**")).toEqual({
+      vault: "Jack",
+      item: "My Item",
+      sectionGlob: null,
+      fieldGlob: "*",
+      matchAll: true,
+    });
+  });
 });
 
 describe("globToRegExp", () => {
@@ -722,10 +733,14 @@ describe("discoverItemFields", () => {
     expect(byLabel["GEMINI_API_KEY "].reference).toBe(
       ref("GOOGLE_GEMINI_API_KEY/GEMINI_API_KEY ")
     );
+    // valueTail = last 4 chars of the value (for masked ••••1234 display); a
+    // valueless field → "". The full value is never kept.
+    expect(byLabel["OPENAI_API_KEY"].valueTail).toBe("-oai"); // value "sk-oai"
+    expect(byLabel["username"].valueTail).toBe(""); // empty value
   });
 
   test("no SDK auth → hard-fails", async () => {
-    await expect(discoverItemFields(VAULT, ITEM, { env: {} })).rejects.toThrow(
+    expect(discoverItemFields(VAULT, ITEM, { env: {} })).rejects.toThrow(
       /SDK auth is required|OP_SERVICE_ACCOUNT_TOKEN/i
     );
   });
@@ -734,7 +749,7 @@ describe("discoverItemFields", () => {
     const factory = makeFakeSdkFactory(
       makeFakeSdkClient({ vaults: [{ id: "x", title: "Other" }], items: SDK_ITEMS, item: SDK_ITEM })
     );
-    await expect(
+    expect(
       discoverItemFields(VAULT, ITEM, { auth: stubAuth, sdkFactory: factory })
     ).rejects.toThrow(/vault 'Jack' not found/i);
   });
@@ -747,7 +762,7 @@ describe("discoverItemFields", () => {
         item: SDK_ITEM,
       })
     );
-    await expect(
+    expect(
       discoverItemFields(VAULT, ITEM, { auth: stubAuth, sdkFactory: factory })
     ).rejects.toThrow(/item '.*' not found/i);
   });
@@ -809,6 +824,20 @@ describe("filterGlobFields", () => {
     expect(matches.map((m) => m.envName).sort()).toEqual(
       ["credential", "notesPlain", "username"].sort()
     );
+  });
+
+  test("'/**' (whole-item match-all) → the UNION of sectionless + all-section fields", async () => {
+    const fields = await discover();
+    const all = filterGlobFields(fields, parseGlobImport(ref("**"))).map((m) => m.envName).sort();
+    const sectionless = filterGlobFields(fields, parseGlobImport(ref("*"))).map((m) => m.envName);
+    const sectioned = filterGlobFields(fields, parseGlobImport(ref("*/*"))).map((m) => m.envName);
+    // ** is exactly the union of `*` (sectionless) and `*/*` (every section).
+    const expectedUnion = [...new Set([...sectionless, ...sectioned])].sort();
+    expect(all).toEqual(expectedUnion);
+    // And it genuinely spans both axes: contains a sectionless field AND a
+    // sectioned key.
+    expect(all).toContain("username"); // sectionless
+    expect(all).toContain("OPENAI_API_KEY"); // sectioned
   });
 
   test("'/Moonshot Kimi/*' → the 2 fields in that section", async () => {
@@ -874,7 +903,7 @@ describe("resolveGlobImport", () => {
 
   test("'/*' (sectionless) — all 3 sectionless labels are lowercase → all skipped → throws", async () => {
     const warnings: string[] = [];
-    await expect(
+    expect(
       resolveGlobImport(ref("*"), {
         auth: stubAuth,
         sdkFactory: itemSdkFactory(),
@@ -900,7 +929,7 @@ describe("resolveGlobImport", () => {
   });
 
   test("zero matches → throws with available-labels hint", async () => {
-    await expect(
+    expect(
       resolveGlobImport(ref("*/NO_SUCH_*"), {
         auth: stubAuth,
         sdkFactory: itemSdkFactory(),
@@ -1096,5 +1125,93 @@ describe("parseOpFlag", () => {
     expect(out.glob).toBe("op://Jack/My Item/*/*_API_KEY");
     expect(out.list).toBe(false);
     expect(out.present).toBe(true);
+  });
+});
+
+describe("isTransientSdkError", () => {
+  test("flags transient desktop-IPC failures", () => {
+    expect(isTransientSdkError(new Error("IPC operation failed: -4"))).toBe(true);
+    expect(isTransientSdkError(new Error("Error { msg: Denied }"))).toBe(true);
+    expect(isTransientSdkError("broken pipe")).toBe(true);
+    expect(isTransientSdkError(new Error("connection reset"))).toBe(true);
+  });
+  test("flags stale desktop-session errors (retryable after idle)", () => {
+    // After an idle period the cached SDK client's desktop session expires; the
+    // next call fails with these — a cache reset + rebuild fixes them.
+    expect(isTransientSdkError(new Error("invalid client id"))).toBe(true);
+    expect(isTransientSdkError(new Error("invalid session"))).toBe(true);
+    expect(isTransientSdkError(new Error("session expired"))).toBe(true);
+    expect(isTransientSdkError(new Error("unauthorized"))).toBe(true);
+    expect(isTransientSdkError(new Error("token expired"))).toBe(true);
+  });
+  test("does NOT flag genuine errors", () => {
+    expect(isTransientSdkError(new Error("vault 'X' not found"))).toBe(false);
+    expect(isTransientSdkError(new Error("invalid secret reference"))).toBe(false);
+    expect(isTransientSdkError(new Error("no auth"))).toBe(false);
+  });
+});
+
+describe("withSdkRetry", () => {
+  test("returns the result when the op succeeds first try", async () => {
+    let calls = 0;
+    const out = await withSdkRetry(async () => {
+      calls++;
+      return "ok";
+    });
+    expect(out).toBe("ok");
+    expect(calls).toBe(1);
+  });
+  test("retries a transient error, then succeeds on a later attempt", async () => {
+    let calls = 0;
+    const out = await withSdkRetry(async () => {
+      calls++;
+      if (calls === 1) throw new Error("IPC operation failed: -4");
+      return "recovered";
+    });
+    expect(out).toBe("recovered");
+    expect(calls).toBe(2);
+  });
+  test("does NOT retry a non-transient error", async () => {
+    let calls = 0;
+    let threw: unknown;
+    try {
+      await withSdkRetry(async () => {
+        calls++;
+        throw new Error("vault not found");
+      });
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error)?.message).toContain("vault not found");
+    expect(calls).toBe(1); // no retry for a genuine error
+  });
+  test("gives up after MAX_ATTEMPTS (3) on a persistent transient error", async () => {
+    let calls = 0;
+    let threw: unknown;
+    try {
+      await withSdkRetry(async () => {
+        calls++;
+        throw new Error("IPC operation failed: -4");
+      });
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error)?.message).toContain("IPC operation failed");
+    expect(calls).toBe(3); // 1 initial + 2 retries
+  });
+  test("serializes overlapping SDK ops (never concurrent)", async () => {
+    // Two ops launched together must NOT run at the same time — the second only
+    // starts after the first settles. Track max concurrency.
+    let active = 0;
+    let maxActive = 0;
+    const op = async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 20));
+      active--;
+      return "done";
+    };
+    await Promise.all([withSdkRetry(op), withSdkRetry(op), withSdkRetry(op)]);
+    expect(maxActive).toBe(1); // serialized — only one ran at a time
   });
 });

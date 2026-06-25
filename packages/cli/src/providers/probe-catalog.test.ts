@@ -104,10 +104,19 @@ describe("isCacheFresh", () => {
     expect(isCacheFresh(recent)).toBe(true);
   });
 
-  test("cache older than TTL is stale", () => {
-    const oldDate = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+  test("cache older than the (1h) default TTL is stale", () => {
+    // 2h old is stale under the 1h default TTL.
+    const oldDate = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     const old: ProbeModelsResponse = { ...SAMPLE, generatedAt: oldDate };
     expect(isCacheFresh(old)).toBe(false);
+  });
+
+  test("cache 30 min old is fresh under the (1h) default TTL", () => {
+    const recent: ProbeModelsResponse = {
+      ...SAMPLE,
+      generatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    };
+    expect(isCacheFresh(recent)).toBe(true);
   });
 
   test("respects custom TTL", () => {

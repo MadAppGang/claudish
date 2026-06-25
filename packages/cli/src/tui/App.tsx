@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/react */
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   loadConfig,
   loadLocalConfig,
@@ -19,6 +19,7 @@ import { getProviderByName } from "../providers/provider-definitions.js";
 import {
   discoverProbeModelFromEndpoint,
   ensureProbeModelsCached,
+  forceRefreshProbeModels,
   getProbeModel,
 } from "../providers/probe-catalog.js";
 import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
@@ -48,7 +49,54 @@ import {
 // Real package version (auto-generated at build), not the stale hardcoded
 // constant that used to live in constants.ts.
 import { VERSION as PKG_VERSION } from "../version.js";
-import type { MergedRule, Mode, RoutingScope, Tab, TestResultsMap } from "./types.js";
+import type {
+  MergedRule,
+  Mode,
+  OpEntry,
+  OpKind,
+  OpScope,
+  OpTestResultsMap,
+  RoutingScope,
+  Tab,
+  TestResultsMap,
+} from "./types.js";
+// 1Password CONFIG persistence (sync, no SDK). Reads/writes the global +
+// project config files for the account / imports / environments fields.
+import {
+  readOnepasswordAccount,
+  readOnepasswordAccountForScope,
+  saveOnepasswordAccount,
+  clearOnepasswordAccount,
+  listOnepasswordImports,
+  addOnepasswordImport,
+  removeOnepasswordImport,
+  listOnepasswordEnvironments,
+  addOnepasswordEnvironment,
+  removeOnepasswordEnvironment,
+} from "../providers/onepassword-config.js";
+// 1Password SDK engine (async; the WASM is dynamically imported INSIDE these
+// functions only when auth + a secret are actually needed). Importing the
+// module here is cheap — no SDK is touched at import time.
+import {
+  resolveSdkAuth,
+  detectSdkAuth,
+  resolveDesktopAccount,
+  discoverItemFields,
+  discoverItemFieldsById,
+  withSdkRetry,
+  filterGlobFields,
+  parseGlobImport,
+  isGlobImport,
+  resolveSecrets,
+  readEnvironment,
+  listVaults,
+  listItems,
+  maskSecret,
+  envNameFromOpRef,
+  resolveGlobImport,
+  type AccountInfo,
+  type DiscoveredField,
+} from "../providers/onepassword.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { TabBar } from "./components/TabBar.js";
@@ -61,6 +109,15 @@ import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { PrivacyContent } from "./components/PrivacyContent.js";
 import { PrivacyDetail } from "./components/PrivacyDetail.js";
+import { OnepasswordContent, type OpExpansion } from "./components/OnepasswordContent.js";
+import { OnepasswordDetail } from "./components/OnepasswordDetail.js";
+import {
+  OnepasswordModal,
+  isOpModalMode,
+  buildFieldOptions,
+  fuzzyMatch,
+  fuzzyFilterByTitle,
+} from "./components/OnepasswordModal.js";
 
 interface AppProps {
   /**
@@ -121,6 +178,66 @@ export function App({ requestLogin }: AppProps = {}) {
   // profile-edit wizard state lives in useProfileWizard.
   const [profileIndex, setProfileIndex] = useState(0);
 
+  // ── 1Password tab state ─────────────────────────────────────────────────────
+  // opIndex      — cursor into the merged entries list.
+  // opScopeCursor/KindCursor/AccountCursor — <select> cursors for the pickers.
+  // opAccounts   — accounts surfaced when resolveSdkAuth needs a picker.
+  // opTestResults — per-entry test results, keyed `${scope}:${kind}:${value}`.
+  // opPendingKind/Scope/Value — the in-flight add-wizard's selections, carried
+  //   across the kind→input→scope steps until the add action runs.
+  // opTick       — bumped after a write so the opEntries memo re-derives even
+  //   though the foundation helpers read files directly (config object identity
+  //   alone doesn't capture op:// fields, which we read via the scope helpers).
+  // opBusy       — true while an async add-validate / test is running; gates the
+  //   keyboard branch (Esc still works) so concurrent ops can't interleave.
+  const [opIndex, setOpIndex] = useState(0);
+  const [opScopeCursor, setOpScopeCursor] = useState<0 | 1>(0);
+  const [opKindCursor, setOpKindCursor] = useState(0);
+  const [opAccountCursor, setOpAccountCursor] = useState(0);
+  const [opAccounts, setOpAccounts] = useState<AccountInfo[]>([]);
+  const [opTestResults, setOpTestResults] = useState<OpTestResultsMap>({});
+  const [opPendingKind, setOpPendingKind] = useState<OpKind>("ref");
+  const [opPendingValue, setOpPendingValue] = useState("");
+  // Scope chosen in step 1; carried through the wizard until the add action runs.
+  const [opPendingScope, setOpPendingScope] = useState<OpScope>("global");
+  const [opTick, setOpTick] = useState(0);
+  const [opBusy, setOpBusy] = useState(false);
+  // ── op:// browse-don't-type pickers (vault → item → field) ───────────────────
+  // The lists are loaded async (listVaults / listItems / discoverItemFields) and
+  // the cursors track each <select>. opPickedVault/opPickedItem hold the chosen
+  // TITLES (used to build the literal op:// path and as breadcrumb context).
+  // opEnvPreview holds the previewed Environment variable NAMES (null = no
+  // preview yet) for the two-Enter env flow.
+  const [opVaults, setOpVaults] = useState<{ id: string; title: string }[]>([]);
+  const [opItems, setOpItems] = useState<{ id: string; title: string }[]>([]);
+  const [opFields, setOpFields] = useState<DiscoveredField[]>([]);
+  const [opVaultCursor, setOpVaultCursor] = useState(0);
+  const [opItemCursor, setOpItemCursor] = useState(0);
+  const [opFieldCursor, setOpFieldCursor] = useState(0);
+  const [opPickedVault, setOpPickedVault] = useState<string | null>(null);
+  const [opPickedVaultId, setOpPickedVaultId] = useState<string | null>(null);
+  const [opPickedItem, setOpPickedItem] = useState<string | null>(null);
+  // Cache of discovered fields per `${vaultId}:${itemId}` so re-entering an item
+  // is INSTANT (no SDK round-trip). The SDK item-fetch is the slow part (desktop
+  // IPC + decrypt), so caching is the biggest perceived-speed win.
+  const opFieldsCache = useRef<Map<string, DiscoveredField[]>>(new Map());
+  const [opEnvPreview, setOpEnvPreview] = useState<string[] | null>(null);
+  // Inline fuzzy filter for the vault/item/field/account list pickers. The user
+  // types to narrow a long list; ↑↓/Enter operate on the FILTERED set. Cleared
+  // whenever a picker is (re)entered. One shared string — only one picker is
+  // visible at a time.
+  const [opFilter, setOpFilter] = useState("");
+  // Per-set (glob) expansion cache: glob op:// value → its resolved key NAMES
+  // (no values) / loading / error. Populated lazily by an effect so the main
+  // list can show each set's keys as nested sub-rows. Keyed by the glob value so
+  // it survives re-renders and isn't re-fetched.
+  const [opExpansions, setOpExpansions] = useState<Record<string, OpExpansion>>({});
+  // Deferred-promise resolver for the in-TUI account picker. resolveSdkAuth's
+  // onNeedsPicker flips mode to pick_op_account, stashes accounts, and returns
+  // a promise whose resolve is stored here; the pick_op_account key handler
+  // calls it with the chosen url (or undefined on Esc).
+  const opPickerResolver = useRef<((url: string | undefined) => void) | null>(null);
+
   const quit = useCallback(() => renderer.destroy(), [renderer]);
 
   // Sort: configured providers first (env/cfg key OR OAuth credentials),
@@ -142,6 +259,10 @@ export function App({ requestLogin }: AppProps = {}) {
   const refreshConfig = useCallback(() => {
     setConfig(loadConfig());
     setBufStats(getBufferStats());
+    // Bump the 1Password derivation tick too: the op:// fields are read from
+    // disk by the scope-aware helpers (not carried on the loadConfig object),
+    // so the opEntries memo needs an explicit signal to re-run after a save.
+    setOpTick((t) => t + 1);
   }, []);
 
   // Route probe wizard — owns probeMode/probeModel/probeResults internally.
@@ -239,6 +360,481 @@ export function App({ requestLogin }: AppProps = {}) {
   // Active routing profile, shown in the header as `profile: [name]`.
   const profileName = config.defaultProfile || "default";
 
+  // ── 1Password derived state ─────────────────────────────────────────────────
+  // Merged entries list, grouped by kind, project-then-global within each kind
+  // so the most-specific scope reads first. The op:// fields are read straight
+  // from disk via the scope-aware helpers, so the memo depends on `opTick`
+  // (bumped by refreshConfig after every save) rather than the config object.
+  const opEntries: OpEntry[] = useMemo(() => {
+    const out: OpEntry[] = [];
+    const scopes: OpScope[] = ["project", "global"];
+
+    // Refs + globs (onepassword[]).
+    for (const scope of scopes) {
+      for (const v of listOnepasswordImports(scope)) {
+        const kind: OpKind = isGlobImport(v) ? "glob" : "ref";
+        out.push({
+          kind,
+          value: v,
+          scope,
+          envName: kind === "ref" ? envNameFromOpRef(v) ?? undefined : undefined,
+        });
+      }
+    }
+    // Environments (onepasswordEnvironments[]).
+    for (const scope of scopes) {
+      for (const id of listOnepasswordEnvironments(scope)) {
+        out.push({ kind: "environment", value: id, scope });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opTick]);
+
+  // Lazily resolve each SET (glob) entry's key NAMES (no values) so the main
+  // list can show them as nested sub-rows. Best-effort + cached per glob value:
+  // marks "loading" then resolves to "ready"/"error". Only runs on the
+  // onepassword tab, and only for globs not already cached. Never blocks the UI.
+  useEffect(() => {
+    if (activeTab !== "onepassword") return;
+    const globs = opEntries.filter((e) => e.kind === "glob");
+    for (const g of globs) {
+      if (opExpansions[g.value]) continue; // already loading/ready/error
+      setOpExpansions((prev) => ({ ...prev, [g.value]: { status: "loading" } }));
+      void (async () => {
+        try {
+          const auth = await acquireOpAuth();
+          const parsed = parseGlobImport(g.value);
+          // withSdkRetry: a transient desktop-IPC failure (errno -4) rebuilds the
+          // client + retries once instead of surfacing a one-off error.
+          const fields = await withSdkRetry(() =>
+            discoverItemFields(parsed.vault, parsed.item, { auth }),
+          );
+          const keys = filterGlobFields(fields, parsed)
+            .filter((m) => m.valid)
+            .map((m) => ({ name: m.envName, tail: m.field.valueTail }));
+          setOpExpansions((prev) => ({ ...prev, [g.value]: { status: "ready", keys } }));
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          setOpExpansions((prev) => ({ ...prev, [g.value]: { status: "error", message } }));
+        }
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, opEntries]);
+
+  // Account display by source. env/token first (read-only, can't be edited
+  // here), then the two config scopes shown independently.
+  const opAccountDisplay = useMemo(() => {
+    const envAuth = detectSdkAuth();
+    let env: string | undefined;
+    if (envAuth) {
+      env =
+        envAuth.kind === "token"
+          ? "OP_SERVICE_ACCOUNT_TOKEN"
+          : envAuth.accountName;
+    }
+    return {
+      global: readOnepasswordAccountForScope("global"),
+      project: readOnepasswordAccountForScope("project"),
+      env,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opTick]);
+
+  // True when op auth is available from env/token OR a configured account.
+  const opAuthConfigured = useMemo(
+    () => !!detectSdkAuth() || !!readOnepasswordAccount(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [opTick],
+  );
+
+  // The selected op entry (clamped) for the Detail panel's browse view.
+  const selectedOpEntry =
+    opEntries.length > 0
+      ? opEntries[Math.min(opIndex, opEntries.length - 1)]
+      : undefined;
+
+  // ── Fuzzy-filtered picker lists ──────────────────────────────────────────────
+  // The vault/item/field/account list pickers narrow by `opFilter` as the user
+  // types. The keyboard handler AND the modal both read these so ↑↓/Enter and the
+  // rendered list agree. Cursors are clamped against the filtered length below.
+  const opVaultsFiltered = useMemo(
+    () => fuzzyFilterByTitle(opVaults, opFilter),
+    [opVaults, opFilter]
+  );
+  const opItemsFiltered = useMemo(
+    () => fuzzyFilterByTitle(opItems, opFilter),
+    [opItems, opFilter]
+  );
+  const opAccountsFiltered = useMemo(
+    () => (opFilter.trim() === "" ? opAccounts : opAccounts.filter((a) => fuzzyMatch(opFilter, `${a.url} ${a.email}`))),
+    [opAccounts, opFilter]
+  );
+  // Field options are built (glob + section + concrete) then filtered by name.
+  const opFieldOptionsAll = useMemo(
+    () => buildFieldOptions(opPickedVault ?? "", opPickedItem ?? "", opFields),
+    [opPickedVault, opPickedItem, opFields]
+  );
+  const opFieldOptionsFiltered = useMemo(
+    () => (opFilter.trim() === "" ? opFieldOptionsAll : opFieldOptionsAll.filter((o) => fuzzyMatch(opFilter, o.name))),
+    [opFieldOptionsAll, opFilter]
+  );
+  // Keep the field cursor on a SELECTABLE row: the grouped list has header rows
+  // (selectable:false) the cursor must never rest on. Whenever the filtered list
+  // changes (load or filter edit), snap the cursor to the nearest selectable row
+  // at/after the current index, else the first selectable, else 0.
+  useEffect(() => {
+    if (mode !== "pick_op_field") return;
+    const opts = opFieldOptionsFiltered;
+    if (opts.length === 0) return;
+    const cur = opts[opFieldCursor];
+    if (cur?.selectable) return; // already valid
+    let idx = opts.findIndex((o, i) => i >= opFieldCursor && o.selectable);
+    if (idx < 0) idx = opts.findIndex((o) => o.selectable);
+    setOpFieldCursor(idx < 0 ? 0 : idx);
+  }, [opFieldOptionsFiltered, opFieldCursor, mode]);
+
+  /**
+   * Resolve SDK auth for a 1Password operation, surfacing the multi-account
+   * picker IN the TUI when needed. Returns the resolved auth, or throws (the
+   * caller catches and shows err.message). The picker hook flips mode to
+   * pick_op_account, stashes the accounts, and awaits a deferred promise that
+   * the pick_op_account key handler resolves with the chosen url.
+   */
+  const acquireOpAuth = useCallback(async () => {
+    return resolveSdkAuth({
+      interactive: true,
+      configAccount: readOnepasswordAccount(),
+      onNeedsPicker: (accounts) =>
+        new Promise<string | undefined>((resolve) => {
+          setOpAccounts(accounts);
+          setOpAccountCursor(0);
+          opPickerResolver.current = (url) => {
+            // Persist the chosen account globally so the next run reuses it
+            // without re-prompting (resolveSdkAuth itself doesn't write).
+            if (url && url.trim()) saveOnepasswordAccount(url.trim(), "global");
+            opPickerResolver.current = null;
+            resolve(url);
+          };
+          setMode("pick_op_account");
+        }),
+    });
+  }, []);
+
+  /**
+   * Test a single 1Password entry (read-only). Mirrors the add-validate flow
+   * but never persists. Writes status/note/error into opTestResults keyed by
+   * `${scope}:${kind}:${value}`.
+   */
+  const testOpEntry = useCallback(
+    async (entry: OpEntry): Promise<void> => {
+      const key = `${entry.scope}:${entry.kind}:${entry.value}`;
+      setOpBusy(true);
+      setOpTestResults((prev) => ({ ...prev, [key]: { status: "testing" } }));
+      setStatusMsg("1Password: testing…");
+      try {
+        const auth = await acquireOpAuth();
+        let note = "";
+        if (entry.kind === "account") {
+          // Auth resolution already proved the account works.
+          note = "account ok";
+        } else if (entry.kind === "environment") {
+          const vars = await withSdkRetry(() => readEnvironment(entry.value, { auth }));
+          note = `${Object.keys(vars).length} vars`;
+        } else if (entry.kind === "glob" || isGlobImport(entry.value)) {
+          const g = parseGlobImport(entry.value);
+          const fields = await withSdkRetry(() => discoverItemFields(g.vault, g.item, { auth }));
+          const matches = filterGlobFields(fields, g).filter((m) => m.valid);
+          note = `${matches.length} fields`;
+        } else {
+          const r = await withSdkRetry(() => resolveSecrets({ T: entry.value }, { auth }));
+          note = maskSecret(r.T);
+        }
+        setOpTestResults((prev) => ({
+          ...prev,
+          [key]: { status: "valid", note },
+        }));
+        setStatusMsg(`1Password test ok → ${note}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setOpTestResults((prev) => ({
+          ...prev,
+          [key]: { status: "failed", error: msg },
+        }));
+        setStatusMsg(msg);
+      } finally {
+        setOpBusy(false);
+      }
+    },
+    [acquireOpAuth],
+  );
+
+  /**
+   * Reset every add-wizard scratch field. Called whenever the wizard returns to
+   * browse (commit, cancel, or error) so a later `a` starts clean.
+   */
+  const resetOpWizard = useCallback(() => {
+    setInputValue("");
+    setOpPendingValue("");
+    setOpPendingKind("ref");
+    setOpKindCursor(0);
+    setOpScopeCursor(0);
+    setOpVaults([]);
+    setOpItems([]);
+    setOpFields([]);
+    setOpVaultCursor(0);
+    setOpItemCursor(0);
+    setOpFieldCursor(0);
+    setOpPickedVault(null);
+    setOpPickedVaultId(null);
+    setOpPickedItem(null);
+    setOpEnvPreview(null);
+    setOpFilter("");
+  }, [setInputValue]);
+
+  /**
+   * The ADD action. Runs after the user commits the final wizard step, with the
+   * kind/value/scope known.
+   *
+   * PERSIST-FIRST: the value is written to config IMMEDIATELY (the refs/globs
+   * the user picked from a real, SDK-discovered list are valid by construction —
+   * a second SDK round-trip here would be a needless extra failure point that
+   * could silently lose the save). A best-effort "test" then runs as a NON-FATAL
+   * confirmation: success → a masked/count note; failure → a warning that the
+   * entry was saved but the live check couldn't confirm it (the import still
+   * persists; startup resolution will surface a genuinely-bad ref). The account
+   * write needs no test (auth resolution already proved the account).
+   */
+  const runOpAdd = useCallback(
+    async (kind: OpKind, value: string, scope: OpScope): Promise<void> => {
+      setOpBusy(true);
+      try {
+        // 1) PERSIST FIRST (synchronous, can't fail on a flaky SDK).
+        if (kind === "account") {
+          saveOnepasswordAccount(value, scope);
+        } else if (kind === "environment") {
+          addOnepasswordEnvironment(value, scope);
+        } else {
+          addOnepasswordImport(value, scope);
+        }
+        refreshConfig();
+
+        // 2) Reflect the save in the UI right away.
+        const isGlob = kind === "glob" || isGlobImport(value);
+        const kindWord =
+          kind === "account" ? "account" : kind === "environment" ? "environment" : isGlob ? "glob" : "ref";
+        setStatusMsg(`1Password ${kindWord} saved (${scope}). Confirming…`);
+        setMode("browse");
+        resetOpWizard();
+
+        // 3) RESOLVE + HYDRATE process.env so the new keys take effect in THIS
+        //    running session immediately — the Providers tab reads process.env,
+        //    so without this the keys only appear after a restart. Gap-fill:
+        //    never overwrite an env var that's already set (env wins, as at
+        //    startup). Also a non-fatal confirmation — a flaky SDK can't undo the
+        //    already-persisted entry. (account needs no resolve — auth already ran.)
+        if (kind === "account") {
+          setStatusMsg(`1Password account saved (${scope}).`);
+          return;
+        }
+        try {
+          const auth = await acquireOpAuth();
+          let hydrated = 0;
+          const apply = (vars: Record<string, string>): void => {
+            for (const [name, val] of Object.entries(vars)) {
+              if (!process.env[name]) {
+                process.env[name] = val;
+                hydrated++;
+              }
+            }
+          };
+          if (kind === "environment") {
+            const vars = await withSdkRetry(() => readEnvironment(value, { auth }));
+            apply(vars);
+            setStatusMsg(
+              `1Password environment saved (${scope}) → ${Object.keys(vars).length} vars, ${hydrated} applied.`,
+            );
+          } else if (isGlob) {
+            // resolveGlobImport returns the {envVar: value} map directly — use it
+            // to BOTH confirm and hydrate (one resolution, not a separate test).
+            const resolved = await withSdkRetry(() => resolveGlobImport(value, { auth }));
+            apply(resolved);
+            const names = Object.keys(resolved).slice(0, 3).join(", ");
+            const n = Object.keys(resolved).length;
+            setStatusMsg(
+              n > 0
+                ? `1Password set saved (${scope}) → ${n} key${n === 1 ? "" : "s"} applied (${names})`
+                : `1Password set saved (${scope}) — but it matched no importable fields right now.`,
+            );
+          } else {
+            const r = await withSdkRetry(() => resolveSecrets({ T: value }, { auth }));
+            const name = envNameFromOpRef(value);
+            if (name) apply({ [name]: r.T });
+            setStatusMsg(
+              `1Password key saved (${scope}) → ${name ?? "?"} = ${maskSecret(r.T)}${hydrated ? " (applied)" : ""}`,
+            );
+          }
+          // Drop ALL cached probe handlers so the next probe rebuilds transports
+          // from the newly-hydrated env, then refresh config-derived state so the
+          // Providers tab re-evaluates readiness immediately.
+          invalidateProbeProxyHandlers();
+          refreshConfig();
+        } catch (testErr: unknown) {
+          // The entry IS saved; the live resolve just couldn't run. Surface a
+          // warning (and log the detail to stderr) without rolling back.
+          const msg = testErr instanceof Error ? testErr.message : String(testErr);
+          console.error(`[claudish] 1Password add: saved but live resolve failed: ${msg}`);
+          setStatusMsg(`1Password ${kindWord} saved (${scope}) — live resolve failed: ${msg}`);
+        }
+      } catch (err: unknown) {
+        // A genuine PERSIST failure (config write) — the rare real error.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[claudish] 1Password add failed to persist: ${msg}`);
+        setStatusMsg(`1Password add failed: ${msg}`);
+        setMode("browse");
+        resetOpWizard();
+      } finally {
+        setOpBusy(false);
+      }
+    },
+    [acquireOpAuth, refreshConfig, resetOpWizard, setMode],
+  );
+
+  /**
+   * Load the vault list and open the vault picker. Kicked off when the user
+   * commits the "API key from an item" kind. Sets opBusy during the load so the
+   * modal shows "Loading…" while the (empty) list fills.
+   */
+  const loadOpVaults = useCallback(async (): Promise<void> => {
+    setOpBusy(true);
+    setOpVaults([]);
+    setOpVaultCursor(0);
+    setOpFilter("");
+    setStatusMsg("1Password: loading vaults…");
+    setMode("pick_op_vault");
+    try {
+      const auth = await acquireOpAuth();
+      const vaults = await withSdkRetry(() => listVaults({ auth }));
+      setOpVaults(vaults);
+      setStatusMsg(`1Password: ${vaults.length} vault${vaults.length === 1 ? "" : "s"}.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMsg(msg);
+      setMode("browse");
+    } finally {
+      setOpBusy(false);
+    }
+  }, [acquireOpAuth]);
+
+  /**
+   * Load the items of the chosen vault and open the item picker. Called when the
+   * user commits a vault in pick_op_vault.
+   */
+  const loadOpItems = useCallback(
+    async (vaultId: string, vaultTitle: string): Promise<void> => {
+      setOpBusy(true);
+      setOpItems([]);
+      setOpItemCursor(0);
+      setOpFilter("");
+      setOpPickedVault(vaultTitle);
+      setOpPickedVaultId(vaultId);
+      setStatusMsg("1Password: loading items…");
+      setMode("pick_op_item");
+      try {
+        const auth = await acquireOpAuth();
+        const items = await withSdkRetry(() => listItems(vaultId, { auth }));
+        setOpItems(items);
+        setStatusMsg(`1Password: ${items.length} item${items.length === 1 ? "" : "s"}.`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setStatusMsg(msg);
+        setMode("browse");
+      } finally {
+        setOpBusy(false);
+      }
+    },
+    [acquireOpAuth],
+  );
+
+  /**
+   * Load the fields of the chosen item and open the field picker. Uses the IDs
+   * the pickers already have (`discoverItemFieldsById` → ONE SDK call, not three)
+   * and a per-item cache so re-entering is instant. Falls back gracefully if a
+   * cache hit is available (no spinner at all).
+   */
+  const loadOpFields = useCallback(
+    async (
+      vaultId: string,
+      vaultTitle: string,
+      itemId: string,
+      itemTitle: string,
+    ): Promise<void> => {
+      setOpPickedItem(itemTitle);
+      setOpFieldCursor(0);
+      setOpFilter("");
+      setMode("pick_op_field");
+
+      // Cache hit → instant, no SDK call, no spinner.
+      const cacheKey = `${vaultId}:${itemId}`;
+      const cached = opFieldsCache.current.get(cacheKey);
+      if (cached) {
+        setOpFields(cached);
+        setStatusMsg(`1Password: ${cached.length} field${cached.length === 1 ? "" : "s"} (cached).`);
+        return;
+      }
+
+      setOpBusy(true);
+      setOpFields([]);
+      setStatusMsg(`1Password: loading fields for '${itemTitle}'…`);
+      try {
+        const auth = await acquireOpAuth();
+        const fields = await withSdkRetry(() =>
+          discoverItemFieldsById(vaultId, itemId, vaultTitle, itemTitle, { auth }),
+        );
+        opFieldsCache.current.set(cacheKey, fields);
+        setOpFields(fields);
+        setStatusMsg(`1Password: ${fields.length} field${fields.length === 1 ? "" : "s"}.`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setStatusMsg(msg);
+        setMode("browse");
+      } finally {
+        setOpBusy(false);
+      }
+    },
+    [acquireOpAuth],
+  );
+
+  /**
+   * Preview a 1Password Environment's variable NAMES (no values) — the first
+   * Enter of the two-Enter env flow. Reads the Environment by ID and stashes the
+   * key names in opEnvPreview; the modal renders them. A second Enter (handled in
+   * the keyboard branch) persists via runOpAdd.
+   */
+  const previewOpEnvironment = useCallback(
+    async (id: string): Promise<void> => {
+      setOpBusy(true);
+      setStatusMsg("1Password: reading environment…");
+      try {
+        const auth = await acquireOpAuth();
+        const vars = await withSdkRetry(() => readEnvironment(id, { auth }));
+        const names = Object.keys(vars);
+        setOpEnvPreview(names);
+        setStatusMsg(
+          `1Password environment → ${names.length} var${names.length === 1 ? "" : "s"}. Enter to save.`,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setOpEnvPreview(null);
+        setStatusMsg(msg);
+      } finally {
+        setOpBusy(false);
+      }
+    },
+    [acquireOpAuth],
+  );
+
   /**
    * Run a single provider's connectivity test via the shared probe proxy.
    *
@@ -277,14 +873,21 @@ export function App({ requestLogin }: AppProps = {}) {
       const MAX_ATTEMPTS = 3;
       let lastResult: import("../providers/probe-live.js").ProbeResult | null = null;
       let lastDiscoveryReason: string | undefined;
+      // Self-heal: the cloud catalog's pick is what the (possibly stale) cache
+      // returned. If it 404s, the catalog may have been corrected server-side
+      // while our cache is still "fresh" by its generatedAt clock — force ONE
+      // TTL-bypassing re-fetch and try the fresh pick before falling to
+      // endpoint discovery. Guarded so we refresh at most once per probe.
+      let catalogPick: string | null = catalogModel;
+      let catalogRefreshed = false;
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         let testModel: string | null = null;
-        // On the first attempt, the cloud catalog's pick wins. On retries,
-        // the cloud catalog is exhausted (it returns one model) so we always
-        // walk the endpoint's own list via discovery.
-        if (attempt === 0 && catalogModel && !tried.has(catalogModel)) {
-          testModel = catalogModel;
+        // The cloud catalog's pick wins while it has an untried candidate (the
+        // initial pick, or a fresh one after a forced refresh). Otherwise walk
+        // the endpoint's own list via discovery.
+        if (catalogPick && !tried.has(catalogPick)) {
+          testModel = catalogPick;
         } else {
           const discovery = await discoverProbeModelFromEndpoint(
             proxyUrl,
@@ -311,6 +914,27 @@ export function App({ requestLogin }: AppProps = {}) {
         lastResult = result;
 
         if (result.state === "live" || result.state === "rate-limited") break;
+
+        // On a model-not-found for the CATALOG pick, force-refresh the catalog
+        // once and adopt a fresh, untried pick for the next attempt (self-heal
+        // after a server-side fix). If the refresh yields nothing new, the loop
+        // falls through to endpoint discovery as before.
+        if (
+          result.state === "model-not-found" &&
+          testModel === catalogPick &&
+          !catalogRefreshed
+        ) {
+          catalogRefreshed = true;
+          const refresh = await forceRefreshProbeModels();
+          if (refresh.kind === "ok") {
+            const fresh = getProbeModel(prov.catalogName);
+            catalogPick = fresh && !tried.has(fresh) ? fresh : null;
+          } else {
+            catalogPick = null;
+          }
+          continue;
+        }
+
         // Retry on per-model failures (the next candidate might work).
         // Don't retry on transport-level failures (auth/network/timeout) —
         // those won't get better by changing model.
@@ -710,11 +1334,304 @@ export function App({ requestLogin }: AppProps = {}) {
       return;
     }
 
+    // ── 1Password account input (the `o` shortcut: set the DesktopAuth URL) ────
+    // Separate from the add-wizard. The <input> owns character entry; we own
+    // Enter (stash the typed value + advance to scope) and Esc. opPendingKind is
+    // "account" here (set by the `o` handler).
+    if (mode === "input_op_account") {
+      if (key.name === "return" || key.name === "enter") {
+        const val = inputValue.trim();
+        if (!val) {
+          setStatusMsg("Aborted (empty).");
+          setMode("browse");
+          resetOpWizard();
+          return;
+        }
+        // Stash the typed account and ask for scope; runOpAdd persists.
+        setOpPendingValue(val);
+        setOpScopeCursor(0);
+        setMode("pick_op_scope");
+      } else if (key.name === "escape") {
+        setMode("browse");
+        resetOpWizard();
+      }
+      return;
+    }
+
+    // ── 1Password Environment input (two-Enter NAME preview) ───────────────────
+    // SDK can't enumerate Environments, so the ID is typed. First Enter previews
+    // the variable NAMES (no values); second Enter persists via runOpAdd. The
+    // <input> owns character entry; if the user edits the ID after a preview, the
+    // preview is invalidated so the next Enter re-previews.
+    if (mode === "input_op_env") {
+      if (key.name === "return" || key.name === "enter") {
+        const val = inputValue.trim();
+        if (!val) {
+          setStatusMsg("Aborted (empty).");
+          setMode("browse");
+          resetOpWizard();
+          return;
+        }
+        if (opEnvPreview === null) {
+          // Enter #1 → fetch + show variable names.
+          void previewOpEnvironment(val);
+        } else {
+          // Enter #2 → persist at the scope chosen in step 1.
+          setOpPendingValue(val);
+          void runOpAdd("environment", val, opPendingScope);
+        }
+      } else if (key.name === "escape") {
+        setMode("browse");
+        resetOpWizard();
+      } else if (
+        opEnvPreview !== null &&
+        (key.name === "backspace" ||
+          key.name === "delete" ||
+          (key.raw && key.raw.length === 1 && !key.ctrl && !key.meta))
+      ) {
+        // The ID is being edited after a preview — drop the stale preview so the
+        // next Enter re-fetches. (The <input> still applies the edit itself.)
+        setOpEnvPreview(null);
+      }
+      return;
+    }
+
+    // ── 1Password scope picker (STEP 1 — global / project) ─────────────────────
+    // The scope is now the FIRST step. Enter commits the scope and advances to
+    // the account step (or auto-skips it) → then the kind picker.
+    if (mode === "pick_op_scope") {
+      if (key.name === "return" || key.name === "enter") {
+        const scope: OpScope = opScopeCursor === 0 ? "global" : "project";
+        // The `o` account shortcut reuses pick_op_scope as its FINAL step, so if
+        // a value is already pending (kind=account), persist directly.
+        if (opPendingKind === "account" && opPendingValue) {
+          void runOpAdd("account", opPendingValue, scope);
+          return;
+        }
+        setOpPendingScope(scope);
+        // Step 2: show the account picker ONLY when there's genuine ambiguity
+        // (not env/token-authed AND multiple accounts). Otherwise auto-skip to
+        // the kind picker; auth (and any error) is resolved later in runOpAdd.
+        let needsAccountStep = false;
+        if (!detectSdkAuth()) {
+          const res = resolveDesktopAccount({ interactive: true });
+          if ("needsPicker" in res) {
+            setOpAccounts(res.needsPicker);
+            setOpAccountCursor(0);
+            needsAccountStep = true;
+          }
+        }
+        if (needsAccountStep) {
+          setMode("pick_op_account");
+        } else {
+          setOpKindCursor(0);
+          setMode("pick_op_kind");
+        }
+      } else if (key.name === "escape") {
+        setMode("browse");
+        resetOpWizard();
+      }
+      return;
+    }
+
+    // ── 1Password kind picker (STEP 3 — API key from an item / Environment) ─────
+    // The <select> owns ↑↓; we own Enter (commit kind → value step) and Esc.
+    // Cursor index → kind: 0 = ref (API key from an item), 1 = environment.
+    // "account" is NO LONGER a kind (it's the `o` shortcut + the step-2 picker).
+    if (mode === "pick_op_kind") {
+      // The kind step is rendered MANUALLY (bold title + multi-line muted
+      // description per option), not via <select>, so the keyboard handler owns
+      // ↑↓ here (clamped to the 2 options: 0 = API key, 1 = Environment).
+      if (key.name === "up" || key.name === "k") {
+        setOpKindCursor((i) => Math.max(0, i - 1));
+      } else if (key.name === "down" || key.name === "j") {
+        setOpKindCursor((i) => Math.min(1, i + 1));
+      } else if (key.name === "return" || key.name === "enter") {
+        const kind: OpKind = opKindCursor === 1 ? "environment" : "ref";
+        setOpPendingKind(kind);
+        setInputValue("");
+        setOpEnvPreview(null);
+        if (kind === "environment") {
+          setMode("input_op_env");
+        } else {
+          // API key from an item → kick off the vault picker (browse, don't type).
+          void loadOpVaults();
+        }
+      } else if (key.name === "escape") {
+        // Back to the scope step (step 1).
+        setOpScopeCursor(opPendingScope === "global" ? 0 : 1);
+        setMode("pick_op_scope");
+      }
+      return;
+    }
+
+    // Helper: is this keystroke a typeable character (for inline filtering)?
+    // `*` is excluded: the filter is a fuzzy SUBSEQUENCE match where `*` would be
+    // matched literally — a footgun (it only matches glob-named rows and excludes
+    // every concrete field), so it's never a useful filter char in any picker.
+    const isFilterChar = (): boolean =>
+      !!key.raw &&
+      key.raw.length === 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      key.raw >= " " &&
+      key.raw !== "*";
+
+    // ── 1Password vault picker (API-key step a) ────────────────────────────────
+    // ↑↓ navigate the FUZZY-FILTERED list; typing narrows it; Enter commits the
+    // highlighted vault → loads items; Esc → kind picker. The list (not <select>)
+    // owns nothing now — App drives cursor + filter so they stay in sync.
+    if (mode === "pick_op_vault") {
+      if (key.name === "up" || (key.name === "k" && !isFilterChar())) {
+        setOpVaultCursor((i) => Math.max(0, i - 1));
+      } else if (key.name === "down") {
+        setOpVaultCursor((i) => Math.min(Math.max(0, opVaultsFiltered.length - 1), i + 1));
+      } else if (key.name === "return" || key.name === "enter") {
+        const v = opVaultsFiltered[opVaultCursor];
+        if (v) void loadOpItems(v.id, v.title);
+      } else if (key.name === "escape") {
+        setOpFilter("");
+        setOpKindCursor(0);
+        setMode("pick_op_kind");
+      } else if (key.name === "backspace" || key.name === "delete") {
+        setOpFilter((f) => f.slice(0, -1));
+        setOpVaultCursor(0);
+      } else if (isFilterChar()) {
+        setOpFilter((f) => f + key.raw);
+        setOpVaultCursor(0);
+      }
+      return;
+    }
+
+    // ── 1Password item picker (API-key step b) ─────────────────────────────────
+    // Same fuzzy-filter model. Enter commits the item → loads fields. Esc goes
+    // back one level to the vault picker.
+    if (mode === "pick_op_item") {
+      if (key.name === "up") {
+        setOpItemCursor((i) => Math.max(0, i - 1));
+      } else if (key.name === "down") {
+        setOpItemCursor((i) => Math.min(Math.max(0, opItemsFiltered.length - 1), i + 1));
+      } else if (key.name === "return" || key.name === "enter") {
+        const it = opItemsFiltered[opItemCursor];
+        if (it && opPickedVault && opPickedVaultId)
+          void loadOpFields(opPickedVaultId, opPickedVault, it.id, it.title);
+      } else if (key.name === "escape") {
+        setOpFilter("");
+        setOpVaultCursor(0);
+        setMode("pick_op_vault");
+      } else if (key.name === "backspace" || key.name === "delete") {
+        setOpFilter((f) => f.slice(0, -1));
+        setOpItemCursor(0);
+      } else if (isFilterChar()) {
+        setOpFilter((f) => f + key.raw);
+        setOpItemCursor(0);
+      }
+      return;
+    }
+
+    // ── 1Password field picker (API-key step c) ────────────────────────────────
+    // GROUPED list: section HEADER rows (selectable:false) are visual anchors the
+    // cursor skips. ↑↓ find the next/prev selectable row; Enter builds the op://
+    // path from the highlighted option; Esc → item picker. After a filter change
+    // the cursor snaps to the first selectable row (index 0 may be a header).
+    if (mode === "pick_op_field") {
+      const opts = opFieldOptionsFiltered;
+      // Find the next selectable index from `from` moving in `dir`; if none in
+      // that direction, stay put (returns `from`).
+      const nextSelectable = (from: number, dir: 1 | -1): number => {
+        let i = from;
+        while (i >= 0 && i < opts.length) {
+          if (opts[i]?.selectable) return i;
+          i += dir;
+        }
+        return from;
+      };
+      const firstSelectable = (): number => {
+        const idx = opts.findIndex((o) => o.selectable);
+        return idx < 0 ? 0 : idx;
+      };
+      if (key.name === "up") {
+        setOpFieldCursor((i) => nextSelectable(i - 1, -1));
+      } else if (key.name === "down") {
+        setOpFieldCursor((i) => nextSelectable(i + 1, 1));
+      } else if (key.name === "return" || key.name === "enter") {
+        const chosen = opts[opFieldCursor];
+        if (chosen && chosen.selectable) {
+          const isGlob = isGlobImport(chosen.value);
+          setOpPendingValue(chosen.value);
+          void runOpAdd(isGlob ? "glob" : "ref", chosen.value, opPendingScope);
+        }
+      } else if (key.name === "escape") {
+        setOpFilter("");
+        setOpItemCursor(0);
+        setMode("pick_op_item");
+      } else if (key.name === "backspace" || key.name === "delete") {
+        setOpFilter((f) => f.slice(0, -1));
+        // Defer cursor snap to the next render's filtered list via firstSelectable
+        // computed against the CURRENT opts (the new filter applies next tick, but
+        // snapping to the current first-selectable is a safe approximation; the
+        // render clamps anyway). Use 0 → first selectable.
+        setOpFieldCursor(firstSelectable());
+      } else if (isFilterChar()) {
+        setOpFilter((f) => f + key.raw);
+        setOpFieldCursor(firstSelectable());
+      }
+      return;
+    }
+
+    // ── 1Password account picker ──────────────────────────────────────────────
+    // TWO uses share this mode, distinguished by opPickerResolver.current:
+    //  (A) Deferred-promise picker — surfaced mid-operation by resolveSdkAuth's
+    //      onNeedsPicker. Enter resolves the promise with the chosen url; Esc
+    //      resolves undefined (abort). The in-flight op continues.
+    //  (B) Wizard STEP 2 — multi-account disambiguation up front. No resolver is
+    //      pending: save the chosen account globally and advance to the kind
+    //      picker (step 3). Esc goes back to the scope step (step 1).
+    // Both support inline fuzzy filtering of the account list.
+    if (mode === "pick_op_account") {
+      const resolver = opPickerResolver.current;
+      if (key.name === "up") {
+        setOpAccountCursor((i) => Math.max(0, i - 1));
+      } else if (key.name === "down") {
+        setOpAccountCursor((i) => Math.min(Math.max(0, opAccountsFiltered.length - 1), i + 1));
+      } else if (key.name === "return" || key.name === "enter") {
+        const chosen = opAccountsFiltered[opAccountCursor]?.url;
+        setOpFilter("");
+        if (resolver) {
+          // (A) deferred-promise picker.
+          setMode("browse");
+          resolver(chosen);
+        } else {
+          // (B) wizard step 2 → save + advance to the kind picker.
+          if (chosen && chosen.trim()) saveOnepasswordAccount(chosen.trim(), "global");
+          setOpKindCursor(0);
+          setMode("pick_op_kind");
+        }
+      } else if (key.name === "escape") {
+        setOpFilter("");
+        if (resolver) {
+          setMode("browse");
+          resolver(undefined);
+        } else {
+          // (B) wizard step 2 → back to the scope step.
+          setOpScopeCursor(opPendingScope === "global" ? 0 : 1);
+          setMode("pick_op_scope");
+        }
+      } else if (key.name === "backspace" || key.name === "delete") {
+        setOpFilter((f) => f.slice(0, -1));
+        setOpAccountCursor(0);
+      } else if (isFilterChar()) {
+        setOpFilter((f) => f + key.raw);
+        setOpAccountCursor(0);
+      }
+      return;
+    }
+
     // Browse mode
     if (key.name === "q") return quit();
 
     if (key.name === "tab") {
-      const tabs: Tab[] = ["providers", "profiles", "routing", "privacy"];
+      const tabs: Tab[] = ["providers", "profiles", "routing", "privacy", "onepassword"];
       const idx = tabs.indexOf(activeTab);
       setActiveTab(tabs[(idx + 1) % tabs.length]!);
       setStatusMsg(null);
@@ -739,6 +1656,11 @@ export function App({ requestLogin }: AppProps = {}) {
     }
     if (key.name === "4") {
       setActiveTab("privacy");
+      setStatusMsg(null);
+      return;
+    }
+    if (key.name === "5") {
+      setActiveTab("onepassword");
       setStatusMsg(null);
       return;
     }
@@ -1074,6 +1996,67 @@ export function App({ requestLogin }: AppProps = {}) {
         setBufStats(getBufferStats());
         setStatusMsg("Stats buffer cleared.");
       }
+    } else if (activeTab === "onepassword") {
+      // While an async add-validate / test runs, gate everything except a quick
+      // status note so two ops can't interleave (mirrors the probe gating).
+      if (opBusy) {
+        setStatusMsg("1Password: busy, please wait…");
+        return;
+      }
+      if (key.name === "up" || key.name === "k") {
+        setOpIndex((i) => Math.max(0, i - 1));
+        setStatusMsg(null);
+      } else if (key.name === "down" || key.name === "j") {
+        setOpIndex((i) => Math.min(Math.max(0, opEntries.length - 1), i + 1));
+        setStatusMsg(null);
+      } else if (key.name === "a") {
+        // Start the add wizard at the SCOPE picker (step 1). The rest of the
+        // wizard (account → kind → value) is driven from there.
+        resetOpWizard();
+        setOpScopeCursor(0);
+        setStatusMsg(null);
+        setMode("pick_op_scope");
+      } else if (key.name === "o") {
+        // Shortcut: set the DesktopAuth account directly (its own little flow:
+        // input_op_account → pick_op_scope → save). opPendingKind="account"
+        // makes pick_op_scope persist instead of advancing the add-wizard.
+        resetOpWizard();
+        setOpPendingKind("account");
+        setInputValue(readOnepasswordAccount() ?? "");
+        setStatusMsg(null);
+        setMode("input_op_account");
+      } else if (key.name === "t") {
+        if (opEntries.length === 0) {
+          setStatusMsg("No 1Password entries to test.");
+        } else if (selectedOpEntry) {
+          void testOpEntry(selectedOpEntry);
+        }
+      } else if (key.name === "x") {
+        if (opEntries.length === 0 || !selectedOpEntry) {
+          setStatusMsg("No 1Password entry to remove.");
+        } else if (selectedOpEntry.scope === "env") {
+          // The env/token account is read-only here — can't remove from config.
+          setStatusMsg(
+            "Account comes from OP_ACCOUNT / token — unset the env var to remove.",
+          );
+        } else {
+          const e = selectedOpEntry;
+          // The "env" case was handled above; re-derive a concrete OpScope so
+          // the config helpers (which take OpConfigScope) type-check. The alias
+          // loses the prior narrowing, so map explicitly.
+          const scope: OpScope = e.scope === "project" ? "project" : "global";
+          if (e.kind === "account") {
+            clearOnepasswordAccount(scope);
+          } else if (e.kind === "environment") {
+            removeOnepasswordEnvironment(e.value, scope);
+          } else {
+            removeOnepasswordImport(e.value, scope);
+          }
+          refreshConfig();
+          setOpIndex((i) => Math.max(0, i - 1));
+          setStatusMsg("1Password entry removed.");
+        }
+      }
     }
   });
 
@@ -1219,6 +2202,21 @@ export function App({ requestLogin }: AppProps = {}) {
           <PrivacyDetail />
         </>
       )}
+      {activeTab === "onepassword" && (
+        <>
+          <OnepasswordContent
+            activeTab={activeTab}
+            entries={opEntries}
+            opIndex={opIndex}
+            account={opAccountDisplay}
+            authConfigured={opAuthConfigured}
+            testResults={opTestResults}
+            expansions={opExpansions}
+            contentH={contentH}
+          />
+          <OnepasswordDetail selectedEntry={selectedOpEntry} testResults={opTestResults} />
+        </>
+      )}
 
       {/* Footer */}
       <Footer
@@ -1240,6 +2238,38 @@ export function App({ requestLogin }: AppProps = {}) {
             : undefined
         }
       />
+
+      {/* 1Password add-wizard modal — a centered absolute overlay painted ON
+          TOP of the content (zIndex), so the kind/input/scope/account steps are
+          a real popup dialog rather than crammed into the bottom detail strip.
+          Rendered last so it's the topmost sibling of the root box. */}
+      {activeTab === "onepassword" && isOpModalMode(mode) && (
+        <OnepasswordModal
+          mode={mode}
+          inputValue={inputValue}
+          setInputValue={setInputValue}
+          scopeCursor={opScopeCursor}
+          kindCursor={opKindCursor}
+          accountCursor={opAccountCursor}
+          // Filtered lists — App owns ↑↓ + the inline fuzzy filter, so the modal
+          // renders exactly what the keyboard navigates.
+          accounts={opAccountsFiltered}
+          vaults={opVaultsFiltered}
+          items={opItemsFiltered}
+          fieldOptions={opFieldOptionsFiltered}
+          filter={opFilter}
+          vaultCursor={opVaultCursor}
+          itemCursor={opItemCursor}
+          fieldCursor={opFieldCursor}
+          pickedVault={opPickedVault}
+          pickedItem={opPickedItem}
+          busy={opBusy}
+          envPreview={opEnvPreview}
+          onScopeChange={(i) => setOpScopeCursor(i === 0 ? 0 : 1)}
+          width={width}
+          height={height}
+        />
+      )}
     </box>
   );
 }

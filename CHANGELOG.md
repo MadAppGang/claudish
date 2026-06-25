@@ -2,6 +2,23 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.7.0] - 2026-06-25
+
+### New Features
+
+- **1Password tab in `claudish config`** — manage all 1Password integration from a dedicated TUI tab (tab 5), at both global (`~/.claudish/config.json`) and project (`.claudish.json`) scope:
+  - **Account auth** — pick the 1Password account (multi-account picker rendered in-TUI), shown with scope markers (▴ project / • global / · env).
+  - **Keys, sets, and environments** — add a single `op://` reference (a "key"), a glob (a "set"), or a 1Password Environment, each via a centered modal wizard: scope → account (only when ambiguous) → kind → value.
+  - **Browse, don't type** — for keys/sets you browse vault → item → field with inline fuzzy filtering; the `op://` path is built for you (never typed). New `onepasswordEnvironments[]` config field persists Environments (the saved form of `--op-env`).
+  - **Whole-item glob** — `op://Vault/Item/**` imports every key in an item across all sections (claudish-side grammar; 1Password never sees `*`).
+  - **Live validation + masked tails** — adding resolves against 1Password and applies the keys to the running session immediately (providers light up with no restart); sets expand in the list to show each key name with a masked `••••XXXX` value tail.
+
+### Bug Fixes
+
+- **Probe model cache** — lowered the catalog TTL from 24h to 1h and added refresh-on-404 self-heal, so a server-side probe-model correction reaches the "Test connection" feature promptly instead of being masked by a stale-but-fresh cache.
+- **1Password SDK resilience** — serialize all SDK calls (the desktop-app IPC bridge is not concurrency-safe → `IPC operation failed: -4`), reuse one authenticated client, and auto-retry transient/stale-session errors (`invalid client id` after idle) by rebuilding the client.
+- **402 probe errors** now read as "Payment required — subscription expired or no credit" instead of a bare `HTTP 402`.
+
 ## [7.6.0] - 2026-06-22
 
 ### New Features

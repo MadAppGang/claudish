@@ -23,7 +23,12 @@ import { dirname, join } from "node:path";
 
 const PROBE_MODELS_URL =
   "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+// 1h TTL (matches the server's own instance cache). A 24h TTL meant a
+// server-side catalog correction (e.g. fixing a probe model that 404s) took up
+// to a day to reach users. 1h propagates fixes promptly without re-fetching on
+// every probe; a stale-but-fresh wrong pick is additionally self-healed by the
+// refresh-on-404 path in the TUI (forceRefreshProbeModels).
+const CACHE_TTL_MS = 60 * 60 * 1000;
 // Generous timeout — the endpoint typically responds in ~400ms, but the TUI
 // fires this concurrently with proxy startup and N parallel probe handlers.
 // Under load on a cold cache we've seen the network round-trip pushed past
@@ -133,6 +138,33 @@ export async function ensureProbeModelsCached(): Promise<FetchOutcome> {
   const cached = readProbeModelsCache();
   if (isCacheFresh(cached)) return { kind: "ok", data: cached! };
 
+  if (_inFlight) return _inFlight;
+
+  _inFlight = (async () => {
+    const outcome = await fetchProbeModels();
+    if (outcome.kind === "ok") writeProbeModelsCache(outcome.data);
+    return outcome;
+  })();
+
+  try {
+    return await _inFlight;
+  } finally {
+    _inFlight = null;
+  }
+}
+
+/**
+ * Force a re-fetch of the probe catalog, IGNORING the TTL, and overwrite the
+ * cache on success. Used as a self-heal when the cached probe model for a
+ * provider fails with model-not-found/404 — the catalog may have been corrected
+ * server-side while the local cache is still "fresh" by its generatedAt clock.
+ *
+ * Shares the same in-flight dedupe as ensureProbeModelsCached so a parallel
+ * "test all" only triggers ONE forced refetch. Returns the outcome; never throws.
+ * On success the in-memory + on-disk cache is updated, so a subsequent
+ * getProbeModel() returns the fresh pick.
+ */
+export async function forceRefreshProbeModels(): Promise<FetchOutcome> {
   if (_inFlight) return _inFlight;
 
   _inFlight = (async () => {

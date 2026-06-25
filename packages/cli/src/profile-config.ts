@@ -136,6 +136,14 @@ export interface ClaudishProfileConfig {
    * OP_ACCOUNT (env) but above auto-detection.
    */
   onepasswordAccount?: string;
+  /**
+   * 1Password Environment IDs to load at startup (SDK beta API). Each entry's
+   * variables are hydrated into process.env (overwrite, mirroring `--op-env`).
+   * Persisted form of the `--op-env <id>` flag. Resolved below `--op-env` but
+   * above `onepassword[]` single refs/globs. A failure hard-fails (explicit
+   * opt-in, like all 1Password sources).
+   */
+  onepasswordEnvironments?: string[];
   /** Built-in local providers explicitly enabled in global config. */
   localProviders?: string[];
   /** ISO timestamp when user confirmed auto-approve behavior. Absent = never confirmed. */
@@ -233,6 +241,9 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.onepasswordAccount !== undefined) {
       merged.onepasswordAccount = config.onepasswordAccount;
+    }
+    if (config.onepasswordEnvironments !== undefined) {
+      merged.onepasswordEnvironments = config.onepasswordEnvironments;
     }
     if (config.localProviders !== undefined) {
       merged.localProviders = Array.from(new Set(config.localProviders)).sort();

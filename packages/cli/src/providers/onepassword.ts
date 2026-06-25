@@ -91,7 +91,16 @@ export function maskSecret(v: string): string {
 // value itself.
 // ===========================================================================
 
-/** A discovered 1Password item field — names/metadata only, never the value. */
+/**
+ * A discovered 1Password item field — names/metadata + a MASKED value tail.
+ *
+ * Security note: we deliberately keep NO full value. `valueTail` is only the
+ * LAST 4 characters of the value (computed at discovery time, where the SDK has
+ * already decrypted everything in-process to list fields) — the standard
+ * "•••• 1234" identification pattern (1Password / AWS / Stripe). It lets the
+ * user confirm WHICH credential is wired up without exposing the secret. The
+ * full value is never stored, returned, or logged.
+ */
 export interface DiscoveredField {
   /** The field's label, verbatim (may include surrounding whitespace). */
   label: string;
@@ -103,6 +112,14 @@ export interface DiscoveredField {
   type: string;
   /** Whether the field has a non-empty value (no value content is kept). */
   hasValue: boolean;
+  /** The LAST 4 chars of the value (for "••••1234" display), or "" when none. */
+  valueTail: string;
+}
+
+/** Last 4 chars of a secret, for masked-tail display (empty for short/empty). */
+export function valueTail(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) return "";
+  return value.slice(-4);
 }
 
 /**
@@ -130,19 +147,31 @@ export interface GlobImport {
   /** null → 1-segment (top-level fields). Non-null → 2-segment section glob. */
   sectionGlob: string | null;
   fieldGlob: string;
+  /**
+   * true → the whole-item `**` form: match EVERY field regardless of section
+   * (sectioned AND sectionless). Purely claudish-side syntax (1Password never
+   * sees `*`/`**`), so this is free to define. Set only for a lone single-segment
+   * `**`; a 2-segment `**`-on-one-axis is an ordinary glob, not match-all.
+   */
+  matchAll?: boolean;
 }
 
 /**
  * Parse an `op://<vault>/<item>/...` glob path into its components. Assumes
  * isGlobImport(opPath) is true (1 or 2 post-item segments).
  *
- *  - 1 post segment  → { sectionGlob: null, fieldGlob: post[0] }
- *  - 2 post segments → { sectionGlob: post[0], fieldGlob: post[1] }
+ *  - 1 post segment `**` → { sectionGlob: null, fieldGlob: "*", matchAll: true }
+ *  - 1 post segment      → { sectionGlob: null, fieldGlob: post[0] }
+ *  - 2 post segments     → { sectionGlob: post[0], fieldGlob: post[1] }
  */
 export function parseGlobImport(opPath: string): GlobImport {
   const rest = opPath.slice("op://".length).split("/");
   const [vault, item, ...post] = rest;
   if (post.length === 1) {
+    if (post[0] === "**") {
+      // Whole-item match-all: every field, any section or none.
+      return { vault, item, sectionGlob: null, fieldGlob: "*", matchAll: true };
+    }
     return { vault, item, sectionGlob: null, fieldGlob: post[0] };
   }
   return { vault, item, sectionGlob: post[0], fieldGlob: post[1] };
@@ -251,9 +280,81 @@ export async function discoverItemFields(
       reference,
       type: typeof field.fieldType === "string" ? field.fieldType : String(field.fieldType ?? ""),
       hasValue: !!field.value,
+      valueTail: valueTail(field.value),
     });
   }
   return out;
+}
+
+/**
+ * Like discoverItemFields, but takes the vault/item IDs DIRECTLY — skipping the
+ * `vaults.list()` + `items.list()` title-resolution round-trips. The config TUI
+ * already has the IDs from its vault/item pickers, so this cuts the field-load
+ * from THREE sequential SDK calls to ONE (`items.get`), roughly 3× faster on the
+ * desktop-app IPC path. `vaultTitle`/`itemTitle` are only used to synthesize the
+ * `op://` reference strings (which are title-based). THROWS on no-auth / failure.
+ */
+export async function discoverItemFieldsById(
+  vaultId: string,
+  itemId: string,
+  vaultTitle: string,
+  itemTitle: string,
+  opts: {
+    sdkFactory?: SdkClientFactory;
+    auth?: SdkAuth;
+    env?: NodeJS.ProcessEnv;
+  } = {}
+): Promise<DiscoveredField[]> {
+  const client = await acquireSdkClient(opts, `1Password item discovery for '${itemTitle}'`);
+  const full = await client.items.get(vaultId, itemId);
+  const out: DiscoveredField[] = [];
+  for (const field of full.fields) {
+    if (typeof field.title !== "string") continue;
+    const section = sectionLabel(full, field.sectionId);
+    const reference = `op://${vaultTitle}/${itemTitle}/${section ? `${section}/` : ""}${field.title}`;
+    out.push({
+      label: field.title,
+      section,
+      reference,
+      type: typeof field.fieldType === "string" ? field.fieldType : String(field.fieldType ?? ""),
+      hasValue: !!field.value,
+      valueTail: valueTail(field.value),
+    });
+  }
+  return out;
+}
+
+/**
+ * List the user's 1Password vaults (id + title only). Used by the config TUI's
+ * vault picker, the first level of the browse-don't-type add-wizard. Mirrors
+ * discoverItemFields' acquireSdkClient usage; THROWS on no-auth / SDK failure.
+ */
+export async function listVaults(
+  opts: {
+    sdkFactory?: SdkClientFactory;
+    auth?: SdkAuth;
+    env?: NodeJS.ProcessEnv;
+  } = {}
+): Promise<{ id: string; title: string }[]> {
+  const client = await acquireSdkClient(opts, "1Password vault listing");
+  return client.vaults.list();
+}
+
+/**
+ * List the items (id + title only) in one vault. Used by the config TUI's item
+ * picker (second level). Mirrors discoverItemFields' acquireSdkClient usage;
+ * THROWS on no-auth / SDK failure.
+ */
+export async function listItems(
+  vaultId: string,
+  opts: {
+    sdkFactory?: SdkClientFactory;
+    auth?: SdkAuth;
+    env?: NodeJS.ProcessEnv;
+  } = {}
+): Promise<{ id: string; title: string }[]> {
+  const client = await acquireSdkClient(opts, "1Password item listing");
+  return client.items.list(vaultId);
 }
 
 /**
@@ -300,7 +401,9 @@ export function filterGlobFields(fields: DiscoveredField[], glob: GlobImport): G
   const matches: GlobFieldMatch[] = [];
   for (const field of fields) {
     // Section scope.
-    if (glob.sectionGlob === null) {
+    if (glob.matchAll) {
+      // `**` — every field, any section or none. No section check at all.
+    } else if (glob.sectionGlob === null) {
       if (field.section !== null) continue;
     } else {
       if (field.section === null) continue;
@@ -647,21 +750,136 @@ export type SdkAuth = { kind: "token"; token: string } | { kind: "desktop"; acco
 export type SdkClientFactory = (auth: SdkAuth) => Promise<SdkClientLike>;
 
 /**
+ * Process-lifetime cache of built SDK clients, keyed by auth identity. Reusing
+ * ONE client across operations avoids a fresh `createClient` (and a new desktop
+ * IPC handshake) on every vault/item/field call. Repeated handshakes are what
+ * make the desktop app's IPC flaky (errno -4 / "Denied") under the rapid
+ * sequence of calls the config TUI makes — one client, reused, is far steadier
+ * and faster. Keyed so a multi-account run never crosses clients.
+ */
+const sdkClientCache = new Map<string, Promise<SdkClientLike>>();
+
+function sdkAuthCacheKey(auth: SdkAuth): string {
+  return auth.kind === "token" ? `token:${auth.token}` : `desktop:${auth.accountName}`;
+}
+
+/**
  * Default SDK client factory. DYNAMICALLY imports @1password/sdk (so the WASM
  * is only loaded when we actually have auth + a secret to resolve) and builds
- * an authenticated client.
+ * an authenticated client — then CACHES it per auth identity so subsequent
+ * operations reuse the same client (one desktop IPC handshake, not one per call).
+ * The cached value is the in-flight Promise so concurrent first calls dedupe.
  */
 export const defaultSdkClientFactory: SdkClientFactory = async (auth) => {
-  const { createClient, DesktopAuth } = await import("@1password/sdk");
-  const client = await createClient({
-    auth: auth.kind === "token" ? auth.token : new DesktopAuth(auth.accountName),
-    integrationName: "claudish",
-    integrationVersion: VERSION || "1.0.0",
-  });
-  // The real Client structurally satisfies SdkClientLike (secrets / vaults /
-  // items / environments); narrow via unknown to avoid importing SDK types here.
-  return client as unknown as SdkClientLike;
+  const key = sdkAuthCacheKey(auth);
+  const cached = sdkClientCache.get(key);
+  if (cached) return cached;
+
+  const build = (async () => {
+    const { createClient, DesktopAuth } = await import("@1password/sdk");
+    const client = await createClient({
+      auth: auth.kind === "token" ? auth.token : new DesktopAuth(auth.accountName),
+      integrationName: "claudish",
+      integrationVersion: VERSION || "1.0.0",
+    });
+    // The real Client structurally satisfies SdkClientLike (secrets / vaults /
+    // items / environments); narrow via unknown to avoid importing SDK types here.
+    return client as unknown as SdkClientLike;
+  })();
+
+  // Cache the in-flight promise so concurrent callers share one build; on
+  // failure, evict so a later call can retry with a fresh handshake.
+  sdkClientCache.set(key, build);
+  build.catch(() => sdkClientCache.delete(key));
+  return build;
 };
+
+/**
+ * Evict all cached SDK clients so the next operation rebuilds (a fresh desktop
+ * IPC handshake). Call this after a transient IPC failure — a cached client
+ * whose desktop connection went bad will keep failing until rebuilt.
+ */
+export function resetSdkClientCache(): void {
+  sdkClientCache.clear();
+}
+
+/** True when an error looks like a TRANSIENT desktop-IPC failure (errno -4,
+ *  "IPC operation failed", "Denied", broken pipe) worth one rebuild+retry. */
+export function isTransientSdkError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes("ipc operation failed") ||
+    msg.includes("ipc operation") ||
+    msg.includes("-4") ||
+    msg.includes("denied") ||
+    msg.includes("broken pipe") ||
+    msg.includes("connection") ||
+    // Stale DESKTOP SESSION after idle: the cached SDK client's session expires
+    // and the next call fails with "invalid client id" / "invalid session" /
+    // "session expired". Resetting the cache rebuilds the client (a fresh
+    // DesktopAuth handshake), so these are retryable, not hard failures.
+    msg.includes("invalid client id") ||
+    msg.includes("invalid client") ||
+    msg.includes("invalid session") ||
+    msg.includes("session expired") ||
+    msg.includes("session not found") ||
+    msg.includes("unauthorized") ||
+    msg.includes("token expired") ||
+    msg.includes("not authenticated")
+  );
+}
+
+/**
+ * Process-wide SDK SERIALIZER. The 1Password SDK's WASM↔desktop-app IPC bridge
+ * is NOT safe for concurrent calls on a shared client: two operations in flight
+ * at once corrupt the channel → "IPC operation failed: -4". The config TUI fires
+ * overlapping calls (e.g. a post-save confirm AND the list's glob-expansion at
+ * the same moment), which reliably triggers it. We chain every SDK operation
+ * onto one promise so AT MOST ONE runs at a time. Calls still complete; they just
+ * queue. This is the real fix for -4 (the client cache + retry alone can't help
+ * when both concurrent calls fail together).
+ */
+let sdkQueue: Promise<unknown> = Promise.resolve();
+function runSdkExclusive<T>(op: () => Promise<T>): Promise<T> {
+  const run = sdkQueue.then(op, op); // run after the prior op settles (ok or not)
+  // Keep the chain alive regardless of this op's outcome; swallow here so a
+  // rejected op doesn't poison the queue for the next caller.
+  sdkQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Sleep helper for the retry backoff (gives the desktop bridge a moment). */
+function sdkSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run an SDK operation SERIALIZED (never concurrent with another SDK op) and,
+ * on a TRANSIENT IPC error, evict the client cache (fresh desktop handshake),
+ * pause briefly, and retry — up to 2 retries. Non-transient errors (auth, not
+ * found, bad ref) propagate immediately. Serialization is the primary -4 fix;
+ * the cache-reset + backoff retries handle a genuinely transient blip.
+ */
+export async function withSdkRetry<T>(op: () => Promise<T>): Promise<T> {
+  const MAX_ATTEMPTS = 3;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      // Each attempt runs exclusively — no other SDK call overlaps it.
+      return await runSdkExclusive(op);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientSdkError(err) || attempt === MAX_ATTEMPTS) throw err;
+      // Transient: drop the (possibly poisoned) client + back off before retry.
+      resetSdkClientCache();
+      await sdkSleep(150 * attempt);
+    }
+  }
+  throw lastErr;
+}
 
 /**
  * Determine whether SDK auth is available WITHOUT blocking on any interactive
