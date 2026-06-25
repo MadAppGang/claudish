@@ -309,6 +309,31 @@ function routeBare(
 }
 
 /**
+ * Normalize a slugified GLM version name back to its canonical dotted form.
+ *
+ * Some clients derive the wire model id from a URL/registry slug and replace
+ * the version dot with a dash: `glm-5.2` → `glm-5-2`, `glm-4.6` → `glm-4-6`,
+ * `glm-4.5-air` → `glm-4-5-air`. Routing rules key on the canonical dotted
+ * name (`glm-5.2` → `gc@glm-5.2`), so without this the slug matches no GLM rule
+ * and fails with a confusing "Unknown Model" 400 from the provider.
+ *
+ * Narrow and anchored by design: only `glm-<digits>-<digits>` (optionally
+ * followed by `-suffix`) is rewritten. Already-dotted names (`glm-5.2`),
+ * dash-native open-model names (`glm-4-9b`), and every non-GLM model are left
+ * exactly as-is — the regex simply doesn't match them.
+ *
+ * Cluster context (2026-06-25): added to unblock the Hermes bot (po-2026),
+ * whose model registry slugified `glm-5.2` into `glm-5-2` before POSTing to the
+ * proxy's `/v1/messages`.
+ */
+export function normalizeGlmSlug(model: string): string {
+  return model.replace(
+    /^glm-(\d+)-(\d+)(-.*)?$/i,
+    (_m, major, minor, suffix) => `glm-${major}.${minor}${suffix ?? ""}`
+  );
+}
+
+/**
  * Resolve a model name to a provider chain.
  *
  * Two paths:
@@ -331,9 +356,12 @@ export function route(
   defaultProviderOverride?: string
 ): RoutePlan {
   const parsed = parseModelSpec(modelSpec);
+  // Tolerate slugified GLM version names (e.g. a client that turns "glm-5.2"
+  // into "glm-5-2") so they match the canonical routing rule instead of failing.
+  const model = normalizeGlmSlug(parsed.model);
 
   if (parsed.isExplicitProvider) {
-    return routeExplicit(modelSpec, parsed.model, parsed.provider);
+    return routeExplicit(modelSpec, model, parsed.provider);
   }
 
   const rules = rulesOverride ?? loadRoutingRules();
@@ -347,5 +375,5 @@ export function route(
       : rulesOverride !== undefined
         ? undefined
         : loadConfig().defaultProvider;
-  return routeBare(parsed.model, parsed.provider, rules, defaultProvider);
+  return routeBare(model, parsed.provider, rules, defaultProvider);
 }
