@@ -61,12 +61,18 @@ if (hostIdx !== -1 && args[hostIdx + 1]) {
 }
 
 import { createProxyServer } from "../../proxy-server.js";
-import { loadConfig } from "../../profile-config.js";
+import { loadConfig, getModelMapping } from "../../profile-config.js";
 
-// No modelMap — the proxy is a transparent router. Every model name routes
-// to its provider via config.json routing rules:
-//   claude-opus-4-7 → anthropic, glm-5.1 → z.ai, qwen3.6-35b-a3b → vllm-myia
-// Any model can be used directly; no role remapping.
+// Role remapping from the active profile (2026-06-25). Without a modelMap, a
+// client that sends a literal Anthropic role name — e.g. `claude-sonnet-4-6`
+// because its model selector didn't resolve the "Sonnet" alias to glm-5.2 —
+// fell through to the native-anthropic passthrough check (proxy-server.ts isNative)
+// and leaked budget Anthropic credits on the Sonnet route. Loading the profile's
+// opus/sonnet/haiku map activates proxy-server.ts's role remapping:
+//   claude-sonnet-* → glm-5.2 (gc@), claude-haiku-* → qwen, claude-opus-* → claude-opus-4-8 (native, ai-01).
+// Models already sent by their budgeted name (glm-5.2, qwen3.6-…) are unaffected.
+const profileConfig = loadConfig();
+const modelMap = getModelMapping(profileConfig.defaultProfile);
 
 const server = await createProxyServer(
   port,
@@ -74,7 +80,7 @@ const server = await createProxyServer(
   undefined,
   false,
   process.env.ANTHROPIC_API_KEY,
-  undefined,
+  modelMap,
   { quiet: false, hostname }
 );
 

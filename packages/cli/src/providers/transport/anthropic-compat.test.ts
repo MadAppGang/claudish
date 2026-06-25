@@ -22,7 +22,7 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
   it("returns Authorization: Bearer header when authScheme is 'bearer'", async () => {
     const provider: RemoteProvider = {
       name: "minimax",
-      baseUrl: "https://api.minimax.io",
+      baseUrl: "https://api.minimaxi.com",
       apiPath: "/anthropic/v1/messages",
       apiKeyEnvVar: "MINIMAX_API_KEY",
       prefixes: ["mm@", "mmax@"],

@@ -4,15 +4,21 @@
  *
  * When a provider model requests web_search, claudish:
  * 1. Extracts the search query from tool arguments
- * 2. Calls the local SearXNG instance
+ * 2. Calls the SearXNG MCP server (when SEARXNG_MCP_URL is set),
+ *    falling back to the direct SearXNG HTTP API
  * 3. Returns formatted results as a text block in the stream
  *
- * IMPORTANT: executeWebSearchSync must not block the SSE stream.
- * It races SearXNG against a 3-second deadline and returns a
- * fallback message immediately if SearXNG is unreachable.
+ * Fallback chains (HARD constraint: a failed search/fetch must NEVER
+ * stop the agent — every path ends in well-formed text, never a throw):
+ *   search: MCP searxng_web_search → direct HTTP /search → error text
+ *   fetch:  MCP web_url_read → MCP via r.jina.ai prefix → direct HTTP → error text
+ *
+ * IMPORTANT: these executors must not block the SSE stream.
+ * Every network call is bounded by a strict deadline.
  */
 
 import { log } from "../../logger.js";
+import { isMcpSearxngAvailable, mcpWebSearch, mcpUrlRead } from "./mcp-searxng-client.js";
 
 const SEARXNG_URL = process.env.SEARXNG_URL || "http://search.myia.io";
 
@@ -53,10 +59,19 @@ async function fetchFromSearXNG(query: string, maxResults = 5): Promise<SearchRe
 }
 
 /**
- * Stream-safe web search: races SearXNG against a short deadline.
+ * Stream-safe web search: MCP searxng_web_search first (when configured),
+ * then the direct SearXNG HTTP API, each bounded by a deadline.
  * Returns formatted results text, never throws, never blocks > deadline.
  */
 export async function executeWebSearch(query: string, deadlineMs = 3000): Promise<string> {
+  if (isMcpSearxngAvailable()) {
+    const mcp = await mcpWebSearch(query, Math.max(deadlineMs, 5000));
+    if (mcp.ok) {
+      return `[Web search results for "${query}"]\n\n${mcp.text}`;
+    }
+    log(`[WebSearch] MCP route failed (${mcp.error}), falling back to direct HTTP`);
+  }
+
   try {
     const results = await Promise.race([
       fetchFromSearXNG(query),
@@ -94,6 +109,283 @@ export function formatSearchResults(query: string, results: SearchResult[]): str
     lines.push("");
   }
   return lines.join("\n");
+}
+
+/**
+ * Maximum bytes to download from a URL. Prevents multi-MB pages from
+ * consuming memory and blocking the event loop during regex processing.
+ * 500 KB is plenty for text extraction — we only keep 15K chars of output.
+ */
+const MAX_FETCH_BYTES = 500_000;
+
+/**
+ * Maximum HTML input size for regex-based htmlToText(). If the downloaded
+ * HTML exceeds this, it is pre-truncated. Since we only keep 15K chars of
+ * output, 100K chars of input HTML is more than sufficient.
+ */
+const MAX_HTML_INPUT_CHARS = 100_000;
+
+/**
+ * Fetch a URL with graceful degradation. Never throws.
+ *
+ * Chain: MCP web_url_read (server-side fetch + markdown) → MCP web_url_read
+ * with the r.jina.ai reader prefix (bypasses 403s on bot-hostile hosts) →
+ * direct streaming HTTP fetch → error text.
+ */
+export async function executeWebFetch(url: string, deadlineMs = 10_000): Promise<string> {
+  if (isMcpSearxngAvailable()) {
+    const direct = await mcpUrlRead(url, 12_000);
+    if (direct.ok && isUsefulFetchResult(direct.text)) {
+      return truncateContent(direct.text, 15000);
+    }
+    log(`[WebFetch] MCP web_url_read failed for "${url}" (${direct.ok ? "low-content result" : direct.error}), trying r.jina.ai prefix`);
+
+    const viaJina = await mcpUrlRead(`https://r.jina.ai/${url}`, 12_000);
+    if (viaJina.ok && isUsefulFetchResult(viaJina.text)) {
+      return truncateContent(viaJina.text, 15000);
+    }
+    log(`[WebFetch] MCP via r.jina.ai failed for "${url}" (${viaJina.ok ? "low-content result" : viaJina.error}), falling back to direct HTTP`);
+  }
+
+  return fetchViaHttp(url, deadlineMs);
+}
+
+/**
+ * Heuristic: an MCP fetch result that is empty or a bare error/denial page
+ * should trigger the next fallback instead of being returned to the model.
+ */
+function isUsefulFetchResult(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 50) return false;
+  if (/^(error|403|404|access denied|forbidden)/i.test(trimmed) && trimmed.length < 300) return false;
+  return true;
+}
+
+/**
+ * Direct HTTP fetch of a URL with HTML → readable text conversion.
+ * Uses streaming with a byte cap to avoid loading multi-MB pages into memory,
+ * and pre-truncates HTML before regex to prevent event-loop blocking.
+ */
+async function fetchViaHttp(url: string, deadlineMs = 10_000): Promise<string> {
+  try {
+    log(`[WebFetch] Fetching: "${url}"`);
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(deadlineMs),
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; Claudish/1.0)",
+        Accept: "text/html,application/xhtml+xml,text/plain,*/*",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+
+    // Stream the response body with a byte cap to avoid loading
+    // multi-MB pages (e.g. HuggingFace model cards) into memory.
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    let truncated = false;
+    const reader = response.body!.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        totalBytes += value.length;
+        if (totalBytes > MAX_FETCH_BYTES) {
+          log(`[WebFetch] Body exceeded ${MAX_FETCH_BYTES} bytes after ${totalBytes} bytes, truncating download`);
+          truncated = true;
+          break;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    // Decode collected chunks
+    const decoder = new TextDecoder();
+    let body = chunks.map(c => decoder.decode(c, { stream: true })).join("") + decoder.decode();
+
+    // If it's already plain text or JSON, return as-is (truncated)
+    if (contentType.includes("text/plain") || contentType.includes("application/json")) {
+      return truncateContent(body, 15000);
+    }
+
+    // HTML content — pre-truncate before regex to prevent CPU spikes,
+    // then strip tags and decode entities
+    if (contentType.includes("text/html") || body.trimStart().startsWith("<")) {
+      if (body.length > MAX_HTML_INPUT_CHARS) {
+        log(`[WebFetch] Pre-truncating HTML: ${body.length} → ${MAX_HTML_INPUT_CHARS} chars before regex`);
+        body = body.slice(0, MAX_HTML_INPUT_CHARS);
+      }
+      const text = htmlToText(body);
+      log(`[WebFetch] Converted HTML to text: ${body.length} → ${text.length} chars${truncated ? " (download truncated)" : ""}`);
+      return truncateContent(text, 15000);
+    }
+
+    // Unknown content type — return truncated raw text
+    return truncateContent(body, 15000);
+  } catch (err: any) {
+    log(`[WebFetch] Error fetching "${url}": ${err.message}`);
+    return `[Web fetch for "${url}" failed: ${err.message}]`;
+  }
+}
+
+/**
+ * Basic HTML → plain text conversion.
+ * Strips tags, decodes entities, normalizes whitespace.
+ * Enhanced: extracts main content when possible, removes navigation chrome.
+ */
+function htmlToText(html: string): string {
+  let text = html;
+
+  // Remove script and style blocks entirely
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
+
+  // Remove SVG blocks (common in GitHub navigation chrome)
+  text = text.replace(/<svg[\s\S]*?<\/svg>/gi, "");
+  text = text.replace(/<path\b[^>]*>/gi, "");
+
+  // Try to extract main content area before stripping tags.
+  // Many sites (GitHub, docs) use <main>, <article>, or role="main".
+  const mainContent =
+    text.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1] ||
+    text.match(/<article[^>]*>([\s\S]*?)<\/article>/i)?.[1] ||
+    text.match(/<[^>]+role=["']main["'][^>]*>([\s\S]*?)<\/\w+>/i)?.[1];
+  if (mainContent && mainContent.length > 200) {
+    text = mainContent;
+  }
+
+  // Remove <nav>, <header>, <footer> blocks (navigation chrome)
+  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
+  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
+  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
+
+  // Convert common block elements to newlines
+  text = text.replace(/<\/(p|div|h[1-6]|li|br|tr|blockquote)>/gi, "\n");
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  // Add newlines before headings for better readability
+  text = text.replace(/<h[1-6][^>]*>/gi, "\n\n");
+
+  // Remove all remaining HTML tags
+  text = text.replace(/<[^>]+>/g, "");
+
+  // Decode common HTML entities
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#39;/g, "'");
+  text = text.replace(/&nbsp;/g, " ");
+
+  // Collapse excessive whitespace (3+ newlines → 2)
+  text = text.replace(/\n{3,}/g, "\n\n");
+  // Collapse excessive spaces
+  text = text.replace(/[ \t]+/g, " ");
+
+  return text.trim();
+}
+
+/**
+ * Heuristic: detect low-quality web content that is mostly navigation chrome
+ * rather than useful page content. Used to decide whether to re-fetch via MCP
+ * or at least clean up the content.
+ */
+export function isLowQualityWebContent(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 100) return false;
+
+  // Known navigation chrome markers (GitHub, docs sites, etc.)
+  const chromeMarkers = [
+    "Skip to content",
+    "Navigation Menu",
+    "Toggle navigation",
+    "Appearance settings",
+    "Sign in",
+    "PlatformAI",
+    "DEVELOPER WORKFLOWS",
+    "APPLICATION SECURITY",
+    "EXPLORE BY TOPIC",
+    "SUPPORT & SERVICES",
+  ];
+  const chromeHits = chromeMarkers.filter(m => trimmed.includes(m)).length;
+  if (chromeHits >= 3) return true;
+
+  // SVG path data (indicates raw HTML rendering artifacts)
+  if (/M\d+\.\d+ \d+\.\d+[a-z]\d+/.test(trimmed)) return true;
+
+  // High ratio of markdown links to text — many `[text](url)` patterns
+  const linkCount = (trimmed.match(/\[([^\]]{1,50})\]\([^)]+\)/g) || []).length;
+  const lineCount = trimmed.split("\n").filter(l => l.trim().length > 0).length;
+  if (linkCount > 20 && linkCount / lineCount > 0.4) return true;
+
+  return false;
+}
+
+/**
+ * Extract the original URL from web content that Claude Code fetched.
+ * Looks for the first identifiable URL pattern in the content.
+ */
+export function extractUrlFromWebContent(text: string): string | null {
+  // Try to find a URL in the first 500 chars (often near the title)
+  const head = text.substring(0, 500);
+
+  // GitHub pattern: the title line often contains the repo URL
+  const githubMatch = head.match(/github\.com\/[\w.-]+\/[\w.-]+/);
+  if (githubMatch) return `https://${githubMatch[0]}`;
+
+  // Generic URL: first http(s) link
+  const urlMatch = head.match(/https?:\/\/[^\s)\]"']+/);
+  if (urlMatch) return urlMatch[0];
+
+  // Search entire content for a markdown link that looks like the page URL
+  const mdLink = text.match(/\]\((https?:\/\/[^\s)]+)\)/);
+  if (mdLink) return mdLink[1];
+
+  return null;
+}
+
+/**
+ * Clean raw web content that arrived as poorly-converted HTML/markdown.
+ * Strips navigation chrome, normalizes structure, keeps only useful text.
+ */
+export function cleanRawWebContent(text: string): string {
+  let cleaned = text;
+
+  // Remove common navigation chrome sections (markdown form)
+  // GitHub-specific: the long navigation block at the top
+  cleaned = cleaned.replace(/Skip to content[\s\S]*?(?=##|\n[A-Z][a-z])/i, "");
+
+  // Remove SVG path data lines
+  cleaned = cleaned.replace(/^[ \t]*M\d+\.\d+.*$/gm, "");
+
+  // Remove lines that are just navigation links (short lines with markdown links)
+  const lines = cleaned.split("\n");
+  const filtered = lines.filter(line => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return true;
+    if (trimmed.length < 3) return false;
+    if (/^\[.+\]\(.*\)$/.test(trimmed) && trimmed.length < 60) return false;
+    if (/^-{3,}$/.test(trimmed)) return false;
+    return true;
+  });
+
+  cleaned = filtered.join("\n");
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+
+  return truncateContent(cleaned.trim(), 15000);
+}
+
+/**
+ * Truncate content to a maximum length, adding an ellipsis if truncated.
+ */
+function truncateContent(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen) + `\n\n[... content truncated at ${maxLen} chars. Original length: ${text.length} chars]`;
 }
 
 /**

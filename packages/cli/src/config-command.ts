@@ -76,7 +76,7 @@ const PROVIDERS: ProviderDef[] = [
     description: "MiniMax API (mm@, mmax@)",
     keyUrl: "https://www.minimaxi.com/",
     endpointEnvVar: "MINIMAX_BASE_URL",
-    defaultEndpoint: "https://api.minimax.io",
+    defaultEndpoint: "https://api.minimaxi.com",
   },
   {
     name: "kimi",

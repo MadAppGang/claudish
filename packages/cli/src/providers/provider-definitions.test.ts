@@ -294,6 +294,16 @@ describe("getEffectiveBaseUrl", () => {
     const def = getProviderByName("openrouter")!;
     expect(getEffectiveBaseUrl(def)).toBe("https://openrouter.ai");
   });
+
+  test("minimax (mm@) default baseUrl is minimaxi.com, not minimax.io", () => {
+    const def = getProviderByName("minimax")!;
+    expect(def.baseUrl).toBe("https://api.minimaxi.com");
+  });
+
+  test("minimax-coding (mmc@) default baseUrl remains minimax.io", () => {
+    const def = getProviderByName("minimax-coding")!;
+    expect(def.baseUrl).toBe("https://api.minimax.io");
+  });
 });
 
 // ---------------------------------------------------------------------------

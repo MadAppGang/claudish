@@ -35,6 +35,7 @@ export function createOllamaJsonlStream(
 
       const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       let textStarted = false;
+      let finalized = false;
       let promptTokens = 0;
       let completionTokens = 0;
       let lastActivity = Date.now();
@@ -63,36 +64,58 @@ export function createOllamaJsonlStream(
       }, 1000);
 
       const finalize = (reason: string, err?: string) => {
-        if (isClosed) return;
+        if (finalized) return;
+        finalized = true;
 
-        if (textStarted) {
-          send("content_block_stop", { type: "content_block_stop", index: 0 });
-        }
-
-        if (reason === "error") {
-          send("error", { type: "error", error: { type: "api_error", message: err } });
-        } else {
-          send("message_delta", {
-            type: "message_delta",
-            delta: { stop_reason: "end_turn", stop_sequence: null },
-            usage: { input_tokens: promptTokens, output_tokens: completionTokens },
-          });
-          send("message_stop", { type: "message_stop" });
-        }
-
-        if (opts.onTokenUpdate) {
-          opts.onTokenUpdate(promptTokens, completionTokens);
-        }
-
-        if (!isClosed) {
-          isClosed = true;
-          if (pingInterval) {
-            clearInterval(pingInterval);
-            pingInterval = null;
+        // HARD never-hang invariant: cleanup in `finally` (clearInterval +
+        // controller.close) MUST run on every exit path, including a throw from a
+        // send() mid-body. The previous guard set isClosed only AFTER the sends, so
+        // a throw before that line left isClosed=false; the outer catch re-called
+        // finalize() and could throw again, leaving the ping interval leaking
+        // forever (= hung stream). See never-hang-priority.
+        try {
+          if (textStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: 0 });
           }
+
+          if (reason === "error") {
+            send("error", { type: "error", error: { type: "api_error", message: err } });
+          } else {
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+            });
+            send("message_stop", { type: "message_stop" });
+          }
+
+          if (opts.onTokenUpdate) {
+            try {
+              opts.onTokenUpdate(promptTokens, completionTokens);
+            } catch {}
+          }
+        } catch (finalizeErr) {
+          // Last-ditch terminal pair so the client never hangs waiting for the end.
+          log(`[OllamaJSONL] finalize() body threw: ${finalizeErr}`);
           try {
-            controller.close();
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: { input_tokens: 0, output_tokens: 0 },
+            });
+            send("message_stop", { type: "message_stop" });
           } catch {}
+        } finally {
+          if (!isClosed) {
+            isClosed = true;
+            if (pingInterval) {
+              clearInterval(pingInterval);
+              pingInterval = null;
+            }
+            try {
+              controller.close();
+            } catch {}
+          }
         }
       };
 

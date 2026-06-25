@@ -37,6 +37,14 @@ export const CustomEndpointSimpleSchema = z.object({
   apiKey: z.string().min(1),
   modelPrefix: z.string().optional(),
   models: z.array(z.string()).optional(),
+  /**
+   * Max concurrent in-flight requests to this endpoint (0 = unlimited, 1 =
+   * sequential). Only meaningful for capacity-limited backends (e.g. a single
+   * GPU vLLM server) where parallel large prefills cause engine wedging.
+   * Wires the endpoint through LocalModelQueue — same mechanism as local
+   * models' `:N` concurrency suffix. Omit for unbounded (default behavior).
+   */
+  maxConcurrency: z.number().int().min(0).max(8).optional(),
 });
 
 // "Complex" custom endpoint: a runtime PROVIDER_PROFILES entry.
@@ -61,6 +69,11 @@ export const CustomEndpointComplexSchema = z.object({
     .optional(),
   modelPrefix: z.string().optional(),
   models: z.array(z.string()).optional(),
+  /**
+   * Max concurrent in-flight requests to this endpoint (0 = unlimited, 1 =
+   * sequential). See CustomEndpointSimpleSchema.maxConcurrency.
+   */
+  maxConcurrency: z.number().int().min(0).max(8).optional(),
 });
 
 export const CustomEndpointSchema = z.discriminatedUnion("kind", [

@@ -32,6 +32,7 @@ import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-res
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
+import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
   describeImages,
@@ -302,6 +303,42 @@ export class ComposedHandler implements ModelHandler {
     // 4. Build request payload
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
 
+    // 4a. Fallback de-escalation system message (cost control).
+    // When a low-capability local model is reached ONLY via provider fallback —
+    // i.e. the primary model (GLM) failed on every upstream provider (zai, gc)
+    // — instruct the fallback model to behave conservatively: keep the session
+    // alive with simple, safe responses rather than attempting complex work the
+    // primary model would have to redo. This preserves the agent without burning
+    // metered tokens on ambitious-but-low-quality output.
+    //
+    // Gated on `fallbackMeta.attempts > 0` so DIRECT calls to the same model are
+    // unaffected (explicit qwen usage keeps full capability). Generalize the
+    // model match to a configurable set if more economy-fallback models are added.
+    if (
+      fallbackMeta &&
+      fallbackMeta.attempts > 0 &&
+      this.bareModelName === "qwen3.6-35b-a3b"
+    ) {
+      const FALLBACK_NOTICE =
+        "You are operating in TEMPORARY FALLBACK mode because the primary model is temporarily unavailable (the proxy fell back to you after all upstream providers failed). Behave conservatively: avoid complex multi-step reasoning, risky operations, destructive commands, and large refactors. Prioritize keeping the session alive with a safe, simple response. Do NOT attempt ambitious work — the primary model will resume shortly and any complex work you start would need to be redone. If a task is too complex for conservative execution, say so briefly rather than attempting it.";
+      const msgs = requestPayload.messages;
+      if (Array.isArray(msgs) && msgs.length > 0 && msgs[0]?.role === "system") {
+        const existing = msgs[0];
+        const existingText =
+          typeof existing.content === "string"
+            ? existing.content
+            : Array.isArray(existing.content)
+              ? existing.content.map((c: any) => c.text || "").join("\n")
+              : "";
+        msgs[0] = { ...existing, content: FALLBACK_NOTICE + "\n\n" + existingText };
+      } else if (Array.isArray(msgs)) {
+        msgs.unshift({ role: "system", content: FALLBACK_NOTICE });
+      }
+      logStderr(
+        `[Fallback] ${this.provider.displayName} reached as fallback (attempts=${fallbackMeta.attempts}) — injected conservative-mode system message`
+      );
+    }
+
     // 4b. Strip inline system messages from messages[] for Anthropic-transport providers.
     // Claude Code v2.1.153+ injects system messages inline (e.g. system-reminders).
     // Providers like Z.AI reject role:"system" in messages — only role:"user"/"assistant" accepted.
@@ -493,6 +530,30 @@ export class ComposedHandler implements ModelHandler {
       throw error;
     }
 
+    // ── Patient overload backoff (2026-06-25) ──────────────────────────────
+    // GLM/Z.AI concurrency contention arrives as a direct HTTP 429/503 whose
+    // body says "overloaded" (NOT a quota wall — both Anthropic and GLM quotas
+    // have headroom). The transport already ran a fast ~60s first-line retry; if
+    // the error still persists, back off patiently (~5 min — fits the 600s
+    // client timeout, far better than hammering a server that already warned us)
+    // via doFetch (direct, bypassing transport 429-retry to avoid compounding)
+    // before surfacing 529. The in-stream [1305] variant (HTTP 200 + SSE error)
+    // is handled by the peek loop below. Worst case bounded: transport 60s +
+    // patient loop ~5 min ≈ 6 min, well under the 10-min client timeout.
+    if (!response.ok) {
+      let probeText = "";
+      try {
+        probeText = await response.clone().text();
+      } catch {
+        // body read is best-effort
+      }
+      if (isTransientOverload(response.status, probeText)) {
+        const recovered = await this.patientOverloadBackoff(doFetch);
+        if (recovered) response = recovered;
+        // null = exhausted → response stays the overload → !response.ok below → 529
+      }
+    }
+
     // Check if the transport fell back to a different model (e.g., capacity exhaustion)
     if (this.provider.getActiveModelName?.()) {
       const activeModel = this.provider.getActiveModelName()!;
@@ -673,6 +734,30 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           errorBody = { error: { type: "api_error", message: errorText } };
         }
+
+        // Transient overload (gc@/Z.AI concurrency limit delivered as a direct
+        // HTTP 429/503, body says "overloaded"). By the time we reach here, the
+        // patient backoff loop (patientOverloadBackoff, ~5 min via doFetch) has
+        // already exhausted — so this is genuinely sustained contention. Surface
+        // HTTP 529 overloaded_error so the client retries with its own backoff,
+        // NOT 429 (which the client reads as a quota wall and stops the turn).
+        // (2026-06-25 patient-backoff.)
+        if (isTransientOverload(response.status, errorText)) {
+          logStderr(
+            `[Overload] [${this.provider.displayName}] HTTP ${response.status} transient overload → returning 529 overloaded_error (patient ~5min backoff exhausted)`,
+            true // forceConsole — operational event
+          );
+          c.header("Retry-After", "5");
+          return c.json(
+            wrapAnthropicError(
+              529,
+              `${this.provider.displayName} temporarily overloaded (concurrency limit) — please retry shortly`,
+              "overloaded_error"
+            ),
+            529 as any
+          );
+        }
+
         return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
       }
     }
@@ -686,8 +771,11 @@ export class ComposedHandler implements ModelHandler {
     // short window catches it without delaying slow-but-healthy big-context
     // responses), temporize with a jittered backoff + retry the SAME provider
     // (the sustained quota has headroom — only the instantaneous burst limit is
-    // hit), and on persistence return a 429 so FallbackHandler switches to the
-    // next provider in the chain (e.g. GLM Coding — a separate quota).
+    // hit). On persistence we return HTTP 529 (overloaded_error), NOT 429 — a
+    // 429 is read by clients as a quota/usage-wall and stops the turn, whereas
+    // 529 means "temporarily overloaded, not your usage limit" and the client
+    // retries. 529 is also retryable so FallbackHandler advances in multi-
+    // candidate mode. See the 2026-06-25 patient-backoff revision.
     //
     // The whole block is fail-open: peekStreamStart() only ever returns a
     // usable Response, and any classification other than "rate-limit" flows
@@ -698,15 +786,22 @@ export class ComposedHandler implements ModelHandler {
         (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
         this.getAdapter().getStreamFormat();
       if (peekFormat === "anthropic-sse") {
-        const maxRlRetries = 3;
+        // Patient overload backoff (2026-06-25): GLM/Z.AI concurrency limits
+        // surface as HTTP 200 + in-stream [130x]. Clients (Claude Code) have
+        // generous request timeouts (API_TIMEOUT_MS=600000) and would rather
+        // wait several minutes for concurrency to settle than hit a hard error.
+        // So we retry up to 6× with a ~5-minute spread (5s/10s/20s/40s/80s/150s
+        // + jitter ≈ 305s) and only surface 529 if contention is genuinely
+        // sustained. Retries use doFetch DIRECTLY (not enqueueRequest) so the
+        // transport's own 429-retry doesn't compound into an unbounded wait.
+        // Jitter (the cluster shares one key per provider) prevents synchronized
+        // retries from re-colliding on the burst limit.
+        const maxRlRetries = 6;
         let rlAttempt = 0;
         let peeked = await peekStreamStart(response);
         while (peeked.cls === "rate-limit" && rlAttempt < maxRlRetries) {
-          // Jittered exponential backoff: 1s, 2s, 4s (+0-750ms). The cluster
-          // shares one key per provider, so jitter prevents synchronized
-          // retries from re-colliding on the burst limit.
           const backoffMs =
-            Math.min(1000 * 2 ** rlAttempt, 8000) + Math.floor(Math.random() * 750);
+            Math.min(5000 * 2 ** rlAttempt, 150000) + Math.floor(Math.random() * 1000);
           log(
             `[RateLimit] [${this.provider.displayName}] in-stream rate-limit (HTTP 200), temporizing — retry ${rlAttempt + 1}/${maxRlRetries} in ${(backoffMs / 1000).toFixed(1)}s${peeked.detail ? `: ${peeked.detail}` : ""}`,
             true // forceConsole — operational event, must be visible without --debug
@@ -715,9 +810,9 @@ export class ComposedHandler implements ModelHandler {
           rlAttempt++;
           let retryResp: Response;
           try {
-            retryResp = this.provider.enqueueRequest
-              ? await this.provider.enqueueRequest(doFetch)
-              : await doFetch();
+            // doFetch direct (not enqueueRequest): the transport's 429-retry
+            // would compound with this patient loop into an unbounded wait.
+            retryResp = await doFetch();
           } catch (e: any) {
             log(
               `[RateLimit] [${this.provider.displayName}] rate-limit retry fetch failed: ${e?.message ?? e}`,
@@ -736,13 +831,13 @@ export class ComposedHandler implements ModelHandler {
         }
         if (peeked.cls === "rate-limit") {
           log(
-            `[RateLimit] [${this.provider.displayName}] in-stream rate-limit persisted after ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} → returning 429 for cross-provider fallback`,
+            `[Overload] [${this.provider.displayName}] in-stream overload persisted after ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} → returning 529 overloaded_error (patient backoff exhausted)`,
             true // forceConsole — operational event, must be visible without --debug
           );
           try {
             const { error_class, error_code } = classifyError(
-              new Error("in-stream rate limit"),
-              429,
+              new Error("in-stream overload"),
+              529,
               peeked.detail
             );
             recordStats({
@@ -751,7 +846,7 @@ export class ComposedHandler implements ModelHandler {
               stream_format: this.provider.streamFormat,
               latency_ms: Math.round(performance.now() - startTime),
               success: false,
-              http_status: 429,
+              http_status: 529,
               error_class,
               error_code,
               token_strategy: this.options.tokenStrategy ?? "standard",
@@ -765,13 +860,19 @@ export class ComposedHandler implements ModelHandler {
           } catch {
             // Stats must never crash claudish
           }
+          // 529 overloaded_error (NOT 429): a 429 is read by Claude Code as a
+          // quota/usage-wall and stops the turn; 529 means "temporarily
+          // overloaded, not your usage limit" and the client retries with its
+          // own backoff. Retry-After nudges impatient clients to wait rather
+          // than hammer a server that already warned us.
+          c.header("Retry-After", "5");
           return c.json(
             wrapAnthropicError(
-              429,
-              `${this.provider.displayName} rate limited (in-stream burst limit); ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} exhausted`,
-              "rate_limit_error"
+              529,
+              `${this.provider.displayName} temporarily overloaded (concurrency limit); ${rlAttempt} retr${rlAttempt === 1 ? "y" : "ies"} exhausted — please retry shortly`,
+              "overloaded_error"
             ),
-            429 as any
+            529 as any
           );
         }
         // healthy or other-error → use the peeked (tee'd, full) stream below.
@@ -819,7 +920,30 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    return this.handleStream(c, response, adapter, claudeRequest, toolNameMap, onStreamComplete);
+    const streamResponse = this.handleStream(
+      c,
+      response,
+      adapter,
+      claudeRequest,
+      toolNameMap,
+      onStreamComplete
+    );
+
+    // Non-streaming clients (notably Claude Code's `/compact`, and any caller that
+    // sent `stream: false`) expect a single JSON `message` body, NOT SSE. Every
+    // adapter drives the upstream provider in streaming mode and the whole pipeline
+    // emits Claude SSE, so we buffer that translated SSE back into one Anthropic
+    // message here. Mirrors request-logger.ts's `stream` definition exactly
+    // (`body.stream === true` ⇒ streaming; anything else ⇒ sync). NativeHandler
+    // already honors this for Anthropic-direct; this closes the same gap for every
+    // proxied/composed model. See collect-sse-message.ts.
+    const wantsStreaming = payload?.stream === true;
+    if (wantsStreaming) return streamResponse;
+
+    const message = await collectAnthropicSseToMessage(streamResponse, this.bareModelName);
+    return c.json(message, {
+      headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
+    });
   }
 
   private handleStream(
@@ -967,11 +1091,88 @@ export class ComposedHandler implements ModelHandler {
     this.pendingFallbackMeta = { chain, attempts };
   }
 
+  /**
+   * Patient backoff for transient provider overload (HTTP 429/503 whose body
+   * indicates concurrency/overload — NOT a quota wall). Retries the SAME provider
+   * via `doFetch` directly (bypassing the transport's own 429-retry so the two
+   * don't compound) with a ~5-minute exponential spread (5s/10s/20s/40s/80s/150s
+   * + jitter ≈ 305s), which fits comfortably in the 600s client request timeout.
+   *
+   * Returns:
+   *   - a recovered (ok) Response → caller streams it normally.
+   *   - a non-transient !ok Response (the error morphed, e.g. into a 500) →
+   *     caller surfaces the real error via the normal !response.ok path.
+   *   - null → contention genuinely sustained after ~5 min → caller surfaces 529.
+   *
+   * (2026-06-25 patient-backoff revision.)
+   */
+  private async patientOverloadBackoff(
+    doFetch: () => Promise<Response>
+  ): Promise<Response | null> {
+    const maxRetries = 6;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const backoffMs =
+        Math.min(5000 * 2 ** attempt, 150000) + Math.floor(Math.random() * 1000);
+      log(
+        `[Overload] [${this.provider.displayName}] transient overload (HTTP) — patient retry ${attempt + 1}/${maxRetries} in ${(backoffMs / 1000).toFixed(1)}s`,
+        true // forceConsole — operational event, must be visible without --debug
+      );
+      await new Promise((r) => setTimeout(r, backoffMs));
+      try {
+        const retryResp = await doFetch();
+        if (retryResp.ok) return retryResp; // recovered
+        const retryText = await retryResp.clone().text();
+        if (!isTransientOverload(retryResp.status, retryText)) {
+          // Morphed into a non-transient error (e.g. 500) — stop retrying and
+          // let the caller surface the real error rather than masking it as 529.
+          return retryResp;
+        }
+        // still transient overload → keep backing off
+      } catch (e: any) {
+        log(
+          `[Overload] [${this.provider.displayName}] patient retry fetch failed: ${e?.message ?? e}`,
+          true
+        );
+        // transient network blip — keep retrying
+      }
+    }
+    return null; // exhausted — contention genuinely sustained
+  }
+
   async shutdown(): Promise<void> {
     if (this.provider.shutdown) {
       await this.provider.shutdown();
     }
   }
+}
+
+/**
+ * Detect whether an HTTP error represents a TRANSIENT provider overload
+ * (concurrency/burst limit, server-side) rather than a quota/usage wall.
+ *
+ * Used to surface the error as HTTP 529 (overloaded_error) instead of 429
+ * (rate_limit_error): clients read 429 as "quota reached" and stop the turn,
+ * whereas 529 means "temporarily overloaded, not your usage limit" and the
+ * client retries with its own backoff. GLM Coding (gc@) frequently delivers
+ * concurrency limits as a direct HTTP 429 whose body contains "overloaded" —
+ * this is NOT a quota wall, and in no-fallback mode there is no other provider
+ * to switch to, so the only useful outcome is a patient client retry. See the
+ * 2026-06-25 patient-backoff revision.
+ */
+function isTransientOverload(status: number, errorText: string): boolean {
+  const lower = errorText.toLowerCase();
+  if (status === 503) return true;
+  if (status === 429) {
+    return (
+      lower.includes("overloaded") ||
+      lower.includes("concurrency") ||
+      lower.includes("concurrent") ||
+      lower.includes("temporarily") ||
+      lower.includes("service may be") ||
+      lower.includes("try again later")
+    );
+  }
+  return false;
 }
 
 /**

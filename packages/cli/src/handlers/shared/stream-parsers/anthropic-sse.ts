@@ -13,6 +13,7 @@ import type { Context } from "hono";
 import { log } from "../../../logger.js";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { createResponseCapture } from "../response-capture.js";
+import { executeWebFetch } from "../web-search-executor.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -67,6 +68,71 @@ export function createAnthropicPassthroughStream(
           }
         }, 1000);
 
+        // ── Shared content-block index tracking state ──────────────────
+        // DECLARED HERE (in start() scope, not inside the inner try block) so that
+        // handleServerToolResult's closure and the read loop share the SAME binding.
+        // Previously highestSeenIndex was declared inside the inner try{} block while
+        // handleServerToolResult (which writes it at line ~109) lived in the outer scope —
+        // two different block scopes → ReferenceError: highestSeenIndex is not defined
+        // whenever a real server_tool_use block fired the handler, crashing the proxy
+        // (observed live: po-2025 "Content block not found" freeze).
+        let highestSeenIndex = -1;
+        let lastBlockOpen = false;
+        const clampIndex = (idx: number, context: string): number => {
+          if (idx > highestSeenIndex + 1) {
+            log(
+              `[AnthropicSSE] Index jump detected: ${idx} but expected <=${highestSeenIndex + 1} (${context}) — clamping to ${highestSeenIndex + 1}`
+            );
+            return highestSeenIndex + 1;
+          }
+          return idx;
+        };
+        const trackIndex = (idx: number) => {
+          if (idx > highestSeenIndex) highestSeenIndex = idx;
+        };
+
+        // Execute a suppressed server_tool_use (webReader) and inject the result
+        // as a text block. Non-blocking — errors degrade to a short notice.
+        const handleServerToolResult = async (
+          toolName: string,
+          rawInput: string,
+          currentHighestIdx: number,
+        ) => {
+          const textIdx = currentHighestIdx + 1;
+          let resultText: string;
+          try {
+            const input = JSON.parse(rawInput || "{}");
+            const url = input.url;
+            if (url && (toolName === "webReader" || toolName === "web_search_preview")) {
+              log(`[AnthropicSSE] Executing suppressed server_tool_use webReader for ${url}`);
+              const result = await executeWebFetch(url);
+              resultText = result.ok
+                ? result.text
+                : `[Web fetch for ${url} failed: ${result.error}]`;
+            } else {
+              resultText = `[Server tool "${toolName}" was executed by the provider (result not available locally).]`;
+            }
+          } catch {
+            resultText = `[Server tool "${toolName}" was executed by the provider (result not available locally).]`;
+          }
+          // Truncate very long results to avoid blowing up the context
+          if (resultText.length > 8000) {
+            resultText = resultText.slice(0, 8000) + "\n[...truncated]";
+          }
+          if (!isClosed) {
+            controller.enqueue(encoder.encode(
+              `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: textIdx, content_block: { type: "text", text: "" } })}\n\n`
+            ));
+            controller.enqueue(encoder.encode(
+              `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: textIdx, delta: { type: "text_delta", text: resultText } })}\n\n`
+            ));
+            controller.enqueue(encoder.encode(
+              `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: textIdx })}\n\n`
+            ));
+            highestSeenIndex = textIdx;
+          }
+        };
+
         try {
           const reader = response.body!.getReader();
           let buffer = "";
@@ -79,28 +145,24 @@ export function createAnthropicPassthroughStream(
           let stopReason: string | null = null;
           let sawMessageStop = false;
           let sawMessageStart = false;
-          let suppressedServerTools = 0;
 
           // Thinking-block filtering state
           let insideThinkingBlock = false;
           /** How many thinking blocks have been suppressed so far. */
           let thinkingBlocksSuppressed = 0;
 
-          // Content block index tracking — detect out-of-range indices
-          // that would cause "Content block not found" on the client side.
-          let highestSeenIndex = -1;
-          const clampIndex = (idx: number, context: string): number => {
-            if (idx > highestSeenIndex + 1) {
-              log(
-                `[AnthropicSSE] Index jump detected: ${idx} but expected <=${highestSeenIndex + 1} (${context}) — clamping to ${highestSeenIndex + 1}`
-              );
-              return highestSeenIndex + 1;
-            }
-            return idx;
-          };
-          const trackIndex = (idx: number) => {
-            if (idx > highestSeenIndex) highestSeenIndex = idx;
-          };
+          // server_tool_use suppression state.
+          // Z.AI built-in tools (webReader, web_search) emit server_tool_use blocks
+          // that Claude Code doesn't support — "Unsupported content type: server_tool_use"
+          // followed by "Content block not found" (index desync). Suppress them and
+          // execute web fetches ourselves, injecting results as text blocks.
+          let insideServerToolBlock = false;
+          let serverToolName = "";
+          let serverToolInput = "";
+          let serverToolsSuppressed = 0;
+
+          // (highestSeenIndex / lastBlockOpen / clampIndex / trackIndex declared
+          //  earlier in start() scope — shared with handleServerToolResult's closure.)
 
           // ── Graceful in-stream error finalization ─────────────────────
           // Some anthropic-compat providers (Z.AI, MiniMax, Kimi) return HTTP 200
@@ -146,9 +208,12 @@ export function createAnthropicPassthroughStream(
                     "event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}\n\n`
                   )
                 );
-              } else if (highestSeenIndex >= 0) {
+              } else if (highestSeenIndex >= 0 && lastBlockOpen) {
                 // Mid-stream: close whatever content block was open when the error hit,
                 // otherwise the client sees an unterminated block.
+                // Only emit if the block is actually still open — if the provider
+                // already sent a content_block_stop, a duplicate would cause
+                // "Content block not found" on the client.
                 controller.enqueue(
                   encoder.encode(
                     "event: content_block_stop\n" +
@@ -186,6 +251,13 @@ export function createAnthropicPassthroughStream(
             }
           };
 
+          // Wrap the read loop so a mid-stream upstream socket close (Z.AI / GLM
+          // Coding connection reset) is caught HERE — where finalizeWithError is
+          // in scope — instead of escaping to the outer catch which can only do a
+          // bare controller.close() with NO terminal message_stop. Without that
+          // terminal event, Claude Code reports "socket connection was closed
+          // unexpectedly" and freezes the turn. See never-hang-priority.
+          try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -220,6 +292,7 @@ export function createAnthropicPassthroughStream(
                   ) {
                     insideThinkingBlock = true;
                     thinkingBlocksSuppressed++;
+                    // Thinking blocks are suppressed — don't count them as open.
                     log(`[AnthropicSSE] Filtering thinking block at index ${data.index}`);
                     continue; // suppress this line
                   }
@@ -237,11 +310,16 @@ export function createAnthropicPassthroughStream(
                   }
 
                   // Re-index non-thinking content blocks
-                  // After suppressing N thinking blocks, subtract N from the index
-                  if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
-                    const reindexed = data.index - thinkingBlocksSuppressed;
+                  // After suppressing N thinking blocks + M server_tool_use blocks,
+                  // subtract N+M from the index to keep it sequential.
+                  const totalSuppressed = thinkingBlocksSuppressed + serverToolsSuppressed;
+                  if (typeof data.index === "number" && totalSuppressed > 0) {
+                    const reindexed = data.index - totalSuppressed;
                     const clamped = clampIndex(reindexed, `${data.type} (filtered, orig=${data.index})`);
                     trackIndex(clamped);
+                    // Track block open/close state for finalizeWithError
+                    if (data.type === "content_block_start") lastBlockOpen = true;
+                    if (data.type === "content_block_stop") lastBlockOpen = false;
                     const modifiedLine =
                       "data: " + JSON.stringify({ ...data, index: clamped });
 
@@ -255,8 +333,10 @@ export function createAnthropicPassthroughStream(
                     if (typeof data.index === "number") {
                       if (data.type === "content_block_start") {
                         trackIndex(data.index);
+                        lastBlockOpen = true;
                       } else {
                         const clamped = clampIndex(data.index, `${data.type} (unfiltered)`);
+                        if (data.type === "content_block_stop") lastBlockOpen = false;
                         if (clamped !== data.index) {
                           const modifiedLine =
                             "data: " + JSON.stringify({ ...data, index: clamped });
@@ -293,9 +373,48 @@ export function createAnthropicPassthroughStream(
                       return; // stop processing further lines
                     }
 
+                    // ── server_tool_use suppression ──────────────────────────────
+                    // MUST run BEFORE the index-remap/passthrough logic below.
+                    // Z.AI built-in tools (webReader, web_search_preview) emit
+                    // server_tool_use blocks that Claude Code doesn't understand:
+                    //   "Unsupported content type: server_tool_use" + "Content block not found"
+                    // We suppress the entire block lifecycle (start → deltas → stop),
+                    // execute web fetches ourselves, and inject results as text.
+                    // (Ordering matters: without this guard first, the start event
+                    //  would already be enqueued by the passthrough below before the
+                    //  suppression flag is set — leaking the unsupported block type.)
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "server_tool_use"
+                    ) {
+                      insideServerToolBlock = true;
+                      serverToolName = data.content_block.name || "(unnamed)";
+                      serverToolInput = "";
+                      serverToolsSuppressed++;
+                      log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}: ${serverToolName}`);
+                      continue; // drop this start event
+                    }
+                    if (insideServerToolBlock) {
+                      // Accumulate input_json_delta inside the suppressed block
+                      if (data.type === "content_block_delta" && data.delta?.type === "input_json_delta") {
+                        serverToolInput += data.delta.partial_json || "";
+                      }
+                      // On stop: block is complete — execute and inject result
+                      if (data.type === "content_block_stop") {
+                        insideServerToolBlock = false;
+                        log(`[AnthropicSSE] server_tool_use "${serverToolName}" complete, input=${serverToolInput.length} chars`);
+                        // Fire-and-forget: execute the web fetch and inject as text
+                        handleServerToolResult(serverToolName, serverToolInput, highestSeenIndex);
+                        serverToolName = "";
+                        serverToolInput = "";
+                      }
+                      continue; // drop all events inside the suppressed block
+                    }
+
                     // No error — check index bounds before passing through
                     if (typeof data.index === "number") {
                       if (data.type === "content_block_start") {
+                        lastBlockOpen = true;
                         // z.ai sometimes sends content_block_start with an index
                         // that jumps (e.g., 0 → 2, skipping 1). This causes
                         // "Content block not found" on the client. Remap to
@@ -317,6 +436,7 @@ export function createAnthropicPassthroughStream(
                         trackIndex(expected);
                       } else {
                         // delta / stop — clamp to highestSeenIndex
+                        if (data.type === "content_block_stop") lastBlockOpen = false;
                         const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
                         if (clamped !== data.index) {
                           const modified = { ...data, index: clamped };
@@ -358,19 +478,6 @@ export function createAnthropicPassthroughStream(
                     ) {
                       toolUseBlocks++;
                       log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
-                    }
-                    // Suppress server_tool_use blocks (Z.AI built-in tools)
-                    if (
-                      data.type === "content_block_start" &&
-                      data.content_block?.type === "server_tool_use"
-                    ) {
-                      suppressedServerTools++;
-                      log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}`);
-                      continue;
-                    }
-                    if (data.type === "content_block_stop" && suppressedServerTools > 0) {
-                      suppressedServerTools--;
-                      continue;
                     }
                     if (data.type === "message_start") {
                       sawMessageStart = true;
@@ -440,6 +547,18 @@ export function createAnthropicPassthroughStream(
               }
             }
           }
+          } catch (readErr) {
+            // Upstream socket closed mid-stream (Z.AI / GLM Coding connection
+            // reset). finalizeWithError() emits the terminal message_stop so the
+            // client ends the turn cleanly instead of freezing. In scope here
+            // because finalizeWithError is declared above in the same outer try.
+            log(
+              `[AnthropicSSE] Upstream read error for ${opts.modelName}: ${String(readErr).slice(0, 200)} — finalizing gracefully`,
+              true
+            );
+            finalizeWithError(`upstream read error: ${String(readErr)}`, "reader-exception");
+            return; // skip normal finalization — already terminated
+          }
 
           log(
             `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}` +
@@ -469,7 +588,7 @@ export function createAnthropicPassthroughStream(
               ));
               controller.enqueue(encoder.encode(
                 "event: content_block_delta\n" +
-                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. Try compacting the conversation or reducing the context size.]"}}\n\n`
+                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly on a very large conversation, then try /compact.]"}}\n\n`
               ));
               controller.enqueue(encoder.encode(
                 "event: content_block_stop\n" +

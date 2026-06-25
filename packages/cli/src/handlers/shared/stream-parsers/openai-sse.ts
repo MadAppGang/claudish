@@ -33,6 +33,7 @@ export interface StreamingState {
   toolIds: Set<string>;
   lastActivity: number;
   accumulatedText: string; // Accumulated text for potential tool call extraction
+  lastFinishReason: string | null; // Last finish_reason seen (stop/length/content_filter) — diagnoses empty responses
 }
 
 export interface ToolState {
@@ -42,8 +43,22 @@ export interface ToolState {
   started: boolean; // Whether content_block_start has been sent
   closed: boolean;
   suppressed: boolean; // Web search tools — drop from stream, replace with text
+  remapped: boolean; // Web search tools re-emitted as the client's WebSearch tool_use
   arguments: string; // Accumulated JSON arguments string
   buffered: boolean; // Whether we're buffering args until tool call completes
+}
+
+/**
+ * Whether the client declared a WebSearch tool in this request.
+ * When it did, provider-side web search calls (web_search tool calls or GLM
+ * <searchWeb> tags) are remapped to a synthetic WebSearch tool_use with
+ * stop_reason "tool_use" — the client then runs its own WebSearch, gets the
+ * results as a tool_result, and the agentic loop CONTINUES. Suppressing the
+ * call and injecting results as text ends the turn (stop_reason end_turn),
+ * which stalls the agent on raw search results (CoursIA incident 2026-06-10).
+ */
+function clientDeclaresWebSearch(toolSchemas?: any[]): boolean {
+  return !!toolSchemas?.some((s) => s?.name === "WebSearch");
 }
 
 /**
@@ -98,6 +113,7 @@ export function createStreamingState(): StreamingState {
     toolIds: new Set(),
     lastActivity: Date.now(),
     accumulatedText: "",
+    lastFinishReason: null,
   };
 }
 
@@ -143,6 +159,45 @@ export function createStreamingResponseHandler(
         const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         const state = createStreamingState();
 
+        // Emit a synthetic WebSearch tool_use block. Used to remap provider
+        // web search calls (web_search tool calls, GLM <searchWeb> tags) to
+        // the client's own WebSearch tool so the agentic loop continues
+        // (stop_reason "tool_use") instead of ending the turn on raw results.
+        const emitWebSearchToolUse = (query: string, t?: ToolState) => {
+          const blockIndex = t?.blockIndex ?? state.curIdx++;
+          const id = t?.id ?? `tool_websearch_${Date.now()}_${blockIndex}`;
+          send("content_block_start", {
+            type: "content_block_start",
+            index: blockIndex,
+            content_block: { type: "tool_use", id, name: "WebSearch" },
+          });
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "input_json_delta", partial_json: JSON.stringify({ query }) },
+          });
+          send("content_block_stop", { type: "content_block_stop", index: blockIndex });
+          if (t) {
+            t.started = true;
+            t.closed = true;
+          } else {
+            // Register so hasStructuredTools counts it → stop_reason "tool_use".
+            // Negative key avoids collisions with provider tool_call indices.
+            state.tools.set(-(blockIndex + 1), {
+              id,
+              name: "WebSearch",
+              blockIndex,
+              started: true,
+              closed: true,
+              suppressed: false,
+              remapped: true,
+              arguments: JSON.stringify({ query }),
+              buffered: false,
+            });
+          }
+          log(`[Stream] Remapped provider web search → WebSearch tool_use (query="${query}")`);
+        };
+
         send("message_start", {
           type: "message_start",
           message: {
@@ -167,7 +222,18 @@ export function createStreamingResponseHandler(
         const finalize = async (reason: string, err?: string) => {
           if (state.finalized) return;
           state.finalized = true;
-          const toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
+          // Hang-guard: the body below performs awaits and send()s that can throw
+          // (a controller errored by a client-disconnect race, a callback failure).
+          // If a throw escaped, the outer read-loop catch would re-call finalize() —
+          // now a no-op (finalized=true) — leaving the stream with no message_stop
+          // and a leaked ping interval: a hung HTTP 200 the client reports as "empty
+          // or malformed response", and an agent blocked forever (the worst proxy
+          // failure mode). The try/catch/finally GUARANTEES terminal events +
+          // controller.close() + clearInterval(ping) on every exit path.
+          let terminalSent = false;
+          let toolCount = 0;
+          try {
+          toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
           log(`[Stream] reason=${reason} model=${target} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
           logStderr(`[Stream] ${target} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
 
@@ -183,21 +249,51 @@ export function createStreamingResponseHandler(
           // These must be intercepted before text-based tool call extraction, since we want to
           // execute SearXNG and replace the search tags with results, not pass them through.
           let searchWebResults: string | null = null;
+          let pendingSearchRemap: string | null = null;
           let cleanedText = state.accumulatedText;
           const searchWebMatch = state.accumulatedText.match(/<searchWeb>\s*<query>([\s\S]*?)<\/query>\s*<\/searchWeb>/i);
           if (searchWebMatch) {
             const searchQuery = searchWebMatch[1].trim();
-            log(`[Stream] GLM searchWeb detected: "${searchQuery}" — intercepting via SearXNG`);
-            if (searchQuery && SEARXNG_AVAILABLE) {
-              searchWebResults = await executeWebSearch(searchQuery);
+            if (searchQuery && clientDeclaresWebSearch(toolSchemas)) {
+              // Remap to the client's WebSearch tool — emitted as a tool_use
+              // block after the text blocks close, keeping the agent loop alive.
+              log(`[Stream] GLM searchWeb detected: "${searchQuery}" — remapping to client WebSearch tool_use`);
+              pendingSearchRemap = searchQuery;
             } else {
-              searchWebResults = searchQuery
-                ? `[Web search for "${searchQuery}" could not be executed. SearXNG is not configured.]`
-                : `[Web search was requested but no query was provided.]`;
+              log(`[Stream] GLM searchWeb detected: "${searchQuery}" — intercepting via SearXNG`);
+              if (searchQuery && SEARXNG_AVAILABLE) {
+                searchWebResults = await executeWebSearch(searchQuery);
+              } else {
+                searchWebResults = searchQuery
+                  ? `[Web search for "${searchQuery}" could not be executed. SearXNG is not configured.]`
+                  : `[Web search was requested but no query was provided.]`;
+              }
             }
             // Remove the search tags from accumulated text so they don't appear in output
             cleanedText = state.accumulatedText.replace(/<searchWeb>[\s\S]*?<\/searchWeb>/i, "").trim();
             state.accumulatedText = cleanedText;
+          }
+
+          // Close any open reasoning/text blocks BEFORE emitting new blocks below.
+          // If we don't, new tool_use blocks (higher indices) get fully opened/closed
+          // before the reasoning block (lower index) is stopped — the Anthropic client
+          // rejects this out-of-order lifecycle as "Content block not found".
+          //
+          // Snapshot BEFORE clearing the flags: hasContent (below) must know whether
+          // text/reasoning was EVER produced, not whether a block is still open.
+          // Reading state.textStarted after this close block made hasContent always
+          // false for pure-text responses — a spurious "[Error: empty response …
+          // try /compact]" was appended after every valid text answer (cluster-wide
+          // false-compact incident, 2026-06-12).
+          const producedText = state.textStarted;
+          const producedReasoning = state.reasoningStarted;
+          if (state.reasoningStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
+            state.reasoningStarted = false;
+          }
+          if (state.textStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+            state.textStarted = false;
           }
 
           // Check for text-based tool calls before finalizing
@@ -208,12 +304,6 @@ export function createStreamingResponseHandler(
             log(
               `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
             );
-
-            // Close any open text block first
-            if (state.textStarted) {
-              send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
-              state.textStarted = false;
-            }
 
             // Send each extracted tool call as a proper tool_use block
             for (const tc of textToolCalls) {
@@ -234,11 +324,10 @@ export function createStreamingResponseHandler(
             }
           }
 
-          if (state.reasoningStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
-          }
-          if (state.textStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+          // GLM <searchWeb> remapped to the client's WebSearch tool —
+          // emitted as a tool_use block so stop_reason becomes "tool_use".
+          if (pendingSearchRemap) {
+            emitWebSearchToolUse(pendingSearchRemap);
           }
 
           // Inject SearXNG results if we intercepted GLM <searchWeb> tags.
@@ -256,6 +345,20 @@ export function createStreamingResponseHandler(
               delta: { type: "text_delta", text: searchWebResults },
             });
             send("content_block_stop", { type: "content_block_stop", index: srchIdx });
+          }
+
+          // Remapped web search tools that never saw finish_reason="tool_calls"
+          // (e.g. the provider ended with "stop") — emit them now so the
+          // query isn't silently dropped and stop_reason becomes "tool_use".
+          for (const t of Array.from(state.tools.values())) {
+            if (t.remapped && !t.closed) {
+              const query = extractSearchQuery(t.arguments);
+              if (query) {
+                emitWebSearchToolUse(query, t);
+              } else {
+                t.closed = true;
+              }
+            }
           }
 
           // Handle buffered-but-unsent structured tool calls.
@@ -339,27 +442,118 @@ export function createStreamingResponseHandler(
             await middlewareManager.afterStreamComplete(target, streamMetadata);
           }
 
+          // Determine whether the stream produced any usable content.
+          const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
+          // A suppressed web-search tool that reached `closed` emitted its SearXNG
+          // result as a real text block (see the suppression path) — that IS content,
+          // even though the tool is suppressed and never set textStarted. Likewise the
+          // GLM <searchWeb> SearXNG injection. Counting these prevents a spurious
+          // "[Error: empty response]" being appended after valid search results.
+          const hasSuppressedWebText = Array.from(state.tools.values()).some((t) => t.suppressed && t.closed);
+          const hasContent =
+            producedText ||
+            producedReasoning ||
+            state.accumulatedText.length > 0 ||
+            hasStructuredTools ||
+            textToolCalls.length > 0 ||
+            hasSuppressedWebText ||
+            searchWebResults !== null;
+
           if (reason === "error") {
-            send("error", { type: "error", error: { type: "api_error", message: err } });
+            // Socket close, network error, or other fetch failure mid-stream.
+            // Previously we sent event: error, but Claude Code surfaces raw SSE error
+            // events as "API Error: <message>" without closing the turn cleanly.
+            // Instead, close any open blocks and inject the error as a text block
+            // so the turn ends gracefully with end_turn.
+            log(`[Stream] Stream error from ${target}: ${err}`);
+            logStderr(`[Stream] Stream error from ${target}: ${err?.substring(0, 120)}`);
+
+            // Close reasoning if still open
+            if (state.reasoningStarted) {
+              send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
+              state.reasoningStarted = false;
+            }
+            // Close text if still open
+            if (state.textStarted) {
+              send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+              state.textStarted = false;
+            }
+
+            // Inject error as a text block (or replace if no content was produced)
+            const isSocketClose = /socket.*closed|connection was closed|ECONNRESET/i.test(err || "");
+            const errorNotice = isSocketClose
+              ? `[The connection to the model provider was interrupted. This is usually temporary — please retry.]`
+              : `[Upstream stream error: ${(err || "unknown").substring(0, 200)}]`;
+            const errorIdx = state.curIdx++;
+            send("content_block_start", {
+              type: "content_block_start",
+              index: errorIdx,
+              content_block: { type: "text", text: "" },
+            });
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index: errorIdx,
+              delta: { type: "text_delta", text: errorNotice },
+            });
+            send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: {
+                input_tokens: state.usage?.prompt_tokens || 0,
+                output_tokens: state.usage?.completion_tokens || 0,
+              },
+            });
+            send("message_stop", { type: "message_stop" });
+            terminalSent = true;
           } else {
             // Ensure at least one content block exists — some providers (z.ai, GLM)
             // return empty responses (finish_reason without content). The Anthropic
             // SDK treats messages with content:[] as malformed.
-            const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
-            const hasContent = state.textStarted || state.reasoningStarted || hasStructuredTools || textToolCalls.length > 0;
             if (!hasContent) {
-              // Send a proper Anthropic error event so the SDK triggers its retry logic.
-              // Injecting fake text would be silently accepted but not trigger recovery.
-              const emptyMsg = `The model returned an empty response. This usually happens when the conversation context is too large. Try compacting the conversation or reducing the context size.`;
-              send("error", {
-                type: "error",
-                error: {
-                  type: "api_error",
-                  message: emptyMsg,
-                },
+              // Inject a text content block with the error message.
+              // Previously we sent event: error, but Claude Code does not handle
+              // raw error events in-stream — it reports "empty or malformed response".
+              // A content block with the error text is properly parsed and surfaced.
+              //
+              // Cause classification (was: always blamed "context too large"):
+              //   - finish_reason "length"        → genuine context/max_tokens overflow → compact
+              //   - finish_reason "content_filter"→ provider content filter → not a context issue
+              //   - otherwise (stop/null)         → almost always transient (provider load /
+              //                                       momentary rate limit) → RETRY, do NOT compact
+              // The old blanket "compact" message pushed agents into a destructive /compact on
+              // transient empties (the majority — sub-agents with tiny contexts), discarding
+              // context mid-task. Lead with "transient, retry"; mention compact only when the
+              // cause is actually length/overflow.
+              const fr = state.lastFinishReason;
+              const promptTokens = state.usage?.prompt_tokens ?? 0;
+              const isOverflow = fr === "length" || promptTokens > 100_000;
+              const emptyMsg =
+                fr === "content_filter"
+                  ? `The model's response was filtered by the provider's content policy. This is usually transient — please retry, or rephrase the request.`
+                  : isOverflow
+                    ? `The model returned an empty response and the conversation context is very large (finish_reason: ${fr || "stop"}, ~${promptTokens} input tokens). Try /compact to reduce the context size, or retry.`
+                    : `The model returned an empty response (finish_reason: ${fr || "stop"}). This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly, then try /compact.`;
+              const blockIdx = state.curIdx++;
+              send("content_block_start", {
+                type: "content_block_start",
+                index: blockIdx,
+                content_block: { type: "text", text: "" },
               });
-              logStderr(`[Stream] EMPTY RESPONSE from ${target} — sent api_error to client (context overflow?)`);
-              log(`[Stream] Empty response from provider (context overflow?) — sent api_error event`);
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: blockIdx,
+                delta: { type: "text_delta", text: `[Error: ${emptyMsg}]` },
+              });
+              send("content_block_stop", { type: "content_block_stop", index: blockIdx });
+              const cls = fr === "content_filter" ? "content-filter" : isOverflow ? "overflow" : "transient";
+              logStderr(
+                `[Stream] EMPTY RESPONSE from ${target} — finish_reason=${fr || "null"} prompt_tokens=${promptTokens} → ${cls} (injected ${cls} message)`
+              );
+              log(
+                `[Stream] Empty response from provider (finish_reason=${fr || "null"}, prompt_tokens=${promptTokens}) — classified as ${cls}, injected guidance`
+              );
             }
 
             // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
@@ -374,6 +568,7 @@ export function createStreamingResponseHandler(
               },
             });
             send("message_stop", { type: "message_stop" });
+            terminalSent = true;
           }
 
           // Update token counts - use actual usage if available, otherwise estimate
@@ -394,15 +589,44 @@ export function createStreamingResponseHandler(
             }
           }
 
-          if (!isClosed) {
-            try {
-              controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
-            } catch (e) {}
-            controller.close();
-            isClosed = true;
-            if (ping) clearInterval(ping);
-            cap.note(`close reason=${reason}`);
-            cap.done({ closed: true, reason, tools: toolCount, text_len: state.accumulatedText.length, err: err ?? null });
+          } catch (finalizeErr) {
+            // finalize() body threw before completing (controller enqueue raced a
+            // disconnect, a callback failed, etc.). Force terminal events so the
+            // client never hangs on an un-terminated 200.
+            logStderr(
+              `[Stream] finalize() threw for ${target}: ${String(finalizeErr).slice(0, 160)} — forcing terminal events`
+            );
+            if (!terminalSent) {
+              try {
+                send("message_delta", {
+                  type: "message_delta",
+                  delta: { stop_reason: "end_turn", stop_sequence: null },
+                  usage: {
+                    input_tokens: state.usage?.prompt_tokens || 0,
+                    output_tokens: state.usage?.completion_tokens || 0,
+                  },
+                });
+                send("message_stop", { type: "message_stop" });
+                terminalSent = true;
+              } catch {}
+            }
+          } finally {
+            // ALWAYS terminate the HTTP stream and free the ping timer, on every
+            // exit path (success, empty, error, or a throw inside finalize).
+            if (!isClosed) {
+              try {
+                controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
+              } catch {}
+              try {
+                controller.close();
+              } catch {}
+              isClosed = true;
+              if (ping) clearInterval(ping);
+              try {
+                cap.note(`close reason=${reason}`);
+                cap.done({ closed: true, reason, tools: toolCount, text_len: state.accumulatedText.length, err: err ?? null });
+              } catch {}
+            }
           }
         };
 
@@ -437,6 +661,13 @@ export function createStreamingResponseHandler(
 
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
+
+                // Track the last non-null finish_reason so the empty-response
+                // fallback (finalize) can diagnose the cause instead of guessing
+                // "context overflow" for every empty response.
+                if (finishReason) {
+                  state.lastFinishReason = finishReason;
+                }
 
                 // Debug: Log chunk details for troubleshooting early termination
                 if (delta?.content || finishReason) {
@@ -576,8 +807,9 @@ export function createStreamingResponseHandler(
                           const rawName = tc.function.name;
                           const restoredName = toolNameMap?.get(rawName) || rawName;
                           const isWebSearch = isWebSearchToolCall(restoredName);
+                          const remapToWebSearch = isWebSearch && clientDeclaresWebSearch(toolSchemas);
                           if (isWebSearch) {
-                            log(`[Stream] Web search tool call detected: "${restoredName}" — intercepting via SearXNG (available=${SEARXNG_AVAILABLE})`);
+                            log(`[Stream] Web search tool call detected: "${restoredName}" — ${remapToWebSearch ? "remapping to client WebSearch tool_use" : `intercepting via SearXNG (available=${SEARXNG_AVAILABLE})`}`);
                           }
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
@@ -585,16 +817,16 @@ export function createStreamingResponseHandler(
                             blockIndex: state.curIdx++,
                             started: false,
                             closed: false,
-                            suppressed: isWebSearch,
+                            suppressed: isWebSearch && !remapToWebSearch,
+                            remapped: remapToWebSearch,
                             arguments: "", // Initialize arguments accumulator
                             buffered: !!toolSchemas && toolSchemas.length > 0 && !isWebSearch,
                           };
                           state.tools.set(idx, t);
                         }
-                        // Skip suppressed tools entirely
-                        if (t.suppressed) continue;
-                        // Only send content_block_start immediately if NOT buffering
-                        if (!t.started && !t.buffered) {
+                        // Only send content_block_start immediately if NOT buffering.
+                        // Suppressed and remapped tools never stream their blocks live.
+                        if (!t.started && !t.buffered && !t.suppressed && !t.remapped) {
                           send("content_block_start", {
                             type: "content_block_start",
                             index: t.blockIndex,
@@ -603,11 +835,12 @@ export function createStreamingResponseHandler(
                           t.started = true;
                         }
                       }
-                      if (tc.function?.arguments && t && !t.suppressed) {
-                        // Always accumulate arguments
+                      if (tc.function?.arguments && t) {
+                        // Always accumulate arguments — suppressed/remapped tools
+                        // need them too (extractSearchQuery reads the query later).
                         t.arguments += tc.function.arguments;
-                        // Only stream immediately if NOT buffering
-                        if (!t.buffered) {
+                        // Only stream immediately if NOT buffering/suppressed/remapped
+                        if (!t.buffered && !t.suppressed && !t.remapped) {
                           send("content_block_delta", {
                             type: "content_block_delta",
                             index: t.blockIndex,
@@ -624,6 +857,20 @@ export function createStreamingResponseHandler(
 
                 if (chunk.choices?.[0]?.finish_reason === "tool_calls") {
                   for (const t of Array.from(state.tools.values())) {
+                    if (t.remapped) {
+                      if (!t.closed) {
+                        const query = extractSearchQuery(t.arguments);
+                        if (query) {
+                          emitWebSearchToolUse(query, t);
+                        } else {
+                          // No usable query — degrade to the suppression path
+                          // (text injection below) rather than emit a broken tool_use.
+                          t.remapped = false;
+                          t.suppressed = true;
+                        }
+                      }
+                      if (t.closed) continue;
+                    }
                     if (t.suppressed) {
                       // Execute web search via SearXNG and inject results
                       if (!t.closed) {
@@ -721,6 +968,29 @@ export function createStreamingResponseHandler(
                             t.closed = true;
                             continue;
                           }
+
+                          // Non-buffered and never started — emit repaired tool at a new index
+                          const fallbackIdx = state.curIdx++;
+                          const fallbackId = `tool_repaired_${Date.now()}_${fallbackIdx}`;
+                          log(
+                            `[Streaming] Emitting repaired tool ${t.name} (non-buffered, not started) at fallback index ${fallbackIdx}`
+                          );
+                          send("content_block_start", {
+                            type: "content_block_start",
+                            index: fallbackIdx,
+                            content_block: { type: "tool_use", id: fallbackId, name: t.name },
+                          });
+                          send("content_block_delta", {
+                            type: "content_block_delta",
+                            index: fallbackIdx,
+                            delta: { type: "input_json_delta", partial_json: repairedJson },
+                          });
+                          send("content_block_stop", {
+                            type: "content_block_stop",
+                            index: fallbackIdx,
+                          });
+                          t.closed = true;
+                          continue;
                         }
 
                         if (!validation.valid) {
@@ -728,6 +998,14 @@ export function createStreamingResponseHandler(
                           log(
                             `[Streaming] Tool call ${t.name} validation failed: ${validation.missingParams.join(", ")}`
                           );
+                          // Close the original tool block FIRST (lower index) so that
+                          // the error text block (higher index) doesn't open/close out of order.
+                          if (t.started && !t.buffered && !t.closed) {
+                            send("content_block_stop", {
+                              type: "content_block_stop",
+                              index: t.blockIndex,
+                            });
+                          }
                           const errorIdx = t.buffered ? t.blockIndex : state.curIdx++;
                           const errorMsg = `\n\n⚠️ Tool call "${t.name}" failed: missing required parameters: ${validation.missingParams.join(", ")}. Local models sometimes generate incomplete tool calls. Please try again or use a model with better tool support.`;
                           send("content_block_start", {
@@ -744,13 +1022,6 @@ export function createStreamingResponseHandler(
                             type: "content_block_stop",
                             index: errorIdx,
                           });
-                          // Close the invalid tool if it was already started
-                          if (t.started && !t.buffered) {
-                            send("content_block_stop", {
-                              type: "content_block_stop",
-                              index: t.blockIndex,
-                            });
-                          }
                           t.closed = true;
                           continue;
                         }

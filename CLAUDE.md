@@ -213,30 +213,57 @@ Located in `handlers/shared/stream-parsers/`:
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
 - `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex)
 
+### Non-Streaming (`stream: false`) Support
+
+Claude Code's agentic loop always sends `stream: true`, but **`/compact` (context condensation) and any non-streaming Anthropic API caller send `stream: false`** and expect a single JSON `message` body (`Content-Type: application/json`), NOT SSE. Returning SSE to such a client surfaces as `"API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request"` and **blocks the affected operation** (a session that can't compact eventually overflows and the agent stalls — a never-hang-priority violation).
+
+Every adapter's `buildPayload` hardcodes `stream: true` (the proxy always drives the upstream provider in streaming mode), and the whole translation pipeline emits Claude SSE. To serve non-streaming clients, `ComposedHandler.handle()` buffers the already-translated SSE back into one Anthropic message via `collectAnthropicSseToMessage()` (`handlers/shared/collect-sse-message.ts`):
+
+- The trigger mirrors `request-logger.ts`'s `stream` definition exactly: `wantsStreaming = payload?.stream === true`. Anything else → buffer to JSON.
+- `NativeHandler` (Anthropic-direct/Opus) already honored `stream: false` natively — that is why `/compact` worked on Opus but failed on every proxied/composed model. This closes the same gap for ComposedHandler (and therefore FallbackHandler, which delegates to it).
+- The collector **never throws** (never-hang-priority): a broken/empty stream degrades to a well-formed message with an empty text block. It reuses the full pipeline (all stream formats, web-tool interception, empty-response classification) verbatim — it just collapses the SSE into a message at the end.
+- Regression tests: `handlers/shared/collect-sse-message.test.ts` (text, tool_use, mixed thinking/text order, empty body, malformed lines, unparseable tool JSON).
+
 ## Web Search Interception (v7.1+)
 
-When providers emit web search tool calls (WebSearch/WebFetch) or GLM's `<searchWeb>` tags, claudish intercepts them and executes via a local **SearXNG** instance instead of forwarding to the provider (which would fail for non-Anthropic providers).
+When providers emit web search tool calls (`web_search`, `brave_web_search`, `tavily_search`) or GLM's `<searchWeb>` tags, claudish intercepts them instead of forwarding to the provider (which would fail for non-Anthropic providers).
+
+**HARD constraint**: a failed search/fetch must NEVER stop the agent. Every path degrades gracefully to well-formed text — no throws, no hung streams.
 
 ### Architecture
 
-Two interception paths, both in the stream parsers:
+Three interception paths:
 
-1. **Structured tool_call** (`openai-sse.ts`): WebSearch/WebFetch tool calls are flagged as `suppressed` in `ToolState`. At finalize, SearXNG is called and results are injected as a text block replacing the tool call. The `suppressed` flag prevents the tool_use content_block from reaching the client.
+1. **Structured tool_call** (`openai-sse.ts`): provider web search tool calls are detected via `web-search-detector.ts`. **If the client declared a `WebSearch` tool in the request** (checked against `toolSchemas`), the call is **remapped** to a synthetic `WebSearch` tool_use block with `stop_reason: "tool_use"` — Claude Code then executes its own WebSearch (which arrives as a sub-agent request, path 3) and the agentic loop continues. If WebSearch is NOT declared (e.g. sub-agents without web tools), the call is `suppressed` and results are injected as a text block with `end_turn` (legitimate there).
 
-2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, these tags are detected, SearXNG is called, tags are stripped from text, and results are appended as a separate text block.
+2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, same remap logic: WebSearch declared → synthetic tool_use; otherwise SearXNG is called and results are appended as a text block.
 
-3. **Sub-agent requests** (`proxy-server.ts`): Claude Code sometimes sends web search/fetch as a single user message ("Perform a web search for the query: X"). These are intercepted at the proxy level before handler selection.
+3. **Sub-agent requests** (`proxy-server.ts`): Claude Code's own WebSearch/WebFetch tools send a single user message ("Perform a web search for the query: X" / "Perform a web fetch for the URL: X"). Intercepted at the proxy level before handler selection; results returned as text with `end_turn` (correct — the sub-agent's job is to return text).
+
+**Why the remap matters (CoursIA incident 2026-06-10)**: suppress + inject-text + `end_turn` ends the assistant turn on raw search results — the agent stalls instead of using them. Remapping to the client's WebSearch keeps `stop_reason: "tool_use"`, so results come back as a tool_result and the loop continues. Regression tests: `format-translation.test.ts` ("web search remap").
+
+### Execution backends (fallback chains)
+
+`web-search-executor.ts` resolves each search/fetch through a chain; the first usable result wins:
+
+- **Search**: MCP `searxng_web_search` (if `SEARXNG_MCP_URL` set, 5s deadline) → direct HTTP `{SEARXNG_URL}/search?format=json` (3s) → error text.
+- **Fetch**: MCP `web_url_read` (12s, real fetch + markdown) → MCP `web_url_read` with `https://r.jina.ai/<url>` prefix (bypasses 403 on bot-hostile hosts, e.g. npmjs) → direct streaming HTTP with 500KB byte cap → error text.
+
+The MCP client (`handlers/shared/mcp-searxng-client.ts`) is a minimal JSON-RPC streamable-http client (no SDK, no stdio): handles both `application/json` and `text/event-stream` response formats, lazy `initialize` handshake with `mcp-session-id` caching when the server demands a session, strict `AbortSignal.timeout` deadlines, and a non-throwing `{ ok, text|error }` contract. Per-call duration is logged as `[MCP-SearXNG] tools/call <name> <ms>ms ok=<bool>` for overhead measurement vs direct HTTP.
 
 ### Configuration
 
-- **`SEARXNG_URL`** env var (required): URL of the SearXNG instance (e.g. `http://search.myia.io`). When unset, web search interception falls through gracefully with a fallback message.
-- **`SEARXNG_AVAILABLE`** flag: detected at startup from `SEARXNG_URL` presence.
-- **Deadline**: 3s default for SearXNG calls (5s for sub-agent path). Non-blocking — races against timeout.
+- **`SEARXNG_MCP_URL`** env var (optional): URL of the MCP searxng endpoint (e.g. `https://mcp-tools.myia.io/searxng/mcp`). When unset, the MCP layer is skipped entirely — zero behavior change for existing deployments.
+- **`MCP_AUTH`** or **`SEARXNG_MCP_TOKEN`** env var: bearer token for the MCP endpoint. Never hardcode; provisioned via RooSync.
+- **`SEARXNG_URL`** env var: URL of the SearXNG instance (e.g. `http://search.myia.io`) for the direct HTTP fallback. When unset, interception falls through gracefully with a fallback message.
+- **Deadlines**: MCP search 5s, MCP fetch 12s, direct HTTP search 3s (5s sub-agent path), direct fetch 10s. Non-blocking — every call races a timeout.
 
 ### Components
 
-- `handlers/shared/web-search-executor.ts` — SearXNG fetch, result formatting, query extraction
-- `handlers/shared/stream-parsers/openai-sse.ts` — tool_call suppression + `<searchWeb>` tag detection
+- `handlers/shared/mcp-searxng-client.ts` — MCP streamable-http JSON-RPC client (non-throwing)
+- `handlers/shared/web-search-executor.ts` — fallback chains, result formatting, query extraction
+- `handlers/shared/web-search-detector.ts` — provider web-search tool name detection
+- `handlers/shared/stream-parsers/openai-sse.ts` — remap/suppression + `<searchWeb>` tag detection
 - `proxy-server.ts` — sub-agent request interception
 
 ### Inline System Message Handling
@@ -247,7 +274,81 @@ Claude Code v2.1.153+ injects `role: "system"` messages inline (e.g. system-remi
 
 ### Diagnostic Body Capture
 
-Set `CLAUDISH_CAPTURE_DIR` env var to enable full request body capture for offline reproduction of hangs or malformed responses. Disabled by default (no-op when unset). Files written as JSON with metadata (timestamp, source IP, model, PID).
+Set `CLAUDISH_CAPTURE_DIR` env var to enable full request body capture for offline reproduction of hangs or malformed responses. Disabled by default (no-op when unset). Files written as JSON with metadata (timestamp, source IP, model, PID, machine header).
+
+In the Docker deployment, `CLAUDISH_CAPTURE_DIR=/captures` is bind-mounted to `D:\claudish-captures` on the host, so captures persist across container recreates. Compacted nightly to 7z, then backed up to GDrive (see `capture-retention.md` memory).
+
+## Traffic Analysis
+
+**Use the scripts, not hand-rolled grep.** The proxy log format has traps that produce false positives when grepped naively (see `proxy-log-monitoring` memory: `bytes=NNNN` matching error codes, timestamp digits matching `429`, `[msg:N]` body previews matching keywords). The scripts below encode the precise filters.
+
+Three levels of analysis — pick by need:
+
+| Need | Script | Source | Speed |
+|------|--------|--------|-------|
+| **Live surveillance** (cron, quick health check) | `traffic-live.ps1` | `docker logs` stdout | fast |
+| **Rich detail** (workspace, session, CC version, tokens) | `traffic-summary.ps1` / `traffic-sessions.ps1` | `req-*.json` captures | slower |
+| **History** (past days from compressed archives) | `traffic-history.ps1` | `captures-*.7z` | slow |
+
+### Scripts
+
+| Script | Purpose | Usage |
+|--------|---------|-------|
+| `traffic-live.ps1` | **Live analysis from docker logs** — model/machine/handler distribution, precise error counts, never-hang check, Anthropic leak check, session-loop detection. This is what the 6h surveillance cron runs. | `.\scripts\traffic-live.ps1 [-Hours N] [-AnthropicMachines 'host1,host2']` |
+| `traffic-summary.ps1` | Overview from captures: machines, models, workspaces, sessions | `.\scripts\traffic-summary.ps1 [-Hours N]` |
+| `traffic-sessions.ps1` | Detailed session list with timing, models, data volume | `.\scripts\traffic-sessions.ps1 [-Hours N] [-All]` |
+| `traffic-history.ps1` | Historical analysis from 7z archives | `.\scripts\traffic-history.ps1 [-Date yyyy-MM-dd] [-Days N]` |
+| `compress-captures.ps1` | Nightly 7z compaction + GDrive backup + 30d local purge (scheduled task) | Runs automatically at 04:17 |
+| `claudish-watchdog.ps1` | Proxy health: tool-call stream test + proactive restart (uptime >11h) + auto-recovery on hang. Scheduled every 15min. | Runs automatically |
+| `CaptureUtils.psm1` | Shared module (capture parsing, device mapping, 7z extraction) | Imported by the scripts above |
+
+### Quick Commands
+
+```powershell
+# Live health check — what's happening right now?
+.\scripts\traffic-live.ps1 -Hours 1
+
+# Standard 6h surveillance window (cron default)
+.\scripts\traffic-live.ps1 -Hours 6
+
+# Rich detail: which workspace/session is active?
+.\scripts\traffic-summary.ps1 -Hours 2
+.\scripts\traffic-sessions.ps1
+
+# Historical analysis from compressed archives
+.\scripts\traffic-history.ps1 -Days 7
+```
+
+### Capture Format
+
+- **`req-*.json`** — Single-line JSON with full Anthropic request body (messages, system, tools, metadata). Extractable: machine (X-Claudish-Machine header), workspace (from system prompt), session_id (from metadata.user_id), CC version (from billing header). Written to `/captures` inside the container, bind-mounted to `D:\claudish-captures` (persists across container recreates).
+- **`resp-*.sse`** — Response SSE with metadata header (elapsed_ms, stop_reason, event count). Correlates with req via shared counter (req-1-0042 → resp-1-r0042).
+- **Archives** — `D:\claudish-captures\archive\captures-YYYY-MM-DD.7z` (LZMA2, ~100-130:1 ratio), mirrored to `G:\Mon Drive\MyIA\backups\claudish-captures\` via Google Drive Desktop (plain Windows file copy, no API). Local purge >30 days (only after confirming the GDrive copy).
+
+### Machine Attribution
+
+Machines are identified by the `X-Claudish-Machine` header (set via `ANTHROPIC_CUSTOM_HEADERS` in Claude Code settings). When missing, `CaptureUtils.psm1` falls back to device_id fingerprinting. Known device IDs are hardcoded in the module's `$DeviceMap` (currently partial — po-2023 + ai-01 only; update when new machines are seen without the header).
+
+### Anthropic Leak Diagnostics
+
+By cluster policy, **Anthropic-billed models (Opus, Fable, Sonnet) must come from `myia-ai-01` only**. `traffic-live.ps1` flags Anthropic traffic from other machines automatically:
+
+- **[OK]** — authorized machine (`-AnthropicMachines`, default `myia-ai-01`).
+- **[REVIEW]** — `myia-po-2025`: may run an authorized Safari workflow (agent-sdk / VS Code) under Anthropic. **Do not auto-flag as leak** — confirm with the user first (lesson 2026-06-21: 6 false WARNs raised on po-2025 before learning Safari was authorized).
+- **[LEAK]** — any other machine on Anthropic. Investigate.
+
+**Sub-agent leaks vs legitimate sessions** — the distinction that matters:
+- **Real sub-agent leak** = requests carry `cc_is_subagent=true` (in the billing header, *not* on the stdout `[Request]` line) + Anthropic model + non-authorized machine. The Agent tool spawns sub-agents that default to "best available" = Opus.
+- **Legitimate Anthropic session** = `agent-sdk/X` + entrypoint `claude-vscode` + same source IP across requests + `msgs=60+` (large context = main session, not sub-agent). No `cc_is_subagent`.
+
+`cc_is_subagent` lives in the request body, not stdout — so it's not visible via `docker logs` alone. To confirm a sub-agent leak, inspect a capture:
+```bash
+# Find the billing header in a suspect capture
+docker exec claudish-proxy sh -c "head -c 500 /captures/req-1-NNNN-*.json"
+# Look for: cc_is_subagent=true  → sub-agent. Absent → main session (not a leak).
+```
+
+**Fix for a confirmed leak:** add a global rule in `~/.claude/rules/` instructing the model to always specify `model: "sonnet"` (or equivalent) when spawning sub-agents, reserving Opus for genuinely complex tasks. This is client-side behavior — not fixable in the proxy.
 
 ## Debug Logging
 

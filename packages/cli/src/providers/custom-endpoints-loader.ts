@@ -163,7 +163,7 @@ function buildSimpleHandler(
       headers: ctx.provider.headers,
       authScheme: "bearer",
     };
-    const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey);
+    const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey, ep.maxConcurrency);
     const adapter = new OpenAIAPIFormat(finalModel);
     return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
       adapter,
@@ -182,7 +182,7 @@ function buildSimpleHandler(
     headers: ctx.provider.headers,
     authScheme: ctx.provider.authScheme ?? "x-api-key",
   };
-  const transport = new AnthropicProviderTransport(remoteProvider, apiKey);
+  const transport = new AnthropicProviderTransport(remoteProvider, apiKey, ep.maxConcurrency);
   const adapter = new AnthropicAPIFormat(finalModel, ctx.provider.name);
   return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
     adapter,
@@ -218,7 +218,7 @@ function buildComplexHandler(
         headers: ep.headers,
         authScheme: ep.authScheme ?? "bearer",
       };
-      const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey);
+      const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey, ep.maxConcurrency);
       const adapter = new OpenAIAPIFormat(finalModel);
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
@@ -236,7 +236,7 @@ function buildComplexHandler(
         headers: ep.headers,
         authScheme: ep.authScheme ?? "x-api-key",
       };
-      const transport = new AnthropicProviderTransport(remoteProvider, apiKey);
+      const transport = new AnthropicProviderTransport(remoteProvider, apiKey, ep.maxConcurrency);
       const adapter = new AnthropicAPIFormat(finalModel, ctx.provider.name);
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,

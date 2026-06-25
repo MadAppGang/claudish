@@ -162,7 +162,10 @@ function isRetryableError(status: number, errorBody: string): boolean {
   if (status === 404) return true;
 
   // Rate limited — per-provider limit, a different provider may have capacity
-  if (status === 429) return true;
+  // 529 overloaded — provider-wide overload, the next provider may not be hit.
+  // Both are retryable → advance to the next candidate (no-op in single-candidate
+  // no-fallback mode, where this handler isn't constructed at all).
+  if (status === 429 || status === 529) return true;
 
   const lower = errorBody.toLowerCase();
 

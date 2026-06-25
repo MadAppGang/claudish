@@ -23,9 +23,13 @@ import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
 import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
 
-const MINIMAX_API_KEY = process.env.MINIMAX_CODING_API_KEY || process.env.MINIMAX_API_KEY;
+const MINIMAX_CODING_KEY = process.env.MINIMAX_CODING_API_KEY;
+const MINIMAX_REGULAR_KEY = process.env.MINIMAX_API_KEY;
+const MINIMAX_API_KEY = MINIMAX_CODING_KEY || MINIMAX_REGULAR_KEY;
 const SKIP_REAL_API = !MINIMAX_API_KEY;
-const MINIMAX_API_BASE = "https://api.minimax.io/anthropic/v1/messages";
+const MINIMAX_API_BASE = MINIMAX_CODING_KEY
+  ? "https://api.minimax.io/anthropic/v1/messages"
+  : "https://api.minimaxi.com/anthropic/v1/messages";
 
 // ─── Mock slim-cache seeding ─────────────────────────────────────────────────
 

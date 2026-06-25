@@ -36,7 +36,7 @@ import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
-import { executeWebSearch } from "./handlers/shared/web-search-executor.js";
+import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFromWebContent, cleanRawWebContent } from "./handlers/shared/web-search-executor.js";
 
 /**
  * Intercept WebSearch/WebFetch tool calls and execute them via SearXNG instead
@@ -71,19 +71,34 @@ async function interceptWebTools(c: any, body: any): Promise<Response | null> {
     if (fetchMatch) {
       const url = fetchMatch[1].trim();
       log(`[WebTools] Intercepted sub-agent web fetch: "${url}"`);
-      let resultText: string;
-      try {
-        const fetchUrl = `${process.env.SEARXNG_URL || "http://search.myia.io"}/search?q=${encodeURIComponent(url)}&format=json&categories=general`;
-        const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(5000) });
-        const data = await resp.json() as any;
-        const results = (data.results || []).slice(0, 3);
-        resultText = results.length > 0
-          ? results.map((r: any) => `**${r.title}**\n${r.url}\n${r.content || ""}`).join("\n\n")
-          : `[No results found for URL: ${url}]`;
-      } catch (err: any) {
-        resultText = `[Web fetch for "${url}" failed: ${err.message}]`;
-      }
+      // Real fetch with graceful degradation:
+      // MCP web_url_read → MCP via r.jina.ai → direct HTTP → error text.
+      const resultText = await executeWebFetch(url, 10_000);
       return buildTextResponse(body.model || "unknown", resultText, isStreaming);
+    }
+
+    // Case 3: Claude Code already fetched the page and sends raw HTML/markdown
+    // to a sub-agent for analysis. Format: "Web page content:\n---\n<content>"
+    // This happens when Claude Code's native WebFetch tool fetches the page
+    // itself, converts to markdown poorly, and delegates to a sub-agent.
+    const webContentMatch = text.match(/^Web page content:\s*\n---\n([\s\S]+)$/);
+    if (webContentMatch) {
+      const rawContent = webContentMatch[1];
+      if (isLowQualityWebContent(rawContent)) {
+        log(`[WebTools] Detected low-quality web content in sub-agent, attempting re-fetch`);
+        const url = extractUrlFromWebContent(rawContent);
+        if (url) {
+          log(`[WebTools] Re-fetching "${url}" via clean pipeline`);
+          const cleanContent = await executeWebFetch(url, 10_000);
+          return buildTextResponse(body.model || "unknown", cleanContent, isStreaming);
+        }
+        // No URL extractable — clean the raw content as best we can
+        log(`[WebTools] No URL found, cleaning raw web content`);
+        const cleaned = cleanRawWebContent(rawContent);
+        return buildTextResponse(body.model || "unknown", cleaned, isStreaming);
+      }
+      // Content looks reasonable — let it through to the normal handler
+      return null;
     }
   }
 
@@ -155,6 +170,99 @@ function buildTextResponse(model: string, text: string, streaming: boolean): Res
         type: "content_block_delta",
         index: 0,
         delta: { type: "text_delta", text },
+      }));
+
+      controller.enqueue(send("content_block_stop", {
+        type: "content_block_stop",
+        index: 0,
+      }));
+
+      controller.enqueue(send("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { input_tokens: 0, output_tokens: 0 },
+      }));
+
+      controller.enqueue(send("message_stop", { type: "message_stop" }));
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "anthropic-version": "2023-06-01",
+    },
+  });
+}
+
+/**
+ * Build an assistant response with web tool results as text blocks.
+ *
+ * IMPORTANT: We must NOT use tool_result blocks here. In the Anthropic API,
+ * tool_result blocks are only valid in messages with role: "user". Returning
+ * them in an assistant message (role: "assistant") causes the client to store
+ * malformed conversation history, leading to 400 errors on subsequent requests:
+ *   "tool_result blocks can only be in user messages"
+ *
+ * Instead, we inject the search/fetch results as a text block in a normal
+ * assistant response — the same approach used by openai-sse.ts suppression.
+ */
+function buildToolResultResponse(model: string, toolResults: any[], streaming: boolean): Response {
+  const encoder = new TextEncoder();
+  const send = (event: string, data: any) =>
+    encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  // Combine all tool results into a single text block
+  const combinedText = toolResults.map((tr) => tr.content).join("\n\n");
+
+  if (!streaming) {
+    return new Response(JSON.stringify({
+      id: `msg_webtools_${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      model,
+      content: [{ type: "text", text: combinedText }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    }), {
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+    });
+  }
+
+  // Streaming SSE response — emit results as a text content block
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(send("message_start", {
+        type: "message_start",
+        message: {
+          id: `msg_webtools_${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }));
+
+      controller.enqueue(send("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }));
+
+      controller.enqueue(send("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: combinedText },
       }));
 
       controller.enqueue(send("content_block_stop", {

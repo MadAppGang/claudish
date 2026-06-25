@@ -229,7 +229,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "minimax",
     displayName: "MiniMax",
     transport: "anthropic",
-    baseUrl: "https://api.minimax.io",
+    baseUrl: "https://api.minimaxi.com",
     baseUrlEnvVars: ["MINIMAX_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
     apiKeyEnvVar: "MINIMAX_API_KEY",

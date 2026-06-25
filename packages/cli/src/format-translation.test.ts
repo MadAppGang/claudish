@@ -259,6 +259,67 @@ describe("Anthropic SSE Passthrough (createAnthropicPassthroughStream)", () => {
     expect(tokenInput).toBe(50);
     expect(tokenOutput).toBe(5);
   });
+
+  // never-hang regression: Z.AI / GLM Coding close the socket mid-stream under
+  // load. Before the fix, the reader.read() throw escaped to a catch that did a
+  // bare controller.close() with NO terminal message_stop, so Claude Code saw
+  // "socket connection was closed unexpectedly" and froze the turn.
+  test("never-hang: upstream socket close mid-stream still emits terminal message_stop", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const encoder = new TextEncoder();
+    // Fixture: a few valid events, then the upstream body ERRORS (socket close).
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            "event: message_start\n" +
+              `data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"glm-5.1","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n`
+          )
+        );
+        controller.enqueue(
+          encoder.encode(
+            "event: content_block_start\n" +
+              `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+          )
+        );
+        controller.enqueue(
+          encoder.encode(
+            "event: content_block_delta\n" +
+              `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial answer before cutoff"}}\n\n`
+          )
+        );
+        // Simulate the upstream TCP socket dying mid-stream — deferred so the
+        // enqueued chunks are read first (a real close arrives after a network
+        // round-trip, not synchronously in the same tick as the writes).
+        setTimeout(
+          () => controller.error(new Error("The socket connection was closed unexpectedly.")),
+          5
+        );
+      },
+    });
+    const fixture = new Response(upstream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5.1",
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Partial content must survive (not lost to the cutoff).
+    expect(extractText(events)).toContain("Partial answer before cutoff");
+
+    // CRITICAL: a terminal message_stop MUST be present so Claude Code ends the
+    // turn cleanly instead of freezing. This is the assertion that failed
+    // before the fix.
+    expect(events.some((e) => e.data?.type === "message_stop")).toBe(true);
+
+    // Synthesized stop_reason so the client treats it as a completed turn.
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
 });
 
 // ─── Adapter Message Conversion Tests ───────────────────────────────────────
@@ -1626,5 +1687,399 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
     expect(errorEvent).toBeUndefined();
     const msgStop = events.find((e) => e.data?.type === "message_stop");
     expect(msgStop).toBeDefined();
+  });
+
+  test("server_tool_use block does not crash the proxy (scope bug: highestSeenIndex ReferenceError)", async () => {
+    // REGRESSION (po-2025 freeze, 2026-06-14): Z.AI emits a real server_tool_use
+    // block (webReader). The suppression handler `handleServerToolResult` is an
+    // async closure that writes `highestSeenIndex`. That variable was declared
+    // inside the inner read-loop `try {}` block, while the closure lived in the
+    // outer `start()` scope — two separate block scopes. When a real
+    // server_tool_use fired the handler, the closure hit a ReferenceError and
+    // CRASHED the proxy process (client then saw "socket closed" / "Content block
+    // not found"). Fix: hoist highestSeenIndex (and friends) into the shared
+    // start() scope. This test replays a server_tool_use stream end-to-end; it
+    // must NOT throw and must emit a clean terminal message_stop.
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "regression-zai-server-tool-use.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5.2",
+    });
+
+    // Drain the full stream into a single buffer. The bug threw inside stream
+    // consumption — this must complete without throwing or rejecting.
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+    }
+    // Allow the async handleServerToolResult (web fetch) to settle before
+    // asserting — its injected text block lands after the read loop closes.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The pre-server_tool text block is preserved.
+    expect(raw).toContain('"text":"Let me look that up."');
+
+    // server_tool_use blocks are suppressed — no content_block with that type
+    // reaches the client (which cannot render it).
+    expect(raw).not.toContain('"type":"server_tool_use"');
+
+    // The turn terminates cleanly with message_stop (proves no proxy crash /
+    // unterminated stream, which is the never-hang-priority contract).
+    expect(raw).toContain('"type":"message_stop"');
+  });
+});
+
+// ─── Regression: web search remap (agentic blocking fix) ───────────────────
+//
+// CoursIA incident 2026-06-10: provider-side web search (web_search tool call
+// or GLM <searchWeb> tag) was suppressed and replaced with a text block +
+// stop_reason "end_turn" — the agent ended its turn on raw search results and
+// the agentic loop stalled. The fix remaps these to a synthetic WebSearch
+// tool_use (stop_reason "tool_use") whenever the client declared WebSearch,
+// so Claude Code runs its own WebSearch and the conversation continues.
+
+describe("Regression: web search remap to client WebSearch tool_use", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getDefaultAdapter() {
+    const mod = await import("./adapters/base-api-format.js");
+    return new mod.DefaultAPIFormat("test-model");
+  }
+
+  function sseToResponse(content: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(content));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  const WEBSEARCH_SCHEMA = {
+    name: "WebSearch",
+    description: "Search the web",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  };
+  const READ_SCHEMA = {
+    name: "Read",
+    description: "Read a file",
+    input_schema: {
+      type: "object",
+      properties: { file_path: { type: "string" } },
+      required: ["file_path"],
+    },
+  };
+
+  // Provider emits a structured web_search tool call (GLM/z.ai dialect)
+  const WEB_SEARCH_TOOLCALL_SSE = [
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me look that up."},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ws_1","type":"function","function":{"name":"web_search","arguments":""}}]},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"query\\":\\"chatterbox tts docker compose\\"}"}}]},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":7}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  test("web_search tool call + WebSearch declared → remapped tool_use, stop_reason=tool_use", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(WEB_SEARCH_TOOLCALL_SSE),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      [WEBSEARCH_SCHEMA, READ_SCHEMA]
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // The provider tool call is remapped to the client's WebSearch tool
+    const tools = extractToolNames(events);
+    expect(tools).toContain("WebSearch");
+
+    // The remapped input carries the original query
+    const inputJson = events
+      .filter((e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "input_json_delta")
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    expect(JSON.parse(inputJson)).toEqual({ query: "chatterbox tts docker compose" });
+
+    // THE fix: the turn must continue, not end on injected text
+    expect(extractStopReason(events)).toBe("tool_use");
+
+    // No raw search-results text block injected
+    expect(extractText(events)).not.toContain("[Web search");
+  });
+
+  test("web_search tool call WITHOUT WebSearch declared → suppression fallback, stop_reason=end_turn", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(WEB_SEARCH_TOOLCALL_SSE),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      [READ_SCHEMA] // no WebSearch in the request
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // No tool_use leaks through (web_search must not reach the client)
+    expect(extractToolNames(events)).toHaveLength(0);
+
+    // Results (or a graceful degradation notice) are injected as text
+    expect(extractText(events)).toContain("[Web search");
+
+    // Legitimate end_turn: without WebSearch declared the client could not
+    // execute a remapped tool anyway (e.g. sub-agents without web tools).
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
+
+  test("GLM <searchWeb> tag + WebSearch declared → remapped tool_use, stop_reason=tool_use", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const glmSse = [
+      `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"<searchWeb><query>devnen Chatterbox-TTS-Server docker run</query></searchWeb>"},"finish_reason":null}]}`,
+      ``,
+      `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}`,
+      ``,
+      `data: [DONE]`,
+      ``,
+    ].join("\n");
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(glmSse),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      [WEBSEARCH_SCHEMA, READ_SCHEMA]
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    const tools = extractToolNames(events);
+    expect(tools).toContain("WebSearch");
+
+    const inputJson = events
+      .filter((e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "input_json_delta")
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    expect(JSON.parse(inputJson)).toEqual({ query: "devnen Chatterbox-TTS-Server docker run" });
+
+    expect(extractStopReason(events)).toBe("tool_use");
+  });
+});
+
+// ─── Regression: empty-response cause classification (no destructive /compact) ─
+// Providers (GLM, qwen) sometimes return finish_reason with zero content. The
+// old code injected a blanket "context too large → compact" message for every
+// empty response, pushing agents into a destructive /compact on transient
+// empties (sub-agents with tiny contexts) — discarding context mid-task.
+// The fix classifies by finish_reason + prompt_tokens and leads transient
+// empties with "retry, NOT a context problem".
+describe("Regression: empty-response cause classification", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getDefaultAdapter() {
+    const mod = await import("./adapters/base-api-format.js");
+    return new mod.DefaultAPIFormat("test-model");
+  }
+
+  function sseToResponse(content: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(content));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  // finish_reason "stop", tiny context → TRANSIENT (must NOT push /compact)
+  const EMPTY_STOP_SMALL = [
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":0}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  // finish_reason "length" → OVERFLOW (mentions /compact)
+  const EMPTY_LENGTH = [
+    `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5000,"completion_tokens":0}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  // finish_reason "content_filter" → CONTENT-FILTER message
+  const EMPTY_FILTER = [
+    `data: {"id":"c3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":20,"completion_tokens":0}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  test("empty + finish_reason=stop + small context → transient message (no /compact push)", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(EMPTY_STOP_SMALL),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    // Transient empties lead with retry guidance, NOT compact.
+    expect(text).toMatch(/transient/i);
+    expect(text).toMatch(/retry/i);
+    expect(text).toMatch(/NOT a context-size problem/i);
+    // Must NOT be the old blanket "context is too large → compact" framing.
+    expect(text).not.toMatch(/This usually happens when the conversation context is too large/);
+
+    // Still terminates cleanly so the agent's turn ends gracefully.
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
+
+  test("empty + finish_reason=length → overflow message (mentions /compact)", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(EMPTY_LENGTH),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    // A genuine length/overflow empty correctly advises /compact.
+    expect(text).toMatch(/context is very large|\/compact/i);
+    // And surfaces the real finish_reason.
+    expect(text).toMatch(/length/);
+  });
+
+  test("empty + finish_reason=content_filter → content-filter message (not context)", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(EMPTY_FILTER),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    expect(text).toMatch(/content policy|filtered/i);
+    // A content filter is NOT a context-size problem.
+    expect(text).not.toMatch(/context is very large/i);
+  });
+
+  // A normal response WITH text content must never get the empty-response error
+  // appended. Broken by the a519a95 reorder: finalize() cleared state.textStarted
+  // when closing the text block BEFORE hasContent read it, so every pure-text
+  // response was misclassified as empty — clients saw their real answer followed
+  // by "[Error: ... Try /compact ...]" and large-context sessions ran destructive
+  // compactions in a loop (cluster-wide incident, 2026-06-12).
+  const TEXT_THEN_STOP = [
+    `data: {"id":"c4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello, here is my answer."},"finish_reason":null}]}`,
+    ``,
+    `data: {"id":"c4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":150000,"completion_tokens":7}}`,
+    ``,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+
+  test("response with real text content must NOT get an empty-response error appended", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(TEXT_THEN_STOP),
+      adapter,
+      "glm-5.1",
+      null,
+      undefined,
+      undefined
+    );
+
+    const events = await parseClaudeSseStream(response);
+    const text = extractText(events);
+
+    expect(text).toContain("Hello, here is my answer.");
+    // The empty-response guidance must NOT appear after valid content —
+    // even with a very large prompt (150k tokens would classify as overflow).
+    expect(text).not.toMatch(/empty response/i);
+    expect(text).not.toMatch(/\/compact/);
+    expect(extractStopReason(events)).toBe("end_turn");
   });
 });
