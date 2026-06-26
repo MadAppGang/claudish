@@ -46,10 +46,22 @@ $ErrorActionPreference = 'Stop'
 # --- gather logs -------------------------------------------------------------
 # --timestamps prepends ISO8601 to each line → enables temporal analysis
 # (e.g. detecting whether an anomaly is recent vs residual).
+#
+# GOTCHA: `docker logs` writes its log output to STDERR by convention. With
+# $ErrorActionPreference='Stop' active, the `2>&1` merge turns the first stderr
+# line into a terminating NativeCommandError — the script threw before reading
+# the stream (surfaced as "NativeCommandError" + exit during cron runs). The
+# capture must run under 'Continue'; we restore 'Stop' right after for the rest
+# of the script. docker logs returns exit 0 for normal stderr output (that's
+# where logs live, not an error), so the exit-code check gates real failures.
+$ErrorActionPreference = 'Continue'
 $raw = docker logs --timestamps --since "${Hours}h" $Container 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: cannot read docker logs from '$Container' (is the container running?)." -ForegroundColor Red
-    Write-Host $raw
+$dockerExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+
+if ($dockerExit -ne 0) {
+    Write-Host "ERROR: cannot read docker logs from '$Container' (exit $dockerExit — is the container running?)." -ForegroundColor Red
+    Write-Host ($raw | Out-String)
     exit 1
 }
 
