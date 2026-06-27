@@ -42,6 +42,7 @@ import {
   maskKey,
   providerAuthCapabilities,
   providerIsReady,
+  providerIsReadyForDisplay,
   type ProviderDef,
 } from "./providers.js";
 import { A, C } from "./theme.js";
@@ -273,16 +274,19 @@ export function App({ requestLogin }: AppProps = {}) {
 
   const quit = useCallback(() => renderer.destroy(), [renderer]);
 
-  // Sort: configured providers first (env/cfg key OR OAuth credentials),
-  // then unconfigured. Original order preserved within each group.
+  // Sort: configured/ready providers first (env/cfg key, OAuth, public-key, or a
+  // RUNNING local server), then unconfigured. Original order preserved within
+  // each group. Liveness is included so a running-but-not-enabled local (e.g. a
+  // freshly-started Ollama) sorts above the "not configured" divider, matching
+  // its "running" status.
   const displayProviders = useMemo(() => {
     return [...PROVIDERS].sort((a, b) => {
-      const aReady = providerIsReady(a, config);
-      const bReady = providerIsReady(b, config);
+      const aReady = providerIsReadyForDisplay(a, config, localLiveness);
+      const bReady = providerIsReadyForDisplay(b, config, localLiveness);
       if (aReady === bReady) return PROVIDERS.indexOf(a) - PROVIDERS.indexOf(b);
       return aReady ? -1 : 1;
     });
-  }, [config]);
+  }, [config, localLiveness]);
 
   const selectedProvider = displayProviders[providerIndex]!;
   const selectedProviderDef = getProviderByName(selectedProvider.catalogName);

@@ -5,6 +5,7 @@ import {
   maskKey,
   providerAuthCapabilities,
   providerAuthSource,
+  providerIsReadyForDisplay,
 } from "../providers.js";
 import type { TestResultsMap } from "../types.js";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
@@ -74,7 +75,7 @@ export function ProvidersContent({
   // ready (no divider). Index-based, not a mutable "seen one yet" flag, so the
   // divider still renders correctly even when earlier rows are scrolled off.
   const firstUnreadyIdx = displayProviders.findIndex(
-    (p) => providerAuthSource(p, config) === null,
+    (p) => !providerIsReadyForDisplay(p, config, localLiveness),
   );
 
   // contentH = total height of the rounded box.
@@ -103,7 +104,10 @@ export function ProvidersContent({
   const getRow = (p: ProviderDef, idx: number) => {
     const auth = providerAuthSource(p, config);
     const caps = providerAuthCapabilities(p, config);
-    const isReady = auth !== null;
+    // Display-readiness includes a running local server, so a running-but-not-
+    // enabled local gets a filled dot + sorts above the divider (consistent with
+    // its "running" status), not a hollow dot under "not configured".
+    const isReady = providerIsReadyForDisplay(p, config, localLiveness);
     const isOauthOnly = auth === "oauth";
     const selected = idx === providerIndex;
 
@@ -136,13 +140,14 @@ export function ProvidersContent({
     // `tr` was already resolved above (for the key scramble); reuse it here.
     let statusFg: string = isReady ? C.green : C.dim;
     let statusText = p.isLocal ? (isReady ? "enabled" : "disabled") : isReady ? "ready" : "not set";
-    // Local providers: layer liveness on top of config-enabled. "enabled" alone
-    // is misleading (the server may be down); a detected-but-not-enabled server
-    // is a useful nudge to enable it.
+    // Local providers: layer liveness on top of the CONFIG-ENABLED flag (not
+    // isReady — that now counts a running server as ready, which would hide the
+    // "running but not enabled" distinction). "enabled" alone is misleading (the
+    // server may be down); a detected-but-not-enabled server is a nudge to enable.
     if (p.isLocal) {
       const live = localLiveness[p.catalogName];
-      if (isReady) {
-        // config-enabled
+      const enabled = providerAuthSource(p, config) !== null; // local-enabled in config
+      if (enabled) {
         if (live === "running") {
           statusFg = C.green;
           statusText = "running";

@@ -6,6 +6,7 @@
 import { credentials } from "../auth/credentials/authority.js";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import { isLocalProviderEnabled } from "../profile-config.js";
+import type { LocalLiveness } from "../providers/local-liveness.js";
 import { getAllProviders, type ProviderDefinition } from "../providers/provider-definitions.js";
 
 export interface ProviderDef {
@@ -154,6 +155,28 @@ export function providerIsReady(
     return providerAuthSource(p, config) !== null;
   }
   return credentials.isAuthenticated(p.catalogName) || providerAuthSource(p, config) !== null;
+}
+
+/**
+ * Display-readiness for the Providers tab: providerIsReady PLUS live local-server
+ * detection. A local provider that is RUNNING right now counts as ready for the
+ * "configured first" sort, the "─ not configured ─" divider, and the status dot
+ * — even if the user hasn't config-enabled it yet (e.g. a freshly-started
+ * Ollama). Without this, a running-but-not-enabled local shows STATUS "running"
+ * while sitting BELOW the not-configured divider with a hollow dot — the same
+ * source-vs-readiness divergence the publicKeyFallback fix removed for keyless
+ * providers.
+ *
+ * `localLiveness` is keyed by catalogName; pass {} when liveness is unknown
+ * (collapses to plain providerIsReady).
+ */
+export function providerIsReadyForDisplay(
+  p: ProviderDef,
+  config: { apiKeys?: Record<string, string>; localProviders?: string[] },
+  localLiveness: Record<string, LocalLiveness>
+): boolean {
+  if (p.isLocal && localLiveness[p.catalogName] === "running") return true;
+  return providerIsReady(p, config);
 }
 
 /**

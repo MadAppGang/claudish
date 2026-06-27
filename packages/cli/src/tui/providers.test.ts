@@ -4,6 +4,7 @@ import {
   type ProviderDef,
   providerAuthSource,
   providerIsReady,
+  providerIsReadyForDisplay,
 } from "./providers.js";
 
 // Minimal ProviderDef builder for the helpers under test.
@@ -112,5 +113,48 @@ describe("providerIsReady agrees with providerAuthSource for the public case", (
     process.env[ENV] = "sk-gemini-direct";
     const directGemini = def({ name: "gemini", catalogName: "google" });
     expect(providerIsReady(directGemini, EMPTY)).toBe(true);
+  });
+});
+
+describe("providerIsReadyForDisplay — running local counts as ready", () => {
+  // Regression: a RUNNING but not-config-enabled local (e.g. a freshly-started
+  // Ollama) must sort/divide as ready, matching its "running" status — not sit
+  // below the "not configured" divider with a hollow dot.
+  test("running local is ready for display even when not config-enabled", () => {
+    const ollama = def({ isLocal: true, catalogName: "ollama", apiKeyEnvVar: "" });
+    // Plain readiness: NOT enabled → not ready.
+    expect(providerIsReady(ollama, { localProviders: [] })).toBe(false);
+    // Display readiness with liveness "running" → ready.
+    expect(providerIsReadyForDisplay(ollama, { localProviders: [] }, { ollama: "running" })).toBe(
+      true
+    );
+  });
+
+  test("down/unknown local is NOT ready for display when not enabled", () => {
+    const ollama = def({ isLocal: true, catalogName: "ollama", apiKeyEnvVar: "" });
+    expect(providerIsReadyForDisplay(ollama, { localProviders: [] }, { ollama: "down" })).toBe(
+      false
+    );
+    expect(providerIsReadyForDisplay(ollama, { localProviders: [] }, {})).toBe(false);
+  });
+
+  test("config-enabled local is ready regardless of liveness", () => {
+    const ollama = def({ isLocal: true, catalogName: "ollama", apiKeyEnvVar: "" });
+    expect(
+      providerIsReadyForDisplay(ollama, { localProviders: ["ollama"] }, { ollama: "down" })
+    ).toBe(true);
+  });
+
+  test("non-local provider: liveness is irrelevant, falls through to providerIsReady", () => {
+    const saved = process.env.CLAUDISH_TEST_PROVIDERS_KEY;
+    delete process.env.CLAUDISH_TEST_PROVIDERS_KEY;
+    try {
+      const openrouter = def({ name: "openrouter", catalogName: "openrouter" });
+      expect(
+        providerIsReadyForDisplay(openrouter, { apiKeys: {} }, { ollama: "running" })
+      ).toBe(false);
+    } finally {
+      if (saved !== undefined) process.env.CLAUDISH_TEST_PROVIDERS_KEY = saved;
+    }
   });
 });
