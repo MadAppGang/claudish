@@ -142,6 +142,15 @@ export interface ClaudishProfileConfig {
    * Validation of entries happens at the consumption site (Phase 3) via Zod, not here.
    */
   customEndpoints?: Record<string, unknown>;
+  /**
+   * Per-provider concurrency caps for BUILTIN providers (custom endpoints use
+   * per-endpoint `maxConcurrency` instead). Keyed by provider name
+   * (e.g. "glm-coding" for gc@). The transport runs at most N requests in flight
+   * to that provider, queuing the rest (never rejects). Bounds pile-up during
+   * slow-provider periods so a single slow backend can't starve the event loop
+   * and cascade into gateway timeouts. See ConcurrencyLimiter.
+   */
+  providerConcurrency?: Record<string, number>;
   /** Proxy authentication key — clients must send x-proxy-key matching this value */
   proxyKey?: string;
 }
@@ -221,6 +230,9 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.customEndpoints !== undefined) {
       merged.customEndpoints = config.customEndpoints;
+    }
+    if (config.providerConcurrency !== undefined) {
+      merged.providerConcurrency = config.providerConcurrency;
     }
     if (config.proxyKey !== undefined) {
       merged.proxyKey = config.proxyKey;

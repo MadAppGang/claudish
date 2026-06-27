@@ -9,6 +9,7 @@
 import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
+import { ConcurrencyLimiter } from "../../handlers/shared/concurrency-limiter.js";
 import { log } from "../../logger.js";
 
 export class OpenAIProviderTransport implements ProviderTransport {
@@ -20,6 +21,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
   private apiKey: string;
   private modelName: string;
   private maxConcurrency?: number;
+  private limiter?: ConcurrencyLimiter;
 
   constructor(
     provider: RemoteProvider,
@@ -44,6 +46,12 @@ export class OpenAIProviderTransport implements ProviderTransport {
         `[${this.displayName}] Concurrency: ${this.maxConcurrency === 0 ? "unlimited" : this.maxConcurrency}`
       );
     }
+    // Per-instance cap (independent per provider — see ConcurrencyLimiter docs).
+    // 0 = unlimited (no limiter). Gated by CLAUDISH_LOCAL_QUEUE_ENABLED so that env
+    // var also disables remote caps.
+    if (this.maxConcurrency !== undefined && this.maxConcurrency > 0 && LocalModelQueue.isEnabled()) {
+      this.limiter = new ConcurrencyLimiter(this.maxConcurrency, this.displayName);
+    }
   }
 
   getEndpoint(): string {
@@ -66,9 +74,10 @@ export class OpenAIProviderTransport implements ProviderTransport {
    * and detailed error handling.
    *
    * If `maxConcurrency` is set (capacity-limited backends, e.g. a single-GPU
-   * vLLM server), the whole fetch+retry unit is run through LocalModelQueue so
-   * at most N requests are in flight to the backend at once. This prevents
-   * parallel large prefills from wedging the engine. Unset = unbounded (the
+   * vLLM server, or a remote provider that must not pile up unbounded slow
+   * streams), the whole fetch+retry unit is run through a per-instance
+   * ConcurrencyLimiter so at most N requests are in flight to THIS backend at
+   * once — independent of other providers' caps. Unset / 0 = unbounded (the
    * default, unchanged behavior for every standard remote provider).
    */
   async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
@@ -116,11 +125,12 @@ export class OpenAIProviderTransport implements ProviderTransport {
       return lastResponse!;
     };
 
-    // Capacity-limited backend (e.g. single-GPU vLLM) — serialize through the
-    // queue so parallel large prefills can't wedge the engine. The 429 retry
-    // unit above is a single queued item: at most maxConcurrency are in flight.
-    if (this.maxConcurrency !== undefined && LocalModelQueue.isEnabled()) {
-      return LocalModelQueue.getInstance().enqueue(runWith429Retry, this.name, this.maxConcurrency);
+    // Capacity-limited backend (e.g. single-GPU vLLM, or a slow remote provider
+    // that must not be allowed to pile up unbounded streams and starve the event
+    // loop). The 429 retry unit above is a single gated item: at most
+    // maxConcurrency are in flight to this backend. Independent per provider.
+    if (this.limiter) {
+      return this.limiter.run(runWith429Retry);
     }
     return runWith429Retry();
   }

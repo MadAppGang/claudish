@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
+import { ConcurrencyLimiter } from "../../handlers/shared/concurrency-limiter.js";
 import { log } from "../../logger.js";
 import { KimiOAuth } from "../../auth/kimi-oauth.js";
 
@@ -23,6 +24,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
   private provider: RemoteProvider;
   private apiKey: string;
   private maxConcurrency?: number;
+  private limiter?: ConcurrencyLimiter;
 
   constructor(provider: RemoteProvider, apiKey: string, maxConcurrency?: number) {
     this.provider = provider;
@@ -35,6 +37,11 @@ export class AnthropicProviderTransport implements ProviderTransport {
       log(
         `[${this.displayName}] Concurrency: ${this.maxConcurrency === 0 ? "unlimited" : this.maxConcurrency}`
       );
+    }
+    // Per-instance cap (independent per provider — see ConcurrencyLimiter docs).
+    // 0 = unlimited (no limiter). Gated by CLAUDISH_LOCAL_QUEUE_ENABLED.
+    if (this.maxConcurrency !== undefined && this.maxConcurrency > 0 && LocalModelQueue.isEnabled()) {
+      this.limiter = new ConcurrencyLimiter(this.maxConcurrency, this.displayName);
     }
   }
 
@@ -136,11 +143,12 @@ export class AnthropicProviderTransport implements ProviderTransport {
       return lastResponse!;
     };
 
-    // Capacity-limited backend — serialize through the queue so parallel large
-    // prefills can't wedge the engine. See OpenAIProviderTransport for the
-    // same pattern. Unset maxConcurrency = unbounded (unchanged behavior).
-    if (this.maxConcurrency !== undefined && LocalModelQueue.isEnabled()) {
-      return LocalModelQueue.getInstance().enqueue(runWith429Retry, this.name, this.maxConcurrency);
+    // Capacity-limited backend — per-instance cap so parallel large prefills can't
+    // wedge the engine (and a slow remote provider can't pile up unbounded streams).
+    // Independent per provider. See OpenAIProviderTransport for the same pattern.
+    // Unset maxConcurrency = unbounded (unchanged behavior).
+    if (this.limiter) {
+      return this.limiter.run(runWith429Retry);
     }
     return runWith429Retry();
   }
