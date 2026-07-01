@@ -54,8 +54,21 @@ $ErrorActionPreference = 'Stop'
 # capture must run under 'Continue'; we restore 'Stop' right after for the rest
 # of the script. docker logs returns exit 0 for normal stderr output (that's
 # where logs live, not an error), so the exit-code check gates real failures.
+# GOTCHA #2 — `--since` is UNUSABLE on this Docker Desktop, in ANY form.
+# Empirically (2026-07-01, post power-outage): with the container up and serving,
+# `--since 6h`, `--since <absolute RFC3339 6h-ago>` BOTH return 0 lines, while
+# `--since 2026-01-01` returns everything and `--tail N` is correct. Root cause is
+# clock corruption in the container's json-log: physically-recent lines carry
+# timestamps ~2 days stale (the WSL2 VM clock jumped during the outage), so any
+# recent `--since` cutoff filters out live traffic. Timestamp-based windowing is
+# therefore ALSO unreliable — the only robust selector is `--tail N` by line count.
+# We approximate the -Hours window by tail depth (~5-6k log lines/hour at peak),
+# capped so we never pull an unbounded buffer. Over-pulling biases toward showing
+# MORE history (safe for surveillance: better a stale line than a missed hang);
+# it never hides recent traffic. Timestamps are still shown but may be skewed.
+$tailLines = [Math]::Min(200000, [Math]::Max(4000, $Hours * 8000))
 $ErrorActionPreference = 'Continue'
-$raw = docker logs --timestamps --since "${Hours}h" $Container 2>&1
+$raw = docker logs --timestamps --tail $tailLines $Container 2>&1
 $dockerExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 
@@ -68,9 +81,10 @@ if ($dockerExit -ne 0) {
 # Filter to actual log lines (docker injects some non-log output on stderr).
 $lines = $raw | Where-Object { $_ -match '^\d{4}-\d{2}-\d{2}T' }
 if ($lines.Count -eq 0) {
-    Write-Host "No log lines in the last $Hours hours (container may have just started)." -ForegroundColor Yellow
+    Write-Host "No log lines found (tail=$tailLines). Container may have just started, or is idle." -ForegroundColor Yellow
     exit 0
 }
+Write-Host ("(window approximated by --tail $tailLines lines; --since is unreliable on this host — see GOTCHA #2)") -ForegroundColor DarkGray
 
 $requests = $lines | Where-Object { $_ -match '\[Request\]' }
 $responses = $lines | Where-Object { $_ -match '\[resp\]' }

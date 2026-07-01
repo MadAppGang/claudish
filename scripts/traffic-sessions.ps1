@@ -64,11 +64,9 @@ foreach ($s in $sessions) {
     $sid = $s.Name
     $shortSid = if ($sid.Length -gt 8) { $sid.Substring(0, 8) + '…' } else { $sid }
 
-    # Resolve machine: prefer explicit header, fall back to device_id
+    # Machine attribution is resolved upstream in Get-CaptureRequests
+    # (header -> device_id fingerprint -> unknown).
     $machine = $latest.Machine
-    if ($machine -eq '(unknown)' -and $latest.DeviceId) {
-        $machine = Resolve-MachineFromDevice $latest.DeviceId
-    }
 
     # Compute session duration
     $duration = $latest.FileTime - $oldest.FileTime

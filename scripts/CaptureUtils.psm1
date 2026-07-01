@@ -43,7 +43,12 @@ function Get-CaptureRequests {
                     File       = $_.Name
                     Timestamp  = $j.ts
                     Model      = if ($j.model) { $j.model } else { '(none)' }
-                    Machine    = if ($j.machine) { $j.machine } else { '(unknown)' }
+                    # Attribution precedence: X-Claudish-Machine header (persisted in
+                    # the capture body since 2026-07) -> device_id fingerprint fallback
+                    # (header-less captures: cron agents, pre-2026-07 archives) -> unknown.
+                    Machine    = if ($j.machine) { $j.machine }
+                                 elseif ($sessionInfo.DeviceId) { Resolve-MachineFromDevice $sessionInfo.DeviceId }
+                                 else { '(unknown)' }
                     Workspace  = $workspace
                     SessionId  = $sessionInfo.SessionId
                     DeviceId   = $sessionInfo.DeviceId
