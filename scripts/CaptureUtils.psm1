@@ -43,13 +43,19 @@ function Get-CaptureRequests {
                     File       = $_.Name
                     Timestamp  = $j.ts
                     Model      = if ($j.model) { $j.model } else { '(none)' }
-                    Machine    = if ($j.machine) { $j.machine } else { '(unknown)' }
+                    # Attribution precedence: X-Claudish-Machine header (persisted in
+                    # the capture body since 2026-07) -> device_id fingerprint fallback
+                    # (header-less captures: cron agents, pre-2026-07 archives) -> unknown.
+                    Machine    = if ($j.machine) { $j.machine }
+                                 elseif ($sessionInfo.DeviceId) { Resolve-MachineFromDevice $sessionInfo.DeviceId }
+                                 else { '(unknown)' }
                     Workspace  = $workspace
                     SessionId  = $sessionInfo.SessionId
                     DeviceId   = $sessionInfo.DeviceId
                     AccountId  = $sessionInfo.AccountId
                     CCVersion  = $ccInfo.Version
                     Entrypoint = $ccInfo.Entrypoint
+                    IsSubagent = $ccInfo.IsSubagent
                     MsgCount   = $msgCount
                     ToolCount  = $toolCount
                     MaxTokens  = $j.body.max_tokens
@@ -123,12 +129,18 @@ function Get-SessionIdFromMetadata {
 function Get-CCVersionFromSystem {
     <#
     .SYNOPSIS
-    Extract Claude Code version and entrypoint from system[0] billing header.
+    Extract Claude Code version, entrypoint, and sub-agent flag from system[0]
+    billing header.
+
+    IsSubagent distinguishes the DANGEROUS leak (a rogue Opus sub-agent spawned by
+    the Agent tool, cc_is_subagent=true) from a benign interactive user session
+    (cc_is_subagent absent). This is THE distinction the leak policy hinges on —
+    see the leak-policy-binary-by-machine + sub-agent-opus-leak memories.
     #>
     [CmdletBinding()]
     param($System)
 
-    $result = @{ Version = ''; Entrypoint = '' }
+    $result = @{ Version = ''; Entrypoint = ''; IsSubagent = $false }
     if (-not $System -or $System.Count -eq 0) { return $result }
 
     $text = $System[0].text ?? $System[0] ?? ''
@@ -138,6 +150,9 @@ function Get-CCVersionFromSystem {
     }
     if ($text -match 'cc_entrypoint=([^;\s]+)') {
         $result.Entrypoint = $Matches[1]
+    }
+    if ($text -match 'cc_is_subagent=true') {
+        $result.IsSubagent = $true
     }
 
     return $result
@@ -203,6 +218,42 @@ function Get-ArchivedDays {
         } | Sort-Object Date
 }
 
+function Get-OutageArchives {
+    <#
+    .SYNOPSIS
+    List outage-reconciliation archives (outage-<machine>-<start>_<end>.7z).
+
+    .DESCRIPTION
+    Sidecar machines capture locally ONLY during a hub outage (in nominal relay
+    mode the forward bypasses capture). reconcile-outage-captures.ps1 packs those
+    outage-window captures into outage-<machine>-<start>_<end>.7z and drops them in
+    a reconcile/ subfolder for the hub to merge. This enumerator parses those names.
+
+    The machine group is non-greedy so machine names that contain dashes
+    (myia-po-2024) are parsed correctly — it stops at the first position where the
+    remainder matches -<start>_<end>.7z. Does NOT collide with the daily
+    captures-YYYY-MM-DD.7z archives (different prefix).
+    #>
+    [CmdletBinding()]
+    param([string]$Dir = $script:DefaultCaptureDir)
+
+    if (-not (Test-Path -LiteralPath $Dir)) { return @() }
+
+    $rx = '^outage-(?<machine>.+?)-(?<start>\d{8}T\d{6})_(?<end>\d{8}T\d{6})\.7z$'
+    Get-ChildItem (Join-Path $Dir 'outage-*.7z') -File -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if ($_.Name -match $rx) {
+                [PSCustomObject]@{
+                    Machine = $Matches['machine']
+                    Start   = [datetime]::ParseExact($Matches['start'], 'yyyyMMddTHHmmss', $null)
+                    End     = [datetime]::ParseExact($Matches['end'],   'yyyyMMddTHHmmss', $null)
+                    File    = $_.FullName
+                    Size    = $_.Length
+                }
+            }
+        } | Sort-Object Start
+}
+
 function Expand-ArchiveDay {
     <#
     .SYNOPSIS
@@ -263,4 +314,4 @@ function Resolve-MachineFromDevice {
 }
 
 Export-ModuleMember -Function Get-CaptureRequests, Get-WorkspaceFromSystem, Get-SessionIdFromMetadata,
-    Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Expand-ArchiveDay, Resolve-MachineFromDevice
+    Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Get-OutageArchives, Expand-ArchiveDay, Resolve-MachineFromDevice

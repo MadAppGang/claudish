@@ -20,6 +20,12 @@ interface AnthropicPassthroughOpts {
   onTokenUpdate?: (input: number, output: number) => void;
   /** Optional adapter — used to check shouldFilterThinking(). */
   adapter?: BaseAPIFormat;
+  /**
+   * When false, no resp-*.sse is written (default true). Used by the relay
+   * nominal forward: the hub captures centrally, so the sidecar must not
+   * double-capture nor emit an orphan response file.
+   */
+  capture?: boolean;
 }
 
 /**
@@ -43,7 +49,7 @@ export function createAnthropicPassthroughStream(
 
   const filterThinking = opts.adapter?.shouldFilterThinking() ?? false;
 
-  const cap = createResponseCapture("anthropic", opts.modelName);
+  const cap = createResponseCapture("anthropic", opts.modelName, opts.capture !== false);
 
   return c.body(
     new ReadableStream({
