@@ -122,7 +122,8 @@ function markFail(state: RelayState, reason: string): void {
 export async function forwardToUpstream(
   c: Context,
   body: unknown,
-  state: RelayState
+  state: RelayState,
+  headerTimeoutMs: number = FORWARD_HEADERS_TIMEOUT_MS
 ): Promise<Response | null> {
   // Build outbound headers: copy inbound minus hop-by-hop (this PRESERVES
   // X-Claudish-Machine so central attribution survives the relay — the whole
@@ -153,16 +154,26 @@ export async function forwardToUpstream(
     }
   }
 
+  // Bound ONLY the header-fetch phase, not the (arbitrarily long) body stream.
+  // AbortSignal.timeout() would keep firing after headers arrive and abort the
+  // streaming body mid-flight — truncating every real response at ~5s. So use an
+  // AbortController and clear the timer the instant fetch() resolves (= headers
+  // received); the body then streams unbounded, and a mid-stream hub death is
+  // handled by createAnthropicPassthroughStream's finalizeWithError (never-hang).
   let res: Response;
+  const headerController = new AbortController();
+  const headerTimer = setTimeout(() => headerController.abort(), headerTimeoutMs);
   try {
     res = await fetch(`${state.upstream}/v1/messages`, {
       method: "POST",
       headers,
       body: payload,
-      signal: AbortSignal.timeout(FORWARD_HEADERS_TIMEOUT_MS),
+      signal: headerController.signal,
     });
+    clearTimeout(headerTimer); // headers in → stop bounding; body is unbounded
   } catch (e) {
-    // Pre-stream failure (connection refused / timeout) → fall through to local.
+    // Pre-stream failure (connection refused / header timeout) → fall through to local.
+    clearTimeout(headerTimer);
     markFail(state, `forward-connect: ${String(e).slice(0, 80)}`);
     return null;
   }
@@ -282,6 +293,9 @@ async function deepProbe(state: RelayState): Promise<boolean> {
  */
 export function startUpstreamProber(state: RelayState): () => void {
   let stopped = false;
+  let probing = false; // guard: at most one in-flight deep probe. setInterval does
+  // not await tick(), so without this a 30s deepProbe would let the next 10s ticks
+  // launch overlapping probes (double-spending budget tokens during recovery).
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -300,18 +314,24 @@ export function startUpstreamProber(state: RelayState): () => void {
         }
         state.consecutiveOk++;
         if (
+          !probing &&
           state.consecutiveOk >= OK_THRESHOLD &&
           Date.now() - state.lastFlipAt >= RECOVERY_COOLDOWN_MS
         ) {
-          const deep = await deepProbe(state);
-          if (deep) {
-            state.alive = true;
-            state.consecutiveFail = 0;
-            state.consecutiveOk = 0;
-            state.lastFlipAt = Date.now();
-            log(`[Relay] upstream ${state.upstream} healthy again → NOMINAL (relay resumed)`, true);
-          } else {
-            state.consecutiveOk = 0; // deep probe failed; keep waiting
+          probing = true;
+          try {
+            const deep = await deepProbe(state);
+            if (deep) {
+              state.alive = true;
+              state.consecutiveFail = 0;
+              state.consecutiveOk = 0;
+              state.lastFlipAt = Date.now();
+              log(`[Relay] upstream ${state.upstream} healthy again → NOMINAL (relay resumed)`, true);
+            } else {
+              state.consecutiveOk = 0; // deep probe failed; keep waiting
+            }
+          } finally {
+            probing = false;
           }
         }
       }

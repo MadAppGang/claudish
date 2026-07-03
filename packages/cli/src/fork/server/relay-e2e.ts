@@ -71,7 +71,7 @@ function mockCtx(headers: Record<string, string> = {}): any {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function waitFor(
-  label: string,
+  _label: string,
   pred: () => boolean,
   timeoutMs: number,
   pollMs = 1000

@@ -256,3 +256,66 @@ describe("forwardToUpstream — streaming (never-hang delegation)", () => {
     expect(state.consecutiveFail).toBe(0);
   });
 });
+
+describe("forwardToUpstream — header timeout must NOT truncate the body (regression)", () => {
+  // Regression guard for the AbortSignal.timeout() trap: the forward fetch must
+  // bound ONLY the header-fetch phase, never the body stream. A prior version used
+  // signal: AbortSignal.timeout(5000), which keeps firing after headers arrive and
+  // aborts the streaming body mid-flight — truncating EVERY real response at ~5s.
+  // The fix clears the header timer the instant fetch() resolves. Here the header
+  // timeout is a tiny 120ms and the terminal message_stop is emitted only at ~300ms
+  // (well after it): with the bug the abort fires, the body errors, and "late" +
+  // message_stop are lost; fixed, the full stream arrives.
+  it("delivers content emitted after headerTimeoutMs (timer cleared once headers arrive)", async () => {
+    const encoder = new TextEncoder();
+    fetchImpl = async (_url: any, init: any) => {
+      const signal: AbortSignal | undefined = init?.signal;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n' +
+                'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"early"}}\n\n'
+            )
+          );
+          // Real fetch errors the body stream when its signal fires — model that so
+          // the buggy AbortSignal.timeout path would actually truncate here.
+          if (signal) {
+            signal.addEventListener("abort", () => {
+              try {
+                controller.error(new Error("aborted"));
+              } catch {}
+            });
+          }
+          setTimeout(() => {
+            try {
+              controller.enqueue(
+                encoder.encode(
+                  'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"late"}}\n\n' +
+                    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+                    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n' +
+                    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+                )
+              );
+              controller.close();
+            } catch {}
+          }, 300);
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+
+    const state = createRelayState({ upstream: "http://hub:3000" });
+    // 120ms header timeout << 300ms body tail: proves the body is unbounded by it.
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "glm-5.2" }, state, 120);
+    expect(r).not.toBeNull();
+    const out = await r!.text();
+    expect(out).toContain("early");
+    expect(out).toContain("late"); // emitted AFTER the header timeout → not truncated
+    expect(out).toContain("message_stop");
+  });
+});
