@@ -55,6 +55,7 @@ function Get-CaptureRequests {
                     AccountId  = $sessionInfo.AccountId
                     CCVersion  = $ccInfo.Version
                     Entrypoint = $ccInfo.Entrypoint
+                    IsSubagent = $ccInfo.IsSubagent
                     MsgCount   = $msgCount
                     ToolCount  = $toolCount
                     MaxTokens  = $j.body.max_tokens
@@ -128,12 +129,18 @@ function Get-SessionIdFromMetadata {
 function Get-CCVersionFromSystem {
     <#
     .SYNOPSIS
-    Extract Claude Code version and entrypoint from system[0] billing header.
+    Extract Claude Code version, entrypoint, and sub-agent flag from system[0]
+    billing header.
+
+    IsSubagent distinguishes the DANGEROUS leak (a rogue Opus sub-agent spawned by
+    the Agent tool, cc_is_subagent=true) from a benign interactive user session
+    (cc_is_subagent absent). This is THE distinction the leak policy hinges on —
+    see the leak-policy-binary-by-machine + sub-agent-opus-leak memories.
     #>
     [CmdletBinding()]
     param($System)
 
-    $result = @{ Version = ''; Entrypoint = '' }
+    $result = @{ Version = ''; Entrypoint = ''; IsSubagent = $false }
     if (-not $System -or $System.Count -eq 0) { return $result }
 
     $text = $System[0].text ?? $System[0] ?? ''
@@ -143,6 +150,9 @@ function Get-CCVersionFromSystem {
     }
     if ($text -match 'cc_entrypoint=([^;\s]+)') {
         $result.Entrypoint = $Matches[1]
+    }
+    if ($text -match 'cc_is_subagent=true') {
+        $result.IsSubagent = $true
     }
 
     return $result
