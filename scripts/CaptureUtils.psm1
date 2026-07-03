@@ -208,6 +208,42 @@ function Get-ArchivedDays {
         } | Sort-Object Date
 }
 
+function Get-OutageArchives {
+    <#
+    .SYNOPSIS
+    List outage-reconciliation archives (outage-<machine>-<start>_<end>.7z).
+
+    .DESCRIPTION
+    Sidecar machines capture locally ONLY during a hub outage (in nominal relay
+    mode the forward bypasses capture). reconcile-outage-captures.ps1 packs those
+    outage-window captures into outage-<machine>-<start>_<end>.7z and drops them in
+    a reconcile/ subfolder for the hub to merge. This enumerator parses those names.
+
+    The machine group is non-greedy so machine names that contain dashes
+    (myia-po-2024) are parsed correctly — it stops at the first position where the
+    remainder matches -<start>_<end>.7z. Does NOT collide with the daily
+    captures-YYYY-MM-DD.7z archives (different prefix).
+    #>
+    [CmdletBinding()]
+    param([string]$Dir = $script:DefaultCaptureDir)
+
+    if (-not (Test-Path -LiteralPath $Dir)) { return @() }
+
+    $rx = '^outage-(?<machine>.+?)-(?<start>\d{8}T\d{6})_(?<end>\d{8}T\d{6})\.7z$'
+    Get-ChildItem (Join-Path $Dir 'outage-*.7z') -File -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if ($_.Name -match $rx) {
+                [PSCustomObject]@{
+                    Machine = $Matches['machine']
+                    Start   = [datetime]::ParseExact($Matches['start'], 'yyyyMMddTHHmmss', $null)
+                    End     = [datetime]::ParseExact($Matches['end'],   'yyyyMMddTHHmmss', $null)
+                    File    = $_.FullName
+                    Size    = $_.Length
+                }
+            }
+        } | Sort-Object Start
+}
+
 function Expand-ArchiveDay {
     <#
     .SYNOPSIS
@@ -268,4 +304,4 @@ function Resolve-MachineFromDevice {
 }
 
 Export-ModuleMember -Function Get-CaptureRequests, Get-WorkspaceFromSystem, Get-SessionIdFromMetadata,
-    Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Expand-ArchiveDay, Resolve-MachineFromDevice
+    Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Get-OutageArchives, Expand-ArchiveDay, Resolve-MachineFromDevice

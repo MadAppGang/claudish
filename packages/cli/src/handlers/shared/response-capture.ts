@@ -33,9 +33,16 @@ const NOOP: ResponseCapture = {
  * Create a response capture for one stream. `label` identifies the parser
  * (e.g. "anthropic", "openai", "native"). Returns a no-op when capture is off.
  */
-export function createResponseCapture(label: string, model: string): ResponseCapture {
+export function createResponseCapture(
+  label: string,
+  model: string,
+  enabled = true
+): ResponseCapture {
   const captureDir = process.env.CLAUDISH_CAPTURE_DIR;
-  if (!captureDir) return NOOP;
+  // `enabled = false` lets the relay nominal forward reuse the passthrough stream
+  // without writing an orphan resp-*.sse (no matching req capture on the sidecar;
+  // the hub captures centrally).
+  if (!captureDir || !enabled) return NOOP;
 
   const decoder = new TextDecoder();
   let sse = "";

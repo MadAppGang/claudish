@@ -23,6 +23,15 @@ services:
       - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
       - SEARXNG_URL=http://search.myia.io
       - CLAUDISH_CAPTURE_DIR=/captures
+      # Sidecar relay (fork extension). All empty → this container is the HUB
+      # (po-2023): always local, unchanged. On a sidecar machine, set these in the
+      # per-machine .env:
+      #   CLAUDISH_RELAY_UPSTREAM — hub URL (LAN http://192.168.0.46:3000, WAN https://models.myia.io)
+      #   CLAUDISH_RELAY_COMPRESS — 1 on WAN externals (po-2025, web1) only
+      #   CLAUDISH_NO_ANTHROPIC   — 1 on every machine except ai-01 (leak-policy backstop)
+      - CLAUDISH_RELAY_UPSTREAM=${CLAUDISH_RELAY_UPSTREAM:-}
+      - CLAUDISH_RELAY_COMPRESS=${CLAUDISH_RELAY_COMPRESS:-}
+      - CLAUDISH_NO_ANTHROPIC=${CLAUDISH_NO_ANTHROPIC:-}
     command: ["--port", "3000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]
