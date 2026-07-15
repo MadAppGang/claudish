@@ -6,17 +6,20 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      # Mount config from host (contains API keys, routing, profiles)
+      # Mount config from host (contains API keys, routing, profiles). Override
+      # CLAUDISH_CONFIG_DIR for a sidecar whose config lives elsewhere; defaults
+      # to the hub (po-2023) path so the hub compose is unchanged.
       - type: bind
-        source: C:\Users\jsboi\.claudish
+        source: ${CLAUDISH_CONFIG_DIR:-C:\Users\jsboi\.claudish}
         target: /root/.claudish
         read_only: true
       # Persistent diagnostic capture: full request/response bodies for offline
       # analysis. The proxy writes req-*.json / resp-*.sse here (gated by
       # CLAUDISH_CAPTURE_DIR). Compacted nightly by ClaudishCaptureCompaction
-      # (compress-captures.ps1), then backed up to GDrive.
+      # (compress-captures.ps1), then backed up to GDrive. Override
+      # CLAUDISH_CAPTURES_DIR on machines without a D: drive.
       - type: bind
-        source: D:\claudish-captures
+        source: ${CLAUDISH_CAPTURES_DIR:-D:\claudish-captures}
         target: /captures
     environment:
       - NODE_ENV=production

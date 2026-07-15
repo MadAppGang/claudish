@@ -136,8 +136,18 @@ export async function forwardToUpstream(
     headers[key] = value;
   }
   if (state.proxyKey) {
-    delete headers["authorization"];
-    headers["x-api-key"] = state.proxyKey;
+    // Inject the cluster proxy key as x-proxy-key (NOT x-api-key). The hub's
+    // auth gate accepts x-proxy-key, but NativeHandler's proxyKey→Anthropic swap
+    // only triggers on x-api-key/authorization == proxyKey. Using x-proxy-key
+    // means a relayed native (Opus) request does NOT swap → the client's own
+    // OAuth (preserved below) passes through to Anthropic. This is what lets
+    // ai-01's Opus traverse sidecar → hub → Anthropic: the hub stores no
+    // Anthropic key of its own, so the x-api-key swap path would 401. Executors
+    // (glm/minimax) are unaffected — they carry no OAuth, and the gate still
+    // passes on x-proxy-key. See memory proxy-key-custom-header-auth.
+    delete headers["x-api-key"]; // a stale client x-api-key==proxyKey would re-arm the hub swap
+    headers["x-proxy-key"] = state.proxyKey;
+    // KEEP authorization — preserves the client OAuth for native passthrough.
   }
 
   // Serialize (body already consumed by the route's readRequestBody). Optionally
@@ -230,7 +240,7 @@ async function heartbeat(state: RelayState): Promise<boolean> {
 async function deepProbe(state: RelayState): Promise<boolean> {
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (state.proxyKey) headers["x-api-key"] = state.proxyKey;
+    if (state.proxyKey) headers["x-proxy-key"] = state.proxyKey;
     const body = JSON.stringify({
       model: "glm-5.2",
       max_tokens: 100,
