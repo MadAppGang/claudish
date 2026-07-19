@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -73,6 +73,37 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   return models.some((m) => m && parseModelSpec(m).provider === "native-anthropic");
 }
 
+/** Existence-only probe for an OS-credential-store Anthropic OAuth item. */
+export type KeychainCredentialProbe = () => boolean;
+
+// Startup-only memo (see hasResolvableAnthropicAuth call graph — at most a couple of
+// evaluations per launch). Tests inject their own probe, so this stays inert there.
+let macosKeychainAnthropicResult: boolean | undefined;
+
+/**
+ * Existence-only probe for Claude Code's macOS login-Keychain OAuth item (service
+ * "Claude Code-credentials"). Returns true iff the item is present. Uses
+ * `security find-generic-password` WITHOUT `-w`, so it never requests the secret,
+ * needs no Keychain-access prompt, and never touches the token — Claude Code itself
+ * still forwards the OAuth once claudish skips the placeholder key. Non-darwin → false
+ * (returns before spawning). Best-effort: any error (security absent, non-zero exit,
+ * item missing) → false.
+ */
+export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
+  if (process.platform !== "darwin") return false;
+  if (macosKeychainAnthropicResult !== undefined) return macosKeychainAnthropicResult;
+  try {
+    // Existence only — NO `-w`, so no secret is requested and no Keychain prompt appears.
+    const res = spawnSync("security", ["find-generic-password", "-s", "Claude Code-credentials"], {
+      stdio: "ignore",
+    });
+    macosKeychainAnthropicResult = !res.error && res.status === 0;
+  } catch {
+    macosKeychainAnthropicResult = false;
+  }
+  return macosKeychainAnthropicResult;
+};
+
 /**
  * Does the user explicitly want their real ANTHROPIC_API_KEY used, accepting
  * metered API billing instead of their claude.ai subscription?
@@ -103,11 +134,27 @@ function wantsAnthropicApiBilling(config: ClaudishConfig): boolean {
  * Does the environment carry a resolvable Anthropic credential? Used to decide
  * whether classifier passthrough can safely preserve Claude Code's real auth
  * (skipping the placeholder key) without stranding Claude Code at a login gate.
- * Checks env tokens and the presence of Claude Code's OAuth credentials file.
+ * Checks, in order: env tokens (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN), Claude
+ * Code's OAuth credentials file (~/.claude/.credentials.json), and — on macOS — the
+ * login Keychain item Claude Code stores its OAuth in ("Claude Code-credentials",
+ * existence-only; the secret is never read). Deps are injectable for hermetic tests.
+ *
+ * TODO: Windows/Linux may also keep the OAuth in an OS credential store (Credential
+ * Manager / libsecret) rather than the file; only the macOS Keychain is covered so far.
  */
-function hasResolvableAnthropicAuth(): boolean {
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return true;
-  return existsSync(join(homedir(), ".claude", ".credentials.json"));
+export function hasResolvableAnthropicAuth(
+  deps: {
+    env?: NodeJS.ProcessEnv;
+    fileExists?: (path: string) => boolean;
+    keychainProbe?: KeychainCredentialProbe;
+  } = {}
+): boolean {
+  const env = deps.env ?? process.env;
+  const fileExists = deps.fileExists ?? existsSync;
+  const keychainProbe = deps.keychainProbe ?? defaultKeychainAnthropicProbe;
+  if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return true;
+  if (fileExists(join(homedir(), ".claude", ".credentials.json"))) return true;
+  return keychainProbe();
 }
 
 /**

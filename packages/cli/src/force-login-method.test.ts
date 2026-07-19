@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildClaudishSettingsOverlay,
+  hasResolvableAnthropicAuth,
   isProxyAuthMode,
   managedSettingsForcesClaudeAi,
 } from "./claude-runner.js";
@@ -102,5 +103,66 @@ describe("managedSettingsForcesClaudeAi", () => {
   test("garbage JSON → false", () => {
     const readFile = (() => "{ not json") as never;
     expect(managedSettingsForcesClaudeAi(readFile)).toBe(false);
+  });
+});
+
+describe("hasResolvableAnthropicAuth", () => {
+  // Inject all deps so tests are hermetic: never read the real process.env / filesystem,
+  // never mutate process.platform, and never spawn `security`.
+  const noEnv: NodeJS.ProcessEnv = {};
+  const noFile = () => false;
+  const noKeychain = () => false;
+
+  test("ANTHROPIC_API_KEY env → true", () => {
+    expect(
+      hasResolvableAnthropicAuth({
+        env: { ANTHROPIC_API_KEY: "sk-test" },
+        fileExists: noFile,
+        keychainProbe: noKeychain,
+      })
+    ).toBe(true);
+  });
+
+  test("ANTHROPIC_AUTH_TOKEN env → true", () => {
+    expect(
+      hasResolvableAnthropicAuth({
+        env: { ANTHROPIC_AUTH_TOKEN: "tok-test" },
+        fileExists: noFile,
+        keychainProbe: noKeychain,
+      })
+    ).toBe(true);
+  });
+
+  test("credentials file present → true (no env, no keychain)", () => {
+    expect(
+      hasResolvableAnthropicAuth({ env: noEnv, fileExists: () => true, keychainProbe: noKeychain })
+    ).toBe(true);
+  });
+
+  test("macOS Keychain item present → true (no env, no file)", () => {
+    expect(
+      hasResolvableAnthropicAuth({ env: noEnv, fileExists: noFile, keychainProbe: () => true })
+    ).toBe(true);
+  });
+
+  test("Keychain absent + no env + no file → false", () => {
+    expect(
+      hasResolvableAnthropicAuth({ env: noEnv, fileExists: noFile, keychainProbe: noKeychain })
+    ).toBe(false);
+  });
+
+  test("non-darwin (probe returns false) still resolves via env/file", () => {
+    // Off-darwin, defaultKeychainAnthropicProbe returns false; the env/file checks
+    // remain the only sources. All-absent → false; env present → still true.
+    expect(
+      hasResolvableAnthropicAuth({ env: noEnv, fileExists: noFile, keychainProbe: () => false })
+    ).toBe(false);
+    expect(
+      hasResolvableAnthropicAuth({
+        env: { ANTHROPIC_API_KEY: "sk-test" },
+        fileExists: noFile,
+        keychainProbe: () => false,
+      })
+    ).toBe(true);
   });
 });
