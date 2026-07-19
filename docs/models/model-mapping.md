@@ -94,6 +94,79 @@ Yep. Claudish detects this is an Anthropic model ID and routes directly to Anthr
 
 ---
 
+## Auto-Mode Classifier Passthrough
+
+When you run Claude Code in **auto mode** (`--permission-mode auto`), Claude Code sends a
+dedicated **permission-classifier** request — Anthropic's "security monitor" — to decide
+whether each tool call is safe to run automatically. That classifier only behaves correctly
+on a real Claude model. If your hybrid setup routes it to a non-Claude provider (Codex, GPT,
+Gemini, …), it over-blocks or times out with *"safety classifier temporarily unavailable"* —
+and even harmless commands get denied.
+
+**Classifier passthrough** fixes this: it detects the classifier request by content and
+reroutes **only that request** to native Anthropic (`claude-sonnet-5` by default, via your
+Claude Max OAuth), while your main loop keeps running on whatever provider you mapped.
+
+### Enable it
+
+Opt-in (default off) via a flag or an env var:
+
+```bash
+# Flag
+claudish --model-opus cx@gpt-5.6-sol --model-sonnet claude-sonnet-5 \
+  --classifier-provider anthropic \
+  -- --permission-mode auto "your task"
+
+# Or env var
+export CLAUDISH_CLASSIFIER_PROVIDER=anthropic
+```
+
+Choose a specific classifier model with `--classifier-model` / `CLAUDISH_CLASSIFIER_MODEL`
+(defaults to `claude-sonnet-5` — fast, cheap, and correct for the classifier):
+
+```bash
+claudish --classifier-model claude-sonnet-5 ...
+```
+
+### Example: main loop on Codex, safety classifier on Claude
+
+```bash
+claudish \
+  --model-opus cx@gpt-5.6-sol \
+  --model-sonnet claude-sonnet-5 \
+  --classifier-provider anthropic \
+  -- --permission-mode auto -p 'refactor the auth module'
+```
+
+The main loop (Opus/Sonnet tiers) runs on Codex; only the permission-classifier request is
+rerouted to `claude-sonnet-5` on `api.anthropic.com`.
+
+### Requirements
+
+- You need working Anthropic credentials (Claude Max OAuth, or `ANTHROPIC_API_KEY`). The
+  simplest way is to **map a role to a native Claude model** — e.g.
+  `--model-sonnet claude-sonnet-5` as above — which preserves your real Claude Code auth
+  automatically. If you enable the flag with no native mapping *and* no resolvable Anthropic
+  credentials, claudish keeps your main loop working and prints a warning that the classifier
+  can't authenticate.
+- Only the classifier request is rerouted; every other request follows your normal role
+  mapping.
+
+> **Consent model:** Claude Code's classifier treats a command you *explicitly name* in your
+> prompt (e.g. literally asking it to run `curl … | bash`) as informed consent and allows it.
+> Visible blocks are for dangerous actions the agent formulates on its own, or for
+> hard-blocked operations — so a "dangerous" prompt that spells out the exact command may be
+> allowed by design.
+
+### Debugging
+
+Set `CLAUDISH_CLASSIFIER_DEBUG=1` to append each incoming request's model / sampling params /
+system prompt / headers to `logs/classifier-capture.jsonl` — handy for confirming the
+classifier is detected and rerouted. With `--debug-claudish`, a
+`[Classifier] … → native Anthropic` line is written when the passthrough fires.
+
+---
+
 ## Subagent Mapping
 
 When Claude Code spawns sub-agents (via the Task tool), they use the subagent model:

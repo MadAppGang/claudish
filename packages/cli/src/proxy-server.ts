@@ -1,10 +1,16 @@
-import { Hono } from "hono";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
 import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
 import { credentials } from "./auth/credentials/authority.js";
 import { loadHookRules } from "./behavior/hooks.js";
 import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
+import {
+  isAutoModeClassifierRequest,
+  rewriteClassifierForNative,
+} from "./classifier-passthrough.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
@@ -100,6 +106,59 @@ export interface ProxyServerOptions {
    * matched before catalog resolution.
    */
   modelChain?: string[];
+  /**
+   * Classifier passthrough (opt-in). When `enabled`, Claude Code's auto-mode
+   * permission classifier request (detected by content) is rewritten onto
+   * `model` and forwarded via the native Anthropic handler (OAuth passthrough),
+   * bypassing role-based routing — so the main loop can run on another provider
+   * while the safety classifier still runs on a real Claude model. Undefined /
+   * disabled by default. See classifier-passthrough.ts.
+   */
+  classifier?: { enabled: boolean; model: string };
+}
+
+/**
+ * Ground-truth capture for classifier passthrough. No-op unless the
+ * `CLAUDISH_CLASSIFIER_DEBUG` env flag is set. When active, appends the raw
+ * model / sampling params / `system` array / relevant headers of an incoming
+ * request to a dedicated `logs/classifier-capture.jsonl` file so the auto-mode
+ * permission classifier's system marker (and its payload shape) can be verified
+ * or discovered. Writes to a purpose-built file — NOT the redacted always-on
+ * log — so it never pollutes structural logging. Best-effort; never throws.
+ */
+let classifierCaptureDirReady = false;
+function maybeCaptureClassifierRequest(c: Context, body: any): void {
+  if (!process.env.CLAUDISH_CLASSIFIER_DEBUG) return;
+  try {
+    const dir = join(process.cwd(), "logs");
+    if (!classifierCaptureDirReady) {
+      mkdirSync(dir, { recursive: true });
+      classifierCaptureDirReady = true;
+    }
+    const record = {
+      ts: new Date().toISOString(),
+      model: body?.model,
+      stream: body?.stream,
+      max_tokens: body?.max_tokens,
+      temperature: body?.temperature,
+      top_p: body?.top_p,
+      top_k: body?.top_k,
+      thinking: body?.thinking,
+      hasTools: Array.isArray(body?.tools) && body.tools.length > 0,
+      tool_choice: body?.tool_choice,
+      system: body?.system,
+      headers: {
+        "anthropic-beta": c.req.header("anthropic-beta") ?? null,
+        "anthropic-version": c.req.header("anthropic-version") ?? null,
+        "x-app": c.req.header("x-app") ?? null,
+        authorization: c.req.header("authorization") ? "Bearer <present>" : null,
+        "x-api-key": c.req.header("x-api-key") ? "<present>" : null,
+      },
+    };
+    appendFileSync(join(dir, "classifier-capture.jsonl"), `${JSON.stringify(record)}\n`);
+  } catch {
+    // Diagnostic capture is best-effort — never break the request path.
+  }
 }
 
 export async function createProxyServer(
@@ -930,6 +989,30 @@ export async function createProxyServer(
       log(
         `[RequestMeta] model=${body.model} output_config=${JSON.stringify(body.output_config) ?? "(none)"} metadata=${JSON.stringify(body.metadata) ?? "(none)"} anthropic-beta=${c.req.header("anthropic-beta") ?? "(none)"}`
       );
+
+      // Ground-truth capture (no-op unless CLAUDISH_CLASSIFIER_DEBUG). Runs
+      // before detection so a drifted marker can still be discovered.
+      maybeCaptureClassifierRequest(c, body);
+
+      // Classifier passthrough (opt-in, default off): Claude Code's auto-mode
+      // permission classifier is identified by CONTENT (a marker in its system
+      // prompt), not model name. When enabled, reroute it to a native Claude
+      // model on api.anthropic.com via nativeHandler (which forwards the inbound
+      // Claude Max OAuth and the system array — incl. the x-anthropic-billing-header
+      // block — verbatim), bypassing role-based routing. This lets the main loop
+      // run on another provider (e.g. Codex) while the safety classifier still
+      // runs on a real Claude model. Skipped in monitor mode (everything is
+      // already native there). See classifier-passthrough.ts.
+      if (!monitorMode && options.classifier?.enabled && isAutoModeClassifierRequest(body)) {
+        log(
+          `[Classifier] auto-mode permission classifier → native Anthropic (model ${body.model} → ${options.classifier.model})`
+        );
+        // Rewrite onto the native Claude model + strip 400-prone fields (see
+        // classifier-passthrough.ts). Log first — it reads the original body.model.
+        rewriteClassifierForNative(body, options.classifier.model);
+        return nativeHandler.handle(c, body);
+      }
+
       const handler = await getHandlerForRequest(body.model);
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands

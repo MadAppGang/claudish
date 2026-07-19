@@ -391,6 +391,24 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.defaultProvider = dpArg;
     } else if (arg === "--anthropic-api-billing") {
       config.anthropicApiBilling = true;
+    } else if (arg === "--classifier-model") {
+      // Opt-in: reroute Claude Code's auto-mode permission classifier to this
+      // native Claude model on api.anthropic.com. Setting it also enables the
+      // passthrough. Matched here (before the catch-all below) so it isn't
+      // forwarded to Claude Code as a passthrough arg.
+      const cmArg = args[++i];
+      if (!cmArg) {
+        console.error("--classifier-model requires a model id");
+        process.exit(1);
+      }
+      config.classifierModel = cmArg;
+    } else if (arg === "--classifier-provider") {
+      const cpArg = args[++i];
+      if (!cpArg) {
+        console.error("--classifier-provider requires a provider name (e.g. anthropic)");
+        process.exit(1);
+      }
+      config.classifierProvider = cpArg;
     } else if (arg === "--op-env" || arg.startsWith("--op-env=")) {
       // The actual 1Password Environment read happens early in index.ts
       // (highest priority). Here we only consume the flag + its value so it

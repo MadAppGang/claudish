@@ -58,6 +58,9 @@ export const ENV = {
   // Opt IN to using a real ANTHROPIC_API_KEY for native Claude models (metered
   // API billing) instead of the claude.ai subscription. Off by default.
   CLAUDISH_ANTHROPIC_API_BILLING: "CLAUDISH_ANTHROPIC_API_BILLING",
+  // Classifier passthrough (auto-mode permission classifier → native Anthropic)
+  CLAUDISH_CLASSIFIER_PROVIDER: "CLAUDISH_CLASSIFIER_PROVIDER", // "anthropic" enables classifier passthrough
+  CLAUDISH_CLASSIFIER_MODEL: "CLAUDISH_CLASSIFIER_MODEL", // native Claude model to rewrite the classifier onto (also enables)
 } as const;
 
 // OpenRouter API Configuration

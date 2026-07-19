@@ -26,6 +26,8 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 | `--model-sonnet` | | string | none | Model for Sonnet role (default coding) |
 | `--model-haiku` | | string | none | Model for Haiku role (fast tasks, background) |
 | `--model-subagent` | | string | none | Model for sub-agents (Task tool) |
+| `--classifier-provider` | | string | none (off) | Set to `anthropic` to route Claude Code's auto-mode permission classifier to native Anthropic while the main loop runs on another provider. See [Classifier Passthrough](models/model-mapping.md#auto-mode-classifier-passthrough) |
+| `--classifier-model` | | string | `claude-sonnet-5` | Native Claude model the classifier request is rewritten onto. Setting it also enables classifier passthrough |
 | `--port` | | number | random (3000–9000) | Proxy server port |
 | `--auto-approve` | `-y` | boolean | false | Skip permission prompts (passes `--dangerously-skip-permissions` to Claude Code) |
 | `--no-auto-approve` | | boolean | | Explicitly enable permission prompts (overrides -y) |
@@ -111,6 +113,9 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `CLAUDISH_MODEL_SONNET` | Override model for Sonnet role | none |
 | `CLAUDISH_MODEL_HAIKU` | Override model for Haiku role | none |
 | `CLAUDISH_MODEL_SUBAGENT` | Override model for sub-agents | none |
+| `CLAUDISH_CLASSIFIER_PROVIDER` | Set to `anthropic` to route the auto-mode permission classifier to native Anthropic (default off). See [Classifier Passthrough](models/model-mapping.md#auto-mode-classifier-passthrough) | none (off) |
+| `CLAUDISH_CLASSIFIER_MODEL` | Native Claude model the classifier request is rewritten onto; setting it also enables classifier passthrough | `claude-sonnet-5` |
+| `CLAUDISH_CLASSIFIER_DEBUG` | Set to `1` to append each incoming request's model/params/system/headers to `logs/classifier-capture.jsonl` for classifier-detection debugging | none (off) |
 | `CLAUDISH_SUMMARIZE_TOOLS` | Summarize tool descriptions (`true` or `1` to enable) | false |
 | `CLAUDISH_TELEMETRY` | Override telemetry (`0`, `false`, or `off` to disable) | from config |
 | `CLAUDISH_ACTIVE_MODEL_NAME` | (Internal) Set by Claudish to display model name in status line | auto |

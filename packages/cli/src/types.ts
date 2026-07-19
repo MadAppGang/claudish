@@ -76,6 +76,12 @@ export interface ClaudishConfig {
   modelHaiku?: string;
   modelSubagent?: string;
 
+  // Classifier passthrough (auto-mode permission check → native Claude).
+  // Opt-in: reroutes Claude Code's auto-mode permission classifier request to
+  // api.anthropic.com (native OAuth) even when the main loop runs on another provider.
+  classifierModel?: string; // --classifier-model <m> (also enables the passthrough)
+  classifierProvider?: string; // --classifier-provider anthropic (enables the passthrough)
+
   // Cost tracking
   costTracking?: boolean;
   auditCosts?: boolean;

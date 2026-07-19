@@ -7,6 +7,7 @@ config({ quiet: true }); // Loads .env from current working directory
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveExplicitFlagAuth } from "./auth/credentials/op-source.js";
+import { resolveClassifierConfig } from "./classifier-passthrough.js";
 import {
   beginSpan,
   finalizeStartupTrace,
@@ -921,6 +922,7 @@ async function runCli() {
           // Present only when `--model` was a pinned chain; `explicitModel` above
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
+          classifier: resolveClassifierConfig(cliConfig, process.env),
         }
       )
     );

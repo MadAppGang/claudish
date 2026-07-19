@@ -15,6 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
@@ -99,16 +100,46 @@ function wantsAnthropicApiBilling(config: ClaudishConfig): boolean {
 }
 
 /**
+ * Does the environment carry a resolvable Anthropic credential? Used to decide
+ * whether classifier passthrough can safely preserve Claude Code's real auth
+ * (skipping the placeholder key) without stranding Claude Code at a login gate.
+ * Checks env tokens and the presence of Claude Code's OAuth credentials file.
+ */
+function hasResolvableAnthropicAuth(): boolean {
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return true;
+  return existsSync(join(homedir(), ".claude", ".credentials.json"));
+}
+
+/**
+ * Should claudish preserve Claude Code's REAL Anthropic auth — i.e. NOT set a
+ * placeholder key and NOT force console login, so NativeHandler can forward the
+ * user's Claude Max OAuth to api.anthropic.com?
+ *
+ * True for native-Anthropic model mappings (--model-sonnet claude-sonnet-5, etc.),
+ * AND for classifier passthrough when Anthropic credentials are actually
+ * resolvable — the latter guard prevents a pure-Codex user who enables the flag
+ * without any Anthropic creds from being stranded at the login gate (we keep the
+ * placeholder and warn instead; see runClaudeWithProxy).
+ */
+function shouldPreserveNativeAuth(config: ClaudishConfig): boolean {
+  return (
+    hasNativeAnthropicMapping(config) ||
+    (classifierPassthroughEnabled(config) && hasResolvableAnthropicAuth())
+  );
+}
+
+/**
  * "Proxy mode" = claudish points Claude Code at its local proxy with a placeholder
  * API key (see the auth block in runClaudeWithProxy). In this mode the session
  * authenticates via ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, so a user/project/local
  * setting of `forceLoginMethod: "claudeai"` would block it at startup.
  *
- * The inverse — native-Anthropic models or --monitor — uses the user's REAL claude.ai
- * subscription credentials, so we must NOT touch their login method there.
+ * The inverse — native-Anthropic models, classifier passthrough (with resolvable
+ * creds), or --monitor — uses the user's REAL claude.ai subscription credentials,
+ * so we must NOT touch their login method there.
  */
 export function isProxyAuthMode(config: ClaudishConfig): boolean {
-  return !config.monitor && !hasNativeAnthropicMapping(config);
+  return !config.monitor && !shouldPreserveNativeAuth(config);
 }
 
 /**
@@ -1198,8 +1229,9 @@ export async function runClaudeWithProxy(
       env[ENV.ANTHROPIC_MODEL] = modelId;
       env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
     }
-    if (hasNativeAnthropicMapping(config)) {
-      // Native Claude model detected — Claude Code talks to Anthropic directly,
+    if (shouldPreserveNativeAuth(config)) {
+      // Native Claude model, or classifier passthrough with resolvable Anthropic
+      // creds — Claude Code talks to Anthropic directly for those requests,
       // so its own claude.ai subscription login should serve the request.
       //
       // A real ANTHROPIC_API_KEY in the environment silently OVERRIDES that
@@ -1211,11 +1243,34 @@ export async function runClaudeWithProxy(
       // hide it by default and SAY so; opt back in explicitly when API billing
       // is what you want. ANTHROPIC_AUTH_TOKEN is left alone — nothing bundles
       // one incidentally, so setting it is always a deliberate act.
-      if (process.env.ANTHROPIC_API_KEY && !wantsAnthropicApiBilling(config)) {
+      //
+      // Gated on hasNativeAnthropicMapping, NOT on the whole preserve condition:
+      // when the ONLY reason we are here is classifier passthrough, a real
+      // ANTHROPIC_API_KEY may be the user's only Anthropic credential, and
+      // deleting it would strand the very request the passthrough exists to
+      // serve. The exposure is bounded — under classifier-only passthrough the
+      // main loop runs on a foreign provider, so the sole traffic that key can
+      // bill is the classifier call itself.
+      if (
+        hasNativeAnthropicMapping(config) &&
+        process.env.ANTHROPIC_API_KEY &&
+        !wantsAnthropicApiBilling(config)
+      ) {
         delete env.ANTHROPIC_API_KEY;
         hidAnthropicApiKey = true;
       }
     } else {
+      if (classifierPassthroughEnabled(config)) {
+        // Classifier passthrough is enabled but no role maps to a native Claude
+        // model AND no Anthropic credentials are resolvable → the rerouted
+        // classifier request would 401 at api.anthropic.com. Keep the placeholder
+        // so the MAIN loop still works, and warn instead of bricking the session.
+        console.error(
+          "[claudish] classifier passthrough enabled but no Anthropic credentials detected — " +
+            "classifier requests will fail to authenticate against api.anthropic.com. " +
+            "Map a role to a native Claude model (e.g. --model-sonnet claude-sonnet-5) or set ANTHROPIC_API_KEY."
+        );
+      }
       // Pure proxy mode: EVERY model goes through a claudish provider, so the
       // session never makes a real Anthropic call and a real Anthropic key here
       // is dead weight. Forwarding one is actively harmful: Claude Code then

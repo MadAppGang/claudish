@@ -90,6 +90,37 @@ export CLAUDE_CODE_SUBAGENT_MODEL='...'
 
 ---
 
+## Classifier Passthrough
+
+Route Claude Code's auto-mode permission classifier to native Anthropic while your main loop
+runs on another provider. Full guide: [Model Mapping → Auto-Mode Classifier Passthrough](../models/model-mapping.md#auto-mode-classifier-passthrough).
+
+### `CLAUDISH_CLASSIFIER_PROVIDER`
+
+Set to `anthropic` to enable classifier passthrough (default off). CLI equivalent: `--classifier-provider anthropic`.
+
+```bash
+export CLAUDISH_CLASSIFIER_PROVIDER=anthropic
+```
+
+### `CLAUDISH_CLASSIFIER_MODEL`
+
+Native Claude model the classifier request is rewritten onto. Setting it also enables passthrough. Defaults to `claude-sonnet-5`. CLI equivalent: `--classifier-model <id>`.
+
+```bash
+export CLAUDISH_CLASSIFIER_MODEL=claude-sonnet-5
+```
+
+### `CLAUDISH_CLASSIFIER_DEBUG`
+
+Set to `1` to dump each request's raw model / sampling params / system prompt / headers to `logs/classifier-capture.jsonl` for troubleshooting detection. Off by default.
+
+```bash
+export CLAUDISH_CLASSIFIER_DEBUG=1
+```
+
+---
+
 ## Network Configuration
 
 ### `CLAUDISH_PORT`
