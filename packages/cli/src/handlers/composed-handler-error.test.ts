@@ -44,14 +44,34 @@ function stubUpstream(status: number, body: unknown) {
     })) as unknown as typeof fetch;
 }
 
+/** Stub global fetch to throw before any upstream response is received. */
+function stubUpstreamThrow(error: unknown) {
+  globalThis.fetch = (async () => {
+    throw error;
+  }) as unknown as typeof fetch;
+}
+
+interface CapturedErrorBody {
+  type?: string;
+  error?: {
+    type?: string;
+    message?: string;
+  };
+}
+
+interface CapturedResponse {
+  body?: CapturedErrorBody;
+  status?: number;
+}
+
 /** Minimal Hono Context capturing what c.json() was called with. */
-function makeContext(): { c: Context; captured: { body?: any; status?: number } } {
-  const captured: { body?: any; status?: number } = {};
+function makeContext(): { c: Context; captured: CapturedResponse } {
+  const captured: CapturedResponse = {};
   const c = {
     req: { header: () => ({}) },
     header: () => {},
-    json: (body: any, status?: number) => {
-      captured.body = body;
+    json: (body: unknown, status?: number) => {
+      captured.body = body as CapturedErrorBody;
       captured.status = status;
       return new Response(JSON.stringify(body), { status: status ?? 200 });
     },
@@ -142,5 +162,49 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
 
     expect(captured.status).toBe(400);
     expect(captured.body?.error?.message).toContain("Unauthorized");
+  });
+
+  test("a thrown DNS error is surfaced as a 503 connection_error", async () => {
+    stubUpstreamThrow(
+      Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("getaddrinfo ENOTFOUND host"), { code: "ENOTFOUND" }),
+      })
+    );
+    const { c, captured } = makeContext();
+    await makeHandler().handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(503);
+    expect(captured.body?.type).toBe("error");
+    expect(captured.body?.error?.type).toBe("connection_error");
+    expect(captured.body?.error?.message).toContain("Cannot resolve");
+    expect(captured.body?.error?.message).toContain("DNS");
+    expect(captured.body?.error?.type).not.toBe("api_error");
+  });
+
+  test("a thrown ECONNREFUSED error is surfaced as a 503 connection_error", async () => {
+    stubUpstreamThrow(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+    const { c, captured } = makeContext();
+    await makeHandler().handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(503);
+    expect(captured.body?.error?.type).toBe("connection_error");
+    expect(captured.body?.error?.message).toContain("Make sure the server is running");
+  });
+
+  test("a non-connection throw propagates without calling c.json", async () => {
+    const thrown = new TypeError("Cannot read properties of undefined");
+    stubUpstreamThrow(thrown);
+    const { c, captured } = makeContext();
+    let didReject = false;
+
+    try {
+      await makeHandler().handle(c, PAYLOAD);
+    } catch (error) {
+      didReject = true;
+      expect(error).toBe(thrown);
+    }
+
+    expect(didReject).toBe(true);
+    expect(captured.status).toBeUndefined();
   });
 });

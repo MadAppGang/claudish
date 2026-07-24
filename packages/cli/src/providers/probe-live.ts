@@ -256,8 +256,38 @@ function extractUpstreamStatus(body: string): number | undefined {
   }
 }
 
+/**
+ * Pull the Anthropic error `type` (e.g. "connection_error") out of a proxy error
+ * body so classification can distinguish a local connection failure from a
+ * same-status upstream error (a transient upstream 503 is "server_error"/
+ * "overloaded_error", a proxy-side reach failure is "connection_error").
+ */
+function extractErrorType(body: string): string | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body);
+    const t = parsed?.error?.type;
+    return typeof t === "string" ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function classifyHttpError(status: number, body: string, latencyMs: number): ProbeResult {
   const lowered = body.toLowerCase();
+  // A proxy-side connection failure (DNS unresolved, connection refused, host
+  // unreachable) is tagged by composed-handler as a 503 connection_error. That's
+  // a LOCAL network problem, not an upstream server error — classify it as
+  // network-error so the row reads "network error" with the proxy's actionable
+  // message ("check your network/DNS") instead of a generic "server error · 503".
+  if (extractErrorType(body) === "connection_error") {
+    return {
+      state: "network-error",
+      latencyMs,
+      httpStatus: status,
+      errorMessage: extractErrorMessage(body) || "Cannot reach provider",
+    };
+  }
   // A remapped terminal error carries the real upstream code — classify (and
   // display) by THAT, not the proxy's 400 wrapper.
   const upstream = status === 400 ? extractUpstreamStatus(body) : undefined;

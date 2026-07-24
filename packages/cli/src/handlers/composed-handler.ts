@@ -41,6 +41,7 @@ import {
   isTerminalError,
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
+import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
@@ -413,11 +414,17 @@ export class ComposedHandler implements ModelHandler {
         ? await this.provider.enqueueRequest(doFetch)
         : await doFetch();
     } catch (error: any) {
-      // Connection refused — server is down or not reachable
-      if (error.code === "ECONNREFUSED" || error.cause?.code === "ECONNREFUSED") {
-        const msg = `Cannot connect to ${this.provider.displayName} at ${endpoint}. Make sure the server is running.`;
-        log(`[${this.provider.displayName}] ${msg}`);
-        logStderr(`Error: ${msg} Check the server is running.`);
+      // A failure to even REACH the provider (DNS can't resolve, connection
+      // refused, host unreachable) is a LOCAL network problem, not an upstream
+      // server error. Surface it as a 503 connection_error with an honest,
+      // actionable message so Claude Code and the config probe show "can't reach
+      // host — check your network/DNS" instead of a mystifying 500. (A Tailscale
+      // MagicDNS outage making chatgpt.com unresolvable is what motivated this.)
+      const conn = classifyConnectionError(error);
+      if (conn) {
+        const msg = buildConnectionErrorMessage(conn.kind, this.provider.displayName, endpoint);
+        log(`[${this.provider.displayName}] ${msg} (code=${conn.code})`);
+        logStderr(`Error: ${msg}`);
         reportError({
           error,
           providerName: this.provider.name,

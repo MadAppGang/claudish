@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.17.1] - 2026-07-24
+
+### Bug Fixes
+
+- **DNS / connection failures now read as "network error", not a generic 500**: when claudish's proxy cannot even *reach* a provider — DNS can't resolve the host, the connection is refused, or the host is unreachable — that is a **local network problem on your machine**, not an upstream server error. Previously only `ECONNREFUSED` was caught; every other connect failure fell through to a generic HTTP 500. The motivating case: a Tailscale MagicDNS outage made `chatgpt.com` unresolvable, so the Codex CLI, the desktop app, **and** claudish all failed identically — but claudish reported it as a mystifying "generation error 500", sending the user hunting for a claudish or OpenAI bug.
+
+  - New `handlers/shared/connection-error.ts`: `classifyConnectionError` walks the error **and its undici `.cause` chain** for `ENOTFOUND`/`EAI_AGAIN` (dns), `ECONNREFUSED` (refused), and `ETIMEDOUT`/`ECONNRESET`/`ENETUNREACH`/`EHOSTUNREACH`/… (unreachable), with a `getaddrinfo` message fallback. `buildConnectionErrorMessage` returns an actionable, provider-attributed message — the DNS case points at your connection / VPN / DNS resolver (e.g. Tailscale MagicDNS), *not* at the provider.
+  - `composed-handler` now tags **any** reach-the-host failure as a `503 connection_error` (previously only `ECONNREFUSED`).
+  - The `claudish config` probe (`classifyHttpError`) maps a `connection_error` body to **`network-error`** instead of `server-error`, so the row reads "network error" with the real cause instead of "server error · 500". A genuine transient upstream 503 (`overloaded_error`) still reads as a server error.
+
 ## [7.17.0] - 2026-07-23
 
 ### Documentation

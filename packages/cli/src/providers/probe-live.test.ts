@@ -107,6 +107,34 @@ describe("classifyHttpError — remapped terminal errors (upstream_status)", () 
     expect(result.state).toBe("error");
     expect(result.httpStatus).toBe(400);
   });
+
+  test("a proxy 503 connection failure classifies as network-error", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        type: "connection_error",
+        message:
+          "Cannot resolve chatgpt.com for OpenAI Codex. This is a DNS/network problem on your machine — check your internet connection, VPN, or DNS resolver (e.g. Tailscale MagicDNS) — not OpenAI Codex.",
+      },
+    });
+    const result = classifyHttpError(503, body, 1385);
+    // A proxy-side connection failure is a LOCAL network problem, not an upstream server error.
+    expect(result.state).toBe("network-error");
+    expect(result.errorMessage).toContain("Cannot resolve chatgpt.com");
+  });
+
+  test("a genuine transient upstream 503 stays server-error", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        type: "overloaded_error",
+        message: "temporary overload",
+      },
+    });
+    const result = classifyHttpError(503, body, 42);
+    expect(result.state).toBe("server-error");
+    expect(result.httpStatus).toBe(503);
+  });
 });
 
 describe("probe budget", () => {
