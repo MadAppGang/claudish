@@ -26,6 +26,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { realValue } from "../../env-placeholder.js";
 import { getApiKey } from "../../profile-config.js";
 import { hasOpSources, resolveOpKeyForEnvVars } from "./op-source.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
@@ -65,39 +66,15 @@ export interface ApiKeyDescriptor {
 }
 
 /**
- * An UNEXPANDED `${VAR}` placeholder is not a key.
+ * An UNEXPANDED `${VAR}` placeholder is not a key — see `env-placeholder.ts` for
+ * the rule and why it lives in its own module.
  *
- * A host that launches claudish from a declarative config can pass an env entry
- * through VERBATIM when the referenced shell variable is unset. Claude Code does
- * exactly this with the claudish plugin's `.mcp.json`
- * (`"OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}"`): an MCP server started from a
- * shell without that variable receives the literal 21-character string
- * `${OPENROUTER_API_KEY}` as its "key".
- *
- * That string is truthy, so it used to win step 1 of the resolution chain,
- * shadow 1Password entirely, and get signed into the Authorization header — a
- * 401 that reads as "claudish ignored my 1Password config". Treating it as
- * absent lets resolution fall through to config and 1Password, which is what the
- * user configured.
- *
- * Deliberately anchored and brace-only: a real key never has this shape, and a
- * key that merely CONTAINS `${` (unlikely but not impossible) is left alone.
+ * Re-exported here because this was its original home and several call sites
+ * (notably the sync readiness classifier in `tui/providers.ts`) import it from
+ * this path. Keeping the re-export means the rule moved without a rename sweep,
+ * and there is still exactly ONE implementation.
  */
-const UNEXPANDED_PLACEHOLDER = /^\$\{[^}]*\}$/;
-
-/**
- * The value, or undefined when it is an unexpanded `${VAR}` placeholder.
- *
- * Exported because the SYNC readiness classifier (tui/providers.ts
- * `providerAuthSource`) reads `process.env` directly rather than going through
- * this credential. Both must apply the SAME rule or the reports diverge:
- * `claudish providers --json` would call a provider ready on the strength of a
- * placeholder that sign-time correctly refuses to use.
- */
-export function realValue(v: string | undefined): string | undefined {
-  if (!v) return undefined;
-  return UNEXPANDED_PLACEHOLDER.test(v.trim()) ? undefined : v;
-}
+export { realValue };
 
 export class ApiKeyCredentialProvider implements CredentialProvider {
   readonly catalogName: string;

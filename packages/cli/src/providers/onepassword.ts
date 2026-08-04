@@ -39,6 +39,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { realValue } from "../env-placeholder.js";
 import { addSpanMeta, beginQueuedSpan, setStartupAuthKind, traceSpan } from "../startup-trace.js";
 import { VERSION } from "../version.js";
 import { withHandshakeLock } from "./onepassword-handshake-lock.js";
@@ -145,9 +146,22 @@ export function wasOpAuthorizationDenied(): boolean {
  * lesson (this is the bug from the locked-Mac SSH report).
  */
 export function renderOpFailureNotice(envVar: string): string[] {
+  return renderOpFailureBlock(`for ${envVar} this run`);
+}
+
+/**
+ * The same block with a caller-supplied subject phrase.
+ *
+ * The MCP server needs this without an env-var name. When a tool routes a model
+ * and 1Password fails, the only report today is `warnOnce` on STDERR — which an
+ * MCP host captures and never shows the user. That is precisely why this whole
+ * class of failure presented as silence: claudish was explaining itself into a
+ * stream nobody reads. Returning the lines lets the tool RESULT carry them.
+ */
+export function renderOpFailureBlock(subject: string): string[] {
   if (opSourceFailures.length === 0) return [];
 
-  const lines: string[] = [`1Password was consulted for ${envVar} this run and failed:`];
+  const lines: string[] = [`1Password was consulted ${subject} and failed:`];
   for (const f of opSourceFailures) {
     const where = f.source ? `${f.kind} ${f.source}` : f.kind;
     lines.push(`  ${where} — ${f.message.split("\n")[0]}`);
@@ -1476,8 +1490,7 @@ async function countdownForUnlock(
   }
 
   const stop = ttyIn ? "Esc to stop waiting" : "Ctrl-C to stop waiting";
-  const line = (secs: number) =>
-    dim(`   waiting ${secs}s · try ${round} of ${rounds} · ${stop}`);
+  const line = (secs: number) => dim(`   waiting ${secs}s · try ${round} of ${rounds} · ${stop}`);
   if (!ttyOut) process.stderr.write(`${line(lockRetrySeconds)}\n`);
 
   try {
@@ -1687,7 +1700,18 @@ export function resolveDesktopAccount(
   const env = opts.env ?? process.env;
 
   // (a) Explicit env override.
-  const envAccount = env.OP_ACCOUNT?.trim();
+  //
+  // realValue() drops an unexpanded `${OP_ACCOUNT}` — the literal string a host
+  // passes through when the referenced shell variable is unset. This is not
+  // hypothetical: the obvious way to configure an account for the MCP server is
+  // `"OP_ACCOUNT": "${OP_ACCOUNT}"` in the plugin's .mcp.json, and Claude Code
+  // hands that string over verbatim when the variable is missing. Taken at face
+  // value it becomes a DesktopAuth account name that cannot exist, so the
+  // handshake fails and retries — measured at 4 wasted handshakes, and 4
+  // possible 1Password prompts, from one malformed value. Treating it as absent
+  // lets resolution fall through to the config account and the `op` default,
+  // which is what the user meant.
+  const envAccount = realValue(env.OP_ACCOUNT)?.trim();
   if (envAccount) return { accountName: envAccount };
 
   // (b) Saved config account.

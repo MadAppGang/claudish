@@ -33,10 +33,11 @@ import {
   normalizePricingDisplay,
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
-import { sanitizeForReport } from "./redact.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
+import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { createProxyServer } from "./proxy-server.js";
+import { sanitizeForReport } from "./redact.js";
 import {
   getStatus,
   judgeResponses,
@@ -432,6 +433,24 @@ function defineTools(
 
   // ── Low-Level Tools ──────────────────────────────────────────────────
 
+  /**
+   * Append the 1Password failure block to an error a tool is about to return.
+   *
+   * Every op-source failure is deliberately non-fatal — a broken import must never
+   * lock the user out — so the only report was `warnOnce` on STDERR. An MCP host
+   * captures that stream and shows the user nothing, which is exactly why a
+   * 1Password problem here reads as silence rather than an error: claudish was
+   * explaining itself into a pipe nobody reads. Splicing the block into the tool
+   * RESULT puts the explanation where the agent and the user will actually see it.
+   *
+   * Returns the message unchanged when 1Password played no part this run, so
+   * non-op users and unrelated failures see byte-identical output.
+   */
+  function withOpFailureContext(message: string, subject: string): string {
+    const block = renderOpFailureBlock(subject);
+    return block.length === 0 ? message : `${message}\n\n${block.join("\n")}`;
+  }
+
   tools.push({
     name: "run_prompt",
     description:
@@ -470,7 +489,10 @@ function defineTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+              text: withOpFailureContext(
+                `Error: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+                `while routing ${args.model}`
+              ),
             },
           ],
           isError: true,
@@ -834,7 +856,10 @@ function defineTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+              text: withOpFailureContext(
+                `Error: ${error instanceof Error ? error.message : String(error)}`,
+                "while running the team"
+              ),
             },
           ],
           isError: true,
@@ -1059,7 +1084,10 @@ function defineTools(
           content: [
             {
               type: "text" as const,
-              text: `Error creating session: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+              text: withOpFailureContext(
+                `Error creating session: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+                `while routing ${args.model}`
+              ),
             },
           ],
           isError: true,
