@@ -23,6 +23,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defaultOpAccountLister, defaultOpDefaultAccountProbe } from "../providers/onepassword.js";
 import type { ArmConfigSpec } from "./types.js";
 
 /** The real global config. Read-only, always — never a write target. */
@@ -105,6 +106,24 @@ export function buildArmEnv(opts: {
   return out;
 }
 
+/**
+ * The account URL `op` itself would use, or undefined.
+ *
+ * Reuses the product's own probe + lister rather than re-shelling to `op`, so
+ * the harness and `resolveDesktopAccount` can never disagree about which account
+ * "the default" means.
+ */
+function discoverDefaultAccountUrl(): string | undefined {
+  try {
+    const uuid = defaultOpDefaultAccountProbe();
+    if (!uuid) return undefined;
+    const accounts = defaultOpAccountLister();
+    return accounts?.find((a) => a.account_uuid === uuid)?.url;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The real config, parsed. `{}` when absent or garbled — never throws. */
 export function readRealConfig(): Record<string, unknown> {
   try {
@@ -133,12 +152,23 @@ export function buildArmConfig(spec: ArmConfigSpec): Record<string, unknown> {
 
   const account = spec.onepasswordAccount;
   if (account === "inherit") {
+    // "inherit" means "this arm tests the CONFIGURED-account path". Since the
+    // account fix landed, a healthy machine may legitimately have no
+    // `onepasswordAccount` at all — and then inheriting nothing would silently
+    // turn this arm into a duplicate of `op-no-account`, quietly dropping
+    // coverage of the path it was written for. So fall back to the machine's own
+    // default account: the arm still pins "an account is configured and used",
+    // and stays distinct from the arm that pins the fallback.
     const v = real.onepasswordAccount;
     if (typeof v === "string" && v.trim()) cfg.onepasswordAccount = v;
+    else {
+      const discovered = discoverDefaultAccountUrl();
+      if (discovered) cfg.onepasswordAccount = discovered;
+    }
   } else if (typeof account === "string") {
     cfg.onepasswordAccount = account;
   }
-  // account === null || undefined → key omitted.
+  // account === null → key omitted (that is `op-no-account`'s whole point).
 
   const envs = spec.onepasswordEnvironments;
   if (envs === "inherit") {
@@ -161,13 +191,12 @@ export function checkPreconditions(): string[] {
   const problems: string[] = [];
   const real = readRealConfig();
 
-  if (typeof real.onepasswordAccount !== "string" || !real.onepasswordAccount) {
-    problems.push(
-      "~/.claudish/config.json has no `onepasswordAccount`. On a multi-account " +
-        "machine every non-TTY arm will fail at account selection. Set it (or run " +
-        "claudish once interactively and pick)."
-    );
-  }
+  // `onepasswordAccount` is deliberately NOT required. It used to be — a
+  // multi-account machine could not select an account without a TTY, so every
+  // arm failed. `resolveDesktopAccount` now falls back to `op account get`, so
+  // an unset account is a SUPPORTED state and the suite must run in it. That is
+  // the state `op-no-account` exists to cover; requiring it here would refuse to
+  // run in exactly the configuration the fix makes work.
   const envs = real.onepasswordEnvironments;
   if (!Array.isArray(envs) || envs.length === 0) {
     problems.push(
