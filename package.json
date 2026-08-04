@@ -21,6 +21,10 @@
     "lint": "bun run --cwd packages/cli lint && bun --cwd packages/macos-bridge run lint",
     "format": "bun run --cwd packages/cli format && bun --cwd packages/macos-bridge run format",
     "test": "bun run --cwd packages/cli test && bun --cwd packages/macos-bridge run test",
+    "test:safe": "bun run scripts/guard-real-config.ts -- bun run test",
+    "test:mcp": "bun run packages/cli/src/mcp-e2e/runner.ts",
+    "test:mcp:op": "bun run packages/cli/src/mcp-e2e/runner.ts --group op",
+    "madbench": "bun run packages/cli/src/madbench/runner.ts",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules",
     "postinstall": "node scripts/postinstall.cjs"
   },

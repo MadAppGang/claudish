@@ -17,9 +17,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setConfigFileOverride } from "../config-override.js";
 import { createProxyServer } from "../proxy-server.js";
 import type { ProxyServer } from "../types.js";
 
@@ -29,12 +30,9 @@ const nextPort = () => PORT_BASE + (portCounter++ % 200);
 
 let activeProxy: ProxyServer | null = null;
 
-// profile-config captures homedir() at module load, so we sandbox by writing the
-// REAL ~/.claudish/config.json and restoring it afterwards (same strategy as the
-// sibling e2e suite).
-const REAL_CONFIG_PATH = join(process.env.HOME ?? tmpdir(), ".claudish", "config.json");
-let configBackup: string | null = null;
-let configExisted = false;
+// setConfigFileOverride keeps fixtures isolated so a crashed run cannot damage the developer's real config.
+let configFileCounter = 0;
+let tempConfigPath: string | null = null;
 
 // Sakana keys must be ABSENT for the missing-credential path. Snapshot + delete
 // any that happen to be set in the runner's env, restore in afterEach.
@@ -42,10 +40,12 @@ const SAKANA_ENV_KEYS = ["SAKANA_API_KEY", "SAKANA_SUBSCRIPTION_API_KEY", "SAKAN
 const savedEnv: Record<string, string | undefined> = {};
 
 function sandbox(config: Record<string, unknown>): void {
-  configExisted = existsSync(REAL_CONFIG_PATH);
-  configBackup = configExisted ? readFileSync(REAL_CONFIG_PATH, "utf8") : null;
-  mkdirSync(join(process.env.HOME ?? tmpdir(), ".claudish"), { recursive: true });
-  writeFileSync(REAL_CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+  tempConfigPath = join(
+    tmpdir(),
+    `explicit-spec-no-credential.test-${process.pid}-${configFileCounter++}.json`
+  );
+  writeFileSync(tempConfigPath, JSON.stringify(config, null, 2), "utf8");
+  setConfigFileOverride(tempConfigPath);
 
   for (const k of SAKANA_ENV_KEYS) {
     savedEnv[k] = process.env[k];
@@ -54,15 +54,11 @@ function sandbox(config: Record<string, unknown>): void {
 }
 
 function restore(): void {
-  if (configBackup !== null) {
-    writeFileSync(REAL_CONFIG_PATH, configBackup, "utf8");
-  } else if (!configExisted && existsSync(REAL_CONFIG_PATH)) {
-    try {
-      rmSync(REAL_CONFIG_PATH);
-    } catch {}
+  setConfigFileOverride(null);
+  if (tempConfigPath !== null) {
+    rmSync(tempConfigPath, { force: true });
+    tempConfigPath = null;
   }
-  configBackup = null;
-  configExisted = false;
   for (const k of SAKANA_ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];

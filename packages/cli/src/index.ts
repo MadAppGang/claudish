@@ -312,7 +312,26 @@ if (isMcpMode) {
   // op://) are resolved ON DEMAND by the credential authority when a tool routes
   // a model — no startup hydration, so the server can never die at boot on a
   // multi-account 1Password ambiguity.
-  import("./mcp-server.js").then((mcp) => mcp.startMcpServer());
+  import("./mcp-server.js").then(async (mcp) => {
+    mcp.startMcpServer();
+    // Observability seam for the MCP e2e harness. Spans are BUFFERED until
+    // finalize, and the MCP path — unlike every other entry point — never
+    // finalizes, because a long-lived server has no "startup done" moment that
+    // maps onto the CLI's. That made every later span (op:auth-resolve,
+    // op:resolve(NAMES), op:sdk-wasm-import) invisible: measured, an MCP server
+    // launched with CLAUDISH_STARTUP_TRACE=1 emitted zero trace lines.
+    //
+    // Finalizing here flips the trace into live-print mode, so spans raised by
+    // on-demand credential resolution stream to stderr as they happen — which is
+    // the only way to tell "resolved from 1Password" apart from "found it in
+    // env" without asserting on prose. Gated on the flag so production MCP runs
+    // are byte-identical; quiet so the slow-start line never lands on a stdio
+    // transport that a host is parsing.
+    if (process.env.CLAUDISH_STARTUP_TRACE === "1") {
+      const { finalizeStartupTrace } = await import("./startup-trace.js");
+      finalizeStartupTrace("mcp", { quiet: true });
+    }
+  });
 } else if (isServeCommand) {
   // Standalone inference gateway for Claude Desktop redirect:
   // claudish serve --port <n> --models <path>. Keys resolve on demand per route.
