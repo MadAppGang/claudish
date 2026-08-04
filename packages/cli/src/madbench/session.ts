@@ -176,33 +176,45 @@ function flattenResult(content: unknown): string {
  * calls, and a positional pairing would silently attribute one model's answer
  * to another — the exact class of error this benchmark exists to catch.
  */
+/** Claude Code namespaces MCP tools as `mcp__<server>__<tool>`. */
+function isClaudishTool(name: unknown): name is string {
+  return typeof name === "string" && name.startsWith("mcp__") && name.includes("claudish");
+}
+
+/** Build the call record for a claudish `tool_use` block. */
+function toClaudishCall(block: ContentBlock): ClaudishCall | null {
+  if (!isClaudishTool(block.name)) return null;
+  const input = (block.input ?? {}) as Record<string, unknown>;
+  const model = typeof input.model === "string" ? input.model : undefined;
+  return {
+    tool: block.name.split("__").pop() ?? block.name,
+    qualifiedName: block.name,
+    toolUseId: block.id ?? "",
+    input,
+    ...(model !== undefined ? { model } : {}),
+    resultText: "",
+    isError: false,
+  };
+}
+
+/** Fold one content block into the accumulating call map. */
+function absorbBlock(block: ContentBlock, calls: Map<string, ClaudishCall>): void {
+  if (block.type === "tool_use") {
+    const call = toClaudishCall(block);
+    if (call) calls.set(call.toolUseId, call);
+    return;
+  }
+  if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") return;
+  const call = calls.get(block.tool_use_id);
+  if (!call) return;
+  call.resultText = flattenResult(block.content);
+  call.isError = block.is_error === true;
+}
+
 export function extractClaudishCalls(frames: StreamFrame[]): ClaudishCall[] {
   const calls = new Map<string, ClaudishCall>();
-
   for (const frame of frames) {
-    for (const block of frame.message?.content ?? []) {
-      if (block.type === "tool_use" && typeof block.name === "string") {
-        // Claude Code namespaces MCP tools as mcp__<server>__<tool>.
-        if (!block.name.startsWith("mcp__") || !block.name.includes("claudish")) continue;
-        const input = (block.input ?? {}) as Record<string, unknown>;
-        const model = typeof input.model === "string" ? input.model : undefined;
-        calls.set(block.id ?? "", {
-          tool: block.name.split("__").pop() ?? block.name,
-          qualifiedName: block.name,
-          toolUseId: block.id ?? "",
-          input,
-          ...(model !== undefined ? { model } : {}),
-          resultText: "",
-          isError: false,
-        });
-      }
-      if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
-        const call = calls.get(block.tool_use_id);
-        if (!call) continue;
-        call.resultText = flattenResult(block.content);
-        call.isError = block.is_error === true;
-      }
-    }
+    for (const block of frame.message?.content ?? []) absorbBlock(block, calls);
   }
   return [...calls.values()];
 }

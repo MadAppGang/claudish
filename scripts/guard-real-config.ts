@@ -88,36 +88,40 @@ if (before.existed) {
 
 const child = spawn(cmd[0], cmd.slice(1), { stdio: "inherit", env: process.env });
 
+/** Report the mutation, put the original bytes back, and explain the fix. */
+function reportAndRestore(after: Snapshot): void {
+  process.stderr.write(
+    `\n\x1b[31m✗ REAL CONFIG MUTATED\x1b[0m — something in that command wrote ${CONFIG}\n`
+  );
+  for (const line of describeDelta(before.content, after.content)) {
+    process.stderr.write(`${line}\n`);
+  }
+  try {
+    if (before.existed && before.content !== null) {
+      writeFileSync(CONFIG, before.content, "utf-8");
+      process.stderr.write("\n  Restored your config from the pre-run snapshot.\n");
+    }
+  } catch (err) {
+    process.stderr.write(
+      `\n  \x1b[31mRESTORE FAILED\x1b[0m (${err instanceof Error ? err.message : String(err)}).\n` +
+        `  A copy is at ${CONFIG}.guard-backup\n`
+    );
+  }
+  process.stderr.write(
+    "\n  Tests must isolate with setConfigFileOverride(<temp path>) instead of\n" +
+      "  writing the real file. See scripts/guard-real-config.ts for the history.\n\n"
+  );
+}
+
 child.on("exit", (code, signal) => {
   const after = snapshot();
   const changed =
     before.existed !== after.existed || (before.content ?? null) !== (after.content ?? null);
 
   if (changed) {
-    process.stderr.write(
-      `\n\x1b[31m✗ REAL CONFIG MUTATED\x1b[0m — something in that command wrote ${CONFIG}\n`
-    );
-    for (const line of describeDelta(before.content, after.content)) {
-      process.stderr.write(`${line}\n`);
-    }
-    try {
-      if (before.existed && before.content !== null) {
-        writeFileSync(CONFIG, before.content, "utf-8");
-        process.stderr.write("\n  Restored your config from the pre-run snapshot.\n");
-      }
-    } catch (err) {
-      process.stderr.write(
-        `\n  \x1b[31mRESTORE FAILED\x1b[0m (${err instanceof Error ? err.message : String(err)}).\n` +
-          `  A copy is at ${CONFIG}.guard-backup\n`
-      );
-    }
-    process.stderr.write(
-      "\n  Tests must isolate with setConfigFileOverride(<temp path>) instead of\n" +
-        "  writing the real file. See scripts/guard-real-config.ts for the history.\n\n"
-    );
+    reportAndRestore(after);
     process.exit(1);
   }
-
   if (signal) {
     process.stderr.write(`\n[guard] command terminated by ${signal}; config intact.\n`);
     process.exit(1);

@@ -1629,6 +1629,28 @@ export const defaultOpAccountLister: OpAccountLister = () => {
 };
 
 /**
+ * Reads `op`'s OWN notion of the current account — the one a bare `op read` or
+ * `op run` would use. Returns its account uuid, or null when `op` is absent,
+ * signed out, or answers with anything unexpected.
+ *
+ * Read-only and never throws, exactly like `defaultOpAccountLister`. Kept
+ * separate from it because they answer different questions: `list` enumerates
+ * what EXISTS, `get` names which one is CURRENT.
+ */
+export type OpDefaultAccountProbe = () => string | null;
+
+export const defaultOpDefaultAccountProbe: OpDefaultAccountProbe = () => {
+  try {
+    const res = spawnSync("op", ["account", "get", "--format=json"], { encoding: "utf-8" });
+    if (res.error || res.status !== 0) return null;
+    const parsed = JSON.parse(res.stdout ?? "") as { id?: unknown };
+    return typeof parsed.id === "string" && parsed.id ? parsed.id : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * The outcome of desktop-account resolution. Either a concrete account name to
  * use with DesktopAuth, an actionable error string, or a request for the caller
  * to run an interactive picker over the listed accounts (and save the choice).
@@ -1659,6 +1681,7 @@ export function resolveDesktopAccount(
     configAccount?: string;
     interactive?: boolean;
     opAccountLister?: OpAccountLister;
+    opDefaultAccountProbe?: OpDefaultAccountProbe;
   } = {}
 ): DesktopAccountResult {
   const env = opts.env ?? process.env;
@@ -1694,9 +1717,34 @@ export function resolveDesktopAccount(
     return { needsPicker: accounts };
   }
 
+  // (d) Non-interactive with several accounts. Ask `op` which one IT would use.
+  //
+  // This is the case that made 1Password unusable from every non-TTY caller —
+  // the MCP server, --stdin children, team spawns, channel sessions, serve. The
+  // old code hard-failed here, which meant `createClient()` was never reached;
+  // since the desktop approval dialog is raised BY that call, no dialog could
+  // ever appear and the failure looked like silence rather than an error.
+  //
+  // `op account get` names the account a bare `op read` / `op run` resolves to,
+  // so deferring to it makes claudish agree with the tool the user already
+  // configured rather than inventing its own policy. It is a read-only probe and
+  // costs one fast spawn only on this branch — the single-account, OP_ACCOUNT,
+  // and saved-config paths never reach it.
+  //
+  // The probe returns an account UUID; DesktopAuth wants the account URL, so the
+  // uuid is matched back against the enumerated list. A probe that fails, or
+  // names an account not in the list, falls through to the original error — this
+  // can only turn a guaranteed failure into a success, never the reverse.
+  const probe = opts.opDefaultAccountProbe ?? defaultOpDefaultAccountProbe;
+  const defaultUuid = probe();
+  if (defaultUuid) {
+    const match = accounts.find((a) => a.account_uuid === defaultUuid);
+    if (match) return { accountName: match.url };
+  }
+
   const listing = accounts.map((a) => `  - ${a.url}${a.email ? ` (${a.email})` : ""}`).join("\n");
   return {
-    error: `Multiple 1Password accounts are available and this is a non-interactive session, so claudish can't prompt you to pick one. ${remediation}\nAccounts:\n${listing}`,
+    error: `Multiple 1Password accounts are available, this is a non-interactive session, and \`op\` could not name a default account. ${remediation}\nAccounts:\n${listing}`,
   };
 }
 
@@ -1721,6 +1769,7 @@ export async function resolveSdkAuth(
     configAccount?: string;
     interactive?: boolean;
     opAccountLister?: OpAccountLister;
+    opDefaultAccountProbe?: OpDefaultAccountProbe;
     /**
      * Invoked when multiple accounts exist in an interactive session. Returns
      * the chosen account URL (the caller is expected to persist it), or
@@ -1741,6 +1790,7 @@ export async function resolveSdkAuth(
     configAccount: opts.configAccount,
     interactive: opts.interactive,
     opAccountLister: opts.opAccountLister,
+    opDefaultAccountProbe: opts.opDefaultAccountProbe,
   });
 
   if ("accountName" in result) {

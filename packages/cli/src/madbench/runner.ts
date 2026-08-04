@@ -99,40 +99,24 @@ function buildPrompt(runToken: string, expected: string, n: number): string {
   ].join("\n");
 }
 
-async function main(): Promise<void> {
-  const latest = join(LOG_ROOT, "latest");
+/**
+ * Build this run's isolated claudish config, seeded read-only from the real one.
+ *
+ * A fresh minimal object rather than a copy: unrelated real settings (custom
+ * endpoints, profiles, stats) must not leak in and perturb the benchmark. The
+ * MCP server is spawned via `env -i` with CLAUDISH_CONFIG pointed at this file,
+ * so the real config is never a write target.
+ */
+function writeIsolatedConfig(): {
+  claudishConfigPath: string;
+  armConfig: Record<string, unknown>;
+} {
+  let real: Record<string, unknown> = {};
   try {
-    if (existsSync(latest)) unlinkSync(latest);
-    symlinkSync(RUN_DIR, latest);
+    real = JSON.parse(readFileSync(REAL_CONFIG, "utf-8")) as Record<string, unknown>;
   } catch {
-    /* convenience only */
+    // No config, or garbled — the arm simply has nothing to inherit.
   }
-
-  const authMode: AuthMode = process.env.OP_SERVICE_ACCOUNT_TOKEN ? "service-account" : "desktop";
-  const runToken = `MADBENCH-${stamp.slice(0, 19)}`;
-  const expectedAnswer = String(17 * 23);
-
-  log("madbench — real Claude Code → claudish MCP → real models");
-  log(`run dir:   ${RUN_DIR}`);
-  log(`auth mode: ${authMode}`);
-  if (authMode === "desktop") {
-    log("");
-    log("  ⚠  Desktop 1Password auth. This run WILL raise approval prompts — one per");
-    log("     SDK client handshake. Stay at the keyboard and approve them, or set");
-    log("     OP_SERVICE_ACCOUNT_TOKEN to run unattended.");
-    log("");
-  }
-
-  // Isolated config, seeded read-only from the real one. The MCP server is
-  // spawned via `env -i` with CLAUDISH_CONFIG pointed here, so the real file is
-  // never a write target and the run cannot clobber it.
-  const real = (() => {
-    try {
-      return JSON.parse(readFileSync(REAL_CONFIG, "utf-8")) as Record<string, unknown>;
-    } catch {
-      return {} as Record<string, unknown>;
-    }
-  })();
   const armConfig: Record<string, unknown> = {
     version: "1.0.0",
     defaultProfile: "default",
@@ -146,62 +130,16 @@ async function main(): Promise<void> {
   }
   const claudishConfigPath = join(RUN_DIR, "claudish-config.json");
   writeFileSync(claudishConfigPath, JSON.stringify(armConfig, null, 2), "utf-8");
+  return { claudishConfigPath, armConfig };
+}
 
-  if (authMode === "desktop" && !armConfig.onepasswordAccount) {
-    log("❌ No `onepasswordAccount` in ~/.claudish/config.json and no service-account token.");
-    log("   On a multi-account machine the MCP server cannot pick an account without a TTY,");
-    log("   so every model would fail to get a key. Set one and re-run.");
-    process.exit(2);
-  }
-
-  const before = md5(REAL_CONFIG);
-  log(`real config md5 before: ${before}`);
-
-  const prompt = buildPrompt(runToken, expectedAnswer, requiredModels);
-  writeFileSync(join(RUN_DIR, "prompt.txt"), prompt, "utf-8");
-  log(`\n▶ running session (timeout ${Math.round(timeoutMs / 1000)}s)…`);
-
-  const session = await runSession({
-    serverEntry: SERVER_ENTRY,
-    claudishConfigPath,
-    runDir: RUN_DIR,
-    prompt,
-    timeoutMs,
-    authMode,
-    cwd: REPO_ROOT,
-    verbose,
-  });
-
-  const calls = extractClaudishCalls(session.frames);
-  const obs: BenchObservation = {
-    runToken,
-    authMode,
-    exitCode: session.exitCode,
-    timedOut: session.timedOut,
-    durationMs: session.durationMs,
-    frames: session.frames,
-    ...(session.frames.find((f) => f.type === "system" && f.subtype === "init")
-      ? { init: session.frames.find((f) => f.type === "system" && f.subtype === "init") }
-      : {}),
-    calls,
-    catalogModels: extractCatalogModels(calls),
-    finalText: extractFinalText(session.frames),
-    stdout: session.stdout,
-    stderr: session.stderr,
-    expectedAnswer,
-  };
-
-  writeFileSync(join(RUN_DIR, "stream.jsonl"), session.stdout, "utf-8");
-  writeFileSync(join(RUN_DIR, "stderr.log"), session.stderr, "utf-8");
-  writeFileSync(join(RUN_DIR, "calls.json"), JSON.stringify(calls, null, 2), "utf-8");
-
-  log(`  session exited ${session.exitCode} in ${Math.round(session.durationMs / 1000)}s`);
-  log(`  claudish tool calls: ${calls.length}`);
-  for (const c of calls) {
-    log(`    - ${c.tool}${c.model ? ` model=${c.model}` : ""}${c.isError ? " [ERROR]" : ""}`);
-  }
-
-  const results: CheckResult[] = CHECKS.map((check) => {
+/**
+ * Run every check, converting a thrown check into a failure rather than letting
+ * it abort the run. A check that crashes is a bug in the check, and losing the
+ * other six results plus the whole session artifact to it would be a bad trade.
+ */
+function runChecks(obs: BenchObservation): CheckResult[] {
+  return CHECKS.map((check) => {
     let failures: string[];
     try {
       failures = check.run(obs);
@@ -215,18 +153,23 @@ async function main(): Promise<void> {
       failures,
     };
   });
+}
 
-  log("");
-  for (const r of results) {
-    log(
-      r.passed ? `  ✅ ${r.id}` : `  ❌ ${r.id}\n${r.failures.map((f) => `       ${f}`).join("\n")}`
-    );
-  }
-
-  const after = md5(REAL_CONFIG);
-  const isolationOk = before === after;
-  if (!isolationOk) log(`\n❌ ISOLATION BREACH — real config changed: ${before} → ${after}`);
-
+/**
+ * Emit report.json (machine-readable) and report.md (the human summary).
+ * Split out of main() so the run's control flow stays readable: this is all
+ * formatting, none of it decides anything.
+ */
+function writeReports(args: {
+  obs: BenchObservation;
+  results: CheckResult[];
+  before: string;
+  after: string;
+  isolationOk: boolean;
+}): number {
+  const { obs, results, before, after, isolationOk } = args;
+  const { calls, authMode, runToken, expectedAnswer } = obs;
+  const session = { durationMs: obs.durationMs, exitCode: obs.exitCode, timedOut: obs.timedOut };
   const passed = results.filter((r) => r.passed).length;
   writeFileSync(
     join(RUN_DIR, "report.json"),
@@ -284,6 +227,117 @@ ${results
 `,
     "utf-8"
   );
+  return passed;
+}
+
+/** Point `logs/madbench/latest` at this run. Convenience only; never fatal. */
+function refreshLatestSymlink(): void {
+  const latest = join(LOG_ROOT, "latest");
+  try {
+    if (existsSync(latest)) unlinkSync(latest);
+    symlinkSync(RUN_DIR, latest);
+  } catch {
+    /* convenience only */
+  }
+}
+
+/** Banner + the one precondition that would otherwise waste a real session. */
+function announceAndCheck(authMode: AuthMode, armConfig: Record<string, unknown>): void {
+  log("madbench — real Claude Code → claudish MCP → real models");
+  log(`run dir:   ${RUN_DIR}`);
+  log(`auth mode: ${authMode}`);
+  if (authMode === "desktop") {
+    log("");
+    log("  ⚠  Desktop 1Password auth. This run WILL raise approval prompts — one per");
+    log("     SDK client handshake. Stay at the keyboard and approve them, or set");
+    log("     OP_SERVICE_ACCOUNT_TOKEN to run unattended.");
+    log("");
+  }
+
+  // `onepasswordAccount` is deliberately NOT required. It used to be — a
+  // multi-account machine could not pick an account without a TTY, so every model
+  // failed to get a key. `resolveDesktopAccount` now falls back to
+  // `op account get`, so an unset account is a supported state and madbench must
+  // run in it. Requiring it here would quietly force the very manual config edit
+  // the fix exists to remove.
+  if (authMode !== "desktop" || armConfig.onepasswordEnvironments) return;
+  log("❌ No `onepasswordEnvironments` in ~/.claudish/config.json and no service-account token.");
+  log("   There is no 1Password source to resolve provider keys from, so the models");
+  log("   would fail for a reason unrelated to what this benchmark measures.");
+  process.exit(2);
+}
+
+async function main(): Promise<void> {
+  refreshLatestSymlink();
+
+  const authMode: AuthMode = process.env.OP_SERVICE_ACCOUNT_TOKEN ? "service-account" : "desktop";
+  const runToken = `MADBENCH-${stamp.slice(0, 19)}`;
+  const expectedAnswer = String(17 * 23);
+
+  const { claudishConfigPath, armConfig } = writeIsolatedConfig();
+  announceAndCheck(authMode, armConfig);
+
+  const before = md5(REAL_CONFIG);
+  log(`real config md5 before: ${before}`);
+
+  const prompt = buildPrompt(runToken, expectedAnswer, requiredModels);
+  writeFileSync(join(RUN_DIR, "prompt.txt"), prompt, "utf-8");
+  log(`\n▶ running session (timeout ${Math.round(timeoutMs / 1000)}s)…`);
+
+  const session = await runSession({
+    serverEntry: SERVER_ENTRY,
+    claudishConfigPath,
+    runDir: RUN_DIR,
+    prompt,
+    timeoutMs,
+    authMode,
+    cwd: REPO_ROOT,
+    verbose,
+  });
+
+  const calls = extractClaudishCalls(session.frames);
+  const obs: BenchObservation = {
+    runToken,
+    authMode,
+    exitCode: session.exitCode,
+    timedOut: session.timedOut,
+    durationMs: session.durationMs,
+    frames: session.frames,
+    ...(session.frames.find((f) => f.type === "system" && f.subtype === "init")
+      ? { init: session.frames.find((f) => f.type === "system" && f.subtype === "init") }
+      : {}),
+    calls,
+    catalogModels: extractCatalogModels(calls),
+    finalText: extractFinalText(session.frames),
+    stdout: session.stdout,
+    stderr: session.stderr,
+    expectedAnswer,
+  };
+
+  writeFileSync(join(RUN_DIR, "stream.jsonl"), session.stdout, "utf-8");
+  writeFileSync(join(RUN_DIR, "stderr.log"), session.stderr, "utf-8");
+  writeFileSync(join(RUN_DIR, "calls.json"), JSON.stringify(calls, null, 2), "utf-8");
+
+  log(`  session exited ${session.exitCode} in ${Math.round(session.durationMs / 1000)}s`);
+  log(`  claudish tool calls: ${calls.length}`);
+  for (const c of calls) {
+    log(`    - ${c.tool}${c.model ? ` model=${c.model}` : ""}${c.isError ? " [ERROR]" : ""}`);
+  }
+
+  const results = runChecks(obs);
+
+  log("");
+  for (const r of results) {
+    log(
+      r.passed ? `  ✅ ${r.id}` : `  ❌ ${r.id}\n${r.failures.map((f) => `       ${f}`).join("\n")}`
+    );
+  }
+
+  const after = md5(REAL_CONFIG);
+  const isolationOk = before === after;
+  if (!isolationOk) log(`\n❌ ISOLATION BREACH — real config changed: ${before} → ${after}`);
+
+  const passed = writeReports({ obs, results, before, after, isolationOk });
 
   log(`\n${passed}/${results.length} checks passed`);
   log(`report: ${join(RUN_DIR, "report.md")}`);

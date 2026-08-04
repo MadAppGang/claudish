@@ -2,9 +2,8 @@
  * Phase 5 end-to-end tests for the LiteLLM-demotion refactor.
  *
  * Black-box tests. The proxy is invoked in-process via the public
- * `createProxyServer()` entry point. Each test sandboxes `$HOME` to an
- * ephemeral temp dir so `~/.claudish/config.json` mutations never touch
- * the real user config.
+ * `createProxyServer()` entry point. Each test redirects the active global
+ * config to an ephemeral temp file so mutations never touch the real user config.
  *
  * Real API calls. All tests skipIf on missing credentials. No mocks.
  *
@@ -19,9 +18,10 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setConfigFileOverride } from "../config-override.js";
 import { resolveDefaultProvider } from "../default-provider.js";
 import { pickerProviderToFirebaseSlug } from "../model-selector.js";
 import { createProxyServer } from "../proxy-server.js";
@@ -39,7 +39,8 @@ function nextPort(): number {
 }
 
 let activeProxy: ProxyServer | null = null;
-let tempHome: string | null = null;
+let tempConfigPath: string | null = null;
+let tempConfigCounter = 0;
 let stderrRestore: (() => void) | null = null;
 let stderrBuffer = "";
 
@@ -88,50 +89,25 @@ function releaseStderr(): string {
   return out;
 }
 
-// NOTE on isolation strategy:
-// profile-config.ts captures `homedir()` into a top-level const at module load.
-// This means HOME-override sandboxing CANNOT redirect config reads at runtime.
-// We use direct backup-and-restore of the real ~/.claudish/config.json instead.
-// Each test that mutates config must call sandboxHome() in setup and the
-// `afterEach` will restore via clearHomeSandbox().
-const REAL_CONFIG_PATH = join(process.env.HOME ?? tmpdir(), ".claudish", "config.json");
-let realConfigBackup: string | null = null;
-let realConfigExisted = false;
-
-function sandboxHome(configJson?: Record<string, unknown>): string {
-  // Backup the real config once per test
-  realConfigExisted = existsSync(REAL_CONFIG_PATH);
-  if (realConfigExisted) {
-    realConfigBackup = require("node:fs").readFileSync(REAL_CONFIG_PATH, "utf8");
-  } else {
-    realConfigBackup = null;
-    mkdirSync(join(process.env.HOME ?? tmpdir(), ".claudish"), { recursive: true });
-  }
-  // Write the test config in place
+// setConfigFileOverride isolates fixtures so a crashed run cannot damage the developer's real config.
+function sandboxHome(configJson?: Record<string, unknown>): void {
+  clearHomeSandbox();
+  tempConfigPath = join(
+    tmpdir(),
+    `default-provider-e2e.test.ts-${process.pid}-${tempConfigCounter++}.json`
+  );
   if (configJson) {
-    writeFileSync(REAL_CONFIG_PATH, JSON.stringify(configJson, null, 2), "utf8");
-  } else if (realConfigExisted) {
-    // No config requested — leave the real one in place
+    writeFileSync(tempConfigPath, JSON.stringify(configJson, null, 2), "utf8");
   }
-  // Track for cleanup
-  tempHome = "REAL"; // sentinel — clearHomeSandbox uses this to know we mutated the real config
-  return process.env.HOME ?? tmpdir();
+  setConfigFileOverride(tempConfigPath);
 }
 
 function clearHomeSandbox(): void {
-  if (tempHome === "REAL") {
-    // Restore real config
-    if (realConfigBackup !== null) {
-      writeFileSync(REAL_CONFIG_PATH, realConfigBackup, "utf8");
-    } else if (realConfigExisted === false && existsSync(REAL_CONFIG_PATH)) {
-      try {
-        rmSync(REAL_CONFIG_PATH);
-      } catch {}
-    }
-    realConfigBackup = null;
-    realConfigExisted = false;
+  setConfigFileOverride(null);
+  if (tempConfigPath) {
+    rmSync(tempConfigPath, { force: true });
+    tempConfigPath = null;
   }
-  tempHome = null;
 }
 
 async function spinProxy(opts: {
@@ -261,10 +237,10 @@ describe("Group A — legacy LiteLLM auto-promotion removed (commit 5)", () => {
     // After commit 5 of the model-catalog and routing redesign, this auto-
     // promotion path is gone — the resolver falls through to OPENROUTER_API_KEY
     // or hardcoded "openrouter". Users wanting LiteLLM as default must set
-    // defaultProvider: "litellm" in ~/.claudish/config.json or set
+    // defaultProvider: "litellm" in the global config or set
     // CLAUDISH_DEFAULT_PROVIDER=litellm. The marker file is no longer produced.
     const env: NodeJS.ProcessEnv = {
-      HOME: process.env.HOME,
+      HOME: tmpdir(),
       LITELLM_BASE_URL: "http://example.invalid:4000",
       LITELLM_API_KEY: "ll-test-key",
     };
@@ -284,7 +260,7 @@ describe("Group A — legacy LiteLLM auto-promotion removed (commit 5)", () => {
 // ---------------------------------------------------------------------------
 
 // Asked via claudish's OWN credential authority (env → aliases →
-// ~/.claudish/config.json apiKeys → 1Password), NOT raw process.env: a key
+// global config apiKeys → 1Password), NOT raw process.env: a key
 // stored any supported way makes claudish able to serve these models, so these
 // tests must run — an env-only gate would silently skip a suite that could
 // actually test something. LiteLLM additionally needs its base URL, which is an
@@ -803,7 +779,7 @@ describe("Group E — config flip happy path", () => {
 
       // Phase 2: flip to litellm
       writeFileSync(
-        join(process.env.HOME!, ".claudish", "config.json"),
+        tempConfigPath!,
         JSON.stringify({
           version: "1.0.0",
           defaultProfile: "default",

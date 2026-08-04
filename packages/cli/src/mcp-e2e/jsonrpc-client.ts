@@ -103,11 +103,32 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
     if (opts.verbose) process.stderr.write(`\x1b[2m${line}\x1b[0m\n`);
   };
 
-  const proc = spawn("bun", ["run", opts.serverEntry, "--mcp"], {
-    stdio: ["pipe", "pipe", "pipe"],
-    cwd: opts.cwd,
-    env: opts.env,
-  });
+  // A scenario may deliberately shrink PATH (op-no-op-binary hides the `op`
+  // CLI), and an over-narrow PATH hides `bun` too. Spawn failure must fail THIS
+  // ARM, not tear down the whole suite mid-run — a harness that dies on one bad
+  // scenario loses every result that came before it.
+  let proc: ReturnType<typeof spawn>;
+  try {
+    proc = spawn("bun", ["run", opts.serverEntry, "--mcp"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd: opts.cwd,
+      env: opts.env,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    append(`[harness] spawn failed: ${message}`);
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      durationMs: Date.now() - started,
+      frames: [],
+      stderr: `[harness] spawn failed: ${message}`,
+      spans: [],
+      toolText: {},
+      sessionIds: [],
+    };
+  }
 
   const frames: JsonRpcFrame[] = [];
   const toolText: Record<string, string> = {};
@@ -116,7 +137,7 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
   let stdoutPending = "";
   let timedOut = false;
 
-  proc.stderr.on("data", (chunk: Buffer) => {
+  proc.stderr?.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf-8");
     stderrBuf += text;
     for (const l of text.split("\n").filter(Boolean)) append(`STDERR ${l}`);
@@ -126,7 +147,20 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
   // without assuming response ordering.
   const idToTool = new Map<number, string>();
 
-  proc.stdout.on("data", (chunk: Buffer) => {
+  /** Attribute one parsed frame to the tool that requested it. */
+  const absorbFrame = (frame: JsonRpcFrame): void => {
+    frames.push(frame);
+    if (typeof frame.id !== "number") return;
+    const tool = idToTool.get(frame.id);
+    if (!tool) return;
+    const text = extractText(frame.result);
+    toolText[tool] = (toolText[tool] ? `${toolText[tool]}\n` : "") + text;
+    if (tool !== "create_session") return;
+    const sid = findSessionId(text);
+    if (sid) sessionIds.push(sid);
+  };
+
+  proc.stdout?.on("data", (chunk: Buffer) => {
     stdoutPending += chunk.toString("utf-8");
     const lines = stdoutPending.split("\n");
     stdoutPending = lines.pop() ?? "";
@@ -134,17 +168,7 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
       if (!line.trim()) continue;
       append(`STDOUT ${line}`);
       try {
-        const frame = JSON.parse(line) as JsonRpcFrame;
-        frames.push(frame);
-        if (typeof frame.id === "number" && idToTool.has(frame.id)) {
-          const tool = idToTool.get(frame.id) as string;
-          const text = extractText(frame.result);
-          toolText[tool] = (toolText[tool] ? `${toolText[tool]}\n` : "") + text;
-          if (tool === "create_session") {
-            const sid = findSessionId(text);
-            if (sid) sessionIds.push(sid);
-          }
-        }
+        absorbFrame(JSON.parse(line) as JsonRpcFrame);
       } catch {
         // Non-JSON on stdout is itself a finding; the raw line is already logged.
       }
@@ -155,7 +179,7 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
     const frame = `${JSON.stringify(rpc)}\n`;
     append(`SEND   ${frame.trim()}`);
     try {
-      proc.stdin.write(frame);
+      proc.stdin?.write(frame);
     } catch {
       // Server already gone; exit handling reports it.
     }
@@ -163,6 +187,12 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
 
   const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
     proc.on("exit", (code, signal) => resolve({ code, signal }));
+    // Node reports some spawn failures asynchronously. Without this listener an
+    // 'error' event is unhandled and takes the whole runner down.
+    proc.on("error", (err) => {
+      append(`[harness] process error: ${err.message}`);
+      resolve({ code: null, signal: null });
+    });
   });
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -221,7 +251,7 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
   }
 
   await sleep(500);
-  proc.stdin.end();
+  proc.stdin?.end();
   proc.kill("SIGTERM");
   const { code, signal } = await Promise.race([
     exited,

@@ -360,22 +360,32 @@ function pruneOldRuns(keep: number): void {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
+/** Apply the --group/--scenario filters, in declared run order. */
+function selectScenarios(): Scenario[] {
+  let selected = SCENARIOS.slice().sort((a, b) => a.order - b.order);
+  if (onlyGroup) selected = selected.filter((s) => s.group === onlyGroup);
+  if (onlyScenario) selected = selected.filter((s) => s.id === onlyScenario);
+  return selected;
+}
+
+/** Refuse to run when the machine can't make any arm meaningful. */
+function assertPreconditions(): void {
+  const problems = checkPreconditions();
+  if (problems.length === 0) return;
+  log("\n❌ preconditions not met:");
+  for (const p of problems) log(`   - ${p}`);
+  log("\nRefusing to run — every arm would fail for the same reason.");
+  process.exit(2);
+}
+
 async function main(): Promise<void> {
   refreshLatestSymlink();
   log("MCP × 1Password e2e harness");
   log(`run dir: ${RUN_DIR}`);
 
-  const problems = checkPreconditions();
-  if (problems.length > 0) {
-    log("\n❌ preconditions not met:");
-    for (const p of problems) log(`   - ${p}`);
-    log("\nRefusing to run — every arm would fail for the same reason.");
-    process.exit(2);
-  }
+  assertPreconditions();
 
-  let selected = SCENARIOS.slice().sort((a, b) => a.order - b.order);
-  if (onlyGroup) selected = selected.filter((s) => s.group === onlyGroup);
-  if (onlyScenario) selected = selected.filter((s) => s.id === onlyScenario);
+  const selected = selectScenarios();
   if (selected.length === 0) {
     log(`No scenarios matched (scenario=${onlyScenario ?? "*"} group=${onlyGroup ?? "*"}).`);
     process.exit(2);

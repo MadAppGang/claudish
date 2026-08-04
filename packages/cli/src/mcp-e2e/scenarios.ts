@@ -1,5 +1,8 @@
+import { dirname } from "node:path";
+
 import type { ObservationView, Scenario } from "./types.js";
 
+const BUN_DIR = dirname(process.execPath);
 const AUTH_UNAVAILABLE = /\[claudish\] 1Password auth unavailable, skipping op:\/\/ keys:/;
 const SDK_DENIED = /Denied authorization for SDK client/;
 
@@ -102,6 +105,38 @@ export const SCENARIOS: Scenario[] = [
       }),
   },
 
+  // `op:client-handshake` is createClient(), the call that raises the desktop
+  // dialog. Its absence was the entire original bug: without a handshake no
+  // dialog could ever appear, so the failure looked like silence, not an error.
+  {
+    id: "op-no-account",
+    group: "op",
+    description: "A missing account pin is resolved from op's own default account",
+    config: {
+      onepasswordAccount: null,
+      onepasswordEnvironments: "inherit",
+    },
+    calls: [createSessionCall()],
+    order: 15,
+    assert: (observations) =>
+      assertSingle(observations, (observation, failures) => {
+        assertSpanPresent(observation, failures, "op:client-handshake");
+        assertSpanPresent(observation, failures, "op:environments.getVariables");
+
+        const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
+        if (authUnavailable.length > 0) {
+          failures.push(
+            `expected no 1Password auth-unavailable marker, observed ${authUnavailable.length} matching stderr line(s)`
+          );
+        }
+        if (observation.timedOut) {
+          failures.push(
+            `expected default-account resolution to finish before its timeout, observed timedOut=${observation.timedOut}`
+          );
+        }
+      }),
+  },
+
   // These values are deliberately fake: this arm asserts whether 1Password is
   // consulted, which is decided by key presence, never key validity. The upstream
   // call failing is therefore expected and irrelevant here.
@@ -167,41 +202,37 @@ export const SCENARIOS: Scenario[] = [
       }),
   },
 
-  // With three accounts and no account pin, non-TTY selection must fail before
-  // createClient. The absent client-handshake is precisely why no desktop dialog
-  // can appear, so this pins the user-visible symptom rather than only an error.
+  // The goal is no `op` binary, not no PATH. Emptying or over-narrowing PATH hides
+  // bun and tests the harness instead of the product, so retain Bun's directory.
+  // This checks that `op` is not reachable; standard installs put it elsewhere
+  // (bun in `~/.bun/bin`, op in a system or Homebrew prefix).
   {
-    id: "op-no-account",
+    id: "op-no-op-binary",
     group: "op",
-    description: "A missing account pin reproduces the non-TTY multi-account failure",
+    description: "A missing op CLI reports that account selection is unavailable",
+    env: { PATH: BUN_DIR },
     config: {
       onepasswordAccount: null,
       onepasswordEnvironments: "inherit",
     },
     calls: [createSessionCall()],
     cooldownSeconds: 45,
-    order: 90,
+    order: 92,
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
+        // This is the honest remaining failure mode: with no account pin and no
+        // op to ask, claudish genuinely cannot know which account to use, so it
+        // says so instead of guessing.
+        if (observation.hasSpan("op:client-handshake")) {
+          failures.push(
+            `expected no op:client-handshake span without an account pin or op CLI, observed spans: ${observedSpanNames(observation)}`
+          );
+        }
+
         const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
         if (authUnavailable.length === 0) {
           failures.push(
             "expected the 1Password auth-unavailable stderr marker, observed 0 matching lines"
-          );
-        }
-        if (!authUnavailable.some((line) => line.includes("Multiple"))) {
-          failures.push(
-            `expected the auth-unavailable marker to mention Multiple accounts, observed ${authUnavailable.length} marker line(s) without that diagnostic`
-          );
-        }
-        if (observation.hasSpan("op:client-handshake")) {
-          failures.push(
-            `expected no op:client-handshake span after account selection failed, observed spans: ${observedSpanNames(observation)}`
-          );
-        }
-        if (observation.hasSpan("op:sdk-wasm-import")) {
-          failures.push(
-            `expected no op:sdk-wasm-import span because account selection should fail before createClient, observed spans: ${observedSpanNames(observation)}`
           );
         }
       }),
