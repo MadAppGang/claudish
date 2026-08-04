@@ -2,6 +2,51 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.33.0] - 2026-08-04
+
+### Bug Fixes
+
+- v7.33.0 — 1Password works without a TTY, and says so when it doesn't
+
+  claudish decided WHICH of several 1Password accounts to use only through a
+  terminal picker. With no TTY — the MCP server, `--stdin` children, `team`
+  spawns, channel sessions, `serve` — it hard-failed at account selection,
+  BEFORE `createClient()`. Since the desktop approval dialog is raised by that
+  call, no dialog could ever appear, so the failure read as silence rather than
+  an error. Everything downstream of the account choice already worked headless.
+
+  `resolveDesktopAccount` now falls back to `op account get` — the account a
+  bare `op read` or `op run` resolves to — so claudish agrees with the tool the
+  user already configured instead of inventing its own policy. The probe sits on
+  the branch that previously returned an unconditional error and falls through to
+  that same error when `op` cannot answer, so it can only turn a guaranteed
+  failure into a success.
+
+- Surface 1Password failures in MCP tool results. Every op-source failure is
+  deliberately non-fatal, so the only report was `warnOnce` on stderr — which an
+  MCP host captures and never shows. A missing key surfaced as "export
+  GLM_CODING_API_KEY=your-key", telling the user to export a credential they
+  already store in 1Password, with no hint 1Password was involved.
+
+- Guard `OP_ACCOUNT` against an unexpanded `${VAR}`. Claude Code passes the
+  literal string into an MCP `env` block when the variable is unset; taken at
+  face value it became an account name that cannot exist, costing 4 wasted
+  handshakes (and up to 4 desktop prompts) per run.
+
+- Stop three e2e tests from sandboxing by overwriting the real
+  `~/.claudish/config.json`. A killed run left the fixture permanent, which
+  destroyed a user's `onepasswordAccount` and `onepasswordEnvironments` twice.
+  They now isolate via `setConfigFileOverride`, and `bun run test:safe` restores
+  and fails loudly if anything writes that file.
+
+### New Features
+
+- `bun run test:mcp` — 7-arm MCP × 1Password e2e harness driving a real
+  `claudish --mcp` over stdio JSON-RPC with a stripped env and isolated config.
+- `bun run madbench` — full-stack benchmark: a real Claude Code session through
+  the claudish MCP server to three real models, with model ids resolved by the
+  agent from the live catalog rather than pinned.
+
 ## [7.32.0] - 2026-08-04
 
 ### Documentation
