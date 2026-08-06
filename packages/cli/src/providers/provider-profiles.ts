@@ -21,6 +21,7 @@ type BaseModelAdapter = BaseAPIFormat;
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
 import { DefaultAPIFormat } from "../adapters/base-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
+import { DevinAPIFormat } from "../adapters/devin-api-format.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
 import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
@@ -34,6 +35,7 @@ import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { AntigravityProviderTransport } from "./transport/antigravity.js";
+import { DevinProviderTransport } from "./transport/devin.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
 import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
@@ -122,6 +124,29 @@ const antigravityProfile: ProviderProfile = {
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created Antigravity handler (composed): ${ctx.modelName}`);
+    return handler;
+  },
+};
+
+const devinProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new DevinProviderTransport(ctx.modelName);
+    const adapter = new DevinAPIFormat(ctx.modelName);
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      // Devin serves uids like `claude-sonnet-5-medium`, which match the
+      // behavior engine's `^claude-` "native Anthropic" test — so without this
+      // the Layer 4 supervisor would switch OFF for exactly the models most
+      // likely to need it, on the strength of a name. The 87/87 plan-mode
+      // measurement behind that rule is about Claude reached through
+      // Anthropic's own harness, and says nothing about a `claude-*` uid
+      // re-served by a third party over a reverse-engineered protobuf endpoint.
+      forceForeignModel: true,
+      ...ctx.sharedOpts,
+    });
+    // No tokenStrategy: Devin reports the FULL input each turn in field 28,
+    // which is "standard" (assignment) semantics — the default.
+    log(`[Proxy] Created Devin handler (composed): ${ctx.modelName}`);
     return handler;
   },
 };
@@ -392,6 +417,7 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   gemini: geminiProfile,
   "gemini-codeassist": geminiCodeAssistProfile,
   antigravity: antigravityProfile,
+  devin: devinProfile,
   openai: openaiProfile,
   "openai-codex": openaiCodexProfile,
   // xAI's API is OpenAI Chat-Completions compatible. Without this entry

@@ -41,6 +41,7 @@
  */
 
 import { isLocalProviderEnabled } from "../../profile-config.js";
+import { hasDevinCredentials } from "../../providers/devin/devin-credentials.js";
 import { hasSharedAntigravityToken } from "../antigravity-token.js";
 import { hasOAuthCredentials } from "../oauth-registry.js";
 import { realValue } from "./api-key-credential.js";
@@ -106,6 +107,18 @@ export function describeSourceSync(p: SourceClassifiable, config: SourceConfig):
   // (file-based) can't see it. Check the keychain directly so the config TUI
   // shows it ready when a token is present. Memoized; safe on the render path.
   if (p.catalogName === "antigravity" && hasSharedAntigravityToken()) return "oauth";
+  // Devin's credential is `apiKeyEnvVar: ""` (its artifact is `Basic <k>-<k>`,
+  // which the generic key path cannot express), so the env/cfg checks below are
+  // structurally blind to it. `"oauth"` is reused deliberately rather than
+  // widening CredentialSource: the value is literally `devin-session-token$<JWT>`,
+  // minted by a login in the `devin` CLI and stored in a file — which is what
+  // "oauth" means in this union. A new member would ripple through every TUI
+  // label map and the `claudish providers --json` wire contract for no
+  // user-visible gain.
+  if (p.catalogName === "devin") {
+    if (realValue(process.env.WINDSURF_API_KEY)) return "env";
+    if (hasDevinCredentials()) return "oauth";
+  }
   // realValue() drops an unexpanded `${VAR}` placeholder — the literal string a
   // host passes through when the referenced shell variable is unset. Sign-time
   // refuses to use one, so it must not count as a credential here either.

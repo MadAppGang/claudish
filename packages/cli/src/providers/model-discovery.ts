@@ -53,7 +53,7 @@ export interface DiscoveredModel {
  * `path` is appended to the provider's resolved baseUrl.
  */
 export interface ModelDiscoveryDescriptor {
-  /** Path appended to the resolved baseUrl (e.g. "/models"). */
+  /** Path appended to the resolved baseUrl (e.g. "/models"). Unused by `devin-connect`. */
   path: string;
   /**
    * Response shape.
@@ -61,8 +61,11 @@ export interface ModelDiscoveryDescriptor {
    *   created? }] }`. Also accepts `context_window` / `max_context_length`
    *   spellings, since OpenAI-compatible endpoints disagree on the field name.
    *   `created` is unix seconds and feeds `DiscoveredModel.releaseDate`.
+   * - `devin-connect`: not an HTTP GET at all — two protobuf rpcs whose
+   *   intersection is capability ∩ entitlement. Owned by
+   *   `providers/devin/devin-models.ts`; `path` is ignored.
    */
-  format: "openai-models-list";
+  format: "openai-models-list" | "devin-connect";
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -163,6 +166,28 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   const def = getProviderByName(providerName);
   const descriptor = def?.modelDiscovery;
   if (!def || !descriptor) return [];
+
+  // Devin's roster is not a GET — it is two protobuf rpcs (capability ∩
+  // entitlement), owned by the module that speaks that wire. The import is
+  // DYNAMIC to keep the codec off the cold-start path and out of a static
+  // cycle. (If a third such provider ever appears, replace this branch with a
+  // `registerModelDiscoveryFetcher(name, fn)` seam — not worth it for one.)
+  if (descriptor.format === "devin-connect") {
+    const { getServedDevinModels } = await import("./devin/devin-models.js");
+    const served = await getServedDevinModels();
+    if (served.length === 0) {
+      log(`[model-discovery:${providerName}] no models for this subscription`);
+      return [];
+    }
+    const models: DiscoveredModel[] = served.map((model) => ({
+      id: model.uid,
+      displayName: model.displayName,
+      contextWindow: model.contextWindow,
+    }));
+    log(`[model-discovery:${providerName}] discovered ${models.length} models`);
+    _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
+    return models;
+  }
 
   const baseUrl = resolveBaseUrl(providerName);
   if (!baseUrl) return [];

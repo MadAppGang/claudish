@@ -16,6 +16,7 @@ import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
 import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { makeCodexCredential } from "./codex-credential.js";
+import { DevinCredentialProvider } from "./devin-credential.js";
 import { GeminiCodeAssistCredentialProvider } from "./gemini-credential.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
@@ -146,6 +147,11 @@ export class CredentialAuthority {
     // token (the agy keychain item), not a GEMINI_API_KEY. Registered under its
     // own name so `ag@`/`go@` requests resolve here (and never onto "google").
     authority.register(new AntigravityCredentialProvider(), ["antigravity"]);
+    // Devin's artifact is `authorization: Basic <k>-<k>`, which the generic
+    // ApiKeyCredentialProvider cannot express. Its definition carries
+    // apiKeyEnvVar: "" so the generic loop below skips it anyway — this
+    // registration is what actually makes `dv@` resolvable.
+    authority.register(new DevinCredentialProvider(), ["devin"]);
     authority.register(makeKimiCredential(), ["kimi"]);
     // kimi-coding is a SEPARATE product with its own endpoint + KIMI_CODING_API_KEY.
     // It must NOT alias onto the regular Kimi credential, or the coding endpoint
@@ -163,6 +169,11 @@ export class CredentialAuthority {
       "openai-codex",
       "gemini-codeassist",
       "antigravity",
+      // Redundant with `apiKeyEnvVar: ""` (the loop skips it either way), and
+      // kept because this set is the documented STATEMENT OF INTENT: if someone
+      // ever gives the devin definition an env var, the generic provider must
+      // still not take the name.
+      "devin",
       "kimi",
       "kimi-coding",
       "vertex",

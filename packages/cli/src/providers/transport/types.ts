@@ -11,7 +11,26 @@ export type StreamFormat =
   | "openai-responses-sse"
   | "gemini-sse"
   | "anthropic-sse"
-  | "ollama-jsonl";
+  | "ollama-jsonl"
+  /**
+   * Connect-protocol envelopes carrying protobuf (Devin). The ONLY non-text
+   * wire in the pipeline — see `serializeBody` below, and note that this
+   * backend reports errors INSIDE an HTTP 200 body.
+   */
+  | "connect-proto";
+
+/**
+ * Body bytes a transport may hand to `fetch`.
+ *
+ * Deliberately NOT the DOM's `BodyInit`: the macOS bridge typechecks these same
+ * sources with `lib: ["ES2023"]` and no DOM, where that name does not exist
+ * (TS2304). This union covers every shape a serializer realistically produces —
+ * a JSON string, or encoded bytes — and is assignable to `fetch`'s body under
+ * both configurations. `Uint8Array<ArrayBuffer>` rather than plain
+ * `Uint8Array`: the default parameter is `ArrayBufferLike`, which could be
+ * `SharedArrayBuffer`-backed and is rejected as a request body.
+ */
+export type SerializedBody = string | Uint8Array<ArrayBuffer>;
 
 /**
  * A transport layer for a model API provider.
@@ -76,6 +95,28 @@ export interface ProviderTransport {
    * Called after adapter.buildPayload() + adapter.prepareRequest().
    */
   transformPayload?(payload: any): any;
+
+  /**
+   * Serialize the request payload to wire bytes.
+   *
+   * DEFAULT-PRESERVING BY CONSTRUCTION: not implementing this (or returning
+   * undefined) leaves the pipeline on `JSON.stringify(payload)` +
+   * `Content-Type: application/json`, byte for byte. ComposedHandler computes
+   * `provider.serializeBody?.(payload)` once and applies
+   * `serialized?.body ?? JSON.stringify(payload)` /
+   * `serialized?.contentType ?? "application/json"` at BOTH fetch call sites
+   * (the main request and the 401-retry twin), so a transport that leaves this
+   * undefined executes the identical instruction sequence it always did.
+   *
+   * It lives here rather than on the Layer 1 FormatConverter because the one
+   * implementer (Devin) embeds its credential in the encoded body, and
+   * credentials are categorically the transport's business — the same reason
+   * `transformPayload` (the CodeAssist envelope, which injects the project id)
+   * is a transport hook.
+   *
+   * Called after `transformPayload`, so it sees the final payload.
+   */
+  serializeBody?(payload: any): { body: SerializedBody; contentType: string };
 
   /**
    * Extra options to merge into the fetch RequestInit.

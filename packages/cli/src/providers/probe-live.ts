@@ -75,7 +75,7 @@ export interface ProbeTiming {
  * token-related failure, we surface a login hint instead of masking the link
  * as "skipped".
  */
-const OAUTH_PROVIDERS = new Set(["vertex", "gemini-codeassist"]);
+const OAUTH_PROVIDERS = new Set(["vertex", "gemini-codeassist", "devin"]);
 // Ask for a short paragraph so we can sample streaming throughput (tokens/sec).
 // Capped to keep probes quick while leaving room for reasoning models that
 // spend hidden reasoning tokens BEFORE any visible text: at 64 tokens, models
@@ -232,7 +232,12 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
         ? "claudish login antigravity"
         : provider === "vertex"
           ? "gcloud auth application-default login"
-          : undefined;
+          : // Not a claudish command: the Devin CLI mints the token and claudish
+            // reads its credentials file. Naming `claudish login devin` here
+            // would send the user to a command that does not exist.
+            provider === "devin"
+            ? "devin login"
+            : undefined;
 
   if (!loginCommand) return result;
 

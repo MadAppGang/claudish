@@ -26,6 +26,7 @@ export type TransportType =
   | "gemini"
   | "gemini-oauth"
   | "antigravity"
+  | "devin"
   | "openrouter"
   | "ollamacloud"
   | "kimi-coding"
@@ -168,6 +169,50 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "Antigravity subscription (ag@; go@ deprecated)",
+  },
+
+  // ── Devin (Cognition/Codeium subscription) ─────────────────────────
+  // Auth is the Devin CLI's own session token, read verbatim from
+  // ~/.local/share/devin/credentials.toml (or WINDSURF_API_KEY). One flat
+  // subscription serving several vendors' models over a Connect-protobuf rpc.
+  {
+    name: "devin",
+    displayName: "Devin",
+    transport: "devin",
+    baseUrl: "https://server.codeium.com",
+    baseUrlEnvVars: ["WINDSURF_API_SERVER_URL"],
+    apiPath: "/exa.api_server_pb.ApiServerService/GetChatMessage",
+    // MUST stay empty — this is load-bearing, not an oversight. proxy-server
+    // only runs its credential-extraction block for a NON-empty apiKeyEnvVar,
+    // and that block extracts the key by stripping `Bearer ` from
+    // `auth.headers.Authorization`. Devin's artifact is
+    // `authorization: Basic <k>-<k>` (lowercase header, Basic scheme), so the
+    // extraction would yield "" -> `return null` -> the handler is never built
+    // and the model SILENTLY falls through to OpenRouter. A wrong provider
+    // quietly succeeding is worse than a crash. Empty makes proxy-server skip
+    // the block and lets the transport pull its own artifact from the credential
+    // authority — exactly the Antigravity pattern.
+    apiKeyEnvVar: "",
+    apiKeyDescription: "Devin CLI session token (~/.local/share/devin/credentials.toml)",
+    apiKeyUrl: "https://devin.ai/",
+    shortcuts: ["dv", "devin"],
+    shortestPrefix: "dv",
+    legacyPrefixes: [
+      { prefix: "dv/", stripPrefix: true },
+      { prefix: "devin/", stripPrefix: true },
+    ],
+    // NO nativeModelPatterns, and no DEFAULT_ROUTING_RULES entry either. Devin's
+    // uids collide head-on with other providers' namespaces —
+    // `claude-opus-5-medium` matches native-anthropic's /^claude-/i,
+    // `gpt-5-6-luna-medium` matches OpenAI's, `glm-5-2` matches GLM's,
+    // `kimi-k3-high` matches Kimi's — so a bare name must never auto-detect as
+    // Devin, and Devin must never be prepended to those chains. Same reasoning
+    // as Qwen Plan, which also serves other vendors' models: access to the plan
+    // stays EXPLICIT (`dv@claude-opus-5`). Users who want otherwise can add a
+    // rule in ~/.claudish/config.json.
+    modelDiscovery: { path: "", format: "devin-connect" },
+    isDirectApi: true,
+    description: "Devin subscription (dv@, devin@)",
   },
 
   // ── Gemini Code Assist (OAuth) ─────────────────────────────────────

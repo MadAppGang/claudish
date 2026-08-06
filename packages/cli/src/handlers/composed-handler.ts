@@ -50,9 +50,11 @@ import {
 } from "./shared/anthropic-error.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { requestCatalogContextWindow } from "./shared/context-window-fallback.js";
+import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
+import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
@@ -86,6 +88,18 @@ export interface ComposedHandlerOptions {
   unwrapGeminiResponse?: boolean;
   /** Whether the current session is interactive (gates consent prompt). */
   isInteractive?: boolean;
+  /**
+   * Force the Layer 4 behavior supervisor ON regardless of the model's name.
+   *
+   * The default rule reads `claude-*` as "native Claude, already follows these
+   * conventions" — a naming rule that holds for models reached through
+   * Anthropic's own harness. A third party re-serving `claude-sonnet-5-medium`
+   * over a reverse-engineered endpoint has no such measurement behind it, so a
+   * provider whose uids merely LOOK like Claude's would silently disarm the
+   * supervisor for exactly the models most likely to need it. Set by the
+   * provider profile; every other provider leaves it undefined and is untouched.
+   */
+  forceForeignModel?: boolean;
   /** How this handler was invoked (for stats). */
   invocationMode?: "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map";
 }
@@ -375,8 +389,16 @@ export class ComposedHandler implements ModelHandler {
       providerName: this.provider.name,
       // A naming rule, not a pinned roster: Claude models are `claude-*`, and
       // they already follow these conventions (measured 87/87 on plan mode).
+      //
+      // `forceForeignModel` is the one escape hatch, and it exists because the
+      // name is not always evidence: a subscription aggregator can serve uids
+      // like `claude-sonnet-5-medium` that match this test while being reached
+      // over a foreign protocol, where the 87/87 measurement says nothing. The
+      // flag is opt-in per provider profile, so the global rule — and every
+      // other provider's behaviour — is unchanged.
       isNativeAnthropic:
-        /^claude[-.]/i.test(this.bareModelName) || this.provider.name === "anthropic",
+        !this.options.forceForeignModel &&
+        (/^claude[-.]/i.test(this.bareModelName) || this.provider.name === "anthropic"),
     });
     if (!behaviorSession.isNoop) {
       behaviorSession.applyRequest(claudeRequest, claudeRequest.tools ?? [], tools, messages);
@@ -480,7 +502,15 @@ export class ComposedHandler implements ModelHandler {
 
     const endpoint = this.provider.getEndpoint(this.targetModel);
     const headers = await this.provider.getHeaders();
-    headers["Content-Type"] = "application/json";
+
+    // 6a. The body is NOT necessarily JSON. A transport may serialize the
+    // payload itself (Devin encodes Connect-protobuf, credential and all).
+    // Computed ONCE — retries must re-send identical bytes — and
+    // default-preserving: a transport that leaves `serializeBody` undefined
+    // yields `undefined` here and every expression below collapses to exactly
+    // what it was before this hook existed.
+    const serialized = this.provider.serializeBody?.(requestPayload);
+    headers["Content-Type"] = serialized?.contentType ?? "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
 
@@ -490,7 +520,7 @@ export class ComposedHandler implements ModelHandler {
       fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify(requestPayload),
+        body: serialized?.body ?? JSON.stringify(requestPayload),
         ...requestInit,
       });
 
@@ -574,12 +604,15 @@ export class ComposedHandler implements ModelHandler {
         try {
           await this.provider.forceRefreshAuth();
           const retryHeaders = await this.provider.getHeaders();
-          retryHeaders["Content-Type"] = "application/json";
+          // Same serialization as the primary request — this is a separate call
+          // site and the easy one to forget, which is why both are pinned by
+          // the same assertion.
+          retryHeaders["Content-Type"] = serialized?.contentType ?? "application/json";
           const retryInit = this.provider.getRequestInit?.() || {};
           const retryResp = await fetch(endpoint, {
             method: "POST",
             headers: retryHeaders,
-            body: JSON.stringify(requestPayload),
+            body: serialized?.body ?? JSON.stringify(requestPayload),
             ...retryInit,
           });
           if (retryResp.ok) {
@@ -827,6 +860,66 @@ export class ComposedHandler implements ModelHandler {
       response = settled.response;
     }
 
+    // 7c. Devin has the same shape of fault in a different encoding: the
+    // Connect transport returns 200 and the error rides a `flags=2` frame. Same
+    // doctrine as 7b — retry the transient class, and surface the terminal class
+    // as a 400 rendered inline rather than a status Claude Code silently retries.
+    if (this.resolveStreamFormat() === "connect-proto") {
+      const settled = await this.settleDevinStreamHead(response, () =>
+        this.provider.enqueueRequest ? this.provider.enqueueRequest(doFetch) : doFetch()
+      );
+      if (settled.kind !== "ok") {
+        const isTerminal = settled.kind === "terminal";
+        const httpStatus = isTerminal ? 400 : 503;
+        const surfaced = isTerminal
+          ? `${this.provider.displayName} rejected the request (${settled.code}): ${settled.message}`
+          : `${this.provider.displayName} is overloaded upstream (${settled.code}): ${settled.message} ` +
+            `claudish retried ${settled.attempts}× over ` +
+            `${Math.round(
+              STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce((sum, ms) => sum + ms, 0) /
+                1000
+            )}s without success.`;
+        logStderr(`Error: ${surfaced}`);
+        reportError({
+          error: new Error(settled.message),
+          providerName: this.provider.name,
+          providerDisplayName: this.provider.displayName,
+          streamFormat: this.provider.streamFormat,
+          modelId: this.targetModel,
+          httpStatus,
+          isStreaming: true,
+          retryAttempted: !isTerminal,
+          isInteractive: this.isInteractive,
+          providerErrorType: settled.code,
+        });
+        try {
+          recordStats({
+            model_id: this.targetModel,
+            provider_name: this.provider.name,
+            stream_format: this.provider.streamFormat,
+            latency_ms: Math.round(performance.now() - startTime),
+            success: false,
+            http_status: httpStatus,
+            error_class: isTerminal ? "client_error" : "server_error",
+            error_code: settled.code,
+            token_strategy: this.options.tokenStrategy ?? "standard",
+            adapter_name: this.getActiveAdapterName(),
+            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+            fallback_used: fallbackMeta !== undefined,
+            fallback_chain: fallbackMeta?.chain,
+            fallback_attempts: fallbackMeta?.attempts,
+            invocation_mode: this.options.invocationMode ?? "auto-route",
+          });
+        } catch {
+          // Stats must never crash claudish
+        }
+        return isTerminal
+          ? c.json(wrapAnthropicError(400, surfaced, "invalid_request_error"), 400 as any)
+          : c.json(wrapAnthropicError(503, surfaced, "overloaded_error"), 503 as any);
+      }
+      response = settled.response;
+    }
+
     // 8. Parse streaming response based on provider's format
     // latency_ms = time-to-first-byte (response received before stream consumed).
     // When 7b retried a transient in-stream fault this also covers the backoff
@@ -920,6 +1013,97 @@ export class ComposedHandler implements ModelHandler {
     for (let attempt = 0; ; attempt++) {
       const verdict = await sniffResponsesStreamHead(response, { log });
       if (verdict.kind === "clean") return { kind: "ok", response: verdict.response };
+
+      const delayMs = STREAM_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        log(
+          `[${this.provider.displayName}] in-stream ${verdict.code} persisted after ` +
+            `${attempt} retries — surfacing 503 so the client can retry`
+        );
+        return {
+          kind: "exhausted",
+          code: verdict.code,
+          message: verdict.message,
+          attempts: attempt,
+        };
+      }
+
+      log(
+        `[${this.provider.displayName}] in-stream ${verdict.code} before any output — ` +
+          `retry ${attempt + 1}/${STREAM_RETRY_DELAYS_MS.length} in ${delayMs / 1000}s`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      let next: Response;
+      try {
+        next = await reissue();
+      } catch (error) {
+        log(`[${this.provider.displayName}] retry fetch failed: ${error}`);
+        return {
+          kind: "exhausted",
+          code: verdict.code,
+          message: `${verdict.message} (retry could not reach the provider: ${error})`,
+          attempts: attempt + 1,
+        };
+      }
+
+      // The fault graduated to a status-level failure. The !response.ok handling
+      // is already behind us, so stop here rather than re-entering it.
+      if (!next.ok) {
+        const body = await next.text().catch(() => "");
+        log(`[${this.provider.displayName}] retry returned HTTP ${next.status}`);
+        return {
+          kind: "exhausted",
+          code: `http_${next.status}`,
+          message: body.slice(0, 500) || `HTTP ${next.status}`,
+          attempts: attempt + 1,
+        };
+      }
+
+      response = next;
+    }
+  }
+
+  /**
+   * Settle a Devin Connect stream head — the `connect-proto` twin of
+   * {@link settleResponsesStreamHead}, sharing its backoff schedule.
+   *
+   * It differs in one way, and the difference is the point: the sniffer
+   * distinguishes TERMINAL faults from transient ones, so an unserved model uid
+   * or a revoked entitlement is answered immediately with the real reason
+   * instead of burning 48s of backoff first. Only the transient class is
+   * retried; only an exhausted retry chain becomes a 503.
+   *
+   * Terminal messages pass through the transport's served-set-aware rewrite when
+   * it offers one, which is what turns an opaque backend string into "that uid
+   * is not served by your subscription; here is what is".
+   */
+  private async settleDevinStreamHead(
+    initial: Response,
+    reissue: () => Promise<Response>
+  ): Promise<
+    | { kind: "ok"; response: Response }
+    | { kind: "terminal"; code: string; message: string }
+    | { kind: "exhausted"; code: string; message: string; attempts: number }
+  > {
+    // Optional-method probe rather than a `ProviderTransport` member: this whole
+    // branch is Devin-specific by construction, and widening the shared
+    // interface for one consumer would invite the next provider to add another.
+    const rewrite = (
+      this.provider as { rewriteInStreamError?: (code: string, message: string) => string }
+    ).rewriteInStreamError?.bind(this.provider);
+
+    let response = initial;
+
+    for (let attempt = 0; ; attempt++) {
+      const verdict = await sniffDevinStreamHead(response, { log });
+      if (verdict.kind === "clean") return { kind: "ok", response: verdict.response };
+
+      if (verdict.kind === "terminal") {
+        const message = rewrite?.(verdict.code, verdict.message) ?? verdict.message;
+        log(`[${this.provider.displayName}] terminal in-stream error ${verdict.code}`);
+        return { kind: "terminal", code: verdict.code, message };
+      }
 
       const delayMs = STREAM_RETRY_DELAYS_MS[attempt];
       if (delayMs === undefined) {
@@ -1134,6 +1318,28 @@ export class ComposedHandler implements ModelHandler {
           priorInputTokens,
         });
       }
+
+      case "connect-proto":
+        return createDevinConnectStream(c, response, {
+          modelName: this.bareModelName,
+          onTokenUpdate,
+          priorInputTokens,
+          onApiError,
+          toolNameMap,
+          // The backend reports which uid actually answered (`claude-opus-5`
+          // resolves to `claude-opus-5-high`), so the status line names the real
+          // model instead of the family the user typed.
+          onServedModel: (uid) => {
+            if (uid !== this.bareModelName) this.tokenTracker.setActiveModelName(uid);
+          },
+          // Layer 4 — the same hooks the gemini-sse case passes.
+          repairToolArgs: (name, argsJson) =>
+            behaviorSession?.repairToolCall(name, argsJson) ?? null,
+          shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
+          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
+          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onTurnEnd: () => behaviorSession?.finishTurn(),
+        });
 
       case "ollama-jsonl":
         return createOllamaJsonlStream(c, response, {

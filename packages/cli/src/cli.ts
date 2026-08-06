@@ -1396,6 +1396,12 @@ async function probeModelRouting(
     } else if (providerName === "litellm") {
       formatAdapterName = "LiteLLMAPIFormat";
       declaredStreamFormat = "openai-sse";
+    } else if (providerName === "devin") {
+      // Must come BEFORE the final else. Without it `--probe dv@…` reports
+      // OpenAIAPIFormat / openai-sse — exactly the kind of silent wiring lie
+      // --probe exists to prevent.
+      formatAdapterName = "DevinAPIFormat";
+      declaredStreamFormat = "connect-proto";
     } else {
       formatAdapterName = "OpenAIAPIFormat";
       declaredStreamFormat = "openai-sse";

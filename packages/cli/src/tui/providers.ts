@@ -6,6 +6,7 @@
 import { hasSharedAntigravityToken } from "../auth/antigravity-token.js";
 import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
+import { hasDevinCredentials } from "../providers/devin/devin-credentials.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
 import { type ProviderDefinition, getAllProviders } from "../providers/provider-definitions.js";
 
@@ -175,13 +176,20 @@ export function providerAuthCapabilities(
   const apiKeySupported = !!p.apiKeyEnvVar;
   const apiKeySet =
     apiKeySupported && (!!process.env[p.apiKeyEnvVar] || !!config.apiKeys?.[p.apiKeyEnvVar]);
-  const oauthSupported = !!p.oauthSlug;
+  // Devin has no claudish-side login (the token is minted by `devin login` and
+  // read from that CLI's own file), so it declares no oauthLoginSlug — but it
+  // IS token-authenticated, and gating the column on `oauthSlug` alone would
+  // render the row as "not configurable" for a user who is signed in. Relaxing
+  // the local expression is the narrow fix; adding a slug would advertise a
+  // `claudish login devin` command that does not exist.
+  const oauthSupported = !!p.oauthSlug || p.catalogName === "devin";
   // Antigravity's OAuth token is in the shared keychain, not an oauth-file — so
   // hasOAuthCredentials can't see it; check the keychain directly (memoized).
   const oauthSet =
     oauthSupported &&
     (hasOAuthCredentials(p.catalogName) ||
-      (p.catalogName === "antigravity" && hasSharedAntigravityToken()));
+      (p.catalogName === "antigravity" && hasSharedAntigravityToken()) ||
+      (p.catalogName === "devin" && hasDevinCredentials()));
   return {
     apiKey: { supported: apiKeySupported, set: apiKeySet },
     oauth: { supported: oauthSupported, set: oauthSet },

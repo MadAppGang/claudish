@@ -13,6 +13,13 @@ interface ProviderHintInfo {
   loginFlag?: string;
   /** Primary API key environment variable name. */
   apiKeyEnvVar?: string;
+  /**
+   * A free-text remediation line, for providers whose credential comes from
+   * somewhere claudish does not own. `loginFlag` renders as "Run: claudish …",
+   * which would be an actionably WRONG instruction when the login lives in a
+   * different CLI entirely — the user would type a command that does not exist.
+   */
+  note?: string;
 }
 
 const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
@@ -22,6 +29,12 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   "gemini-codeassist": { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
   // Antigravity auth is OAuth-only (shared keychain token) — no API key env var.
   antigravity: { loginFlag: "login antigravity" },
+  // There is no `claudish login devin`: the token is minted by the Devin CLI's
+  // own login and read verbatim from its credentials file.
+  devin: {
+    note: "Sign in with the Devin CLI (`devin login`) — claudish reads ~/.local/share/devin/credentials.toml",
+    apiKeyEnvVar: "WINDSURF_API_KEY",
+  },
   openai: { apiKeyEnvVar: "OPENAI_API_KEY" },
   "openai-codex": { loginFlag: "login codex", apiKeyEnvVar: "OPENAI_CODEX_API_KEY" },
   minimax: { apiKeyEnvVar: "MINIMAX_API_KEY" },
@@ -63,6 +76,10 @@ export function buildCredentialHint(modelName: string, providers: string[]): str
 
     if (hint.loginFlag) {
       lines.push(`  Run:  claudish ${hint.loginFlag}  (authenticate via OAuth)`);
+      hasOption = true;
+    }
+    if (hint.note) {
+      lines.push(`  ${hint.note}`);
       hasOption = true;
     }
     if (hint.apiKeyEnvVar) {
