@@ -10,6 +10,7 @@
  *   --sleep <s>    sleep for <s> seconds then exit 0
  *   --fail         exit immediately with code 1
  *   --lines <n>    write "line 1" … "line N" to stdout then exit 0
+ *   --print-argv   write the received argv as JSON then exit 0
  *
  * The real claudish spawn args (--model, -y, --stdin, --quiet) come first;
  * the test-only flags are appended via claudishFlags so they land after all
@@ -19,7 +20,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,12 +37,15 @@ const FAKE_CLAUDISH_TS = join(__dirname, "test-helpers", "fake-claudish.ts");
 
 /** Temp directory where we place a `claudish` wrapper script. */
 let shimDir: string;
+/** Temp artifact root so tests never write under the real ~/.claudish. */
+let sessionsDir: string;
 /** Original PATH value so we can restore it after tests. */
 const ORIGINAL_PATH = process.env.PATH ?? "";
 
 beforeAll(() => {
   // Create a temp directory for the shim
   shimDir = mkdtempSync(join(tmpdir(), "claudish-shim-"));
+  sessionsDir = mkdtempSync(join(tmpdir(), "claudish-sessions-"));
 
   // Write a `claudish` wrapper that calls the fake via bun
   const shimPath = join(shimDir, "claudish");
@@ -58,6 +62,7 @@ afterAll(() => {
   // Clean up shim directory
   try {
     rmSync(shimDir, { recursive: true, force: true });
+    rmSync(sessionsDir, { recursive: true, force: true });
   } catch {}
 });
 
@@ -79,7 +84,7 @@ function waitUntil(predicate: () => boolean, timeoutMs = 5000, intervalMs = 50):
 
 /** Create a SessionManager with sensible test defaults. */
 function makeManager(opts?: SessionManagerOptions): SessionManager {
-  return new SessionManager({ maxSessions: 20, ...opts });
+  return new SessionManager({ maxSessions: 20, sessionsDir, ...opts });
 }
 
 /**
@@ -141,6 +146,35 @@ describe("SessionManager", () => {
     expect(typeof info.startedAt).toBe("string");
     expect(info.completedAt).toBeNull();
     expect(info.exitCode).toBeNull();
+  });
+
+  test("spawnModel changes argv while SessionInfo keeps the requested model", async () => {
+    const id = manager.createSession({
+      model: "glm-5",
+      spawnModel: "gc@glm-5",
+      claudishFlags: ["--print-argv"],
+    });
+
+    await waitUntil(() => ["completed", "failed"].includes(manager.getSession(id).status));
+
+    const argv = JSON.parse(manager.getOutput(id).output.trim()) as string[];
+    const modelFlag = argv.indexOf("--model");
+    expect(argv[modelFlag + 1]).toBe("gc@glm-5");
+    expect(manager.getSession(id).model).toBe("glm-5");
+  });
+
+  test("spawn argv falls back to the requested model when spawnModel is absent", async () => {
+    const id = manager.createSession({
+      model: "glm-5",
+      claudishFlags: ["--print-argv"],
+    });
+
+    await waitUntil(() => ["completed", "failed"].includes(manager.getSession(id).status));
+
+    const argv = JSON.parse(manager.getOutput(id).output.trim()) as string[];
+    const modelFlag = argv.indexOf("--model");
+    expect(argv[modelFlag + 1]).toBe("glm-5");
+    expect(manager.getSession(id).model).toBe("glm-5");
   });
 
   test("getSession throws for non-existent session", () => {
@@ -365,7 +399,7 @@ describe("SessionManager", () => {
 
   // ── 13. session artifacts on disk ─────────────────────────────────────────
 
-  test("meta.json is written to ~/.claudish/sessions/{id}/ after completion", async () => {
+  test("meta.json is written to the configured sessions directory after completion", async () => {
     const id = quickSession(manager);
 
     await waitUntil(() => {
@@ -376,7 +410,7 @@ describe("SessionManager", () => {
     // Give the exit handler a moment to finish writing files
     await new Promise((r) => setTimeout(r, 300));
 
-    const metaPath = join(homedir(), ".claudish", "sessions", id, "meta.json");
+    const metaPath = join(sessionsDir, id, "meta.json");
     expect(existsSync(metaPath)).toBe(true);
 
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));

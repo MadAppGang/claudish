@@ -232,7 +232,9 @@ process.stdin.on('end', () => {
       isEstimated = tokens.is_estimated || false;
       providerName = tokens.provider_name || '';
       if (tokens.model_name) model = tokens.model_name;
-      var quotaRemaining = tokens.quota_remaining;
+      // Plan usage for the subscription actually being spent. Replaces the old
+      // scalar quota_remaining, which only ever covered a single model.
+      var plan = tokens.plan;
     } catch (e) {
       try {
         const json = JSON.parse(input);
@@ -274,11 +276,18 @@ process.stdin.on('end', () => {
       ctxDisplay = ctx + '%';
     }
     let quotaDisplay = '';
-    if (typeof quotaRemaining === 'number') {
-      const usedPct = ((1 - quotaRemaining) * 100).toFixed(0);
-      const remainPct = (quotaRemaining * 100).toFixed(0);
-      const qColor = quotaRemaining > 0.5 ? GREEN : quotaRemaining > 0.2 ? YELLOW : RED;
-      quotaDisplay = ' ' + DIM + '•' + RESET + ' ' + qColor + remainPct + '% quota' + RESET;
+    if (plan && Array.isArray(plan.windows)) {
+      // Show the window closest to its limit — the one that cuts you off first.
+      let worst = null;
+      for (const w of plan.windows) {
+        if (!w || typeof w.used_pct !== 'number') continue;
+        if (!worst || w.used_pct > worst.used_pct) worst = w;
+      }
+      if (worst) {
+        const usedPct = Math.round(worst.used_pct);
+        const qColor = usedPct < 50 ? GREEN : usedPct < 80 ? YELLOW : RED;
+        quotaDisplay = ' ' + DIM + '•' + RESET + ' ' + qColor + worst.id + ':' + usedPct + '%' + RESET;
+      }
     }
     console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\${quotaDisplay}\`);
   } catch (e) {
@@ -620,6 +629,32 @@ export function createTempSettingsFile(
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";
 
+    // Plan usage for the subscription being spent, extracted WITHOUT jq — this
+    // variant is deliberately dependency-free, unlike the magus statusline
+    // plugin which may assume jq.
+    //
+    // The file is written by claudish's own `JSON.stringify`, so the shape is
+    // predictable: `"windows":[{"id":"7d","used_pct":66,"resets_at":"…"}]`. The
+    // `grep -o` pulls each id/percent pair, `sed` flips it to "66 7d", and
+    // `sort -rn | head -1` picks the window nearest its limit — the one that
+    // will stop the user working. No plan key, or no numeric window, leaves
+    // PLAN_DISPLAY empty and the segment is omitted entirely rather than
+    // printing a dangling separator.
+    //
+    // Optional whitespace is tolerated after each colon to match the style of
+    // the other extractions here, which survive a pretty-printed file.
+    //
+    // The one real fragility: this depends on `id` being ADJACENT to `used_pct`,
+    // which holds because both adapters build the object in that order and
+    // JSON.stringify preserves insertion order. If a future adapter emits them
+    // apart, the pattern stops matching and the plan segment silently
+    // disappears — a missing segment, never a wrong number. That is the right
+    // way round for a status line, and `status-line-context.test.ts` executes
+    // this script so the regression is visible in CI rather than in a user's bar.
+    // A float `used_pct` truncates to its integer part, which is also harmless;
+    // `toUsedPct()` rounds today, so it never arises.
+    const readPlanBash = `PLAN_PAIR=$(echo "$TOKENS" | grep -o '"id": *"[^"]*", *"used_pct": *[0-9]*' | sed 's/"id": *"\\([^"]*\\)", *"used_pct": *\\([0-9]*\\)/\\2 \\1/' | sort -rn | head -1); if [ -n "$PLAN_PAIR" ]; then PLAN_PCT="\${PLAN_PAIR%% *}"; PLAN_ID="\${PLAN_PAIR#* }"; case "$PLAN_PCT" in ''|*[!0-9]*) PLAN_PCT="" ;; esac; [ -n "$PLAN_PCT" ] && PLAN_DISPLAY="$PLAN_ID:$PLAN_PCT%"; fi;`;
+
     // Both cost and context percentage come from our token file
     // Helper function to format tokens with k/M suffix (pure bash, no awk)
     const formatTokensBash = `fmt_tok() { local n=\${1:-0}; if [ "$n" -ge 1000000 ]; then echo "$((n/1000000))M"; elif [ "$n" -ge 1000 ]; then echo "$((n/1000))k"; else echo "$n"; fi; }`;
@@ -661,8 +696,14 @@ export function createTempSettingsFile(
     // own line already shows it), and the result captured into a variable instead
     // of printed.
     const dirPrelude = `DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; `;
-    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
-    const segmentWithDir = `printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
+    // Plan segment, appended only when there is a number to show. Built as a
+    // separate printf so the no-plan case emits nothing at all — most providers
+    // expose no usage surface, so absence is the common path, and a trailing
+    // "• " with nothing after it would be the visible cost of getting it wrong.
+    const planSuffix = `if [ -n "$PLAN_DISPLAY" ]; then printf " ${DIM}•${RESET} ${GREEN}%s${RESET}" "$PLAN_DISPLAY"; fi`;
+
+    const segmentWithDir = `printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"; ${planSuffix}; printf "\\n"`;
     // The CHAINED segment deliberately drops the model name that
     // segmentWithDir shows. It is appended to the user's OWN status line, which
     // already renders the model — printing it again produced
@@ -672,8 +713,8 @@ export function createTempSettingsFile(
     // session, before the first response), the field is omitted ENTIRELY rather
     // than falling back to the model name or emitting an empty segment with a
     // dangling separator.
-    const segmentNoDirWithProvider = `printf "${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$PROVIDER" "$COST_DISPLAY" "$CTX_DISPLAY"`;
-    const segmentNoDirNoProvider = `printf "${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    const segmentNoDirWithProvider = `printf "${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}" "$PROVIDER" "$COST_DISPLAY" "$CTX_DISPLAY"; ${planSuffix}; printf "\\n"`;
+    const segmentNoDirNoProvider = `printf "${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}" "$COST_DISPLAY" "$CTX_DISPLAY"; ${planSuffix}; printf "\\n"`;
     const segmentNoDir = `if [ -n "$PROVIDER" ]; then ${segmentNoDirWithProvider}; else ${segmentNoDirNoProvider}; fi`;
 
     statusCommand = userStatusLineCommand

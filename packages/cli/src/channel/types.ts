@@ -33,7 +33,19 @@ export interface SessionInfo {
 }
 
 export interface SessionCreateOptions {
+  /**
+   * The model as the caller asked for it. This is the session's DISPLAY
+   * identity — `SessionInfo.model`, channel `meta.model`, `list_sessions` — and
+   * the agent correlates on it, so it is never rewritten.
+   */
   model: string;
+  /**
+   * Optional explicit "provider@model" spec to spawn with, resolved by the
+   * parent (see auth/credentials/prehydrate.ts). Only argv uses it: a child
+   * given an explicit spec skips routing, which is what stops it re-walking the
+   * chain and opening its own 1Password SDK client. Absent → spawn `model`.
+   */
+  spawnModel?: string;
   prompt?: string;
   timeoutSeconds?: number;
   claudishFlags?: string[];
@@ -69,4 +81,6 @@ export interface SessionManagerOptions {
   maxSessions?: number;
   scrollbackCapacity?: number;
   onStateChange?: (sessionId: string, event: ChannelEvent) => void;
+  /** Artifact root override. Defaults to CLAUDISH_SESSIONS_DIR, then ~/.claudish/sessions. */
+  sessionsDir?: string;
 }

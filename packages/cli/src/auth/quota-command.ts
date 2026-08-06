@@ -1,23 +1,37 @@
 /**
- * Quota/usage subcommand for OAuth providers.
+ * Quota/usage subcommand for subscription providers.
  *
  * Usage:
- *   claudish quota [provider]   - Show quota usage for a provider
+ *   claudish quota [provider]   - Show plan usage for a provider
  *   claudish usage [provider]   - Alias for quota
  *
- * Registry-based: each provider registers aliases + handler.
- * Adding a new provider = one entry in QUOTA_ADAPTERS.
+ * All provider knowledge lives in the `auth/quota` registry — this module only
+ * resolves what the user typed and renders what the adapter returns.
+ *
+ * ## What changed, and why
+ *
+ * The previous version kept its own `QUOTA_ADAPTERS` table where each entry was
+ * a `handler: () => Promise<void>` that printed and then called `process.exit()`.
+ * Two things followed from that:
+ *
+ * 1. There was no seam to get structured data out, so the same numbers could not
+ *    also be published to a status line. That is the whole of MTL-76 §2.
+ * 2. Window labels were hardcoded. Codex's two slots were rendered as
+ *    "5h window" and "Weekly" — but Codex reports each slot's DURATION in
+ *    `x-codex-*-window-minutes`, and on a real Pro account the primary slot is
+ *    the WEEKLY window (10080 minutes) while the secondary is unused (0). So the
+ *    old output mislabelled one bar and invented a second. Durations are now
+ *    read, never assumed.
+ *
+ * Providers proven to expose no usage surface are registered too, so this
+ * command answers "not supported" with a date rather than "Unknown provider",
+ * which reads as a typo.
  */
 
-import { getModelByIdFromFirebase, getRecommendedModels } from "../model-loader.js";
-import {
-  getGeminiTierFullName,
-  getValidAccessToken,
-  rankCodeAssistModel,
-  retrieveUserQuota,
-  setupGeminiUser,
-} from "./gemini-oauth.js";
-import { hasOAuthCredentials } from "./oauth-registry.js";
+import { getShortcuts } from "../providers/provider-definitions.js";
+import type { QuotaAdapter } from "./quota/adapter.js";
+import { allQuotaAdapters, resolveQuotaAdapter } from "./quota/registry.js";
+import type { PlanUsage, ProbeRecord } from "./quota/types.js";
 
 // ANSI
 const R = "\x1b[0m";
@@ -27,452 +41,246 @@ const I = "\x1b[3m";
 const RED = "\x1b[31m";
 const GRN = "\x1b[32m";
 const YEL = "\x1b[33m";
-const MAG = "\x1b[35m";
 const CYN = "\x1b[36m";
 const WHT = "\x1b[37m";
 const GRY = "\x1b[90m";
 
-// ---------------------------------------------------------------------------
-// Quota Adapter Registry
-// ---------------------------------------------------------------------------
-
-interface QuotaAdapter {
-  name: string;
-  aliases: string[];
-  isAvailable: () => boolean;
-  handler: () => Promise<void>;
-}
-
-const QUOTA_ADAPTERS: QuotaAdapter[] = [
-  {
-    name: "Gemini Code Assist",
-    aliases: ["gemini", "google", "go", "gemini-codeassist"],
-    isAvailable: () => hasOAuthCredentials("google") || hasOAuthCredentials("gemini-codeassist"),
-    handler: geminiQuotaHandler,
-  },
-  {
-    name: "Codex (ChatGPT Plus/Pro)",
-    aliases: ["codex", "openai", "gpt", "cx", "chatgpt", "openai-codex"],
-    isAvailable: () => hasOAuthCredentials("openai-codex"),
-    handler: codexQuotaHandler,
-  },
-];
+const W = 58;
 
 // ---------------------------------------------------------------------------
-// Main entry point
+// Entry point
 // ---------------------------------------------------------------------------
 
 export async function quotaCommand(provider?: string): Promise<void> {
-  if (!provider) {
-    const { select } = await import("@inquirer/prompts");
-    const choices = QUOTA_ADAPTERS.map((a) => ({
-      name: `${a.name} \u2014 ${a.isAvailable() ? "logged in" : "not logged in"}`,
-      value: a,
-    }));
-    const selected = await select({ message: "Select provider:", choices });
-    return selected.handler();
-  }
-
-  const target = provider.toLowerCase();
-  const adapter = QUOTA_ADAPTERS.find((a) => a.aliases.includes(target));
+  const adapter = provider ? resolveAdapterFromInput(provider) : await promptForAdapter();
 
   if (!adapter) {
-    const allAliases = QUOTA_ADAPTERS.flatMap((a) => a.aliases);
-    console.error(`Unknown provider: ${provider}`);
-    console.error(`Available: ${allAliases.join(", ")}`);
+    printUnknownProvider(provider ?? "");
     process.exit(1);
+  }
+
+  const capability = adapter.capability();
+
+  if (capability.kind === "none") {
+    printUnsupported(adapter, capability.evidence);
+    return;
+  }
+  if (capability.kind === "unknown") {
+    console.log(`\n  ${WHT}${adapter.label}${R} — usage support has not been researched yet.\n`);
+    return;
   }
 
   if (!adapter.isAvailable()) {
-    console.error(`${RED}Not logged in for ${adapter.name}.${R} Run: ${B}claudish login${R}`);
+    console.error(`${RED}Not logged in for ${adapter.label}.${R} Run: ${B}claudish login${R}\n`);
     process.exit(1);
   }
 
-  return adapter.handler();
-}
-
-// ---------------------------------------------------------------------------
-// Gemini handler
-// ---------------------------------------------------------------------------
-
-async function geminiQuotaHandler(): Promise<void> {
-  if (!hasOAuthCredentials("google") && !hasOAuthCredentials("gemini-codeassist")) {
-    console.error(`${RED}Not logged in.${R} Run: ${B}claudish login gemini${R}`);
-    process.exit(1);
+  // The explicit path may spend quota where a provider has no cheaper reading
+  // (Codex); `poll` is the free one. Prefer whichever the adapter offers.
+  const fetch = adapter.fetchExplicit ?? adapter.poll;
+  if (!fetch) {
+    console.log(`\n  ${WHT}${adapter.label}${R} — no way to read usage.\n`);
+    return;
   }
 
+  let plan: PlanUsage | undefined;
   try {
-    const accessToken = await getValidAccessToken();
-    const { projectId } = await setupGeminiUser(accessToken);
-    const tierName = getGeminiTierFullName();
-
-    const quota = await retrieveUserQuota(accessToken, projectId);
-    if (!quota?.buckets?.length) {
-      console.log(`\n  ${D}No quota data available.${R}\n`);
-      process.exit(0);
-    }
-
-    const W = 58;
-
-    // Header box
-    console.log("");
-    console.log(`  ${CYN}\u256d${"\u2500".repeat(W)}\u256e${R}`);
-    console.log(
-      `  ${CYN}\u2502${R} ${B}${WHT}Gemini Code Assist Quota${R}${" ".repeat(W - 25)}${CYN}\u2502${R}`
-    );
-    console.log(`  ${CYN}\u251c${"\u2500".repeat(W)}\u2524${R}`);
-    console.log(
-      `  ${CYN}\u2502${R} ${GRY}Tier${R}     ${WHT}${tierName}${R}${" ".repeat(Math.max(0, W - 10 - tierName.length))}${CYN}\u2502${R}`
-    );
-    console.log(
-      `  ${CYN}\u2502${R} ${GRY}Project${R}  ${WHT}${projectId}${R}${" ".repeat(Math.max(0, W - 10 - projectId.length))}${CYN}\u2502${R}`
-    );
-    console.log(`  ${CYN}\u2570${"\u2500".repeat(W)}\u256f${R}`);
-
-    const groups = groupByVersion(quota.buckets);
-
-    // Overall summary
-    const allBuckets = quota.buckets.filter(
-      (b: QuotaBucket) => typeof b.remainingFraction === "number"
-    );
-    const avgRemaining =
-      allBuckets.length > 0
-        ? allBuckets.reduce((sum: number, b: QuotaBucket) => sum + (b.remainingFraction ?? 0), 0) /
-          allBuckets.length
-        : 1;
-    const avgUsed = 1 - avgRemaining;
-    const summaryColor = avgUsed < 0.5 ? GRN : avgUsed < 0.8 ? YEL : RED;
-
-    console.log("");
-    console.log(
-      `  ${summaryColor}${B}${(avgUsed * 100).toFixed(1)}%${R} ${D}overall usage across ${allBuckets.length} models${R}`
-    );
-    console.log("");
-
-    // Build a map of modelId -> remaining for fallback chain display
-    const remainingByModel = new Map<string, number>();
-    for (const b of quota.buckets) {
-      if (b.modelId && typeof b.remainingFraction === "number") {
-        remainingByModel.set(b.modelId, b.remainingFraction);
-      }
-    }
-
-    for (const group of groups) {
-      console.log(`  ${MAG}${B}${group.title}${R}`);
-
-      for (const bucket of group.buckets) {
-        const model = bucket.modelId || "unknown";
-        const remaining =
-          typeof bucket.remainingFraction === "number" ? bucket.remainingFraction : null;
-        const used = remaining !== null ? 1 - remaining : null;
-        const reset = bucket.resetTime ? formatRelativeReset(bucket.resetTime) : "";
-
-        const color = used === null ? GRY : used < 0.5 ? GRN : used < 0.8 ? YEL : RED;
-        const bar =
-          remaining !== null ? buildUsageBar(used!, color, 24) : `${GRY}${"\u00b7".repeat(24)}${R}`;
-        const pct = used !== null ? `${(used * 100).toFixed(1)}%` : "?";
-
-        const nameStr = `  ${GRY}\u2502${R} ${WHT}${model}${R}`;
-        const padLen = Math.max(1, 30 - model.length);
-
-        console.log(
-          `${nameStr}${" ".repeat(padLen)}${bar}  ${color}${pct.padStart(6)}${R}  ${GRY}${I}${reset}${R}`
-        );
-      }
-      console.log("");
-    }
-
-    // Fallback chain: LIVE served models (read from the quota buckets we already
-    // fetched), ranked by preference, with live quota status. The served subset
-    // drifts as Google changes the free tier, so we derive it here rather than
-    // from a hardcoded roster.
-    const fallbackChain = quota.buckets
-      .map((b) => b.modelId)
-      .filter((m): m is string => typeof m === "string" && m.length > 0)
-      .sort((a, b) => rankCodeAssistModel(a) - rankCodeAssistModel(b));
-    console.log(`  ${B}${CYN}Fallback Chain${R} ${D}(on capacity exhaustion)${R}`);
-    for (let i = 0; i < fallbackChain.length; i++) {
-      const model = fallbackChain[i];
-      const rem = remainingByModel.get(model);
-      const pct = rem !== undefined ? `${((1 - rem) * 100).toFixed(0)}%` : "?";
-      const color = rem === undefined ? GRY : rem > 0.5 ? GRN : rem > 0.2 ? YEL : RED;
-      const arrow = i < fallbackChain.length - 1 ? ` ${GRY}\u2192${R}` : "";
-      const marker = i === 0 ? `${CYN}\u25b8${R} ` : "  ";
-      console.log(`  ${marker}${WHT}${model}${R} ${color}${pct}${R}${arrow}`);
-    }
-    console.log("");
-
-    // Usage examples — sourced from Firebase recommended catalog so we don't
-    // hardcode model IDs that drift as new Gemini releases ship. Filter by
-    // provider=google (RecommendedModelEntry lacks `availableInPlans`; that
-    // field is on ModelDoc — see §6.E in architecture.md). Dedupe IDs because
-    // a single model can appear in multiple categories (vision + subscription).
-    let geminiExamples: string[];
-    try {
-      const recs = await getRecommendedModels();
-      const seen = new Set<string>();
-      geminiExamples = recs.models
-        .filter((e) => (e.provider ?? "").toLowerCase() === "google")
-        .filter((e) => {
-          if (seen.has(e.id)) return false;
-          seen.add(e.id);
-          return true;
-        })
-        .slice(0, 2)
-        .map((e) => e.id);
-      if (geminiExamples.length === 0) {
-        geminiExamples = ["gemini-3.1-pro-preview"];
-      }
-    } catch {
-      geminiExamples = ["gemini-3.1-pro-preview"];
-    }
-    console.log(`  ${B}${CYN}Usage${R}`);
-    for (const ex of geminiExamples) {
-      console.log(`    ${WHT}claudish --model ${ex}${R}`);
-    }
-    console.log("");
-
-    // Legend
-    console.log(
-      `  ${GRN}\u2588${R}${GRY} <50%${R}   ${YEL}\u2588${R}${GRY} 50-80%${R}   ${RED}\u2588${R}${GRY} >80%${R}   ${D}\u2591 available${R}`
-    );
-    console.log("");
+    plan = await fetch.call(adapter);
   } catch (err: any) {
-    console.error(`Failed to fetch quota: ${err.message}`);
+    console.error(`\n  ${RED}Failed to fetch usage:${R} ${err?.message ?? err}\n`);
     process.exit(1);
   }
+
+  if (!plan || plan.windows.length === 0) {
+    console.log(`\n  ${D}No usage data returned for ${adapter.label}.${R}\n`);
+    return;
+  }
+
+  renderPlan(adapter, plan);
+}
+
+/**
+ * Resolve what the user typed to an adapter.
+ *
+ * Accepts the canonical provider id ("openai-codex") and every routing shortcut
+ * ("cx", "codex", "ag"), because `getShortcuts()` already maps aliases onto
+ * canonical ids. Reusing it means there is no second alias list to drift.
+ */
+function resolveAdapterFromInput(input: string): QuotaAdapter | undefined {
+  const raw = input.toLowerCase().replace(/@+$/, "");
+
+  const direct = resolveQuotaAdapter(raw);
+  if (direct) return direct;
+
+  // Friendly names first. `getShortcuts()` covers ROUTING prefixes, which is not
+  // the same vocabulary users type at this command: "gpt"/"chatgpt"/"openai" are
+  // not routing shortcuts at all, and "gemini" routes to the direct-API provider
+  // (which has no quota adapter) rather than to the subscription one. All of
+  // these worked before this command was rewritten, so they are kept working.
+  const friendly = FRIENDLY_NAMES[raw];
+  if (friendly) {
+    const viaFriendly = resolveQuotaAdapter(friendly);
+    if (viaFriendly) return viaFriendly;
+  }
+
+  const canonical = getShortcuts()[raw];
+  if (canonical) {
+    const viaShortcut = resolveQuotaAdapter(canonical);
+    if (viaShortcut) return viaShortcut;
+  }
+  return undefined;
+}
+
+/**
+ * User-facing names → canonical provider id.
+ *
+ * Deliberately separate from `getShortcuts()`: that table answers "which
+ * provider does this @-prefix route to", a different question from "which
+ * subscription does the user mean". `gemini` is the clearest divergence — as a
+ * routing prefix it means the pay-per-use direct API, but someone typing
+ * `claudish quota gemini` is asking about their subscription.
+ */
+const FRIENDLY_NAMES: Record<string, string> = {
+  gpt: "openai-codex",
+  chatgpt: "openai-codex",
+  openai: "openai-codex",
+  gemini: "antigravity",
+  google: "antigravity",
+  glm: "glm-coding",
+  zai: "glm-coding",
+  kimi: "kimi-coding",
+  moonshot: "kimi-coding",
+  minimax: "minimax-coding",
+  sakana: "sakana-subscription",
+  fugu: "sakana-subscription",
+  zen: "opencode-zen-go",
+  qwen: "qwen-cloud",
+};
+
+async function promptForAdapter(): Promise<QuotaAdapter | undefined> {
+  const { select } = await import("@inquirer/prompts");
+  const choices = allQuotaAdapters().map((a) => {
+    const kind = a.capability().kind;
+    const status =
+      kind === "none"
+        ? `${GRY}not supported${R}`
+        : a.isAvailable()
+          ? `${GRN}logged in${R}`
+          : `${GRY}not logged in${R}`;
+    return { name: `${a.label} — ${status}`, value: a };
+  });
+  return select({ message: "Select provider:", choices });
 }
 
 // ---------------------------------------------------------------------------
-// Codex handler
+// Rendering
 // ---------------------------------------------------------------------------
 
-async function codexQuotaHandler(): Promise<void> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { homedir } = await import("node:os");
-
-  const credPath = join(homedir(), ".claudish", "codex-oauth.json");
-  if (!existsSync(credPath)) {
-    console.error(`${RED}No Codex credentials found.${R} Run: ${B}claudish login codex${R}`);
-    process.exit(1);
-  }
-
-  const creds = JSON.parse(readFileSync(credPath, "utf-8"));
-
-  // Extract email from JWT access token
-  let email = "";
-  try {
-    const parts = creds.access_token.split(".");
-    if (parts.length >= 2) {
-      let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-      while (payload.length % 4) payload += "=";
-      const claims = JSON.parse(Buffer.from(payload, "base64").toString());
-      email = claims?.["https://api.openai.com/profile"]?.email || "";
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // Resolve the probe model from Firebase so we don't hardcode a Codex model
-  // ID that drifts. quotaCommand runs before the launcher catalog warm (R7 in
-  // architecture.md §9), so use the async Firebase helper directly. On
-  // network failure, fall back to "gpt-5" — preserves today's behavior modulo
-  // the alias.
-  let probeModel = "gpt-5";
-  try {
-    const doc = await getModelByIdFromFirebase("gpt-5");
-    if (doc?.modelId) probeModel = doc.modelId;
-  } catch {
-    // Keep the hardcoded fallback above.
-  }
-
-  const resp = await fetch("https://chatgpt.com/backend-api/codex/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${creds.access_token}`,
-      "chatgpt-account-id": creds.account_id || "",
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      originator: "codex",
-      "OpenAI-Beta": "responses",
-    },
-    body: JSON.stringify({
-      model: probeModel,
-      instructions: "Reply with just: ok",
-      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
-      stream: true,
-      store: false,
-    }),
-  });
-
-  const planType = resp.headers.get("x-codex-plan-type") || "unknown";
-  const primaryUsed = Number.parseInt(resp.headers.get("x-codex-primary-used-percent") || "", 10);
-  const secondaryUsed = Number.parseInt(
-    resp.headers.get("x-codex-secondary-used-percent") || "",
-    10
-  );
-  const primaryResetAt = Number.parseInt(resp.headers.get("x-codex-primary-reset-at") || "0", 10);
-  const secondaryResetAt = Number.parseInt(
-    resp.headers.get("x-codex-secondary-reset-at") || "0",
-    10
-  );
-  const hasCredits = resp.headers.get("x-codex-credits-has-credits") === "True";
-  const creditsBalance = resp.headers.get("x-codex-credits-balance") || "";
-
-  // Consume body to avoid connection leak
-  try {
-    await resp.text();
-  } catch {
-    /* ignore */
-  }
-
-  if (Number.isNaN(primaryUsed)) {
-    console.error(`${RED}Could not fetch usage data.${R} Headers missing from response.`);
-    process.exit(1);
-  }
-
-  // Read models from Codex CLI cache
-  let modelSlugs: string[] = [];
-  try {
-    const modelsPath = join(homedir(), ".codex", "models_cache.json");
-    if (existsSync(modelsPath)) {
-      const cache = JSON.parse(readFileSync(modelsPath, "utf-8"));
-      modelSlugs = (cache.models || []).map((m: any) => m.slug || m.id).filter(Boolean);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  const W = 58;
-  const planLabel = planType.charAt(0).toUpperCase() + planType.slice(1);
-
-  // Header box (Gemini style)
+function renderPlan(adapter: QuotaAdapter, plan: PlanUsage): void {
   console.log("");
-  console.log(`  ${CYN}\u256d${"\u2500".repeat(W)}\u256e${R}`);
+  boxTop(plan.label);
+  boxRow("Provider", adapter.providerId);
+  boxRow("Windows", String(plan.windows.length));
+  boxBottom();
+
+  // Peak, not average: the window nearest its limit is the one that will stop
+  // the user working, and averaging hides it.
+  const peak = plan.windows.reduce((m, w) => Math.max(m, w.used_pct), 0);
+  const peakColor = colorFor(peak);
+  console.log("");
   console.log(
-    `  ${CYN}\u2502${R} ${B}${WHT}Codex Subscription Quota${R}${" ".repeat(W - 25)}${CYN}\u2502${R}`
+    `  ${peakColor}${B}${peak}%${R} ${D}peak usage across ${plan.windows.length} window${plan.windows.length === 1 ? "" : "s"}${R}`
   );
-  console.log(`  ${CYN}\u251c${"\u2500".repeat(W)}\u2524${R}`);
-  const boxRow = (label: string, value: string) => {
-    const paddedLabel = label.padEnd(9);
-    const visLen = paddedLabel.length + value.length;
+  console.log("");
+
+  for (const w of plan.windows) {
+    const color = colorFor(w.used_pct);
+    const bar = buildUsageBar(w.used_pct / 100, color, 24);
+    const reset = w.resets_at ? formatRelativeReset(w.resets_at) : "";
+    const name = w.id.length > 14 ? `${w.id.slice(0, 13)}…` : w.id;
     console.log(
-      `  ${CYN}\u2502${R} ${GRY}${paddedLabel}${R}${WHT}${value}${R}${" ".repeat(Math.max(0, W - 1 - visLen))}${CYN}\u2502${R}`
+      `  ${GRY}│${R} ${WHT}${name.padEnd(14)}${R}${bar}  ${color}${String(w.used_pct).padStart(3)}%${R}  ${GRY}${I}${reset}${R}`
     );
-  };
-  boxRow("Plan", planLabel);
-  if (email) boxRow("Account", email);
-  if (creds.account_id) boxRow("ID", creds.account_id);
-  if (hasCredits && creditsBalance) boxRow("Credits", creditsBalance);
-  console.log(`  ${CYN}\u2570${"\u2500".repeat(W)}\u256f${R}`);
+  }
 
-  // Overall summary
-  const overallUsed = Math.max(primaryUsed, secondaryUsed);
-  const summaryColor = overallUsed < 50 ? GRN : overallUsed < 80 ? YEL : RED;
   console.log("");
-  console.log(`  ${summaryColor}${B}${overallUsed}%${R} ${D}peak usage across rate windows${R}`);
-  console.log("");
-
-  // Usage bars
-  const primaryColor = primaryUsed < 50 ? GRN : primaryUsed < 80 ? YEL : RED;
-  const primaryBar = buildUsageBar(primaryUsed / 100, primaryColor, 24);
-  const primaryReset =
-    primaryResetAt > 0 ? formatRelativeReset(new Date(primaryResetAt * 1000).toISOString()) : "";
-
-  const secondaryColor = secondaryUsed < 50 ? GRN : secondaryUsed < 80 ? YEL : RED;
-  const secondaryBar = buildUsageBar(secondaryUsed / 100, secondaryColor, 24);
-  const secondaryReset =
-    secondaryResetAt > 0
-      ? formatRelativeReset(new Date(secondaryResetAt * 1000).toISOString())
-      : "";
-
   console.log(
-    `  ${GRY}\u2502${R} ${WHT}${"5h window".padEnd(14)}${R}${primaryBar}  ${primaryColor}${String(primaryUsed).padStart(3)}%${R}  ${GRY}${I}${primaryReset}${R}`
-  );
-  console.log(
-    `  ${GRY}\u2502${R} ${WHT}${"Weekly".padEnd(14)}${R}${secondaryBar}  ${secondaryColor}${String(secondaryUsed).padStart(3)}%${R}  ${GRY}${I}${secondaryReset}${R}`
+    `  ${GRN}█${R}${GRY} <50%${R}   ${YEL}█${R}${GRY} 50-80%${R}   ${RED}█${R}${GRY} >80%${R}   ${D}░ available${R}`
   );
   console.log("");
+}
 
-  // Models
-  if (modelSlugs.length > 0) {
-    console.log(`  ${B}${CYN}Available Models${R}`);
-    for (const slug of modelSlugs) {
-      console.log(`    ${WHT}claudish --model cx@${slug}${R}`);
-    }
+/**
+ * Report a provider that has been researched and has nothing to report.
+ *
+ * Prints the date and the recheck condition, because the useful question about
+ * a negative result is not "is it absent" but "how old is this verdict".
+ */
+function printUnsupported(adapter: QuotaAdapter, evidence: ProbeRecord): void {
+  console.log("");
+  console.log(`  ${WHT}${B}${adapter.label}${R} ${D}— usage reporting not supported${R}`);
+  console.log("");
+  console.log(`  ${GRY}This provider exposes no usage endpoint and returns no rate-limit${R}`);
+  console.log(`  ${GRY}headers, so there is nothing for claudish to report.${R}`);
+  console.log("");
+  console.log(`  ${D}Probed ${evidence.researched_at}:${R}`);
+  for (const p of evidence.probed) {
+    console.log(`    ${GRY}· ${p.what}${R}`);
+    console.log(`      ${D}→ ${p.result}${R}`);
+  }
+  if (evidence.recheck_if) {
+    console.log("");
+    console.log(`  ${D}Re-check if: ${evidence.recheck_if}${R}`);
   }
   console.log("");
+}
 
-  // Legend + link
-  console.log(
-    `  ${GRN}\u2588${R}${GRY} <50%${R}   ${YEL}\u2588${R}${GRY} 50-80%${R}   ${RED}\u2588${R}${GRY} >80%${R}   ${D}\u2591 available${R}`
-  );
-  console.log(`  ${D}https://chatgpt.com/codex/settings/usage${R}`);
-  console.log("");
+function printUnknownProvider(input: string): void {
+  const known = allQuotaAdapters().map((a) => a.providerId);
+  console.error(`Unknown provider: ${input}`);
+  console.error(`Available: ${known.join(", ")}`);
 }
 
 // ---------------------------------------------------------------------------
-// Shared types & helpers
+// Box + bar helpers
 // ---------------------------------------------------------------------------
 
-interface QuotaBucket {
-  modelId?: string;
-  remainingFraction?: number;
-  remainingAmount?: string;
-  resetTime?: string;
-  tokenType?: string;
+function boxTop(title: string): void {
+  console.log(`  ${CYN}╭${"─".repeat(W)}╮${R}`);
+  const t = title.length > W - 2 ? title.slice(0, W - 3) : title;
+  console.log(
+    `  ${CYN}│${R} ${B}${WHT}${t}${R}${" ".repeat(Math.max(0, W - 1 - t.length))}${CYN}│${R}`
+  );
+  console.log(`  ${CYN}├${"─".repeat(W)}┤${R}`);
 }
 
-interface VersionGroup {
-  title: string;
-  version: string | undefined;
-  buckets: QuotaBucket[];
+function boxRow(label: string, value: string): void {
+  const paddedLabel = label.padEnd(9);
+  const visLen = paddedLabel.length + value.length;
+  console.log(
+    `  ${CYN}│${R} ${GRY}${paddedLabel}${R}${WHT}${value}${R}${" ".repeat(Math.max(0, W - 1 - visLen))}${CYN}│${R}`
+  );
 }
 
-function groupByVersion(buckets: QuotaBucket[]): VersionGroup[] {
-  const groups = new Map<string, VersionGroup>();
-  const sorted = [...buckets].sort((a, b) => (a.modelId || "").localeCompare(b.modelId || ""));
-
-  for (const bucket of sorted) {
-    const version = extractVersion(bucket.modelId || "");
-    const key = version || "__other__";
-    const existing = groups.get(key);
-    if (existing) {
-      existing.buckets.push(bucket);
-    } else {
-      groups.set(key, {
-        title: version ? `Gemini ${version}` : "Other",
-        version,
-        buckets: [bucket],
-      });
-    }
-  }
-
-  return [...groups.values()].sort((a, b) => {
-    if (!a.version && !b.version) return 0;
-    if (!a.version) return 1;
-    if (!b.version) return -1;
-    return b.version.localeCompare(a.version);
-  });
+function boxBottom(): void {
+  console.log(`  ${CYN}╰${"─".repeat(W)}╯${R}`);
 }
 
-function extractVersion(modelId: string): string | undefined {
-  const match = modelId.match(/^gemini-([0-9]+(?:\.[0-9]+)*)-/i);
-  return match?.[1];
+function colorFor(usedPct: number): string {
+  return usedPct < 50 ? GRN : usedPct < 80 ? YEL : RED;
 }
 
-function buildUsageBar(usedFraction: number, color: string, width = 24): string {
+export function buildUsageBar(usedFraction: number, color: string, width = 24): string {
   const clamped = Math.max(0, Math.min(1, usedFraction));
   const usedCols =
     clamped >= 1 ? width : Math.max(clamped > 0.005 ? 1 : 0, Math.round(clamped * width));
   const freeCols = width - usedCols;
-  const usedPart = usedCols > 0 ? `${color}${"\u2588".repeat(usedCols)}${R}` : "";
-  const freePart = freeCols > 0 ? `${D}${"\u2591".repeat(freeCols)}${R}` : "";
+  const usedPart = usedCols > 0 ? `${color}${"█".repeat(usedCols)}${R}` : "";
+  const freePart = freeCols > 0 ? `${D}${"░".repeat(freeCols)}${R}` : "";
   return usedPart + freePart;
 }
 
-function formatRelativeReset(resetTime: string): string {
+export function formatRelativeReset(resetTime: string): string {
   const resetAt = new Date(resetTime).getTime();
   if (Number.isNaN(resetAt)) return "";
   const diffMs = resetAt - Date.now();

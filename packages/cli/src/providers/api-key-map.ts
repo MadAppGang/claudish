@@ -31,7 +31,16 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   "qwen-cloud": { envVar: "QWEN_CLOUD_PLAN_API_KEY" },
   ollamacloud: { envVar: "OLLAMA_API_KEY" },
   "opencode-zen": { envVar: "OPENCODE_API_KEY" },
-  "opencode-zen-go": { envVar: "OPENCODE_API_KEY" },
+  // The Go plan has its OWN key. This entry used to name OPENCODE_API_KEY — the
+  // paid Zen tier's key — which contradicted the provider definition
+  // (`provider-definitions.ts`, `apiKeyEnvVar: "OPENCODE_GO_API_KEY"`) and its
+  // note that a key minted for one tier is rejected by the other with a 401.
+  // The practical effect was a `zgo@` request reporting "Missing API key" while
+  // OPENCODE_GO_API_KEY was sitting in the environment, and — since routing
+  // filters candidates by credential — `opencode-zen-go` being dropped from
+  // every chain it appears in. Same shape as the sakana-subscription mismatch
+  // above: two tiers, two keys, one table naming the wrong one.
+  "opencode-zen-go": { envVar: "OPENCODE_GO_API_KEY", aliases: ["OPENCODE_API_KEY"] },
   "gemini-codeassist": { envVar: "GEMINI_API_KEY" },
   vertex: { envVar: "VERTEX_API_KEY", aliases: ["VERTEX_PROJECT"] },
   poe: { envVar: "POE_API_KEY" },

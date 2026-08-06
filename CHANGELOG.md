@@ -2,6 +2,37 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.40.0] - 2026-08-06
+
+### Documentation
+
+- update CHANGELOG.md for v7.39.0([`7aff9f9`](https://github.com/MadAppGang/claudish/commit/7aff9f9a6476872624cac10ac740e13e71e4d538))
+
+### New Features
+
+- v7.40.0 — subscriptions before metered APIs, and stop mistaking a spent plan for a broken key([`cd952c2`](https://github.com/MadAppGang/claudish/commit/cd952c2948d79601deb24335a04e7a6fd1628113))
+
+## [7.39.0] - 2026-08-05
+
+### Documentation
+
+- update CHANGELOG.md for v7.38.0([`aad6060`](https://github.com/MadAppGang/claudish/commit/aad60604164a4741123d15517901fe807db8e27d))
+
+### New Features
+
+- v7.39.0 — real subscription usage in the status line, and gemini-* routes to Antigravity([`f7670f8`](https://github.com/MadAppGang/claudish/commit/f7670f85536e8600ebf27c4e32d4286fd42157f5))
+- publish real subscription usage, and stop the 2s probe that measured it *(quota)* ([`c700f68`](https://github.com/MadAppGang/claudish/commit/c700f680a14cb54021e7294b521307429597b506))
+
+## [7.38.0] - 2026-08-05
+
+### Bug Fixes
+
+- v7.38.0 — one 1Password dialog per multi-model run, not one per model([`7714a22`](https://github.com/MadAppGang/claudish/commit/7714a228a716368e14d6f4c4b8763c10a84b6a54))
+
+### Documentation
+
+- update CHANGELOG.md for v7.37.0([`fb7aa51`](https://github.com/MadAppGang/claudish/commit/fb7aa517aa4467662388b68974b60a7b6e217c0f))
+
 ## [7.37.0] - 2026-08-05
 
 ### Bug Fixes

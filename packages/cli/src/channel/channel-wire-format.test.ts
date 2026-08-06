@@ -41,10 +41,12 @@ const FAKE_CLAUDISH_TS = join(__dirname, "test-helpers", "fake-claudish.ts");
 // ─── PATH shim setup ────────────────────────────────────────────────────────
 
 let shimDir: string;
+let sessionsDir: string;
 const ORIGINAL_PATH = process.env.PATH ?? "";
 
 beforeAll(() => {
   shimDir = mkdtempSync(join(tmpdir(), "claudish-shim-wireformat-"));
+  sessionsDir = mkdtempSync(join(tmpdir(), "claudish-sessions-wireformat-"));
   const shimPath = join(shimDir, "claudish");
   writeFileSync(shimPath, `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`, { mode: 0o755 });
   process.env.PATH = `${shimDir}:${ORIGINAL_PATH}`;
@@ -55,6 +57,7 @@ afterAll(() => {
   if (shimDir) {
     try {
       rmSync(shimDir, { recursive: true, force: true });
+      rmSync(sessionsDir, { recursive: true, force: true });
     } catch {}
   }
 });
@@ -81,6 +84,7 @@ async function captureSessionFrames(opts: {
     env: {
       ...process.env,
       CLAUDISH_MCP_TOOLS: "all",
+      CLAUDISH_SESSIONS_DIR: sessionsDir,
     },
   });
 

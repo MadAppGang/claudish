@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,12 +26,18 @@ import { hasCredential } from "../test-helpers/credential-gate.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const SERVER_ENTRY = join(__dirname, "../index.ts");
+const SESSIONS_DIR = mkdtempSync(join(tmpdir(), "claudish-e2e-sessions-"));
+const SKIP_LIVE_E2E = process.env.CLAUDISH_SKIP_LIVE_E2E === "1";
+
+afterAll(() => {
+  rmSync(SESSIONS_DIR, { recursive: true, force: true });
+});
 
 // Asked via claudish's OWN credential authority (env → aliases →
 // ~/.claudish/config.json apiKeys → 1Password), NOT raw process.env: a key
 // configured any supported way must run these tests, exactly as it would serve
 // a real run. Module scope — describe() callbacks are sync, so no await there.
-const hasOpenRouterKey = await hasCredential("openrouter");
+const hasOpenRouterKey = SKIP_LIVE_E2E ? false : await hasCredential("openrouter");
 
 // ─── Group 1: MCP Protocol Tests (SDK Client) ───────────────────────────────
 // Validates the MCP server itself works correctly at the protocol level.
@@ -44,7 +50,11 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     transport = new StdioClientTransport({
       command: "bun",
       args: ["run", SERVER_ENTRY, "--mcp"],
-      env: { ...process.env, CLAUDISH_MCP_TOOLS: "all" },
+      env: {
+        ...process.env,
+        CLAUDISH_MCP_TOOLS: "all",
+        CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+      },
       stderr: "pipe",
     });
     client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
@@ -226,7 +236,11 @@ describe("Group 1b: MCP Protocol — channel-only tools", () => {
     transport = new StdioClientTransport({
       command: "bun",
       args: ["run", SERVER_ENTRY, "--mcp"],
-      env: { ...process.env, CLAUDISH_MCP_TOOLS: "channel" },
+      env: {
+        ...process.env,
+        CLAUDISH_MCP_TOOLS: "channel",
+        CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+      },
       stderr: "pipe",
     });
     client = new Client({ name: "test-client-channel", version: "1.0.0" }, { capabilities: {} });
@@ -260,7 +274,11 @@ describe("Group 1b: MCP Protocol — low-level-only tools", () => {
     transport = new StdioClientTransport({
       command: "bun",
       args: ["run", SERVER_ENTRY, "--mcp"],
-      env: { ...process.env, CLAUDISH_MCP_TOOLS: "low-level" },
+      env: {
+        ...process.env,
+        CLAUDISH_MCP_TOOLS: "low-level",
+        CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+      },
       stderr: "pipe",
     });
     client = new Client({ name: "test-client-low-level", version: "1.0.0" }, { capabilities: {} });
@@ -315,6 +333,7 @@ async function runClaudeWithMcp(
         args: ["run", SERVER_ENTRY, "--mcp"],
         env: {
           CLAUDISH_MCP_TOOLS: "all",
+          CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
           OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ?? "",
         },
       },
@@ -397,38 +416,40 @@ async function runClaudeWithMcp(
 // The probe runs one tiny headless prompt and treats a login/credential error
 // as "not usable".
 let claudeUsable = false;
-try {
-  const proc = spawn("claude", ["--version"], { stdio: "pipe" });
-  const versionOk = (await new Promise<number>((r) => proc.on("exit", (c) => r(c ?? 1)))) === 0;
-  if (versionOk) {
-    const probe = spawn("claude", ["-p", "--dangerously-skip-permissions", "--bare", "hi"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    probe.stdout?.on("data", (c: Buffer) => {
-      out += c.toString();
-    });
-    probe.stderr?.on("data", (c: Buffer) => {
-      out += c.toString();
-    });
-    const probeCode = await new Promise<number>((r) => {
-      const t = setTimeout(() => {
-        probe.kill("SIGTERM");
-        r(-1);
-      }, 30_000);
-      probe.on("exit", (c) => {
-        clearTimeout(t);
-        r(c ?? 1);
+if (!SKIP_LIVE_E2E) {
+  try {
+    const proc = spawn("claude", ["--version"], { stdio: "pipe" });
+    const versionOk = (await new Promise<number>((r) => proc.on("exit", (c) => r(c ?? 1)))) === 0;
+    if (versionOk) {
+      const probe = spawn("claude", ["-p", "--dangerously-skip-permissions", "--bare", "hi"], {
+        stdio: ["ignore", "pipe", "pipe"],
       });
-      probe.on("error", () => {
-        clearTimeout(t);
-        r(1);
+      let out = "";
+      probe.stdout?.on("data", (c: Buffer) => {
+        out += c.toString();
       });
-    });
-    claudeUsable =
-      probeCode === 0 && !/not logged in|please run \/login|invalid api key/i.test(out);
-  }
-} catch {}
+      probe.stderr?.on("data", (c: Buffer) => {
+        out += c.toString();
+      });
+      const probeCode = await new Promise<number>((r) => {
+        const t = setTimeout(() => {
+          probe.kill("SIGTERM");
+          r(-1);
+        }, 30_000);
+        probe.on("exit", (c) => {
+          clearTimeout(t);
+          r(c ?? 1);
+        });
+        probe.on("error", () => {
+          clearTimeout(t);
+          r(1);
+        });
+      });
+      claudeUsable =
+        probeCode === 0 && !/not logged in|please run \/login|invalid api key/i.test(out);
+    }
+  } catch {}
+}
 
 if (!claudeUsable) {
   console.warn(

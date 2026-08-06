@@ -13,7 +13,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -1055,19 +1055,32 @@ function defineTools(
           ? (args.claude_flags as string).split(/\s+/).filter(Boolean)
           : undefined;
 
-        // Resolve the model's credential in THIS process before spawning the
-        // child. Several create_session calls in flight at once would otherwise
-        // each open their own 1Password SDK client, and the desktop app denies
-        // all but one ("Denied authorization for SDK client"). Resolving here
-        // write-throughs the key into process.env, which the child inherits.
-        await prehydrateCredentialsForSpawn([args.model as string]);
+        // Resolve the model's credential AND its route in THIS process before
+        // spawning the child. Several create_session calls in flight at once
+        // would otherwise each open their own 1Password SDK client, and the
+        // desktop app denies all but one ("Denied authorization for SDK
+        // client"). Resolving here write-throughs the key into process.env,
+        // which the child inherits; the returned plan pins the bare name to an
+        // explicit "provider@model" spec so the child never re-walks the chain
+        // and asks 1Password about candidates the parent short-circuited past.
+        //
+        // Pinning is SKIPPED for a work_dir outside this process's cwd: route()
+        // reads project-local config relative to process.cwd(), so the parent
+        // would decide with the wrong project's rules. process.chdir() is not
+        // an option — it is process-global and races concurrent calls.
+        const requestedModel = args.model as string;
+        const workDir = args.work_dir as string | undefined;
+        const plan = await prehydrateCredentialsForSpawn([requestedModel], {
+          pin: workDir === undefined || resolve(workDir) === process.cwd(),
+        });
 
         const sessionId = sessionManager.createSession({
-          model: args.model as string,
+          model: requestedModel,
+          spawnModel: plan.pinned.get(requestedModel),
           prompt: args.prompt as string | undefined,
           timeoutSeconds: args.timeout_seconds as number | undefined,
           claudishFlags,
-          cwd: args.work_dir as string | undefined,
+          cwd: workDir,
         });
 
         return {

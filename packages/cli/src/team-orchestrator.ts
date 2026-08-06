@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
+import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { redactSecrets } from "./redact.js";
 import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
 
@@ -113,6 +113,8 @@ export interface TeamRunOptions {
    * frequency costs nothing there.
    */
   heartbeatSeconds?: number;
+  /** Spawn-plan factory seam for hermetic call-site tests. */
+  spawnPlanner?: (models: (string | undefined)[]) => Promise<SpawnPlan>;
 }
 
 export interface TeamJudgeOptions {
@@ -407,14 +409,19 @@ export async function runModels(
   const inputPath = join(sessionPath, "input.md");
   const inputContent = readFileSync(inputPath, "utf-8");
 
-  // Resolve every model's credential HERE, before the spawn loop below fires N
-  // children at once. Each child would otherwise open its own 1Password SDK
-  // client, and the desktop app authorizes exactly one of them and denies the
-  // rest ("Denied authorization for SDK client") — silently losing whichever
-  // models depend on 1Password rather than a shell env var. Resolving in the
-  // parent write-throughs the keys into process.env, which the children
-  // inherit. See auth/credentials/prehydrate.ts for the measured repro.
-  await prehydrateCredentialsForSpawn(Object.values(manifest.models).map((m) => m.model));
+  // Resolve every model's credential AND its route HERE, before the spawn loop
+  // below fires N children at once. Each child would otherwise open its own
+  // 1Password SDK client, and the desktop app authorizes exactly one of them and
+  // denies the rest ("Denied authorization for SDK client") — silently losing
+  // whichever models depend on 1Password rather than a shell env var. Resolving
+  // in the parent write-throughs the keys into process.env, which the children
+  // inherit, and the returned plan pins each bare name to an explicit
+  // "provider@model" spec so the child never re-walks the chain (which is how a
+  // hydrated child still reached 1Password). See auth/credentials/prehydrate.ts
+  // for the measured repro.
+  const spawnPlan = await (opts.spawnPlanner ?? prehydrateCredentialsForSpawn)(
+    Object.values(manifest.models).map((m) => m.model)
+  );
 
   // In-memory status cache to eliminate read-modify-write races
   const statusCache: TeamStatus = JSON.parse(readFileSync(statusPath, "utf-8"));
@@ -460,9 +467,16 @@ export async function runModels(
     const outputPath = join(sessionPath, `response-${anonId}.md`);
     const errorLogPath = join(sessionPath, "errors", `${anonId}.log`);
 
+    // Spawn with the parent-resolved explicit spec when there is one, so the
+    // child skips routing entirely and finds its key in the inherited env.
+    // ABSENT from the map is not an error — it means "spawn it bare", which is
+    // exactly the pre-pinning behaviour. The manifest keeps `entry.model` (the
+    // user's string) as the run's identity; only argv changes.
+    const spawnModel = spawnPlan.pinned.get(entry.model) ?? entry.model;
+
     // CRITICAL FIX: do NOT use -p flag (-p means --profile in claudish)
     // --stdin triggers non-interactive single-shot mode
-    const args = ["--model", entry.model, "-y", "--stdin", "--quiet", ...(opts.claudeFlags ?? [])];
+    const args = ["--model", spawnModel, "-y", "--stdin", "--quiet", ...(opts.claudeFlags ?? [])];
 
     updateModelStatus(anonId, {
       state: "RUNNING",

@@ -28,6 +28,9 @@ import type { ModelHandler } from "./types.js";
 type BaseModelAdapter = BaseAPIFormat;
 import { DialectManager } from "../adapters/dialect-manager.js";
 import { lookupModelForProvider } from "../adapters/model-catalog.js";
+import type { QuotaAdapter } from "../auth/quota/adapter.js";
+import { resolveQuotaAdapter } from "../auth/quota/registry.js";
+import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
 import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
 import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
@@ -52,6 +55,7 @@ import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/c
 import { requestCatalogContextWindow } from "./shared/context-window-fallback.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { filterIdentity } from "./shared/openai-compat.js";
+import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
@@ -125,6 +129,12 @@ export class ComposedHandler implements ModelHandler {
   private isInteractive: boolean;
   /** Fallback metadata set by FallbackHandler before calling handle() */
   private pendingFallbackMeta?: { chain: string[]; attempts: number };
+  /**
+   * When this handler last polled a provider's usage endpoint. A handler is
+   * cached per model and can serve overlapping requests, so this throttle is
+   * per-handler rather than global — two providers refresh independently.
+   */
+  private lastPlanPollAt = 0;
 
   constructor(
     provider: ProviderTransport,
@@ -429,13 +439,15 @@ export class ComposedHandler implements ModelHandler {
         if (this.provider.displayName) {
           this.tokenTracker.setProviderDisplayName(this.provider.displayName);
         }
-        // Fetch quota so status line shows usage remaining (await but with timeout)
-        if (typeof (this.provider as any).getQuotaRemaining === "function") {
-          await Promise.race([
-            this.fetchQuotaForStatusLine(),
-            new Promise((r) => setTimeout(r, 2000)), // 2s timeout
-          ]).catch(() => {});
-        }
+        // Quota is DELIBERATELY not fetched here.
+        //
+        // This used to await getQuotaRemaining with a 2s cap on every single
+        // request, purely so a status line could show usage — i.e. it could
+        // add up to two seconds of latency to a turn before the upstream call
+        // had even started. Quota is now published by the adapters in
+        // auth/quota: Codex scrapes it from response headers that arrive
+        // anyway, and Antigravity polls a free endpoint off the request path.
+        // Neither can delay a turn, because neither does any work during one.
       } catch (err: any) {
         log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
         logStderr(
@@ -597,6 +609,15 @@ export class ComposedHandler implements ModelHandler {
     }
 
     log(`[${this.provider.displayName}] Response status: ${response.status}`);
+
+    // Harvest plan usage BEFORE the error branches, because every one of them
+    // returns early. A 429 is the single most valuable moment to read Codex's
+    // usage headers — it is the turn where the user just hit their limit, and
+    // capturing only on success would report 90% and then go quiet at 100%.
+    // Idempotent: this runs again after the response settles, and the later,
+    // fresher reading simply overwrites this one.
+    this.capturePlanUsage(response);
+
     if (!response.ok) {
       // 401: retry with forced auth refresh (OAuth token expiry)
       if (response.status === 401 && this.provider.forceRefreshAuth) {
@@ -927,6 +948,11 @@ export class ComposedHandler implements ModelHandler {
     // and a turn that silently cost 48s of retries should not report 2s.
     latencyMs = Math.round(performance.now() - startTime);
     const httpStatus = response.status;
+
+    // Harvest plan usage from the response we just received. Placed here, after
+    // retries and the 7b stream sniff have settled on a final response, so a
+    // retried turn reports the headers of the attempt that actually succeeded.
+    this.capturePlanUsage(response);
 
     // 9. Record stats AFTER stream completes (tokens are populated by onTokenUpdate during streaming).
     // Pass an onComplete callback into handleStream; it fires at the end of the stream after
@@ -1358,21 +1384,59 @@ export class ComposedHandler implements ModelHandler {
     return this.tokenTracker;
   }
 
-  /** Fetch quota and update token tracker (non-blocking, best-effort) */
-  private async fetchQuotaForStatusLine(): Promise<void> {
+  /**
+   * Read plan usage out of a response the session already received.
+   *
+   * Synchronous and I/O-free by construction: the headers are in hand, so
+   * there is nothing to await and nothing to time out. That is what makes this
+   * safe to call on the response path, unlike the per-request quota fetch it
+   * replaced. Any throw is swallowed — a usage reading is never worth
+   * disturbing a turn over.
+   */
+  private capturePlanUsage(response: Response): void {
     try {
-      const fn = (this.provider as any).getQuotaRemaining;
-      if (typeof fn !== "function") return;
-      // bareModelName is already the provider-stripped form (invariant enforced
-      // in constructor), so pass it directly instead of re-parsing targetModel.
-      const remaining = await fn.call(this.provider, this.bareModelName);
-      if (typeof remaining === "number") {
-        this.tokenTracker.setQuotaRemaining(remaining);
-        this.tokenTracker.rewrite();
+      const adapter = resolveQuotaAdapter(this.provider.name);
+      if (!adapter) return;
+
+      // Preferred: the numbers rode in on a response we already have.
+      const plan = adapter.scrape?.(response);
+      if (plan) {
+        this.tokenTracker.setPlanUsage(plan);
+        return;
       }
+
+      // Otherwise the provider may have a free usage endpoint to poll.
+      this.maybePollPlanUsage(adapter);
     } catch {
-      // Non-fatal
+      // Non-fatal, always.
     }
+  }
+
+  /**
+   * Refresh plan usage from a provider's free usage endpoint.
+   *
+   * Fire-and-forget and rate-limited. It is deliberately NOT awaited: the
+   * whole point of retiring the old step-5b probe was that a turn must never
+   * wait on a quota reading. The result lands in the tracker whenever it
+   * arrives and is published by the next token write.
+   */
+  private maybePollPlanUsage(adapter: QuotaAdapter): void {
+    if (!adapter.poll) return;
+
+    const now = Date.now();
+    if (now - this.lastPlanPollAt < PLAN_POLL_INTERVAL_MS) return;
+    // Stamped BEFORE the call, not after: concurrent turns on this handler
+    // would otherwise all see a stale timestamp and stampede the endpoint.
+    this.lastPlanPollAt = now;
+
+    void adapter
+      .poll({ modelId: this.bareModelName })
+      .then((plan) => {
+        if (plan) this.tokenTracker.setPlanUsage(plan);
+      })
+      .catch(() => {
+        // A failed usage reading is not a session problem.
+      });
   }
 
   /**
@@ -1402,6 +1466,14 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
   if (status === 429 && isTerminal429(errorText)) {
     return "Out of quota — check your plan & billing details. This won't recover on retry.";
   }
+  // A spent SUBSCRIPTION allowance also arrives as 429, and the generic
+  // rate-limit advice below is actively wrong for it: "reduce concurrency" does
+  // nothing about an allowance that refills on a clock. Zen Go's real body is
+  // `429 "5-hour usage limit reached. Resets in 3hr 17min"` — the useful reply
+  // names the plan and the wait, not the request rate.
+  if (isQuotaExhaustionError(status, errorText)) {
+    return "Subscription allowance spent — this refills on the provider's own schedule (see the message below). Reducing concurrency won't help; switch model/provider or wait.";
+  }
   if (status === 429 || lower.includes("rate limit")) {
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
@@ -1413,6 +1485,12 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
       lower.includes("model not found")
     ) {
       return "Model not supported by this provider. Verify model name.";
+    }
+    // A plan that has run out is not an auth failure, but some providers report
+    // it as one — see shared/quota-exhaustion.ts for why this is shared with the
+    // fallback gate rather than duplicated here.
+    if (isQuotaExhaustionError(status, errorText)) {
+      return "Out of quota — check your plan & billing details. This won't recover on retry.";
     }
     return "Check API key / OAuth credentials.";
   }

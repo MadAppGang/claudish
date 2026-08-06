@@ -12,6 +12,7 @@
 import type { Context } from "hono";
 import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
+import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
 import type { ModelHandler } from "./types.js";
 
 export interface FallbackCandidate {
@@ -90,7 +91,23 @@ export class FallbackHandler implements ModelHandler {
         // Retryable (auth/not-found) — log and try next provider
         errors.push({ provider: name, status: response.status, message: errorBody });
         if (!isLast) {
-          logStderr(`[Fallback] ${name} failed (HTTP ${response.status}), trying next provider...`);
+          // Advancing past a SPENT SUBSCRIPTION is not the same event as
+          // advancing past a bad credential, even though both are retryable: the
+          // next candidate bills per token, so the user's cost model just
+          // changed. They did not choose that — claudish assembled this chain —
+          // so it is said out loud rather than buried in a generic line.
+          // Wording, not status — same reason as the retryability check: by here
+          // a terminal 429 has been remapped to 400, so a status-gated test
+          // would advance SILENTLY and lose exactly the notice this exists for.
+          if (hasQuotaExhaustionWording(errorBody)) {
+            logStderr(
+              `[Fallback] ${name} subscription allowance is spent — falling through to the next provider, which is billed PER TOKEN. Use a provider prefix (e.g. \`zgo@model\`) to fail instead of switching.`
+            );
+          } else {
+            logStderr(
+              `[Fallback] ${name} failed (HTTP ${response.status}), trying next provider...`
+            );
+          }
         }
       } catch (err: any) {
         errors.push({ provider: name, status: 0, message: err.message });
@@ -152,6 +169,40 @@ export class FallbackHandler implements ModelHandler {
  * billing context) do NOT — they'd likely fail on any provider.
  */
 function isRetryableError(status: number, errorBody: string): boolean {
+  // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
+  // provider cannot serve, but the next one can.
+  //
+  // Checked FIRST, and on wording rather than status, because the transport has
+  // already decided this is terminal for itself and surfaced it as 400 (see the
+  // "terminal errors become 400" doctrine). 400 is otherwise non-retryable, so a
+  // status-based check here would stop the chain dead — which is exactly the
+  // regression that showed up as a bare `minimax-m2.5` hard-failing while Zen
+  // Go's 5-hour window was spent and metered MiniMax stood ready.
+  //
+  // The billing change this causes is announced rather than prevented — see the
+  // warning at the advance site below.
+  //
+  // A first attempt made them terminal, to stop a user being moved from their
+  // subscription onto per-token billing without being told. That was the wrong
+  // lever, for two measured reasons:
+  //
+  //   1. It was unnecessary for the case it was meant to protect. An explicit
+  //      `kc@k3` / `zgo@model` spec resolves to exactly ONE candidate, so there
+  //      is nothing to advance to and the "Out of quota" error surfaces whatever
+  //      this function returns. Terminal only ever affected chains claudish
+  //      assembled on the user's behalf.
+  //   2. In those chains it cost availability outright. With `opencode-zen-go`
+  //      now sitting ahead of the metered APIs, a bare `minimax-m2.5` hard-failed
+  //      whenever the Go plan's rolling 5-hour window was spent — a request that
+  //      had worked a moment earlier via the metered provider. Verified live:
+  //      Zen Go answers `429 GoUsageLimitError "5-hour usage limit reached.
+  //      Resets in 3hr 17min"`, and treating that as terminal stopped the chain
+  //      dead instead of falling through to a provider that was ready to serve.
+  //
+  // So the chain advances, and the billing change is made LOUD instead of being
+  // prevented at the cost of the request.
+  if (hasQuotaExhaustionWording(errorBody)) return true;
+
   // Auth errors — different provider might have valid credentials
   if (status === 401 || status === 403) return true;
 

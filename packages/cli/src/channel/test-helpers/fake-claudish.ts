@@ -6,6 +6,7 @@
  *   --sleep <seconds>   Sleep for N seconds then exit 0
  *   --fail              Exit immediately with code 1
  *   --lines <n>         Print N numbered lines then exit 0
+ *   --print-argv        Print the received argv as JSON then exit 0
  *   --echo-stdin        Read stdin and echo it to stdout then exit 0
  *   (default)           Echo any stdin received to stdout then exit 0
  *
@@ -26,6 +27,12 @@ function hasFlag(name: string): boolean {
 }
 
 async function main() {
+  // --print-argv: expose the exact spawn contract to parent-process tests
+  if (hasFlag("--print-argv")) {
+    process.stdout.write(`${JSON.stringify(args)}\n`);
+    process.exit(0);
+  }
+
   // --fail: exit immediately with error
   if (hasFlag("--fail")) {
     process.exit(1);

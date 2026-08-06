@@ -411,6 +411,7 @@ const ENV_KEYS_TO_CLEAR = [
   "ZAI_API_KEY",
   "OLLAMA_API_KEY",
   "OPENCODE_API_KEY",
+  "OPENCODE_GO_API_KEY",
 ];
 
 const savedEnv: Record<string, string | undefined> = {};

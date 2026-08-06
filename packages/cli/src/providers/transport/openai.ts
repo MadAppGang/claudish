@@ -6,6 +6,7 @@
  * Includes 30-second timeout with detailed error reporting.
  */
 
+import { isQuotaExhaustionError } from "../../handlers/shared/quota-exhaustion.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -133,6 +134,17 @@ export class OpenAIProviderTransport implements ProviderTransport {
  */
 export function isTerminal429(body: string): boolean {
   if (!body) return false;
+
+  // A spent SUBSCRIPTION allowance is terminal for this request even though it is
+  // not a billing failure. Zen Go answers `429 "5-hour usage limit reached.
+  // Resets in 3hr 17min"` — a window that refills on a clock, so no amount of
+  // backoff inside one request can recover it. Without this, the transport's
+  // 429 loop retried it until the caller's timeout: a `create_session` against a
+  // bare `minimax-m2.5` burned its full 60s budget retrying an exhausted plan
+  // instead of failing fast so the fallback chain could reach the metered
+  // provider that was ready to serve.
+  if (isQuotaExhaustionError(429, body)) return true;
+
   const lower = body.toLowerCase();
   return (
     lower.includes("insufficient balance") ||

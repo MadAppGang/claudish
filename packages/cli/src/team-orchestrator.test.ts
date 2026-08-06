@@ -7,14 +7,15 @@
  *   - architecture.md: public API signatures, manifest.json schema,
  *     status.json schema, security (path validation), revision #5 (zero-padded IDs)
  *
- * runModels and judgeResponses are excluded — they spawn child processes and
- * belong in integration tests.
+ * Most runModels and judgeResponses behavior lives in integration tests; this
+ * file keeps one hermetic fake-child run to pin the manifest identity contract.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ModelStatus, TeamManifest, TeamStatus, VoteResult } from "./team-orchestrator.js";
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
@@ -347,6 +348,57 @@ describe("team-orchestrator", () => {
 
       // tempDir exists but has no status.json
       expect(() => getStatus(tempDir)).toThrow();
+    });
+  });
+
+  describe("runModels — pinned spawn identity", () => {
+    it("keeps manifest.models[].model unchanged after a pinned run", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const originalPath = process.env.PATH;
+      const shimDir = mkdtempSync(join(tmpdir(), "team-pinned-shim-"));
+      const fakeClaudish = join(
+        dirname(fileURLToPath(import.meta.url)),
+        "channel",
+        "test-helpers",
+        "fake-claudish.ts"
+      );
+      const spawnPlanner = mock(async () => ({
+        pinned: new Map([["vendor/model", "or@vendor/model"]]),
+      }));
+      writeFileSync(join(shimDir, "claudish"), `#!/bin/sh\nexec bun run "${fakeClaudish}" "$@"\n`, {
+        mode: 0o755,
+      });
+
+      try {
+        process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
+
+        setupSession(tempDir, ["vendor/model"], "Analyze this input");
+        const status = await runModels(tempDir, {
+          timeout: 5,
+          claudeFlags: ["--print-argv"],
+          spawnPlanner,
+        });
+        expect(Object.values(status.models)[0].state).toBe("COMPLETED");
+        expect(spawnPlanner).toHaveBeenCalledWith(["vendor/model"]);
+
+        const manifest = readJson<TeamManifest>(join(tempDir, "manifest.json"));
+        const [anonId, entry] = Object.entries(manifest.models)[0];
+        expect(entry.model).toBe("vendor/model");
+
+        const argv = JSON.parse(
+          readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
+        ) as string[];
+        const modelFlag = argv.indexOf("--model");
+        expect(argv[modelFlag + 1]).toBe("or@vendor/model");
+
+        // The manifest identity is re-used by the judge round; the pinned argv
+        // must never replace it with the provider wire spec.
+        const reread = readJson<TeamManifest>(join(tempDir, "manifest.json"));
+        expect(reread.models[anonId].model).toBe("vendor/model");
+      } finally {
+        process.env.PATH = originalPath;
+        rmSync(shimDir, { recursive: true, force: true });
+      }
     });
   });
 

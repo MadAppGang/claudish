@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { type PlanUsage, isPlanStale } from "../../auth/quota/types.js";
 import { log } from "../../logger.js";
 import { type ModelPricing, getModelPricing } from "./remote-provider-types.js";
 
@@ -53,8 +54,14 @@ export class TokenTracker {
   private lastInputTokens = 0;
   /** Override model name in status line (e.g., after capacity fallback) */
   private modelNameOverride: string | undefined;
-  /** Quota remaining fraction (0-1) for the current model */
-  private quotaRemaining: number | undefined;
+  /**
+   * Plan usage for the subscription this session is SPENDING, published under
+   * the `plan` key for status lines. Held in memory and serialized by
+   * writeFile — never fetched there, so publishing costs no extra I/O.
+   */
+  private planUsage: PlanUsage | undefined;
+  /** Last plan written, so setPlanUsage can write on change only. */
+  private lastPlanSerialized = "";
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
@@ -71,9 +78,30 @@ export class TokenTracker {
     this.config.providerDisplayName = name;
   }
 
-  /** Set quota remaining fraction (0-1) for the current model */
-  setQuotaRemaining(fraction: number): void {
-    this.quotaRemaining = fraction;
+  /**
+   * Record plan usage for the provider being spent.
+   *
+   * Writes the file when the value actually CHANGES, and only then.
+   *
+   * An earlier version stored without writing, on the reasoning that writeFile
+   * already runs on every token update so the next one would pick it up free.
+   * That left two holes. A background poll that resolves after a turn's final
+   * token write published nothing until the *next* turn — and for a provider
+   * polled every 5 minutes on an idle session, that could be never. Worse, an
+   * expired reading was only dropped at write time, so a stale `plan` sat in
+   * the file indefinitely and the frozen consumer rendered it as current, which
+   * is exactly the failure the omit-when-stale rule exists to prevent.
+   *
+   * Change-triggered is still effectively free: a plan changes at most once per
+   * scrape or poll interval, not once per token, so this adds a write every few
+   * minutes rather than the per-delta amplification the original note feared.
+   */
+  setPlanUsage(plan: PlanUsage | undefined): void {
+    const next = plan ? JSON.stringify(plan) : "";
+    if (next === this.lastPlanSerialized) return;
+    this.planUsage = plan;
+    this.lastPlanSerialized = next;
+    this.rewrite();
   }
 
   /** Force rewrite the token file with current state */
@@ -301,9 +329,22 @@ export class TokenTracker {
       if (displayModel) {
         data.model_name = displayModel;
       }
-      // Include quota remaining if available (e.g., from Gemini Code Assist)
-      if (this.quotaRemaining !== undefined) {
-        data.quota_remaining = this.quotaRemaining;
+      // Plan usage for the subscription actually being spent. Status lines
+      // render this INSTEAD of Anthropic's rate limits, which under claudish
+      // describe an account the session is not using.
+      //
+      // Stale readings are OMITTED rather than flagged. The consumer
+      // (statusline.sh) reads only `.plan.label` and `.plan.windows[]` and
+      // ignores keys it does not know — so a `stale: true` field would be
+      // dropped while the numbers beside it still rendered as current. Absence
+      // is the only signal the frozen contract can carry, and the consumer
+      // already degrades silently on it.
+      if (this.planUsage && !isPlanStale(this.planUsage)) {
+        data.plan = {
+          label: this.planUsage.label,
+          windows: this.planUsage.windows,
+          source: this.planUsage.source,
+        };
       }
 
       // CLAUDISH_TOKEN_FILE lets a parent process dictate where these stats land.

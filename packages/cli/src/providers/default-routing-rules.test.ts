@@ -100,9 +100,9 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["openai-codex", "openai", "openrouter"]);
   });
 
-  test("'gemini-2.0-flash' matches gemini-* → [gemini-codeassist, google, openrouter]", () => {
+  test("'gemini-2.0-flash' matches gemini-* → [antigravity, google, openrouter]", () => {
     const matched = matchRoutingRule("gemini-2.0-flash", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["gemini-codeassist", "google", "openrouter"]);
+    expect(matched).toEqual(["antigravity", "google", "openrouter"]);
   });
 
   test("'grok-4' matches grok-* → [x-ai, openrouter]", () => {
@@ -110,9 +110,9 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["x-ai", "openrouter"]);
   });
 
-  test("'kimi-k2.5' matches kimi-* → [kimi-coding, kimi, openrouter] (no pinned model)", () => {
+  test("'kimi-k2.5' matches kimi-* → [kimi-coding, opencode-zen-go, kimi, openrouter] (no pinned model)", () => {
     const matched = matchRoutingRule("kimi-k2.5", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["kimi-coding", "kimi", "openrouter"]);
+    expect(matched).toEqual(["kimi-coding", "opencode-zen-go", "kimi", "openrouter"]);
   });
 
   test("kimi-coding candidate drops when model is not in its subscription plan", () => {
@@ -129,11 +129,14 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
       const matched = matchRoutingRule("kimi-k2.5", DEFAULT_ROUTING_RULES);
       expect(matched).not.toBeNull();
       const routes = buildRoutingChain(matched!, "kimi-k2.5", path);
-      expect(routes).toHaveLength(2);
+      expect(routes).toHaveLength(3);
       // kimi-coding is dropped because the plan doesn't serve this model
-      expect(routes[0].provider).toBe("kimi");
-      expect(routes[0].modelSpec).toBe("kimi@kimi-k2.5");
-      expect(routes[1].provider).toBe("openrouter");
+      expect(routes.map((route) => route.provider)).not.toContain("kimi-coding");
+      expect(routes[0].provider).toBe("opencode-zen-go");
+      expect(routes[0].modelSpec).toBe("zengo@kimi-k2.5");
+      expect(routes[1].provider).toBe("kimi");
+      expect(routes[1].modelSpec).toBe("kimi@kimi-k2.5");
+      expect(routes[2].provider).toBe("openrouter");
     } finally {
       cleanup();
     }
@@ -152,12 +155,14 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
       const matched = matchRoutingRule("kimi-k3", DEFAULT_ROUTING_RULES);
       expect(matched).not.toBeNull();
       const routes = buildRoutingChain(matched!, "kimi-k3", path);
-      expect(routes).toHaveLength(3);
+      expect(routes).toHaveLength(4);
       // catalog translates the subscription model to its wire id
       expect(routes[0].provider).toBe("kimi-coding");
       expect(routes[0].modelSpec).toBe("kc@k3");
-      expect(routes[1].provider).toBe("kimi");
-      expect(routes[1].modelSpec).toBe("kimi@kimi-k3");
+      expect(routes[1].provider).toBe("opencode-zen-go");
+      expect(routes[1].modelSpec).toBe("zengo@kimi-k3");
+      expect(routes[2].provider).toBe("kimi");
+      expect(routes[2].modelSpec).toBe("kimi@kimi-k3");
     } finally {
       cleanup();
     }
@@ -175,29 +180,31 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     try {
       // bare `k3` doesn't match `kimi-*`, so the dedicated `k3*` rule handles it
       const matched = matchRoutingRule("k3", DEFAULT_ROUTING_RULES);
-      expect(matched).toEqual(["kimi-coding", "kimi", "openrouter"]);
+      expect(matched).toEqual(["kimi-coding", "opencode-zen-go", "kimi", "openrouter"]);
       const routes = buildRoutingChain(matched!, "k3", path);
-      expect(routes).toHaveLength(3);
+      expect(routes).toHaveLength(4);
       expect(routes[0].provider).toBe("kimi-coding");
       expect(routes[0].modelSpec).toBe("kc@k3");
-      expect(routes[1].provider).toBe("kimi");
-      expect(routes[1].modelSpec).toBe("kimi@k3");
+      expect(routes[1].provider).toBe("opencode-zen-go");
+      expect(routes[1].modelSpec).toBe("zengo@k3");
+      expect(routes[2].provider).toBe("kimi");
+      expect(routes[2].modelSpec).toBe("kimi@k3");
     } finally {
       cleanup();
     }
   });
 
-  test("'minimax-m2.5' matches minimax-* → [minimax-coding, minimax, openrouter]", () => {
+  test("'minimax-m2.5' matches minimax-* → [minimax-coding, opencode-zen-go, minimax, openrouter]", () => {
     const matched = matchRoutingRule("minimax-m2.5", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["minimax-coding", "minimax", "openrouter"]);
+    expect(matched).toEqual(["minimax-coding", "opencode-zen-go", "minimax", "openrouter"]);
   });
 
   // Case-insensitive matching: docs use mixed casing (`MiniMax-M2.5`,
   // `GPT-4o`); the rule keys are lowercase but matchRoutingRule lowers both
   // sides before comparing.
-  test("'MiniMax-M2.5' matches minimax-* (case-insensitive) → [minimax-coding, minimax, openrouter]", () => {
+  test("'MiniMax-M2.5' matches minimax-* (case-insensitive) → [minimax-coding, opencode-zen-go, minimax, openrouter]", () => {
     const matched = matchRoutingRule("MiniMax-M2.5", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["minimax-coding", "minimax", "openrouter"]);
+    expect(matched).toEqual(["minimax-coding", "opencode-zen-go", "minimax", "openrouter"]);
   });
 
   test("'GPT-4o' matches gpt-* (case-insensitive) → [openai-codex, openai, openrouter]", () => {
@@ -205,19 +212,19 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["openai-codex", "openai", "openrouter"]);
   });
 
-  test("'Gemini-2.5-Pro' matches gemini-* (case-insensitive) → [gemini-codeassist, google, openrouter]", () => {
+  test("'Gemini-2.5-Pro' matches gemini-* (case-insensitive) → [antigravity, google, openrouter]", () => {
     const matched = matchRoutingRule("Gemini-2.5-Pro", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["gemini-codeassist", "google", "openrouter"]);
+    expect(matched).toEqual(["antigravity", "google", "openrouter"]);
   });
 
-  test("'glm-4.6' matches glm-* → [glm-coding, glm, openrouter]", () => {
+  test("'glm-4.6' matches glm-* → [glm-coding, opencode-zen-go, glm, openrouter]", () => {
     const matched = matchRoutingRule("glm-4.6", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["glm-coding", "glm", "openrouter"]);
+    expect(matched).toEqual(["glm-coding", "opencode-zen-go", "glm", "openrouter"]);
   });
 
-  test("'qwen3.7-plus' matches qwen3.* → [qwen-cloud, openrouter]", () => {
+  test("'qwen3.7-plus' matches qwen3.* → [qwen-cloud, opencode-zen-go, openrouter]", () => {
     const matched = matchRoutingRule("qwen3.7-plus", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["qwen-cloud", "openrouter"]);
+    expect(matched).toEqual(["qwen-cloud", "opencode-zen-go", "openrouter"]);
   });
 
   test("'qwen3-coder-next' does not match the dotted Qwen Plan rule", () => {
@@ -239,9 +246,33 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["z-ai", "openrouter"]);
   });
 
-  test("'deepseek-v3.5' matches deepseek-* → [deepseek, openrouter]", () => {
+  test("'deepseek-v3.5' matches deepseek-* → [opencode-zen-go, deepseek, openrouter]", () => {
     const matched = matchRoutingRule("deepseek-v3.5", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["deepseek", "openrouter"]);
+    expect(matched).toEqual(["opencode-zen-go", "deepseek", "openrouter"]);
+  });
+
+  test("'mimo-v2-pro' matches mimo-* → [opencode-zen-go, openrouter]", () => {
+    const matched = matchRoutingRule("mimo-v2-pro", DEFAULT_ROUTING_RULES);
+    expect(matched).toEqual(["opencode-zen-go", "openrouter"]);
+  });
+
+  test("hy3* matches both 'hy3' and 'hy3-preview' → [opencode-zen-go, openrouter]", () => {
+    expect(matchRoutingRule("hy3", DEFAULT_ROUTING_RULES)).toEqual([
+      "opencode-zen-go",
+      "openrouter",
+    ]);
+    expect(matchRoutingRule("hy3-preview", DEFAULT_ROUTING_RULES)).toEqual([
+      "opencode-zen-go",
+      "openrouter",
+    ]);
+  });
+
+  test("gpt-* and grok-* deliberately exclude opencode-zen-go", () => {
+    for (const model of ["gpt-5", "grok-4"]) {
+      const matched = matchRoutingRule(model, DEFAULT_ROUTING_RULES);
+      expect(matched).not.toBeNull();
+      expect(matched!).not.toContain("opencode-zen-go");
+    }
   });
 
   test("'fugu' matches the exact fugu rule → [sakana-subscription, sakana] (no openrouter)", () => {

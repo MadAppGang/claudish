@@ -259,7 +259,16 @@ const openCodeZenProfile: ProviderProfile = {
     const isGoProvider = ctx.provider.name === "opencode-zen-go";
 
     if (ctx.modelName.toLowerCase().includes("minimax")) {
-      const transport = new AnthropicProviderTransport(ctx.provider, zenApiKey);
+      // Both Zen tiers authenticate with `Authorization: Bearer`, but this branch
+      // swaps in the ANTHROPIC transport, which defaults to `x-api-key` and only
+      // sends Bearer when the provider declares `authScheme: "bearer"`. Neither
+      // Zen definition declares it — they don't need to for their own OpenAI
+      // transport, which is Bearer-only — so every MiniMax model on Zen and Zen
+      // Go was sending the key in a header the endpoint ignores and getting back
+      // `401 {"type":"AuthError","message":"Missing API key."}`. Verified live
+      // 2026-08-06: x-api-key alone → 401 AuthError; Bearer → served.
+      const bearerProvider = { ...ctx.provider, authScheme: "bearer" as const };
+      const transport = new AnthropicProviderTransport(bearerProvider, zenApiKey);
       const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
       const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
         adapter,

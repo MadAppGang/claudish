@@ -43,12 +43,17 @@ export class SessionManager {
   private sessions = new Map<string, SessionEntry>();
   private maxSessions: number;
   private scrollbackCapacity: number;
+  private sessionsDir: string;
   private onStateChange?: (sessionId: string, event: ChannelEvent) => void;
   private sigintHandler: (() => void) | null = null;
 
   constructor(options?: SessionManagerOptions) {
     this.maxSessions = options?.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.scrollbackCapacity = options?.scrollbackCapacity ?? DEFAULT_SCROLLBACK;
+    this.sessionsDir =
+      options?.sessionsDir ??
+      process.env.CLAUDISH_SESSIONS_DIR ??
+      join(homedir(), ".claudish", "sessions");
     this.onStateChange = options?.onStateChange;
   }
 
@@ -63,7 +68,7 @@ export class SessionManager {
     const startedAt = new Date().toISOString();
 
     // Create session artifact directory
-    const sessionDir = join(homedir(), ".claudish", "sessions", sessionId);
+    const sessionDir = join(this.sessionsDir, sessionId);
     mkdirSync(sessionDir, { recursive: true });
 
     // Write initial prompt if provided
@@ -71,8 +76,18 @@ export class SessionManager {
       writeFileSync(join(sessionDir, "prompt.md"), opts.prompt, "utf-8");
     }
 
-    // Build spawn args — mirrors team-orchestrator pattern
-    const args = ["--model", opts.model, "-y", "--stdin", "--quiet", ...(opts.claudishFlags ?? [])];
+    // Build spawn args — mirrors team-orchestrator pattern. `spawnModel` is the
+    // parent-resolved explicit "provider@model" spec when routing was pinned;
+    // absent means spawn the caller's string, i.e. the pre-pinning behaviour.
+    // `info.model` below deliberately keeps `opts.model` — the pin is argv-only.
+    const args = [
+      "--model",
+      opts.spawnModel ?? opts.model,
+      "-y",
+      "--stdin",
+      "--quiet",
+      ...(opts.claudishFlags ?? []),
+    ];
 
     const proc = spawn("claudish", args, {
       cwd: opts.cwd ?? process.cwd(),
