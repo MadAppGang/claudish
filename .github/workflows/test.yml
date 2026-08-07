@@ -48,15 +48,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # PINNED, not `latest`. Measured on run 31174096977: a newer bun's
+      # `bun install` REWRITES packages/cli/package.json (expanding the `files`
+      # array), which biome then fails as a format error — a red gate caused by
+      # an upstream release rather than by the code under test. `latest` also
+      # means a bun release can break CI overnight with no commit to blame.
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.3.10"
 
       # Root install — `workspaces: ["packages/*"]`, so this covers cli AND
       # macos-bridge. The root scripts below span both packages; running
       # `--cwd packages/cli` instead would silently drop macos-bridge.
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
         run: bun run typecheck
