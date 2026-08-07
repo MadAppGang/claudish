@@ -63,6 +63,20 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: DEBUG - what did install change?
+        run: |
+          echo "--- git status after install ---"
+          git status --short
+          echo "--- git diff (package.json only) ---"
+          git diff -- packages/cli/package.json | head -30
+          echo "--- files array as it sits on disk ---"
+          grep -n -A 7 '"files"' packages/cli/package.json | head -9
+          echo "--- biome version ---"
+          bunx biome --version
+          echo "--- what biome checks, count by dir ---"
+          bunx --cwd packages/cli biome check . --reporter=json 2>/dev/null \
+            | bun -e 'let s="";for await(const c of console)s+=c;const d=JSON.parse(s).diagnostics??[];const f=new Set(d.map(x=>x.location?.path?.file));console.log("files with diagnostics:",f.size)' || true
+
       - name: Typecheck
         run: bun run typecheck
 
