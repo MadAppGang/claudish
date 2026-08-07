@@ -1,0 +1,63 @@
+name: Tests
+
+# The hermetic test gate.
+#
+# WHY THIS EXISTS: until now no workflow ran `bun test` at all. The green check
+# on a PR came from the review bot, so a merge could publish to npm with the
+# suite never having run. A regex that silently deleted Gemini answers shipped
+# for seven months and five releases behind exactly that gap.
+#
+# WHY NO API KEY SECRETS ARE SET HERE — this is load-bearing, not an oversight.
+# Real-API tests gate on `test-helpers/credential-gate.ts`, which asks
+# claudish's OWN CredentialAuthority whether a provider can be served (env →
+# config `apiKeys` → 1Password). With no credentials present that answer is
+# `false` everywhere, so every live test skips itself and what remains is
+# exactly the deterministic tier: adapters, stream parsers, routing, fixtures.
+# Measured locally in a credential-free environment: 1855 pass / 25 skip /
+# 0 fail in ~56s, versus ~235s and real billing when keys ARE present.
+#
+# Adding a key secret here would silently convert this gate into the flaky,
+# billable live suite. Live coverage belongs in smoke-test.yml, which is
+# manually dispatched and holds the secrets on purpose.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A superseded push should not keep burning a runner.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck · lint · hermetic tests
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Root install — `workspaces: ["packages/*"]`, so this covers cli AND
+      # macos-bridge. The root scripts below span both packages; running
+      # `--cwd packages/cli` instead would silently drop macos-bridge.
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Fails on ERRORS only. The suite currently carries ~797 warnings
+      # (noExplicitAny, noExcessiveCognitiveComplexity) which are pre-existing
+      # style debt, not defects — biome exits 0 for those, so this gate catches
+      # genuine regressions without demanding a 300-file cleanup first.
+      - name: Lint
+        run: bun run lint
+
+      - name: Hermetic tests
+        run: bun run test
