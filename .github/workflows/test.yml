@@ -59,5 +59,18 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      # CLAUDISH_SKIP_LIVE_E2E is REQUIRED here, and not just an optimisation.
+      # channel/e2e-channel.test.ts probes for a usable Claude Code at MODULE
+      # LOAD by spawning `claude --version` and awaiting only its `exit` event.
+      # A runner has no `claude` binary, so spawn emits `error` instead, the
+      # promise never settles, and the whole suite hangs until the job is
+      # killed (observed: >12 min on run 31172281077 before cancellation).
+      # The file's own flag short-circuits that probe.
+      #
+      # The timeout is the backstop: a future hang should fail in 10 minutes,
+      # not burn a 6-hour runner slot. A healthy run is ~60s.
       - name: Hermetic tests
         run: bun run test
+        timeout-minutes: 10
+        env:
+          CLAUDISH_SKIP_LIVE_E2E: "1"
