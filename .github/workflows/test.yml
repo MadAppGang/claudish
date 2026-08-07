@@ -33,7 +33,16 @@ concurrency:
 jobs:
   test:
     name: typecheck · lint · hermetic tests
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu — deliberate. Measured on ubuntu-latest (run
+    # 31173939734): the credential-equivalence suite and the magmux e2e fail
+    # wholesale because claudish's credential authority reaches for macOS
+    # facilities (keychain, `ioreg` screen-lock probe) and the magmux bridge
+    # binary is a macOS artifact the release workflow downloads separately.
+    # The suite has only ever been developed and run on darwin. Gating on the
+    # platform it is actually written for gives a HONEST signal; gating on
+    # ubuntu would mean permanently-red checks people learn to ignore.
+    # Linux portability of the test suite is a separate piece of work.
+    runs-on: macos-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
