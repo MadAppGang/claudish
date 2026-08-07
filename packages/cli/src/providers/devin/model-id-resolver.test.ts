@@ -10,6 +10,11 @@ function servedModel(uid: string, family = "claude-opus-5"): DevinModelConfig {
     displayName: `Synthetic ${uid}`,
     contextWindow: 123_456,
     maxOutput: 7_890,
+    // Declares no axes on purpose: this suite pins the SPELLING fallback, the
+    // path the 12 real uids that publish no `model_family_metadata` take.
+    axes: [],
+    isFamilyDefault: false,
+    isRecommended: false,
   };
 }
 

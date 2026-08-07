@@ -33,9 +33,11 @@ import {
   type DiscoveredModel,
   discoverProviderModels,
   rankDiscoveredModels,
+  toRosterEntry,
 } from "./providers/model-discovery.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
-import { fetchOllamaModels } from "./providers/ollama-discovery.js";
+import { collapseRoster } from "./providers/model-resolvers/registry.js";
+import { type ModelOffer, offerIsLive } from "./providers/model-resolvers/types.js";
 import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
 import { isChatCapable } from "./providers/transport/probe-discovery.js";
 
@@ -1087,6 +1089,23 @@ async function pickModelFromList(
  *
  * Exported for unit tests.
  */
+/**
+ * A live offer as a short badge, or undefined when there is nothing to say.
+ *
+ * Evaluated against the clock on every render, never cached: two of the four
+ * promos on the measured Devin roster expired within days of being observed,
+ * and a stale "FREE" badge is a wrong-price bug — strictly worse than no badge.
+ */
+function describeOffer(offer: ModelOffer | undefined): string | undefined {
+  if (!offerIsLive(offer) || offer?.kind !== "promo") return undefined;
+  if (offer.expiresAt === undefined) return "FREE";
+  const until = new Date(offer.expiresAt * 1000).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+  return `FREE until ${until}`;
+}
+
 export async function buildDiscoveredModelRows(
   provider: string,
   displayName: string,
@@ -1098,12 +1117,16 @@ export async function buildDiscoveredModelRows(
   if (discovered.length === 0) return [];
 
   const subscription = isSubscriptionProvider(provider);
-  // A non-subscription discovery provider bills per token, so show the real
-  // rate — the live endpoint doesn't report one and the slim catalog carries
-  // no prices, so ask the vendor catalog. Skipped entirely for subscription
-  // plans (they render SUB), which is every discovery provider today, so
-  // nothing pays for this lookup.
-  const pricingById = subscription
+  const local = getProviderByName(provider)?.isLocal === true;
+  // Neither a flat-rate plan nor a local daemon charges per token, and the
+  // vendor catalog has nothing to say about either — Firebase does not list a
+  // model someone pulled onto their own machine.
+  const flatRate = subscription || local;
+  // A per-token discovery provider should show the real rate; the live endpoint
+  // doesn't report one and the slim catalog carries no prices, so ask the
+  // vendor catalog. Skipped for flat-rate providers, which is every discovery
+  // provider today, so nothing pays for this lookup.
+  const pricingById = flatRate
     ? new Map<string, ModelInfo["pricing"]>()
     : new Map(
         (await loadModelsForPickerProvider(provider, catalog)).map((m) => [
@@ -1111,6 +1134,14 @@ export async function buildDiscoveredModelRows(
           m.pricing,
         ])
       );
+
+  // Fold variant explosions into the rows a human actually picks. Identity for
+  // every provider without a resolver, so this is a no-op except for Devin,
+  // where 167 served uids are ~39 real choices multiplied out by reasoning tier
+  // and speed premium. The chosen id is always a real wire id, so it still
+  // round-trips through buildExplicitModelSpec and argv unchanged.
+  const choices = collapseRoster(provider, discovered.map(toRosterEntry));
+  const discoveredById = new Map(discovered.map((m) => [m.id, m]));
 
   // The live endpoint decides WHICH models appear (entitlement) and overrides
   // the context window for THIS tier. Everything else — capabilities, release
@@ -1120,24 +1151,36 @@ export async function buildDiscoveredModelRows(
   // Re-querying the same cloud one id at a time returns the same answer N
   // round-trips later; a window the catalog lacks renders as unknown, which
   // keeps the gap visible as a models-index issue rather than hiding it.
-  const rows = discovered.map((m) => {
-    const contextLength = resolveDiscoveredContextLength(m);
+  const rows = choices.map((c) => {
+    const source = discoveredById.get(c.id);
+    const contextLength = source ? resolveDiscoveredContextLength(source) : (c.contextWindow ?? 0);
+
+    // Order: what it is · how big · what it costs · whether it is on offer.
+    const parts = [c.displayName];
+    if (contextLength) parts.push(`${Math.round(contextLength / 1024)}K context`);
+    // A relative multiplier is only meaningful on a plan that bills in credits;
+    // for a per-token provider the real rate is already in `pricing`.
+    if (subscription && c.costFactor !== undefined) parts.push(`×${c.costFactor}`);
+    const promo = describeOffer(c.offer);
+    if (promo) parts.push(promo);
+
     return {
-      id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
-      name: m.displayName || m.id,
-      description: contextLength
-        ? `${m.displayName ?? m.id} · ${Math.round(contextLength / 1024)}K context`
-        : (m.displayName ?? m.id),
+      id: c.id, // wire id — buildExplicitModelSpec adds the provider prefix
+      name: c.displayName,
+      description: parts.join(" · "),
       provider: displayName,
-      releaseDate: resolveDiscoveredReleaseDate(m),
-      pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(m.id.toLowerCase()),
+      releaseDate: source ? resolveDiscoveredReleaseDate(source) : undefined,
+      pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(c.id.toLowerCase()),
       context: formatContextLength(contextLength),
       contextLength,
-      // Catalog-first. `true` only as the fallback for a model the catalog does
-      // not carry — every provider here serves chat models, so assuming tool
-      // support is the safer miss than hiding a capable model.
-      supportsTools: lookupModelCapabilities(m.id)?.supportsTools ?? true,
-      isFree: subscription, // covered by the subscription — no per-token charge
+      // Catalog-first, then whatever the endpoint reported, then `true`. The
+      // endpoint step matters only for Ollama, whose locally-pulled models are
+      // absent from the catalog and where tool support genuinely varies — an
+      // embedding or vision-only pull cannot drive Claude Code. For everything
+      // else the catalog answers and `true` remains the safer miss than hiding
+      // a capable model.
+      supportsTools: lookupModelCapabilities(c.id)?.supportsTools ?? source?.supportsTools ?? true,
+      isFree: flatRate, // subscription or local — no per-token charge either way
       source: displayName,
     };
   });
@@ -1180,33 +1223,11 @@ async function selectModelFromProvider(
     // to the cloud catalog rather than showing an empty list.
   }
 
-  // Ollama (local): Firebase has no catalog, but the daemon lists installed
-  // models at /api/tags. Show that list (filterable, with a custom-entry escape
-  // hatch) instead of forcing the user to type a model name from memory. Falls
-  // through to free-text below when the daemon is unreachable or has no models.
-  if (provider === "ollama") {
-    const ollamaModels = await fetchOllamaModels({ enrichCapabilities: false });
-    // Daemon order (/api/tags) is not meaningful to the user. Apply the shared
-    // ordering rule so this picker matches every other one; with no release
-    // dates locally the comparator degrades to newest-version-first, then id.
-    const chatModels: ModelInfo[] = sortModelsNewestFirst(
-      ollamaModels.map((m) => ({
-        id: m.name, // bare name, e.g. "llama3.2:3b" — prefix added by buildExplicitModelSpec
-        name: m.name,
-        description: m.description,
-        provider: displayName,
-        supportsTools: m.supportsTools,
-        isFree: true,
-        source: displayName,
-      }))
-    );
-    if (chatModels.length > 0) {
-      const picked = await pickModelFromList(provider, displayName, tierName, chatModels);
-      if (picked) return picked;
-      // picked === null → user chose the custom-entry hatch; fall through.
-    }
-    // Unreachable daemon / no models / custom entry → free-text below.
-  }
+  // Ollama and LM Studio used to be handled here, each its own way — Ollama by
+  // an inline `/api/tags` branch, LM Studio not at all (free-text only). Both
+  // now declare `modelDiscovery`, so the block above lists them like every
+  // other provider that knows its own roster. A local daemon is not a different
+  // KIND of thing; it is a provider whose endpoint happens to be on localhost.
 
   // Local / user-deployed providers: Firebase has no catalog, free-text only.
   // No prefix advertising — buildExplicitModelSpec adds it silently.

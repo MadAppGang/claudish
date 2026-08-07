@@ -49,7 +49,15 @@
 import { log } from "../../logger.js";
 import { readDevinApiKey, readDevinServerUrl } from "./devin-credentials.js";
 import { DEVIN_CLI_VERSION } from "./devin-request.js";
-import { type TLV, bytes, msg, parseTLV, readString, readVarintValue } from "./proto-codec.js";
+import {
+  type TLV,
+  bytes,
+  msg,
+  parseTLV,
+  readFloat32LE,
+  readString,
+  readVarintValue,
+} from "./proto-codec.js";
 
 /** Capability rpc — every model the backend knows about. */
 const MODEL_CONFIGS_PATH = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
@@ -63,6 +71,37 @@ const ROSTER_TTL_MS = 5 * 60 * 1000;
 /** Metadata rpcs are small and on interactive paths (picker, probe). */
 const UNARY_TIMEOUT_MS = 10_000;
 
+/** A time-boxed promotional price on one uid (field 19 `promo_status`). */
+export interface DevinPromo {
+  /** Unix SECONDS. Compare against the clock at render — two live promos expire within days. */
+  expiresAt: number;
+}
+
+/**
+ * One knob the backend declares for a uid (`model_family_metadata.entries[]`).
+ *
+ * Devin STATES what each uid is instead of leaving it to be parsed out of the
+ * name, so this is the authority wherever it is present. Measured against a
+ * real roster:
+ *
+ * - `label` on the effort axis agrees with the uid suffix on all 130 uids that
+ *   carry both, and additionally expresses `Minimal`, which no suffix rule does.
+ * - `enabled` on `Fast Mode` is true for `-fast` AND `-priority` uids — i.e. it
+ *   means "a speed premium is engaged", which is the property that actually
+ *   matters (those cost ~2x). A `-fast`-only spelling rule misses 32 uids.
+ * - `enabled` on `1M Context` means "the 1M upgrade is applied", NOT "the window
+ *   is 1M": it is absent on natively-1M models. Context therefore comes from
+ *   `contextWindow`, never from this axis.
+ */
+export interface DevinAxis {
+  /** The vendor's own name for the knob: `Effort`, `1M Context`, `Fast Mode`, … */
+  key: string;
+  /** The value THIS uid sits at on that axis: `High`, `Max`, `No Thinking`, … */
+  label?: string;
+  /** Whether this uid has the axis engaged. */
+  enabled: boolean;
+}
+
 /** One row of the live roster. */
 export interface DevinModelConfig {
   /** Routing key — request field 21 (e.g. `claude-opus-5-high`). */
@@ -75,6 +114,35 @@ export interface DevinModelConfig {
   maxOutput: number;
   /** Bare family name (e.g. `claude-opus-5`, `glm-5.2`) — dotted, unlike uids. */
   family: string;
+  /**
+   * Devin's OWN row label for the picker (`model_family_label`, field 30.1) —
+   * e.g. `"GLM-5.2"`, `"Claude Opus 4.8"`. Absent on a handful of uids (legacy
+   * `MODEL_*` names, internal review models), which fall back to `family`.
+   */
+  groupLabel?: string;
+  /**
+   * The knobs Devin declares for this uid (`model_family_metadata.entries`,
+   * field 30.2), with the value this uid sits at on each.
+   *
+   * This is why nothing is inferred from uid SPELLING where Devin speaks: the
+   * backend states what each variant IS, so the resolver reads it. Spelling is
+   * the fallback for the 12 uids that declare no effort axis.
+   */
+  axes: DevinAxis[];
+  /** Relative credit cost (`credit_multiplier`, field 3). Spans ×0.5 … ×400. */
+  creditMultiplier?: number;
+  /** Coarse vendor cost band (`model_cost_tier`, field 24). Orders the default fallback. */
+  costTier?: number;
+  /**
+   * Devin designates this uid as its family's default (`is_default_model_in_family`,
+   * field 31). Measured well-formed: of 39 groups, 20 carry exactly one and NONE
+   * carries two — so this is the default, not a heuristic.
+   */
+  isFamilyDefault: boolean;
+  /** Devin marks this uid as recommended (`is_recommended`, field 11). */
+  isRecommended: boolean;
+  /** Live promotional pricing, when the backend advertises one. */
+  promo?: DevinPromo;
 }
 
 /**
@@ -130,27 +198,118 @@ function decodeModelDetails(payload: Uint8Array): { maxOutput: number; family: s
 }
 
 /**
+ * `model_family_metadata` (field 30): the backend's OWN picker model.
+ *
+ * ```
+ * 30 { 1: "GLM-5.2"                            <- model_family_label (the row)
+ *      2: { 1: "Effort",     2: {…} }          <- entries[] — one per AXIS
+ *      2: { 1: "1M Context", 2: {…} } }
+ * ```
+ *
+ * Field names come from the `devin` binary's own serde strings, so these are
+ * the vendor's names, not guesses.
+ */
+function decodeFamilyMetadata(payload: Uint8Array): { groupLabel?: string; axes: DevinAxis[] } {
+  let groupLabel: string | undefined;
+  const axes: DevinAxis[] = [];
+  for (const sub of parseTLV(payload)) {
+    if (sub.no === 1 && sub.wire === 2) {
+      groupLabel = readString(sub) || undefined;
+      continue;
+    }
+    if (sub.no !== 2 || sub.wire !== 2) continue;
+
+    // entry: { 1: key, 2: value { 1: enabled, 2: label, 3: order } }
+    const axis: DevinAxis = { key: "", enabled: false };
+    for (const entry of parseTLV(sub.payload)) {
+      if (entry.no === 1 && entry.wire === 2) axis.key = readString(entry);
+      else if (entry.no === 2 && entry.wire === 2) {
+        for (const value of parseTLV(entry.payload)) {
+          if (value.no === 1 && value.wire === 0) axis.enabled = readVarintValue(value) === 1;
+          else if (value.no === 2 && value.wire === 2) axis.label = readString(value) || undefined;
+        }
+      }
+    }
+    if (axis.key) axes.push(axis);
+  }
+  return { groupLabel, axes };
+}
+
+/** `promo_status` (field 19): `{ 1: kind, 2: { 1: expiry_unix_seconds } }`. */
+function decodePromo(payload: Uint8Array): DevinPromo | undefined {
+  for (const sub of parseTLV(payload)) {
+    if (sub.wire !== 2) continue;
+    for (const inner of parseTLV(sub.payload)) {
+      if (inner.no === 1 && inner.wire === 0) {
+        const expiresAt = readVarintValue(inner);
+        if (expiresAt > 0) return { expiresAt };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Decode one model config.
  *
- * Field map (verified): `22` uid · `1` display name · `18` context window ·
- * `23.13` max output · `23.23` family. Unknown fields are ignored, so the
- * backend can add any it likes. A row without a uid is not routable — drop it.
+ * Field map — names taken from `ClientModelConfig`'s serde strings in the devin
+ * binary, values verified against a real capture:
+ *
+ * | field | name | |
+ * |---|---|---|
+ * | 1 | `label` | display name |
+ * | 3 | `credit_multiplier` | f32 **little**-endian |
+ * | 11 | `is_recommended` | |
+ * | 18 | `max_tokens` | the context window |
+ * | 19 | `promo_status` | promo + expiry |
+ * | 22 | `model_uid` | the routing key |
+ * | 23 | `model_info` | `.13` max output, `.23` family |
+ * | 24 | `model_cost_tier` | |
+ * | 30 | `model_family_metadata` | `.1` label, `.2` axes |
+ * | 31 | `is_default_model_in_family` | |
+ *
+ * Unknown fields are ignored, so the backend can add any it likes. A row
+ * without a uid is not routable — drop it.
  */
 function decodeModelConfig(payload: Uint8Array): DevinModelConfig | null {
   let uid = "";
   let displayName = "";
   let contextWindow = 0;
   let details = { maxOutput: 0, family: "" };
+  let family: { groupLabel?: string; axes: DevinAxis[] } = { axes: [] };
+  let creditMultiplier: number | undefined;
+  let costTier: number | undefined;
+  let isFamilyDefault = false;
+  let isRecommended = false;
+  let promo: DevinPromo | undefined;
 
   for (const field of parseTLV(payload)) {
     if (field.no === 22 && field.wire === 2) uid = readString(field);
     else if (field.no === 1 && field.wire === 2) displayName = readString(field);
     else if (field.no === 18 && field.wire === 0) contextWindow = readVarintValue(field);
     else if (field.no === 23 && field.wire === 2) details = decodeModelDetails(field.payload);
+    else if (field.no === 30 && field.wire === 2) family = decodeFamilyMetadata(field.payload);
+    else if (field.no === 3 && field.wire === 5) creditMultiplier = readFloat32LE(field);
+    else if (field.no === 24 && field.wire === 0) costTier = readVarintValue(field);
+    else if (field.no === 31 && field.wire === 0) isFamilyDefault = readVarintValue(field) === 1;
+    else if (field.no === 11 && field.wire === 0) isRecommended = readVarintValue(field) === 1;
+    else if (field.no === 19 && field.wire === 2) promo = decodePromo(field.payload);
   }
 
   if (!uid) return null;
-  return { uid, displayName: displayName || uid, contextWindow, ...details };
+  return {
+    uid,
+    displayName: displayName || uid,
+    contextWindow,
+    ...details,
+    groupLabel: family.groupLabel,
+    axes: family.axes,
+    creditMultiplier,
+    costTier,
+    isFamilyDefault,
+    isRecommended,
+    promo,
+  };
 }
 
 /** Top-level fields with the given number and wire type 2. */
@@ -167,12 +326,24 @@ export async function fetchDevinModelConfigs(apiKey: string): Promise<DevinModel
   const body = await postUnary(MODEL_CONFIGS_PATH, apiKey);
   if (!body) return [];
 
+  const configs = decodeModelConfigs(body);
+  log(`[Devin] GetCliModelConfigs: ${configs.length} configs`);
+  return configs;
+}
+
+/**
+ * Pure decode of a `GetCliModelConfigs` response body.
+ *
+ * Split out from the fetch so the roster decode can be replayed against a
+ * captured response byte-for-byte — the fixture is real wire data, never
+ * hand-written.
+ */
+export function decodeModelConfigs(body: Uint8Array): DevinModelConfig[] {
   const configs: DevinModelConfig[] = [];
   for (const field of topLevelDelimited(body, 1)) {
     const config = decodeModelConfig(field.payload);
     if (config) configs.push(config);
   }
-  log(`[Devin] GetCliModelConfigs: ${configs.length} configs`);
   return configs;
 }
 

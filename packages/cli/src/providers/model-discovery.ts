@@ -25,6 +25,7 @@
 
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
+import type { ModelOffer, RosterAxis, RosterEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
 
 /** A model as reported by the provider's own live endpoint. */
@@ -46,6 +47,39 @@ export interface DiscoveredModel {
    * wherever it exists; this covers the rest.
    */
   releaseDate?: string;
+  /**
+   * Variant metadata, for providers that encode knobs INTO their model ids.
+   *
+   * Most endpoints report a flat list where each id is already the thing a
+   * human would choose, and leave all of this undefined. Devin does not: its
+   * roster is ~33 models multiplied out by reasoning tier, speed premium, and
+   * context window, and it publishes which is which. Carrying that here is what
+   * lets `providers/model-resolvers/` fold 170 ids into 42 rows and unfold them
+   * again at request time.
+   */
+  groupLabel?: string;
+  family?: string;
+  costFactor?: number;
+  costTier?: number;
+  isFamilyDefault?: boolean;
+  isRecommended?: boolean;
+  axes?: RosterAxis[];
+  offer?: ModelOffer;
+  /**
+   * Whether the model can call tools, when the endpoint says so.
+   *
+   * Only Ollama reports it (via its own capability list / name heuristics), and
+   * it genuinely varies there — a local embedding or vision-only pull cannot
+   * drive Claude Code. Undefined means "not reported", which callers read as
+   * yes, since every hosted roster in claudish is tool-capable.
+   */
+  supportsTools?: boolean;
+}
+
+/** A discovered model in the shape the model-resolver seam consumes. */
+export function toRosterEntry(model: DiscoveredModel): RosterEntry {
+  const { id, ...rest } = model;
+  return { wireId: id, ...rest };
 }
 
 /**
@@ -64,8 +98,10 @@ export interface ModelDiscoveryDescriptor {
    * - `devin-connect`: not an HTTP GET at all — two protobuf rpcs whose
    *   intersection is capability ∩ entitlement. Owned by
    *   `providers/devin/devin-models.ts`; `path` is ignored.
+   * - `ollama-tags`: Ollama's `{ models: [{ name, details, … }] }`. Owned by
+   *   `providers/ollama-discovery.ts`, which also derives tool support.
    */
-  format: "openai-models-list" | "devin-connect";
+  format: "openai-models-list" | "devin-connect" | "ollama-tags";
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -179,12 +215,31 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       log(`[model-discovery:${providerName}] no models for this subscription`);
       return [];
     }
-    const models: DiscoveredModel[] = served.map((model) => ({
-      id: model.uid,
-      displayName: model.displayName,
-      contextWindow: model.contextWindow,
-    }));
+    // Carry the full variant metadata, not just id/name/window: the picker
+    // folds these 170 uids into ~42 rows and needs the group label, the cost
+    // multiplier, the promo, and the vendor's own default flag to do it.
+    const { devinRosterEntry } = await import("./model-resolvers/devin.js");
+    const models: DiscoveredModel[] = served.map((model) => {
+      const { wireId, ...rest } = devinRosterEntry(model);
+      return { id: wireId, ...rest };
+    });
     log(`[model-discovery:${providerName}] discovered ${models.length} models`);
+    _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
+    return models;
+  }
+
+  // Ollama's daemon speaks its own listing shape and carries capability data no
+  // OpenAI-compatible list has. Dynamic import keeps it off the cold-start path.
+  if (descriptor.format === "ollama-tags") {
+    const { fetchOllamaModels } = await import("./ollama-discovery.js");
+    const installed = await fetchOllamaModels({ enrichCapabilities: false });
+    if (installed.length === 0) return [];
+    const models: DiscoveredModel[] = installed.map((model) => ({
+      id: model.name,
+      displayName: model.name,
+      supportsTools: model.supportsTools,
+    }));
+    log(`[model-discovery:${providerName}] discovered ${models.length} local models`);
     _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
     return models;
   }
@@ -196,13 +251,26 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
   // mints any provider-specific platform headers.
+  //
+  // A LOCAL provider deliberately does NOT go through it. LM Studio and a
+  // localhost Ollama serve unauthenticated; a key is the exception, wanted only
+  // when the user has exposed the daemon on their network. Asking the authority
+  // would send it hunting through the op:// chain for a key that usually does
+  // not exist — measured: listing LM Studio models opened a 1Password handshake
+  // and, on a locked Mac, a 30-second unlock wait, to discover nothing. Reading
+  // the env var directly is both correct and free.
   let headers: Record<string, string> = {};
-  try {
-    const auth = await credentials.getRequestAuth(providerName, { model: "" });
-    headers = { ...auth.headers };
-  } catch (e: unknown) {
-    log(`[model-discovery:${providerName}] no credentials, skipping: ${(e as Error)?.message}`);
-    return [];
+  if (def.isLocal) {
+    const key = def.apiKeyEnvVar ? process.env[def.apiKeyEnvVar] : undefined;
+    if (key) headers = { Authorization: `Bearer ${key}` };
+  } else {
+    try {
+      const auth = await credentials.getRequestAuth(providerName, { model: "" });
+      headers = { ...auth.headers };
+    } catch (e: unknown) {
+      log(`[model-discovery:${providerName}] no credentials, skipping: ${(e as Error)?.message}`);
+      return [];
+    }
   }
 
   let response: Response;

@@ -632,6 +632,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "ollama:", stripPrefix: true },
     ],
     isLocal: true,
+    // The daemon knows exactly which models are pulled; nothing else can. Path
+    // is unused by the `ollama-tags` fetcher, which owns its own endpoint.
+    modelDiscovery: { path: "/api/tags", format: "ollama-tags" },
     description: "Local Ollama (ollama@)",
   },
 
@@ -658,6 +661,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "mlstudio:", stripPrefix: true },
     ],
     isLocal: true,
+    // LM Studio serves an OpenAI-compatible list of the models it has loaded.
+    // Previously unlisted, so the picker made users type a name from memory.
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     description: "Local LM Studio (lms@)",
   },
 
