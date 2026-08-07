@@ -1,10 +1,12 @@
 {
   "name": "claudish-monorepo",
-  "version": "7.43.0",
+  "version": "7.44.0",
   "private": true,
   "description": "Monorepo for Claudish - Run Claude Code with any model",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "cd packages/cli && exec bun run src/index.ts",
     "dev:mcp": "bun run --cwd packages/cli dev:mcp",
