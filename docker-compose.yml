@@ -1,14 +1,17 @@
 services:
   claudish-proxy:
     build: .
-    container_name: claudish-proxy
+    container_name: ${CLAUDISH_CONTAINER_NAME:-claudish-proxy}
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Host port is per-machine: 3000 is already taken on some sidecar hosts.
+      # Container side stays 3000 — see `command:` below.
+      - "${CLAUDISH_HOST_PORT:-3000}:3000"
     volumes:
-      # Mount config from host (contains API keys, routing, profiles). Override
-      # CLAUDISH_CONFIG_DIR for a sidecar whose config lives elsewhere; defaults
-      # to the hub (po-2023) path so the hub compose is unchanged.
+      # Mount config from host (contains API keys, routing, profiles). Defaults to
+      # the hub (po-2023) path so the hub compose keeps working with no .env at all;
+      # a sidecar sets CLAUDISH_CONFIG_DIR to its own profile, e.g.
+      # C:\Users\<user>\.claudish
       - type: bind
         source: ${CLAUDISH_CONFIG_DIR:-C:\Users\jsboi\.claudish}
         target: /root/.claudish
@@ -17,15 +20,26 @@ services:
       # analysis. The proxy writes req-*.json / resp-*.sse here (gated by
       # CLAUDISH_CAPTURE_DIR). Compacted nightly by ClaudishCaptureCompaction
       # (compress-captures.ps1), then backed up to GDrive. Override
-      # CLAUDISH_CAPTURES_DIR on machines without a D: drive.
+      # CLAUDISH_CAPTURE_HOST_DIR on machines without a D: drive.
+      # Sidecars KEEP capture on: in NOMINAL mode the relay path writes nothing
+      # (the hub captures centrally), so any loose req-*/resp-* file on a sidecar
+      # is by construction an AUTONOMOUS-mode outage capture — which is exactly
+      # what reconcile-outage-captures.ps1 packs and merges back. Setting
+      # CLAUDISH_CAPTURE_DIR empty disables writing entirely; that is an escape
+      # hatch for disk-starved hosts, NOT the sidecar default, because it would
+      # silently destroy the outage-reconciliation trail.
+      # NB: CLAUDISH_CAPTURE_HOST_DIR (host bind) is deliberately NOT named
+      # CLAUDISH_CAPTURES_DIR — a one-letter delta from the container-side
+      # CLAUDISH_CAPTURE_DIR below would be a silent-misconfiguration trap.
       - type: bind
-        source: ${CLAUDISH_CAPTURES_DIR:-D:\claudish-captures}
+        source: ${CLAUDISH_CAPTURE_HOST_DIR:-D:\claudish-captures}
         target: /captures
     environment:
       - NODE_ENV=production
       - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
       - SEARXNG_URL=http://search.myia.io
-      - CLAUDISH_CAPTURE_DIR=/captures
+      # Empty disables capture writing (sidecar default; hub leaves it at /captures).
+      - CLAUDISH_CAPTURE_DIR=${CLAUDISH_CAPTURE_DIR-/captures}
       # Sidecar relay (fork extension). All empty → this container is the HUB
       # (po-2023): always local, unchanged. On a sidecar machine, set these in the
       # per-machine .env:
