@@ -201,7 +201,11 @@ Write-Host ""
 Write-Host "  Now repoint THIS machine's Claude Code (~/.claude/settings.json):" -ForegroundColor White
 Write-Host "    ANTHROPIC_BASE_URL = http://localhost:$ProxyPort" -ForegroundColor White
 Write-Host "  keep the existing custom header (machine name already correct):" -ForegroundColor White
-Write-Host "    ANTHROPIC_CUSTOM_HEADERS = `"X-Claudish-Machine: $Machine`n`" + `"`n`" + `"x-proxy-key: $ClusterKey`"" -ForegroundColor White
+# NEVER interpolate $ClusterKey into console output: this block is routinely
+# captured into terminal transcripts, CI logs and agent context, which would leak
+# the cluster gate key to every reader of those artifacts.
+Write-Host "    ANTHROPIC_CUSTOM_HEADERS = `"X-Claudish-Machine: $Machine\nx-proxy-key: <cluster key, unchanged>`"" -ForegroundColor White
+Write-Host "  (the machine already carries the key — leave that header exactly as it is)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Verify relay mode in logs:  docker logs $ContainerName 2>&1 | Select-String 'Relay|NOMINAL|upstream'" -ForegroundColor DarkGray
 Write-Host ""
