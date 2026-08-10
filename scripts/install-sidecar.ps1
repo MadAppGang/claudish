@@ -33,8 +33,25 @@
 .PARAMETER NoAnthropic
   Set CLAUDISH_NO_ANTHROPIC=1 (every machine except ai-01 — leak-policy backstop).
 
+.PARAMETER HostPort
+  Host port published by the container. Default 3000. Set this when 3000 is already
+  taken on the target machine (e.g. ai-01, where another service holds 3000) — the
+  container side always stays 3000, only the host binding moves.
+
+.PARAMETER ContainerName
+  Docker container name. Default claudish-proxy. Give a sidecar its own name
+  (e.g. claudish-sidecar) so logs/scripts never confuse it with the hub container.
+
+.PARAMETER NoCapture
+  Disable capture writing entirely (sets CLAUDISH_CAPTURE_DIR empty). Escape hatch
+  for disk-starved hosts ONLY. By default a sidecar KEEPS capture on: NOMINAL relay
+  writes nothing, so any loose capture file is by construction an AUTONOMOUS-mode
+  outage capture — the trail reconcile-outage-captures.ps1 needs.
+
 .PARAMETER RepoDir
-  Where the fork lives / will be cloned. Default C:\Dev\claudish.
+  Where the fork lives / will be cloned. Default C:\Dev\claudish. Pass explicitly if
+  the machine already has a clone elsewhere, otherwise a second one is created.
+  NB: an existing clone is hard-reset to origin/main — commit local work first.
 
 .PARAMETER ConfigDir
   Host dir mounted as /root/.claudish (must contain config.json with provider keys).
@@ -58,6 +75,9 @@ param(
     [Parameter(Mandatory)][string]$ProxyKey,
     [switch]$Compress,
     [switch]$NoAnthropic,
+    [switch]$NoCapture,
+    [int]$HostPort     = 3000,
+    [string]$ContainerName = "claudish-proxy",
     [string]$RepoUrl   = "https://github.com/jsboige/claudish.git",
     [string]$RepoDir   = "C:\Dev\claudish",
     [string]$ConfigDir = (Join-Path $env:USERPROFILE ".claudish"),
@@ -65,7 +85,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProxyPort = 3000
+$ProxyPort = $HostPort
 $ClusterKey = $ProxyKey  # alias for readability
 
 function Write-Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
@@ -114,13 +134,19 @@ $lines = @(
 if ($Compress)    { $lines += "CLAUDISH_RELAY_COMPRESS=1" }
 if ($NoAnthropic) { $lines += "CLAUDISH_NO_ANTHROPIC=1" }
 $lines += "CLAUDISH_CONFIG_DIR=$ConfigDir"
-$lines += "CLAUDISH_CAPTURES_DIR=$CapturesDir"
+$lines += "CLAUDISH_CAPTURE_HOST_DIR=$CapturesDir"
+$lines += "CLAUDISH_HOST_PORT=$HostPort"
+$lines += "CLAUDISH_CONTAINER_NAME=$ContainerName"
+# Set-but-empty disables capture writing (compose uses ${CLAUDISH_CAPTURE_DIR-/captures},
+# single-dash = "unset" only, so an empty value here really means "write nothing").
+if ($NoCapture)   { $lines += "CLAUDISH_CAPTURE_DIR=" }
 $envContent = ($lines -join "`r`n") + "`r`n"
 # UTF-8 no BOM (PS 5.1 Set-Content adds BOM → breaks parsers).
 [void][System.IO.File]::WriteAllText((Join-Path $RepoDir ".env"), $envContent, (New-Object System.Text.UTF8Encoding $false))
-$tag = @($Machine, $Upstream)
+$tag = @($Machine, $Upstream, "port=$HostPort", "container=$ContainerName")
 if ($Compress)    { $tag += "COMPRESS" }
 if ($NoAnthropic) { $tag += "NO_ANTHROPIC" }
+if ($NoCapture)   { $tag += "NO_CAPTURE" }
 Write-Ok ".env written: $($tag -join ' | ')"
 
 # ── 4. Build + start ────────────────────────────────────────────────
@@ -140,7 +166,7 @@ for ($i = 0; $i -lt 30; $i++) {
         if ($r.StatusCode -eq 200) { $healthy = $true; break }
     } catch { Start-Sleep -Seconds 2 }
 }
-if (-not $healthy) { Die "container did not become healthy on :$ProxyPort (check 'docker logs claudish-proxy')" }
+if (-not $healthy) { Die "container did not become healthy on :$ProxyPort (check 'docker logs $ContainerName')" }
 Write-Ok "healthy"
 
 # ── 6. End-to-end probe (NOMINAL relay → hub → provider) ────────────
@@ -160,7 +186,7 @@ try {
     if ($r.Content -match "message_stop") {
         Write-Ok "stream completed with terminal message_stop (NOMINAL relay works)"
     } else {
-        Write-Warn "probe returned $($r.Content.Length) bytes but no message_stop — inspect 'docker logs claudish-proxy'"
+        Write-Warn "probe returned $($r.Content.Length) bytes but no message_stop — inspect 'docker logs $ContainerName'"
     }
 } catch {
     Write-Warn "probe failed: $($_.Exception.Message) — if the hub is reachable this needs investigation"
@@ -170,11 +196,16 @@ try {
 Write-Host ""
 Write-Host "SIDECAR INSTALLED for $Machine" -ForegroundColor Green
 Write-Host "  mode         : NOMINAL relay → $Upstream (autonomous on hub outage)" -ForegroundColor White
-Write-Host "  container    : claudish-proxy on :$ProxyPort" -ForegroundColor White
+Write-Host "  container    : $ContainerName on :$ProxyPort" -ForegroundColor White
 Write-Host ""
 Write-Host "  Now repoint THIS machine's Claude Code (~/.claude/settings.json):" -ForegroundColor White
 Write-Host "    ANTHROPIC_BASE_URL = http://localhost:$ProxyPort" -ForegroundColor White
 Write-Host "  keep the existing custom header (machine name already correct):" -ForegroundColor White
 Write-Host "    ANTHROPIC_CUSTOM_HEADERS = `"X-Claudish-Machine: $Machine`n`" + `"`n`" + `"x-proxy-key: $ClusterKey`"" -ForegroundColor White
 Write-Host ""
-Write-Host "  Verify relay mode in logs:  docker logs claudish-proxy 2>&1 | Select-String 'Relay|NOMINAL|upstream'" -ForegroundColor DarkGray
+Write-Host "  Verify relay mode in logs:  docker logs $ContainerName 2>&1 | Select-String 'Relay|NOMINAL|upstream'" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  NOTE — the glm-5.2 probe above does NOT validate the native (Opus) path:" -ForegroundColor DarkGray
+Write-Host "  it is the traffic class the relay header bug spared. On ai-01 (the only" -ForegroundColor DarkGray
+Write-Host "  Anthropic-native machine) the real acceptance is a live Opus turn from" -ForegroundColor DarkGray
+Write-Host "  Claude Code after the repoint — an HTTP probe cannot carry the OAuth." -ForegroundColor DarkGray
