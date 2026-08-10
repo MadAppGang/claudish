@@ -169,8 +169,13 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $healthy) { Die "container did not become healthy on :$ProxyPort (check 'docker logs $ContainerName')" }
 Write-Ok "healthy"
 
-# ── 6. End-to-end probe (NOMINAL relay → hub → provider) ────────────
-Write-Step "End-to-end tool-call probe (glm-5.2 via sidecar)"
+# ── 6. End-to-end tool-call probe + MODE assertion ──────────────────
+# A 200 with message_stop proves the sidecar answers — it does NOT prove it
+# relayed: in AUTONOMOUS mode the local pipeline answers just as well, which is
+# precisely how a sidecar that cannot reach the hub looks healthy while silently
+# bypassing it (observed on ai-01, 2026-08-10: Docker had no route to the LAN
+# hub). So assert the mode from the logs: in NOMINAL the relay branch sits BEFORE
+# logRequest, so a relayed request emits NO "[Request]" line; a local one always does.
 $body = @{
     model = "glm-5.2"; max_tokens = 100; stream = $true
     tools = @(
@@ -179,14 +184,33 @@ $body = @{
     )
     messages = @(@{ role = "user"; content = "Reply with the single word OK." })
 } | ConvertTo-Json -Depth 10
+$hdr = @{ "x-proxy-key" = $ClusterKey; "X-Claudish-Machine" = $Machine }
+function Invoke-Probe { Invoke-WebRequest "http://localhost:$ProxyPort/v1/messages" -Method POST `
+        -ContentType "application/json" -Headers $hdr -Body $body -TimeoutSec 60 -UseBasicParsing }
+
+# Warm-up: the forward bounds its HEADER phase (5s). A cold DNS+TLS handshake to a
+# WAN upstream can exceed that, so the very first request may legitimately fall
+# through to local. Don't judge the mode on it.
+Write-Step "End-to-end tool-call probe (glm-5.2 via sidecar) — warm-up"
+try { [void](Invoke-Probe) ; Write-Ok "warm-up answered" } catch { Write-Warn "warm-up failed: $($_.Exception.Message)" }
+
+Write-Step "Asserting relay mode (NOMINAL vs AUTONOMOUS)"
 try {
-    $r = Invoke-WebRequest "http://localhost:$ProxyPort/v1/messages" -Method POST `
-        -ContentType "application/json" -Headers @{ "x-proxy-key" = $ClusterKey; "X-Claudish-Machine" = $Machine } `
-        -Body $body -TimeoutSec 60 -UseBasicParsing
+    $r = Invoke-Probe
     if ($r.Content -match "message_stop") {
-        Write-Ok "stream completed with terminal message_stop (NOMINAL relay works)"
+        Write-Ok "stream completed with terminal message_stop"
     } else {
         Write-Warn "probe returned $($r.Content.Length) bytes but no message_stop — inspect 'docker logs $ContainerName'"
+    }
+    $servedLocally = (docker logs --since 90s $ContainerName 2>&1 | Select-String -SimpleMatch "[Request]")
+    if ($servedLocally) {
+        Write-Warn "served LOCALLY → the sidecar is AUTONOMOUS: it cannot reach $Upstream."
+        Write-Warn "  Check egress FROM THE CONTAINER, not from the host — they differ:"
+        Write-Warn "    docker exec $ContainerName wget -qO- --timeout=5 $Upstream/health"
+        Write-Warn "  Docker on Windows often has no route to a LAN IP while the host does."
+        Write-Warn "  In that case use the WAN endpoint as upstream: -Upstream https://models.myia.io"
+    } else {
+        Write-Ok "no local [Request] line → request was RELAYED to $Upstream (NOMINAL)"
     }
 } catch {
     Write-Warn "probe failed: $($_.Exception.Message) — if the hub is reachable this needs investigation"

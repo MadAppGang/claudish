@@ -29,7 +29,7 @@ After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** si
 
 | Machine | `-Upstream` | `-Compress` | `-NoAnthropic` | Note |
 |---|---|---|---|---|
-| myia-ai-01 | `http://192.168.0.46:3000` | — | **no** | The one Anthropic authority; Opus traverses the relay via the header fix (OAuth preserved) |
+| myia-ai-01 | `https://models.myia.io` | — | **no** | The one Anthropic authority; Opus traverses the relay via the header fix (OAuth preserved). **Not the LAN IP** — this machine's Docker has no route to it (see "Docker cannot reach the LAN hub"). Also needs `-HostPort 3002 -ContainerName claudish-sidecar` (3000 taken by a third-party service). |
 | myia-po-2024 | `http://192.168.0.46:3000` | — | yes | LAN |
 | myia-po-2025 | `https://models.myia.io` | yes | yes | WAN external |
 | myia-po-2026 | `http://192.168.0.46:3000` | — | yes | LAN |
@@ -88,6 +88,31 @@ Keep `ANTHROPIC_AUTH_TOKEN` empty and keep the `x-proxy-key` + `X-Claudish-Machi
 2. **Native path (ai-01 only)**: the installer probe uses `glm-5.2` — the traffic class the relay header bug *spared*. It proves nothing about native passthrough. On ai-01 the real acceptance is **a live Opus turn from Claude Code after the repoint**: an HTTP probe cannot carry the OAuth that the bug destroyed, so it is blind by construction.
 3. **Failover**: stop the hub (`docker stop claudish-proxy` **on po-2023**) → within ~20s this sidecar flips AUTONOMOUS → a glm/minimax request still succeeds (served locally). Restart the hub → after hysteresis the sidecar returns to NOMINAL. (Coordinate the hub-stop with the cluster — it briefly interrupts every direct-to-hub client too.)
 4. **Attribution survives**: `traffic-live.ps1` / captures still show `machine=<MACHINE>` on this machine's requests — the relay preserves `X-Claudish-Machine` by design.
+
+## Troubleshooting — Docker cannot reach the LAN hub
+
+**Symptom**: the installer's probe returns 200 with `message_stop`, but the sidecar logs `[Relay] upstream … DOWN → AUTONOMOUS`, and every request shows a local `[claudish] [Request]` line plus a fresh capture file. The sidecar looks healthy while silently bypassing the hub.
+
+**Cause**: Docker's egress is not the host's egress. On ai-01 (2026-08-10) `curl http://192.168.0.46:3000/health` returned `{"status":"ok"}` **from the host** while the same request **from inside the container** timed out and `ping` lost 100% of packets — internet egress worked fine. Docker Desktop on Windows routinely has no route to a physical LAN address.
+
+**Diagnose from inside the container** (host-side tests prove nothing here):
+
+```powershell
+docker exec <ContainerName> wget -qO- --timeout=5 http://192.168.0.46:3000/health   # LAN
+docker exec <ContainerName> wget -qO- --timeout=8 https://models.myia.io/health     # WAN
+```
+
+**Fix**: use the WAN endpoint as the upstream — it is the same hub, reachable from the container:
+
+```powershell
+.\scripts\install-sidecar.ps1 -Machine myia-ai-01 -Upstream https://models.myia.io ...
+```
+
+Leave `-Compress` off on a machine that is physically on the LAN: the uplink is not the constrained direction there, and the hub inflates either way.
+
+**Related sharp edge — the first request after a restart may be served locally.** `forwardToUpstream` bounds the *header* phase at 5s; a cold DNS+TLS handshake to a WAN upstream can exceed that, so the request falls through to local (by design — never hang). It logs nothing, because `markFail` only logs on the 2-failure transition. Warm up before judging the mode; the installer now does exactly that.
+
+**How to tell NOMINAL from AUTONOMOUS** (the only reliable test): in NOMINAL the relay branch sits *before* `logRequest`/capture, so a relayed request emits **no** `[claudish] [Request]` line and writes **no** capture file. Either artifact appearing means the request was served locally.
 
 ## Known limitation — NOMINAL leak policy is soft
 
