@@ -60,7 +60,22 @@ const OK_THRESHOLD = 3; // consecutive OK heartbeats before attempting a deep pr
 const RECOVERY_COOLDOWN_MS = 60_000; // min time autonomous before returning to relay
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 4_000;
-const FORWARD_HEADERS_TIMEOUT_MS = 5_000; // pre-stream deadline; longer stream is unbounded
+/**
+ * Pre-stream deadline (the body stream itself is unbounded). This is NOT a liveness
+ * detector — the heartbeat prober owns that (10s interval, 2 failures → AUTONOMOUS).
+ * Its only job is to stop a black-holed connection from hanging a request forever,
+ * so it must sit ABOVE the hub's normal header latency, not inside it.
+ *
+ * Measured on ai-01 → models.myia.io, 2026-08-10, ordinary glm-5.2 streaming POSTs:
+ * first byte at 2.5s / 3.1s / 3.4s / **8.3s**. The former 5s bound sat in the middle
+ * of that distribution, so routine upstream latency aborted the forward and the
+ * request fell through to the local pipeline — silently (markFail only logs on its
+ * second consecutive failure) and expensively (the hub's in-flight provider call is
+ * orphaned but still billed, then the sidecar re-runs the same prompt locally).
+ * Worse, on a CLAUDISH_NO_ANTHROPIC machine that fallthrough reroutes a native
+ * target to the budget model — a policy-visible behavior change caused by latency.
+ */
+export const FORWARD_HEADERS_TIMEOUT_MS = 30_000;
 const DEEP_PROBE_TIMEOUT_MS = 30_000;
 
 /**
@@ -112,6 +127,23 @@ function markFail(state: RelayState, reason: string): void {
       true
     );
   }
+}
+
+/**
+ * Log EVERY per-request fallthrough. `markFail` only speaks on its second
+ * consecutive failure, so a single forward failure used to be completely invisible
+ * while still changing behavior: the request is served by the local pipeline, so it
+ * escapes central capture (attribution hole) and, on a CLAUDISH_NO_ANTHROPIC
+ * machine, a native target is rerouted to the budget model. Silent degradation of
+ * that kind is the one thing a relay must never do.
+ * Not called from the prober — heartbeat failures would spam one line per 10s tick.
+ */
+function logFallthrough(state: RelayState, reason: string): void {
+  log(
+    `[Relay] forward failed (${reason}) → this request served LOCALLY ` +
+      `[${state.consecutiveFail}/${FAIL_THRESHOLD} before AUTONOMOUS]`,
+    true
+  );
 }
 
 /**
@@ -185,12 +217,14 @@ export async function forwardToUpstream(
     // Pre-stream failure (connection refused / header timeout) → fall through to local.
     clearTimeout(headerTimer);
     markFail(state, `forward-connect: ${String(e).slice(0, 80)}`);
+    logFallthrough(state, `connect: ${String(e).slice(0, 80)}`);
     return null;
   }
 
   if (res.status >= 500) {
     // Hub answered 5xx → treat as unhealthy, fall back to local for this request.
     markFail(state, `forward-http-${res.status}`);
+    logFallthrough(state, `hub HTTP ${res.status}`);
     return null;
   }
 

@@ -48,10 +48,15 @@
   writes nothing, so any loose capture file is by construction an AUTONOMOUS-mode
   outage capture — the trail reconcile-outage-captures.ps1 needs.
 
+.PARAMETER Force
+  Allow the hard-reset of an existing clone that has uncommitted changes or unpushed
+  commits. Without it the script refuses and tells you what it would have destroyed.
+
 .PARAMETER RepoDir
   Where the fork lives / will be cloned. Default C:\Dev\claudish. Pass explicitly if
   the machine already has a clone elsewhere, otherwise a second one is created.
-  NB: an existing clone is hard-reset to origin/main — commit local work first.
+  NB: an existing clone is hard-reset to origin/main — the script now refuses when
+  that would destroy uncommitted work or unpushed commits (override with -Force).
 
 .PARAMETER ConfigDir
   Host dir mounted as /root/.claudish (must contain config.json with provider keys).
@@ -76,6 +81,7 @@ param(
     [switch]$Compress,
     [switch]$NoAnthropic,
     [switch]$NoCapture,
+    [switch]$Force,
     [int]$HostPort     = 3000,
     [string]$ContainerName = "claudish-proxy",
     [string]$RepoUrl   = "https://github.com/jsboige/claudish.git",
@@ -97,6 +103,23 @@ function Die($msg)        { Write-Host "   XX  $msg" -ForegroundColor Red; exit 
 Write-Step "Repo → $RepoDir"
 if (Test-Path (Join-Path $RepoDir ".git")) {
     Write-Ok "exists, pulling latest main"
+    # `reset --hard` below is a deletion, and a deletion must prove what it destroys.
+    # The default RepoDir is a REAL checkout on several machines (po-2024's clone;
+    # ai-01's D:\Dev\claudish, from which a sidecar is actually running), so a run
+    # with the default path would silently discard whatever local work sits there.
+    $dirty = @(git -C $RepoDir status --porcelain)
+    if ($dirty.Count -gt 0 -and -not $Force) {
+        Write-Host ($dirty | Select-Object -First 10 | Out-String) -ForegroundColor Yellow
+        Die "$RepoDir has $($dirty.Count) uncommitted change(s) that 'reset --hard' would destroy. Commit/stash them, point -RepoDir at a fresh path, or pass -Force to discard them deliberately."
+    }
+    $ahead = @(git -C $RepoDir log --oneline "origin/main..HEAD" 2>$null)
+    if ($ahead.Count -gt 0 -and -not $Force) {
+        Write-Host ($ahead | Out-String) -ForegroundColor Yellow
+        Die "$RepoDir holds $($ahead.Count) commit(s) not on origin/main and would lose them. Push them, point -RepoDir at a fresh path, or pass -Force."
+    }
+    if ($Force -and ($dirty.Count -gt 0 -or $ahead.Count -gt 0)) {
+        Write-Warn "-Force: discarding $($dirty.Count) local change(s) and $($ahead.Count) unpushed commit(s) in $RepoDir"
+    }
     git -C $RepoDir fetch origin main --quiet
     git -C $RepoDir checkout main --quiet 2>$null
     git -C $RepoDir reset --hard origin/main --quiet

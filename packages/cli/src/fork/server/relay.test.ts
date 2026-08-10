@@ -4,6 +4,7 @@ import {
   createRelayState,
   readRequestBody,
   forwardToUpstream,
+  FORWARD_HEADERS_TIMEOUT_MS,
   type RelayState,
 } from "./relay.js";
 
@@ -262,6 +263,17 @@ describe("forwardToUpstream — failover hysteresis (FAIL path)", () => {
     expect(r).not.toBeNull();
     expect(r!.status).toBe(400);
     expect(state.consecutiveFail).toBe(0); // 4xx is not a hub-health failure
+  });
+});
+
+describe("FORWARD_HEADERS_TIMEOUT_MS — must sit above real hub header latency", () => {
+  it("is generous enough that ordinary upstream latency never forces a local fallthrough", () => {
+    // Measured ai-01 → models.myia.io on 2026-08-10, plain glm-5.2 streaming POSTs:
+    // first byte at 2.5s / 3.1s / 3.4s / 8.3s. A 5s bound sat inside that spread and
+    // silently demoted routine requests to the local pipeline (no central capture,
+    // double provider spend, and budget-model reroute on CLAUDISH_NO_ANTHROPIC hosts).
+    // Liveness is the prober's job, not this bound's — keep it well clear of the tail.
+    expect(FORWARD_HEADERS_TIMEOUT_MS).toBeGreaterThanOrEqual(20_000);
   });
 });
 
