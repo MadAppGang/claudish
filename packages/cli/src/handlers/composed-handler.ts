@@ -1159,7 +1159,12 @@ export class ComposedHandler implements ModelHandler {
  * to switch to, so the only useful outcome is a patient client retry. See the
  * 2026-06-25 patient-backoff revision.
  */
-function isTransientOverload(status: number, errorText: string): boolean {
+/**
+ * Test-only export: `cluster-critical.test.ts` (Invariant 4) asserts this logic
+ * directly. Keeping the function private otherwise — the production call sites
+ * all live in this file.
+ */
+export function isTransientOverload(status: number, errorText: string): boolean {
   const lower = errorText.toLowerCase();
   if (status === 503) return true;
   if (status === 429) {
