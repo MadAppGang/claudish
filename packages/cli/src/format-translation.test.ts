@@ -614,7 +614,12 @@ describe("Model Adapter Quirks", () => {
 
   test("MiniMaxModelDialect: unknown minimax model → context window 0", async () => {
     const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
-    const adapter = new MiniMaxModelDialect("minimax-m2.5");
+    // Must be an id that no catalog will ever contain: getContextWindow() calls
+    // lookupModel(), which reads the machine-local ~/.claudish/all-models.json.
+    // This test used "minimax-m2.5", which was genuinely absent when written and
+    // is now catalogued at 204800 — so the assertion started depending on when
+    // the developer last refreshed their cache rather than on the code.
+    const adapter = new MiniMaxModelDialect("minimax-not-a-real-model-zzz");
     expect(adapter.getContextWindow()).toBe(0);
   });
 

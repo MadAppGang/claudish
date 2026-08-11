@@ -1,0 +1,7 @@
+# SSE fixtures are byte-exact captures of provider wire traffic, replayed by
+# format-translation.test.ts. The SSE event separator is a blank line: the test
+# harness splits on "\n\n". Under core.autocrlf=true (the Windows default) these
+# files check out as CRLF, "\n\n" never matches "\r\n\r\n", and 12 tests fail
+# with an empty parse — indistinguishable from a real anthropic-sse regression.
+# Keep them LF on every platform.
+*.sse text eol=lf

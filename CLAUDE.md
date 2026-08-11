@@ -314,6 +314,39 @@ Two capture variables, one letter apart in meaning and deliberately *not* in spe
 
 **Fleet deployment.** `scripts/install-sidecar.ps1` idempotently stands up a sidecar on a target machine (clone/pull, per-machine `.env`, `docker compose up --build`, end-to-end probe). Runbook + per-machine config table: `docs/deployment/relay-sidecar-deployment.md`. Sidecars go on every machine except po-2023 (hub) and web1 (stays on `models.myia.io`). The client prerequisite — the `x-proxy-key` custom header — is documented in memory `proxy-key-custom-header-auth`.
 
+## Budget Failover (v7.2+)
+
+**Not the same thing as `FallbackHandler`.** That one swaps *providers* for the *same* model when a provider is unhealthy — a transport concern. This one substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`) when that role's metered plan is exhausted — a subscription concern. They compose: a failover target still gets the normal provider fallback chain.
+
+**Why it exists.** The cluster runs on weekly-metered plans (Anthropic, MiniMax, Z.AI). When a plan burns faster than its reset window, the choice is to stop working or to serve the role from another pool. Serving it *silently* is the dangerous option: the agent keeps assuming capabilities it no longer has, or — in the MiniMax→DeepSeek direction — fails to use capabilities it just gained. So every substitution is announced.
+
+**Where the notice goes: condensation.** `ComposedHandler` appends it to the collected message on the non-streaming path (`stream: false`), which in practice is `/compact`. That boundary is chosen because it is the only moment in an agentic session where the context is rebuilt from scratch anyway — the notice costs nothing there, is guaranteed to survive into the continuing context, and the prompt cache is already cold so re-routing is free. `appendFailoverNoticeToMessage` targets the **trailing** text block (clients may read `content[0]`) and **never throws**: a thrown error would turn a working condensation into a failed one, and a session that cannot condense eventually stalls.
+
+**Configuration** (env, read at proxy startup; see `.env.sidecar.example`):
+
+| Var | Meaning |
+|---|---|
+| `CLAUDISH_FAILOVER_<ROLE>` | Routing target for the role. Any spec `getHandlerForRequest` accepts. |
+| `..._LABEL` | Human name used in the notice. Defaults to the target string. |
+| `..._DIRECTION` | `degraded` (default) · `improved` · `lateral`. Unset means degraded — never flatter the substitute. |
+| `..._NOTE` | Extra guidance appended to that role's notice line. |
+| `CLAUDISH_FAILOVER_ACTIVE` | Roles armed **now**, comma-separated, or `none`. Use to conserve a plan *before* it dies. |
+| `CLAUDISH_FAILOVER_AUTO` | `1` = also arm on genuine upstream quota exhaustion. |
+
+**With nothing set, every code path is inert** — no routing change, no notice, zero added bytes. Configuring a target does **not** activate it; arming is separate and deliberate.
+
+**`isQuotaExhaustion` is deliberately narrower than `FallbackHandler.isRetryableError`.** 402 arms on status alone; 429 arms only when the body names a quota/credit/balance/weekly/plan wall — a plain per-minute rate limit must **not** burn the weekly switch because a burst hit a 60-second window. 401 and 404 **never** arm: those are wiring mistakes, and swapping the model would hide a bad key or a bad model id behind a plausible-looking answer.
+
+**Placement.** These belong on the machine that actually *calls* the models. A NOMINAL sidecar only relays, so on a sidecar they matter solely for AUTONOMOUS (hub-down) mode — the hub is the normal home. A failover target must be resolvable *on that machine*: pointing a sidecar at a custom endpoint defined only in the hub's `config.json` configures a fallback that fails exactly when it is needed.
+
+### `CLAUDISH_QWEN_THINKING`
+
+Qwen reasons by default, so an unset `thinking` is not neutral — it means "think, at length", and the Token Plan bills on **output**. Values: `disabled` (default) · `passthrough` · `budget:<n>`. Re-read on **every request**, deliberately: the fleet flips this during a budget crunch, and a cached value would require restarting the proxy that is at that moment the thing keeping everyone working.
+
+The subtlety this encodes: Qwen exposes **two switches on two wires, and each endpoint ignores the other's form**. The OpenAI-compatible endpoint takes `enable_thinking` + `thinking_budget`; the Anthropic-compatible one takes the native `thinking` object. `QwenModelDialect.prepareRequest` therefore branches on `ctx.wireFormat` (`PrepareRequestContext`, threaded from `ComposedHandler.resolveStreamFormat()`). Before this, the adapter converted `thinking` → `enable_thinking` unconditionally, which on the Anthropic wire **deleted the only switch that works**.
+
+Measured against Qwen Token Plan, `max_tokens: 400`, prompt `"Reponds exactement: ok"` (2026-08-11): baseline `67 in / 43 out` with a thinking block; `enable_thinking: false` → `67 / 48`, still thinking; `thinking: {type: "disabled"}` → `31 / 1`. Note the **input** count moves too (67 → 31) — Alibaba appears to inject a reasoning preamble when thinking is on. That makes a crisp post-deploy check: **if `input_tokens` drops from 67 to 31 on that prompt, the native switch reached Qwen.**
+
 ## Traffic Analysis
 
 **Use the scripts, not hand-rolled grep.** The proxy log format has traps that produce false positives when grepped naively (see `proxy-log-monitoring` memory: `bytes=NNNN` matching error codes, timestamp digits matching `429`, `[msg:N]` body previews matching keywords). The scripts below encode the precise filters.

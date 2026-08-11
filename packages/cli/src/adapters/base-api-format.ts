@@ -13,7 +13,7 @@ import type { ModelPricing } from "../handlers/shared/remote-provider-types.js";
 import { getModelPricing } from "../handlers/shared/remote-provider-types.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import type { APIFormat } from "./api-format.js";
-import type { ModelDialect } from "./model-dialect.js";
+import type { ModelDialect, PrepareRequestContext } from "./model-dialect.js";
 import { lookupModel } from "./model-catalog.js";
 
 /**
@@ -107,9 +107,10 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * Useful for mapping parameters like thinking budget -> reasoning_effort
    * @param request - The OpenRouter payload being prepared
    * @param originalRequest - The original Claude-format request
+   * @param ctx - Optional wire-format context (see PrepareRequestContext)
    * @returns The modified request payload
    */
-  prepareRequest(request: any, originalRequest: any): any {
+  prepareRequest(request: any, originalRequest: any, ctx?: PrepareRequestContext): any {
     return request;
   }
 
