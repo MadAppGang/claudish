@@ -745,24 +745,103 @@ export async function createProxyServer(
   );
   app.get("/health", (c) => c.json({ status: "ok" }));
 
-  // Model discovery for Claude Desktop "third-party inference" mode.
-  // The app builds its model picker ONLY from a live GET /v1/models, and
-  // silently drops any id it doesn't recognize — so `serve` advertises the
-  // Claude-recognized SLOT ids here (supplied via options.servedSlotIds),
-  // NOT the real model ids those slots route to. Defaults to an empty list
-  // for non-serve callers (the picker is irrelevant to them).
+  // Model discovery endpoint.
+  //
+  // Two coexisting consumers, one response shape:
+  //
+  // 1. **Claude Desktop** in third-party-inference mode: builds its picker
+  //    from a live `GET /v1/models` and silently drops any id it doesn't
+  //    recognize. `serve` callers advertise the Claude-recognized SLOT ids
+  //    here (via `options.servedSlotIds`), NOT the real model ids behind
+  //    them. This branch must remain byte-identical to upstream slot mode —
+  //    Desktop parses the response and regressions wouldn't be caught by
+  //    feel.
+  //
+  // 2. **Gateway model discovery** for non-serve callers
+  //    (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`): aggregates routable
+  //    model names from routing rules + custom endpoints. The catch-all `*`
+  //    rule is excluded (it's a routing wildcard, not a real model id).
+  //    Rules whose entire routing chain has no credentials are filtered out
+  //    — otherwise the picker surfaces options that can only 401.
+  //
+  // The two branches never see each other's data: if `servedSlotIds` is
+  // non-empty we serve slot mode and ignore the aggregate.
   const servedSlotIds = options.servedSlotIds ?? [];
-  app.get("/v1/models", (c) => {
+  app.get("/v1/models", async (c) => {
+    if (servedSlotIds.length > 0) {
+      return c.json({
+        object: "list",
+        has_more: false,
+        data: servedSlotIds.map((id) => ({
+          id,
+          object: "model",
+          type: "model",
+          created: 1716000000,
+          owned_by: "claudish",
+        })),
+      });
+    }
+
+    // Discovery mode: aggregate routable models, filter to credentialed providers.
+    const cfg = loadConfig();
+    const seen = new Set<string>();
+    const data: { id: string; object: string; type: string; created: number; owned_by: string }[] = [];
+
+    if (cfg.routing) {
+      for (const modelName of Object.keys(cfg.routing)) {
+        // Skip the catch-all routing wildcard — it's a routing rule, not a real model.
+        if (modelName === "*") continue;
+        // Resolve the routing chain and keep the rule only if at least one
+        // candidate has credentials. Reuses the same machinery every
+        // bare-name request goes through, so the filter is consistent with
+        // what would actually serve traffic. A 401-only option in the picker
+        // is strictly worse than not advertising it.
+        try {
+          const plan = await route(modelName, cfg.routing);
+          // Only "ok" plans reach a real provider. "no-route" plans mean the
+          // rule has no candidate (model not routed anywhere), which is the
+          // same outcome for the picker as missing credentials.
+          if (plan.kind !== "ok") continue;
+        } catch {
+          continue;
+        }
+        if (!seen.has(modelName)) {
+          seen.add(modelName);
+          data.push({
+            id: modelName,
+            object: "model",
+            type: "model",
+            created: 1716000000,
+            owned_by: "claudish",
+          });
+        }
+      }
+    }
+
+    if (cfg.customEndpoints) {
+      for (const [, ep] of Object.entries(cfg.customEndpoints)) {
+        const endpoint = ep as { models?: string[] };
+        if (endpoint.models) {
+          for (const m of endpoint.models) {
+            if (!seen.has(m)) {
+              seen.add(m);
+              data.push({
+                id: m,
+                object: "model",
+                type: "model",
+                created: 1716000000,
+                owned_by: "claudish",
+              });
+            }
+          }
+        }
+      }
+    }
+
     return c.json({
       object: "list",
       has_more: false,
-      data: servedSlotIds.map((id) => ({
-        id,
-        object: "model",
-        type: "model",
-        created: 1716000000,
-        owned_by: "claudish",
-      })),
+      data,
     });
   });
 
