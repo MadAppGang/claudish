@@ -272,8 +272,23 @@ export function createAnthropicPassthroughStream(
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
 
-            for (const line of lines) {
+            for (let line of lines) {
               totalLines++;
+
+              // ── SSE data-prefix normalization ─────────────────────────
+              // Anthropic's canonical wire format (and what every check below
+              // expects) is `data: {...}` with exactly one space after the colon.
+              // Some anthropic-compat providers emit `data:{...}` with NO space
+              // (Qwen Cloud Token Plan / Alibaba MaaS). Without normalization,
+              // every `startsWith("data: ")` check silently fails: no data line
+              // is ever parsed, sawMessageStop stays false, and finalizeWithError
+              // injects a spurious "[empty response]" error after the valid
+              // stream completes. The HTML5 SSE spec allows either form (one
+              // optional leading space is trimmed from the field value), so this
+              // normalization is spec-compliant. See qwen-deepseek-onboarding.
+              if (line.startsWith("data:") && !line.startsWith("data: ")) {
+                line = "data: " + line.slice(5);
+              }
 
               // ── Thinking-block filtering ──────────────────────────────
               if (filterThinking && line.startsWith("data: ")) {

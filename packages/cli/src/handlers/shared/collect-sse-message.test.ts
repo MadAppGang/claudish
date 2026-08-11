@@ -20,6 +20,32 @@ function sseResponse(events: any[]): Response {
   });
 }
 
+/**
+ * Build a Response whose body streams SSE events in the Qwen Cloud / Alibaba
+ * MaaS wire format: `event:TYPE\ndata:{...}` — NO space after the colon.
+ * (Anthropic's canonical format, used by sseResponse above, is `data: {...}`
+ * with a space.) Regression: the anthropic-sse parser used to require the
+ * space, so every Qwen data line was skipped, sawMessageStop stayed false,
+ * and finalizeWithError injected a spurious "[empty response]".
+ */
+function qwenSseResponse(events: any[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const evt of events) {
+        controller.enqueue(
+          encoder.encode(`event:${evt.type}\ndata:${JSON.stringify(evt)}\n\n`)
+        );
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 describe("collectAnthropicSseToMessage", () => {
   it("reconstructs a plain text message from SSE", async () => {
     const res = sseResponse([
@@ -125,6 +151,70 @@ describe("collectAnthropicSseToMessage", () => {
 
     const msg = await collectAnthropicSseToMessage(res, "m");
     expect(msg.content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  it("parses Qwen-style SSE with NO space after data: (regression: empty-response bug)", async () => {
+    // Qwen Cloud Token Plan / Alibaba MaaS emit `data:{...}` without the space
+    // after the colon. Before the normalization fix, the anthropic-sse parser
+    // never matched any data line (every check used startsWith("data: ")),
+    // sawMessageStop stayed false, and finalizeWithError injected a spurious
+    // "[empty response]" error — even though the upstream stream was complete
+    // and valid. This test feeds the exact Qwen wire shape (thinking + text +
+    // tool_use + message_stop, no spaces) and asserts correct reconstruction.
+    const res = qwenSseResponse([
+      { type: "message_start", message: { id: "msg_qwen", model: "qwen3.8-max", role: "assistant", usage: { input_tokens: 87215, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "The user asked" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Hello from Qwen" } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { input_tokens: 87215, output_tokens: 4 } },
+      { type: "message_stop" },
+    ]);
+
+    const msg = await collectAnthropicSseToMessage(res, "qwen3.8-max");
+
+    // Before the fix: content would be the injected error text
+    // "[Error: The model returned an empty response...]" with stop_reason end_turn
+    // but output_tokens 0. After the fix: the real text is reconstructed.
+    expect(msg.id).toBe("msg_qwen");
+    expect(msg.model).toBe("qwen3.8-max");
+    expect(msg.content).toEqual([
+      { type: "thinking", thinking: "The user asked" },
+      { type: "text", text: "Hello from Qwen" },
+    ]);
+    expect(msg.stop_reason).toBe("end_turn");
+    expect(msg.usage.output_tokens).toBe(4);
+  });
+
+  it("parses Qwen-style SSE ending in tool_use with NO space after data:", async () => {
+    // The production failure (capture resp-1-r1815) was a tool_use turn: Qwen
+    // returned thinking + text + tool_use + message_stop with stop_reason
+    // tool_use, all in no-space format. claudish reported sawMessageStop=false
+    // and toolUse=0 — the parser extracted nothing. Assert the tool_use is now
+    // reconstructed and stop_reason detected.
+    const res = qwenSseResponse([
+      { type: "message_start", message: { id: "msg_t", model: "qwen3.8-max", role: "assistant", usage: { input_tokens: 100, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "planning" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "running a tool" } },
+      { type: "content_block_stop", index: 1 },
+      { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "toolu_q", name: "Bash" } },
+      { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: '{"command":"echo hi"}' } },
+      { type: "content_block_stop", index: 2 },
+      { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { input_tokens: 100, output_tokens: 10 } },
+      { type: "message_stop" },
+    ]);
+
+    const msg = await collectAnthropicSseToMessage(res, "qwen3.8-max");
+
+    expect(msg.stop_reason).toBe("tool_use");
+    expect(msg.content.some((c: any) => c.type === "tool_use" && c.name === "Bash")).toBe(true);
+    const toolBlock = msg.content.find((c: any) => c.type === "tool_use");
+    expect(toolBlock.input).toEqual({ command: "echo hi" });
   });
 
   it("falls back to {} for unparseable tool input JSON without throwing", async () => {
