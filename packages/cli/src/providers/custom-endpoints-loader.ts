@@ -232,6 +232,7 @@ function buildComplexHandler(
         prefixes: ctx.provider.prefixes ?? [],
         headers: ep.headers,
         authScheme: ep.authScheme ?? "bearer",
+        streamFormatOverride: ep.streamFormat,
       };
       const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey);
       const adapter = new OpenAIAPIFormat(finalModel);
@@ -250,6 +251,7 @@ function buildComplexHandler(
         prefixes: ctx.provider.prefixes ?? [],
         headers: ep.headers,
         authScheme: ep.authScheme ?? "x-api-key",
+        streamFormatOverride: ep.streamFormat,
       };
       const transport = new AnthropicProviderTransport(remoteProvider, apiKey);
       const adapter = new AnthropicAPIFormat(finalModel, ctx.provider.name);

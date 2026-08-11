@@ -61,7 +61,7 @@ export interface ProviderTransport {
    * response formats server-side, regardless of the underlying model.
    * If undefined, the adapter's getStreamFormat() is used.
    */
-  overrideStreamFormat?(): StreamFormat;
+  overrideStreamFormat?(): StreamFormat | undefined;
 
   /**
    * Extra fields to merge into the request payload.
