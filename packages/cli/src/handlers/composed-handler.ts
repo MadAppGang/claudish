@@ -398,7 +398,13 @@ export class ComposedHandler implements ModelHandler {
     // so every request here goes to a provider that doesn't understand Anthropic
     // thinking signatures. Without this strip, Opus thinking blocks (with signatures)
     // flow through to Z.AI/GLM/MiniMax/etc., which either ignore or corrupt them.
-    if (requestPayload.messages) {
+    //
+    // Opt-out: models that REQUIRE their reasoning to be echoed back as
+    // reasoning_content (DeepSeek) override preserveThinkingInHistory()=true.
+    // For those, the thinking block must survive so the OpenAI-format converter
+    // can re-emit reasoning_content on the outbound payload — stripping it makes
+    // the converter omit the field, which DeepSeek rejects with HTTP 400.
+    if (requestPayload.messages && !this.modelAdapter?.preserveThinkingInHistory?.()) {
       let stripped = 0;
       for (const msg of requestPayload.messages) {
         if (msg.role === "assistant" && Array.isArray(msg.content)) {

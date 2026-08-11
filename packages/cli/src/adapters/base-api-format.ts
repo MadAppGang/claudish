@@ -206,6 +206,21 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
+   * Whether thinking blocks in message history MUST be preserved (not stripped)
+   * so the OpenAI-format converter can round-trip them as `reasoning_content`.
+   *
+   * Providers that enforce reasoning_content echo-back on every assistant turn
+   * (DeepSeek) return true. Default false: strip — Anthropic thinking signatures
+   * are meaningless (and corrupting) to non-native anthropic-transport providers
+   * like GLM/MiniMax, and ComposedHandler strips them from history by default.
+   * Returning true opts the model out of that strip so the converter sees the
+   * thinking block and re-emits reasoning_content on the outbound payload.
+   */
+  preserveThinkingInHistory(): boolean {
+    return false;
+  }
+
+  /**
    * Truncate tool names in the request payload if the model has a name length limit.
    * Handles both Chat Completions format ({type:"function", function:{name}})
    * and Responses API format ({type:"function", name}).

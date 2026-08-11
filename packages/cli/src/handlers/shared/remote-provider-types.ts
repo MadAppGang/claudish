@@ -51,6 +51,20 @@ export interface RemoteProvider {
   headers?: Record<string, string>;
   /** Auth scheme for the API key header (defaults to "x-api-key") */
   authScheme?: "x-api-key" | "bearer";
+  /**
+   * Optional stream-format override surfaced via ProviderTransport.overrideStreamFormat().
+   * When the transport's wire format differs from what the model's dialect would
+   * pick (e.g. an Anthropic-compatible endpoint serving a Qwen-named model —
+   * QwenModelDialect inherits openai-sse, but the wire is anthropic-sse), this
+   * lets the customEndpoint config plumb the truth through to the parser.
+   * Mirrors the StreamFormat union declared at providers/transport/types.ts.
+   */
+  streamFormatOverride?:
+    | "anthropic-sse"
+    | "openai-sse"
+    | "openai-responses-sse"
+    | "gemini-sse"
+    | "ollama-jsonl";
 }
 
 /**
