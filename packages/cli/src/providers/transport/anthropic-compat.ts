@@ -39,6 +39,16 @@ export class AnthropicProviderTransport implements ProviderTransport {
     return `${this.provider.baseUrl}${this.provider.apiPath}`;
   }
 
+  /**
+   * Honor the optional streamFormatOverride declared on the RemoteProvider.
+   * Lets custom endpoints (e.g. qwen-token-plan serving an Anthropic-compatible
+   * wire format for a Qwen-named model) win over the dialect's default choice.
+   * No-op when unset — by default Anthropic-compat speaks anthropic-sse anyway.
+   */
+  overrideStreamFormat(): StreamFormat | undefined {
+    return this.provider.streamFormatOverride;
+  }
+
   async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       "anthropic-version": "2023-06-01",

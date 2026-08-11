@@ -41,6 +41,15 @@ export class OpenAIProviderTransport implements ProviderTransport {
   }
 
   /**
+   * Honor the optional streamFormatOverride declared on the RemoteProvider.
+   * Lets a custom endpoint (e.g. an aggregator whose openai transport actually
+   * speaks anthropic-sse) win over the dialect's default choice of openai-sse.
+   */
+  overrideStreamFormat(): StreamFormat | undefined {
+    return this.provider.streamFormatOverride;
+  }
+
+  /**
    * Honours the provider's declared `authScheme` and merges its static
    * `headers`, mirroring AnthropicProviderTransport.
    *
