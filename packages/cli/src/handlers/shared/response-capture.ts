@@ -97,3 +97,42 @@ export function createResponseCapture(
     },
   };
 }
+
+/**
+ * Durably append an upstream error body to a survives-recreates log.
+ *
+ * Non-ok upstream responses (429 quota, 402 payment, 500, …) short-circuit
+ * BEFORE the stream parser runs, so `createResponseCapture` never taps them —
+ * their bodies lived only in stdout, which a `docker compose up` recreate
+ * wipes. That made the exact 429 wording needed to calibrate `isQuotaExhaustion`
+ * unreachable after the fact (incident 2026-08-11 morning: the GLM cap-5h 429
+ * body was lost to a container recreate done the same evening for the failover
+ * deploy). This appends one JSON line per error to
+ * `${CLAUDISH_CAPTURE_DIR}/upstream-errors.log`, which is bind-mounted on the
+ * hub and so survives recreates — the next saturation leaves a durable trail.
+ *
+ * No-op when `CLAUDISH_CAPTURE_DIR` is unset. Never throws.
+ */
+export function appendUpstreamError(entry: {
+  model: string;
+  provider: string;
+  status: number;
+  body: string;
+}): void {
+  const captureDir = process.env.CLAUDISH_CAPTURE_DIR;
+  if (!captureDir) return;
+  try {
+    const fs = require("fs");
+    fs.mkdirSync(captureDir, { recursive: true });
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      model: entry.model,
+      provider: entry.provider,
+      status: entry.status,
+      body: String(entry.body).slice(0, 2048),
+    });
+    fs.appendFileSync(`${captureDir}/upstream-errors.log`, line + "\n");
+  } catch {
+    // capture must never crash claudish
+  }
+}

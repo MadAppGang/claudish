@@ -33,6 +33,7 @@ import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthro
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
+import { appendUpstreamError } from "./shared/response-capture.js";
 import { appendFailoverNoticeToMessage } from "../fork/failover.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
@@ -704,6 +705,16 @@ export class ComposedHandler implements ModelHandler {
         }
       } else {
         const errorText = await response.text();
+        // Durably capture the upstream error body: non-ok responses short-circuit
+        // before the stream parser, so they never get a resp-*.sse — without this
+        // the body lives only in stdout, which a container recreate wipes. This is
+        // the exact wording isQuotaExhaustion needs to arm role failover.
+        appendUpstreamError({
+          model: this.targetModel,
+          provider: this.provider.displayName,
+          status: response.status,
+          body: errorText,
+        });
         log(`[${this.provider.displayName}] Error: ${errorText}`);
         const hint = getRecoveryHint(response.status, errorText, this.provider.displayName);
         logStderr(`Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}`);
