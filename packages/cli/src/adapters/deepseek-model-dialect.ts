@@ -35,6 +35,18 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
     return request;
   }
 
+  /**
+   * DeepSeek thinks automatically and REQUIRES reasoning_content to be echoed
+   * back on every assistant turn that produced reasoning. Stripping the thinking
+   * block from history makes the OpenAI-format converter omit reasoning_content,
+   * which DeepSeek rejects with HTTP 400 "The reasoning_content in the thinking
+   * mode must be passed back to the API". Preserve the block so the converter
+   * can round-trip it.
+   */
+  override preserveThinkingInHistory(): boolean {
+    return true;
+  }
+
   shouldHandle(modelId: string): boolean {
     return matchesModelFamily(modelId, "deepseek");
   }
