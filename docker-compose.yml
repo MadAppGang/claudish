@@ -49,6 +49,27 @@ services:
       - CLAUDISH_RELAY_UPSTREAM=${CLAUDISH_RELAY_UPSTREAM:-}
       - CLAUDISH_RELAY_COMPRESS=${CLAUDISH_RELAY_COMPRESS:-}
       - CLAUDISH_NO_ANTHROPIC=${CLAUDISH_NO_ANTHROPIC:-}
+      # Budget failover (fork extension). All empty → inert: no routing change,
+      # no notice, zero added bytes. Belongs on the machine that actually CALLS
+      # the models — i.e. the hub, since a NOMINAL sidecar only relays.
+      # See CLAUDE.md § "Budget Failover".
+      - CLAUDISH_FAILOVER_OPUS=${CLAUDISH_FAILOVER_OPUS:-}
+      - CLAUDISH_FAILOVER_OPUS_LABEL=${CLAUDISH_FAILOVER_OPUS_LABEL:-}
+      - CLAUDISH_FAILOVER_OPUS_DIRECTION=${CLAUDISH_FAILOVER_OPUS_DIRECTION:-}
+      - CLAUDISH_FAILOVER_OPUS_NOTE=${CLAUDISH_FAILOVER_OPUS_NOTE:-}
+      - CLAUDISH_FAILOVER_SONNET=${CLAUDISH_FAILOVER_SONNET:-}
+      - CLAUDISH_FAILOVER_SONNET_LABEL=${CLAUDISH_FAILOVER_SONNET_LABEL:-}
+      - CLAUDISH_FAILOVER_SONNET_DIRECTION=${CLAUDISH_FAILOVER_SONNET_DIRECTION:-}
+      - CLAUDISH_FAILOVER_SONNET_NOTE=${CLAUDISH_FAILOVER_SONNET_NOTE:-}
+      - CLAUDISH_FAILOVER_HAIKU=${CLAUDISH_FAILOVER_HAIKU:-}
+      - CLAUDISH_FAILOVER_HAIKU_LABEL=${CLAUDISH_FAILOVER_HAIKU_LABEL:-}
+      - CLAUDISH_FAILOVER_HAIKU_DIRECTION=${CLAUDISH_FAILOVER_HAIKU_DIRECTION:-}
+      - CLAUDISH_FAILOVER_HAIKU_NOTE=${CLAUDISH_FAILOVER_HAIKU_NOTE:-}
+      - CLAUDISH_FAILOVER_ACTIVE=${CLAUDISH_FAILOVER_ACTIVE:-}
+      - CLAUDISH_FAILOVER_AUTO=${CLAUDISH_FAILOVER_AUTO:-}
+      # Qwen reasons by default and bills on output. disabled (default) |
+      # passthrough | budget:<n>. Re-read per request: flip without a restart.
+      - CLAUDISH_QWEN_THINKING=${CLAUDISH_QWEN_THINKING:-}
     command: ["--port", "3000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]

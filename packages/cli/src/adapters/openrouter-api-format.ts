@@ -10,6 +10,7 @@
  * - Tool choice mapping from Claude format
  */
 
+import type { PrepareRequestContext } from "./model-dialect.js";
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import { DialectManager } from "./dialect-manager.js";
 import { removeUriFormat } from "../transform.js";
@@ -149,8 +150,8 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
 
   // ─── Delegate prepareRequest to inner adapter ──────────────────────
 
-  override prepareRequest(request: any, originalRequest: any): any {
-    return this.innerAdapter.prepareRequest(request, originalRequest);
+  override prepareRequest(request: any, originalRequest: any, ctx?: PrepareRequestContext): any {
+    return this.innerAdapter.prepareRequest(request, originalRequest, ctx);
   }
 
   override getToolNameMap(): Map<string, string> {

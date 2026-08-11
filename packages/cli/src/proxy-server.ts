@@ -37,6 +37,15 @@ import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
 import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/server/relay.js";
+import {
+  initFailover,
+  isFailoverActive,
+  getFailoverRule,
+  armFailover,
+  isQuotaExhaustion,
+  roleFromModelName,
+  type FailoverRole,
+} from "./fork/failover.js";
 import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFromWebContent, cleanRawWebContent } from "./handlers/shared/web-search-executor.js";
 
 /**
@@ -313,6 +322,11 @@ export async function createProxyServer(
 ): Promise<ProxyServer> {
   // Resolve proxy key early — needed for both auth middleware and NativeHandler
   const proxyKey = process.env.CLAUDISH_PROXY_KEY || loadConfig().proxyKey;
+
+  // Budget failover config (fork extension). Inert with no CLAUDISH_FAILOVER_*
+  // env; when set, diverts a whole role to another pool and announces it at the
+  // next condensation. Read once per proxy lifetime. See fork/failover.ts.
+  initFailover();
 
   // Load user-declared custom endpoints from ~/.claudish/config.json and
   // register them in the runtime provider registry so they appear in lookups
@@ -602,6 +616,19 @@ export async function createProxyServer(
     let wasFromModelMap = false;
 
     const req = requestedModel.toLowerCase();
+
+    // The role is derived from what the CLIENT asked for, independently of
+    // whether modelMap has an entry for it — a failover must be able to divert
+    // an unmapped role (e.g. bare native opus on ai-01) just as well as a mapped
+    // one. Kept in sync with the mapping cascade immediately below.
+    const role: FailoverRole | null = req.includes("opus")
+      ? "opus"
+      : req.includes("sonnet")
+        ? "sonnet"
+        : req.includes("haiku")
+          ? "haiku"
+          : null;
+
     if (modelMap) {
       // Role-specific mappings take highest priority
       if (req.includes("opus") && modelMap.opus) {
@@ -619,6 +646,20 @@ export async function createProxyServer(
     } else if (model) {
       // No role mappings at all - use default model
       target = model;
+    }
+
+    // 2a. Budget failover — a whole role is served from a different pool because
+    // its nominal plan is exhausted or being conserved. Sits AFTER the modelMap
+    // cascade so it overrides the nominal mapping, and BEFORE catalog/route
+    // resolution so the substitute is resolved exactly like any other target.
+    // Inert unless CLAUDISH_FAILOVER_* is configured. See fork/failover.ts.
+    if (role && isFailoverActive(role)) {
+      const rule = getFailoverRule(role)!;
+      if (rule.target !== target) {
+        log(`[Proxy] Failover: role '${role}' ${target} → ${rule.target} (${rule.label})`);
+        target = rule.target;
+        wasFromModelMap = true;
+      }
     }
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
@@ -879,7 +920,36 @@ export async function createProxyServer(
       stripBillingHeaderFromBody(body, handler instanceof NativeHandler);
 
       // Route
-      return handler.handle(c, body);
+      const response = await handler.handle(c, body);
+
+      // Budget failover, reactive arm. A quota/credit refusal means this role's
+      // plan is spent; serving the request from another pool is strictly better
+      // than handing the agent an error it cannot act on. Narrow by construction:
+      // isQuotaExhaustion ignores plain rate limits and wiring errors (401/404),
+      // which a model swap would only hide. Inert unless CLAUDISH_FAILOVER_AUTO=1.
+      if (!response.ok) {
+        const failRole = roleFromModelName(body.model);
+        if (failRole && !isFailoverActive(failRole)) {
+          let errBody = "";
+          try {
+            errBody = await response.clone().text();
+          } catch {
+            // Unreadable body — status alone still decides for 402.
+          }
+          if (
+            isQuotaExhaustion(response.status, errBody) &&
+            armFailover(failRole, `HTTP ${response.status} from ${body.model}`)
+          ) {
+            // Retry once through the now-armed failover. Safe to reuse `c`: the
+            // same invariant FallbackHandler relies on — handlers only mutate the
+            // context on the success path (see fallback-handler.ts).
+            const failHandler = await getHandlerForRequest(body.model);
+            return failHandler.handle(c, body);
+          }
+        }
+      }
+
+      return response;
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       return c.json(wrapAnthropicError(500, String(e)), 500);

@@ -33,6 +33,8 @@ import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthro
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
+import { appendFailoverNoticeToMessage } from "../fork/failover.js";
+import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
   describeImages,
@@ -152,6 +154,26 @@ export class ComposedHandler implements ModelHandler {
   /** Provider adapter — handles transport format (messages, tools, payload) */
   private getAdapter(): BaseModelAdapter {
     return this.explicitAdapter || this.adapterManager.getAdapter();
+  }
+
+  /**
+   * Stream format priority (single definition — three call sites depend on it):
+   *   1. Transport override (aggregators like LiteLLM/OpenRouter normalize server-side)
+   *   2. Explicit format adapter (provider profile passes it, e.g. AnthropicAPIFormat
+   *      for Z.AI, CodexAPIFormat for OpenAI Codex) — the layer that KNOWS the wire.
+   *   3. Model dialect — only reached if no explicit adapter was passed. Dialects
+   *      handle model quirks, NOT wire format; their inherited "openai-sse" must NOT
+   *      override an explicit adapter. That was #102.
+   *
+   * Also handed to dialects via prepareRequest(ctx) so a model quirk whose encoding
+   * differs per wire (Qwen's thinking switch) can pick the form that is actually read.
+   */
+  private resolveStreamFormat(): StreamFormat {
+    return (
+      this.provider.overrideStreamFormat?.() ??
+      (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
+      this.getAdapter().getStreamFormat()
+    );
   }
 
   /** Model context window — model adapter wins over provider adapter */
@@ -396,10 +418,15 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5. Adapter post-processing (tool name truncation, reasoning params, etc.)
-    adapter.prepareRequest(requestPayload, claudeRequest);
+    // The wire format is passed through so a dialect whose parameter encoding
+    // differs per wire picks the form the endpoint actually reads (Qwen's
+    // thinking switch: `enable_thinking` on OpenAI-compat, native `thinking` on
+    // Anthropic-compat — each endpoint silently ignores the other's).
+    const prepareCtx = { wireFormat: this.resolveStreamFormat() };
+    adapter.prepareRequest(requestPayload, claudeRequest, prepareCtx);
     // Model adapter may also need to post-process (e.g., strip unsupported thinking params)
     if (this.modelAdapter && this.modelAdapter !== adapter) {
-      this.modelAdapter.prepareRequest(requestPayload, claudeRequest);
+      this.modelAdapter.prepareRequest(requestPayload, claudeRequest, prepareCtx);
     }
     const toolNameMap = adapter.getToolNameMap();
 
@@ -781,10 +808,7 @@ export class ComposedHandler implements ModelHandler {
     // usable Response, and any classification other than "rate-limit" flows
     // straight through to handleStream() unchanged.
     {
-      const peekFormat =
-        this.provider.overrideStreamFormat?.() ??
-        (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
-        this.getAdapter().getStreamFormat();
+      const peekFormat = this.resolveStreamFormat();
       if (peekFormat === "anthropic-sse") {
         // Patient overload backoff (2026-06-25): GLM/Z.AI concurrency limits
         // surface as HTTP 200 + in-stream [130x]. Clients (Claude Code) have
@@ -941,6 +965,14 @@ export class ComposedHandler implements ModelHandler {
     if (wantsStreaming) return streamResponse;
 
     const message = await collectAnthropicSseToMessage(streamResponse, this.bareModelName);
+
+    // Condensation is the announcement point for a budget failover: it is the one
+    // moment the context is rebuilt from scratch, so the notice is guaranteed to
+    // survive into the continuing session at negligible cost. No-op (zero bytes)
+    // unless a role is actually being served from a substitute pool.
+    // See fork/failover.ts.
+    appendFailoverNoticeToMessage(message);
+
     return c.json(message, {
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
     });
@@ -984,23 +1016,8 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    // Stream format priority:
-    //   1. Transport override (aggregators like LiteLLM/OpenRouter normalize server-side)
-    //   2. Explicit format adapter (provider profile passes it, e.g. AnthropicAPIFormat
-    //      for Z.AI, CodexAPIFormat for OpenAI Codex) — this is the layer that KNOWS
-    //      the wire protocol.
-    //   3. Model dialect — only reached if no explicit adapter was passed. Dialects like
-    //      GLMModelDialect/GrokModelDialect handle model quirks (context window, thinking
-    //      block stripping), NOT wire format. Their inherited default "openai-sse" must
-    //      NOT override the explicit adapter — that was #102.
-    //
-    // Previous ordering (pre-fix) put modelAdapter at tier 2, causing GLMModelDialect's
-    // inherited "openai-sse" to silently override AnthropicAPIFormat's "anthropic-sse"
-    // for zai@glm-* — the Anthropic SSE was then fed to the OpenAI parser and dropped.
-    const streamFormat =
-      this.provider.overrideStreamFormat?.() ??
-      (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
-      this.getAdapter().getStreamFormat();
+    // See resolveStreamFormat() for the priority rules and the #102 history.
+    const streamFormat = this.resolveStreamFormat();
     // Stream parsers receive bareModelName: it is used both as the middleware-identity
     // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in
     // `message_start.message.model` for display. Passing the routed form here was the

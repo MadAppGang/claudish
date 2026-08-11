@@ -11,6 +11,7 @@
  * - MLX simple format for message conversion
  */
 
+import type { PrepareRequestContext } from "./model-dialect.js";
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import { DialectManager } from "./dialect-manager.js";
 import { log } from "../logger.js";
@@ -133,9 +134,9 @@ export class LocalModelAdapter extends BaseAPIFormat {
 
   // ─── Request post-processing ────────────────────────────────────────
 
-  override prepareRequest(request: any, originalRequest: any): any {
+  override prepareRequest(request: any, originalRequest: any, ctx?: PrepareRequestContext): any {
     // Delegate to inner adapter (Qwen tool name truncation, etc.)
-    this.innerAdapter.prepareRequest(request, originalRequest);
+    this.innerAdapter.prepareRequest(request, originalRequest, ctx);
 
     // Merge inner adapter's tool name map
     for (const [k, v] of this.innerAdapter.getToolNameMap()) {
