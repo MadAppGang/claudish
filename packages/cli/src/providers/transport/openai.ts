@@ -61,6 +61,15 @@ export class OpenAIProviderTransport implements ProviderTransport {
     return `${this.provider.baseUrl}${this.provider.apiPath}`;
   }
 
+  /**
+   * Honor the optional streamFormatOverride declared on the RemoteProvider.
+   * Lets a custom endpoint (e.g. an aggregator whose openai transport actually
+   * speaks anthropic-sse) win over the dialect's default choice of openai-sse.
+   */
+  overrideStreamFormat(): StreamFormat | undefined {
+    return this.provider.streamFormatOverride;
+  }
+
   async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     if (this.apiKey) {
