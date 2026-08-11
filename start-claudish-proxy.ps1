@@ -30,9 +30,17 @@ if ($existing) {
     Start-Sleep -Seconds 2
 }
 
-# Start the proxy
-Write-Log "Starting: bun packages/cli/src/fork/server/standalone-proxy.ts --port 3000"
-bun packages/cli/src/fork/server/standalone-proxy.ts --port 3000 2>&1 | ForEach-Object {
+# Start the proxy.
+# Bind to 127.0.0.1 (loopback) — this proxy holds CLAUDISH_PROXY_KEY at runtime
+# and relays to the hub. Binding to all interfaces (the default when --host is
+# omitted) would expose the cluster proxy key to the LAN and beyond, and is the
+# shape that triggers the Windows firewall prompt for bun.exe. Override with
+# $env:CLAUDISH_HOST if a LAN bind is explicitly intended (rare; the sidecar
+# role is the supported way to expose the proxy on the network, via the Docker
+# container on its own port).
+$proxyHost = if ($env:CLAUDISH_HOST) { $env:CLAUDISH_HOST } else { "127.0.0.1" }
+Write-Log "Starting: bun packages/cli/src/fork/server/standalone-proxy.ts --port 3000 --host $proxyHost"
+bun packages/cli/src/fork/server/standalone-proxy.ts --port 3000 --host $proxyHost 2>&1 | ForEach-Object {
     Write-Log $_
 }
 Write-Log "Claudish proxy exited."
