@@ -331,7 +331,7 @@ Three levels of analysis — pick by need:
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
-| `traffic-live.ps1` | **Live analysis from docker logs** — model/machine/handler distribution, precise error counts, never-hang check, Anthropic leak check, session-loop detection. This is what the 6h surveillance cron runs. | `.\scripts\traffic-live.ps1 [-Hours N] [-AnthropicMachines 'host1,host2']` |
+| `traffic-live.ps1` | **Live analysis from docker logs** — model/machine/handler distribution, precise error counts, never-hang check, Anthropic leak check, session-loop detection. This is what the 6h surveillance cron runs. **`-Container` defaults to `claudish-proxy` (the hub name) — on a sidecar machine you MUST pass `-Container claudish-sidecar`, otherwise the script exits 1 with `No such container`.** | `.\scripts\traffic-live.ps1 [-Hours N] [-Container name] [-AnthropicMachines 'host1,host2']` |
 | `traffic-summary.ps1` | Overview from captures: machines, models, workspaces, sessions | `.\scripts\traffic-summary.ps1 [-Hours N]` |
 | `traffic-sessions.ps1` | Detailed session list with timing, models, data volume | `.\scripts\traffic-sessions.ps1 [-Hours N] [-All]` |
 | `traffic-anthropic.ps1` | **Answers "where does the Anthropic traffic come from?"** — attributes every Anthropic-native (opus/fable) request by **machine + workspace** (workspace = proof, from the system prompt; not stdout). Per-request verdict: `[OK]` ai-01 · `[REVIEW]` po-2025 · `[INFO]` fable during a `-FableOverrideActive` window · `[LEAK-SUBAGENT]` rogue Opus sub-agent (`cc_is_subagent=true`, **exit 1**) · `[REVIEW-INTERACTIVE]` user-driven non-ai-01 session (exit 0). sonnet-4-6 shown separately (remapped to glm → not Anthropic). | `.\scripts\traffic-anthropic.ps1 [-Hours N] [-FableOverrideActive]` |
@@ -348,6 +348,11 @@ Three levels of analysis — pick by need:
 
 # Standard 6h surveillance window (cron default)
 .\scripts\traffic-live.ps1 -Hours 6
+
+# On a SIDECAR machine (ai-01, po-2024...) the container is not named claudish-proxy.
+# Expect ~0 requests when the sidecar is NOMINAL: a relayed request writes no capture
+# and emits no [Request] line, so local traffic analysis is blind by construction.
+.\scripts\traffic-live.ps1 -Hours 3 -Container claudish-sidecar
 
 # Rich detail: which workspace/session is active?
 .\scripts\traffic-summary.ps1 -Hours 2
