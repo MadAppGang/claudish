@@ -47,6 +47,8 @@ import {
   type FailoverRole,
 } from "./fork/failover.js";
 import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFromWebContent, cleanRawWebContent } from "./handlers/shared/web-search-executor.js";
+import { convertOpenAIRequestToAnthropic } from "./handlers/shared/format/openai-request-to-anthropic.js";
+import { anthropicMessageToChatCompletion, createOpenAIChatStreamFromAnthropic } from "./handlers/shared/anthropic-to-openai.js";
 
 /**
  * Intercept WebSearch/WebFetch tool calls and execute them via SearXNG instead
@@ -953,6 +955,99 @@ export async function createProxyServer(
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       return c.json(wrapAnthropicError(500, String(e)), 500);
+    }
+  });
+
+  // OpenAI-compatible ingress. An OpenAI client (sk-agent, any AsyncOpenAI
+  // consumer) POSTs here; we translate the body to Anthropic shape, run the
+  // SAME routing pipeline as /v1/messages (so the client inherits the cascade,
+  // budget failover, accounting, and leak policy), and translate the response
+  // back to OpenAI wire shape. Anthropic remains the native ingress; this is a
+  // translated ingress into the same pipeline. See CLAUDE.md.
+  app.post("/v1/chat/completions", async (c) => {
+    try {
+      const openaiBody = await readRequestBody(c);
+
+      // Relay (sidecar NOMINAL): forward the RAW OpenAI body to the hub's
+      // /v1/chat/completions — the hub translates. Path-aware forward
+      // (relay.ts) means this reaches the right hub route, not /v1/messages.
+      const relay = options.relay;
+      if (relay?.upstream && relay.alive) {
+        const forwarded = await forwardToUpstream(c, openaiBody, relay);
+        if (forwarded) return forwarded;
+      }
+
+      if (typeof openaiBody?.model !== "string" || openaiBody.model.length === 0) {
+        return c.json(
+          { error: { message: "missing required field: model", type: "invalid_request_error", param: "model", code: null } },
+          400
+        );
+      }
+
+      const anthropicBody = convertOpenAIRequestToAnthropic(openaiBody);
+      const wantsStream = openaiBody.stream === true;
+
+      const handler = await getHandlerForRequest(anthropicBody.model);
+      logRequest(anthropicBody, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
+      stripBillingHeaderFromBody(anthropicBody, handler instanceof NativeHandler);
+
+      let response = await handler.handle(c, anthropicBody);
+
+      // Budget failover (same reactive arm as /v1/messages). The retry returns an
+      // Anthropic response from the failover handler; translation below handles it.
+      if (!response.ok) {
+        const failRole = roleFromModelName(anthropicBody.model);
+        if (failRole && !isFailoverActive(failRole)) {
+          let errBody = "";
+          try {
+            errBody = await response.clone().text();
+          } catch {
+            // unreadable body — status alone still decides for 402
+          }
+          if (
+            isQuotaExhaustion(response.status, errBody) &&
+            armFailover(failRole, `HTTP ${response.status} from ${anthropicBody.model}`)
+          ) {
+            const failHandler = await getHandlerForRequest(anthropicBody.model);
+            response = await failHandler.handle(c, anthropicBody);
+          }
+        }
+      }
+
+      // Translate the final Anthropic response to OpenAI shape.
+      if (!response.ok) {
+        // Error: convert the Anthropic error envelope to OpenAI's error shape so
+        // an OpenAI SDK can surface it instead of choking on the foreign body.
+        let errJson: any;
+        try {
+          errJson = await response.json();
+        } catch {
+          errJson = { error: { type: "api_error", message: `upstream HTTP ${response.status}` } };
+        }
+        const anthropicErr = errJson?.error ?? errJson;
+        const oaiErr = {
+          error: {
+            message: anthropicErr.message ?? `upstream HTTP ${response.status}`,
+            type: anthropicErr.type ?? "api_error",
+            code: anthropicErr.code ?? null,
+          },
+        };
+        return c.json(oaiErr, response.status as any);
+      }
+
+      if (wantsStream) {
+        return createOpenAIChatStreamFromAnthropic(response, anthropicBody.model);
+      }
+      const message = await response.json();
+      return c.json(anthropicMessageToChatCompletion(message, anthropicBody.model), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      log(`[Proxy] /v1/chat/completions error: ${e}`);
+      return c.json(
+        { error: { message: String(e), type: "api_error", code: null } },
+        500
+      );
     }
   });
 

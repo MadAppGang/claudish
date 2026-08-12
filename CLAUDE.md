@@ -347,6 +347,15 @@ The subtlety this encodes: Qwen exposes **two switches on two wires, and each en
 
 Measured against Qwen Token Plan, `max_tokens: 400`, prompt `"Reponds exactement: ok"` (2026-08-11): baseline `67 in / 43 out` with a thinking block; `enable_thinking: false` → `67 / 48`, still thinking; `thinking: {type: "disabled"}` → `31 / 1`. Note the **input** count moves too (67 → 31) — Alibaba appears to inject a reasoning preamble when thinking is on. That makes a crisp post-deploy check: **if `input_tokens` drops from 67 to 31 on that prompt, the native switch reached Qwen.**
 
+## OpenAI-Compatible Ingress (v7.2+)
+
+Anthropic is the **native** ingress (`/v1/messages`). The OpenAI ingress `POST /v1/chat/completions` is a **translated** ingress: an OpenAI-format request (sk-agent, any `AsyncOpenAI` consumer) is converted to Anthropic shape, run through the **same** routing pipeline (`getHandlerForRequest` → `ComposedHandler.handle`), and the response translated back to OpenAI wire shape. The OpenAI client therefore inherits the routing cascade, budget failover, accounting, and leak policy for free — it flips onto the hub by changing `base_url` alone.
+
+- **Request converter**: `handlers/shared/format/openai-request-to-anthropic.ts` — system/developer → top-level `system`; user (string or parts incl. `image_url`) → content blocks; assistant (`tool_calls`/`reasoning_content`) → `tool_use`/`thinking` blocks; `tool` role → `tool_result`; function tools → Anthropic `input_schema`; `tool_choice` mapping; defaults `max_tokens` (Anthropic requires it, OpenAI doesn't).
+- **Response translators**: `handlers/shared/anthropic-to-openai.ts` — `anthropicMessageToChatCompletion` (non-streaming: collected message → `chat.completion` JSON, computes `total_tokens`) and `createOpenAIChatStreamFromAnthropic` (streaming: Anthropic SSE → `chat.completion.chunk` SSE + `data: [DONE]`). `thinking` blocks surface as `reasoning_content` (the OpenAI extension DeepSeek/GLM use); `stop_reason` maps to `finish_reason` (`end_turn`/`stop_sequence`→`stop`, `tool_use`→`tool_calls`, `max_tokens`→`length`). Never-hang holds: a malformed stream degrades to a single terminal chunk + `[DONE]`.
+- **Relay**: path-aware (`relay.ts`) — a sidecar forwards to the SAME route the client hit, so an OpenAI request on a sidecar reaches the hub's `/v1/chat/completions` in NOMINAL mode (preserves the resilience model). The deep liveness probe stays on `/v1/messages`.
+- **Out of scope** (for now): `/v1/models` discovery, OpenAI web-search tool interception, per-role thinking policy on the OpenAI path.
+
 ## Traffic Analysis
 
 **Use the scripts, not hand-rolled grep.** The proxy log format has traps that produce false positives when grepped naively (see `proxy-log-monitoring` memory: `bytes=NNNN` matching error codes, timestamp digits matching `429`, `[msg:N]` body previews matching keywords). The scripts below encode the precise filters.
