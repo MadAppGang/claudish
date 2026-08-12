@@ -1,36 +1,47 @@
 /**
- * Failover — role-level model substitution with an explicit degradation notice.
+ * Failover — role-level model substitution as a transitive cascade of degradations,
+ * with explicit onset + recovery notices.
  *
- * This is NOT the same thing as `FallbackHandler` (handlers/fallback-handler.ts).
- * That one swaps *providers* for the *same* model when a provider is unhealthy.
- * This one swaps the *model itself* for a whole role (opus/sonnet/haiku) when the
- * nominal model's budget is exhausted — a subscription-level concern, not a
- * transport-level one.
+ * This is NOT `FallbackHandler` (handlers/fallback-handler.ts). That one swaps
+ * *providers* for the *same* model when a provider is unhealthy — a transport
+ * concern. This one swaps the *model itself* for a whole role (opus/sonnet/haiku)
+ * when the nominal model's budget is exhausted — a subscription concern.
  *
- * Why it exists: the cluster runs on metered weekly plans (Anthropic, MiniMax,
- * Z.AI). When a plan burns faster than its reset window, the choice is either to
- * stop working or to serve the role from a different pool. Serving it silently is
- * the dangerous option — the agent keeps assuming capabilities it no longer has
- * (or, in the MiniMax→DeepSeek direction, fails to use capabilities it just
- * gained). So every substitution is announced at the next condensation boundary.
+ * Each role has an ORDERED CASCADE of substitutes, `>`-separated in env:
  *
- * Why condensation is the announcement point: it is the only moment in an agentic
- * session where the context is rebuilt from scratch anyway, so a few extra lines
- * cost nothing and are guaranteed to survive into the continuing context. It is
- * also the only free re-routing boundary (the prompt cache is already cold there).
+ *   CLAUDISH_FAILOVER_OPUS=qwen-token-plan@qwen3.8-max>gc@glm-5.2>deepseek@deepseek-payg
+ *   CLAUDISH_FAILOVER_OPUS_LABEL=Qwen 3.8 Max>GLM-5.2>DeepSeek PAYG
+ *   CLAUDISH_FAILOVER_OPUS_DIRECTION=degraded>degraded>improved
  *
- * Configuration is env-driven, because that is how the fleet is configured
- * (docker-compose + per-machine .env), and because it must be changeable without
- * a rebuild during a budget crunch:
+ * "Opus → Qwen 3.8 → GLM" is nominal-tier cascade behaviour, not a set of special
+ * routes: when the nominal walls, serve step 0; when step 0 ALSO walls, serve step
+ * 1; and so on. A single value (no `>`) is a 1-step cascade — the historical config
+ * parses unchanged. The last step (typically PAYG) is always served when everything
+ * above it is down: a pay-per-use target should not wall, and its real error beats a
+ * synthetic one.
  *
- *   CLAUDISH_FAILOVER_OPUS=qwen-token-plan@qwen3.8-max
- *   CLAUDISH_FAILOVER_OPUS_LABEL="Qwen 3.8 Max"
- *   CLAUDISH_FAILOVER_OPUS_DIRECTION=degraded        # degraded | improved | lateral
- *   CLAUDISH_FAILOVER_OPUS_NOTE="Extended thinking is off on this target."
- *   CLAUDISH_FAILOVER_ACTIVE=opus,haiku              # armed now, no error needed
- *   CLAUDISH_FAILOVER_AUTO=1                         # also arm on upstream quota errors
+ * Per-step TTL with exponential backoff (BACKOFF_MS) avoids re-probing a weekly wall
+ * every 10 min (Qwen: ~6 probes over 6 days) while GLM's rolling 5h window self-heals
+ * (10m+30m+1h+4h ≈ 5h30 lands a probe right after it restarts). Step-failure state is
+ * deliberately INDEPENDENT of the role-level auto-arm TTL: the 10-min nominal re-probe
+ * cycle must not re-probe a weekly-walled step every time it fires.
  *
- * With no env set, every function here is inert: no routing change, no notice.
+ * Two notices, two moments (the user's mandate 2026-08-12):
+ *  - Moment of failover/recovery (streaming, once per session per resolved depth): the
+ *    substitute (or back-to-nominal) model reads its own prior turn starting with the
+ *    notice, so it knows the capability delta and recalibrates its risk appetite.
+ *  - Condensation (/compact, every time): re-injected because compaction rebuilds
+ *    context and loses the prior notice. Onset persists while armed; RECOVERY persists
+ *    RECOVERY_CONDENSATIONS times so the model can "corriger ses mémoires et se
+ *    remettre en rythme nominal."
+ *
+ * Recovery detection = the auto-arm TTL probe. An armed role's auto-arm expires after
+ * AUTO_ARM_TTL_MS; the next request serves nominal; if nominal answers, the role
+ * transitions to RECOVERING and notices fire. Config-arms (operator-held) do not
+ * self-probe — their recovery is operator-initiated. Now that NativeHandler propagates
+ * upstream status (commit 30a974f), auto-arm works on Anthropic-native, so the
+ * historical reason to config-arm Opus is gone — auto-arm is the default path and
+ * Friday-03h-style resets self-detect.
  */
 
 import { logStderr } from "../logger.js";
@@ -42,8 +53,8 @@ export const FAILOVER_ROLES: readonly FailoverRole[] = ["opus", "sonnet", "haiku
 /** Which way the substitution moves capability, from the agent's point of view. */
 export type FailoverDirection = "degraded" | "improved" | "lateral";
 
-export interface FailoverRule {
-  role: FailoverRole;
+/** One substitution target within a role's cascade. */
+export interface FailoverStep {
   /** Routing target, in any form `getHandlerForRequest` accepts. */
   target: string;
   /** Human label for the notice; defaults to the target string. */
@@ -53,67 +64,126 @@ export interface FailoverRule {
   note?: string;
 }
 
+export interface FailoverRule {
+  role: FailoverRole;
+  /** Ordered substitutes; index 0 is served first when the nominal walls. */
+  steps: FailoverStep[];
+}
+
+/** A role whose nominal is currently walled (armed). Does not carry the resolved
+ * step — that depends on per-step failure state, resolved on demand. */
 export interface ArmedFailover {
-  rule: FailoverRule;
   since: Date;
   /** "config" when armed by CLAUDISH_FAILOVER_ACTIVE, else the upstream error. */
   reason: string;
+}
+
+/** A role + the cascade step currently serving it. */
+export interface ResolvedFailover {
+  role: FailoverRole;
+  step: FailoverStep;
+  stepIndex: number;
+}
+
+interface StepFailure {
+  count: number;
+  lastFailure: Date;
+}
+
+interface RecoveryState {
+  since: Date;
+  /** Condensation notices remaining before recovery clears. */
+  remaining: number;
+  prevLabel: string;
+  prevDirection: FailoverDirection;
+  prevStepIndex: number;
+  /** Sessions that already got the one-time stream recovery notice. */
+  notifiedSessions: Set<string>;
 }
 
 /** Parsed once at module load; re-read only by resetFailoverForTests(). */
 let rules = new Map<FailoverRole, FailoverRule>();
 let autoArmEnabled = false;
 const armed = new Map<FailoverRole, ArmedFailover>();
-
+/** Per-step failure counters. Independent of the role-level arm TTL. */
+const stepFailures = new Map<FailoverRole, StepFailure[]>();
+/** Roles that just returned to nominal after failover — emitting recovery notices. */
+const recovering = new Map<FailoverRole, RecoveryState>();
+/** Bridge: step a role WAS serving, captured when its auto-arm TTL expires. The
+ * cascade loop consumes this to seed `recovering` if the nominal probe succeeds. */
+const pendingRecovery = new Map<
+  FailoverRole,
+  { label: string; direction: FailoverDirection; stepIndex: number }
+>();
 /**
- * Sessions that have already received the one-time "moment of failover" stream
- * notice, per role. Keyed by whatever stable per-session id we extracted from
- * `metadata.user_id` (Claude Code sends `{"device_id","account_uuid","session_id"}`).
- *
- * Lifetimes follow the armed entry: when an auto-arm expires (isFailoverActive
- * disarm branch) the role's set is cleared, so a fresh failover episode notifies
- * each session once again. A config-arm never disarms, so for the whole operator
- * window each NEW session gets exactly one notice — which is the intent ("jusqu'au
- * retour des crédits"). The condensation notice (appendFailoverNoticeToMessage)
- * reinforces at every /compact regardless of this set.
+ * Sessions that have already received the "moment of failover" stream notice, per
+ * role, mapped to the LAST step index they were notified at. Re-notify when the
+ * resolved step CHANGES (Qwen→GLM mid-session) so the agent recalibrates to the new
+ * substitute. Cleared on auto-arm TTL expiry (a fresh episode re-notifies) and on
+ * full reset. Condensation notices are independent of this map.
  */
-const notifiedSessions = new Map<FailoverRole, Set<string>>();
+const notifiedSessions = new Map<FailoverRole, Map<string, number>>();
+
+const AUTO_ARM_TTL_MS = 10 * 60 * 1000;
+const RECOVERY_CONDENSATIONS = 3;
+/** Safety TTL: clear recovery even if no compactions fire to decrement it. */
+const RECOVERY_MAX_MS = 60 * 60 * 1000;
+/** Per-step probe backoff: ~10m, 30m, 1h, 4h, then a 24h cap. */
+const BACKOFF_MS = [10 * 60_000, 30 * 60_000, 60 * 60_000, 4 * 60 * 60_000, 24 * 60 * 60_000];
 
 function parseDirection(raw: string | undefined): FailoverDirection {
   const v = (raw || "").trim().toLowerCase();
   if (v === "improved" || v === "degraded" || v === "lateral") return v;
   // Unknown or unset: "degraded" is the safe default. Announcing a downgrade that
-  // turned out to be an upgrade is harmless; the reverse makes the agent
-  // over-trust a weaker model.
+  // turned out to be an upgrade is harmless; the reverse makes the agent over-trust
+  // a weaker model.
   return "degraded";
+}
+
+/** Split a `>`-separated env value into trimmed non-empty steps. */
+function splitSteps(raw: string): string[] {
+  return raw.split(">").map((s) => s.trim()).filter(Boolean);
 }
 
 function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
   const out = new Map<FailoverRole, FailoverRule>();
   for (const role of FAILOVER_ROLES) {
     const key = `CLAUDISH_FAILOVER_${role.toUpperCase()}`;
-    const target = (env[key] || "").trim();
-    if (!target) continue;
-    out.set(role, {
-      role,
+    const targets = splitSteps(env[key] || "");
+    if (targets.length === 0) continue;
+    const labels = splitSteps(env[`${key}_LABEL`] || "");
+    const directions = splitSteps(env[`${key}_DIRECTION`] || "");
+    const notes = splitSteps(env[`${key}_NOTE`] || "");
+    if (labels.length !== 0 && labels.length !== targets.length) {
+      logStderr(
+        `[Failover] ${role}: ${labels.length} labels vs ${targets.length} targets — padding with defaults. Check CLAUDISH_FAILOVER_${role.toUpperCase()}_LABEL.`
+      );
+    }
+    const steps: FailoverStep[] = targets.map((target, i) => ({
       target,
-      label: (env[`${key}_LABEL`] || "").trim() || target,
-      direction: parseDirection(env[`${key}_DIRECTION`]),
-      note: (env[`${key}_NOTE`] || "").trim() || undefined,
-    });
+      label: labels[i]?.trim() || target,
+      direction: parseDirection(directions[i]),
+      note: notes[i]?.trim() || undefined,
+    }));
+    out.set(role, { role, steps });
   }
   return out;
 }
 
 /**
  * (Re)read configuration from the environment and arm whatever
- * CLAUDISH_FAILOVER_ACTIVE names. Called once at proxy startup so the log line
- * lands next to the other startup banners; safe to call again in tests.
+ * CLAUDISH_FAILOVER_ACTIVE names. Called once at proxy startup so the log line lands
+ * next to the other startup banners; safe to call again in tests.
  */
 export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   rules = loadRules(env);
   autoArmEnabled = /^(1|true|yes|on)$/i.test((env.CLAUDISH_FAILOVER_AUTO || "").trim());
   armed.clear();
+  // In-memory probe/recovery state does not survive a restart — start fresh.
+  stepFailures.clear();
+  recovering.clear();
+  pendingRecovery.clear();
+  notifiedSessions.clear();
 
   const activeRaw = (env.CLAUDISH_FAILOVER_ACTIVE || "").trim().toLowerCase();
   if (activeRaw && activeRaw !== "none") {
@@ -125,24 +195,23 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
       }
       const rule = rules.get(role);
       if (!rule) {
-        // Armed but unconfigured is a config error the operator must see: it
-        // silently means "no failover" exactly when one was intended.
+        // Armed but unconfigured is a config error the operator must see: it silently
+        // means "no failover" exactly when one was intended.
         logStderr(
           `[Failover] '${role}' is listed in CLAUDISH_FAILOVER_ACTIVE but CLAUDISH_FAILOVER_${role.toUpperCase()} is not set — no substitution will happen for this role.`
         );
         continue;
       }
-      // Date.now() (not new Date()) so `since` and the TTL comparison in
-      // isFailoverActive read the same clock — otherwise a test that fakes
-      // Date.now cannot exercise the expiry at all.
-      armed.set(role, { rule, since: new Date(Date.now()), reason: "config" });
+      // Date.now() (not new Date()) so `since` and the TTL comparison read the same
+      // clock — otherwise a test that fakes Date.now cannot exercise the expiry.
+      armed.set(role, { since: new Date(Date.now()), reason: "config" });
     }
   }
 
   if (armed.size > 0 || rules.size > 0) {
     const armedList =
       armed.size > 0
-        ? [...armed.values()].map((a) => `${a.rule.role}→${a.rule.label}`).join(", ")
+        ? [...armed.keys()].map((r) => `${r}→${describeResolved(r)}`).join(", ")
         : "none";
     logStderr(
       `[Failover] configured=${rules.size} armed=[${armedList}] auto=${autoArmEnabled ? "on" : "off"}`
@@ -150,13 +219,17 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   }
 }
 
+/** Human label for the step a role would resolve to right now (or "nominal"). */
+function describeResolved(role: FailoverRole): string {
+  const { step } = resolveFailoverTarget(role);
+  return step ? step.label : "nominal";
+}
+
 /**
- * Which role a client-requested model name belongs to.
- *
- * Substring matching on the name the CLIENT sent, deliberately: Claude Code
- * always speaks in roles ("claude-opus-5", "claude-3-5-haiku-…") even when the
- * proxy serves something else entirely. Kept as the single definition so the
- * routing hook and the auto-arm path can never drift apart.
+ * Which role a client-requested model name belongs to. Substring on the CLIENT name
+ * (Claude Code speaks in roles: "claude-opus-5", "claude-3-5-haiku-…") even when the
+ * proxy serves something else. Single definition so the routing hook and the auto-arm
+ * path can never drift.
  */
 export function roleFromModelName(model: string | undefined): FailoverRole | null {
   const m = (model || "").toLowerCase();
@@ -166,93 +239,167 @@ export function roleFromModelName(model: string | undefined): FailoverRole | nul
   return null;
 }
 
-/** The configured substitution for a role, armed or not. */
+/** The configured cascade for a role, armed or not. */
 export function getFailoverRule(role: FailoverRole): FailoverRule | undefined {
   return rules.get(role);
 }
 
-/**
- * How long an auto-armed substitution holds before the nominal model is retried.
- *
- * A provider wall is a *window*, not a state change: Z.AI's 5h cap, Anthropic's
- * weekly reset, MiniMax's quota all lift on their own. Staying on the substitute
- * until an operator notices wastes the plan the fleet actually pays for, so the
- * arming has to be self-clearing.
- *
- * Ten minutes is chosen against the cost of being wrong in each direction: too
- * short and a still-capped provider is probed constantly (one wasted round-trip
- * per expiry, per in-flight request); too long and a recovered plan sits unused.
- * A provider window is measured in hours, so ten minutes recovers promptly while
- * probing at most ~6 times an hour.
- */
-const AUTO_ARM_TTL_MS = 10 * 60 * 1000;
+// ─── per-step backoff ──────────────────────────────────────────────────────────
+
+function stepTtlMs(count: number): number {
+  const idx = Math.min(Math.max(count, 1), BACKOFF_MS.length) - 1;
+  return BACKOFF_MS[idx];
+}
+
+function isStepTtlFailed(f: StepFailure | undefined): boolean {
+  if (!f || f.count === 0) return false;
+  return Date.now() - f.lastFailure.getTime() < stepTtlMs(f.count);
+}
+
+function stepFailuresFor(role: FailoverRole): StepFailure[] {
+  let arr = stepFailures.get(role);
+  if (!arr) {
+    const rule = rules.get(role);
+    const len = rule ? rule.steps.length : 0;
+    arr = Array.from({ length: len }, () => ({ count: 0, lastFailure: new Date(0) }));
+    stepFailures.set(role, arr);
+  }
+  return arr;
+}
+
+/** Record that cascade step `idx` for `role` just quota-walled. */
+export function markStepFailed(role: FailoverRole, idx: number, reason: string): void {
+  const rule = rules.get(role);
+  if (!rule || idx < 0 || idx >= rule.steps.length) return;
+  const arr = stepFailuresFor(role);
+  arr[idx] = { count: arr[idx].count + 1, lastFailure: new Date(Date.now()) };
+  logStderr(
+    `[Failover] step ${role}[${idx}] (${rule.steps[idx].label}) walled — count=${arr[idx].count} ttl=${Math.round(
+      stepTtlMs(arr[idx].count) / 60000
+    )}min (${reason})`
+  );
+}
+
+/** Clear one step's failure state after it answered successfully. */
+export function resetStepSuccess(role: FailoverRole, idx: number): void {
+  const arr = stepFailures.get(role);
+  if (!arr || !arr[idx] || arr[idx].count === 0) return;
+  arr[idx] = { count: 0, lastFailure: new Date(0) };
+}
+
+/** Clear ALL step failures for a role — used when the nominal itself recovers. */
+export function resetAllStepFailures(role: FailoverRole): void {
+  stepFailures.delete(role);
+}
+
+// ─── resolution ────────────────────────────────────────────────────────────────
 
 /**
- * True when requests for this role must be routed to the failover target.
+ * The cascade step that should serve `role` right now, or null for the nominal model.
+ * Walks the cascade, skipping TTL-failed steps; if every step is TTL-failed, returns
+ * the LAST step anyway (PAYG is meant to always work). Single source of truth — used
+ * by `getHandlerForRequest`'s swap AND the cascade loop.
+ */
+export function resolveFailoverTarget(role: FailoverRole): { step: FailoverStep | null; stepIndex: number } {
+  const rule = rules.get(role);
+  if (!rule || !isFailoverActive(role)) return { step: null, stepIndex: -1 };
+  return resolveSkippingFailed(role, rule);
+}
+
+/** Resolution that does NOT call isFailoverActive (used inside isFailoverActive's
+ * own expiry path, to avoid recursion and to read pre-deletion state). Assumes armed. */
+function resolveSkippingFailed(
+  role: FailoverRole,
+  rule: FailoverRule
+): { step: FailoverStep | null; stepIndex: number } {
+  const fails = stepFailures.get(role);
+  for (let i = 0; i < rule.steps.length; i++) {
+    if (!isStepTtlFailed(fails?.[i])) return { step: rule.steps[i], stepIndex: i };
+  }
+  const last = rule.steps.length - 1;
+  return { step: rule.steps[last], stepIndex: last };
+}
+
+/**
+ * How long an auto-armed substitution holds before the nominal model is retried. A
+ * provider wall is a window (Z.AI 5h cap, Anthropic weekly, MiniMax quota) that lifts
+ * on its own; staying on the substitute until an operator notices wastes the paid
+ * plan. Ten minutes recovers promptly while probing at most ~6×/hour.
+ */
+/**
+ * True when requests for this role must be routed into the cascade. Auto-arms EXPIRE
+ * after AUTO_ARM_TTL_MS: once expired the entry is dropped and the role's prior
+ * resolved step is stashed in `pendingRecovery` so the cascade loop can emit a
+ * recovery notice if the nominal probe succeeds. Config-arms never expire.
  *
- * Auto-armed substitutions EXPIRE (see AUTO_ARM_TTL_MS): once the TTL passes the
- * entry is dropped, so the next request goes to the nominal model. If the wall is
- * still up, that request takes a quota refusal and the reactive path in
- * proxy-server re-arms and retries through the substitute — transparently, so the
- * client never sees the probe. If the wall has lifted, the request simply
- * succeeds and the fleet is back on its nominal plan with no operator action.
- *
- * Config-armed substitutions (CLAUDISH_FAILOVER_ACTIVE) never expire: those are a
- * deliberate decision to conserve a plan, not a reaction to a refusal, and only
- * an operator should reverse them.
+ * NOTE: step-failure state is intentionally NOT cleared here — the per-step backoff
+ * must outlive the role-arm cycle so a weekly-walled step isn't re-probed every
+ * 10 minutes. It is cleared only on full nominal recovery (resetAllStepFailures).
  */
 export function isFailoverActive(role: FailoverRole): boolean {
   const entry = armed.get(role);
   if (!entry) return false;
   if (entry.reason === "config") return true; // operator-held: never self-clears
   if (Date.now() - entry.since.getTime() < AUTO_ARM_TTL_MS) return true;
+  // TTL expired. Capture what this role was serving so the loop can seed recovery on
+  // a successful nominal probe, then disarm.
+  const rule = rules.get(role);
+  if (rule) {
+    const { step, stepIndex } = resolveSkippingFailed(role, rule);
+    if (step) pendingRecovery.set(role, { label: step.label, direction: step.direction, stepIndex });
+  }
   armed.delete(role);
-  notifiedSessions.delete(role); // a fresh failover episode may re-notify
+  notifiedSessions.delete(role); // a fresh episode may re-notify at a new depth
   logStderr(
-    `[Failover] DISARMED ${role} → retrying nominal model (auto-arm TTL elapsed after ${Math.round(
+    `[Failover] DISARMED ${role} → probing nominal (auto-arm TTL elapsed after ${Math.round(
       (Date.now() - entry.since.getTime()) / 60000
-    )}min). Re-arms automatically if the wall is still up.`
+    )}min). Re-arms if the wall is still up.`
   );
   return false;
 }
 
-/** Currently-armed substitutions, in a stable role order. */
-export function getActiveFailovers(): ArmedFailover[] {
-  return FAILOVER_ROLES.map((r) => armed.get(r)).filter((a): a is ArmedFailover => !!a);
+/** Currently-armed roles with their resolved step, in stable role order. */
+export function getActiveFailovers(): ResolvedFailover[] {
+  const out: ResolvedFailover[] = [];
+  for (const role of FAILOVER_ROLES) {
+    if (!isFailoverActive(role)) continue;
+    const { step, stepIndex } = resolveFailoverTarget(role);
+    if (step) out.push({ role, step, stepIndex });
+  }
+  return out;
 }
 
 /**
- * Arm a role after an upstream refusal. No-op unless CLAUDISH_FAILOVER_AUTO is on
- * and a target is configured. Returns true only on the transition, so callers can
- * log once instead of on every subsequent request.
+ * Arm a role after an upstream refusal. No-op unless CLAUDISH_FAILOVER_AUTO is on and
+ * a cascade is configured. Returns true only on the transition. Re-arming clears any
+ * stale recovery state for the role — we are back in failover, a recovery notice
+ * would mislead.
  */
 export function armFailover(role: FailoverRole, reason: string): boolean {
   if (!autoArmEnabled) return false;
-  // isFailoverActive (not armed.has) so an EXPIRED auto-arm can re-arm: after the
-  // TTL the probe request goes nominal, and when the wall is still up this is the
-  // call that puts the role back on the substitute. armed.has would see the stale
-  // entry and refuse — leaving the role on a dead provider until a restart.
+  // isFailoverActive (not armed.has) so an EXPIRED auto-arm can re-arm.
   if (isFailoverActive(role)) return false;
   const rule = rules.get(role);
   if (!rule) return false;
-  armed.set(role, { rule, since: new Date(Date.now()), reason });
-  logStderr(`[Failover] ARMED ${role} → ${rule.label} (${rule.target}) — ${reason}`);
+  armed.set(role, { since: new Date(Date.now()), reason });
+  pendingRecovery.delete(role);
+  recovering.delete(role);
+  const { step } = resolveFailoverTarget(role);
+  logStderr(`[Failover] ARMED ${role} → ${step ? step.label : "cascade"} — ${reason}`);
   return true;
 }
 
 /**
- * Does this upstream failure mean "the budget for this role is gone"?
- *
- * Deliberately narrower than FallbackHandler.isRetryableError: a 404 or a 401 is
- * a wiring mistake, and swapping the model would hide it. Only quota/credit
- * exhaustion — the thing a different pool actually fixes — arms a failover.
+ * Does this upstream failure mean "the budget for this role is gone"? Deliberately
+ * narrower than FallbackHandler.isRetryableError: a 404/401 is a wiring mistake, and
+ * swapping the model would hide it. Only quota/credit exhaustion arms a failover.
  */
 export function isQuotaExhaustion(status: number, body: string): boolean {
   if (status === 402) return true; // payment required
   const lower = (body || "").toLowerCase();
   if (status === 429) {
-    // A plain per-minute rate limit is transient and must NOT burn the weekly
-    // budget switch; only a plan/quota exhaustion should.
+    // A plain per-minute rate limit is transient and must NOT burn the weekly budget
+    // switch; only a plan/quota exhaustion should.
     if (
       lower.includes("quota") ||
       lower.includes("credit") ||
@@ -278,55 +425,131 @@ export function isQuotaExhaustion(status: number, body: string): boolean {
   return false;
 }
 
+/**
+ * Called by the cascade loop when the NOMINAL model answered successfully for `role`.
+ * Clears all step failures (healthy nominal = fresh episode) and, if the role had a
+ * pending recovery (its auto-arm just expired), seeds the recovery notice state.
+ */
+export function onNominalSuccess(role: FailoverRole): void {
+  resetAllStepFailures(role);
+  const pending = pendingRecovery.get(role);
+  if (pending) {
+    pendingRecovery.delete(role);
+    recovering.set(role, {
+      since: new Date(Date.now()),
+      remaining: RECOVERY_CONDENSATIONS,
+      prevLabel: pending.label,
+      prevDirection: pending.direction,
+      prevStepIndex: pending.stepIndex,
+      notifiedSessions: new Set(),
+    });
+    logStderr(
+      `[Failover] RECOVERED ${role} → nominal (was ${pending.label}, the ${ordinal(
+        pending.stepIndex
+      )} fallback). Recovery notices for ${RECOVERY_CONDENSATIONS} condensations.`
+    );
+  }
+}
+
+/** True while recovery notices should fire for `role` (self-clears after TTL). */
+export function isRecovering(role: FailoverRole): boolean {
+  const r = recovering.get(role);
+  if (!r) return false;
+  if (Date.now() - r.since.getTime() > RECOVERY_MAX_MS) {
+    recovering.delete(role);
+    return false;
+  }
+  return true;
+}
+
+function recoveringState(role: FailoverRole): RecoveryState | undefined {
+  return isRecovering(role) ? recovering.get(role) : undefined;
+}
+
+// ─── notices ───────────────────────────────────────────────────────────────────
+
 const DIRECTION_TEXT: Record<FailoverDirection, string> = {
   degraded: "slightly weaker than the nominal model",
   improved: "stronger than the nominal model",
   lateral: "roughly equivalent to the nominal model",
 };
 
+function ordinal(n: number): string {
+  return (["1st", "2nd", "3rd"][n] as string | undefined) ?? `${n + 1}th`;
+}
+
 /**
- * The block appended to a condensation result. Returns null when nothing is
- * armed, so the common case adds zero bytes.
- *
- * Written for the agent that will read it as context, not for a human log: it
- * states what changed, which direction capability moved, and what to do about it.
+ * The block appended to a condensation result. Returns null when nothing is armed and
+ * nothing is recovering, so the common case adds zero bytes. Emits one line per armed
+ * role (onset — fires every /compact while armed) and one per recovering role
+ * (recovery — fires RECOVERY_CONDENSATIONS times then clears). Written for the agent
+ * that reads it as context: which model is actually serving, which ahead of it is
+ * also exhausted, and what to do about it.
  */
 export function buildFailoverNotice(): string | null {
   const active = getActiveFailovers();
-  if (active.length === 0) return null;
+  const rec = FAILOVER_ROLES.filter((r) => isRecovering(r)).map((r) => ({
+    role: r,
+    state: recoveringState(r)!,
+  }));
+  if (active.length === 0 && rec.length === 0) return null;
 
-  const lines = active.map((a) => {
-    const { role, label, target, direction, note } = a.rule;
+  const lines: string[] = [];
+  for (const a of active) {
+    const { role, step, stepIndex } = a;
+    const ahead = stepIndex > 0
+      ? ` (${rules
+          .get(role)!
+          .steps.slice(0, stepIndex)
+          .map((s) => s.label)
+          .join(", ")} ahead of it ${stepIndex === 1 ? "is" : "are"} also exhausted)`
+      : "";
     const bits = [
-      `- \`${role}\` is being served by **${label}** (\`${target}\`) — ${DIRECTION_TEXT[direction]}.`,
+      `- \`${role}\` is being served by **${step.label}** (\`${step.target}\`) — the ${ordinal(
+        stepIndex
+      )} fallback${ahead}, ${DIRECTION_TEXT[step.direction]}.`,
     ];
-    if (note) bits.push(`  ${note}`);
-    return bits.join("\n");
-  });
+    if (step.note) bits.push(`  ${step.note}`);
+    lines.push(bits.join("\n"));
+  }
+  for (const r of rec) {
+    const roleLabel = r.role.charAt(0).toUpperCase() + r.role.slice(1);
+    const recal =
+      r.state.prevDirection === "improved"
+        ? `You were stronger than nominal under ${r.state.prevLabel}; scale back to your normal ${roleLabel} capability.`
+        : `The context you inherit was built under a weaker model (${r.state.prevLabel}) — recalibrate upward: resume your normal capability and risk appetite, and clean up any over-conservative decisions made under the substitute.`;
+    lines.push(
+      `- \`${r.role}\` is **back on the nominal ${roleLabel} model** after serving as ${r.state.prevLabel} (the ${ordinal(
+        r.state.prevStepIndex
+      )} fallback). ${recal}`
+    );
+    // Decrement after emitting; clear when the budget of condensations is spent.
+    r.state.remaining -= 1;
+    if (r.state.remaining <= 0) recovering.delete(r.role);
+  }
 
+  const header =
+    active.length === 0 && rec.length > 0
+      ? "**[claudish] Nominal model restored.** One or more roles are back on their nominal model after a budget failover:"
+      : "**[claudish] Failover model active.** This condensation, and the requests that follow it, are not being served by the nominal model:";
   return [
     "",
     "---",
     "",
-    "**[claudish] Failover model active.** This condensation, and the requests that follow it, are not being served by the nominal model:",
+    header,
     "",
     ...lines,
     "",
-    "This is a budget substitution, not an error — the nominal plan is exhausted or being conserved. Keep working; adjust your expectations to the model actually serving you.",
+    "This is a cascade of budget substitutions, not an error — the nominal plan is exhausted or being conserved. Keep working; adjust your expectations to the model actually serving you.",
   ].join("\n");
 }
 
 /**
- * Append the failover notice to a collected Anthropic message, in place.
- *
- * Called on the non-streaming path only — i.e. `/compact` and any other
- * `stream: false` caller. Appends to the trailing text block when there is one
- * (a condensation result is a single summary; a second block risks clients that
- * only read `content[0]`), otherwise pushes one.
- *
- * Never throws: a malformed message must not turn a working condensation into a
- * failed one. A missing notice is a cosmetic loss; a thrown error here would
- * break the only operation that lets a full session continue.
+ * Append the failover/recovery notice to a collected Anthropic message, in place.
+ * Called on the non-streaming path (`/compact` and any `stream: false` caller).
+ * Appends to the trailing text block when there is one (clients may read
+ * `content[0]`), otherwise pushes one. Never throws — a malformed message must not
+ * turn a working condensation into a failed one.
  */
 export function appendFailoverNoticeToMessage(message: any): void {
   try {
@@ -347,6 +570,108 @@ export function appendFailoverNoticeToMessage(message: any): void {
   }
 }
 
+/** Depth-aware stream notice for an ARMED role: names the step + what's exhausted
+ * ahead of it. Addressed to the substitute model about to generate. */
+function buildStreamNoticeText(role: FailoverRole, step: FailoverStep, stepIndex: number): string {
+  const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+  const ahead =
+    stepIndex > 0
+      ? ` and ${rules
+          .get(role)!
+          .steps.slice(0, stepIndex)
+          .map((s) => s.label)
+          .join(", ")} ahead of you ${stepIndex === 1 ? "is" : "are"} also`
+      : "";
+  const prefix = `[claudish] You are serving this session as ${step.label} (\`${step.target}\`) — the ${ordinal(
+    stepIndex
+  )} fallback for the ${roleLabel} role, because the nominal ${roleLabel} model${ahead} temporarily exhausted. `;
+  if (step.direction === "degraded") {
+    return (
+      prefix +
+      `The context you inherit was built under a stronger model. Adjust accordingly: be more conservative, verify assumptions before acting, prefer well-trodden solutions over speculative ones, and take fewer risks than you would under ${roleLabel}.`
+    );
+  }
+  if (step.direction === "improved") {
+    return (
+      prefix +
+      `You are stronger than the nominal model here — use the extra capability to keep the work on track and clean up any loose ends in the inherited context.`
+    );
+  }
+  return prefix + `Capability is roughly equivalent; continue the work as normal.`;
+}
+
+/** One-time stream notice for a RECOVERING role: the nominal is back. */
+function buildStreamRecoveryText(role: FailoverRole, st: RecoveryState): string {
+  const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+  if (st.prevDirection === "improved") {
+    return `[claudish] You are back on the nominal ${roleLabel} model after serving as ${st.prevLabel} (the ${ordinal(
+      st.prevStepIndex
+    )} fallback), which was stronger than nominal. Scale back to your normal ${roleLabel} capability and risk appetite.`;
+  }
+  return `[claudish] You are back on the nominal ${roleLabel} model after serving as ${st.prevLabel} (the ${ordinal(
+    st.prevStepIndex
+  )} fallback). The context you inherit was built under a weaker model. Recalibrate upward: resume your normal capability and risk appetite.`;
+}
+
+/**
+ * Return the one-time stream notice for this role+session, marking the session
+ * notified at the current depth. Returns null when there is nothing to announce.
+ * Recovery takes precedence (a recovering role is not armed). For an armed role, the
+ * notice re-fires when the resolved step CHANGES since the session was last notified
+ * (Qwen→GLM mid-session) so the agent recalibrates to the new substitute. Atomic
+ * (check + mark in one call) so two concurrent in-flight requests can't both win.
+ */
+export function consumeStreamNotice(role: FailoverRole, sessionKey: string | null): string | null {
+  if (!sessionKey) return null;
+
+  const rec = recoveringState(role);
+  if (rec) {
+    if (rec.notifiedSessions.has(sessionKey)) return null;
+    rec.notifiedSessions.add(sessionKey);
+    return buildStreamRecoveryText(role, rec);
+  }
+
+  if (!isFailoverActive(role)) return null;
+  const { step, stepIndex } = resolveFailoverTarget(role);
+  if (!step) return null;
+  let perRole = notifiedSessions.get(role);
+  if (!perRole) {
+    perRole = new Map();
+    notifiedSessions.set(role, perRole);
+  }
+  if (perRole.get(sessionKey) === stepIndex) return null; // already notified at this depth
+  perRole.set(sessionKey, stepIndex);
+  return buildStreamNoticeText(role, step, stepIndex);
+}
+
+/**
+ * Extract a stable per-session key from an Anthropic request payload. Claude Code
+ * sends `metadata.user_id` as a JSON string `{"device_id","account_uuid","session_id"}`;
+ * we key dedup on `session_id`. Returns null when nothing stable is present (the
+ * stream notice is then skipped rather than spammed).
+ */
+export function extractSessionKey(payload: any): string | null {
+  try {
+    const uid = payload?.metadata?.user_id;
+    if (!uid) return null;
+    if (typeof uid === "string") {
+      try {
+        const p = JSON.parse(uid);
+        if (p?.session_id) return String(p.session_id);
+      } catch {
+        /* not JSON — use the raw string */
+      }
+      return uid;
+    }
+    if (uid && typeof uid === "object" && (uid as any).session_id) {
+      return String((uid as any).session_id);
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 /** Test seam: drop all state so a test can install its own environment. */
 export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
   if (env) {
@@ -355,61 +680,9 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     rules = new Map();
     autoArmEnabled = false;
     armed.clear();
+    stepFailures.clear();
+    recovering.clear();
+    pendingRecovery.clear();
+    notifiedSessions.clear();
   }
-  notifiedSessions.clear();
-}
-
-/**
- * The risk-adjustment notice injected at the HEAD of the first streamed response
- * a session receives under an active failover. Distinct from
- * `buildFailoverNotice` (which is written for the condensation boundary): this one
- * is addressed to the substitute model about to generate, and tells it which way
- * capability moved so it can recalibrate its risk appetite on the inherited
- * context. Direction-aware because the guidance differs for a weaker vs stronger
- * substitute — the user's stated case is "prendre moins de risque en tant que
- * Qwen 3.8 qu'il n'en aurait pris sous Opus".
- */
-function buildStreamNoticeText(rule: FailoverRule): string {
-  const { role, label, direction } = rule;
-  const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
-  if (direction === "degraded") {
-    return (
-      `[claudish] You are serving this session as a budget substitute (${label}) because the nominal model (${roleLabel}) is temporarily unavailable. ` +
-      `The context you inherit was built under a stronger model. Adjust accordingly: be more conservative, verify assumptions before acting, prefer well-trodden solutions over speculative ones, and take fewer risks than you would under ${roleLabel}.`
-    );
-  }
-  if (direction === "improved") {
-    return (
-      `[claudish] You are serving this session as a budget substitute (${label}) because the nominal model (${roleLabel}) is temporarily unavailable. ` +
-      `You are stronger than the nominal model here — use the extra capability to keep the work on track and clean up any loose ends in the inherited context.`
-    );
-  }
-  return (
-    `[claudish] You are serving this session as a budget substitute (${label}) because the nominal model (${roleLabel}) is temporarily unavailable. ` +
-    `Capability is roughly equivalent; continue the work as normal.`
-  );
-}
-
-/**
- * Return the one-time stream notice for this role+session, marking the session
- * notified so the same session never gets it twice. Returns null when there is
- * nothing to announce: role not under active failover, no stable session id, or
- * the session was already notified this episode.
- *
- * Atomic (check + mark in one call) so two concurrent in-flight requests of the
- * same session can't both win the "first" race and double-inject.
- */
-export function consumeStreamNotice(role: FailoverRole, sessionKey: string | null): string | null {
-  if (!sessionKey) return null;
-  if (!isFailoverActive(role)) return null;
-  const entry = armed.get(role);
-  if (!entry) return null;
-  let set = notifiedSessions.get(role);
-  if (!set) {
-    set = new Set();
-    notifiedSessions.set(role, set);
-  }
-  if (set.has(sessionKey)) return null;
-  set.add(sessionKey);
-  return buildStreamNoticeText(entry.rule);
 }
