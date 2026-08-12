@@ -104,6 +104,19 @@ export class QwenModelDialect extends BaseAPIFormat {
   override prepareRequest(request: any, originalRequest: any, ctx?: PrepareRequestContext): any {
     const policy = readThinkingPolicy();
 
+    // Qwen rejects a request whose max_completion_tokens is not strictly greater
+    // than thinking_budget ("max_completion_tokens [N] must be greater than
+    // thinking_budget [B]"). A budget policy fixed at 4096 therefore 400s any
+    // small request — title/classifier utility calls, or a failover substitute
+    // receiving a compact Opus request. A request that small has no room for
+    // meaningful reasoning anyway, so when the configured budget would not fit
+    // we drop thinking for that one request rather than fail it. A missing
+    // max_tokens is treated as unconstrained (the common, large-request case).
+    const maxTokensRaw = Number(request.max_tokens ?? request.max_completion_tokens ?? 0);
+    const maxTokensKnown = maxTokensRaw > 0;
+    const budgetFits =
+      policy.kind === "budget" && (!maxTokensKnown || maxTokensRaw > policy.budget + 1);
+
     if (ctx?.wireFormat === "anthropic-sse") {
       // Native Anthropic wire — keep `thinking` in its native shape, and never
       // emit enable_thinking/thinking_budget (ignored, and pure noise upstream).
@@ -115,8 +128,15 @@ export class QwenModelDialect extends BaseAPIFormat {
         return request;
       }
       if (policy.kind === "budget") {
-        request.thinking = { type: "enabled", budget_tokens: policy.budget };
-        log(`[QwenModelDialect] anthropic wire: thinking enabled, budget ${policy.budget}`);
+        if (budgetFits) {
+          request.thinking = { type: "enabled", budget_tokens: policy.budget };
+          log(`[QwenModelDialect] anthropic wire: thinking enabled, budget ${policy.budget}`);
+        } else {
+          request.thinking = { type: "disabled" };
+          log(
+            `[QwenModelDialect] anthropic wire: thinking disabled for this request (max_tokens ${maxTokensRaw} <= budget ${policy.budget})`
+          );
+        }
         return request;
       }
       request.thinking = { type: "disabled" };
@@ -134,10 +154,19 @@ export class QwenModelDialect extends BaseAPIFormat {
     }
 
     if (policy.kind === "budget") {
-      request.enable_thinking = true;
-      request.thinking_budget = policy.budget;
-      delete request.thinking;
-      log(`[QwenModelDialect] openai wire: enable_thinking=true, budget ${policy.budget}`);
+      if (budgetFits) {
+        request.enable_thinking = true;
+        request.thinking_budget = policy.budget;
+        delete request.thinking;
+        log(`[QwenModelDialect] openai wire: enable_thinking=true, budget ${policy.budget}`);
+      } else {
+        request.enable_thinking = false;
+        delete request.thinking_budget;
+        delete request.thinking;
+        log(
+          `[QwenModelDialect] openai wire: enable_thinking=false for this request (max_tokens ${maxTokensRaw} <= budget ${policy.budget})`
+        );
+      }
       return request;
     }
 
