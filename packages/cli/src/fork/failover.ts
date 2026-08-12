@@ -118,7 +118,10 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
         );
         continue;
       }
-      armed.set(role, { rule, since: new Date(), reason: "config" });
+      // Date.now() (not new Date()) so `since` and the TTL comparison in
+      // isFailoverActive read the same clock — otherwise a test that fakes
+      // Date.now cannot exercise the expiry at all.
+      armed.set(role, { rule, since: new Date(Date.now()), reason: "config" });
     }
   }
 
@@ -154,9 +157,48 @@ export function getFailoverRule(role: FailoverRole): FailoverRule | undefined {
   return rules.get(role);
 }
 
-/** True when requests for this role must be routed to the failover target. */
+/**
+ * How long an auto-armed substitution holds before the nominal model is retried.
+ *
+ * A provider wall is a *window*, not a state change: Z.AI's 5h cap, Anthropic's
+ * weekly reset, MiniMax's quota all lift on their own. Staying on the substitute
+ * until an operator notices wastes the plan the fleet actually pays for, so the
+ * arming has to be self-clearing.
+ *
+ * Ten minutes is chosen against the cost of being wrong in each direction: too
+ * short and a still-capped provider is probed constantly (one wasted round-trip
+ * per expiry, per in-flight request); too long and a recovered plan sits unused.
+ * A provider window is measured in hours, so ten minutes recovers promptly while
+ * probing at most ~6 times an hour.
+ */
+const AUTO_ARM_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * True when requests for this role must be routed to the failover target.
+ *
+ * Auto-armed substitutions EXPIRE (see AUTO_ARM_TTL_MS): once the TTL passes the
+ * entry is dropped, so the next request goes to the nominal model. If the wall is
+ * still up, that request takes a quota refusal and the reactive path in
+ * proxy-server re-arms and retries through the substitute — transparently, so the
+ * client never sees the probe. If the wall has lifted, the request simply
+ * succeeds and the fleet is back on its nominal plan with no operator action.
+ *
+ * Config-armed substitutions (CLAUDISH_FAILOVER_ACTIVE) never expire: those are a
+ * deliberate decision to conserve a plan, not a reaction to a refusal, and only
+ * an operator should reverse them.
+ */
 export function isFailoverActive(role: FailoverRole): boolean {
-  return armed.has(role);
+  const entry = armed.get(role);
+  if (!entry) return false;
+  if (entry.reason === "config") return true; // operator-held: never self-clears
+  if (Date.now() - entry.since.getTime() < AUTO_ARM_TTL_MS) return true;
+  armed.delete(role);
+  logStderr(
+    `[Failover] DISARMED ${role} → retrying nominal model (auto-arm TTL elapsed after ${Math.round(
+      (Date.now() - entry.since.getTime()) / 60000
+    )}min). Re-arms automatically if the wall is still up.`
+  );
+  return false;
 }
 
 /** Currently-armed substitutions, in a stable role order. */
@@ -171,10 +213,14 @@ export function getActiveFailovers(): ArmedFailover[] {
  */
 export function armFailover(role: FailoverRole, reason: string): boolean {
   if (!autoArmEnabled) return false;
-  if (armed.has(role)) return false;
+  // isFailoverActive (not armed.has) so an EXPIRED auto-arm can re-arm: after the
+  // TTL the probe request goes nominal, and when the wall is still up this is the
+  // call that puts the role back on the substitute. armed.has would see the stale
+  // entry and refuse — leaving the role on a dead provider until a restart.
+  if (isFailoverActive(role)) return false;
   const rule = rules.get(role);
   if (!rule) return false;
-  armed.set(role, { rule, since: new Date(), reason });
+  armed.set(role, { rule, since: new Date(Date.now()), reason });
   logStderr(`[Failover] ARMED ${role} → ${rule.label} (${rule.target}) — ${reason}`);
   return true;
 }

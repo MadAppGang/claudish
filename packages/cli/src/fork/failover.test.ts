@@ -9,7 +9,7 @@
  *  3. The notice never breaks a condensation, whatever the message looks like.
  */
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   initFailover,
   isFailoverActive,
@@ -239,5 +239,72 @@ describe("appendFailoverNoticeToMessage", () => {
     expect(() => appendFailoverNoticeToMessage({})).not.toThrow();
     expect(() => appendFailoverNoticeToMessage({ content: "not an array" })).not.toThrow();
     expect(() => appendFailoverNoticeToMessage({ content: [null, undefined] })).not.toThrow();
+  });
+});
+
+// ── Auto-arm expiry: the substitution must not outlive the wall ──────────────
+//
+// A provider wall is a window (Z.AI 5h cap, weekly resets), so an auto-arm has to
+// clear itself and let the nominal model be retried. Without this the fleet stays
+// on the substitute until an operator notices — paying for a plan it stopped using.
+describe("auto-arm expiry (self-clearing failover)", () => {
+  const ENV = {
+    CLAUDISH_FAILOVER_SONNET: "ds@deepseek-v4-flash",
+    CLAUDISH_FAILOVER_SONNET_LABEL: "DeepSeek",
+    CLAUDISH_FAILOVER_AUTO: "1",
+  } as NodeJS.ProcessEnv;
+
+  const realNow = Date.now;
+  let clock = 1_000_000;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+    initFailover(ENV);
+  });
+
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  it("holds the substitution while the wall is presumed up", () => {
+    expect(armFailover("sonnet", "HTTP 429 quota")).toBe(true);
+    clock += 9 * 60 * 1000; // 9 min — inside the TTL
+    expect(isFailoverActive("sonnet")).toBe(true);
+  });
+
+  it("expires after the TTL so the next request probes the nominal model", () => {
+    armFailover("sonnet", "HTTP 429 quota");
+    clock += 11 * 60 * 1000; // past the TTL
+    expect(isFailoverActive("sonnet")).toBe(false);
+  });
+
+  it("re-arms when the wall is still up (the probe request takes the refusal)", () => {
+    // This is the loop that matters: expire → probe goes nominal → still capped →
+    // reactive path re-arms and retries through the substitute, invisibly.
+    armFailover("sonnet", "HTTP 429 quota");
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(armFailover("sonnet", "HTTP 429 quota again")).toBe(true);
+    expect(isFailoverActive("sonnet")).toBe(true);
+  });
+
+  it("stays nominal when the wall has lifted (no re-arm without a refusal)", () => {
+    armFailover("sonnet", "HTTP 429 quota");
+    clock += 11 * 60 * 1000;
+    // Wall gone: the probe succeeds, so nothing calls armFailover. The role must
+    // simply stay on its nominal model — recovery with no operator action.
+    expect(isFailoverActive("sonnet")).toBe(false);
+    clock += 60 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false);
+  });
+
+  it("does NOT expire a config-armed role (operator intent, not a reaction)", () => {
+    // CLAUDISH_FAILOVER_ACTIVE means "conserve this plan deliberately" — only an
+    // operator should reverse it, however long it has been held.
+    initFailover({ ...ENV, CLAUDISH_FAILOVER_ACTIVE: "sonnet" });
+    expect(isFailoverActive("sonnet")).toBe(true);
+    clock += 24 * 60 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(true);
   });
 });
