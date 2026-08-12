@@ -946,7 +946,17 @@ export async function createProxyServer(
             // same invariant FallbackHandler relies on — handlers only mutate the
             // context on the success path (see fallback-handler.ts).
             const failHandler = await getHandlerForRequest(body.model);
-            return failHandler.handle(c, body);
+            const retryResponse = await failHandler.handle(c, body);
+            // Diagnostic: the discovering request used to surface a 429 to the
+            // client even though the retry ran. Log the retry's outcome so the
+            //next real wall shows whether the substitute answered or re-hit a
+            // wall — without this we are guessing at a failure we cannot easily
+            // reproduce (it needs a live quota wall to trigger).
+            log(
+              `[Proxy] Failover retry for '${body.model}': substitute returned HTTP ${retryResponse.status}` +
+                (retryResponse.ok ? "" : " — client will see the substitute's error")
+            );
+            return retryResponse;
           }
         }
       }
