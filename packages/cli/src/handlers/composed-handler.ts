@@ -34,7 +34,8 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { appendUpstreamError } from "./shared/response-capture.js";
-import { appendFailoverNoticeToMessage } from "../fork/failover.js";
+import { appendFailoverNoticeToMessage, consumeStreamNotice, roleFromModelName } from "../fork/failover.js";
+import { prependNoticeToAnthropicStream } from "./shared/failover-stream-notice.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
@@ -979,7 +980,33 @@ export class ComposedHandler implements ModelHandler {
     // already honors this for Anthropic-direct; this closes the same gap for every
     // proxied/composed model. See collect-sse-message.ts.
     const wantsStreaming = payload?.stream === true;
-    if (wantsStreaming) return streamResponse;
+    if (wantsStreaming) {
+      // One-time "moment of failover" notice: the first streamed response of a
+      // session served under an active role-level failover gets a risk-adjustment
+      // notice prepended as block 0, so the substitute model reads it (from its
+      // own prior turn in history) on the next turn. The condensation path below
+      // reinforces it at every /compact. No-op (returns null) unless this exact
+      // role is armed AND this session hasn't been notified yet this episode — so
+      // it costs zero bytes on normal traffic and fires at most once per session.
+      const notice = consumeStreamNotice(roleFromModelName(payload?.model), extractSessionKey(payload));
+      if (notice) {
+        const body = streamResponse.body;
+        if (body) {
+          try {
+            const wrapped = prependNoticeToAnthropicStream(body, notice);
+            const headers = new Headers(streamResponse.headers);
+            return new Response(wrapped as any, {
+              status: streamResponse.status,
+              statusText: streamResponse.statusText,
+              headers,
+            });
+          } catch {
+            // Never hang: if wrap fails, fall through to the unmodified stream.
+          }
+        }
+      }
+      return streamResponse;
+    }
 
     const message = await collectAnthropicSseToMessage(streamResponse, this.bareModelName);
 
@@ -1253,4 +1280,30 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
     return "Server error — retry after a brief wait.";
   }
   return `Unexpected HTTP ${status} from ${providerName}.`;
+}
+
+/**
+ * Extract a stable per-session key from `metadata.user_id` for the one-time
+ * failover stream notice. Claude Code sends a JSON string of the shape
+ * `{"device_id":"…","account_uuid":"…","session_id":"<uuid>"}`. Falls back to the
+ * raw user_id string when it isn't JSON (coarser but still dedups per account),
+ * and returns null when there is nothing to key on — null skips the notice
+ * entirely rather than firing it every turn.
+ */
+function extractSessionKey(payload: any): string | null {
+  try {
+    const uid = payload?.metadata?.user_id;
+    if (typeof uid !== "string" || !uid) return null;
+    try {
+      const parsed = JSON.parse(uid);
+      if (parsed && typeof parsed === "object" && typeof parsed.session_id === "string") {
+        return parsed.session_id;
+      }
+    } catch {
+      /* not JSON — fall back to the raw string */
+    }
+    return uid;
+  } catch {
+    return null;
+  }
 }

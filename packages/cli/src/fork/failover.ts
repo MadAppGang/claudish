@@ -65,6 +65,20 @@ let rules = new Map<FailoverRole, FailoverRule>();
 let autoArmEnabled = false;
 const armed = new Map<FailoverRole, ArmedFailover>();
 
+/**
+ * Sessions that have already received the one-time "moment of failover" stream
+ * notice, per role. Keyed by whatever stable per-session id we extracted from
+ * `metadata.user_id` (Claude Code sends `{"device_id","account_uuid","session_id"}`).
+ *
+ * Lifetimes follow the armed entry: when an auto-arm expires (isFailoverActive
+ * disarm branch) the role's set is cleared, so a fresh failover episode notifies
+ * each session once again. A config-arm never disarms, so for the whole operator
+ * window each NEW session gets exactly one notice — which is the intent ("jusqu'au
+ * retour des crédits"). The condensation notice (appendFailoverNoticeToMessage)
+ * reinforces at every /compact regardless of this set.
+ */
+const notifiedSessions = new Map<FailoverRole, Set<string>>();
+
 function parseDirection(raw: string | undefined): FailoverDirection {
   const v = (raw || "").trim().toLowerCase();
   if (v === "improved" || v === "degraded" || v === "lateral") return v;
@@ -193,6 +207,7 @@ export function isFailoverActive(role: FailoverRole): boolean {
   if (entry.reason === "config") return true; // operator-held: never self-clears
   if (Date.now() - entry.since.getTime() < AUTO_ARM_TTL_MS) return true;
   armed.delete(role);
+  notifiedSessions.delete(role); // a fresh failover episode may re-notify
   logStderr(
     `[Failover] DISARMED ${role} → retrying nominal model (auto-arm TTL elapsed after ${Math.round(
       (Date.now() - entry.since.getTime()) / 60000
@@ -341,4 +356,60 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     autoArmEnabled = false;
     armed.clear();
   }
+  notifiedSessions.clear();
+}
+
+/**
+ * The risk-adjustment notice injected at the HEAD of the first streamed response
+ * a session receives under an active failover. Distinct from
+ * `buildFailoverNotice` (which is written for the condensation boundary): this one
+ * is addressed to the substitute model about to generate, and tells it which way
+ * capability moved so it can recalibrate its risk appetite on the inherited
+ * context. Direction-aware because the guidance differs for a weaker vs stronger
+ * substitute — the user's stated case is "prendre moins de risque en tant que
+ * Qwen 3.8 qu'il n'en aurait pris sous Opus".
+ */
+function buildStreamNoticeText(rule: FailoverRule): string {
+  const { role, label, direction } = rule;
+  const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+  if (direction === "degraded") {
+    return (
+      `[claudish] You are serving this session as a budget substitute (${label}) because the nominal model (${roleLabel}) is temporarily unavailable. ` +
+      `The context you inherit was built under a stronger model. Adjust accordingly: be more conservative, verify assumptions before acting, prefer well-trodden solutions over speculative ones, and take fewer risks than you would under ${roleLabel}.`
+    );
+  }
+  if (direction === "improved") {
+    return (
+      `[claudish] You are serving this session as a budget substitute (${label}) because the nominal model (${roleLabel}) is temporarily unavailable. ` +
+      `You are stronger than the nominal model here — use the extra capability to keep the work on track and clean up any loose ends in the inherited context.`
+    );
+  }
+  return (
+    `[claudish] You are serving this session as a budget substitute (${label}) because the nominal model (${roleLabel}) is temporarily unavailable. ` +
+    `Capability is roughly equivalent; continue the work as normal.`
+  );
+}
+
+/**
+ * Return the one-time stream notice for this role+session, marking the session
+ * notified so the same session never gets it twice. Returns null when there is
+ * nothing to announce: role not under active failover, no stable session id, or
+ * the session was already notified this episode.
+ *
+ * Atomic (check + mark in one call) so two concurrent in-flight requests of the
+ * same session can't both win the "first" race and double-inject.
+ */
+export function consumeStreamNotice(role: FailoverRole, sessionKey: string | null): string | null {
+  if (!sessionKey) return null;
+  if (!isFailoverActive(role)) return null;
+  const entry = armed.get(role);
+  if (!entry) return null;
+  let set = notifiedSessions.get(role);
+  if (!set) {
+    set = new Set();
+    notifiedSessions.set(role, set);
+  }
+  if (set.has(sessionKey)) return null;
+  set.add(sessionKey);
+  return buildStreamNoticeText(entry.rule);
 }
