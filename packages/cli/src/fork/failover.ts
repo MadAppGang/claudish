@@ -170,6 +170,30 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
   return out;
 }
 
+/** Deployment-specific model-name → role aliases (CLAUDISH_FAILOVER_ROLE_MODELS),
+ * so clients that request the nominal model by NAME (e.g. "glm-5.2", "MiniMax-M3")
+ * instead of a role keyword ("claude-sonnet-4-6") still get cascade protection.
+ * Pattern is a lowercased substring matched against the requested model. */
+let roleAliases: { pattern: string; role: FailoverRole }[] = [];
+
+/** Parse "pattern:role,pattern:role" — lowercase patterns, validated roles. */
+function parseRoleAliases(raw: string): { pattern: string; role: FailoverRole }[] {
+  const out: { pattern: string; role: FailoverRole }[] = [];
+  for (const piece of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const [patternRaw, roleRaw] = piece.split(":");
+    const pattern = (patternRaw || "").trim().toLowerCase();
+    const role = (roleRaw || "").trim().toLowerCase() as FailoverRole;
+    if (!pattern || !FAILOVER_ROLES.includes(role)) {
+      logStderr(
+        `[Failover] Skipping malformed role alias '${piece}' — want "pattern:role" with role in ${FAILOVER_ROLES.join("/")}`
+      );
+      continue;
+    }
+    out.push({ pattern, role });
+  }
+  return out;
+}
+
 /**
  * (Re)read configuration from the environment and arm whatever
  * CLAUDISH_FAILOVER_ACTIVE names. Called once at proxy startup so the log line lands
@@ -177,6 +201,7 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
  */
 export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   rules = loadRules(env);
+  roleAliases = parseRoleAliases(env.CLAUDISH_FAILOVER_ROLE_MODELS || "");
   autoArmEnabled = /^(1|true|yes|on)$/i.test((env.CLAUDISH_FAILOVER_AUTO || "").trim());
   armed.clear();
   // In-memory probe/recovery state does not survive a restart — start fresh.
@@ -236,6 +261,11 @@ export function roleFromModelName(model: string | undefined): FailoverRole | nul
   if (m.includes("opus")) return "opus";
   if (m.includes("sonnet")) return "sonnet";
   if (m.includes("haiku")) return "haiku";
+  // Fall back to deployment-specific aliases: a client that names the nominal
+  // model directly ("glm-5.2") instead of a role keyword must still be cascaded.
+  for (const alias of roleAliases) {
+    if (m.includes(alias.pattern)) return alias.role;
+  }
   return null;
 }
 
@@ -678,6 +708,7 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     initFailover(env);
   } else {
     rules = new Map();
+    roleAliases = [];
     autoArmEnabled = false;
     armed.clear();
     stepFailures.clear();

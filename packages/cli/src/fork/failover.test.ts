@@ -307,10 +307,35 @@ describe("roleFromModelName", () => {
     expect(roleFromModelName("claude-3-5-haiku-20241022")).toBe("haiku");
   });
 
-  it("returns null for anything else", () => {
+  it("returns null for anything else (no aliases configured)", () => {
     expect(roleFromModelName("glm-5.2")).toBeNull();
+    expect(roleFromModelName("mmc@MiniMax-M3")).toBeNull();
     expect(roleFromModelName("")).toBeNull();
     expect(roleFromModelName(undefined)).toBeNull();
+  });
+
+  it("honors CLAUDISH_FAILOVER_ROLE_MODELS aliases for nominal-by-name clients", () => {
+    initFailover({
+      CLAUDISH_FAILOVER_ROLE_MODELS: "glm-5.2:sonnet,minimax-m3:haiku",
+    } as NodeJS.ProcessEnv);
+    expect(roleFromModelName("glm-5.2")).toBe("sonnet");
+    expect(roleFromModelName("gc@glm-5.2")).toBe("sonnet");
+    expect(roleFromModelName("mmc@MiniMax-M3")).toBe("haiku");
+    expect(roleFromModelName("MiniMax-M3")).toBe("haiku");
+    // Role keywords still win; unmatched names stay null.
+    expect(roleFromModelName("claude-sonnet-4-6")).toBe("sonnet");
+    expect(roleFromModelName("deepseek-v4-flash")).toBeNull();
+  });
+
+  it("skips malformed aliases and resets them on re-init", () => {
+    initFailover({
+      CLAUDISH_FAILOVER_ROLE_MODELS: "glm-5.2:sonnet,bogus:rolenope,::x,deepseek",
+    } as NodeJS.ProcessEnv);
+    expect(roleFromModelName("glm-5.2")).toBe("sonnet");
+    expect(roleFromModelName("deepseek-v4-flash")).toBeNull();
+    // Re-init without the alias clears it.
+    initFailover({} as NodeJS.ProcessEnv);
+    expect(roleFromModelName("glm-5.2")).toBeNull();
   });
 });
 

@@ -629,14 +629,10 @@ export async function createProxyServer(
     // The role is derived from what the CLIENT asked for, independently of
     // whether modelMap has an entry for it — a failover must be able to divert
     // an unmapped role (e.g. bare native opus on ai-01) just as well as a mapped
-    // one. Kept in sync with the mapping cascade immediately below.
-    const role: FailoverRole | null = req.includes("opus")
-      ? "opus"
-      : req.includes("sonnet")
-        ? "sonnet"
-        : req.includes("haiku")
-          ? "haiku"
-          : null;
+    // one. Single definition in failover.roleFromModelName (role keywords +
+    // CLAUDISH_FAILOVER_ROLE_MODELS aliases) so the swap and the cascade loop
+    // can never drift.
+    const role = roleFromModelName(requestedModel);
 
     if (modelMap) {
       // Role-specific mappings take highest priority
