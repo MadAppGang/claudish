@@ -284,7 +284,7 @@ async function deepProbe(state: RelayState): Promise<boolean> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (state.proxyKey) headers["x-proxy-key"] = state.proxyKey;
     const body = JSON.stringify({
-      model: "glm-5.2",
+      model: "glm-5.3",
       max_tokens: 100,
       stream: true,
       tools: [
