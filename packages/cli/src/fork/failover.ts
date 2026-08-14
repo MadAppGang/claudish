@@ -515,10 +515,15 @@ function ordinal(n: number): string {
  * (recovery — fires RECOVERY_CONDENSATIONS times then clears). Written for the agent
  * that reads it as context: which model is actually serving, which ahead of it is
  * also exhausted, and what to do about it.
+ *
+ * When `role` is given, only that role is reported: a condensation belongs to one
+ * session, and only the failover of THAT session's role is "the model actually
+ * serving you". An armed sibling role is someone else's failover — announcing it
+ * here tells the agent its own requests are substituted when they are not.
  */
-export function buildFailoverNotice(): string | null {
-  const active = getActiveFailovers();
-  const rec = FAILOVER_ROLES.filter((r) => isRecovering(r)).map((r) => ({
+export function buildFailoverNotice(role?: FailoverRole | null): string | null {
+  const active = getActiveFailovers().filter((a) => !role || a.role === role);
+  const rec = FAILOVER_ROLES.filter((r) => (!role || r === role) && isRecovering(r)).map((r) => ({
     role: r,
     state: recoveringState(r)!,
   }));
@@ -577,13 +582,14 @@ export function buildFailoverNotice(): string | null {
 /**
  * Append the failover/recovery notice to a collected Anthropic message, in place.
  * Called on the non-streaming path (`/compact` and any `stream: false` caller).
- * Appends to the trailing text block when there is one (clients may read
+ * Pass the requesting session's role so the notice covers only that role's
+ * failover. Appends to the trailing text block when there is one (clients may read
  * `content[0]`), otherwise pushes one. Never throws — a malformed message must not
  * turn a working condensation into a failed one.
  */
-export function appendFailoverNoticeToMessage(message: any): void {
+export function appendFailoverNoticeToMessage(message: any, role?: FailoverRole | null): void {
   try {
-    const notice = buildFailoverNotice();
+    const notice = buildFailoverNotice(role);
     if (!notice) return;
     if (!message || !Array.isArray(message.content)) return;
 

@@ -374,6 +374,24 @@ describe("failover condensation notice", () => {
     });
     expect(buildFailoverNotice()).toContain("slightly weaker");
   });
+
+  it("scopes to the requesting role — a sonnet compact carries no haiku failover", () => {
+    // Cluster state: haiku armed (MiniMax walled → DeepSeek), sonnet nominal.
+    initFailover({
+      ...HAIKU_TO_DEEPSEEK,
+      CLAUDISH_FAILOVER_ACTIVE: "haiku",
+    });
+    // Unscoped (legacy/aggregate view) still reports every armed role…
+    expect(buildFailoverNotice()).toContain("DeepSeek v4 Flash");
+    // …but a sonnet session's condensation must NOT be told its requests
+    // are substituted when they are served by the nominal sonnet model.
+    expect(buildFailoverNotice("sonnet")).toBeNull();
+    const msg = { content: [{ type: "text", text: "Summary." }] };
+    appendFailoverNoticeToMessage(msg, "sonnet");
+    expect(msg.content[0].text).toBe("Summary.");
+    // The haiku session's own condensation still gets its notice.
+    expect(buildFailoverNotice("haiku")).toContain("DeepSeek v4 Flash");
+  });
 });
 
 describe("appendFailoverNoticeToMessage", () => {

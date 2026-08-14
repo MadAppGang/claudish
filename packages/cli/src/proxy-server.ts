@@ -904,7 +904,7 @@ export async function createProxyServer(
     }
     try {
       const message = await response.clone().json();
-      appendFailoverNoticeToMessage(message);
+      appendFailoverNoticeToMessage(message, role);
       const headers = new Headers(response.headers);
       headers.set("Content-Type", "application/json");
       return new Response(JSON.stringify(message), { status: response.status, headers });
