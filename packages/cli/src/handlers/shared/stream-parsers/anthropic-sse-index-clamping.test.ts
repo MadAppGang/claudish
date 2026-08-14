@@ -104,7 +104,10 @@ describe("anthropic-sse content block index clamping", () => {
     expect(out).toContain("second");
   });
 
-  it("clamps a delta whose index jumps past the last known block", async () => {
+  it("clamps an orphan delta to the last OPEN block, not the next slot", async () => {
+    // A delta can only reference a block the client has opened. Clamping it
+    // to highest + 1 would emit a delta for an unopened block — the same
+    // "Content block not found" this guard exists to prevent.
     const frames = [
       messageStart(),
       textBlockStart(0),
@@ -119,6 +122,7 @@ describe("anthropic-sse content block index clamping", () => {
 
     expect(out).toContain('"index":0');
     expect(out).not.toContain('"index":5');
+    expect(out).not.toContain('"index":1');
     expect(out).toContain("orphan");
   });
 });
