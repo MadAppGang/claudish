@@ -53,6 +53,38 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   return auth;
 }
 
+/**
+ * Substituted when stripping images leaves a message with zero content parts
+ * (e.g. a PDF-read tool_result message whose only siblings were images).
+ * Providers reject empty-content messages — Z.AI answers HTTP 400 code 1213
+ * "The prompt parameter was not received normally", which the client then
+ * retries into the same wall. The placeholder keeps the turn structure and
+ * tells the model an image existed.
+ */
+export const STRIPPED_IMAGE_PLACEHOLDER =
+  "[An image was present in the original request but was removed: this model does not support image input. Ask the user to use a vision-capable model for visual tasks.]";
+
+/**
+ * Remove all parts of the given types from every message's content array
+ * (in place), collapsing single-text messages to plain strings and
+ * substituting STRIPPED_IMAGE_PLACEHOLDER when nothing remains.
+ */
+export function stripImageBlocksFromMessages(
+  messages: any[],
+  partTypes: string[]
+): void {
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      msg.content = msg.content.filter((part: any) => !partTypes.includes(part.type));
+      if (msg.content.length === 1 && msg.content[0].type === "text") {
+        msg.content = msg.content[0].text;
+      } else if (msg.content.length === 0) {
+        msg.content = STRIPPED_IMAGE_PLACEHOLDER;
+      }
+    }
+  }
+}
+
 export interface ComposedHandlerOptions {
   /** Override format selection — use this specific APIFormat instance */
   adapter?: BaseAPIFormat;
@@ -262,34 +294,11 @@ export class ComposedHandler implements ModelHandler {
           }
           log(`[ComposedHandler] Vision proxy described ${descriptions.length} image(s)`);
           // Strip any remaining Anthropic-format image/document blocks
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) => part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          stripImageBlocksFromMessages(messages, ["image", "document"]);
         } else {
           // Vision proxy failed or not applicable — strip all unsupported image/document blocks
           log(`[ComposedHandler] Stripping image/document blocks (vision not supported)`);
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) =>
-                  part.type !== "image_url" && part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          stripImageBlocksFromMessages(messages, ["image_url", "image", "document"]);
         }
       }
     }
