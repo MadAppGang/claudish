@@ -340,14 +340,28 @@ export function createAnthropicPassthroughStream(
            * must follow the block until it closes.
            */
           const remappedBlocks = new Map<number, number>();
-          const clampIndex = (idx: number, context: string): number => {
+          /**
+           * Clamp an index to the valid range for its frame kind. A
+           * `content_block_start` may legitimately claim the NEXT sequential
+           * slot (highest + 1); a delta or stop can only reference a block
+           * the client has already opened, so their ceiling is `highest`.
+           * Without that distinction an orphan delta clamps to highest + 1 —
+           * an index the client never opened, which is the very
+           * "Content block not found" failure this guard exists to prevent.
+           */
+          const clampIndex = (
+            idx: number,
+            context: string,
+            kind: "start" | "frame"
+          ): number => {
             const remapped = remappedBlocks.get(idx);
             if (remapped !== undefined) return remapped;
-            if (idx > highestSeenIndex + 1) {
+            const ceiling = kind === "start" ? highestSeenIndex + 1 : highestSeenIndex;
+            if (idx > ceiling) {
               log(
-                `[AnthropicSSE] Index jump detected: ${idx} but expected <=${highestSeenIndex + 1} (${context}) — clamping to ${highestSeenIndex + 1}`
+                `[AnthropicSSE] Index jump detected: ${idx} but expected <=${ceiling} (${context}) — clamping to ${ceiling}`
               );
-              return highestSeenIndex + 1;
+              return ceiling;
             }
             return idx;
           };
@@ -434,7 +448,8 @@ export function createAnthropicPassthroughStream(
                   if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
                     const clamped = clampIndex(
                       data.index - thinkingBlocksSuppressed,
-                      `${data.type} (filtered, orig=${data.index})`
+                      `${data.type} (filtered, orig=${data.index})`,
+                      data.type === "content_block_start" ? "start" : "frame"
                     );
                     trackIndex(clamped);
                     const reindexed = clamped;
@@ -453,21 +468,29 @@ export function createAnthropicPassthroughStream(
                   } else {
                     // No filtering needed — track the index, clamp if it jumps,
                     // and pass through via the tool interceptor (a no-op unless
-                    // a rule asked for this tool).
+                    // a rule asked for this tool). No `continue` here: frames
+                    // must fall through to the usage/text tracking below.
                     if (
                       typeof data.index === "number" &&
                       data.type === "content_block_start"
                     ) {
                       trackIndex(data.index);
+                      enqueueData(controller, data, line);
                     } else if (typeof data.index === "number") {
-                      const clamped = clampIndex(data.index, `${data.type} (filtered stream)`);
+                      const clamped = clampIndex(
+                        data.index,
+                        `${data.type} (filtered stream)`,
+                        "frame"
+                      );
                       if (clamped !== data.index) {
                         const modified = { ...data, index: clamped };
                         enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
-                        continue;
+                      } else {
+                        enqueueData(controller, data, line);
                       }
+                    } else {
+                      enqueueData(controller, data, line);
                     }
-                    enqueueData(controller, data, line);
                   }
                 } catch {
                   // Unparseable — pass through
@@ -530,7 +553,7 @@ export function createAnthropicPassthroughStream(
                         trackIndex(expected);
                       } else if (data.type === "content_block_stop") {
                         // delta / stop — follow an existing remap, clamp otherwise
-                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
+                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`, "frame");
                         remappedBlocks.delete(data.index);
                         if (clamped !== data.index) {
                           const modified = { ...data, index: clamped };
@@ -539,7 +562,7 @@ export function createAnthropicPassthroughStream(
                           enqueueData(controller, data, line);
                         }
                       } else {
-                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
+                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`, "frame");
                         if (clamped !== data.index) {
                           const modified = { ...data, index: clamped };
                           enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
