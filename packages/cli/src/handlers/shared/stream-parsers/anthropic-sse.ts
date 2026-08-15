@@ -356,7 +356,8 @@ export function createAnthropicPassthroughStream(
           ): number => {
             const remapped = remappedBlocks.get(idx);
             if (remapped !== undefined) return remapped;
-            const ceiling = kind === "start" ? highestSeenIndex + 1 : highestSeenIndex;
+            const ceiling =
+              kind === "start" ? highestSeenIndex + 1 : Math.max(highestSeenIndex, 0);
             if (idx > ceiling) {
               log(
                 `[AnthropicSSE] Index jump detected: ${idx} but expected <=${ceiling} (${context}) — clamping to ${ceiling}`
@@ -551,21 +552,27 @@ export function createAnthropicPassthroughStream(
                           enqueueData(controller, data, line);
                         }
                         trackIndex(expected);
-                      } else if (data.type === "content_block_stop") {
-                        // delta / stop — follow an existing remap, clamp otherwise
-                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`, "frame");
-                        remappedBlocks.delete(data.index);
-                        if (clamped !== data.index) {
-                          const modified = { ...data, index: clamped };
-                          enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
-                        } else {
-                          enqueueData(controller, data, line);
-                        }
                       } else {
-                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`, "frame");
-                        if (clamped !== data.index) {
-                          const modified = { ...data, index: clamped };
+                        // delta / stop — follow an existing remap. An index
+                        // with no open block behind it (neither remapped nor
+                        // ≤ highest) is an orphan — e.g. MiniMax emits an
+                        // implicit signature block whose content_block_start
+                        // never arrives — and is DROPPED rather than clamped:
+                        // a delta can only point at a block the client has
+                        // opened, and re-attaching it to another block would
+                        // corrupt that block's content.
+                        const remapped = remappedBlocks.get(data.index);
+                        if (data.type === "content_block_stop") {
+                          remappedBlocks.delete(data.index);
+                        }
+                        if (remapped !== undefined) {
+                          const modified = { ...data, index: remapped };
                           enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
+                        } else if (data.index > highestSeenIndex) {
+                          log(
+                            `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block — model=${opts.modelName})`
+                          );
+                          pendingEventLine = null; // swallow the event: line too
                         } else {
                           enqueueData(controller, data, line);
                         }
