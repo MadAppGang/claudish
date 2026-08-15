@@ -104,10 +104,10 @@ describe("anthropic-sse content block index clamping", () => {
     expect(out).toContain("second");
   });
 
-  it("clamps an orphan delta to the last OPEN block, not the next slot", async () => {
-    // A delta can only reference a block the client has opened. Clamping it
-    // to highest + 1 would emit a delta for an unopened block — the same
-    // "Content block not found" this guard exists to prevent.
+  it("drops an orphan delta instead of re-attaching it to another block", async () => {
+    // A delta can only reference a block the client has opened. One that
+    // references nothing is dropped: clamping it onto the last open block
+    // would corrupt that block's content.
     const frames = [
       messageStart(),
       textBlockStart(0),
@@ -123,6 +123,43 @@ describe("anthropic-sse content block index clamping", () => {
     expect(out).toContain('"index":0');
     expect(out).not.toContain('"index":5');
     expect(out).not.toContain('"index":1');
-    expect(out).toContain("orphan");
+    expect(out).not.toContain("orphan");
+  });
+
+  it("absorbs MiniMax's implicit signature block and keeps the stream sequential", async () => {
+    // Shape extracted from 7 production captures (MiniMax-M3, anthropic
+    // passthrough, 2026-07-19 → 2026-08-06): the upstream emits a
+    // signature_delta + stop at index 0 with NO content_block_start for it
+    // (the signature is the sha256 of the empty string — an implicit block),
+    // then the text block starts at index 1. The old stateless clamp remapped
+    // the start 1 → 0 but leaked every following text delta at the original
+    // index 1, producing "Content block not found" on the client.
+    const frames = [
+      messageStart(),
+      frame("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "EoMC" },
+      }),
+      frame("content_block_stop", { type: "content_block_stop", index: 0 }),
+      textBlockStart(1),
+      textDelta(1, "real content"),
+      blockStop(1),
+      messageDelta(),
+      messageStop(),
+    ];
+
+    const out = stripPingFrames(await run(frames));
+
+    // The implicit signature block never existed client-side: dropped whole.
+    expect(out).not.toContain("signature_delta");
+    // The text block is renumbered to 0 and its deltas FOLLOW the remap —
+    // no leak of the original index 1 anywhere.
+    expect(out).toContain('"index":0');
+    expect(out).not.toContain('"index":1');
+    expect(out).toContain("real content");
+    // Sequential: exactly one block start, one stop, in order.
+    expect(out.indexOf("content_block_start")).toBeLessThan(out.indexOf("text_delta"));
+    expect(out.lastIndexOf("content_block_stop")).toBeGreaterThan(out.indexOf("text_delta"));
   });
 });
