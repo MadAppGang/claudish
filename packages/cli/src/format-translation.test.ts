@@ -503,8 +503,12 @@ describe("Regression: Anthropic SSE abandoned streams emit a terminal tail", () 
     });
 
     const events = await parseClaudeSseStream(response);
+    // Under index clamping (see anthropic-sse index-clamping tests), the
+    // client sees the block at the renumbered sequential index (0), not the
+    // upstream index (3) — so the synthetic tail must close the index the
+    // client actually has open.
     const blockStopIndex = events.findIndex(
-      (event) => event.data?.type === "content_block_stop" && event.data?.index === 3
+      (event) => event.data?.type === "content_block_stop" && event.data?.index === 0
     );
     const messageStopIndex = events.findIndex((event) => event.data?.type === "message_stop");
 
