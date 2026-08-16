@@ -129,9 +129,11 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * Convert Claude-format messages to the target API format.
    * Default: delegates to convertMessagesToOpenAI.
    * Override for non-OpenAI formats (e.g., Gemini parts-based format).
+   * @param reasoningRoundtrip - Threads the DeepSeek requirement: emit
+   *   reasoning_content on every assistant message (see openai-messages.ts).
    */
-  convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
-    return convertMessagesToOpenAI(claudeRequest, this.modelId, filterIdentityFn);
+  convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string, reasoningRoundtrip = false): any[] {
+    return convertMessagesToOpenAI(claudeRequest, this.modelId, filterIdentityFn, false, reasoningRoundtrip);
   }
 
   /**

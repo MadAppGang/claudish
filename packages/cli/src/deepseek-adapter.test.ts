@@ -14,6 +14,7 @@ import { describe, test, expect } from "bun:test";
 import { DeepSeekModelDialect } from "./adapters/deepseek-model-dialect.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
+import { convertMessagesToOpenAI } from "./handlers/shared/format/openai-messages.js";
 
 // ─── Group 1: DeepSeekModelDialect model detection ──────────────────────────
 
@@ -90,6 +91,44 @@ describe("DeepSeekModelDialect — preserveThinkingInHistory (400 regression)", 
   test("GLM keeps the default strip (capability is opt-in, not blanket)", () => {
     const adapter = new GLMModelDialect("glm-5");
     expect(adapter.preserveThinkingInHistory()).toBe(false);
+  });
+});
+
+// ─── Group 3b: reasoning_content on every assistant message (v4 roundtrip) ──
+//
+// DeepSeek rejects a thinking-mode conversation whose RECENT assistant messages
+// lack reasoning_content — including tool_use-only turns that never carried a
+// thinking block — with HTTP 400 "The reasoning_content in the thinking mode
+// must be passed back to the API" (reproduced against api.deepseek.com,
+// 2026-08-16, session reqN=5905). The converter must emit the field (empty
+// string satisfies the presence check) on every assistant message when the
+// target requires reasoning roundtrip.
+
+describe("convertMessagesToOpenAI — reasoningRoundtrip emission", () => {
+  const base = {
+    model: "claude-sonnet-4-6",
+    messages: [
+      { role: "user", content: "go" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "plan" }, { type: "text", text: "doing" }] },
+      { role: "user", content: "result" },
+      // tool_use-only turn: no thinking block in source
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+    ],
+  };
+
+  test("off (default): reasoning_content only where thinking block present", () => {
+    const out = convertMessagesToOpenAI(base, "deepseek-v4-flash") as any[];
+    const asst = out.filter((m) => m.role === "assistant");
+    expect(asst[0].reasoning_content).toBe("plan");
+    expect(asst[1].reasoning_content).toBeUndefined(); // tool_use-only turn
+  });
+
+  test("on (DeepSeek): reasoning_content on every assistant message, empty for no-thinking turns", () => {
+    const out = convertMessagesToOpenAI(base, "deepseek-v4-flash", undefined, false, true) as any[];
+    const asst = out.filter((m) => m.role === "assistant");
+    expect(asst[0].reasoning_content).toBe("plan");
+    expect(asst[1].reasoning_content).toBe(""); // tool_use-only turn gets empty field
   });
 });
 

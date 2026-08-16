@@ -7,12 +7,18 @@
 /**
  * Convert Claude/Anthropic messages to OpenAI format
  * @param simpleFormat - If true, use simple string content only (for MLX and other basic providers)
+ * @param reasoningRoundtrip - If true, emit reasoning_content on EVERY assistant message
+ *   (empty string when no thinking block). DeepSeek rejects with HTTP 400 "The reasoning_content
+ *   in the thinking mode must be passed back to the API" when a conversation in thinking mode
+ *   has recent assistant messages without the field — including tool_use-only turns that never
+ *   carried a thinking block. Empty string satisfies the presence check.
  */
 export function convertMessagesToOpenAI(
   req: any,
   modelId: string,
   filterIdentityFn?: (s: string) => string,
-  simpleFormat = false
+  simpleFormat = false,
+  reasoningRoundtrip = false
 ): any[] {
   const messages: any[] = [];
 
@@ -38,7 +44,7 @@ export function convertMessagesToOpenAI(
   if (req.messages) {
     for (const msg of req.messages) {
       if (msg.role === "user") processUserMessage(msg, messages, simpleFormat);
-      else if (msg.role === "assistant") processAssistantMessage(msg, messages, simpleFormat);
+      else if (msg.role === "assistant") processAssistantMessage(msg, messages, simpleFormat, reasoningRoundtrip);
       else if (msg.role === "system") {
         // Inline system messages (Claude Code v2.1.153+): merge into the system prompt
         // or prepend as a user message if no system prompt exists.
@@ -114,7 +120,7 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
   }
 }
 
-function processAssistantMessage(msg: any, messages: any[], simpleFormat = false) {
+function processAssistantMessage(msg: any, messages: any[], simpleFormat = false, reasoningRoundtrip = false) {
   if (Array.isArray(msg.content)) {
     const strings: string[] = [];
     const toolCalls: any[] = [];
@@ -163,7 +169,11 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
       // Include reasoning_content whenever ANY thinking block was present,
       // even if the concatenated text is empty — Kimi K2.5 rejects turn 2+
       // with HTTP 400 if the field is missing after thinking was active.
-      if (hasThinking) m.reasoning_content = reasoningContent;
+      // With reasoningRoundtrip (DeepSeek), emit on every assistant message —
+      // even tool_use-only turns with no thinking block — because DeepSeek
+      // requires the field on recent assistant messages of a thinking-mode
+      // conversation (empty string satisfies the presence check).
+      if (hasThinking || reasoningRoundtrip) m.reasoning_content = reasoningContent;
       if (m.content !== undefined || m.tool_calls) messages.push(m);
     }
   } else {

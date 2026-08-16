@@ -242,7 +242,12 @@ export class ComposedHandler implements ModelHandler {
     if (typeof adapter.reset === "function") adapter.reset();
 
     // 3. Convert messages and tools
-    const messages = adapter.convertMessages(claudeRequest, filterIdentity);
+    // reasoningRoundtrip: models that REQUIRE their reasoning echoed back
+    // (DeepSeek, preserveThinkingInHistory=true) get reasoning_content on every
+    // assistant message — see openai-messages.ts. This mirrors the thinking-strip
+    // gate just above: same capability, opposite direction.
+    const reasoningRoundtrip = !!this.modelAdapter?.preserveThinkingInHistory?.();
+    const messages = adapter.convertMessages(claudeRequest, filterIdentity, reasoningRoundtrip);
     const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool count limits (e.g., OpenAI's 128-tool cap) are enforced
