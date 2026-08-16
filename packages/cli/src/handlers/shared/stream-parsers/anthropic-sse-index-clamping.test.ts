@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createAnthropicPassthroughStream } from "./anthropic-sse.js";
+
+const FIXTURES_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../test-fixtures/sse-responses"
+);
 
 const ctx: any = {
   body: (stream: any, init: any) => new Response(stream, init),
@@ -63,6 +71,25 @@ const messageDelta = () =>
   });
 
 const messageStop = () => frame("message_stop", { type: "message_stop" });
+
+/** Replay a whole fixture file (stripping its `# ` metadata lines) through the parser. */
+const runFixture = async (name: string): Promise<string> => {
+  const text = readFileSync(join(FIXTURES_DIR, name), "utf-8")
+    .split("\n")
+    .filter((l) => !l.startsWith("# "))
+    .join("\n");
+  return stripPingFrames(await run([text]));
+};
+
+/** Parse a parser-emitted wire into its data payloads, in order. */
+const parseEmitted = (wire: string): any[] =>
+  wire
+    .split("\n\n")
+    .flatMap((frame) => frame.split("\n"))
+    .filter((l) => l.startsWith("data: "))
+    .map((l) => l.slice(6))
+    .filter((d) => d !== '{"type":"ping"}')
+    .map((d) => JSON.parse(d));
 
 describe("anthropic-sse content block index clamping", () => {
   it("passes sequential indices through untouched", async () => {
@@ -161,5 +188,50 @@ describe("anthropic-sse content block index clamping", () => {
     // Sequential: exactly one block start, one stop, in order.
     expect(out.indexOf("content_block_start")).toBeLessThan(out.indexOf("text_delta"));
     expect(out.lastIndexOf("content_block_stop")).toBeGreaterThan(out.indexOf("text_delta"));
+  });
+});
+
+describe.each([
+  { reqN: "r10324", textFragment: "Search-4-LocalSearch", toolFragment: "check_twin_parity.py" },
+  { reqN: "r10416", textFragment: "QuantConnect", toolFragment: "config.json" },
+])("production fixture: MiniMax-M3 implicit signature block ($reqN)", ({ reqN, textFragment, toolFragment }) => {
+  it("renumbers the whole stream sequentially and drops the implicit signature block", async () => {
+    // Fixtures reconstructed from production captures (see the file header for
+    // the reconstruction proof): MiniMax emits a signature_delta + stop at
+    // index 0 with NO content_block_start (implicit block), then the text
+    // block at index 1 and the tool_use block at index 2.
+    const events = parseEmitted(await runFixture(`minimax-m3-anthropic-implicit-signature-${reqN}.sse`));
+
+    // The implicit signature block never existed client-side: dropped whole.
+    expect(events.filter((e) => e.type === "content_block_delta" && e.delta?.type === "signature_delta")).toHaveLength(0);
+
+    // Exactly two blocks are opened, renumbered sequentially: text at 0, tool_use at 1.
+    const starts = events.filter((e) => e.type === "content_block_start");
+    expect(starts.map((e) => [e.index, e.content_block.type])).toEqual([
+      [0, "text"],
+      [1, "tool_use"],
+    ]);
+
+    // Every text delta follows the remap: all at 0, none leaked at 1.
+    const textDeltas = events.filter((e) => e.delta?.type === "text_delta");
+    expect(textDeltas.length).toBeGreaterThan(5);
+    expect(new Set(textDeltas.map((e) => e.index))).toEqual(new Set([0]));
+    expect(textDeltas.map((e) => e.delta.text).join("")).toContain(textFragment);
+
+    // The tool call's input stream follows its own remap: all at 1, none at 2,
+    // and the concatenated partial_json reassembles into valid JSON.
+    const toolDeltas = events.filter((e) => e.delta?.type === "input_json_delta");
+    expect(toolDeltas.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(toolDeltas.map((e) => e.index))).toEqual(new Set([1]));
+    const toolInput = JSON.parse(toolDeltas.map((e) => e.delta.partial_json).join(""));
+    expect(JSON.stringify(toolInput)).toContain(toolFragment);
+
+    // Blocks close in order, the terminal pair is present, and no index ever
+    // escapes the sequential range.
+    expect(events.filter((e) => e.type === "content_block_stop").map((e) => e.index)).toEqual([0, 1]);
+    expect(events.at(-1)?.type).toBe("message_stop");
+    const stopReason = events.find((e) => e.type === "message_delta")?.delta?.stop_reason;
+    expect(stopReason).toBe("tool_use");
+    expect(events.filter((e) => typeof e.index === "number" && e.index > 1)).toHaveLength(0);
   });
 });
