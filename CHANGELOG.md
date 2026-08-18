@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.55.0] - 2026-08-18
+
+### Bug Fixes
+
+- one index-mapping layer, applied on both parser branches *(anthropic-sse)* ([#200](https://github.com/MadAppGang/claudish/pull/200)) — closes [#127](https://github.com/MadAppGang/claudish/issues/127), thanks [@jsboige](https://github.com/jsboige)
+- honour the streamFormat a config already declares *(custom-endpoints)* ([#201](https://github.com/MadAppGang/claudish/pull/201)) — closes [#183](https://github.com/MadAppGang/claudish/issues/183), thanks [@jsboige](https://github.com/jsboige)
+
+### Refactor
+
+- resolve a model dialect with a function, not a manager *(adapters)* ([#202](https://github.com/MadAppGang/claudish/pull/202)) — closes [#79](https://github.com/MadAppGang/claudish/issues/79), thanks [@MayCXC](https://github.com/MayCXC)
+
 ## [7.54.0] - 2026-08-18
 
 ### Documentation
