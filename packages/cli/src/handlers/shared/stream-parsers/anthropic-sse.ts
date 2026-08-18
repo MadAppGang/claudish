@@ -169,8 +169,14 @@ export function createAnthropicPassthroughStream(
    * Since the verdict isn't known until the data line is read, the event line is
    * buffered for exactly one line rather than emitted eagerly.
    *
-   * Only ever set on the thinking-filter path, so streams that filter nothing
-   * keep byte-identical output.
+   * Set on BOTH paths. It used to be filter-only, on the reasoning that only
+   * the thinking filter ever dropped a frame — which stopped being true once
+   * the index layer began dropping orphans, something it does on the unfiltered
+   * path as well. Surviving frames are unaffected: `flushPendingEvent` runs
+   * immediately before every enqueue, so the bytes leave in the same order they
+   * always did. Verified by diffing the whole wire for both production fixtures
+   * across both paths: the only difference is the removal of headerless
+   * `event:` lines and the stray blank separators of dropped frames.
    */
   let pendingEventLine: string | null = null;
 
@@ -401,6 +407,7 @@ export function createAnthropicPassthroughStream(
                 `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block — model=${opts.modelName})`
               );
               pendingEventLine = null; // swallow the event: line too
+              suppressedFrame = true; // ...and the blank separator that follows it
             } else {
               enqueueData(controller, data, line);
             }
@@ -528,33 +535,47 @@ export function createAnthropicPassthroughStream(
                     // a rule asked for this tool).
                     emitIndexed(controller, data, line);
 
-                    // Usage/debug tracking
-                    if (data.message?.usage) {
-                      inputTokens = data.message.usage.input_tokens || inputTokens;
-                      outputTokens = data.message.usage.output_tokens || outputTokens;
-                    }
-                    if (data.usage) {
-                      inputTokens = data.usage.input_tokens || inputTokens;
-                      outputTokens = data.usage.output_tokens || outputTokens;
-                    }
-                    if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
-                      const txt = data.delta.text || "";
-                      opts.onAssistantText?.(txt, "text");
-                      textChunks++;
-                      log(
-                        `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
-                      );
-                    }
-                    if (
-                      data.type === "content_block_start" &&
-                      data.content_block?.type === "tool_use"
-                    ) {
-                      toolUseBlocks++;
-                      opts.onToolCallObserved?.(data.content_block.name);
-                      log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
-                    }
-                    if (data.type === "message_delta" && data.delta?.stop_reason) {
-                      stopReason = data.delta.stop_reason;
+                    // Usage/debug tracking, in its OWN try. The outer catch
+                    // re-enqueues the raw line, which is right for a data line
+                    // that would not parse — but by this point the frame has
+                    // already been emitted, rewritten, or deliberately dropped.
+                    // Letting a tracking throw reach that catch emits it a
+                    // second time: a double frame, or a resurrected orphan
+                    // carrying the very index the layer just removed. The
+                    // filtered path already isolates its tracking this way.
+                    try {
+                      if (data.message?.usage) {
+                        inputTokens = data.message.usage.input_tokens || inputTokens;
+                        outputTokens = data.message.usage.output_tokens || outputTokens;
+                      }
+                      if (data.usage) {
+                        inputTokens = data.usage.input_tokens || inputTokens;
+                        outputTokens = data.usage.output_tokens || outputTokens;
+                      }
+                      if (
+                        data.type === "content_block_delta" &&
+                        data.delta?.type === "text_delta"
+                      ) {
+                        const txt = data.delta.text || "";
+                        opts.onAssistantText?.(txt, "text");
+                        textChunks++;
+                        log(
+                          `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
+                        );
+                      }
+                      if (
+                        data.type === "content_block_start" &&
+                        data.content_block?.type === "tool_use"
+                      ) {
+                        toolUseBlocks++;
+                        opts.onToolCallObserved?.(data.content_block.name);
+                        log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
+                      }
+                      if (data.type === "message_delta" && data.delta?.stop_reason) {
+                        stopReason = data.delta.stop_reason;
+                      }
+                    } catch {
+                      // Observation must never change the wire.
                     }
                   } catch {
                     // Unparseable data line — pass through
@@ -562,21 +583,29 @@ export function createAnthropicPassthroughStream(
                       controller.enqueue(encoder.encode(`${line}\n`));
                     }
                   }
-                } else if (filterThinking) {
-                  // Non-data line on the FILTERING path. An `event:` line cannot
-                  // be shipped before its `data:` line is adjudicated, and the
-                  // blank separator of a dropped frame must go with it —
-                  // otherwise the client sees a header with no body.
+                } else {
+                  // Non-data line — an `event:` header or the blank separator —
+                  // on EITHER path.
+                  //
+                  // The header is held for exactly one line because its `data:`
+                  // line may still be dropped, and a header already on the wire
+                  // cannot be recalled. Claude Code rejects a header with no
+                  // body outright: `Could not parse message into JSON: From
+                  // chunk: [ "event:content_block_start" ]` kills the whole turn.
+                  //
+                  // This used to be conditional on `filterThinking`, on the
+                  // reasoning that only the thinking filter ever dropped a
+                  // frame. That stopped being true when the index layer began
+                  // dropping orphans, which it does on BOTH paths — and the
+                  // unfiltered one is the common case for z.ai, Kimi and qwen,
+                  // i.e. exactly the providers whose jumped indices the layer
+                  // exists to repair. Measured before this change: an orphaned
+                  // delta+stop pair left two bare `event:` lines on the wire.
                   if (line.startsWith("event:")) {
                     pendingEventLine = line;
                   } else if (line.trim() === "" && suppressedFrame) {
-                    suppressedFrame = false;
+                    suppressedFrame = false; // swallow the dropped frame's separator
                   } else if (!isClosed) {
-                    controller.enqueue(encoder.encode(`${line}\n`));
-                  }
-                } else {
-                  // Non-data lines (event: lines, blank lines) — pass through
-                  if (!isClosed) {
                     controller.enqueue(encoder.encode(`${line}\n`));
                   }
                 }
