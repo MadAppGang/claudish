@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.58.0] - 2026-08-18
+
+### Features
+
+- keep upstream error bodies, and let `/v1/models` answer *(proxy)* ([#207](https://github.com/MadAppGang/claudish/pull/207)) — closes [#184](https://github.com/MadAppGang/claudish/issues/184) and [#180](https://github.com/MadAppGang/claudish/issues/180), thanks [@jsboige](https://github.com/jsboige)
+
+  `CLAUDISH_UPSTREAM_ERROR_LOG=<path>` appends one JSON line per non-ok upstream response. Without it, the body that distinguishes a retryable rate limit from a hard quota wall is discarded the moment it is classified, since `log()` only persists under `--debug`. Opt-in, 2KB cap, truncation marked, never throws.
+
+  `GET /v1/models` no longer returns an empty list to non-serve callers: it falls back to routing-rule names plus custom-endpoint models. Slot mode is unchanged and still wins.
+
 ## [7.57.0] - 2026-08-18
 
 ### Bug Fixes
