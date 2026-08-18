@@ -232,6 +232,43 @@ export function validateVertexOAuthConfig(): string | null {
 }
 
 /**
+ * API host for a Vertex location.
+ *
+ * Most locations are regional and take the `<location>-aiplatform.googleapis.com`
+ * template. Two do not, and both were previously built from that template and
+ * 404'd, so the location was unreachable rather than merely degraded.
+ *
+ * Measured 2026-08-18, POSTing a real generateContent path to each host. A 401
+ * means the route exists and wants credentials; a 404 means there is no such
+ * route. DNS does not discriminate here — every name below resolves, because
+ * `*.googleapis.com` has a catch-all frontend.
+ *
+ *   location     host built                              code
+ *   us-central1  us-central1-aiplatform.googleapis.com   401   regional, unchanged
+ *   us           us-aiplatform.googleapis.com            401   regional, unchanged
+ *   eu           eu-aiplatform.googleapis.com            404   BROKEN
+ *                aiplatform.eu.rep.googleapis.com        401   the real one
+ *   global       global-aiplatform.googleapis.com        404   BROKEN
+ *                aiplatform.googleapis.com               401   the real one
+ *
+ * `us` stays on the regional host on purpose, even though
+ * `aiplatform.us.rep.googleapis.com` also answers 401. Both are real and they
+ * are different endpoints — only the REP one carries a data-residency
+ * guarantee. But nothing observable from outside says which a user setting
+ * `VERTEX_LOCATION=us` intends, and the current construction already reaches a
+ * live route. Rerouting it would be inference; this table is measurement.
+ * A user who needs US data residency should be given a way to ask for it
+ * explicitly rather than have it inferred from a location string.
+ *
+ * Reported by @nickoloss in #145, who found the eu case and verified the host.
+ */
+export function vertexApiHost(location: string): string {
+  if (location === "global") return "aiplatform.googleapis.com";
+  if (location === "eu") return "aiplatform.eu.rep.googleapis.com";
+  return `${location}-aiplatform.googleapis.com`;
+}
+
+/**
  * Build Vertex AI endpoint URL for OAuth mode
  */
 export function buildVertexOAuthEndpoint(
@@ -248,7 +285,7 @@ export function buildVertexOAuthEndpoint(
     // Add ?alt=sse for SSE streaming format
     const sseParam = streaming ? "?alt=sse" : "";
     return (
-      `https://${config.location}-aiplatform.googleapis.com/v1/` +
+      `https://${vertexApiHost(config.location)}/v1/` +
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/${publisher}/models/${model}:${method}${sseParam}`
     );
@@ -257,7 +294,7 @@ export function buildVertexOAuthEndpoint(
     // Mistral uses regional rawPredict/streamRawPredict endpoint
     const mistralMethod = streaming ? "streamRawPredict" : "rawPredict";
     return (
-      `https://${config.location}-aiplatform.googleapis.com/v1/` +
+      `https://${vertexApiHost(config.location)}/v1/` +
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/mistralai/models/${model}:${mistralMethod}`
     );

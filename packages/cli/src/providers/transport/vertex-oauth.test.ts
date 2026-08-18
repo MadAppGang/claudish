@@ -23,6 +23,11 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { VertexConfig } from "../../auth/vertex-auth.js";
 
+const {
+  buildVertexOAuthEndpoint: actualBuildVertexOAuthEndpoint,
+  vertexApiHost: actualVertexApiHost,
+} = await import("../../auth/vertex-auth.js");
+
 let currentToken = "vertex-token-A";
 const refreshTokenMock = mock(async () => {
   currentToken = "vertex-token-B"; // force-refresh swaps the token
@@ -63,6 +68,79 @@ beforeEach(() => {
 
 afterEach(() => {
   mock.restore();
+});
+
+describe("vertexApiHost", () => {
+  test("uses the bare API host for global", () => {
+    const host = actualVertexApiHost("global");
+
+    expect(host).toBe("aiplatform.googleapis.com");
+    expect(host).not.toBe("global-aiplatform.googleapis.com");
+  });
+
+  test("uses the REP host for eu", () => {
+    const host = actualVertexApiHost("eu");
+
+    expect(host).toBe("aiplatform.eu.rep.googleapis.com");
+    expect(host).not.toBe("eu-aiplatform.googleapis.com");
+  });
+
+  test("uses the regional host for us-central1", () => {
+    expect(actualVertexApiHost("us-central1")).toBe("us-central1-aiplatform.googleapis.com");
+  });
+
+  test("deliberately keeps us on the regional host", () => {
+    // Deliberate per the vertexApiHost docblock: "us" is not a REP alias.
+    expect(actualVertexApiHost("us")).toBe("us-aiplatform.googleapis.com");
+  });
+
+  test("uses the regional template for an arbitrary region", () => {
+    expect(actualVertexApiHost("europe-west4")).toBe("europe-west4-aiplatform.googleapis.com");
+  });
+});
+
+describe("buildVertexOAuthEndpoint", () => {
+  const projectId = "test-project";
+
+  test("builds a regional streaming Google endpoint", () => {
+    const config: VertexConfig = { projectId, location: "us-central1" };
+
+    expect(actualBuildVertexOAuthEndpoint(config, "google", "gemini-2.5-flash", true)).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    );
+  });
+
+  test("builds an eu REP streaming Google endpoint while retaining locations/eu", () => {
+    const config: VertexConfig = { projectId, location: "eu" };
+
+    expect(actualBuildVertexOAuthEndpoint(config, "google", "gemini-2.5-flash", true)).toBe(
+      "https://aiplatform.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    );
+  });
+
+  test("builds a non-streaming global Google endpoint", () => {
+    const config: VertexConfig = { projectId, location: "global" };
+
+    expect(actualBuildVertexOAuthEndpoint(config, "google", "gemini-2.5-flash", false)).toBe(
+      "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"
+    );
+  });
+
+  test("builds an eu REP streaming Mistral endpoint", () => {
+    const config: VertexConfig = { projectId, location: "eu" };
+
+    expect(actualBuildVertexOAuthEndpoint(config, "mistralai", "mistral-large-2411", true)).toBe(
+      "https://aiplatform.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/publishers/mistralai/models/mistral-large-2411:streamRawPredict"
+    );
+  });
+
+  test("keeps other partners on the fixed global OpenAI-compatible endpoint", () => {
+    const config: VertexConfig = { projectId, location: "europe-west4" };
+
+    expect(actualBuildVertexOAuthEndpoint(config, "anthropic", "claude-sonnet-4", true)).toBe(
+      "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/endpoints/openapi/chat/completions"
+    );
+  });
 });
 
 describe("VertexProviderTransport — delegated auth", () => {
