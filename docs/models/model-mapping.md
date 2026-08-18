@@ -162,7 +162,8 @@ rerouted to `claude-sonnet-5` on `api.anthropic.com`.
 
 Set `CLAUDISH_CLASSIFIER_DEBUG=1` to append each incoming request's model / sampling params /
 system prompt / headers to `logs/classifier-capture.jsonl` — handy for confirming the
-classifier is detected and rerouted. With `--debug-claudish`, a
+classifier is detected and rerouted. It captures the **full** system prompt (your CLAUDE.md
+and project rules included), so leave it off unless you are actively debugging detection. With `--debug-claudish`, a
 `[Classifier] … → native Anthropic` line is written when the passthrough fires.
 
 ---

@@ -115,6 +115,8 @@ export CLAUDISH_CLASSIFIER_MODEL=claude-sonnet-5
 
 Set to `1` to dump each request's raw model / sampling params / system prompt / headers to `logs/classifier-capture.jsonl` for troubleshooting detection. Off by default.
 
+Off by default deliberately: the captured `system` array is the **full** system prompt, which carries your CLAUDE.md and project rules, and the classifier request additionally names the command being classified. Credentials are recorded only as `<present>`, never as values. Turn it on to diagnose a drifted detection marker, then turn it back off and delete the file.
+
 ```bash
 export CLAUDISH_CLASSIFIER_DEBUG=1
 ```
