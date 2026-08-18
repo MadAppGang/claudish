@@ -11,13 +11,19 @@
  * cannot be overridden and is caught with a fail-fast abort instead.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildClaudishSettingsOverlay,
   hasResolvableAnthropicAuth,
   isProxyAuthMode,
   managedSettingsForcesClaudeAi,
+  shouldHideIncidentalAnthropicKey,
 } from "./claude-runner.js";
+import { setConfigFileOverride } from "./profile-config.js";
 import type { ClaudishConfig } from "./types.js";
 
 const baseConfig = (overrides: Partial<ClaudishConfig> = {}): ClaudishConfig =>
@@ -164,5 +170,59 @@ describe("hasResolvableAnthropicAuth", () => {
         keychainProbe: () => false,
       })
     ).toBe(true);
+  });
+});
+
+describe("shouldHideIncidentalAnthropicKey", () => {
+  const apiKeyEnv: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: "sk-test" };
+  const noEnv: NodeJS.ProcessEnv = {};
+  const configPath = join(tmpdir(), `claudish-force-login-method-${randomUUID()}.json`);
+
+  beforeAll(() => {
+    writeFileSync(configPath, "{}", "utf8");
+    setConfigFileOverride(configPath);
+  });
+
+  afterAll(() => {
+    setConfigFileOverride(null);
+    rmSync(configPath, { force: true });
+  });
+
+  test("native mapping + API key + default billing → true", () => {
+    expect(
+      shouldHideIncidentalAnthropicKey(baseConfig({ model: "claude-opus-4-6" }), apiKeyEnv)
+    ).toBe(true);
+  });
+
+  test("native mapping + API key + API billing opt-in → false", () => {
+    expect(
+      shouldHideIncidentalAnthropicKey(
+        baseConfig({ model: "claude-opus-4-6", anthropicApiBilling: true }),
+        apiKeyEnv
+      )
+    ).toBe(false);
+  });
+
+  test("native mapping + no API key → false", () => {
+    expect(shouldHideIncidentalAnthropicKey(baseConfig({ model: "claude-opus-4-6" }), noEnv)).toBe(
+      false
+    );
+  });
+
+  test("classifier-only passthrough + API key → false", () => {
+    // Under classifier-only passthrough, the key may be the user's only Anthropic
+    // credential; hiding it would strand the classifier request at a login gate.
+    expect(
+      shouldHideIncidentalAnthropicKey(
+        baseConfig({ model: "x-ai/grok-code-fast-1", classifierProvider: "anthropic" }),
+        apiKeyEnv
+      )
+    ).toBe(false);
+  });
+
+  test("no native mapping or classifier config + API key → false", () => {
+    expect(
+      shouldHideIncidentalAnthropicKey(baseConfig({ model: "x-ai/grok-code-fast-1" }), apiKeyEnv)
+    ).toBe(false);
   });
 });

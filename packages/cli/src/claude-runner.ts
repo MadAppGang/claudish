@@ -117,10 +117,13 @@ export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
  * A config read failure must never block launch, so it degrades to "not opted
  * in" — the safe direction, since that only ever avoids spending money.
  */
-function wantsAnthropicApiBilling(config: ClaudishConfig): boolean {
+function wantsAnthropicApiBilling(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
   if (config.anthropicApiBilling) return true;
 
-  const raw = process.env[ENV.CLAUDISH_ANTHROPIC_API_BILLING];
+  const raw = env[ENV.CLAUDISH_ANTHROPIC_API_BILLING];
   if (raw !== undefined && raw !== "" && raw !== "0" && raw.toLowerCase() !== "false") return true;
 
   try {
@@ -128,6 +131,32 @@ function wantsAnthropicApiBilling(config: ClaudishConfig): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Should an incidental real ANTHROPIC_API_KEY be hidden from the spawned Claude
+ * Code, so the session bills to the claude.ai subscription instead of the
+ * metered API?
+ *
+ * Gated on `hasNativeAnthropicMapping`, NOT on the wider
+ * `shouldPreserveNativeAuth`. The two differ for exactly one case: classifier
+ * passthrough enabled with no native role mapping. There, a real
+ * ANTHROPIC_API_KEY may be the user's ONLY Anthropic credential, so hiding it
+ * would strand the very request the passthrough exists to serve — the login
+ * gate `hasResolvableAnthropicAuth` was added to avoid. The exposure that buys
+ * is bounded: under classifier-only passthrough the main loop runs on a foreign
+ * provider, so the sole traffic that key can bill is the classifier call.
+ *
+ * Split out of runClaudeWithProxy purely so this rule is testable — that
+ * function spawns a process and cannot be exercised directly.
+ */
+export function shouldHideIncidentalAnthropicKey(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (!hasNativeAnthropicMapping(config)) return false;
+  if (!env.ANTHROPIC_API_KEY) return false;
+  return !wantsAnthropicApiBilling(config, env);
 }
 
 /**
@@ -1291,18 +1320,9 @@ export async function runClaudeWithProxy(
       // is what you want. ANTHROPIC_AUTH_TOKEN is left alone — nothing bundles
       // one incidentally, so setting it is always a deliberate act.
       //
-      // Gated on hasNativeAnthropicMapping, NOT on the whole preserve condition:
-      // when the ONLY reason we are here is classifier passthrough, a real
-      // ANTHROPIC_API_KEY may be the user's only Anthropic credential, and
-      // deleting it would strand the very request the passthrough exists to
-      // serve. The exposure is bounded — under classifier-only passthrough the
-      // main loop runs on a foreign provider, so the sole traffic that key can
-      // bill is the classifier call itself.
-      if (
-        hasNativeAnthropicMapping(config) &&
-        process.env.ANTHROPIC_API_KEY &&
-        !wantsAnthropicApiBilling(config)
-      ) {
+      // See shouldHideIncidentalAnthropicKey for why this is narrower than the
+      // shouldPreserveNativeAuth condition guarding this branch.
+      if (shouldHideIncidentalAnthropicKey(config)) {
         delete env.ANTHROPIC_API_KEY;
         hidAnthropicApiKey = true;
       }
