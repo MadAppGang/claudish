@@ -136,6 +136,17 @@ export function runHeadless(opts: PtyRunOptions): HeadlessHandle {
  * expect's own stdin is our test handle, so test code can still send('q')
  * and have the keystroke reach the spawned process over the PTY.
  */
+/**
+ * Size given to a spawned pty.
+ *
+ * Comfortably above magmux's stated minimum of 3 rows / 20 columns per pane, so
+ * a gridfile with several panes still lays out. These are not the developer's
+ * real terminal and do not need to be: the tests read magmux's socket, not its
+ * rendering, and a fixed size makes the harness independent of whoever runs it.
+ */
+const PTY_ROWS = 50;
+const PTY_COLS = 200;
+
 export function runInPty(opts: PtyRunOptions): PtyHandle {
   void platform; // retained for future per-platform tweaks
   // Build the shell command string, quoting each arg for sh -c.
@@ -143,6 +154,14 @@ export function runInPty(opts: PtyRunOptions): PtyHandle {
 
   // Tcl program for expect:
   //   - timeout -1: don't limit; test code owns lifetime
+  //   - stty_init: give the pty a SIZE. expect sizes a spawned pty from its own
+  //     controlling terminal, and we spawn it with `stdio: ["pipe","pipe","pipe"]`,
+  //     so there is no terminal to copy from and the pty comes up 0x0. Measured
+  //     directly, no magmux involved: `stty size` inside such a pty prints
+  //     `0 0`, and prints `50 200` once stty_init is set. A tty-aware child
+  //     then derives nonsense from it — magmux subtracts its status line and
+  //     reports `cannot lay out 1 panes in 0x-1`, which is a correct complaint
+  //     about a terminal we failed to size rather than a bug in magmux.
   //   - spawn + interact: fork sh under a pty(4), which executes our command.
   //     We pass the shell command as a Tcl brace-literal so none of its
   //     contents get re-parsed by Tcl.
@@ -150,6 +169,7 @@ export function runInPty(opts: PtyRunOptions): PtyHandle {
   const tclScript = [
     "set timeout -1",
     "log_user 1",
+    `set stty_init "rows ${PTY_ROWS} cols ${PTY_COLS}"`,
     `spawn -noecho sh -c ${tclBrace(shellCmd)}`,
     "interact",
     "catch wait result",

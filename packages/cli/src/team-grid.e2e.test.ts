@@ -108,13 +108,40 @@ if (!glmCapable) {
   );
 }
 
-beforeAll(() => {
-  magmuxPath = findMagmuxForTest();
+describe("runInPty terminal size", () => {
+  // A 0x0 pty made magmux subtract its status line and report the misleading 0x-1 size.
+  it.skipIf(Bun.which("expect") === null)("gives the spawned pty a non-zero size", async () => {
+    let output = "";
+    const handle = runInPty({
+      command: ["stty", "size"],
+      onData: (chunk) => {
+        output += chunk;
+      },
+    });
+
+    const { code } = await handle.waitForExit();
+    expect(code).toBe(0);
+
+    const normalized = output.replace(/\r/g, "");
+    expect(normalized).toMatch(/\d+\s+\d+/);
+
+    const dimensions = normalized.match(/(\d+)\s+(\d+)/);
+    expect(dimensions).not.toBeNull();
+    const rows = Number(dimensions![1]);
+    const cols = Number(dimensions![2]);
+    expect(rows).toBeGreaterThan(0);
+    expect(cols).toBeGreaterThan(0);
+    // PTY_ROWS and PTY_COLS are private helper details, so exact values are not checked here.
+  });
 });
 
 // ─── Fast tier: socket protocol ──────────────────────────────────────────────
 
 describe("magmux socket protocol (shell commands)", () => {
+  beforeAll(() => {
+    if (!magmuxPath) magmuxPath = findMagmuxForTest();
+  });
+
   const commandPanes = (event: Record<string, unknown>) =>
     (event.panes as Array<Record<string, unknown>>).filter((pane) => pane.control !== true);
 
@@ -255,6 +282,10 @@ describe("magmux socket protocol (shell commands)", () => {
 // ─── Fast tier: crash fallback ───────────────────────────────────────────────
 
 describe("magmux crash fallback", () => {
+  beforeAll(() => {
+    if (!magmuxPath) magmuxPath = findMagmuxForTest();
+  });
+
   it("SIGKILL before results event → no results received", async () => {
     // A long-lived pane so we can kill before completion.
     const grid = writeGridfile(["sleep 30"]);
@@ -297,6 +328,10 @@ function devClaudishCommand(model: string, prompt: string): string {
 }
 
 describe("claudish team with real models and Claude Code", () => {
+  beforeAll(() => {
+    if (!magmuxPath) magmuxPath = findMagmuxForTest();
+  });
+
   const commandPanes = (event: Record<string, unknown>) =>
     (event.panes as Array<Record<string, unknown>>).filter((pane) => pane.control !== true);
 
