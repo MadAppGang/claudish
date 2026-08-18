@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
-import type { ProfileContext } from "./provider-profiles.js";
 import {
   loadCustomEndpoints,
   resolveCustomEndpointApiKey,
   resolveDeclaredEndpointKey,
 } from "./custom-endpoints-loader.js";
+import type { ProfileContext } from "./provider-profiles.js";
 import {
   clearRuntimeRegistry,
   getRuntimeProfiles,
@@ -548,6 +548,45 @@ describe("custom-endpoints-loader", () => {
       // No override set — returns undefined, the parser falls back to the
       // dialect's inherited streamFormat (the historical behavior).
       expect(transport.overrideStreamFormat?.()).toBeUndefined();
+    });
+
+    test("a configured streamFormat selects the stream PARSER, not just the transport value", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "parser-override": {
+            kind: "complex",
+            displayName: "Parser Override",
+            transport: "openai",
+            baseUrl: "https://override.example.com/v1",
+            apiKey: "k",
+            streamFormat: "anthropic-sse",
+          },
+        })
+      );
+
+      const overriddenHandler = getRuntimeProfiles()
+        .get("parser-override")!
+        .createHandler(makeCtx("qwen3.8-max"))!;
+      // resolveStreamFormat is private, but it is the parser-selection step users experience.
+      expect((overriddenHandler as any).resolveStreamFormat()).toBe("anthropic-sse");
+
+      clearRuntimeRegistry();
+      loadCustomEndpoints(
+        makeConfig({
+          "parser-default": {
+            kind: "complex",
+            displayName: "Parser Default",
+            transport: "openai",
+            baseUrl: "https://default.example.com/v1",
+            apiKey: "k",
+          },
+        })
+      );
+
+      const defaultHandler = getRuntimeProfiles()
+        .get("parser-default")!
+        .createHandler(makeCtx("qwen3.8-max"))!;
+      expect((defaultHandler as any).resolveStreamFormat()).toBe("openai-sse");
     });
   });
 });
