@@ -120,8 +120,15 @@ export interface ProviderTransport {
    * Optional payload transformation before sending.
    * Used by providers that wrap the payload in an envelope (e.g., CodeAssist).
    * Called after adapter.buildPayload() + adapter.prepareRequest().
+   *
+   * `claudeRequest` is the ORIGINAL inbound Claude-format body, passed because
+   * buildPayload is lossy in exactly the direction a transport sometimes needs:
+   * the Responses adapter lifts `system` into `instructions` and drops
+   * `metadata`, so conversation identity (`metadata.user_id`) is unreachable
+   * from `payload` alone. Optional and second, so the existing implementers
+   * that ignore it are untouched.
    */
-  transformPayload?(payload: any): any;
+  transformPayload?(payload: any, claudeRequest?: any): any;
 
   /**
    * Serialize the request payload to wire bytes.

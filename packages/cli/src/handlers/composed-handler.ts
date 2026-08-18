@@ -501,7 +501,7 @@ export class ComposedHandler implements ModelHandler {
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
     if (this.provider.transformPayload) {
-      requestPayload = this.provider.transformPayload(requestPayload);
+      requestPayload = this.provider.transformPayload(requestPayload, claudeRequest);
     }
 
     // (Middleware beforeRequest ran at step 3b, before buildPayload — see the
