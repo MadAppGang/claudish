@@ -1,5 +1,5 @@
 /**
- * DialectManager — selects the appropriate Layer 2 ModelDialect for a given model.
+ * resolveModelDialect — selects the appropriate Layer 2 ModelDialect for a model.
  *
  * This allows ComposedHandler to apply model-specific quirks independent of
  * which Layer 1 APIFormat or Layer 3 ProviderTransport are used:
@@ -20,58 +20,46 @@ import { OpenAIAPIFormat } from "./openai-api-format.js";
 import { QwenModelDialect } from "./qwen-model-dialect.js";
 import { XiaomiModelDialect } from "./xiaomi-model-dialect.js";
 
-export class DialectManager {
-  private adapters: BaseAPIFormat[];
-  private defaultAdapter: DefaultAPIFormat;
+/**
+ * Candidate dialects, in match order. ORDER IS LOAD-BEARING: Codex must be
+ * tried before OpenAI, because a codex model id also satisfies OpenAI's test
+ * and whichever runs first wins.
+ *
+ * These are factories rather than instances because `shouldHandle` is an
+ * instance method, so asking "does this dialect want the model" requires
+ * constructing it. Building them one at a time and stopping at the first match
+ * means a `grok-*` request constructs one object instead of ten.
+ */
+const DIALECT_FACTORIES: ReadonlyArray<(modelId: string, wire?: StreamFormat) => BaseAPIFormat> = [
+  (m, w) => new GrokModelDialect(m, w),
+  (m, w) => new GeminiAPIFormat(m, w),
+  (m, w) => new CodexAPIFormat(m, w),
+  (m, w) => new OpenAIAPIFormat(m, w),
+  (m, w) => new QwenModelDialect(m, w),
+  (m, w) => new MiniMaxModelDialect(m, w),
+  (m, w) => new DeepSeekModelDialect(m, w),
+  (m, w) => new GLMModelDialect(m, w),
+  (m, w) => new XiaomiModelDialect(m, w),
+];
 
-  /**
-   * @param modelId     Bare model name — dialects self-select on it.
-   * @param wireFormat  The wire format of the Layer 1 FormatConverter this
-   *   dialect will be composed with (ComposedHandler knows it; the dialect
-   *   cannot, because selection is by model NAME). BaseAPIFormat — not the
-   *   dialect — consumes it, substituting the Anthropic Messages reasoning knob
-   *   and enabling unsigned-thinking filtering on `anthropic-sse`. That is why
-   *   a multi-vendor Anthropic endpoint (Alibaba's Qwen Plan serves qwen3.x,
-   *   glm-5.2 and deepseek-v4-* over one URL, i.e. three different dialects)
-   *   works without each dialect opting in. Omit for "unknown" → the OpenAI
-   *   default, which keeps every pre-existing call site byte-identical.
-   */
-  constructor(modelId: string, wireFormat?: StreamFormat) {
-    // Register all available dialects/formats
-    this.adapters = [
-      new GrokModelDialect(modelId, wireFormat),
-      new GeminiAPIFormat(modelId, wireFormat),
-      new CodexAPIFormat(modelId, wireFormat), // Must be before OpenAIAPIFormat (codex matches first)
-      new OpenAIAPIFormat(modelId, wireFormat),
-      new QwenModelDialect(modelId, wireFormat),
-      new MiniMaxModelDialect(modelId, wireFormat),
-      new DeepSeekModelDialect(modelId, wireFormat),
-      new GLMModelDialect(modelId, wireFormat),
-      new XiaomiModelDialect(modelId, wireFormat),
-    ];
-    this.defaultAdapter = new DefaultAPIFormat(modelId, wireFormat);
+/**
+ * Resolve the dialect for a model, or the OpenAI-shaped default.
+ *
+ * @param modelId     Bare model name — dialects self-select on it.
+ * @param wireFormat  The wire format of the Layer 1 FormatConverter this
+ *   dialect will be composed with (ComposedHandler knows it; the dialect
+ *   cannot, because selection is by model NAME). BaseAPIFormat — not the
+ *   dialect — consumes it, substituting the Anthropic Messages reasoning knob
+ *   and enabling unsigned-thinking filtering on `anthropic-sse`. That is why
+ *   a multi-vendor Anthropic endpoint (Alibaba's Qwen Plan serves qwen3.x,
+ *   glm-5.2 and deepseek-v4-* over one URL, i.e. three different dialects)
+ *   works without each dialect opting in. Omit for "unknown" → the OpenAI
+ *   default, which keeps every pre-existing call site byte-identical.
+ */
+export function resolveModelDialect(modelId: string, wireFormat?: StreamFormat): BaseAPIFormat {
+  for (const make of DIALECT_FACTORIES) {
+    const dialect = make(modelId, wireFormat);
+    if (dialect.shouldHandle(modelId)) return dialect;
   }
-
-  /**
-   * Get the appropriate dialect/format for the current model
-   */
-  getAdapter(): BaseAPIFormat {
-    for (const adapter of this.adapters) {
-      if (adapter.shouldHandle(this.defaultAdapter.getModelId())) {
-        return adapter;
-      }
-    }
-    return this.defaultAdapter;
-  }
-
-  /**
-   * Check if current model needs special handling
-   */
-  needsTransformation(): boolean {
-    return this.getAdapter() !== this.defaultAdapter;
-  }
+  return new DefaultAPIFormat(modelId, wireFormat);
 }
-
-// Backward-compatible alias
-/** @deprecated Use DialectManager */
-export { DialectManager as AdapterManager };

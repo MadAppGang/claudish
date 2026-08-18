@@ -13,7 +13,7 @@
 
 import { log } from "../logger.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
-import { DialectManager } from "./dialect-manager.js";
+import { resolveModelDialect } from "./dialect-manager.js";
 
 interface SamplingParams {
   temperature: number;
@@ -31,8 +31,7 @@ export class LocalModelAdapter extends BaseAPIFormat {
     super(modelId);
     this.providerName = providerName;
 
-    const manager = new DialectManager(modelId);
-    this.innerAdapter = manager.getAdapter();
+    this.innerAdapter = resolveModelDialect(modelId);
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────

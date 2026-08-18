@@ -1438,9 +1438,8 @@ async function probeModelRouting(
       declaredStreamFormat = "openai-sse";
     }
 
-    const { DialectManager } = await import("./adapters/dialect-manager.js");
-    const adapterManager = new DialectManager(modelName);
-    const modelTranslator = adapterManager.getAdapter();
+    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
+    const modelTranslator = resolveModelDialect(modelName);
     const modelTranslatorName = modelTranslator.getName();
 
     const TRANSPORT_OVERRIDES: Record<string, string> = {

@@ -6,7 +6,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import { readAllModelsCache } from "../providers/all-models-cache.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
-import { DialectManager } from "./dialect-manager.js";
+import { resolveModelDialect } from "./dialect-manager.js";
 import { resetReasoningEffortMemo } from "./grok-effort-support.js";
 import { GrokModelDialect } from "./grok-model-dialect.js";
 
@@ -55,7 +55,7 @@ if (hostedEntries.length === 0) {
     );
 
     for (const entry of effortControlled) {
-      const dialect = new DialectManager(entry.modelId).getAdapter();
+      const dialect = resolveModelDialect(entry.modelId);
       const dialectName = dialect.getName();
 
       // Layer-1 format converters own effort for models with no Layer-2 dialect.

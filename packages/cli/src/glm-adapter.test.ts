@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { DialectManager } from "./adapters/dialect-manager.js";
+import { resolveModelDialect } from "./adapters/dialect-manager.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
 
@@ -96,8 +96,7 @@ describe("GLMModelDialect — processTextContent", () => {
 describe("Three-layer adapter — model dialect overrides format adapter", () => {
   test("model dialect strips thinking, format adapter does not", () => {
     const litellmAdapter = new LiteLLMAPIFormat("glm-5", "https://example.com");
-    const adapterManager = new DialectManager("glm-5");
-    const modelAdapter = adapterManager.getAdapter();
+    const modelAdapter = resolveModelDialect("glm-5");
 
     // Format adapter does not strip thinking (no override)
     const request1 = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };

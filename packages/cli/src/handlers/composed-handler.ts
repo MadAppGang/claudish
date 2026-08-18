@@ -26,7 +26,7 @@ import type { ProviderTransport } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { DialectManager } from "../adapters/dialect-manager.js";
+import { resolveModelDialect } from "../adapters/dialect-manager.js";
 import { lookupModelForProvider } from "../adapters/model-catalog.js";
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
@@ -110,7 +110,8 @@ export interface ComposedHandlerOptions {
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
-  private adapterManager: DialectManager;
+  /** The dialect resolved for this model, or the OpenAI-shaped default. */
+  private resolvedDialect: BaseAPIFormat;
   private explicitAdapter?: BaseModelAdapter;
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
   private modelAdapter?: BaseModelAdapter;
@@ -173,14 +174,14 @@ export class ComposedHandler implements ModelHandler {
     // provider.overrideStreamFormat(), which only re-labels the RESPONSE for
     // aggregators. Undefined when no explicit converter was passed (the dialect
     // is then also the converter) → dialects fall back to the OpenAI default.
-    this.adapterManager = new DialectManager(
+    this.resolvedDialect = resolveModelDialect(
       this.bareModelName,
       this.explicitAdapter?.getStreamFormat()
     );
 
     // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
     // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
-    const resolvedModelAdapter = this.adapterManager.getAdapter();
+    const resolvedModelAdapter = this.resolvedDialect;
     if (resolvedModelAdapter.getName() !== "DefaultAPIFormat") {
       this.modelAdapter = resolvedModelAdapter;
     }
@@ -212,7 +213,7 @@ export class ComposedHandler implements ModelHandler {
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
   private getAdapter(): BaseModelAdapter {
-    return this.explicitAdapter || this.adapterManager.getAdapter();
+    return this.explicitAdapter || this.resolvedDialect;
   }
 
   /** Model context window — model adapter wins over provider adapter */
