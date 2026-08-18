@@ -340,34 +340,70 @@ export function createAnthropicPassthroughStream(
            * must follow the block until it closes.
            */
           const remappedBlocks = new Map<number, number>();
-          /**
-           * Clamp an index to the valid range for its frame kind. A
-           * `content_block_start` may legitimately claim the NEXT sequential
-           * slot (highest + 1); a delta or stop can only reference a block
-           * the client has already opened, so their ceiling is `highest`.
-           * Without that distinction an orphan delta clamps to highest + 1 —
-           * an index the client never opened, which is the very
-           * "Content block not found" failure this guard exists to prevent.
-           */
-          const clampIndex = (
-            idx: number,
-            context: string,
-            kind: "start" | "frame"
-          ): number => {
-            const remapped = remappedBlocks.get(idx);
-            if (remapped !== undefined) return remapped;
-            const ceiling =
-              kind === "start" ? highestSeenIndex + 1 : Math.max(highestSeenIndex, 0);
-            if (idx > ceiling) {
-              log(
-                `[AnthropicSSE] Index jump detected: ${idx} but expected <=${ceiling} (${context}) — clamping to ${ceiling}`
-              );
-              return ceiling;
-            }
-            return idx;
-          };
           const trackIndex = (idx: number) => {
             if (idx > highestSeenIndex) highestSeenIndex = idx;
+          };
+
+          /**
+           * THE single index-mapping layer. Every indexed content_block frame
+           * goes through here, on both the thinking-filtered and unfiltered
+           * paths, because Claude Code's rule is the same either way: a delta
+           * or stop may only name an index some `content_block_start` already
+           * opened, and the opened indices must run 0,1,2,… with no gaps.
+           *
+           * Three upstream shapes it repairs:
+           *   - a start whose index jumps (z.ai sends 0 then 2) is remapped to
+           *     the next sequential slot, and the mapping is remembered so the
+           *     block's own deltas and stop follow it;
+           *   - a delta or stop naming a block that was never opened (MiniMax
+           *     emits an implicit signature block with no start) is DROPPED
+           *     whole rather than clamped, since re-attaching it to another
+           *     block would corrupt that block's content;
+           *   - a suppressed thinking block simply never calls `trackIndex`,
+           *     so the next real block lands on the slot the suppressed one
+           *     would have taken. That is why no "subtract the suppressed
+           *     count" arithmetic is needed: the renumbering falls out of
+           *     `highestSeenIndex` instead of being counted separately.
+           *
+           * Emitting through `enqueueData` with the REWRITTEN object matters:
+           * it records lifecycle against the index the client actually saw,
+           * which is what `finalizeAbandonedStream` later closes.
+           */
+          const emitIndexed = (controller: any, data: any, line: string): void => {
+            if (typeof data.index !== "number") {
+              enqueueData(controller, data, line);
+              return;
+            }
+
+            if (data.type === "content_block_start") {
+              const expected = highestSeenIndex + 1;
+              if (data.index !== expected) {
+                log(
+                  `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
+                );
+                remappedBlocks.set(data.index, expected);
+                const remapped = { ...data, index: expected };
+                enqueueData(controller, remapped, `data: ${JSON.stringify(remapped)}`);
+              } else {
+                enqueueData(controller, data, line);
+              }
+              trackIndex(expected);
+              return;
+            }
+
+            const remapped = remappedBlocks.get(data.index);
+            if (data.type === "content_block_stop") remappedBlocks.delete(data.index);
+            if (remapped !== undefined) {
+              const modified = { ...data, index: remapped };
+              enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
+            } else if (data.index > highestSeenIndex) {
+              log(
+                `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block — model=${opts.modelName})`
+              );
+              pendingEventLine = null; // swallow the event: line too
+            } else {
+              enqueueData(controller, data, line);
+            }
           };
 
           while (true) {
@@ -444,55 +480,12 @@ export function createAnthropicPassthroughStream(
                     continue;
                   }
 
-                  // Re-index non-thinking content blocks
-                  // After suppressing N thinking blocks, subtract N from the index
-                  if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
-                    const clamped = clampIndex(
-                      data.index - thinkingBlocksSuppressed,
-                      `${data.type} (filtered, orig=${data.index})`,
-                      data.type === "content_block_start" ? "start" : "frame"
-                    );
-                    trackIndex(clamped);
-                    const reindexed = clamped;
-                    const modifiedLine = `data: ${JSON.stringify({ ...data, index: reindexed })}`;
-
-                    if (!isClosed) {
-                      flushPendingEvent(controller);
-                      controller.enqueue(encoder.encode(`${modifiedLine}\n`));
-                      // Third emit site — enqueued directly rather than through
-                      // enqueueData, so lifecycle has to be recorded here too, and
-                      // with the RENUMBERED index the client actually received.
-                      noteLifecycle(data, reindexed);
-                    }
-
-                    // Still do usage tracking below with the ORIGINAL data
-                  } else {
-                    // No filtering needed — track the index, clamp if it jumps,
-                    // and pass through via the tool interceptor (a no-op unless
-                    // a rule asked for this tool). No `continue` here: frames
-                    // must fall through to the usage/text tracking below.
-                    if (
-                      typeof data.index === "number" &&
-                      data.type === "content_block_start"
-                    ) {
-                      trackIndex(data.index);
-                      enqueueData(controller, data, line);
-                    } else if (typeof data.index === "number") {
-                      const clamped = clampIndex(
-                        data.index,
-                        `${data.type} (filtered stream)`,
-                        "frame"
-                      );
-                      if (clamped !== data.index) {
-                        const modified = { ...data, index: clamped };
-                        enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
-                      } else {
-                        enqueueData(controller, data, line);
-                      }
-                    } else {
-                      enqueueData(controller, data, line);
-                    }
-                  }
+                  // Renumber whatever survived the thinking filter through the
+                  // SAME index-mapping layer the unfiltered path uses. No
+                  // `continue` here: frames must fall through to the
+                  // usage/text tracking below, which still reads the ORIGINAL
+                  // data rather than the rewritten frame.
+                  emitIndexed(controller, data, line);
                 } catch {
                   // Unparseable — pass through
                   if (!isClosed) {
@@ -533,54 +526,7 @@ export function createAnthropicPassthroughStream(
                     // No error — check index bounds before passing through
                     // (still via the tool interceptor, which is a no-op unless
                     // a rule asked for this tool).
-                    if (typeof data.index === "number") {
-                      if (data.type === "content_block_start") {
-                        // z.ai sometimes sends content_block_start with an index
-                        // that jumps (e.g., 0 → 2, skipping 1). This causes
-                        // "Content block not found" on the client. Remap to
-                        // sequential indices and remember the mapping so the
-                        // block's later frames follow it.
-                        const expected = highestSeenIndex + 1;
-                        if (data.index !== expected) {
-                          log(
-                            `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
-                          );
-                          remappedBlocks.set(data.index, expected);
-                          const remapped = { ...data, index: expected };
-                          enqueueData(controller, remapped, `data: ${JSON.stringify(remapped)}`);
-                        } else {
-                          enqueueData(controller, data, line);
-                        }
-                        trackIndex(expected);
-                      } else {
-                        // delta / stop — follow an existing remap. An index
-                        // with no open block behind it (neither remapped nor
-                        // ≤ highest) is an orphan — e.g. MiniMax emits an
-                        // implicit signature block whose content_block_start
-                        // never arrives — and is DROPPED rather than clamped:
-                        // a delta can only point at a block the client has
-                        // opened, and re-attaching it to another block would
-                        // corrupt that block's content.
-                        const remapped = remappedBlocks.get(data.index);
-                        if (data.type === "content_block_stop") {
-                          remappedBlocks.delete(data.index);
-                        }
-                        if (remapped !== undefined) {
-                          const modified = { ...data, index: remapped };
-                          enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
-                        } else if (data.index > highestSeenIndex) {
-                          log(
-                            `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block — model=${opts.modelName})`
-                          );
-                          pendingEventLine = null; // swallow the event: line too
-                        } else {
-                          enqueueData(controller, data, line);
-                        }
-                      }
-                    } else {
-                      // No index field — pass through as-is
-                      enqueueData(controller, data, line);
-                    }
+                    emitIndexed(controller, data, line);
 
                     // Usage/debug tracking
                     if (data.message?.usage) {

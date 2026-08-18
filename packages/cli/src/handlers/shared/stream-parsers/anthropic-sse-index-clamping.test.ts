@@ -35,9 +35,10 @@ const frame = (event: string, data: unknown) =>
 const stripPingFrames = (wire: string): string =>
   wire.replaceAll('event: ping\ndata: {"type":"ping"}\n\n', "");
 
-const run = (frames: string[]) =>
+const run = (frames: string[], adapter?: any) =>
   createAnthropicPassthroughStream(ctx, sseResponse(frames), {
     modelName: "test-model",
+    adapter,
   }).text();
 
 const messageStart = () =>
@@ -73,12 +74,12 @@ const messageDelta = () =>
 const messageStop = () => frame("message_stop", { type: "message_stop" });
 
 /** Replay a whole fixture file (stripping its `# ` metadata lines) through the parser. */
-const runFixture = async (name: string): Promise<string> => {
+const runFixture = async (name: string, adapter?: any): Promise<string> => {
   const text = readFileSync(join(FIXTURES_DIR, name), "utf-8")
     .split("\n")
     .filter((l) => !l.startsWith("# "))
     .join("\n");
-  return stripPingFrames(await run([text]));
+  return stripPingFrames(await run([text], adapter));
 };
 
 /** Parse a parser-emitted wire into its data payloads, in order. */
@@ -194,44 +195,85 @@ describe("anthropic-sse content block index clamping", () => {
 describe.each([
   { reqN: "r10324", textFragment: "Search-4-LocalSearch", toolFragment: "check_twin_parity.py" },
   { reqN: "r10416", textFragment: "QuantConnect", toolFragment: "config.json" },
-])("production fixture: MiniMax-M3 implicit signature block ($reqN)", ({ reqN, textFragment, toolFragment }) => {
-  it("renumbers the whole stream sequentially and drops the implicit signature block", async () => {
-    // Fixtures reconstructed from production captures (see the file header for
-    // the reconstruction proof): MiniMax emits a signature_delta + stop at
-    // index 0 with NO content_block_start (implicit block), then the text
-    // block at index 1 and the tool_use block at index 2.
-    const events = parseEmitted(await runFixture(`minimax-m3-anthropic-implicit-signature-${reqN}.sse`));
+])(
+  "production fixture: MiniMax-M3 implicit signature block ($reqN)",
+  ({ reqN, textFragment, toolFragment }) => {
+    it("renumbers the whole stream sequentially and drops the implicit signature block", async () => {
+      // Fixtures reconstructed from production captures (see the file header for
+      // the reconstruction proof): MiniMax emits a signature_delta + stop at
+      // index 0 with NO content_block_start (implicit block), then the text
+      // block at index 1 and the tool_use block at index 2.
+      const events = parseEmitted(
+        await runFixture(`minimax-m3-anthropic-implicit-signature-${reqN}.sse`)
+      );
 
-    // The implicit signature block never existed client-side: dropped whole.
-    expect(events.filter((e) => e.type === "content_block_delta" && e.delta?.type === "signature_delta")).toHaveLength(0);
+      // The implicit signature block never existed client-side: dropped whole.
+      expect(
+        events.filter(
+          (e) => e.type === "content_block_delta" && e.delta?.type === "signature_delta"
+        )
+      ).toHaveLength(0);
 
-    // Exactly two blocks are opened, renumbered sequentially: text at 0, tool_use at 1.
-    const starts = events.filter((e) => e.type === "content_block_start");
-    expect(starts.map((e) => [e.index, e.content_block.type])).toEqual([
-      [0, "text"],
-      [1, "tool_use"],
-    ]);
+      // Exactly two blocks are opened, renumbered sequentially: text at 0, tool_use at 1.
+      const starts = events.filter((e) => e.type === "content_block_start");
+      expect(starts.map((e) => [e.index, e.content_block.type])).toEqual([
+        [0, "text"],
+        [1, "tool_use"],
+      ]);
 
-    // Every text delta follows the remap: all at 0, none leaked at 1.
-    const textDeltas = events.filter((e) => e.delta?.type === "text_delta");
-    expect(textDeltas.length).toBeGreaterThan(5);
-    expect(new Set(textDeltas.map((e) => e.index))).toEqual(new Set([0]));
-    expect(textDeltas.map((e) => e.delta.text).join("")).toContain(textFragment);
+      // Every text delta follows the remap: all at 0, none leaked at 1.
+      const textDeltas = events.filter((e) => e.delta?.type === "text_delta");
+      expect(textDeltas.length).toBeGreaterThan(5);
+      expect(new Set(textDeltas.map((e) => e.index))).toEqual(new Set([0]));
+      expect(textDeltas.map((e) => e.delta.text).join("")).toContain(textFragment);
 
-    // The tool call's input stream follows its own remap: all at 1, none at 2,
-    // and the concatenated partial_json reassembles into valid JSON.
-    const toolDeltas = events.filter((e) => e.delta?.type === "input_json_delta");
-    expect(toolDeltas.length).toBeGreaterThanOrEqual(1);
-    expect(new Set(toolDeltas.map((e) => e.index))).toEqual(new Set([1]));
-    const toolInput = JSON.parse(toolDeltas.map((e) => e.delta.partial_json).join(""));
-    expect(JSON.stringify(toolInput)).toContain(toolFragment);
+      // The tool call's input stream follows its own remap: all at 1, none at 2,
+      // and the concatenated partial_json reassembles into valid JSON.
+      const toolDeltas = events.filter((e) => e.delta?.type === "input_json_delta");
+      expect(toolDeltas.length).toBeGreaterThanOrEqual(1);
+      expect(new Set(toolDeltas.map((e) => e.index))).toEqual(new Set([1]));
+      const toolInput = JSON.parse(toolDeltas.map((e) => e.delta.partial_json).join(""));
+      expect(JSON.stringify(toolInput)).toContain(toolFragment);
 
-    // Blocks close in order, the terminal pair is present, and no index ever
-    // escapes the sequential range.
-    expect(events.filter((e) => e.type === "content_block_stop").map((e) => e.index)).toEqual([0, 1]);
-    expect(events.at(-1)?.type).toBe("message_stop");
-    const stopReason = events.find((e) => e.type === "message_delta")?.delta?.stop_reason;
-    expect(stopReason).toBe("tool_use");
-    expect(events.filter((e) => typeof e.index === "number" && e.index > 1)).toHaveLength(0);
+      // Blocks close in order, the terminal pair is present, and no index ever
+      // escapes the sequential range.
+      expect(events.filter((e) => e.type === "content_block_stop").map((e) => e.index)).toEqual([
+        0, 1,
+      ]);
+      expect(events.at(-1)?.type).toBe("message_stop");
+      const stopReason = events.find((e) => e.type === "message_delta")?.delta?.stop_reason;
+      expect(stopReason).toBe("tool_use");
+      expect(events.filter((e) => typeof e.index === "number" && e.index > 1)).toHaveLength(0);
+    });
+  }
+);
+
+// Without the adapter, this silently exercises the unfiltered branch and proves
+// nothing about the MiniMax path used in production.
+describe("index mapping applies on the thinking-filtered path too", () => {
+  it("only emits deltas and stops for sequentially opened blocks", async () => {
+    const adapter = { shouldFilterThinking: () => true } as any;
+    const events = parseEmitted(
+      await runFixture("minimax-m3-anthropic-implicit-signature-r10324.sse", adapter)
+    );
+    const openedIndices = new Set<number>();
+    const violations: any[] = [];
+
+    for (const event of events) {
+      if (event.type === "content_block_start") {
+        openedIndices.add(event.index);
+      } else if (
+        (event.type === "content_block_delta" || event.type === "content_block_stop") &&
+        !openedIndices.has(event.index)
+      ) {
+        violations.push(event);
+      }
+    }
+
+    expect(
+      violations,
+      `Frames referenced unopened content block indices:\n${JSON.stringify(violations, null, 2)}`
+    ).toHaveLength(0);
+    expect([...openedIndices]).toEqual([0, 1]);
   });
 });
