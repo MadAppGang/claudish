@@ -2,6 +2,14 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.56.0] - 2026-08-18
+
+### Bug Fixes
+
+- send eu and global to hosts that exist *(vertex)* ([#204](https://github.com/MadAppGang/claudish/pull/204)) — closes [#145](https://github.com/MadAppGang/claudish/issues/145), thanks [@nickoloss](https://github.com/nickoloss)
+
+  `VERTEX_LOCATION=eu` built `eu-aiplatform.googleapis.com` (404) instead of `aiplatform.eu.rep.googleapis.com` (401), so EU data-residency users could not reach Vertex at all. `global` had the same bug for Gemini requests, building `global-aiplatform.googleapis.com` (404) rather than the bare host.
+
 ## [7.55.0] - 2026-08-18
 
 ### Bug Fixes
