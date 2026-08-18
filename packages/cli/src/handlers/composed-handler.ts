@@ -64,6 +64,7 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker } from "./shared/token-tracker.js";
+import { captureUpstreamError } from "./shared/upstream-error-capture.js";
 
 /**
  * Backoff schedule for a retryable error that arrived inside an HTTP 200 stream.
@@ -772,6 +773,16 @@ export class ComposedHandler implements ModelHandler {
       } else {
         const errorText = await response.text();
         log(`[${this.provider.displayName}] Error: ${errorText}`);
+        // Durable copy, opt-in via CLAUDISH_UPSTREAM_ERROR_LOG. `log()` only
+        // persists under --debug, so without this the body that distinguishes a
+        // retryable rate limit from a hard quota wall is gone the moment it is
+        // classified. No-op and non-throwing when the env var is unset.
+        captureUpstreamError({
+          provider: this.provider.displayName,
+          model: this.bareModelName,
+          status: response.status,
+          body: errorText,
+        });
         // A transport that parses its provider's structured errors outranks the
         // shared substring heuristics — computed ONCE here so the user-facing
         // hint and the terminal/retryable remap below cannot disagree about what

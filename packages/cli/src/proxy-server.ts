@@ -773,11 +773,56 @@ export async function createProxyServer(
   // NOT the real model ids those slots route to. Defaults to an empty list
   // for non-serve callers (the picker is irrelevant to them).
   const servedSlotIds = options.servedSlotIds ?? [];
+  /**
+   * Model ids advertised to a NON-serve caller.
+   *
+   * Computed once, at server construction, deliberately. The obvious shape is
+   * to build this per request so a config edit shows up live, but this route
+   * feeds a picker that gets refreshed on a whim, and every per-request option
+   * is worse than it looks: `loadConfig()` is a disk read, and credential-
+   * filtering the list means resolving each rule's provider chain, which can
+   * reach 1Password — where a burst of concurrent handshakes trips a
+   * 15-second machine-wide suppression that then fails unrelated requests.
+   * A picker refresh must not be able to do that.
+   *
+   * NOT credential-filtered, and that is a decision rather than an omission.
+   * Filtering has two failure modes and they are not symmetric. Advertising a
+   * model with no key costs the user one clear credential error, which claudish
+   * already renders inline complete with the 1Password notice. Hiding a model
+   * whose key lives somewhere a SYNC check cannot see — an `op://` reference,
+   * resolvable at request time — makes a working model unpickable with no
+   * error at all and nothing to diagnose. The second is worse, so the list is
+   * everything routable by configuration.
+   */
+  const discoverableModelIds = ((): string[] => {
+    const seen = new Set<string>();
+    try {
+      const cfg = loadConfig();
+      for (const name of Object.keys(cfg.routing ?? {})) {
+        // `*` is the catch-all routing wildcard, not a model anyone can ask for.
+        if (name === "*") continue;
+        seen.add(name);
+      }
+      for (const ep of Object.values(cfg.customEndpoints ?? {})) {
+        for (const m of (ep as { models?: string[] }).models ?? []) seen.add(m);
+      }
+    } catch (err) {
+      // Same posture as every other optional read in this file: a broken config
+      // degrades the picker, it does not take the proxy down.
+      log(`[Proxy] /v1/models discovery skipped: ${err instanceof Error ? err.message : err}`);
+    }
+    return [...seen];
+  })();
+
   app.get("/v1/models", (c) => {
+    // Slot mode wins whenever `serve` supplied ids: Claude Desktop only
+    // recognizes the slot ids, and this branch must stay byte-identical to what
+    // it has always returned.
+    const ids = servedSlotIds.length > 0 ? servedSlotIds : discoverableModelIds;
     return c.json({
       object: "list",
       has_more: false,
-      data: servedSlotIds.map((id) => ({
+      data: ids.map((id) => ({
         id,
         object: "model",
         type: "model",
