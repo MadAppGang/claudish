@@ -19,6 +19,7 @@ import {
   getActiveFailovers,
   armFailover,
   isQuotaExhaustion,
+  isWiringError,
   roleFromModelName,
   buildFailoverNotice,
   appendFailoverNoticeToMessage,
@@ -297,6 +298,64 @@ describe("isQuotaExhaustion — narrow on purpose", () => {
     expect(isQuotaExhaustion(401, "invalid api key")).toBe(false);
     expect(isQuotaExhaustion(404, "model not found")).toBe(false);
     expect(isQuotaExhaustion(500, "internal server error")).toBe(false);
+  });
+});
+
+// ── isWiringError ──────────────────────────────────────────────────────────────
+//
+// The gate on fail-forward. These cases are the ones that decide whether a
+// misconfigured cascade step surfaces or becomes permanently invisible, so each
+// assertion below is load-bearing rather than illustrative.
+
+describe("isWiringError — what must never be advanced over", () => {
+  it("treats auth/endpoint faults as wiring on status alone", () => {
+    expect(isWiringError(401, "")).toBe(true);
+    expect(isWiringError(403, "forbidden")).toBe(true);
+    expect(isWiringError(404, "")).toBe(true);
+  });
+
+  it("recognizes a mistyped model id behind a 400 (GLM code 1500, real body)", () => {
+    // Verbatim shape captured from GLM Coding. This is the case ai-01 raised:
+    // pure wiring, and neither 401 nor 404.
+    expect(
+      isWiringError(
+        400,
+        '{"object":"error","message":"Invalid model: gc@glm-5.4","type":"invalid_model","code":"1500"}'
+      )
+    ).toBe(true);
+  });
+
+  it("recognizes the same fault however the provider words it", () => {
+    expect(isWiringError(400, '{"error":{"message":"model not found"}}')).toBe(true);
+    expect(isWiringError(400, "Unknown model: foo")).toBe(true);
+  });
+
+  it("does NOT claim a payload-shape 400 — those are worth advancing over", () => {
+    // DeepSeek's real 400 (fixed in 911f426). Another provider may accept the same
+    // payload, so this must fail-forward rather than surface.
+    expect(
+      isWiringError(400, '{"error":{"message":"reasoning_content must be passed back"}}')
+    ).toBe(false);
+  });
+
+  it("does NOT claim transient upstream failures", () => {
+    expect(isWiringError(500, "internal server error")).toBe(false);
+    expect(isWiringError(502, "bad gateway")).toBe(false);
+    expect(isWiringError(429, "rate limited")).toBe(false);
+  });
+
+  it("is disjoint from isQuotaExhaustion on every real wall body", () => {
+    // A body must never be classified as both — quota is checked first in the
+    // cascade, but an overlap would mean one of the two matchers is too broad.
+    const walls = [
+      [429, "Usage limit reached for 5 hour. Your limit will reset at 2026-08-19 16:47:38"],
+      [429, "Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)"],
+      [429, "Your token-plan 1-week quota has been exhausted. The quota will reset at 08-18 10:07:00 UTC."],
+    ] as const;
+    for (const [status, body] of walls) {
+      expect(isQuotaExhaustion(status, body)).toBe(true);
+      expect(isWiringError(status, body)).toBe(false);
+    }
   });
 });
 

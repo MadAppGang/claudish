@@ -41,6 +41,7 @@ import {
   initFailover,
   armFailover,
   isQuotaExhaustion,
+  isWiringError,
   roleFromModelName,
   getFailoverRule,
   resolveFailoverTarget,
@@ -850,9 +851,41 @@ export async function createProxyServer(
       } catch {
         // unreadable body — status alone still decides for 402
       }
-      // Only a genuine quota/credit exhaustion advances the cascade; a 401/404/500
-      // wiring fault must surface, not be hidden behind a model swap.
-      if (!isQuotaExhaustion(response.status, errBody)) return response;
+      if (!isQuotaExhaustion(response.status, errBody)) {
+        // Fail-forward. A non-quota failure on an INTERMEDIATE cascade step still
+        // has a working successor beneath it, so advancing serves the user instead
+        // of surfacing a substitute's incident as if it were their own. This is what
+        // makes wall *recognition* an optimization rather than a safety prerequisite:
+        // an unrecognized wall on a middle step now degrades to one wasted round-trip,
+        // not a failed request.
+        //
+        // Narrow on three axes, each for a different reason:
+        //  - nominal (stepIndex -1) never advances: that is the user's own model
+        //    failing, and it must surface.
+        //  - the last step never advances: there is nothing beneath it.
+        //  - wiring faults never advance: a mistyped model id in a step would become
+        //    permanently invisible, every request stepping over it in silence.
+        const isIntermediateStep =
+          stepIndex >= 0 && rule != null && stepIndex < rule.steps.length - 1;
+        if (!isIntermediateStep) return response;
+        if (isWiringError(response.status, errBody)) {
+          log(
+            `[Failover] STEP-WIRING ${role} step=${stepIndex} — HTTP ${response.status} looks like a misconfigured step; surfacing instead of advancing`,
+            true
+          );
+          return response;
+        }
+        // Loud on purpose: advancing must never be silent, or a persistently sick
+        // step is indistinguishable from a healthy cascade.
+        const why = `HTTP ${response.status} (non-quota) from step ${stepIndex}`;
+        log(`[Failover] STEP-ADVANCE ${role} — ${why}; trying next step`, true);
+        // Marked, not merely skipped: the first backoff rung is 10 min, so a transient
+        // blip costs one short skip of a step that has a live successor — whereas not
+        // marking makes every subsequent request re-pay the round-trip (and its
+        // timeout) to a step that may be down for hours. Any success resets the count.
+        markStepFailed(role, stepIndex, why);
+        continue;
+      }
       const reason = `HTTP ${response.status} from ${requestedModel}`;
       if (stepIndex === -1) {
         // Nominal walled: arm the role (reactive, AUTO only). If arming is off or

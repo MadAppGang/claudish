@@ -456,6 +456,39 @@ export function isQuotaExhaustion(status: number, body: string): boolean {
 }
 
 /**
+ * Is this failure a *wiring* fault — a bad key, a bad endpoint, a model id typed
+ * wrong in a cascade step?
+ *
+ * This is the explicit negative space of {@link isQuotaExhaustion}, and it exists
+ * for one reason: the cascade may advance past an intermediate step that fails for
+ * an unrecognized reason (see the fail-forward branch in `handleWithCascade`).
+ * Advancing is right for a step that is genuinely unwell, and wrong for a step that
+ * is merely *misconfigured* — a mistyped model id would otherwise become permanently
+ * invisible, because every request would silently step over it while the cascade
+ * looked healthy and quietly ran one step short.
+ *
+ * Keyed on the machine-readable signature where a provider offers one
+ * (`"type":"invalid_model"`, GLM code 1500), with the human message as a fallback
+ * anchor for providers that offer none. 401/403/404 need no body: there is no
+ * reading of them under which swapping the model is the correct response.
+ *
+ * Deliberately NOT a catch-all for 400: a payload-shape 400 (e.g. DeepSeek's
+ * `reasoning_content must be passed back`) IS worth advancing over, because another
+ * provider may well accept the same payload. Only the *identity* errors are pinned.
+ */
+export function isWiringError(status: number, body: string): boolean {
+  if (status === 401 || status === 403 || status === 404) return true;
+  if (status !== 400) return false;
+  const lower = (body || "").toLowerCase();
+  return (
+    lower.includes("invalid_model") ||
+    lower.includes("invalid model") ||
+    lower.includes("model not found") ||
+    lower.includes("unknown model")
+  );
+}
+
+/**
  * Called by the cascade loop when the NOMINAL model answered successfully for `role`.
  * Clears all step failures (healthy nominal = fresh episode) and, if the role had a
  * pending recovery (its auto-arm just expired), seeds the recovery notice state.
