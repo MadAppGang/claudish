@@ -359,6 +359,108 @@ describe("isWiringError — what must never be advanced over", () => {
   });
 });
 
+// ── isQuotaExhaustion — CHARACTERIZATION against captured production bodies ────
+//
+// The cases above are synthetic: they state what we INTENDED the matcher to do.
+// The cases below are what six providers actually sent the production hub over
+// the seven days ending 2026-08-19, with their occurrence counts.
+//
+// This block passes by construction today. That is the point. It is a
+// characterization harness, not a bug report: when the upstream sync lands
+// (#200/#201, and the second predicate that arrived upstream with 3d4d8a9 in
+// `handlers/shared/quota-exhaustion.ts`), it says whether the cascade still
+// classifies REAL walls the same way — and names the provider that moved,
+// instead of letting the cascade degrade in silence.
+//
+// Note for whoever does that sync: the two predicates live at DIFFERENT PATHS
+// and therefore never conflict. git will happily keep both, and which one runs
+// is decided at the call site in `composed-handler.ts`. There will be no merge
+// marker to warn you.
+//
+// Deliberately NOT pinned: the only 402 in the capture store is a
+// `"provider":"Mockwall"` simulated record. No real 402 exists on any production
+// path — every wall across all six providers arrives as 429. Pinning a 402 as
+// "real" would encode a fiction. Likewise there is no DeepSeek or Mistral wall
+// here, and that is structural rather than a gap: DeepSeek is PAYG (it debits,
+// it does not wall) and Mistral sits last in the sonnet cascade with credit
+// remaining, so it receives no traffic. We invent neither.
+
+/** GLM Coding Plan — 5-hour window wall. 978× / 7d. Verbatim. MUST arm. */
+const GLM_1308_WINDOW_WALL =
+  '{"error":{"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-08-12 18:58:34"}}';
+
+/** GLM Coding Plan — transient overload. 59× / 7d. Captured `error.message`. MUST NOT arm. */
+const GLM_1305_OVERLOAD = "The service may be temporarily overloaded, please try again later";
+
+/** GLM Coding Plan — plain per-request rate limit. 60× / 7d. Captured `error.message`. MUST NOT arm. */
+const GLM_1302_RATE_LIMIT = "Rate limit reached for requests";
+
+/** GLM Coding Plan — Fair Usage throttle. 1262× / 7d, the single most frequent. Captured `error.message`. MUST NOT arm. */
+const GLM_1313_FAIR_USAGE =
+  "Your account's current usage pattern does not comply with the Fair Usage Policy, and your request frequency has been limited";
+
+/** MiniMax Coding (haiku lane) — Token Plan wall. 666× / 7d. Verbatim. MUST arm. */
+const MINIMAX_PLAN_WALL =
+  '{"type":"error","error":{"type":"rate_limit_error","message":"Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)"},"request_id":"06cd2b0d6d5bff0be2821ef3b318dccd"}';
+
+/** MiniMax Coding — cluster overload. 5× / 7d, arrives as 529. Verbatim. MUST NOT arm. */
+const MINIMAX_OVERLOAD =
+  '{"type":"error","error":{"type":"overloaded_error","message":"The server cluster is currently under high load. Please retry after a short wait and thank you for your patience. (2064) (529)"},"request_id":"06cb511dd91128863d7ca1fbdedade75"}';
+
+/** Qwen Token Plan — weekly quota wall. 51× / 7d. Verbatim. DashScope envelope. MUST arm. */
+const QWEN_WEEKLY_WALL =
+  '{"code":"Throttling.AllocationQuota","message":"Your token-plan 1-week quota has been exhausted. The quota will reset at 08-18 10:07:00 UTC.","request_id":"fb4c609e-73a3-419f-8a3a-b4dbea11889e"}';
+
+describe("isQuotaExhaustion — captured production bodies (7d, 6 providers)", () => {
+  it("ARMS on the three real plan walls", () => {
+    expect(isQuotaExhaustion(429, GLM_1308_WINDOW_WALL)).toBe(true);
+    expect(isQuotaExhaustion(429, MINIMAX_PLAN_WALL)).toBe(true);
+    expect(isQuotaExhaustion(429, QWEN_WEEKLY_WALL)).toBe(true);
+  });
+
+  it("does NOT arm on the four real transient bursts", () => {
+    expect(isQuotaExhaustion(429, GLM_1305_OVERLOAD)).toBe(false);
+    expect(isQuotaExhaustion(429, GLM_1302_RATE_LIMIT)).toBe(false);
+    expect(isQuotaExhaustion(429, GLM_1313_FAIR_USAGE)).toBe(false);
+    expect(isQuotaExhaustion(529, MINIMAX_OVERLOAD)).toBe(false);
+  });
+
+  // ── Trap 1: broadening the matcher ──
+  //
+  // `usage limit` looks like it could safely be shortened to `usage`. It cannot:
+  // GLM's Fair Usage throttle says "usage pattern" and "Fair Usage Policy", and
+  // it fired 1262 times in seven days. Broadening would have burned the sonnet
+  // budget switch 1262× on a throttle that clears on its own.
+  it("TRAP — a real burst body contains 'usage' and must still NOT arm", () => {
+    expect(GLM_1313_FAIR_USAGE.toLowerCase()).toContain("usage");
+    expect(GLM_1313_FAIR_USAGE.toLowerCase()).not.toContain("usage limit");
+    expect(isQuotaExhaustion(429, GLM_1313_FAIR_USAGE)).toBe(false);
+  });
+
+  // ── Trap 2: "cleaning up" to a structured criterion ──
+  //
+  // Substring matching on a message looks sloppy next to reading `error.type`.
+  // But MiniMax labels its PLAN WALL `rate_limit_error` and its TRANSIENT
+  // OVERLOAD `overloaded_error` — the structured field is not merely unhelpful
+  // here, it points the wrong way. Keying on it would silently stop arming the
+  // haiku failover, which is the lane MiniMax serves.
+  it("TRAP — MiniMax labels its plan wall `rate_limit_error`, so error.type must not be the criterion", () => {
+    expect(JSON.parse(MINIMAX_PLAN_WALL).error.type).toBe("rate_limit_error");
+    expect(JSON.parse(MINIMAX_OVERLOAD).error.type).toBe("overloaded_error");
+    // The verdicts are the opposite of what those labels suggest.
+    expect(isQuotaExhaustion(429, MINIMAX_PLAN_WALL)).toBe(true);
+    expect(isQuotaExhaustion(529, MINIMAX_OVERLOAD)).toBe(false);
+  });
+
+  // Documents why `allocationquota` sits in the 400/403/500 branch: the DashScope
+  // envelope is the same whatever status carries it. Production sends it on 429;
+  // this asserts the other branch would still recognize the same real body.
+  it("recognizes the real Qwen envelope on the 400/403/500 branch too", () => {
+    expect(isQuotaExhaustion(400, QWEN_WEEKLY_WALL)).toBe(true);
+    expect(isQuotaExhaustion(403, QWEN_WEEKLY_WALL)).toBe(true);
+  });
+});
+
 describe("roleFromModelName", () => {
   it("maps the names Claude Code actually sends", () => {
     expect(roleFromModelName("claude-opus-5")).toBe("opus");
