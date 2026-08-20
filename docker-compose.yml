@@ -76,6 +76,9 @@ services:
       # Qwen reasons by default and bills on output. disabled (default) |
       # passthrough | budget:<n>. Re-read per request: flip without a restart.
       - CLAUDISH_QWEN_THINKING=${CLAUDISH_QWEN_THINKING:-}
+      # GLM thinking is binary on the coding wire. passthrough (default) |
+      # disabled. Re-read per request: flip without a restart.
+      - CLAUDISH_GLM_THINKING=${CLAUDISH_GLM_THINKING:-}
     command: ["--port", "3000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]
