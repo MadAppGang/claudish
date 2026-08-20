@@ -40,6 +40,7 @@ import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/serv
 import {
   initFailover,
   armFailover,
+  isFailoverActive,
   isQuotaExhaustion,
   isWiringError,
   roleFromModelName,
@@ -888,9 +889,14 @@ export async function createProxyServer(
       }
       const reason = `HTTP ${response.status} from ${requestedModel}`;
       if (stepIndex === -1) {
-        // Nominal walled: arm the role (reactive, AUTO only). If arming is off or
-        // no cascade is configured, surface the nominal's error.
-        if (!armFailover(role, reason)) return response;
+        // Nominal walled: arm the role (reactive, AUTO only). armFailover also
+        // returns false when the role is ALREADY armed — typically a concurrent
+        // request armed it between this request's handler resolution and its 429.
+        // That is success for this request, not a failure to arm: proceeding to
+        // the retry serves it from the cascade instead of surfacing a raw 429
+        // (production 2026-08-20: the disarm-probe window at each 10-min TTL
+        // raced two opus requests; the loser died client-side with "API Error").
+        if (!armFailover(role, reason) && !isFailoverActive(role)) return response;
       } else {
         markStepFailed(role, stepIndex, reason);
         if (rule && stepIndex === rule.steps.length - 1) return response; // last step also walled

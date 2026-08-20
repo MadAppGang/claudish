@@ -753,6 +753,26 @@ describe("recovery — nominal restored after failover", () => {
     expect(armFailover("opus", "walled again")).toBe(true);
     expect(isRecovering("opus")).toBe(false);
   });
+
+  it("RACE: already-armed armFailover() must not read as failure (concurrent disarm-window requests)", () => {
+    // Production 2026-08-20 20:05Z: the 10-min disarm probe opened the window;
+    // request A resolved pre-arm (NativeHandler), request B armed the role from
+    // ITS cascade; A's own armFailover then returned false (already armed) and
+    // handleWithCascade surfaced the raw 429 — the client died on "API Error".
+    // The loop now treats false-but-active as success; this test pins the
+    // primitive so neither side regresses: false CAN mean already-armed, and
+    // isFailoverActive is the discriminator the loop relies on.
+    resetFailoverForTests();
+    initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_AUTO: "1" });
+    // Request B arms first.
+    expect(armFailover("opus", "HTTP 429 from claude-opus")).toBe(true);
+    // Request A's late arm attempt loses the race…
+    expect(armFailover("opus", "HTTP 429 from claude-opus")).toBe(false);
+    // …but the loop's discriminator must see an active failover and retry
+    // into the cascade rather than surfacing the 429.
+    expect(isFailoverActive("opus")).toBe(true);
+    expect(resolveFailoverTarget("opus").step?.target).toBe("qwen-token-plan@qwen3.8-max");
+  });
 });
 
 // ── Auto-arm expiry (self-clearing failover) ───────────────────────────────────
