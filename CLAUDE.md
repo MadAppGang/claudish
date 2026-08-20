@@ -168,6 +168,15 @@ Use as: `claudish --model my-vllm@llama3.1-70b "task"` or `claudish --model corp
 - **Runtime registration**: Endpoints call `registerRuntimeProvider()` and `registerRuntimeProfile()` to inject themselves into the provider resolver and transport layers.
 - **`models` field** (optional): When present, limits the endpoint to listed models. Omit to allow any model name.
 - **`modelPrefix` field** (optional): Prepended to the user-specified model name before sending to the API.
+- **`omitReasoningContent` field** (optional, default `false`): Drops `reasoning_content` from outbound assistant messages. Set it for backends that validate their request body strictly.
+
+  The OpenAI-format converter emits that field whenever a thinking block is present in history (`processAssistantMessage`, gated on `hasThinking`) — **independent of any opt-in**, because the two consumers disagree: DeepSeek *requires* it echoed back, Kimi K2.5 requires it on turn 2+ without opting into `preserveThinkingInHistory()`, and GLM ignores it. Strict-schema APIs reject it: Mistral answers `HTTP 422 extra_forbidden` on `body.messages[N].assistant.reasoning_content`, which fails **every** turn of a real thinking-mode session.
+
+  It cannot be handled by ComposedHandler's thinking-block strip. That strip filters `type:"thinking"` blocks out of message content arrays, but it runs *after* `convertMessages` — by which point the OpenAI conversion has flattened content to a string and hoisted the reasoning into a sibling scalar. On the OpenAI wire the block filter is a **structural no-op** and can never reach the field. Hence a separate pass, `stripReasoningContent()` in `openai-messages.ts`, applied to the converted messages.
+
+  **Production incident 2026-08-20**: Mistral was promoted to step 0 of the sonnet cascade while the GLM nominal was walled, so 100% of sonnet traffic hit it — 28 of 32 requests failed (87%). Compounding it, the hub image predated `6bd6f7a`, so the non-quota 422 surfaced to clients instead of failing forward to the next step, and the fleet stalled. Two independent causes, each necessary: the field should not have been sent, *and* a sick intermediate step should have degraded rather than blocked. Interactive sessions had to be resumed by hand on each machine (a 422 is a hard 4xx — Claude Code does not auto-retry it); only scheduled agents self-recovered.
+
+  Measured the same day: Mistral's `zai-glm-5-2` emits **no** reasoning traces at all (0 thinking blocks, 0 `reasoning_content` in its SSE) — it reasons in plain text inside the answer. So nothing is lost by stripping, and that step is `degraded`, not `lateral`: a non-thinking GLM 5.2 standing in for a thinking nominal.
 
 ## Three-Layer Adapter Architecture (v5.14.0+)
 

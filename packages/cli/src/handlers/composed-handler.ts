@@ -27,6 +27,7 @@ import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middlewa
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { filterIdentity } from "./shared/openai-compat.js";
+import { stripReasoningContent } from "./shared/format/openai-messages.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
@@ -100,6 +101,12 @@ export interface ComposedHandlerOptions {
   isInteractive?: boolean;
   /** How this handler was invoked (for stats). */
   invocationMode?: "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map";
+  /**
+   * Drop `reasoning_content` from converted assistant messages before the
+   * payload is built. For strict-schema OpenAI backends that reject unknown
+   * fields — see CustomEndpointSimpleSchema.omitReasoningContent.
+   */
+  omitReasoningContent?: boolean;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -248,6 +255,17 @@ export class ComposedHandler implements ModelHandler {
     // gate just above: same capability, opposite direction.
     const reasoningRoundtrip = !!this.modelAdapter?.preserveThinkingInHistory?.();
     const messages = adapter.convertMessages(claudeRequest, filterIdentity, reasoningRoundtrip);
+    // Strict-schema backends reject unknown fields. Must happen HERE, on the
+    // converted messages — the thinking-block strip further down cannot reach
+    // `reasoning_content`; see stripReasoningContent's docblock.
+    if (this.options.omitReasoningContent) {
+      const dropped = stripReasoningContent(messages);
+      if (dropped > 0) {
+        log(
+          `[ComposedHandler] Dropped reasoning_content from ${dropped} message(s) for ${this.provider.displayName} (strict schema)`
+        );
+      }
+    }
     const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool count limits (e.g., OpenAI's 128-tool cap) are enforced

@@ -180,3 +180,36 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
     messages.push({ role: "assistant", content: msg.content });
   }
 }
+
+/**
+ * Remove `reasoning_content` from already-converted OpenAI messages, in place.
+ * Returns how many messages were changed.
+ *
+ * The counterpart to the emission in processAssistantMessage: that one writes
+ * the field whenever a thinking block is present in history, which is right for
+ * backends that require it (DeepSeek) or tolerate it (GLM, Kimi) and wrong for
+ * ones that validate their body strictly. Mistral answers HTTP 422
+ * `extra_forbidden` on `body.messages[N].assistant.reasoning_content`, which
+ * fails every turn of a real thinking-mode conversation.
+ *
+ * This exists as a separate pass rather than a condition on the emitter because
+ * the two needs genuinely conflict: Kimi K2.5 requires the field on turn 2+ of a
+ * thinking conversation without opting into preserveThinkingInHistory(), so the
+ * emitter cannot be gated on that capability alone.
+ *
+ * Note it cannot be folded into ComposedHandler's thinking-block strip either:
+ * that one filters `type:"thinking"` blocks out of message content arrays, but
+ * by this point the OpenAI conversion has flattened content to a string and
+ * hoisted the reasoning into a sibling scalar — a block filter can never see it.
+ */
+export function stripReasoningContent(messages: any[]): number {
+  if (!Array.isArray(messages)) return 0;
+  let dropped = 0;
+  for (const msg of messages) {
+    if (msg && typeof msg === "object" && "reasoning_content" in msg) {
+      delete msg.reasoning_content;
+      dropped++;
+    }
+  }
+  return dropped;
+}

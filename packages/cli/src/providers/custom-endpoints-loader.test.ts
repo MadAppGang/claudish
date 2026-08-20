@@ -306,4 +306,88 @@ describe("custom-endpoints-loader", () => {
       expect(transport.overrideStreamFormat?.()).toBeUndefined();
     });
   });
+
+  describe("omitReasoningContent plumbing", () => {
+    // Regression (2026-08-20 cluster outage): Mistral rejects any history
+    // carrying reasoning_content with HTTP 422 extra_forbidden. Promoted to
+    // step 0 of the sonnet cascade while GLM was walled, it failed 28 of 32
+    // requests and stalled the fleet. The flag must reach ComposedHandler.
+    function makeCtx(modelName: string): ProfileContext {
+      return {
+        provider: {
+          name: "mistral",
+          baseUrl: "https://api.mistral.ai",
+          apiPath: "/v1/chat/completions",
+          apiKeyEnvVar: "CUSTOM_MISTRAL_KEY",
+          prefixes: ["mistral"],
+          authScheme: "bearer",
+        },
+        modelName,
+        targetModel: modelName,
+        port: 3000,
+        apiKey: "sk-test",
+        sharedOpts: {},
+      };
+    }
+
+    test("complex openai endpoint: omitReasoningContent reaches ComposedHandler options", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          mistral: {
+            kind: "complex",
+            displayName: "Mistral La Plateforme",
+            transport: "openai",
+            baseUrl: "https://api.mistral.ai",
+            apiPath: "/v1/chat/completions",
+            apiKey: "k",
+            streamFormat: "openai-sse",
+            omitReasoningContent: true,
+          },
+        })
+      );
+
+      const handler = getRuntimeProfiles()
+        .get("mistral")!
+        .createHandler(makeCtx("zai-glm-5-2"))!;
+      expect((handler as any).options.omitReasoningContent).toBe(true);
+    });
+
+    test("simple openai endpoint: omitReasoningContent reaches ComposedHandler options", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          strict: {
+            kind: "simple",
+            url: "https://strict.example.com/v1",
+            format: "openai",
+            apiKey: "k",
+            omitReasoningContent: true,
+          },
+        })
+      );
+
+      const handler = getRuntimeProfiles()
+        .get("strict")!
+        .createHandler(makeCtx("some-model"))!;
+      expect((handler as any).options.omitReasoningContent).toBe(true);
+    });
+
+    test("omitted: option stays undefined — no existing endpoint changes behavior", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          lenient: {
+            kind: "complex",
+            displayName: "Lenient",
+            transport: "openai",
+            baseUrl: "https://lenient.example.com",
+            apiKey: "k",
+          },
+        })
+      );
+
+      const handler = getRuntimeProfiles()
+        .get("lenient")!
+        .createHandler(makeCtx("some-model"))!;
+      expect((handler as any).options.omitReasoningContent).toBeUndefined();
+    });
+  });
 });

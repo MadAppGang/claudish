@@ -14,7 +14,10 @@ import { describe, test, expect } from "bun:test";
 import { DeepSeekModelDialect } from "./adapters/deepseek-model-dialect.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
-import { convertMessagesToOpenAI } from "./handlers/shared/format/openai-messages.js";
+import {
+  convertMessagesToOpenAI,
+  stripReasoningContent,
+} from "./handlers/shared/format/openai-messages.js";
 
 // ─── Group 1: DeepSeekModelDialect model detection ──────────────────────────
 
@@ -129,6 +132,70 @@ describe("convertMessagesToOpenAI — reasoningRoundtrip emission", () => {
     const asst = out.filter((m) => m.role === "assistant");
     expect(asst[0].reasoning_content).toBe("plan");
     expect(asst[1].reasoning_content).toBe(""); // tool_use-only turn gets empty field
+  });
+});
+
+// ─── Group 3b: stripReasoningContent (strict-schema backends) ────────────────
+//
+// Mirror image of the above. The emission fires on `hasThinking` alone, so ANY
+// OpenAI-wire endpoint receives reasoning_content once a thinking block is in
+// history — opt-in or not. Mistral validates strictly and answers HTTP 422
+// extra_forbidden on body.messages[N].assistant.reasoning_content.
+//
+// Production incident 2026-08-20: Mistral was promoted to step 0 of the sonnet
+// cascade while the GLM nominal was walled. 28 of 32 requests failed (87%), and
+// because a 422 is not a quota wall the cascade surfaced it to the client rather
+// than routing around it — the fleet stalled until Mistral was pulled.
+//
+// Measured the same day: Mistral's zai-glm-5-2 emits NO reasoning traces at all
+// (0 thinking blocks, 0 reasoning_content in its SSE). So there is no round-trip
+// to preserve and the strip costs nothing.
+
+describe("stripReasoningContent", () => {
+  test("removes the field from every assistant message, in place", () => {
+    const msgs = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "doing", reasoning_content: "plan" },
+      { role: "assistant", content: null, tool_calls: [{ id: "t1" }], reasoning_content: "" },
+    ];
+    expect(stripReasoningContent(msgs)).toBe(2);
+    expect(msgs[1]).not.toHaveProperty("reasoning_content");
+    expect(msgs[2]).not.toHaveProperty("reasoning_content");
+    // Everything else survives untouched — this strips one field, not thinking.
+    expect(msgs[1].content).toBe("doing");
+    expect(msgs[2].tool_calls).toEqual([{ id: "t1" }]);
+  });
+
+  test("empty-string reasoning_content is removed, not skipped as falsy", () => {
+    // The DeepSeek roundtrip emits "" on tool_use-only turns. A truthiness check
+    // would leave those in place and Mistral would still 422.
+    const msgs = [{ role: "assistant", content: null, reasoning_content: "" }];
+    expect(stripReasoningContent(msgs)).toBe(1);
+    expect(msgs[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  test("no-op when the field is absent, and safe on a non-array", () => {
+    const msgs = [{ role: "user", content: "go" }];
+    expect(stripReasoningContent(msgs)).toBe(0);
+    expect(stripReasoningContent(undefined as any)).toBe(0);
+  });
+
+  test("round-trip: converter emits, strip removes — payload is clean", () => {
+    const req = {
+      model: "claude-sonnet-4-6",
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "plan" }, { type: "text", text: "doing" }],
+        },
+        { role: "user", content: "next" },
+      ],
+    };
+    const out = convertMessagesToOpenAI(req, "zai-glm-5-2", undefined, false, true) as any[];
+    expect(out.some((m) => "reasoning_content" in m)).toBe(true);
+    stripReasoningContent(out);
+    expect(out.some((m) => "reasoning_content" in m)).toBe(false);
   });
 });
 
