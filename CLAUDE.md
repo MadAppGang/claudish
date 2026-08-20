@@ -377,6 +377,21 @@ The subtlety this encodes: Qwen exposes **two switches on two wires, and each en
 
 Measured against Qwen Token Plan, `max_tokens: 400`, prompt `"Reponds exactement: ok"` (2026-08-11): baseline `67 in / 43 out` with a thinking block; `enable_thinking: false` → `67 / 48`, still thinking; `thinking: {type: "disabled"}` → `31 / 1`. Note the **input** count moves too (67 → 31) — Alibaba appears to inject a reasoning preamble when thinking is on. That makes a crisp post-deploy check: **if `input_tokens` drops from 67 to 31 on that prompt, the native switch reached Qwen.**
 
+### `CLAUDISH_GLM_THINKING`
+
+GLM exposes a **binary** thinking switch on the OpenAI wire (`thinking: {"type":"enabled"|"disabled"}`) — no budget control, unlike Qwen. Values: `passthrough` (default) · `disabled`. Re-read on every request (same crunch-flip rationale as Qwen).
+
+Probed 2026-08-20 against the gc@ Coding Plan (`glm-5.3`, prompt "Reponds exactement: ok", `max_tokens: 500`):
+
+| `thinking` sent | HTTP | output tokens | reasoning chars |
+|---|---|---|---|
+| absent | 200 | 37 | 131 — **GLM thinks by default** |
+| `{"type":"enabled"}` | 200 | 41 | 148 |
+| `{"type":"disabled"}` | 200 | **3** | **0** — the switch works |
+| enabled + `budget_tokens` | 200 | 35 | tolerated, **ignored** |
+
+The history this encodes: `GLMModelDialect` used to delete `thinking` unconditionally ("GLM doesn't support thinking params" — a GLM-4.x-era artifact), and the OpenAI `buildPayload` never emits the field either. Net effect: GLM silently thought by default on **every** request, the client's ask was meaningless, and no lever existed to stop GLM thinking when the Coding Plan's 5h window is burning — `disabled` cuts a trivial prompt from 37 to 3 output tokens. `passthrough` preserves today's effective behavior (client ask → documented `{"type":"enabled"}`, budget dropped as inert; no ask → no field, GLM default applies). The zai@ anthropic wire is unprobed: passthrough keeps the historical strip there; only an explicit `disabled` sets `{"type":"disabled"}` (mirroring Qwen's anthropic-wire bet).
+
 ## OpenAI-Compatible Ingress (v7.2+)
 
 Anthropic is the **native** ingress (`/v1/messages`). The OpenAI ingress `POST /v1/chat/completions` is a **translated** ingress: an OpenAI-format request (sk-agent, any `AsyncOpenAI` consumer) is converted to Anthropic shape, run through the **same** routing pipeline (`getHandlerForRequest` → `ComposedHandler.handle`), and the response translated back to OpenAI wire shape. The OpenAI client therefore inherits the routing cascade, budget failover, accounting, and leak policy for free — it flips onto the hub by changing `base_url` alone.
@@ -408,7 +423,7 @@ Three levels of analysis — pick by need:
 | `traffic-sessions.ps1` | Detailed session list with timing, models, data volume | `.\scripts\traffic-sessions.ps1 [-Hours N] [-All]` |
 | `traffic-anthropic.ps1` | **Answers "where does the Anthropic traffic come from?"** — attributes every Anthropic-native (opus/fable) request by **machine + workspace** (workspace = proof, from the system prompt; not stdout). Per-request verdict: `[OK]` ai-01 · `[REVIEW]` po-2025 · `[INFO]` fable during a `-FableOverrideActive` window · `[LEAK-SUBAGENT]` rogue Opus sub-agent (`cc_is_subagent=true`, **exit 1**) · `[REVIEW-INTERACTIVE]` user-driven non-ai-01 session (exit 0). sonnet-4-6 shown separately (remapped to glm → not Anthropic). | `.\scripts\traffic-anthropic.ps1 [-Hours N] [-FableOverrideActive]` |
 | `traffic-history.ps1` | Historical analysis from 7z archives | `.\scripts\traffic-history.ps1 [-Date yyyy-MM-dd] [-Days N]` |
-| `compress-captures.ps1` | Nightly 7z compaction + GDrive backup + 30d local purge (scheduled task) | Runs automatically at 04:17 |
+| `compress-captures.ps1` | Nightly 7z compaction + GDrive backup + 30d local purge (scheduled task) | Runs automatically at 02:47 (moved from 04:17 on 2026-08-20: the 60-70 min compaction was colliding with the 04:00 daily container restart and the 04:41 coordinator cron; 02:47 gives a clear runway until 04:00) |
 | `claudish-watchdog.ps1` | Proxy health: tool-call stream test + proactive restart (uptime >11h) + auto-recovery on hang. Scheduled every 15min. | Runs automatically |
 | `CaptureUtils.psm1` | Shared module (capture parsing, device mapping, 7z extraction) | Imported by the scripts above |
 
