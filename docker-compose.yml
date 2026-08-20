@@ -37,7 +37,9 @@ services:
     environment:
       - NODE_ENV=production
       - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
-      - SEARXNG_URL=http://search.myia.io
+      # Default to LAN direct: the public URL is behind Basic Auth since 2026-08-19
+      # (runbook _intercom/2026-07-18_runbook-searxng-protection-po2023.md §9-§10).
+      - SEARXNG_URL=${SEARXNG_URL:-http://192.168.0.47:8181}
       # Empty disables capture writing (sidecar default; hub leaves it at /captures).
       - CLAUDISH_CAPTURE_DIR=${CLAUDISH_CAPTURE_DIR-/captures}
       # Sidecar relay (fork extension). All empty → this container is the HUB
