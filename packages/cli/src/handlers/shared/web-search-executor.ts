@@ -20,7 +20,33 @@
 import { log } from "../../logger.js";
 import { isMcpSearxngAvailable, mcpWebSearch, mcpUrlRead } from "./mcp-searxng-client.js";
 
-const SEARXNG_URL = process.env.SEARXNG_URL || "http://search.myia.io";
+/**
+ * SearXNG endpoint config, read per call (like mcp-searxng-client) so tests
+ * and late-injected container env work without import-order concerns.
+ *
+ * Basic-auth credentials may be embedded in SEARXNG_URL userinfo — the
+ * standard curl-style form `https://user:pass@search.myia.io`. The public
+ * URL sits behind IIS Basic Auth (Windows account, deployed 2026-08-19 to
+ * stop external scraping); LAN deployments use a credless URL and send no
+ * Authorization header. Credentials never appear in logs — only the
+ * stripped base URL does.
+ */
+export function searxngConfig(): { base: string; authHeaders: Record<string, string> } {
+  const raw = process.env.SEARXNG_URL || "http://search.myia.io";
+  try {
+    const u = new URL(raw);
+    if (u.username) {
+      const cred = `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password ?? "")}`;
+      const authHeaders = { Authorization: `Basic ${Buffer.from(cred).toString("base64")}` };
+      u.username = "";
+      u.password = "";
+      return { base: u.toString().replace(/\/+$/, ""), authHeaders };
+    }
+  } catch {
+    // Unparseable — use as-is, no auth.
+  }
+  return { base: raw.replace(/\/+$/, ""), authHeaders: {} };
+}
 
 export interface SearchResult {
   title: string;
@@ -32,12 +58,13 @@ export interface SearchResult {
  * Execute a web search via SearXNG. Non-throwing.
  */
 async function fetchFromSearXNG(query: string, maxResults = 5): Promise<SearchResult[]> {
-  const url = `${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json&categories=general`;
-  log(`[WebSearch] Executing: "${query}" via ${SEARXNG_URL}`);
+  const { base, authHeaders } = searxngConfig();
+  const url = `${base}/search?q=${encodeURIComponent(query)}&format=json&categories=general`;
+  log(`[WebSearch] Executing: "${query}" via ${base}`);
 
   const response = await fetch(url, {
     signal: AbortSignal.timeout(5000),
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", ...authHeaders },
   });
 
   if (!response.ok) {
