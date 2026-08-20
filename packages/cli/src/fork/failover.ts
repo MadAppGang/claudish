@@ -441,6 +441,21 @@ export function isQuotaExhaustion(status: number, body: string): boolean {
     ) {
       return true;
     }
+    // Anthropic weekly usage cap: the body says "rate limit" — the one word this
+    // branch exists to distrust — but Anthropic's per-minute bodies always name
+    // a WINDOW ("tokens per minute", "requests per minute"), while the cap names
+    // the ACCOUNT with no window: "This request would exceed your account's rate
+    // limit. Please try again later." Production 2026-08-20: no keyword above
+    // matched, the opus cascade never armed through the entire exhaustion
+    // window, and every client saw the raw 429 instead of Qwen step 0.
+    if (
+      lower.includes("exceed your account") &&
+      !lower.includes("per minute") &&
+      !lower.includes("per second") &&
+      !lower.includes("per hour")
+    ) {
+      return true;
+    }
     return false;
   }
   if (status === 400 || status === 403 || status === 500) {

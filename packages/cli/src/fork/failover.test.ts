@@ -411,18 +411,64 @@ const MINIMAX_OVERLOAD =
 const QWEN_WEEKLY_WALL =
   '{"code":"Throttling.AllocationQuota","message":"Your token-plan 1-week quota has been exhausted. The quota will reset at 08-18 10:07:00 UTC.","request_id":"fb4c609e-73a3-419f-8a3a-b4dbea11889e"}';
 
+/**
+ * Anthropic — weekly usage cap on the subscription account. 2026-08-20, the
+ * full opus exhaustion window (reset landed the next morning). The client
+ * rendered: "Server is temporarily limiting requests (not your usage limit) ·
+ * This request would exceed your account's rate limit. Please try again
+ * later." — CC itself misread the cap as transient, and so did the cascade:
+ * no quota keyword matched, the opus role never armed, and every session saw
+ * the raw 429 instead of Qwen step 0. Verbatim upstream message. MUST arm.
+ */
+const ANTHROPIC_WEEKLY_CAP =
+  '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}';
+
+/**
+ * Anthropic — genuine per-minute limit. Same error.type as the weekly cap
+ * above (see Trap 2), same "rate limit" vocabulary; the discriminator is the
+ * named WINDOW ("tokens per minute"). MUST NOT arm — a burst must never burn
+ * the weekly switch. Shape per Anthropic's documented rate-limit errors.
+ */
+const ANTHROPIC_PER_MINUTE =
+  '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached for claude-opus-5 on tokens per minute (TPM): Limit 400000, Used 398800, Requested 3500. The limit will reset at 2026-08-21T09:00:00Z."}}';
+
 describe("isQuotaExhaustion — captured production bodies (7d, 6 providers)", () => {
-  it("ARMS on the three real plan walls", () => {
+  it("ARMS on the four real plan walls", () => {
     expect(isQuotaExhaustion(429, GLM_1308_WINDOW_WALL)).toBe(true);
     expect(isQuotaExhaustion(429, MINIMAX_PLAN_WALL)).toBe(true);
     expect(isQuotaExhaustion(429, QWEN_WEEKLY_WALL)).toBe(true);
+    expect(isQuotaExhaustion(429, ANTHROPIC_WEEKLY_CAP)).toBe(true);
   });
 
-  it("does NOT arm on the four real transient bursts", () => {
+  it("does NOT arm on the five real transient bursts", () => {
     expect(isQuotaExhaustion(429, GLM_1305_OVERLOAD)).toBe(false);
     expect(isQuotaExhaustion(429, GLM_1302_RATE_LIMIT)).toBe(false);
     expect(isQuotaExhaustion(429, GLM_1313_FAIR_USAGE)).toBe(false);
     expect(isQuotaExhaustion(529, MINIMAX_OVERLOAD)).toBe(false);
+    expect(isQuotaExhaustion(429, ANTHROPIC_PER_MINUTE)).toBe(false);
+  });
+
+  // ── Trap 3: the Anthropic cap shares vocabulary with its bursts ──
+  //
+  // "This request would exceed your account's rate limit" says "rate limit",
+  // the one word the 429 branch exists to distrust. A future cleanup that
+  // drops the account-vs-window clause as redundant would re-break the opus
+  // cascade exactly as it broke on 2026-08-20. The two bodies differ ONLY in
+  // account-vs-window phrasing — assert the matcher keys on that and nothing
+  // looser ("exceed", "rate limit") that would sweep the per-minute body in.
+  it("TRAP — the Anthropic cap and its per-minute burst share error.type and 'rate limit'; only the account-vs-window phrasing separates them", () => {
+    expect(JSON.parse(ANTHROPIC_WEEKLY_CAP).error.type).toBe("rate_limit_error");
+    expect(JSON.parse(ANTHROPIC_PER_MINUTE).error.type).toBe("rate_limit_error");
+    expect(ANTHROPIC_WEEKLY_CAP.toLowerCase()).not.toContain("per minute");
+    expect(ANTHROPIC_PER_MINUTE.toLowerCase()).toContain("per minute");
+    // Sanity on the negative guards: a hypothetical body naming BOTH the
+    // account and a window stays a burst — window wins.
+    expect(
+      isQuotaExhaustion(
+        429,
+        "This request would exceed your account's rate limit on tokens per minute"
+      )
+    ).toBe(false);
   });
 
   // ── Trap 1: broadening the matcher ──
