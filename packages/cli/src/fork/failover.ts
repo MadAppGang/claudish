@@ -62,6 +62,10 @@ export interface FailoverStep {
   direction: FailoverDirection;
   /** Optional extra guidance appended to the notice line. */
   note?: string;
+  /** Operator-declared reset time (CLAUDISH_FAILOVER_<ROLE>_RESET): the step is not
+   * re-probed before this moment. For walls whose body carries no date (Mistral's
+   * subscription 402); body-parsed dates take precedence when both exist. */
+  resetAt?: Date;
 }
 
 export interface FailoverRule {
@@ -88,6 +92,11 @@ export interface ResolvedFailover {
 interface StepFailure {
   count: number;
   lastFailure: Date;
+  /** Effective reset time for this failure episode: body-parsed wins over the
+   * config-declared step.resetAt. While set and in the future the step is skipped
+   * regardless of backoff — the wall cannot lift before its reset. Once it passes,
+   * the step is probed again (a reset step must be consumed, not avoided). */
+  resetAt?: Date;
 }
 
 interface RecoveryState {
@@ -145,6 +154,28 @@ function splitSteps(raw: string): string[] {
   return raw.split(">").map((s) => s.trim()).filter(Boolean);
 }
 
+/** Parse CLAUDISH_FAILOVER_<ROLE>_RESET into per-step dates. Unlike labels, position
+ * matters even for empty entries: ">2026-08-25T22:28:00Z" declares a reset for step 1
+ * only — so empties must NOT be filtered out the way splitSteps does. Invalid entries
+ * warn and fall back to undefined (no declared reset = probe per backoff, the safe default). */
+function parseStepResets(raw: string | undefined, count: number, role: FailoverRole): (Date | undefined)[] {
+  const out: (Date | undefined)[] = Array.from({ length: count }, () => undefined);
+  if (!raw) return out;
+  const parts = raw.split(">").map((s) => s.trim());
+  for (let i = 0; i < count && i < parts.length; i++) {
+    if (!parts[i]) continue;
+    const d = new Date(parts[i]);
+    if (isNaN(d.getTime())) {
+      logStderr(
+        `[Failover] ${role}: unparseable reset date '${parts[i]}' for step ${i} — ignoring. Want ISO 8601, e.g. 2026-09-01T00:00:00Z.`
+      );
+      continue;
+    }
+    out[i] = d;
+  }
+  return out;
+}
+
 function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
   const out = new Map<FailoverRole, FailoverRule>();
   for (const role of FAILOVER_ROLES) {
@@ -154,6 +185,7 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
     const labels = splitSteps(env[`${key}_LABEL`] || "");
     const directions = splitSteps(env[`${key}_DIRECTION`] || "");
     const notes = splitSteps(env[`${key}_NOTE`] || "");
+    const resets = parseStepResets(env[`${key}_RESET`], targets.length, role);
     if (labels.length !== 0 && labels.length !== targets.length) {
       logStderr(
         `[Failover] ${role}: ${labels.length} labels vs ${targets.length} targets — padding with defaults. Check CLAUDISH_FAILOVER_${role.toUpperCase()}_LABEL.`
@@ -164,6 +196,7 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
       label: labels[i]?.trim() || target,
       direction: parseDirection(directions[i]),
       note: notes[i]?.trim() || undefined,
+      resetAt: resets[i],
     }));
     out.set(role, { role, steps });
   }
@@ -283,6 +316,9 @@ function stepTtlMs(count: number): number {
 
 function isStepTtlFailed(f: StepFailure | undefined): boolean {
   if (!f || f.count === 0) return false;
+  // A known reset date dominates the backoff: the wall cannot lift before it, and a
+  // reset in the past means "probe now" so a recovered step is consumed, not avoided.
+  if (f.resetAt) return Date.now() < f.resetAt.getTime();
   return Date.now() - f.lastFailure.getTime() < stepTtlMs(f.count);
 }
 
@@ -297,16 +333,23 @@ function stepFailuresFor(role: FailoverRole): StepFailure[] {
   return arr;
 }
 
-/** Record that cascade step `idx` for `role` just quota-walled. */
-export function markStepFailed(role: FailoverRole, idx: number, reason: string): void {
+/** Record that cascade step `idx` for `role` just quota-walled. `bodyResetAt` is the
+ * reset time parsed from the provider's own error body (most accurate at wall time);
+ * when absent, the operator-declared step.resetAt applies if configured. */
+export function markStepFailed(
+  role: FailoverRole,
+  idx: number,
+  reason: string,
+  bodyResetAt?: Date
+): void {
   const rule = rules.get(role);
   if (!rule || idx < 0 || idx >= rule.steps.length) return;
   const arr = stepFailuresFor(role);
-  arr[idx] = { count: arr[idx].count + 1, lastFailure: new Date(Date.now()) };
+  const resetAt = bodyResetAt ?? rule.steps[idx].resetAt;
+  arr[idx] = { count: arr[idx].count + 1, lastFailure: new Date(Date.now()), resetAt };
+  const ttlText = resetAt ? `until ${resetAt.toISOString()}` : `${Math.round(stepTtlMs(arr[idx].count) / 60000)}min`;
   logStderr(
-    `[Failover] step ${role}[${idx}] (${rule.steps[idx].label}) walled — count=${arr[idx].count} ttl=${Math.round(
-      stepTtlMs(arr[idx].count) / 60000
-    )}min (${reason})`
+    `[Failover] step ${role}[${idx}] (${rule.steps[idx].label}) walled — count=${arr[idx].count} ttl=${ttlText} (${reason})`
   );
 }
 
@@ -468,6 +511,37 @@ export function isQuotaExhaustion(status: number, body: string): boolean {
     );
   }
   return false;
+}
+
+/**
+ * Extract a wall-lift time from a provider error body, when the provider names one.
+ *  - Qwen (Alibaba MaaS): "The quota will reset at 08-25 22:28:00 UTC" — MM-DD HH:mm:ss,
+ *    year implied (guards a Dec→Jan rollover by rolling a >1-day-past date forward).
+ *  - MiniMax: "Resets in 2 days 13 hr" — relative to now.
+ * Returns undefined for silent bodies (Mistral's subscription 402, Anthropic's weekly
+ * cap, plain per-minute rate limits) — those fall back to the config-declared
+ * step.resetAt or the exponential backoff.
+ */
+export function parseResetAtFromBody(body: string): Date | undefined {
+  const text = body || "";
+  const abs = /reset at (\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.\d+)? UTC/i.exec(text);
+  if (abs) {
+    const year = new Date().getUTCFullYear();
+    let d = new Date(
+      Date.UTC(year, Number(abs[1]) - 1, Number(abs[2]), Number(abs[3]), Number(abs[4]), Number(abs[5]))
+    );
+    if (d.getTime() < Date.now() - 24 * 3600_000) {
+      d.setUTCFullYear(d.getUTCFullYear() + 1);
+    }
+    return d;
+  }
+  const rel = /resets? in (\d+) days?(?:\s+(\d+)\s*h(?:rs?|ours?)?)?/i.exec(text);
+  if (rel) {
+    const days = Number(rel[1]);
+    const hours = rel[2] ? Number(rel[2]) : 0;
+    return new Date(Date.now() + days * 24 * 3600_000 + hours * 3600_000);
+  }
+  return undefined;
 }
 
 /**

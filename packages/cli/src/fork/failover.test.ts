@@ -26,6 +26,8 @@ import {
   resetFailoverForTests,
   resolveFailoverTarget,
   markStepFailed,
+  parseResetAtFromBody,
+  resetStepSuccess,
   onNominalSuccess,
   isRecovering,
   consumeStreamNotice,
@@ -269,6 +271,127 @@ describe("per-step backoff", () => {
     expect(isFailoverActive("opus")).toBe(false); // role-arm expired
     expect(armFailover("opus", "still walled")).toBe(true); // re-arm (nominal probe failed)
     expect(resolveFailoverTarget("opus").stepIndex).toBe(1); // step 0 STILL skipped
+  });
+});
+
+// ── Reset-time awareness ───────────────────────────────────────────────────────
+//
+// A wall with a KNOWN lift date (Mistral subscription → Sept 1, Qwen plan →
+// "reset at 08-25 22:28:00 UTC") must not burn a probe every 24h until then, and
+// MUST be probed the moment it lifts so the recovered budget is consumed.
+
+describe("reset-time awareness", () => {
+  const realNow = Date.now;
+  let clock = 1_000_000;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  describe("parseResetAtFromBody", () => {
+    it("parses the Qwen absolute form (MM-DD HH:mm:ss UTC, year implied)", () => {
+      const year = new Date().getUTCFullYear();
+      const got = parseResetAtFromBody(
+        '{"code":"Throttling.AllocationQuota","message":"The 1-week quota is exhausted. The quota will reset at 08-25 22:28:00 UTC."}'
+      );
+      expect(got?.getTime()).toBe(Date.UTC(year, 7, 25, 22, 28, 0));
+    });
+
+    it("rolls a >1-day-past date forward one year (Dec→Jan rollover)", () => {
+      clock = Date.UTC(new Date().getUTCFullYear(), 7, 15); // mid-August
+      const got = parseResetAtFromBody("The quota will reset at 01-02 03:04:05 UTC");
+      expect(got?.getTime()).toBe(Date.UTC(new Date().getUTCFullYear() + 1, 0, 2, 3, 4, 5));
+    });
+
+    it("parses the MiniMax relative form (days + hours)", () => {
+      const got = parseResetAtFromBody("Weekly limit Resets in 2 days 13 hr Total quota");
+      expect(got?.getTime()).toBe(clock + 2 * 24 * 3600_000 + 13 * 3600_000);
+    });
+
+    it("returns undefined for silent bodies (Mistral 402, Anthropic cap, plain 429)", () => {
+      expect(parseResetAtFromBody('{"detail":"Check your subscription on https://admin.mistral.ai/subscription"}')).toBeUndefined();
+      expect(parseResetAtFromBody('{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}')).toBeUndefined();
+      expect(parseResetAtFromBody('{"error":{"message":"Rate limit exceeded, retry in 3s"}}')).toBeUndefined();
+      expect(parseResetAtFromBody("")).toBeUndefined();
+    });
+  });
+
+  describe("config-declared resets (CLAUDISH_FAILOVER_<ROLE>_RESET)", () => {
+    it("parses per-step dates, preserving empty positions", () => {
+      initFailover({
+        ...OPUS_CASCADE,
+        CLAUDISH_FAILOVER_ACTIVE: "opus",
+        CLAUDISH_FAILOVER_OPUS_RESET: "2026-09-01T00:00:00Z>",
+      } as NodeJS.ProcessEnv);
+      const rule = getFailoverRule("opus")!;
+      expect(rule.steps[0].resetAt?.toISOString()).toBe("2026-09-01T00:00:00.000Z");
+      expect(rule.steps[1].resetAt).toBeUndefined();
+      expect(rule.steps[2].resetAt).toBeUndefined();
+    });
+
+    it("warns and ignores an unparseable date", () => {
+      initFailover({
+        ...OPUS_CASCADE,
+        CLAUDISH_FAILOVER_ACTIVE: "opus",
+        CLAUDISH_FAILOVER_OPUS_RESET: "septembre",
+      } as NodeJS.ProcessEnv);
+      expect(getFailoverRule("opus")!.steps[0].resetAt).toBeUndefined();
+    });
+  });
+
+  describe("skip-until-reset / consume-on-reset", () => {
+    const SEPT1 = new Date(Date.UTC(2026, 8, 1)); // 2026-09-01T00:00:00Z
+
+    it("holds the step failed past the 24h backoff cap but before the reset", () => {
+      initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+      markStepFailed("opus", 0, "subscription wall", SEPT1);
+      clock += 2 * 24 * 3600_000; // 2 days — past even the 24h backoff cap, before Sept 1
+      expect(resolveFailoverTarget("opus").stepIndex).toBe(1); // STILL skipped — the regression the 24h cap failed
+    });
+
+    it("re-probes the step the moment the reset passes (consume-on-reset)", () => {
+      initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+      markStepFailed("opus", 0, "subscription wall", SEPT1);
+      clock = SEPT1.getTime() + 60_000; // just past the reset
+      expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+    });
+
+    it("falls back to the config-declared reset when the body is silent", () => {
+      initFailover({
+        ...OPUS_CASCADE,
+        CLAUDISH_FAILOVER_ACTIVE: "opus",
+        CLAUDISH_FAILOVER_OPUS_RESET: "2026-09-01T00:00:00Z>",
+      } as NodeJS.ProcessEnv);
+      markStepFailed("opus", 0, "Mistral 402, silent body"); // no bodyResetAt → step.resetAt applies
+      clock += 2 * 24 * 3600_000;
+      expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+      clock = SEPT1.getTime() + 60_000;
+      expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+    });
+
+    it("body-parsed reset WINS over an earlier config-declared one", () => {
+      initFailover({
+        ...OPUS_CASCADE,
+        CLAUDISH_FAILOVER_ACTIVE: "opus",
+        CLAUDISH_FAILOVER_OPUS_RESET: "2026-09-01T00:00:00Z>",
+      } as NodeJS.ProcessEnv);
+      const aug25 = new Date(clock + 3 * 24 * 3600_000);
+      markStepFailed("opus", 0, "qwen wall names its own date", aug25);
+      // Past Aug 25 (body) but before Sept 1 (config): the live body knew better.
+      clock = aug25.getTime() + 60_000;
+      expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+    });
+
+    it("resetStepSuccess clears the reset — a recovered step serves again immediately", () => {
+      initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+      markStepFailed("opus", 0, "subscription wall", SEPT1);
+      resetStepSuccess("opus", 0);
+      expect(resolveFailoverTarget("opus").stepIndex).toBe(0); // not held by the stale reset date
+    });
   });
 });
 

@@ -47,6 +47,7 @@ import {
   getFailoverRule,
   resolveFailoverTarget,
   markStepFailed,
+  parseResetAtFromBody,
   resetStepSuccess,
   onNominalSuccess,
   consumeStreamNotice,
@@ -884,7 +885,7 @@ export async function createProxyServer(
         // blip costs one short skip of a step that has a live successor — whereas not
         // marking makes every subsequent request re-pay the round-trip (and its
         // timeout) to a step that may be down for hours. Any success resets the count.
-        markStepFailed(role, stepIndex, why);
+        markStepFailed(role, stepIndex, why, parseResetAtFromBody(errBody));
         continue;
       }
       const reason = `HTTP ${response.status} from ${requestedModel}`;
@@ -898,7 +899,7 @@ export async function createProxyServer(
         // raced two opus requests; the loser died client-side with "API Error").
         if (!armFailover(role, reason) && !isFailoverActive(role)) return response;
       } else {
-        markStepFailed(role, stepIndex, reason);
+        markStepFailed(role, stepIndex, reason, parseResetAtFromBody(errBody));
         if (rule && stepIndex === rule.steps.length - 1) return response; // last step also walled
       }
     }
