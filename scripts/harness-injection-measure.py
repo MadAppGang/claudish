@@ -11,7 +11,7 @@ un instrument.
                                         [--workspace=CoursIA] [--all-parsers]
 
 --------------------------------------------------------------------------
-CINQ PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
+SIX PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
 --------------------------------------------------------------------------
 
 1) APPARIEMENT. Le nom du fichier reponse porte `r0001`, son en-tete porte
@@ -46,6 +46,15 @@ CINQ PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
    taille sur disque est le symptome. La fenetre de captures est donc
    imprimee, et tout fichier dont la mtime est POSTERIEURE a cette fenetre
    est marque `*` : sa ligne decrit un etat revolu.
+
+6) UNICITE DE LA CLE. `(pid, reqN)` n'est PAS unique : dans un container le
+   proxy est **pid 1 a chaque redemarrage** et `reqN` repart a 1. Indexer par
+   ecrasement perdait 15 captures sur 10 cles, en silence, et pouvait apparier
+   la reponse d'une vie de process avec la requete d'une autre -- le croisement
+   meme que le piege 1 pretend interdire, revenu par une autre porte. On garde
+   toutes les candidates et on tranche par le temps : la requete PRECEDE sa
+   reponse. Sans candidate anterieure, on REFUSE d'apparier plutot que deviner
+   (d'ou des `non appariees` non nulles : c'est le signal, pas un defaut).
 --------------------------------------------------------------------------
 """
 import json
@@ -59,6 +68,7 @@ from collections import defaultdict
 FRONTMATTER = re.compile(r"^---\n.*?\n---\n", re.S)
 HDR = re.compile(r"^#\s*parser=(\S+)\s+model=(\S+)\s+reqN=(\d+)\s+pid=(\d+)", re.M)
 CONTENTS_OF = re.compile(r"Contents of ([^\n]+?)(?: \(([^)]*)\))?:\n")
+RESP_TS = re.compile(r"resp-\d+-r\d+-(\d{4}-\d{2}-\d{2}T[\d-]+Z)-")
 
 
 def capture_ts(ts):
@@ -155,11 +165,21 @@ def harness_block(body):
 
 
 def load_requests(cdir, since):
-    reqs = {}
+    """Indexe les requetes par (pid, reqN) -> LISTE horodatee, jamais une seule.
+
+    PIEGE 6 : `(pid, reqN)` n'est PAS unique. Dans un container le proxy est
+    **pid 1 a chaque redemarrage** et `reqN` repart a 1 : deux vies de process
+    produisent les memes cles. Ecraser (`reqs[k] = d`) perdait ici 15 captures
+    sur 10 cles, en silence -- et pouvait apparier la reponse d'un process avec
+    la requete d'un autre, c'est-a-dire exactement le croisement que le piege 1
+    pretend interdire, revenu par une autre porte.
+    On garde donc toutes les candidates, et `pick_request` tranche par le temps.
+    """
+    reqs = defaultdict(list)
     for fn in os.listdir(cdir):
         if not (fn.startswith("req-") and fn.endswith(".json")):
             continue
-        m = re.match(r"req-(\d+)-(\d+)-", fn)
+        m = re.match(r"req-(\d+)-(\d+)-(.+)\.json$", fn)
         if not m:
             continue
         try:
@@ -169,8 +189,26 @@ def load_requests(cdir, since):
             continue
         if since and (d.get("ts") or "") < since:
             continue
-        reqs[(int(m.group(1)), int(m.group(2)))] = d
+        reqs[(int(m.group(1)), int(m.group(2)))].append((m.group(3), d))
+    for v in reqs.values():
+        v.sort(key=lambda kv: kv[0])
     return reqs
+
+
+def pick_request(candidates, resp_ts):
+    """La requete PRECEDE sa reponse : on prend la derniere candidate <= resp_ts.
+
+    Sans horodatage de reponse exploitable, on ne devine pas -- on ne rend une
+    candidate que s'il n'y en a qu'une. Deviner reintroduit le croisement.
+    """
+    if not candidates:
+        return None
+    if resp_ts is None:
+        return candidates[-1][1] if len(candidates) == 1 else None
+    avant = [d for ts, d in candidates if ts <= resp_ts]
+    if avant:
+        return avant[-1]
+    return None
 
 
 def main():
@@ -194,12 +232,17 @@ def main():
             continue
         with open(os.path.join(cdir, fn), encoding="utf-8", errors="replace") as fh:
             txt = fh.read()
+        # On ancre sur la FORME de l'horodatage, pas sur une liste de parsers :
+        # enumerer un vocabulaire, c'est oublier `native` -- soit exactement les
+        # reponses natives qu'on mesure (179 non appariees sur 245 au premier jet).
+        rm = RESP_TS.match(fn)
+        resp_ts = rm.group(1) if rm else None
         h = HDR.search(txt)
         if not h:
             continue
         model, reqn, pid = h.group(2), int(h.group(3)), int(h.group(4))
         # PIEGE 1 : la cle est l'en-tete, JAMAIS le rang du nom de fichier.
-        req = reqs.get((pid, reqn))
+        req = pick_request(reqs.get((pid, reqn)) or [], resp_ts)
         if req is None:
             skipped_unpaired += 1
             continue
