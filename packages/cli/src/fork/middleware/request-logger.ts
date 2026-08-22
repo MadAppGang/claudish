@@ -7,6 +7,31 @@
  * Leak investigation mode: dumps system prompt excerpt + first + last user message.
  */
 
+import { mkdirSync } from "fs";
+import { writeFile } from "fs/promises";
+
+// Capture writes are FIRE-AND-FORGET on purpose. The old writeFileSync stalled the
+// ENTIRE event loop on every request (Bun is single-threaded) — over a Docker
+// bind-mount to a Windows dir, one slow write froze every handler, including the
+// 4s /health heartbeat, while longer streams rode through unnoticed (incident
+// 2026-08-20: PROCESS HUNG episodes diagnosed with po-2023, greenlit fix).
+// Async writes can land out of request order; the monotonic counter + ISO timestamp
+// in the filename is what the traffic-*.ps1 scripts reassemble by.
+let captureDirReady: string | null = null;
+let capN = 0;
+
+function ensureCaptureDir(dir: string): boolean {
+  if (captureDirReady === dir) return true;
+  try {
+    mkdirSync(dir, { recursive: true }); // no-op on an existing dir, never throws EEXIST
+    captureDirReady = dir;
+    return true;
+  } catch (e) {
+    process.stdout.write(`  [capture] mkdir error: ${String(e)}\n`);
+    return false;
+  }
+}
+
 export function resolveSourceIp(
   req: Request,
   remoteAddrMap: WeakMap<Request, string>
@@ -51,20 +76,16 @@ export function logRequest(
   // Full-body capture (temporary diagnostic — gated by CLAUDISH_CAPTURE_DIR env).
   // Disabled when the env var is unset, so this is a no-op in normal operation.
   const captureDir = process.env.CLAUDISH_CAPTURE_DIR;
-  if (captureDir) {
-    try {
-      const fs = require("fs");
-      fs.mkdirSync(captureDir, { recursive: true });
-      const g = globalThis as Record<string, unknown>;
-      const n = (g.__capN = ((g.__capN as number) ?? 0) + 1);
-      const safeSrc = src.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
-      const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      const file = `${captureDir}/req-${process.pid}-${String(n).padStart(4, "0")}-${ts}-${safeSrc}.json`;
-      fs.writeFileSync(file, JSON.stringify({ ts, src, machine, model, pid: process.pid, body }));
-      process.stdout.write(`  [capture] ${file}\n`);
-    } catch (e) {
+  if (captureDir && ensureCaptureDir(captureDir)) {
+    const n = ++capN;
+    const safeSrc = src.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = `${captureDir}/req-${process.pid}-${String(n).padStart(4, "0")}-${ts}-${safeSrc}.json`;
+    const payload = JSON.stringify({ ts, src, machine, model, pid: process.pid, body });
+    // Never block the request path: fire-and-forget with a silent catch.
+    writeFile(file, payload).catch((e) => {
       process.stdout.write(`  [capture] error: ${String(e)}\n`);
-    }
+    });
   }
 
   // Header line
