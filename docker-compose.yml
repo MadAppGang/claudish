@@ -40,9 +40,11 @@ services:
       # WebSearch interception endpoint. Public URL sits behind IIS Basic Auth
       # (2026-08-19): WAN machines embed credentials in the URL userinfo
       # (https://user:pass@search.myia.io — parsed by claudish, never logged),
-      # LAN machines point at the backend directly (http://192.168.0.47:8181,
-      # no auth). Never commit credentials here.
-      - SEARXNG_URL=${SEARXNG_URL:-http://search.myia.io}
+      # LAN machines point at the backend directly (no auth). Default to LAN
+      # direct so a fresh deployment works out of the box — the public URL
+      # 401s without creds. Never commit credentials here.
+      # (runbook _intercom/2026-07-18_runbook-searxng-protection-po2023.md §9-§10).
+      - SEARXNG_URL=${SEARXNG_URL:-http://192.168.0.47:8181}
       # Empty disables capture writing (sidecar default; hub leaves it at /captures).
       - CLAUDISH_CAPTURE_DIR=${CLAUDISH_CAPTURE_DIR-/captures}
       # Sidecar relay (fork extension). All empty → this container is the HUB
