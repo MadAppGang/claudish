@@ -35,6 +35,7 @@ import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
+import { createStreamTracker } from "./fork/server/stream-registry";
 import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
 import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/server/relay.js";
 import {
@@ -792,6 +793,15 @@ export async function createProxyServer(
       // This sits ABOVE the per-machine config (opus/sonnet/haiku already
       // budget-mapped) because we have leaked on an undefined field before
       // (memory: leak-policy-binary-by-machine).
+      //
+      // The truthiness test is load-bearing, not sloppy. docker-compose always
+      // MATERIALIZES this variable (`- CLAUDISH_NO_ANTHROPIC=${CLAUDISH_NO_ANTHROPIC:-}`),
+      // so inside a container it is never absent — only `1` (every machine) or
+      // "" (ai-01, the one machine authorized to reach api.anthropic.com).
+      // Empty-string-falsy IS the ai-01 exemption; there is no separate opt-out.
+      // Deleting the variable from a .env to "clean it up" therefore changes
+      // nothing (compose re-creates it empty), and flipping this to a
+      // `!== undefined` test would silently kill ai-01 native Opus lane.
       if (process.env.CLAUDISH_NO_ANTHROPIC) {
         if (depth === 0 && modelMap?.sonnet) {
           log(
@@ -969,7 +979,22 @@ export async function createProxyServer(
       config: { mode: monitorMode ? "monitor" : "hybrid", mappings: modelMap },
     })
   );
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  // Drain support (fork): count in-flight SSE streams so the watchdog can wait
+  // for a quiet moment instead of dropping every agent mid-response. See
+  // fork/server/stream-registry.ts for the full rationale.
+  const streamTracker = createStreamTracker();
+  const startedAt = Date.now();
+  app.use("*", streamTracker.middleware);
+
+  // `status` stays first and unchanged: the relay heartbeat and the watchdog
+  // only test res.ok, so the added fields are backward compatible.
+  app.get("/health", (c) =>
+    c.json({
+      status: "ok",
+      activeStreams: streamTracker.getActiveStreams(),
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    })
+  );
 
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {

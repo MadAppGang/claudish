@@ -29,7 +29,7 @@
  * Two notices, two moments (the user's mandate 2026-08-12):
  *  - Moment of failover/recovery (streaming, once per session per resolved depth): the
  *    substitute (or back-to-nominal) model reads its own prior turn starting with the
- *    notice, so it knows the capability delta and recalibrates its risk appetite.
+ *    notice, so it knows the capability delta and resumes its normal working scope.
  *  - Condensation (/compact, every time): re-injected because compaction rebuilds
  *    context and loses the prior notice. Onset persists while armed; RECOVERY persists
  *    RECOVERY_CONDENSATIONS times so the model can "corriger ses mémoires et se
@@ -674,7 +674,7 @@ export function buildFailoverNotice(role?: FailoverRole | null): string | null {
     const recal =
       r.state.prevDirection === "improved"
         ? `You were stronger than nominal under ${r.state.prevLabel}; scale back to your normal ${roleLabel} capability.`
-        : `The context you inherit was built under a weaker model (${r.state.prevLabel}) — recalibrate upward: resume your normal capability and risk appetite, and clean up any over-conservative decisions made under the substitute.`;
+        : `The context you inherit was built under a weaker model (${r.state.prevLabel}) — resume your normal working scope: you can take on tasks you deferred under the substitute.`;
     lines.push(
       `- \`${r.role}\` is **back on the nominal ${roleLabel} model** after serving as ${r.state.prevLabel} (the ${ordinal(
         r.state.prevStepIndex
@@ -764,11 +764,11 @@ function buildStreamRecoveryText(role: FailoverRole, st: RecoveryState): string 
   if (st.prevDirection === "improved") {
     return `[claudish] You are back on the nominal ${roleLabel} model after serving as ${st.prevLabel} (the ${ordinal(
       st.prevStepIndex
-    )} fallback), which was stronger than nominal. Scale back to your normal ${roleLabel} capability and risk appetite.`;
+    )} fallback), which was stronger than nominal. Scale back to your normal ${roleLabel} working scope.`;
   }
   return `[claudish] You are back on the nominal ${roleLabel} model after serving as ${st.prevLabel} (the ${ordinal(
     st.prevStepIndex
-  )} fallback). The context you inherit was built under a weaker model. Recalibrate upward: resume your normal capability and risk appetite.`;
+  )} fallback). The context you inherit was built under a weaker model. Resume your normal working scope: you can take on tasks you deferred under the substitute.`;
 }
 
 /**

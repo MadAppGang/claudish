@@ -6,7 +6,7 @@
  * active budget failover (see fork/failover.ts `consumeStreamNotice`). The
  * substitute model then reads its own prior turn — starting with this notice — on
  * the next turn's history, so it knows it inherited a context built for a
- * different model and recalibrates its risk appetite. The condensation notice
+ * different model and resumes its normal working scope. The condensation notice
  * (appendFailoverNoticeToMessage) reinforces this at every /compact.
  *
  * Why index-shift instead of append-at-tail: the notice must lead the message so
