@@ -20,7 +20,12 @@ $ProactiveRestartHours = 11
 # A restart kills every in-flight SSE stream mid-body; the client reports
 # "Connection lost mid-response" and the agent turn is lost. So: drain first,
 # never restart for a cause a restart cannot fix, and confirm before acting.
-$DrainMaxWaitSec = 120          # max wait for in-flight streams to finish
+# Two budgets, because the two restarts are not the same situation. A proactive
+# restart is elective: it can afford to hunt for a quiet moment. A hang recovery
+# is not — the proxy is already serving nobody, so waiting only extends the
+# outage.
+$DrainMaxWaitProactiveSec = 300
+$DrainMaxWaitHangSec = 120
 $StateFile = "$env:USERPROFILE\.claudish\watchdog-state.json"
 $QuietHourStart = 3             # local hour; proactive restarts only in [start,end)
 $QuietHourEnd = 6
@@ -179,7 +184,7 @@ if ($uptimeHours -ge $ProactiveRestartHours) {
         Write-Log "PROACTIVE: uptime ${uptimeHours}h >= ${ProactiveRestartHours}h but outside the quiet window ${QuietHourStart}h-${QuietHourEnd}h — deferring (a healthy proxy is not an emergency)"
     } else {
         Write-Log "PROACTIVE: uptime ${uptimeHours}h >= ${ProactiveRestartHours}h, quiet window — draining then restarting..."
-        Invoke-ClaudishDrainedRestart -Reason "proactive uptime ${uptimeHours}h" -Container $ContainerName -Url $ProxyUrl -MaxWait $DrainMaxWaitSec
+        Invoke-ClaudishDrainedRestart -Reason "proactive uptime ${uptimeHours}h" -Container $ContainerName -Url $ProxyUrl -MaxWait $DrainMaxWaitProactiveSec
         $result = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
         Write-Log "After proactive restart: $($result.Detail)"
         Set-State -ConsecutiveHangs 0
@@ -217,7 +222,7 @@ if ($consecutive -lt 2) {
 }
 
 Write-Log "HANG CONFIRMED 2/2 (uptime=${uptimeHours}h): $($result.Detail)"
-Invoke-ClaudishDrainedRestart -Reason "confirmed hang" -Container $ContainerName -Url $ProxyUrl -MaxWait $DrainMaxWaitSec
+Invoke-ClaudishDrainedRestart -Reason "confirmed hang" -Container $ContainerName -Url $ProxyUrl -MaxWait $DrainMaxWaitHangSec
 Set-State -ConsecutiveHangs 0
 
 $result2 = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
