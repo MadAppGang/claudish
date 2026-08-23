@@ -122,41 +122,10 @@ function Test-ProxyWithTools {
     }
 }
 
-function Get-ActiveStreams {
-    # /health reports activeStreams since the drain patch. An older image omits
-    # the field — return $null so the caller degrades to "restart without drain"
-    # instead of blocking forever on a signal that will never arrive.
-    try {
-        $r = Invoke-WebRequest -Uri "$ProxyUrl/health" -TimeoutSec 5 -UseBasicParsing
-        $j = $r.Content | ConvertFrom-Json
-        if ($null -eq $j.activeStreams) { return $null }
-        return [int]$j.activeStreams
-    } catch { return $null }
-}
-
-function Invoke-DrainedRestart {
-    param([string]$Reason)
-
-    $active = Get-ActiveStreams
-    if ($null -eq $active) {
-        Write-Log "RESTART ($Reason): /health does not report activeStreams (pre-drain image) — restarting without drain"
-    } else {
-        $waited = 0
-        while ($active -gt 0 -and $waited -lt $DrainMaxWaitSec) {
-            Start-Sleep -Seconds 5
-            $waited += 5
-            $active = Get-ActiveStreams
-            if ($null -eq $active) { break }
-        }
-        if ($active -gt 0) {
-            Write-Log "RESTART ($Reason): drained ${waited}s, $active stream(s) STILL in flight — restarting anyway (cap ${DrainMaxWaitSec}s). Those clients will see 'Connection lost mid-response'."
-        } else {
-            Write-Log "RESTART ($Reason): drained ${waited}s, 0 streams in flight — no client interrupted"
-        }
-    }
-    docker restart $ContainerName 2>$null
-    Start-Sleep -Seconds 20
-}
+# The drain logic is shared with any other scheduled restart (ClaudishDailyRestart
+# calls the same file standalone), so it lives in one place rather than being
+# copied here.
+. "$PSScriptRoot\claudish-drain.ps1"
 
 function Get-State {
     if (Test-Path $StateFile) {
@@ -210,7 +179,7 @@ if ($uptimeHours -ge $ProactiveRestartHours) {
         Write-Log "PROACTIVE: uptime ${uptimeHours}h >= ${ProactiveRestartHours}h but outside the quiet window ${QuietHourStart}h-${QuietHourEnd}h — deferring (a healthy proxy is not an emergency)"
     } else {
         Write-Log "PROACTIVE: uptime ${uptimeHours}h >= ${ProactiveRestartHours}h, quiet window — draining then restarting..."
-        Invoke-DrainedRestart -Reason "proactive uptime ${uptimeHours}h"
+        Invoke-ClaudishDrainedRestart -Reason "proactive uptime ${uptimeHours}h" -Container $ContainerName -Url $ProxyUrl -MaxWait $DrainMaxWaitSec
         $result = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
         Write-Log "After proactive restart: $($result.Detail)"
         Set-State -ConsecutiveHangs 0
@@ -248,7 +217,7 @@ if ($consecutive -lt 2) {
 }
 
 Write-Log "HANG CONFIRMED 2/2 (uptime=${uptimeHours}h): $($result.Detail)"
-Invoke-DrainedRestart -Reason "confirmed hang"
+Invoke-ClaudishDrainedRestart -Reason "confirmed hang" -Container $ContainerName -Url $ProxyUrl -MaxWait $DrainMaxWaitSec
 Set-State -ConsecutiveHangs 0
 
 $result2 = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
