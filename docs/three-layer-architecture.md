@@ -20,11 +20,15 @@ uses older class names. This table is your Rosetta Stone:
 
 ### Interfaces
 
-| Conceptual name | Source interface | File |
+| Source name (exists in the code) | Conceptual name (docs only) | File |
 |-----------------|-----------------|------|
-| `APIFormat` | `FormatConverter` | `adapters/format-converter.ts` |
-| `ModelDialect` | `ModelTranslator` | `adapters/model-translator.ts` |
+| `APIFormat` | `FormatConverter` | `adapters/api-format.ts` |
+| `ModelDialect` | `ModelTranslator` | `adapters/model-dialect.ts` |
 | `ProviderTransport` | `ProviderTransport` | `providers/transport/types.ts` |
+| `DialectManager` | `AdapterManager` | `adapters/dialect-manager.ts` |
+
+Grep the **left** column; the right column matches nothing in
+`packages/cli/src/`. Only `ProviderTransport` carries the same name on both sides.
 
 ### Layer 1: APIFormat implementations
 
@@ -75,7 +79,7 @@ wire format. Every provider family speaks a different schema: OpenAI uses
 `messages[]` with `role`/`content`, Gemini uses `contents[]` with `parts`,
 Anthropic uses its own Messages API. `APIFormat` owns that translation.
 
-**Interface** (`adapters/format-converter.ts`):
+**Interface** (`adapters/api-format.ts`):
 
 ```typescript
 export interface FormatConverter {
@@ -133,7 +137,7 @@ thinking entirely. DeepSeek returns reasoning in a separate
 `reasoning_content` field. `ModelDialect` handles these per-family quirks
 without touching message or tool shape.
 
-**Interface** (`adapters/model-translator.ts`):
+**Interface** (`adapters/model-dialect.ts`):
 
 ```typescript
 export interface ModelTranslator {
@@ -178,7 +182,7 @@ On the response side, DeepSeek returns reasoning in `reasoning_content`
 rather than a standard thinking block. The dialect extracts it and maps it
 back to Claude's `thinking` format.
 
-**Dialect selection — `AdapterManager`** (`adapters/adapter-manager.ts`):
+**Dialect selection — `AdapterManager`** (`adapters/dialect-manager.ts`):
 
 `AdapterManager` picks the dialect automatically from the model ID:
 
@@ -522,7 +526,7 @@ export class AcmeModelDialect implements ModelTranslator {
 **2. Register in `AdapterManager`:**
 
 ```typescript
-// adapters/adapter-manager.ts
+// adapters/dialect-manager.ts
 import { AcmeAdapter } from "./acme-adapter.js";
 
 this.adapters = [
@@ -634,7 +638,7 @@ requires only a Layer 2 adapter — no changes to transport or wire format code.
 
 | If you're adding... | Write a new... | Touch |
 |---------------------|----------------|-------|
-| A model with parameter quirks | `ModelDialect` (L2) | `adapter-manager.ts` registration |
+| A model with parameter quirks | `ModelDialect` (L2) | `dialect-manager.ts` registration |
 | A provider with a new wire format | `APIFormat` (L1) | `provider-profiles.ts` entry |
 | A new HTTP endpoint for existing models | `ProviderTransport` (L3) | `provider-profiles.ts` entry |
 | A new API aggregator | `ProviderTransport` (L3) + `overrideStreamFormat()` | `provider-profiles.ts` entry |
