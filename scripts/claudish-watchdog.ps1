@@ -17,6 +17,13 @@ $ProxyUrl = "http://localhost:3000"
 $ContainerName = "claudish-proxy"
 $StreamTimeoutSec = 90
 $ProactiveRestartHours = 11
+# A restart kills every in-flight SSE stream mid-body; the client reports
+# "Connection lost mid-response" and the agent turn is lost. So: drain first,
+# never restart for a cause a restart cannot fix, and confirm before acting.
+$DrainMaxWaitSec = 120          # max wait for in-flight streams to finish
+$StateFile = "$env:USERPROFILE\.claudish\watchdog-state.json"
+$QuietHourStart = 3             # local hour; proactive restarts only in [start,end)
+$QuietHourEnd = 6
 
 function Write-Log($msg) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -81,26 +88,88 @@ function Test-ProxyWithTools {
         if ($content -match "message_stop") {
             $hasToolUse = $content -match "tool_use"
             $type = if ($hasToolUse) { "tool_use+end" } else { "text+end" }
-            return @{ Ok = $true; Detail = "stream OK ($type, $($content.Length) bytes)" }
+            return @{ Ok = $true; Hang = $false; Detail = "stream OK ($type, $($content.Length) bytes)" }
         } elseif ($content.Length -gt 100) {
             # Got data but no message_stop — suspicious but not fatal
-            return @{ Ok = $false; Detail = "stream incomplete ($($content.Length) bytes, no message_stop)" }
+            return @{ Ok = $false; Hang = $true; Detail = "stream incomplete ($($content.Length) bytes, no message_stop)" }
         } elseif ($content.Length -gt 0) {
-            return @{ Ok = $false; Detail = "short response ($($content.Length) bytes): $($content.Substring(0, [Math]::Min(200, $content.Length)))" }
+            return @{ Ok = $false; Hang = $true; Detail = "short response ($($content.Length) bytes): $($content.Substring(0, [Math]::Min(200, $content.Length)))" }
         } else {
-            return @{ Ok = $false; Detail = "EMPTY response — stream hung" }
+            return @{ Ok = $false; Hang = $true; Detail = "EMPTY response — stream hung" }
         }
     }
     catch [System.Net.WebException] {
-        return @{ Ok = $false; Detail = "HTTP error: $($_.Exception.Message)" }
+        # A non-2xx makes Invoke-WebRequest throw. Most of these are NOT hangs:
+        # when every cascade step is walled the proxy correctly answers 429/402,
+        # and GLM walls ~2x/day (median 57 min). Restarting the container cannot
+        # lift an upstream quota wall — it only drops every agent mid-stream.
+        $code = 0
+        if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+        if ($code -eq 402 -or $code -eq 429 -or $code -eq 529) {
+            return @{ Ok = $false; Hang = $false; Detail = "upstream wall HTTP $code — not a hang, no restart" }
+        }
+        if ($code -ge 400 -and $code -lt 500) {
+            return @{ Ok = $false; Hang = $false; Detail = "client/wiring error HTTP $code — a restart would not fix it" }
+        }
+        return @{ Ok = $false; Hang = $true; Detail = "HTTP error ${code}: $($_.Exception.Message)" }
     }
     catch {
         $msg = $_.Exception.Message
         if ($msg -match "timed? ?out" -or $msg -match "timeout") {
-            return @{ Ok = $false; Detail = "TIMEOUT after ${TimeoutSec}s — stream hung" }
+            return @{ Ok = $false; Hang = $true; Detail = "TIMEOUT after ${TimeoutSec}s — stream hung" }
         }
-        return @{ Ok = $false; Detail = "error: $msg" }
+        return @{ Ok = $false; Hang = $true; Detail = "error: $msg" }
     }
+}
+
+function Get-ActiveStreams {
+    # /health reports activeStreams since the drain patch. An older image omits
+    # the field — return $null so the caller degrades to "restart without drain"
+    # instead of blocking forever on a signal that will never arrive.
+    try {
+        $r = Invoke-WebRequest -Uri "$ProxyUrl/health" -TimeoutSec 5 -UseBasicParsing
+        $j = $r.Content | ConvertFrom-Json
+        if ($null -eq $j.activeStreams) { return $null }
+        return [int]$j.activeStreams
+    } catch { return $null }
+}
+
+function Invoke-DrainedRestart {
+    param([string]$Reason)
+
+    $active = Get-ActiveStreams
+    if ($null -eq $active) {
+        Write-Log "RESTART ($Reason): /health does not report activeStreams (pre-drain image) — restarting without drain"
+    } else {
+        $waited = 0
+        while ($active -gt 0 -and $waited -lt $DrainMaxWaitSec) {
+            Start-Sleep -Seconds 5
+            $waited += 5
+            $active = Get-ActiveStreams
+            if ($null -eq $active) { break }
+        }
+        if ($active -gt 0) {
+            Write-Log "RESTART ($Reason): drained ${waited}s, $active stream(s) STILL in flight — restarting anyway (cap ${DrainMaxWaitSec}s). Those clients will see 'Connection lost mid-response'."
+        } else {
+            Write-Log "RESTART ($Reason): drained ${waited}s, 0 streams in flight — no client interrupted"
+        }
+    }
+    docker restart $ContainerName 2>$null
+    Start-Sleep -Seconds 20
+}
+
+function Get-State {
+    if (Test-Path $StateFile) {
+        try { return Get-Content $StateFile -Raw | ConvertFrom-Json } catch {}
+    }
+    return [PSCustomObject]@{ consecutiveHangs = 0 }
+}
+
+function Set-State {
+    param([int]$ConsecutiveHangs)
+    $dir = Split-Path $StateFile -Parent
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    @{ consecutiveHangs = $ConsecutiveHangs } | ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
 }
 
 # --- Main ---
@@ -130,32 +199,62 @@ $uptime = [DateTimeOffset]::UtcNow - $startTime
 $uptimeHours = [Math]::Round($uptime.TotalHours, 1)
 
 # Step 3: Proactive restart if uptime > threshold (prevent degradation BEFORE it happens)
+# An uptime THRESHOLD drifts through the clock: an 11h period restarts at 09:00,
+# then 20:00, then 07:00... landing mid-workday roughly every other time. Gate it
+# on a quiet local window instead, so the one unavoidable daily restart never
+# happens while the fleet is working.
+$nowHour = (Get-Date).Hour
+$inQuietWindow = ($nowHour -ge $QuietHourStart -and $nowHour -lt $QuietHourEnd)
 if ($uptimeHours -ge $ProactiveRestartHours) {
-    Write-Log "PROACTIVE: Uptime ${uptimeHours}h >= ${ProactiveRestartHours}h. Restarting to prevent degradation..."
-    docker restart $ContainerName 2>$null
-    Start-Sleep -Seconds 20
-    $result = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
-    Write-Log "After proactive restart: $($result.Detail)"
-    exit $(if ($result.Ok) { 0 } else { 1 })
+    if (-not $inQuietWindow) {
+        Write-Log "PROACTIVE: uptime ${uptimeHours}h >= ${ProactiveRestartHours}h but outside the quiet window ${QuietHourStart}h-${QuietHourEnd}h — deferring (a healthy proxy is not an emergency)"
+    } else {
+        Write-Log "PROACTIVE: uptime ${uptimeHours}h >= ${ProactiveRestartHours}h, quiet window — draining then restarting..."
+        Invoke-DrainedRestart -Reason "proactive uptime ${uptimeHours}h"
+        $result = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
+        Write-Log "After proactive restart: $($result.Detail)"
+        Set-State -ConsecutiveHangs 0
+        exit $(if ($result.Ok) { 0 } else { 1 })
+    }
 }
 
 # Step 4: Real tool-call streaming test
 $result = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec $StreamTimeoutSec
 
+$state = Get-State
+$consecutive = [int]$state.consecutiveHangs
+
 if ($result.Ok) {
     Write-Log "OK (uptime=${uptimeHours}h). $($result.Detail)"
-} else {
-    Write-Log "FAIL (uptime=${uptimeHours}h): $($result.Detail)"
-    Write-Log "ACTION: Restarting container..."
-    docker restart $ContainerName 2>$null
-    Start-Sleep -Seconds 20
+    Set-State -ConsecutiveHangs 0
+    exit 0
+}
 
-    # Verify recovery
-    $result2 = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
-    if ($result2.Ok) {
-        Write-Log "RECOVERED: $($result2.Detail)"
-    } else {
-        Write-Log "CRITICAL: Still broken after restart: $($result2.Detail)"
-        exit 1
-    }
+if (-not $result.Hang) {
+    # Real failure, wrong remedy. Log it loudly and leave the container alone.
+    Write-Log "DEGRADED (uptime=${uptimeHours}h): $($result.Detail) — NO restart (a restart cannot fix this)"
+    Set-State -ConsecutiveHangs 0
+    exit 0
+}
+
+# Hang signal. One failed 90s probe is not proof: the proxy may simply be under
+# load. Require two consecutive cycles (~15 min apart), mirroring the relay's own
+# failover hysteresis, before paying the cost of dropping every live stream.
+$consecutive = $consecutive + 1
+if ($consecutive -lt 2) {
+    Write-Log "HANG SIGNAL 1/2 (uptime=${uptimeHours}h): $($result.Detail) — waiting for confirmation next cycle, NO restart"
+    Set-State -ConsecutiveHangs $consecutive
+    exit 0
+}
+
+Write-Log "HANG CONFIRMED 2/2 (uptime=${uptimeHours}h): $($result.Detail)"
+Invoke-DrainedRestart -Reason "confirmed hang"
+Set-State -ConsecutiveHangs 0
+
+$result2 = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
+if ($result2.Ok) {
+    Write-Log "RECOVERED: $($result2.Detail)"
+} else {
+    Write-Log "CRITICAL: Still broken after restart: $($result2.Detail)"
+    exit 1
 }

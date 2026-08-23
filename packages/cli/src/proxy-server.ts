@@ -35,6 +35,7 @@ import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
+import { createStreamTracker } from "./fork/server/stream-registry";
 import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
 import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/server/relay.js";
 import {
@@ -978,7 +979,22 @@ export async function createProxyServer(
       config: { mode: monitorMode ? "monitor" : "hybrid", mappings: modelMap },
     })
   );
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  // Drain support (fork): count in-flight SSE streams so the watchdog can wait
+  // for a quiet moment instead of dropping every agent mid-response. See
+  // fork/server/stream-registry.ts for the full rationale.
+  const streamTracker = createStreamTracker();
+  const startedAt = Date.now();
+  app.use("*", streamTracker.middleware);
+
+  // `status` stays first and unchanged: the relay heartbeat and the watchdog
+  // only test res.ok, so the added fields are backward compatible.
+  app.get("/health", (c) =>
+    c.json({
+      status: "ok",
+      activeStreams: streamTracker.getActiveStreams(),
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    })
+  );
 
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {
