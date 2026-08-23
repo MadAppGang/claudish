@@ -863,6 +863,23 @@ describe("recovery — nominal restored after failover", () => {
     expect(consumeStreamNotice("opus", "sess-B")).toContain("back on the nominal Opus"); // other session
   });
 
+  // #34 — recovery notices must speak capability ("working scope"), never posture.
+  // "risk appetite" reads as a safety-rule instruction and "clean up ... decisions"
+  // as an order to undo prior work: both are indistinguishable from an injection.
+  it("recovery notices contain no posture vocabulary (no risk appetite, no undo directive)", () => {
+    resetFailoverForTests();
+    initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_AUTO: "1" });
+    armFailover("opus", "weekly wall");
+    clock += 11 * 60 * 1000;
+    isFailoverActive("opus");
+    onNominalSuccess("opus");
+
+    const banned = [/risk appetite/i, /clean up (any )?over-conservative/i, /recalibrate upward/i];
+    for (const text of [buildFailoverNotice()!, consumeStreamNotice("opus", "sess-guard")!]) {
+      for (const re of banned) expect(text).not.toMatch(re);
+    }
+  });
+
   it("re-arming clears recovery state (we are back in failover)", () => {
     resetFailoverForTests();
     initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_AUTO: "1" });
