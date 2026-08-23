@@ -12,7 +12,7 @@
  *   2. FAILOVER  — hub /health starts failing → prober flips alive→false after
  *                  FAIL_THRESHOLD heartbeats (AUTONOMOUS).
  *   3. RECOVERY  — hub /health recovers → prober runs a deep tool-call probe
- *                  (glm-5.2) against the hub, sees message_stop, and (after the
+ *                  (glm-5.3) against the hub, sees message_stop, and (after the
  *                  cooldown) flips alive→true (NOMINAL).
  *
  * No real provider keys, no budget: the mock hub answers every /v1/messages with

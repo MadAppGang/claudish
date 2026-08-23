@@ -143,6 +143,22 @@ describe("forwardToUpstream — header building", () => {
     expect(h["transfer-encoding"]).toBeUndefined();
   });
 
+  it("path-aware forward: an OpenAI request (/v1/chat/completions) reaches the hub's OpenAI ingress", async () => {
+    fetchImpl = async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const state = createRelayState({ upstream: "http://hub:3000" });
+    const c = mockForwardContext({ "x-claudish-machine": "myia-po-2024" });
+    // Hono sets c.req.path; the mock only stubs req.raw.headers, so add it here.
+    (c.req as any).path = "/v1/chat/completions";
+
+    await forwardToUpstream(c, { model: "glm-5.2", messages: [] }, state);
+
+    expect(lastFetch?.url).toBe("http://hub:3000/v1/chat/completions");
+  });
+
   it("regression: ai-01 Opus passthrough — client x-proxy-key + OAuth both survive, stale x-api-key dropped", async () => {
     // The bug: the old relay did `delete authorization; x-api-key = proxyKey`, so a
     // relayed native (Opus) request triggered the hub's swap to a (non-existent)

@@ -45,6 +45,20 @@ export const CustomEndpointSimpleSchema = z.object({
    * models' `:N` concurrency suffix. Omit for unbounded (default behavior).
    */
   maxConcurrency: z.number().int().min(0).max(8).optional(),
+  /**
+   * Drop `reasoning_content` from outbound assistant messages.
+   *
+   * The OpenAI-format converter emits that field whenever a thinking block is
+   * present in history (openai-messages.ts), independent of any opt-in — most
+   * OpenAI-compatible backends either require it (DeepSeek) or ignore it
+   * (GLM, Kimi). Strict-schema APIs reject it instead: Mistral answers HTTP 422
+   * `extra_forbidden` on `body.messages[N].assistant.reasoning_content`, which
+   * fails every turn of a real thinking-mode session.
+   *
+   * Set for endpoints that validate their request body strictly. Defaults to
+   * false — no existing endpoint changes behavior.
+   */
+  omitReasoningContent: z.boolean().optional(),
 });
 
 // "Complex" custom endpoint: a runtime PROVIDER_PROFILES entry.
@@ -74,6 +88,8 @@ export const CustomEndpointComplexSchema = z.object({
    * sequential). See CustomEndpointSimpleSchema.maxConcurrency.
    */
   maxConcurrency: z.number().int().min(0).max(8).optional(),
+  /** See CustomEndpointSimpleSchema.omitReasoningContent. */
+  omitReasoningContent: z.boolean().optional(),
 });
 
 export const CustomEndpointSchema = z.discriminatedUnion("kind", [

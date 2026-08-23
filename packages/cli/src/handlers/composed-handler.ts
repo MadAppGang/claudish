@@ -27,6 +27,7 @@ import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middlewa
 import { TokenTracker } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { filterIdentity } from "./shared/openai-compat.js";
+import { stripReasoningContent } from "./shared/format/openai-messages.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
@@ -34,7 +35,6 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { appendUpstreamError } from "./shared/response-capture.js";
-import { appendFailoverNoticeToMessage } from "../fork/failover.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
@@ -54,6 +54,38 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   return auth;
 }
 
+/**
+ * Substituted when stripping images leaves a message with zero content parts
+ * (e.g. a PDF-read tool_result message whose only siblings were images).
+ * Providers reject empty-content messages — Z.AI answers HTTP 400 code 1213
+ * "The prompt parameter was not received normally", which the client then
+ * retries into the same wall. The placeholder keeps the turn structure and
+ * tells the model an image existed.
+ */
+export const STRIPPED_IMAGE_PLACEHOLDER =
+  "[An image was present in the original request but was removed: this model does not support image input. Ask the user to use a vision-capable model for visual tasks.]";
+
+/**
+ * Remove all parts of the given types from every message's content array
+ * (in place), collapsing single-text messages to plain strings and
+ * substituting STRIPPED_IMAGE_PLACEHOLDER when nothing remains.
+ */
+export function stripImageBlocksFromMessages(
+  messages: any[],
+  partTypes: string[]
+): void {
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      msg.content = msg.content.filter((part: any) => !partTypes.includes(part.type));
+      if (msg.content.length === 1 && msg.content[0].type === "text") {
+        msg.content = msg.content[0].text;
+      } else if (msg.content.length === 0) {
+        msg.content = STRIPPED_IMAGE_PLACEHOLDER;
+      }
+    }
+  }
+}
+
 export interface ComposedHandlerOptions {
   /** Override format selection — use this specific APIFormat instance */
   adapter?: BaseAPIFormat;
@@ -69,6 +101,12 @@ export interface ComposedHandlerOptions {
   isInteractive?: boolean;
   /** How this handler was invoked (for stats). */
   invocationMode?: "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map";
+  /**
+   * Drop `reasoning_content` from converted assistant messages before the
+   * payload is built. For strict-schema OpenAI backends that reject unknown
+   * fields — see CustomEndpointSimpleSchema.omitReasoningContent.
+   */
+  omitReasoningContent?: boolean;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -211,7 +249,23 @@ export class ComposedHandler implements ModelHandler {
     if (typeof adapter.reset === "function") adapter.reset();
 
     // 3. Convert messages and tools
-    const messages = adapter.convertMessages(claudeRequest, filterIdentity);
+    // reasoningRoundtrip: models that REQUIRE their reasoning echoed back
+    // (DeepSeek, preserveThinkingInHistory=true) get reasoning_content on every
+    // assistant message — see openai-messages.ts. This mirrors the thinking-strip
+    // gate just above: same capability, opposite direction.
+    const reasoningRoundtrip = !!this.modelAdapter?.preserveThinkingInHistory?.();
+    const messages = adapter.convertMessages(claudeRequest, filterIdentity, reasoningRoundtrip);
+    // Strict-schema backends reject unknown fields. Must happen HERE, on the
+    // converted messages — the thinking-block strip further down cannot reach
+    // `reasoning_content`; see stripReasoningContent's docblock.
+    if (this.options.omitReasoningContent) {
+      const dropped = stripReasoningContent(messages);
+      if (dropped > 0) {
+        log(
+          `[ComposedHandler] Dropped reasoning_content from ${dropped} message(s) for ${this.provider.displayName} (strict schema)`
+        );
+      }
+    }
     const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool count limits (e.g., OpenAI's 128-tool cap) are enforced
@@ -263,34 +317,11 @@ export class ComposedHandler implements ModelHandler {
           }
           log(`[ComposedHandler] Vision proxy described ${descriptions.length} image(s)`);
           // Strip any remaining Anthropic-format image/document blocks
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) => part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          stripImageBlocksFromMessages(messages, ["image", "document"]);
         } else {
           // Vision proxy failed or not applicable — strip all unsupported image/document blocks
           log(`[ComposedHandler] Stripping image/document blocks (vision not supported)`);
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) =>
-                  part.type !== "image_url" && part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          stripImageBlocksFromMessages(messages, ["image_url", "image", "document"]);
         }
       }
     }
@@ -979,16 +1010,11 @@ export class ComposedHandler implements ModelHandler {
     // already honors this for Anthropic-direct; this closes the same gap for every
     // proxied/composed model. See collect-sse-message.ts.
     const wantsStreaming = payload?.stream === true;
-    if (wantsStreaming) return streamResponse;
+    if (wantsStreaming) {
+      return streamResponse;
+    }
 
     const message = await collectAnthropicSseToMessage(streamResponse, this.bareModelName);
-
-    // Condensation is the announcement point for a budget failover: it is the one
-    // moment the context is rebuilt from scratch, so the notice is guaranteed to
-    // survive into the continuing session at negligible cost. No-op (zero bytes)
-    // unless a role is actually being served from a substitute pool.
-    // See fork/failover.ts.
-    appendFailoverNoticeToMessage(message);
 
     return c.json(message, {
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },

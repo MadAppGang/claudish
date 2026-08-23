@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import { log, maskCredential } from "../logger.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
-import { createResponseCapture } from "./shared/response-capture.js";
+import { createResponseCapture, appendUpstreamError } from "./shared/response-capture.js";
 import {
   fetchMultiModelAdvice,
   findPendingAdvisorToolResults,
@@ -211,6 +211,41 @@ export class NativeHandler implements ModelHandler {
       });
 
       const contentType = anthropicResponse.headers.get("content-type") || "";
+
+      // Upstream refusal (429/402/…). Two things must happen here that the
+      // streaming branch below would otherwise lose:
+      //   1. Capture the body — NativeHandler is the ONLY path for Anthropic-
+      //      native traffic (Opus/Fable), so without this a quota wall from
+      //      api.anthropic.com left no durable trace (the GLM wall was visible
+      //      only because composed-handler already captured; Opus was blind).
+      //   2. Return the upstream status verbatim. c.body() below defaults to 200,
+      //      which made the reactive failover check (proxy-server.ts:933
+      //      `if (!response.ok)`) never see an Anthropic quota refusal — the whole
+      //      role-level failover was inert on native traffic. Returning the real
+      //      status lets that check arm and retry through the substitute.
+      // Anthropic returns an error body even for stream:true requests when the
+      // refusal is at the gateway/quota layer (before streaming starts), so a
+      // single text() read is complete and cheap.
+      if (!anthropicResponse.ok) {
+        const errText = await anthropicResponse.text().catch(() => "");
+        appendUpstreamError({
+          model: target,
+          provider: "Anthropic (native)",
+          status: anthropicResponse.status,
+          body: errText,
+        });
+        log(`[Native] upstream ${anthropicResponse.status}: ${errText.slice(0, 200)}`);
+        // Preserve Anthropic's own error envelope when it is valid JSON (it
+        // carries the type/code the agent may act on); fall back to a wrapped
+        // envelope for a non-JSON body so the client still gets a clean shape.
+        let errBody: unknown;
+        try {
+          errBody = JSON.parse(errText);
+        } catch {
+          errBody = wrapAnthropicError(anthropicResponse.status, errText.slice(0, 500));
+        }
+        return c.json(errBody, { status: anthropicResponse.status as any });
+      }
 
       // Handle streaming
       if (contentType.includes("text/event-stream")) {

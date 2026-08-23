@@ -641,7 +641,7 @@ describe("Model Adapter Quirks", () => {
     expect(request.thinking).toBeUndefined();
   });
 
-  test("GLMAdapter: strips thinking params", async () => {
+  test("GLMAdapter: translates thinking to the documented binary shape", async () => {
     const { GLMModelDialect } = await import("./adapters/glm-model-dialect.js");
     const adapter = new GLMModelDialect("glm-5");
 
@@ -649,7 +649,10 @@ describe("Model Adapter Quirks", () => {
     const original = { thinking: { budget_tokens: 10000 } };
 
     adapter.prepareRequest(request, original);
-    expect(request.thinking).toBeUndefined();
+    // No ctx → OpenAI wire: client ask becomes {"type":"enabled"}; the budget
+    // is dropped (tolerated but ignored upstream — GLM is binary). See
+    // CLAUDISH_GLM_THINKING in CLAUDE.md.
+    expect(request.thinking).toEqual({ type: "enabled" });
   });
 
   test("AdapterManager selects correct adapter for model IDs", async () => {

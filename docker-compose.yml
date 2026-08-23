@@ -37,7 +37,12 @@ services:
     environment:
       - NODE_ENV=production
       - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
-      # Default to LAN direct: the public URL is behind Basic Auth since 2026-08-19
+      # WebSearch interception endpoint. Public URL sits behind IIS Basic Auth
+      # (2026-08-19): WAN machines embed credentials in the URL userinfo
+      # (https://user:pass@search.myia.io — parsed by claudish, never logged),
+      # LAN machines point at the backend directly (no auth). Default to LAN
+      # direct so a fresh deployment works out of the box — the public URL
+      # 401s without creds. Never commit credentials here.
       # (runbook _intercom/2026-07-18_runbook-searxng-protection-po2023.md §9-§10).
       - SEARXNG_URL=${SEARXNG_URL:-http://192.168.0.47:8181}
       # Empty disables capture writing (sidecar default; hub leaves it at /captures).
@@ -67,11 +72,15 @@ services:
       - CLAUDISH_FAILOVER_HAIKU_LABEL=${CLAUDISH_FAILOVER_HAIKU_LABEL:-}
       - CLAUDISH_FAILOVER_HAIKU_DIRECTION=${CLAUDISH_FAILOVER_HAIKU_DIRECTION:-}
       - CLAUDISH_FAILOVER_HAIKU_NOTE=${CLAUDISH_FAILOVER_HAIKU_NOTE:-}
+      - CLAUDISH_FAILOVER_ROLE_MODELS=${CLAUDISH_FAILOVER_ROLE_MODELS:-}
       - CLAUDISH_FAILOVER_ACTIVE=${CLAUDISH_FAILOVER_ACTIVE:-}
       - CLAUDISH_FAILOVER_AUTO=${CLAUDISH_FAILOVER_AUTO:-}
       # Qwen reasons by default and bills on output. disabled (default) |
       # passthrough | budget:<n>. Re-read per request: flip without a restart.
       - CLAUDISH_QWEN_THINKING=${CLAUDISH_QWEN_THINKING:-}
+      # GLM thinking is binary on the coding wire. passthrough (default) |
+      # disabled. Re-read per request: flip without a restart.
+      - CLAUDISH_GLM_THINKING=${CLAUDISH_GLM_THINKING:-}
     command: ["--port", "3000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://0.0.0.0:3000/health"]

@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { log, logStderr } from "./logger.js";
@@ -39,14 +39,26 @@ import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createH
 import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/server/relay.js";
 import {
   initFailover,
-  isFailoverActive,
-  getFailoverRule,
   armFailover,
+  isFailoverActive,
   isQuotaExhaustion,
+  isWiringError,
   roleFromModelName,
+  getFailoverRule,
+  resolveFailoverTarget,
+  markStepFailed,
+  parseResetAtFromBody,
+  resetStepSuccess,
+  onNominalSuccess,
+  consumeStreamNotice,
+  appendFailoverNoticeToMessage,
+  extractSessionKey,
   type FailoverRole,
 } from "./fork/failover.js";
 import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFromWebContent, cleanRawWebContent } from "./handlers/shared/web-search-executor.js";
+import { convertOpenAIRequestToAnthropic } from "./handlers/shared/format/openai-request-to-anthropic.js";
+import { anthropicMessageToChatCompletion, createOpenAIChatStreamFromAnthropic } from "./handlers/shared/anthropic-to-openai.js";
+import { prependNoticeToAnthropicStream } from "./handlers/shared/failover-stream-notice.js";
 
 /**
  * Intercept WebSearch/WebFetch tool calls and execute them via SearXNG instead
@@ -620,14 +632,10 @@ export async function createProxyServer(
     // The role is derived from what the CLIENT asked for, independently of
     // whether modelMap has an entry for it — a failover must be able to divert
     // an unmapped role (e.g. bare native opus on ai-01) just as well as a mapped
-    // one. Kept in sync with the mapping cascade immediately below.
-    const role: FailoverRole | null = req.includes("opus")
-      ? "opus"
-      : req.includes("sonnet")
-        ? "sonnet"
-        : req.includes("haiku")
-          ? "haiku"
-          : null;
+    // one. Single definition in failover.roleFromModelName (role keywords +
+    // CLAUDISH_FAILOVER_ROLE_MODELS aliases) so the swap and the cascade loop
+    // can never drift.
+    const role = roleFromModelName(requestedModel);
 
     if (modelMap) {
       // Role-specific mappings take highest priority
@@ -648,16 +656,19 @@ export async function createProxyServer(
       target = model;
     }
 
-    // 2a. Budget failover — a whole role is served from a different pool because
-    // its nominal plan is exhausted or being conserved. Sits AFTER the modelMap
-    // cascade so it overrides the nominal mapping, and BEFORE catalog/route
-    // resolution so the substitute is resolved exactly like any other target.
-    // Inert unless CLAUDISH_FAILOVER_* is configured. See fork/failover.ts.
-    if (role && isFailoverActive(role)) {
-      const rule = getFailoverRule(role)!;
-      if (rule.target !== target) {
-        log(`[Proxy] Failover: role '${role}' ${target} → ${rule.target} (${rule.label})`);
-        target = rule.target;
+    // 2a. Budget failover — a whole role is served from a cascade of substitute
+    // pools because its nominal plan is exhausted or being conserved. Sits AFTER
+    // the modelMap cascade so it overrides the nominal mapping, and BEFORE
+    // catalog/route resolution so the substitute is resolved like any other target.
+    // resolveFailoverTarget walks the cascade skipping TTL-failed steps. Inert
+    // unless CLAUDISH_FAILOVER_* is configured. See fork/failover.ts.
+    if (role) {
+      const resolved = resolveFailoverTarget(role);
+      if (resolved.step && resolved.step.target !== target) {
+        log(
+          `[Proxy] Failover: role '${role}' ${target} → ${resolved.step.target} step[${resolved.stepIndex}] (${resolved.step.label})`
+        );
+        target = resolved.step.target;
         wasFromModelMap = true;
       }
     }
@@ -802,6 +813,146 @@ export async function createProxyServer(
     return getOpenRouterHandler(target, invocationMode);
   };
 
+  /**
+   * Run a request through the budget-failover cascade. Tries the resolved target
+   * (nominal when not armed, else the first non-TTL-failed cascade step); on a
+   * quota wall it advances state (arm the role, or mark the step failed) and
+   * retries the next resolution — bounded by (cascade length + 1), so it never
+   * hangs. Reuses the same `c` on every attempt: handlers do not mutate the Hono
+   * Context before returning a non-ok Response (the FallbackHandler invariant),
+   * which is what makes the retry safe.
+   *
+   * `getHandlerForRequest`'s internal swap reads `resolveFailoverTarget` — the SAME
+   * source of truth this loop reads — so mutating failover state between attempts
+   * is enough; no override target is passed in (that would race two resolutions).
+   */
+  const handleWithCascade = async (
+    c: Context,
+    body: any,
+    requestedModel: string
+  ): Promise<Response> => {
+    const role = roleFromModelName(requestedModel);
+    const rule = role ? getFailoverRule(role) : undefined;
+    const maxAttempts = rule ? rule.steps.length + 1 : 1; // nominal + each step
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const handler = await getHandlerForRequest(requestedModel);
+      const { stepIndex } = role ? resolveFailoverTarget(role) : { stepIndex: -1 };
+      response = await handler.handle(c, body);
+      if (response.ok) {
+        if (role) {
+          if (stepIndex === -1) onNominalSuccess(role); // nominal healthy → fresh episode + maybe recovery
+          else resetStepSuccess(role, stepIndex);
+        }
+        return response;
+      }
+      if (!role) return response; // no role → no cascade possible
+      let errBody = "";
+      try {
+        errBody = await response.clone().text();
+      } catch {
+        // unreadable body — status alone still decides for 402
+      }
+      if (!isQuotaExhaustion(response.status, errBody)) {
+        // Fail-forward. A non-quota failure on an INTERMEDIATE cascade step still
+        // has a working successor beneath it, so advancing serves the user instead
+        // of surfacing a substitute's incident as if it were their own. This is what
+        // makes wall *recognition* an optimization rather than a safety prerequisite:
+        // an unrecognized wall on a middle step now degrades to one wasted round-trip,
+        // not a failed request.
+        //
+        // Narrow on three axes, each for a different reason:
+        //  - nominal (stepIndex -1) never advances: that is the user's own model
+        //    failing, and it must surface.
+        //  - the last step never advances: there is nothing beneath it.
+        //  - wiring faults never advance: a mistyped model id in a step would become
+        //    permanently invisible, every request stepping over it in silence.
+        const isIntermediateStep =
+          stepIndex >= 0 && rule != null && stepIndex < rule.steps.length - 1;
+        if (!isIntermediateStep) return response;
+        if (isWiringError(response.status, errBody)) {
+          log(
+            `[Failover] STEP-WIRING ${role} step=${stepIndex} — HTTP ${response.status} looks like a misconfigured step; surfacing instead of advancing`,
+            true
+          );
+          return response;
+        }
+        // Loud on purpose: advancing must never be silent, or a persistently sick
+        // step is indistinguishable from a healthy cascade.
+        const why = `HTTP ${response.status} (non-quota) from step ${stepIndex}`;
+        log(`[Failover] STEP-ADVANCE ${role} — ${why}; trying next step`, true);
+        // Marked, not merely skipped: the first backoff rung is 10 min, so a transient
+        // blip costs one short skip of a step that has a live successor — whereas not
+        // marking makes every subsequent request re-pay the round-trip (and its
+        // timeout) to a step that may be down for hours. Any success resets the count.
+        markStepFailed(role, stepIndex, why, parseResetAtFromBody(errBody));
+        continue;
+      }
+      const reason = `HTTP ${response.status} from ${requestedModel}`;
+      if (stepIndex === -1) {
+        // Nominal walled: arm the role (reactive, AUTO only). armFailover also
+        // returns false when the role is ALREADY armed — typically a concurrent
+        // request armed it between this request's handler resolution and its 429.
+        // That is success for this request, not a failure to arm: proceeding to
+        // the retry serves it from the cascade instead of surfacing a raw 429
+        // (production 2026-08-20: the disarm-probe window at each 10-min TTL
+        // raced two opus requests; the loser died client-side with "API Error").
+        if (!armFailover(role, reason) && !isFailoverActive(role)) return response;
+      } else {
+        markStepFailed(role, stepIndex, reason, parseResetAtFromBody(errBody));
+        if (rule && stepIndex === rule.steps.length - 1) return response; // last step also walled
+      }
+    }
+    return response as Response;
+  };
+
+  /**
+   * Inject failover/recovery notices into a successful Anthropic-shape response.
+   * Streaming: a one-time-per-session (per resolved depth) notice prepended as
+   * block 0, so the substitute/back-to-nominal model reads it from its own prior
+   * turn next time. Non-streaming: the condensation notice appended to the
+   * collected message (fires every /compact while armed, RECOVERY_CONDENSATIONS
+   * times while recovering). Never throws — a malformed body passes through.
+   *
+   * Centralized here (not in ComposedHandler) so it also covers NativeHandler
+   * responses — the recovery case, where the nominal (Opus) is back, must be
+   * announced even though NativeHandler is a thin passthrough.
+   */
+  const applyFailoverNotices = async (
+    response: Response,
+    role: FailoverRole | null,
+    sessionKey: string | null,
+    wantsStreaming: boolean
+  ): Promise<Response> => {
+    if (!role) return response;
+    if (wantsStreaming) {
+      const text = consumeStreamNotice(role, sessionKey);
+      if (text && response.body) {
+        try {
+          const wrapped = prependNoticeToAnthropicStream(response.body, text);
+          const headers = new Headers(response.headers);
+          return new Response(wrapped as any, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        } catch {
+          // Never hang: fall through to the unmodified stream.
+        }
+      }
+      return response;
+    }
+    try {
+      const message = await response.clone().json();
+      appendFailoverNoticeToMessage(message, role);
+      const headers = new Headers(response.headers);
+      headers.set("Content-Type", "application/json");
+      return new Response(JSON.stringify(message), { status: response.status, headers });
+    } catch {
+      return response;
+    }
+  };
+
   // Fork extension: hostname binding + remote address tracking
   const hostnameConfig = createHostnameConfig(options.hostname);
 
@@ -915,44 +1066,105 @@ export async function createProxyServer(
         log(`[WebTools] Intercept error (falling through to normal handler): ${e.message}`);
       }
 
+      // Resolve once for the request log + billing-header strip decision. The
+      // cascade below re-resolves as failover state mutates (same source of truth).
       const handler = await getHandlerForRequest(body.model);
       logRequest(body, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
       stripBillingHeaderFromBody(body, handler instanceof NativeHandler);
 
-      // Route
-      const response = await handler.handle(c, body);
-
-      // Budget failover, reactive arm. A quota/credit refusal means this role's
-      // plan is spent; serving the request from another pool is strictly better
-      // than handing the agent an error it cannot act on. Narrow by construction:
-      // isQuotaExhaustion ignores plain rate limits and wiring errors (401/404),
-      // which a model swap would only hide. Inert unless CLAUDISH_FAILOVER_AUTO=1.
-      if (!response.ok) {
-        const failRole = roleFromModelName(body.model);
-        if (failRole && !isFailoverActive(failRole)) {
-          let errBody = "";
-          try {
-            errBody = await response.clone().text();
-          } catch {
-            // Unreadable body — status alone still decides for 402.
-          }
-          if (
-            isQuotaExhaustion(response.status, errBody) &&
-            armFailover(failRole, `HTTP ${response.status} from ${body.model}`)
-          ) {
-            // Retry once through the now-armed failover. Safe to reuse `c`: the
-            // same invariant FallbackHandler relies on — handlers only mutate the
-            // context on the success path (see fallback-handler.ts).
-            const failHandler = await getHandlerForRequest(body.model);
-            return failHandler.handle(c, body);
-          }
-        }
-      }
-
-      return response;
+      // Route through the budget-failover cascade (nominal → step0 → step1 …),
+      // then inject onset/recovery notices. See handleWithCascade / applyFailoverNotices.
+      const response = await handleWithCascade(c, body, body.model);
+      return applyFailoverNotices(
+        response,
+        roleFromModelName(body.model),
+        extractSessionKey(body),
+        body.stream === true
+      );
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       return c.json(wrapAnthropicError(500, String(e)), 500);
+    }
+  });
+
+  // OpenAI-compatible ingress. An OpenAI client (sk-agent, any AsyncOpenAI
+  // consumer) POSTs here; we translate the body to Anthropic shape, run the
+  // SAME routing pipeline as /v1/messages (so the client inherits the cascade,
+  // budget failover, accounting, and leak policy), and translate the response
+  // back to OpenAI wire shape. Anthropic remains the native ingress; this is a
+  // translated ingress into the same pipeline. See CLAUDE.md.
+  app.post("/v1/chat/completions", async (c) => {
+    try {
+      const openaiBody = await readRequestBody(c);
+
+      // Relay (sidecar NOMINAL): forward the RAW OpenAI body to the hub's
+      // /v1/chat/completions — the hub translates. Path-aware forward
+      // (relay.ts) means this reaches the right hub route, not /v1/messages.
+      const relay = options.relay;
+      if (relay?.upstream && relay.alive) {
+        const forwarded = await forwardToUpstream(c, openaiBody, relay);
+        if (forwarded) return forwarded;
+      }
+
+      if (typeof openaiBody?.model !== "string" || openaiBody.model.length === 0) {
+        return c.json(
+          { error: { message: "missing required field: model", type: "invalid_request_error", param: "model", code: null } },
+          400
+        );
+      }
+
+      const anthropicBody = convertOpenAIRequestToAnthropic(openaiBody);
+      const wantsStream = openaiBody.stream === true;
+
+      const handler = await getHandlerForRequest(anthropicBody.model);
+      logRequest(anthropicBody, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
+      stripBillingHeaderFromBody(anthropicBody, handler instanceof NativeHandler);
+
+      // Route through the cascade, then inject onset/recovery notices on the
+      // Anthropic-shape response BEFORE translation to OpenAI wire shape (the
+      // notice becomes ordinary content the OpenAI client sees).
+      let response = await handleWithCascade(c, anthropicBody, anthropicBody.model);
+      response = await applyFailoverNotices(
+        response,
+        roleFromModelName(anthropicBody.model),
+        extractSessionKey(anthropicBody),
+        wantsStream
+      );
+
+      // Translate the final Anthropic response to OpenAI shape.
+      if (!response.ok) {
+        // Error: convert the Anthropic error envelope to OpenAI's error shape so
+        // an OpenAI SDK can surface it instead of choking on the foreign body.
+        let errJson: any;
+        try {
+          errJson = await response.json();
+        } catch {
+          errJson = { error: { type: "api_error", message: `upstream HTTP ${response.status}` } };
+        }
+        const anthropicErr = errJson?.error ?? errJson;
+        const oaiErr = {
+          error: {
+            message: anthropicErr.message ?? `upstream HTTP ${response.status}`,
+            type: anthropicErr.type ?? "api_error",
+            code: anthropicErr.code ?? null,
+          },
+        };
+        return c.json(oaiErr, response.status as any);
+      }
+
+      if (wantsStream) {
+        return createOpenAIChatStreamFromAnthropic(response, anthropicBody.model);
+      }
+      const message = await response.json();
+      return c.json(anthropicMessageToChatCompletion(message, anthropicBody.model), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      log(`[Proxy] /v1/chat/completions error: ${e}`);
+      return c.json(
+        { error: { message: String(e), type: "api_error", code: null } },
+        500
+      );
     }
   });
 

@@ -206,7 +206,15 @@ export async function forwardToUpstream(
   const headerController = new AbortController();
   const headerTimer = setTimeout(() => headerController.abort(), headerTimeoutMs);
   try {
-    res = await fetch(`${state.upstream}/v1/messages`, {
+    // Path-aware forward: relay to the SAME route the client hit, so an OpenAI
+    // request (/v1/chat/completions) reaches the hub's OpenAI ingress rather
+    // than /v1/messages. Falls back to /v1/messages when the path is missing
+    // (older callers / tests) to preserve the historical behavior.
+    const reqPath =
+      typeof c.req?.path === "string" && c.req.path.startsWith("/v1/")
+        ? c.req.path
+        : "/v1/messages";
+    res = await fetch(`${state.upstream}${reqPath}`, {
       method: "POST",
       headers,
       body: payload,
@@ -276,7 +284,7 @@ async function deepProbe(state: RelayState): Promise<boolean> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (state.proxyKey) headers["x-proxy-key"] = state.proxyKey;
     const body = JSON.stringify({
-      model: "glm-5.2",
+      model: "glm-5.3",
       max_tokens: 100,
       stream: true,
       tools: [

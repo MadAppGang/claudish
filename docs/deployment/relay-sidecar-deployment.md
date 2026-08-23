@@ -85,7 +85,7 @@ Keep `ANTHROPIC_AUTH_TOKEN` empty and keep the `x-proxy-key` + `X-Claudish-Machi
 ## Validation
 
 1. **NOMINAL mode**: `docker logs <ContainerName> 2>&1 | Select-String 'Relay|NOMINAL|upstream'` should show the prober reporting the hub alive. A request through `http://localhost:<HostPort>` is relayed (the installer's end-to-end probe already confirms this).
-2. **Native path (ai-01 only)**: the installer probe uses `glm-5.2` — the traffic class the relay header bug *spared*. It proves nothing about native passthrough. On ai-01 the real acceptance is **a live Opus turn from Claude Code after the repoint**: an HTTP probe cannot carry the OAuth that the bug destroyed, so it is blind by construction.
+2. **Native path (ai-01 only)**: the installer probe uses `glm-5.3` — the traffic class the relay header bug *spared*. It proves nothing about native passthrough. On ai-01 the real acceptance is **a live Opus turn from Claude Code after the repoint**: an HTTP probe cannot carry the OAuth that the bug destroyed, so it is blind by construction.
 3. **Failover**: stop the hub (`docker stop claudish-proxy` **on po-2023**) → within ~20s this sidecar flips AUTONOMOUS → a glm/minimax request still succeeds (served locally). Restart the hub → after hysteresis the sidecar returns to NOMINAL. (Coordinate the hub-stop with the cluster — it briefly interrupts every direct-to-hub client too.)
 4. **Attribution survives**: `traffic-live.ps1` / captures still show `machine=<MACHINE>` on this machine's requests — the relay preserves `X-Claudish-Machine` by design.
 

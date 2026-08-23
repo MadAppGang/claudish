@@ -9,7 +9,7 @@
  *    (LiteLLMAPIFormat, OpenRouterAPIFormat) is set as the explicit adapter
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
 import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
@@ -55,26 +55,106 @@ describe("GLMModelDialect — Model Detection", () => {
   });
 });
 
-describe("GLMModelDialect — prepareRequest", () => {
-  test("strips thinking param from request", () => {
-    const adapter = new GLMModelDialect("glm-5");
-    const request = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };
-    const original = { thinking: { budget: 10000 } };
+// ─── prepareRequest — thinking control (CLAUDISH_GLM_THINKING) ───────────────
+//
+// The bug these pin: the dialect used to delete `thinking` unconditionally on
+// the claim that "GLM doesn't support thinking params" — a GLM-4.x-era
+// artifact. Probed 2026-08-20 against the gc@ Coding Plan (glm-5.3):
+// `{"type":"enabled"/"disabled"}` is accepted, disabled genuinely stops
+// reasoning (out 37→3 tokens on a trivial prompt), and budget_tokens is
+// tolerated but ignored (GLM is binary). Without this, no lever existed to
+// stop GLM thinking during a budget crunch.
 
-    adapter.prepareRequest(request, original);
+const ORIGINAL_GLM_THINKING = process.env.CLAUDISH_GLM_THINKING;
 
+afterEach(() => {
+  if (ORIGINAL_GLM_THINKING === undefined) delete process.env.CLAUDISH_GLM_THINKING;
+  else process.env.CLAUDISH_GLM_THINKING = ORIGINAL_GLM_THINKING;
+});
+
+const ANTHROPIC = { wireFormat: "anthropic-sse" as const };
+const OPENAI = { wireFormat: "openai-sse" as const };
+
+describe("GLMModelDialect — prepareRequest (OpenAI wire, gc@ Coding Plan)", () => {
+  test("passthrough (default): client ask becomes the documented shape, budget dropped", () => {
+    delete process.env.CLAUDISH_GLM_THINKING;
+    const request: any = {};
+    new GLMModelDialect("glm-5.3").prepareRequest(
+      request,
+      { thinking: { type: "enabled", budget_tokens: 32000 } },
+      OPENAI
+    );
+    // toEqual (not objectContaining): the budget key must be absent — it is
+    // inert upstream and the documented shape is type-only.
+    expect(request.thinking).toEqual({ type: "enabled" });
+  });
+
+  test("passthrough with no client ask sends no thinking field (GLM default: enabled)", () => {
+    delete process.env.CLAUDISH_GLM_THINKING;
+    const request: any = { model: "glm-5.3", messages: [] };
+    new GLMModelDialect("glm-5.3").prepareRequest(request, {}, OPENAI);
+    expect(request.thinking).toBeUndefined();
+    expect(request.model).toBe("glm-5.3");
+    expect(request.messages).toEqual([]);
+  });
+
+  test("disabled policy forces it off even when the client asked", () => {
+    process.env.CLAUDISH_GLM_THINKING = "disabled";
+    const request: any = { thinking: { type: "enabled", budget_tokens: 8000 } };
+    new GLMModelDialect("glm-5.3").prepareRequest(
+      request,
+      { thinking: { type: "enabled", budget_tokens: 8000 } },
+      OPENAI
+    );
+    expect(request.thinking).toEqual({ type: "disabled" });
+  });
+
+  test("scrubs a stale anthropic-shaped thinking on the payload when the client sent nothing", () => {
+    delete process.env.CLAUDISH_GLM_THINKING;
+    const request: any = { thinking: { type: "enabled", budget_tokens: 9000 } };
+    new GLMModelDialect("glm-5.3").prepareRequest(request, {}, OPENAI);
     expect(request.thinking).toBeUndefined();
   });
 
-  test("leaves request unchanged without thinking param", () => {
-    const adapter = new GLMModelDialect("glm-5");
-    const request = { model: "glm-5", messages: [] };
-    const original = {};
+  test("unrecognized policy value falls back to passthrough (today's behavior), not disabled", () => {
+    // Unlike Qwen — whose unset default means "think at length" — GLM's safe
+    // default is passthrough: an unrecognized value must not change traffic.
+    process.env.CLAUDISH_GLM_THINKING = "yes-please";
+    const request: any = {};
+    new GLMModelDialect("glm-5.3").prepareRequest(
+      request,
+      { thinking: { type: "enabled", budget_tokens: 1000 } },
+      OPENAI
+    );
+    expect(request.thinking).toEqual({ type: "enabled" });
+  });
 
-    adapter.prepareRequest(request, original);
+  test("with no wire hint at all, behaves like the OpenAI wire (historical default)", () => {
+    // Callers that predate PrepareRequestContext must not change behavior.
+    delete process.env.CLAUDISH_GLM_THINKING;
+    const request: any = { thinking: { budget: 10000 } };
+    new GLMModelDialect("glm-5.3").prepareRequest(request, { thinking: { budget: 10000 } });
+    expect(request.thinking).toEqual({ type: "enabled" });
+  });
+});
 
-    expect(request.model).toBe("glm-5");
-    expect(request.messages).toEqual([]);
+describe("GLMModelDialect — prepareRequest (anthropic wire, zai@ direct)", () => {
+  test("passthrough keeps the historical strip (wire unprobed, no fleet traffic)", () => {
+    delete process.env.CLAUDISH_GLM_THINKING;
+    const request: any = { thinking: { type: "enabled", budget_tokens: 4096 } };
+    new GLMModelDialect("glm-5.3").prepareRequest(
+      request,
+      { thinking: { type: "enabled", budget_tokens: 4096 } },
+      ANTHROPIC
+    );
+    expect(request.thinking).toBeUndefined();
+  });
+
+  test("disabled policy sets the native disable form", () => {
+    process.env.CLAUDISH_GLM_THINKING = "disabled";
+    const request: any = {};
+    new GLMModelDialect("glm-5.3").prepareRequest(request, {}, ANTHROPIC);
+    expect(request.thinking).toEqual({ type: "disabled" });
   });
 });
 
@@ -163,19 +243,19 @@ describe("Three-layer adapter — model dialect overrides format adapter", () =>
     expect(modelAdapter.getName()).toBe("DefaultAPIFormat");
   });
 
-  test("model dialect strips thinking, format adapter does not", () => {
+  test("model dialect translates thinking, format adapter does not", () => {
     const litellmAdapter = new LiteLLMAPIFormat("glm-5", "https://example.com");
     const adapterManager = new DialectManager("glm-5");
     const modelAdapter = adapterManager.getAdapter();
 
-    // Format adapter does not strip thinking (no override)
+    // Format adapter does not touch thinking (no override)
     const request1 = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };
     litellmAdapter.prepareRequest(request1, { thinking: { budget: 10000 } });
     expect(request1.thinking).toBeDefined(); // LiteLLMAPIFormat doesn't touch thinking
 
-    // Model dialect strips thinking
-    const request2 = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };
+    // Model dialect translates it to the documented GLM shape (no ctx → OpenAI wire)
+    const request2: any = { model: "glm-5", thinking: { budget: 10000 }, messages: [] };
     modelAdapter.prepareRequest(request2, { thinking: { budget: 10000 } });
-    expect(request2.thinking).toBeUndefined(); // GLMModelDialect strips it
+    expect(request2.thinking).toEqual({ type: "enabled" }); // GLMModelDialect translates it
   });
 });

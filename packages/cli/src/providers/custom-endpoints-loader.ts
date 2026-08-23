@@ -168,6 +168,7 @@ function buildSimpleHandler(
     return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
       adapter,
       tokenStrategy: "delta-aware",
+      omitReasoningContent: ep.omitReasoningContent,
       ...ctx.sharedOpts,
     });
   }
@@ -224,6 +225,7 @@ function buildComplexHandler(
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
         tokenStrategy: "delta-aware",
+        omitReasoningContent: ep.omitReasoningContent,
         ...ctx.sharedOpts,
       });
     }
