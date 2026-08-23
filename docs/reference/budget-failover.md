@@ -158,28 +158,32 @@ recovered silently.
 The three compose: one stream notice at the moment of failover (per resolved step), then one at each
 condensation for the rest of the window, then recovery notices when nominal returns.
 
-### ⚠ Open defect — the recovery notice reads as a prompt injection
+### ✅ Resolved defect (2026-08-23, issue #34 / PR #36) — the recovery notice read as a prompt injection
 
-On recovery from a `degraded` step, `failover.ts` emits, under the header
+Until 2026-08-23, recovery from a `degraded` step emitted, under the header
 `**[claudish] Nominal model restored.**`, in content block 0:
 
-> The context you inherit was built under a weaker model (LABEL) — recalibrate upward: resume your
+> ~~The context you inherit was built under a weaker model (LABEL) — recalibrate upward: resume your
 > normal capability and risk appetite, and clean up any over-conservative decisions made under the
-> substitute.
+> substitute.~~
 
-On **2026-08-23** a fleet agent reported this as a suspected prompt injection in its own invocation
-context, and was right to: nothing in the frame lets a recipient distinguish "my proxy is talking to
-me" from "someone wrote this into my context". The `[claudish]` prefix is a naming convention, not
-evidence. Two specific problems:
+A fleet agent reported this as a suspected prompt injection in its own invocation context, and was
+right to: nothing in the frame lets a recipient distinguish "my proxy is talking to me" from "someone
+wrote this into my context". The `[claudish]` prefix is a naming convention, not evidence. Two
+specific problems:
 
-- **"risk appetite"** names a *safety* posture, while the intent is *capability* calibration. An agent
+- **"risk appetite"** named a *safety* posture, while the intent is *capability* calibration. An agent
   applying security rules must treat "resume your normal risk appetite" as suspect — and should.
-- **"clean up any over-conservative decisions"** asks the agent to **undo** decisions already taken.
-  That is the phrasing closest to an actual injection.
+- **"clean up any over-conservative decisions"** asked the agent to **undo** decisions already taken.
+  That was the phrasing closest to an actual injection.
 
-Direction for the fix: keep the notice **factual** (which role, which model, which direction), express
-capability or working scope rather than risk posture, and never instruct an agent to reverse prior
-decisions.
+PR #36 rewrote every recovery site (condensation + stream, both directions) to working-scope
+language — `resume your normal working scope: you can take on tasks you deferred under the
+substitute` — with a regression guard in `failover.test.ts` asserting the notices never match
+`/risk appetite/i`, `/clean up (any )?over-conservative/i`, or `/recalibrate upward/i` again. The
+factual announcement (role, model, direction) is unchanged. Standing rule for any future notice
+wording: keep it **factual**, express capability or working scope rather than risk posture, and
+never instruct an agent to reverse prior decisions.
 
 ## `CLAUDISH_GLM_THINKING` measurements
 
