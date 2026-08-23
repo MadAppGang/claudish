@@ -792,6 +792,15 @@ export async function createProxyServer(
       // This sits ABOVE the per-machine config (opus/sonnet/haiku already
       // budget-mapped) because we have leaked on an undefined field before
       // (memory: leak-policy-binary-by-machine).
+      //
+      // The truthiness test is load-bearing, not sloppy. docker-compose always
+      // MATERIALIZES this variable (`- CLAUDISH_NO_ANTHROPIC=${CLAUDISH_NO_ANTHROPIC:-}`),
+      // so inside a container it is never absent — only `1` (every machine) or
+      // "" (ai-01, the one machine authorized to reach api.anthropic.com).
+      // Empty-string-falsy IS the ai-01 exemption; there is no separate opt-out.
+      // Deleting the variable from a .env to "clean it up" therefore changes
+      // nothing (compose re-creates it empty), and flipping this to a
+      // `!== undefined` test would silently kill ai-01 native Opus lane.
       if (process.env.CLAUDISH_NO_ANTHROPIC) {
         if (depth === 0 && modelMap?.sonnet) {
           log(
