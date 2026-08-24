@@ -9,6 +9,11 @@ build/
 .env
 .env.local
 .env.*.local
+.env.*.bak
+.env.*bak*
+
+# Machine-local compose overrides (hub-only binds, never shared)
+docker-compose.override.yml
 
 # IDE
 .idea/
