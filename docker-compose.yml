@@ -16,14 +16,10 @@ services:
         source: ${CLAUDISH_CONFIG_DIR:-C:\Users\jsboi\.claudish}
         target: /root/.claudish
         read_only: true
-      # OpenAI Codex OAuth tokens (ChatGPT Pro subscription relay). Writable
-      # separately from the config dir: CodexOAuth persists refreshed tokens
-      # (access tokens are short-lived), which a read_only mount would break.
-      # Must exist on the host before `docker compose up` — Docker would
-      # otherwise bind-mount a directory over this path.
-      - type: bind
-        source: ${CLAUDISH_CONFIG_DIR:-C:\Users\jsboi\.claudish}\codex-oauth.json
-        target: /root/.claudish/codex-oauth.json
+      # OpenAI Codex OAuth tokens: hub-only bind, deliberately NOT here — a
+      # file-type bind whose source is absent breaks (or directory-poisons)
+      # every sidecar compose up. The hub carries it in its local
+      # docker-compose.override.yml instead (auto-merged, never committed).
       # Persistent diagnostic capture: full request/response bodies for offline
       # analysis. The proxy writes req-*.json / resp-*.sse here (gated by
       # CLAUDISH_CAPTURE_DIR). Compacted nightly by ClaudishCaptureCompaction
