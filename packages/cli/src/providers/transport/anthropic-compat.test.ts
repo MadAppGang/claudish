@@ -191,3 +191,68 @@ describe("AnthropicAPIFormat — tool_reference stripping", () => {
     expect(messages[0].content).toBe("plain string");
   });
 });
+
+describe("AnthropicProviderTransport 429 backoff releases the concurrency slot", () => {
+  // Same defect and same fix as OpenAIProviderTransport. It bites harder here:
+  // these providers (Z.AI, MiniMax, Kimi) share ONE key across the cluster, so
+  // they throttle in synchronized bursts — exactly when holding a slot through
+  // the backoff blocks the most traffic.
+  const provider: RemoteProvider = {
+    name: "glm",
+    displayName: "GLM",
+    baseUrl: "https://api.z.ai",
+    apiPath: "/api/anthropic/v1/messages",
+    transport: "anthropic",
+  };
+
+  test("a request in 429 backoff does not block another request to the same provider", async () => {
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY, 1);
+    const order: string[] = [];
+
+    let aCalls = 0;
+    const a = transport
+      .enqueueRequest(() => {
+        aCalls++;
+        if (aCalls === 1) {
+          return Promise.resolve(
+            new Response('{"error":"rate limited"}', {
+              status: 429,
+              headers: { "Retry-After": "1" },
+            })
+          );
+        }
+        return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+      })
+      .then(() => order.push("A"));
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    const b = transport
+      .enqueueRequest(() => Promise.resolve(new Response('{"ok":true}', { status: 200 })))
+      .then(() => order.push("B"));
+
+    await Promise.all([a, b]);
+
+    expect(order).toEqual(["B", "A"]);
+    expect(aCalls).toBe(2);
+  }, 15000);
+
+  test("still caps concurrent fetches at maxConcurrency", async () => {
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY, 2);
+    let inFlight = 0;
+    let peak = 0;
+
+    const fire = () =>
+      transport.enqueueRequest(async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 30));
+        inFlight--;
+        return new Response('{"ok":true}', { status: 200 });
+      });
+
+    await Promise.all([fire(), fire(), fire(), fire(), fire()]);
+
+    expect(peak).toBe(2);
+  });
+});

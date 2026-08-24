@@ -84,19 +84,35 @@ export class OpenAIProviderTransport implements ProviderTransport {
    *
    * If `maxConcurrency` is set (capacity-limited backends, e.g. a single-GPU
    * vLLM server, or a remote provider that must not pile up unbounded slow
-   * streams), the whole fetch+retry unit is run through a per-instance
-   * ConcurrencyLimiter so at most N requests are in flight to THIS backend at
-   * once — independent of other providers' caps. Unset / 0 = unbounded (the
-   * default, unchanged behavior for every standard remote provider).
+   * streams), each ATTEMPT is run through a per-instance ConcurrencyLimiter so
+   * at most N requests are in flight to THIS backend at once — independent of
+   * other providers' caps. Unset / 0 = unbounded (the default, unchanged
+   * behavior for every standard remote provider).
+   *
+   * The cap gates the fetch, NOT the backoff sleep. During a 429 backoff no
+   * request is in flight, so holding a slot there contradicts what the cap is
+   * documented to do, and converts one throttled request into a full ladder
+   * (2+4+8+16+30s ≈ 62.5s) of head-of-line blocking for every other caller of
+   * the same provider: with a cap of 6, six throttled requests stall the whole
+   * lane while the backend sits idle. Diagnosed 2026-08-24 on the GLM lane,
+   * where a burst 429 amplified into fleet-wide `Connection lost mid-response`.
+   * GeminiCodeAssistTransport already gates per attempt; this aligns with it.
+   *
+   * Re-acquiring puts a retry at the BACK of the FIFO queue, which is wanted: a
+   * request the backend just throttled should not cut ahead of traffic it has
+   * not. Patience is unchanged — same maxRetries, same delays, same responses.
    */
   async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+    const gate = (fn: () => Promise<Response>): Promise<Response> =>
+      this.limiter ? this.limiter.run(fn) : fn();
+
     const runWith429Retry = async (): Promise<Response> => {
       const maxRetries = 5;
       let lastResponse: Response | null = null;
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          const response = await fetchFn();
+          const response = await gate(fetchFn);
 
           if (response.status === 429 && attempt < maxRetries) {
             lastResponse = response;
@@ -136,11 +152,8 @@ export class OpenAIProviderTransport implements ProviderTransport {
 
     // Capacity-limited backend (e.g. single-GPU vLLM, or a slow remote provider
     // that must not be allowed to pile up unbounded streams and starve the event
-    // loop). The 429 retry unit above is a single gated item: at most
-    // maxConcurrency are in flight to this backend. Independent per provider.
-    if (this.limiter) {
-      return this.limiter.run(runWith429Retry);
-    }
+    // loop). Gating happens per attempt inside the loop above (see `gate`), so a
+    // backoff sleep never occupies a slot the backend could be serving with.
     return runWith429Retry();
   }
 
