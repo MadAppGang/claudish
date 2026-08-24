@@ -78,6 +78,10 @@ export function logRequest(
   const captureDir = process.env.CLAUDISH_CAPTURE_DIR;
   if (captureDir && ensureCaptureDir(captureDir)) {
     const n = ++capN;
+    // Shared handoff for response-capture's resp-*.sse correlation (reqN= in its
+    // header). Module-local alone leaves it reading 0 — every resp file became
+    // r0000 after the async rewrite dropped this (pairing broke fleet-wide).
+    (globalThis as Record<string, unknown>).__capN = n;
     const safeSrc = src.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const file = `${captureDir}/req-${process.pid}-${String(n).padStart(4, "0")}-${ts}-${safeSrc}.json`;
