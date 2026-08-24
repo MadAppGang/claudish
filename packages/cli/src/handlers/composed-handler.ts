@@ -998,7 +998,8 @@ export class ComposedHandler implements ModelHandler {
       adapter,
       claudeRequest,
       toolNameMap,
-      onStreamComplete
+      onStreamComplete,
+      latencyMs
     );
 
     // Non-streaming clients (notably Claude Code's `/compact`, and any caller that
@@ -1027,7 +1028,8 @@ export class ComposedHandler implements ModelHandler {
     adapter: BaseModelAdapter,
     claudeRequest: any,
     toolNameMap?: Map<string, string>,
-    onComplete?: () => void
+    onComplete?: () => void,
+    headerLatencyMs?: number // dispatch → upstream headers (for the [ttft] marker)
   ): Response {
     const onTokenUpdate = (input: number, output: number) => {
       const strategy = this.options.tokenStrategy || "standard";
@@ -1076,7 +1078,8 @@ export class ComposedHandler implements ModelHandler {
           this.middlewareManager,
           onTokenUpdate,
           claudeRequest.tools,
-          toolNameMap
+          toolNameMap,
+          headerLatencyMs
         );
 
       case "openai-responses-sse":
@@ -1084,6 +1087,7 @@ export class ComposedHandler implements ModelHandler {
           modelName: this.bareModelName,
           onTokenUpdate,
           toolNameMap: adapter.getToolNameMap(),
+          headerLatencyMs,
         });
 
       case "anthropic-sse":
@@ -1091,6 +1095,7 @@ export class ComposedHandler implements ModelHandler {
           modelName: this.bareModelName,
           onTokenUpdate,
           adapter: adapter as BaseAPIFormat,
+          headerLatencyMs,
         });
 
       case "gemini-sse": {

@@ -11,7 +11,7 @@
  *   4. Run: bun test src/format-translation.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -182,6 +182,48 @@ describe("OpenAI SSE → Claude SSE (createStreamingResponseHandler)", () => {
 
     // Should have message_stop
     expect(events.some((e) => e.data?.type === "message_stop")).toBe(true);
+  });
+
+  test("[ttft] marker: one stdout line on the first upstream data event, carrying header latency", async () => {
+    // 2026-08-24 instrumentation gap: [resp] logged stream TOTALS but nothing
+    // logged first-token timing, leaving "slow TTFT vs long generation"
+    // undecidable from logs. The marker must land on stdout (docker-logs
+    // visible, same surface as [resp]) exactly once per stream.
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-openai-text-only.sse"));
+    const ctx = createMockContext();
+
+    const writes: string[] = [];
+    const spy = spyOn(process.stdout, "write").mockImplementation((chunk: any) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      const response = createStreamingResponseHandler(
+        ctx,
+        fixture,
+        adapter,
+        "test-model",
+        null,
+        undefined,
+        undefined,
+        undefined,
+        123 // headerLatencyMs: dispatch → upstream headers
+      );
+      await parseClaudeSseStream(response);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const ttftLines = writes.filter((w) => w.includes("[ttft] openai"));
+    expect(ttftLines).toHaveLength(1);
+    const line = ttftLines[0];
+    expect(line).toContain("model=test-model");
+    expect(line).toContain("headers=123ms");
+    expect(line).toMatch(/firstEvent=\d+ms/);
+    expect(line).toMatch(/total=\d+ms/);
+    expect(line).toContain("reqN=");
   });
 
   test("SEED: tool-call response produces tool_use blocks and stop_reason=tool_use", async () => {

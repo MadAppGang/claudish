@@ -19,7 +19,7 @@ import {
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall } from "../web-search-detector.js";
 import { executeWebSearch, extractSearchQuery } from "../web-search-executor.js";
-import { createResponseCapture } from "../response-capture.js";
+import { createResponseCapture, currentRequestNumber } from "../response-capture.js";
 
 export interface StreamingState {
   usage: any;
@@ -128,7 +128,8 @@ export function createStreamingResponseHandler(
   middlewareManager: any,
   onTokenUpdate?: (input: number, output: number) => void,
   toolSchemas?: any[], // Tool schemas for validation
-  toolNameMap?: Map<string, string> // Truncated → original tool name mapping
+  toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
+  headerLatencyMs?: number // dispatch → upstream headers, from ComposedHandler
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -138,6 +139,16 @@ export function createStreamingResponseHandler(
   const streamMetadata = new Map<string, any>();
 
   const cap = createResponseCapture("openai", target);
+  // TTFT anchor: headers are in the moment this handler is built. The first
+  // upstream `data:` line then closes the measurement. stdout like [resp] so
+  // the two markers join in docker logs (this was the instrumentation gap of
+  // the 2026-08-24 abort investigation: totals were logged, TTFT never was).
+  // reqN is FROZEN here, at construction — reading the counter later (in the
+  // pump) would label the line with whatever request arrived during the wait,
+  // and the bias grows with exactly the latency this marker exists to measure.
+  const tHeaders = performance.now();
+  const reqN = currentRequestNumber();
+  let ttftLogged = false;
 
   return c.body(
     new ReadableStream({
@@ -644,6 +655,14 @@ export function createStreamingResponseHandler(
             for (const line of lines) {
               if (!line.trim() || !line.startsWith("data: ")) continue;
               const dataStr = line.slice(6);
+              if (!ttftLogged) {
+                ttftLogged = true;
+                const firstEventMs = Math.round(performance.now() - tHeaders);
+                const hdr = headerLatencyMs ?? -1;
+                process.stdout.write(
+                  `  [ttft] openai model=${target} reqN=${reqN} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
+                );
+              }
               log(`[SSE:openai] ${dataStr.substring(0, 300)}`);
               if (dataStr === "[DONE]") {
                 await finalize("done");

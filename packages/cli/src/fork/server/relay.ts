@@ -205,6 +205,7 @@ export async function forwardToUpstream(
   let res: Response;
   const headerController = new AbortController();
   const headerTimer = setTimeout(() => headerController.abort(), headerTimeoutMs);
+  const fetchStartedAt = performance.now();
   try {
     // Path-aware forward: relay to the SAME route the client hit, so an OpenAI
     // request (/v1/chat/completions) reaches the hub's OpenAI ingress rather
@@ -292,6 +293,10 @@ export async function forwardToUpstream(
   return createAnthropicPassthroughStream(c, res, {
     modelName: String(model),
     capture: false,
+    // Relay-side TTFT: fetch dispatch → hub headers. The [ttft] marker this
+    // feeds is the measurement that splits "upstream slow to first byte"
+    // from "long generation" — the exact question the header deadline raises.
+    headerLatencyMs: Math.round(performance.now() - fetchStartedAt),
   });
 }
 
