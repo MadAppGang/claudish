@@ -50,6 +50,16 @@ export function __resetCaptureDirMemo(): void {
   captureDirReady = null;
 }
 
+/**
+ * The request counter request-logger increments (globalThis.__capN) — same
+ * correlation key the [resp] marker uses. Exported for the [ttft] markers so
+ * req→first-token→close lines join without re-reading the global ad hoc.
+ */
+export function currentRequestNumber(): number {
+  const g = globalThis as Record<string, unknown>;
+  return (g.__capN as number) ?? 0;
+}
+
 export interface ResponseCapture {
   /** Tap outgoing bytes (raw Uint8Array or a pre-encoded SSE string). */
   tap(chunk: Uint8Array | string): void;
