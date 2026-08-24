@@ -11,6 +11,7 @@ import type { RemoteProvider } from "../../handlers/shared/remote-provider-types
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { ConcurrencyLimiter } from "../../handlers/shared/concurrency-limiter.js";
 import { log } from "../../logger.js";
+import { isQuotaWall } from "./quota-wall.js";
 
 export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -116,6 +117,9 @@ export class OpenAIProviderTransport implements ProviderTransport {
 
           if (response.status === 429 && attempt < maxRetries) {
             lastResponse = response;
+            // A wall will still be a wall after the ladder — give up now so the
+            // caller's deadline is not spent asleep. Bursts still retry (narrow predicate).
+            if (await isQuotaWall(response, this.displayName)) return response;
             // Parse Retry-After header if present
             const retryAfter = response.headers.get("Retry-After");
             let delayMs: number;

@@ -157,3 +157,67 @@ describe("OpenAIProviderTransport 429 backoff releases the concurrency slot", ()
     expect(callCount).toBe(6); // 5 retries + the initial attempt, as before
   }, 15000);
 });
+
+describe("OpenAIProviderTransport 429 quota-wall short-circuit", () => {
+  const WALL = '{"error":{"message":"You have exceeded your plan limit for this period"}}';
+  const BURST = '{"error":{"message":"rate limited, slow down"}}';
+
+  test("a quota wall skips the ladder instead of sleeping ~62s against it", async () => {
+    const transport = new OpenAIProviderTransport(mockProvider, "glm-5.2", "test-key");
+    let callCount = 0;
+    const startTime = Date.now();
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      return Promise.resolve(new Response(WALL, { status: 429 }));
+    });
+
+    expect(response.status).toBe(429);
+    expect(callCount).toBe(1); // no retry at all
+    expect(Date.now() - startTime).toBeLessThan(1000); // no 2s first rung
+  }, 10000);
+
+  test("the short-circuited response still has a readable body (clone, not consume)", async () => {
+    const transport = new OpenAIProviderTransport(mockProvider, "glm-5.2", "test-key");
+    const response = await transport.enqueueRequest(() =>
+      Promise.resolve(new Response(WALL, { status: 429 }))
+    );
+    // FallbackHandler / isQuotaExhaustion upstream still need this body.
+    expect(await response.text()).toBe(WALL);
+  }, 10000);
+
+  test("a BURST still walks the ladder — the property that keeps this safe", async () => {
+    const transport = new OpenAIProviderTransport(mockProvider, "glm-5.2", "test-key");
+    let callCount = 0;
+    const startTime = Date.now();
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve(new Response(BURST, { status: 429 }));
+      return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+    });
+
+    expect(response.status).toBe(200);
+    expect(callCount).toBe(2); // it retried
+    expect(Date.now() - startTime).toBeGreaterThanOrEqual(1900); // it slept the 2s rung
+  }, 15000);
+
+  test("an unreadable body degrades to the ladder, never to a wrong short-circuit", async () => {
+    const transport = new OpenAIProviderTransport(mockProvider, "glm-5.2", "test-key");
+    let callCount = 0;
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      if (callCount === 1) {
+        // Body already consumed → clone().text() throws inside isQuotaWall.
+        const r = new Response(WALL, { status: 429 });
+        void r.text();
+        return Promise.resolve(r);
+      }
+      return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+    });
+
+    expect(response.status).toBe(200);
+    expect(callCount).toBe(2); // fell through to the retry, as before
+  }, 15000);
+});
