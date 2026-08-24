@@ -14,6 +14,42 @@
  * server-side (the parser loop never reached close).
  */
 
+import { mkdirSync, appendFileSync } from "fs";
+import { writeFile } from "fs/promises";
+
+// The resp-*.sse write is FIRE-AND-FORGET, for the same reason the request-side
+// capture is (commit 180f1cb, incident 2026-08-20): Bun is single-threaded, and
+// over a Docker bind-mount to a Windows dir one slow writeFileSync freezes EVERY
+// handler - including the 4s /health heartbeat the relay failover keys off.
+// That fix landed on request-logger.ts only; this file kept writeFileSync while
+// holding the LARGER payloads (a finalized glm-5.2 stream runs 700-950 KB against
+// a request body's ~535 KB), so the response side stayed the bigger stall of the
+// two. Diagnosed 2026-08-24 with po-2023: type-1 hub degradations (/health 4.5ms
+// -> 7.8s, load-independent, self-resolving) are each preceded by a SALVE of
+// giant response finalizations; an isolated giant produces none.
+//
+// The stdout marker is emitted BEFORE the write is dispatched, deliberately: it
+// is the real-time hang signal (a [Request] line with no matching [resp] means
+// the parser loop never reached close), so it must not wait on disk I/O.
+let captureDirReady: string | null = null;
+
+function ensureCaptureDir(dir: string): boolean {
+  if (captureDirReady === dir) return true;
+  try {
+    mkdirSync(dir, { recursive: true }); // no-op on an existing dir, never throws EEXIST
+    captureDirReady = dir;
+    return true;
+  } catch (e) {
+    process.stdout.write(`  [resp] mkdir error: ${String(e)}\n`);
+    return false;
+  }
+}
+
+/** Test seam: forget the memoized dir so a fresh tmpdir is re-created. */
+export function __resetCaptureDirMemo(): void {
+  captureDirReady = null;
+}
+
 export interface ResponseCapture {
   /** Tap outgoing bytes (raw Uint8Array or a pre-encoded SSE string). */
   tap(chunk: Uint8Array | string): void;
@@ -73,8 +109,7 @@ export function createResponseCapture(
       if (finished) return;
       finished = true;
       try {
-        const fs = require("fs");
-        fs.mkdirSync(captureDir, { recursive: true });
+        if (!ensureCaptureDir(captureDir)) return;
         const ts = new Date().toISOString().replace(/[:.]/g, "-");
         const safeModel = String(model).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
         const file = `${captureDir}/resp-${process.pid}-r${String(reqN).padStart(4, "0")}-${ts}-${label}-${safeModel}.sse`;
@@ -85,12 +120,15 @@ export function createResponseCapture(
           `# notes=${notes.join(" | ")}\n` +
           (extra ? `# extra=${JSON.stringify(extra)}\n` : "") +
           `# ${"=".repeat(60)}\n\n`;
-        fs.writeFileSync(file, header + sse);
         const stopReason = extra?.stop_reason ?? "?";
         const closed = extra?.closed ?? "?";
         process.stdout.write(
           `  [resp] ${label} model=${model} reqN=${reqN} events~=${events} bytes=${sse.length} closed=${closed} stop=${stopReason} ${Date.now() - startedAt}ms -> ${file}\n`
         );
+        // Fire-and-forget: see the note at the top of this file.
+        writeFile(file, header + sse).catch((e) => {
+          process.stdout.write(`  [resp] capture write error: ${String(e)}\n`);
+        });
       } catch (e) {
         process.stdout.write(`  [resp] capture error: ${String(e)}\n`);
       }
@@ -122,8 +160,7 @@ export function appendUpstreamError(entry: {
   const captureDir = process.env.CLAUDISH_CAPTURE_DIR;
   if (!captureDir) return;
   try {
-    const fs = require("fs");
-    fs.mkdirSync(captureDir, { recursive: true });
+    if (!ensureCaptureDir(captureDir)) return;
     const line = JSON.stringify({
       ts: new Date().toISOString(),
       model: entry.model,
@@ -131,7 +168,10 @@ export function appendUpstreamError(entry: {
       status: entry.status,
       body: String(entry.body).slice(0, 2048),
     });
-    fs.appendFileSync(`${captureDir}/upstream-errors.log`, line + "\n");
+    // Kept SYNCHRONOUS on purpose: appends must not interleave, the payload is
+    // capped at 2 KB, and this path only runs on an upstream error - it is not
+    // the per-response hot path the fire-and-forget note above describes.
+    appendFileSync(`${captureDir}/upstream-errors.log`, line + "\n");
   } catch {
     // capture must never crash claudish
   }
