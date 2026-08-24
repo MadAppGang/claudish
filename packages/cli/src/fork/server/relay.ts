@@ -222,10 +222,45 @@ export async function forwardToUpstream(
     });
     clearTimeout(headerTimer); // headers in → stop bounding; body is unbounded
   } catch (e) {
-    // Pre-stream failure (connection refused / header timeout) → fall through to local.
     clearTimeout(headerTimer);
-    markFail(state, `forward-connect: ${String(e).slice(0, 80)}`);
-    logFallthrough(state, `connect: ${String(e).slice(0, 80)}`);
+    // Two failures of opposite natures land in this catch, and only one of them
+    // says anything about whether the HUB is alive.
+    //
+    // A refused / reset / DNS-failed connection is direct evidence the hub is
+    // unreachable, so it feeds the hysteresis — that is what the hysteresis is for.
+    //
+    // Our OWN header deadline firing is not. It says the upstream PROVIDER was slow
+    // to first byte; the hub may be answering /health in under 100ms throughout.
+    // Feeding markFail here let a throttled provider drive the hub's state machine:
+    // two slow POSTs in a row flipped the whole machine to AUTONOMOUS, and because
+    // markFail also zeroes `consecutiveOk`, it erased progress toward recovery.
+    // That contradicts this module's own design, stated at FORWARD_HEADERS_TIMEOUT_MS:
+    // the bound "is NOT a liveness detector — the heartbeat prober owns that".
+    //
+    // Measured on ai-01, 2026-08-24: 23 header-deadline fallthroughs in 24h, 21 of
+    // them a single failure short of the threshold, and 1 of the day's 2 AUTONOMOUS
+    // episodes (3m06s, machine-wide, all traffic off the hub) caused this way while
+    // the hub stayed healthy. The blast radius, not the 3 minutes, is the point.
+    //
+    // Trade-off, accepted knowingly: a hub that answered /health but black-holed
+    // POSTs would no longer be demoted by this path, so every request would spend
+    // the full deadline before falling through. Never observed, and the prober still
+    // catches the ordinary black-hole (where /health hangs too). Building machinery
+    // for it now would re-add, in another form, the coupling this removes.
+    //
+    // The request itself still falls through, and every fallthrough is still logged.
+    // Only the machine-wide contagion is removed.
+    const isHeaderDeadline = (e as any)?.name === "AbortError";
+    const detail = String(e).slice(0, 80);
+    if (!isHeaderDeadline) {
+      markFail(state, `forward-connect: ${detail}`);
+    }
+    // Label the two apart. Reporting a header deadline as `connect:` is what hid
+    // this: the log named a connection failure while the cause was latency.
+    logFallthrough(
+      state,
+      isHeaderDeadline ? `header-timeout after ${headerTimeoutMs}ms` : `connect: ${detail}`
+    );
     return null;
   }
 
