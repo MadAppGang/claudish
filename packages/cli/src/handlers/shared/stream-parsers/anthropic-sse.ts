@@ -50,7 +50,10 @@ export function createAnthropicPassthroughStream(
   let pingInterval: ReturnType<typeof setInterval> | null = null;
   // TTFT anchors — headers arrived when this stream was built; the first
   // upstream `data:` line completes the measurement (see the marker below).
+  // reqN frozen at construction: reading the counter in the pump would label
+  // the line with a request that arrived during the first-token wait.
   const tHeaders = performance.now();
+  const reqN = currentRequestNumber();
   let ttftLogged = false;
 
   const filterThinking = opts.adapter?.shouldFilterThinking() ?? false;
@@ -304,7 +307,7 @@ export function createAnthropicPassthroughStream(
                 const firstEventMs = Math.round(performance.now() - tHeaders);
                 const hdr = opts.headerLatencyMs ?? -1;
                 process.stdout.write(
-                  `  [ttft] anthropic model=${opts.modelName} reqN=${currentRequestNumber()} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
+                  `  [ttft] anthropic model=${opts.modelName} reqN=${reqN} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
                 );
               }
 

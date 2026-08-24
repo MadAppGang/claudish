@@ -1087,6 +1087,7 @@ export class ComposedHandler implements ModelHandler {
           modelName: this.bareModelName,
           onTokenUpdate,
           toolNameMap: adapter.getToolNameMap(),
+          headerLatencyMs,
         });
 
       case "anthropic-sse":

@@ -143,7 +143,11 @@ export function createStreamingResponseHandler(
   // upstream `data:` line then closes the measurement. stdout like [resp] so
   // the two markers join in docker logs (this was the instrumentation gap of
   // the 2026-08-24 abort investigation: totals were logged, TTFT never was).
+  // reqN is FROZEN here, at construction — reading the counter later (in the
+  // pump) would label the line with whatever request arrived during the wait,
+  // and the bias grows with exactly the latency this marker exists to measure.
   const tHeaders = performance.now();
+  const reqN = currentRequestNumber();
   let ttftLogged = false;
 
   return c.body(
@@ -656,7 +660,7 @@ export function createStreamingResponseHandler(
                 const firstEventMs = Math.round(performance.now() - tHeaders);
                 const hdr = headerLatencyMs ?? -1;
                 process.stdout.write(
-                  `  [ttft] openai model=${target} reqN=${currentRequestNumber()} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
+                  `  [ttft] openai model=${target} reqN=${reqN} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
                 );
               }
               log(`[SSE:openai] ${dataStr.substring(0, 300)}`);

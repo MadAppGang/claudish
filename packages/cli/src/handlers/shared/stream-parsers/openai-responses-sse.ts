@@ -14,6 +14,7 @@
 import type { Context } from "hono";
 import { log, getLogLevel } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
+import { currentRequestNumber } from "../response-capture.js";
 
 export function createResponsesStreamHandler(
   c: Context,
@@ -22,6 +23,8 @@ export function createResponsesStreamHandler(
     modelName: string;
     onTokenUpdate?: (input: number, output: number) => void;
     toolNameMap?: Map<string, string>;
+    /** dispatch → upstream headers latency, from ComposedHandler (for [ttft]). */
+    headerLatencyMs?: number;
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -31,6 +34,13 @@ export function createResponsesStreamHandler(
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  // TTFT anchors — headers arrived when this handler was built; the first
+  // upstream `data:` line completes the measurement. reqN frozen at
+  // construction: reading the counter in the pump would label the line with a
+  // request that arrived during the first-token wait.
+  const tHeaders = performance.now();
+  const reqN = currentRequestNumber();
+  let ttftLogged = false;
 
   let buffer = "";
   let blockIndex = 0;
@@ -91,6 +101,14 @@ export function createResponsesStreamHandler(
             if (line.startsWith("event: ")) continue;
             if (!line.startsWith("data: ")) continue;
             const data = line.slice(6);
+            if (!ttftLogged) {
+              ttftLogged = true;
+              const firstEventMs = Math.round(performance.now() - tHeaders);
+              const hdr = opts.headerLatencyMs ?? -1;
+              process.stdout.write(
+                `  [ttft] responses model=${opts.modelName} reqN=${reqN} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
+              );
+            }
             if (data === "[DONE]") continue;
 
             try {
