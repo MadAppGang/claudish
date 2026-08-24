@@ -16,6 +16,10 @@ services:
         source: ${CLAUDISH_CONFIG_DIR:-C:\Users\jsboi\.claudish}
         target: /root/.claudish
         read_only: true
+      # OpenAI Codex OAuth tokens: hub-only bind, deliberately NOT here — a
+      # file-type bind whose source is absent breaks (or directory-poisons)
+      # every sidecar compose up. The hub carries it in its local
+      # docker-compose.override.yml instead (auto-merged, never committed).
       # Persistent diagnostic capture: full request/response bodies for offline
       # analysis. The proxy writes req-*.json / resp-*.sse here (gated by
       # CLAUDISH_CAPTURE_DIR). Compacted nightly by ClaudishCaptureCompaction
@@ -64,14 +68,17 @@ services:
       - CLAUDISH_FAILOVER_OPUS_LABEL=${CLAUDISH_FAILOVER_OPUS_LABEL:-}
       - CLAUDISH_FAILOVER_OPUS_DIRECTION=${CLAUDISH_FAILOVER_OPUS_DIRECTION:-}
       - CLAUDISH_FAILOVER_OPUS_NOTE=${CLAUDISH_FAILOVER_OPUS_NOTE:-}
+      - CLAUDISH_FAILOVER_OPUS_RESET=${CLAUDISH_FAILOVER_OPUS_RESET:-}
       - CLAUDISH_FAILOVER_SONNET=${CLAUDISH_FAILOVER_SONNET:-}
       - CLAUDISH_FAILOVER_SONNET_LABEL=${CLAUDISH_FAILOVER_SONNET_LABEL:-}
       - CLAUDISH_FAILOVER_SONNET_DIRECTION=${CLAUDISH_FAILOVER_SONNET_DIRECTION:-}
       - CLAUDISH_FAILOVER_SONNET_NOTE=${CLAUDISH_FAILOVER_SONNET_NOTE:-}
+      - CLAUDISH_FAILOVER_SONNET_RESET=${CLAUDISH_FAILOVER_SONNET_RESET:-}
       - CLAUDISH_FAILOVER_HAIKU=${CLAUDISH_FAILOVER_HAIKU:-}
       - CLAUDISH_FAILOVER_HAIKU_LABEL=${CLAUDISH_FAILOVER_HAIKU_LABEL:-}
       - CLAUDISH_FAILOVER_HAIKU_DIRECTION=${CLAUDISH_FAILOVER_HAIKU_DIRECTION:-}
       - CLAUDISH_FAILOVER_HAIKU_NOTE=${CLAUDISH_FAILOVER_HAIKU_NOTE:-}
+      - CLAUDISH_FAILOVER_HAIKU_RESET=${CLAUDISH_FAILOVER_HAIKU_RESET:-}
       - CLAUDISH_FAILOVER_ROLE_MODELS=${CLAUDISH_FAILOVER_ROLE_MODELS:-}
       - CLAUDISH_FAILOVER_ACTIVE=${CLAUDISH_FAILOVER_ACTIVE:-}
       - CLAUDISH_FAILOVER_AUTO=${CLAUDISH_FAILOVER_AUTO:-}
