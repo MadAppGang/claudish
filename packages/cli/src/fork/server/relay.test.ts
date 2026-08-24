@@ -282,6 +282,66 @@ describe("forwardToUpstream — failover hysteresis (FAIL path)", () => {
   });
 });
 
+describe("forwardToUpstream — a header deadline is not liveness evidence", () => {
+  // The bound documents itself as "NOT a liveness detector — the heartbeat prober
+  // owns that", yet its abort used to call markFail. So a slow PROVIDER drove the
+  // HUB's state machine. On ai-01 (2026-08-24) that produced 23 header-deadline
+  // fallthroughs in 24h — 21 of them one failure short of the threshold — and one
+  // spurious 3m06s machine-wide AUTONOMOUS episode with the hub healthy throughout.
+  function freshState(): RelayState {
+    return createRelayState({ upstream: "http://hub:3000" });
+  }
+
+  /** A fetch that outlives the deadline, so the AbortController is what rejects. */
+  const neverAnswers = async (_url: any, init: any) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal.reason));
+    });
+
+  it("still falls through to local, so the request is served", async () => {
+    fetchImpl = neverAnswers;
+    const state = freshState();
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 20);
+    expect(r).toBeNull();
+  });
+
+  it("does not count against the hub", async () => {
+    fetchImpl = neverAnswers;
+    const state = freshState();
+    await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 20);
+    expect(state.consecutiveFail).toBe(0);
+  });
+
+  it("two in a row do not flip the machine to AUTONOMOUS", async () => {
+    fetchImpl = neverAnswers;
+    const state = freshState();
+    await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 20);
+    await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 20);
+    expect(state.alive).toBe(true);
+  });
+
+  it("does not erase progress toward recovery", async () => {
+    fetchImpl = neverAnswers;
+    const state = freshState();
+    state.consecutiveOk = 2; // two good heartbeats banked; recovery needs three
+    await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 20);
+    expect(state.consecutiveOk).toBe(2);
+  });
+
+  it("a genuinely refused connection still marks the hub down", async () => {
+    // The other half of the split: this one IS liveness evidence and must keep
+    // driving the hysteresis exactly as before.
+    fetchImpl = async () => {
+      throw new Error("ECONNREFUSED");
+    };
+    const state = freshState();
+    await forwardToUpstream(mockForwardContext({}), { model: "m" }, state);
+    await forwardToUpstream(mockForwardContext({}), { model: "m" }, state);
+    expect(state.consecutiveFail).toBe(2);
+    expect(state.alive).toBe(false);
+  });
+});
+
 describe("FORWARD_HEADERS_TIMEOUT_MS — must sit above real hub header latency", () => {
   it("is generous enough that ordinary upstream latency never forces a local fallthrough", () => {
     // Measured ai-01 → models.myia.io on 2026-08-10, plain glm-5.2 streaming POSTs:
