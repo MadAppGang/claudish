@@ -256,3 +256,48 @@ describe("AnthropicProviderTransport 429 backoff releases the concurrency slot",
     expect(peak).toBe(2);
   });
 });
+
+describe("AnthropicProviderTransport 429 quota-wall short-circuit", () => {
+  const provider: RemoteProvider = {
+    name: "minimax-coding",
+    baseUrl: "https://api.minimaxi.com",
+    apiPath: "/anthropic/v1/messages",
+    transport: "anthropic",
+    authScheme: "bearer",
+  };
+  // MiniMax counts down to its reset; the word that arms the predicate is "quota".
+  const WALL = '{"error":{"message":"Your quota has been exhausted, resets in 3h"}}';
+  const BURST = '{"error":{"message":"too many requests, retry shortly"}}';
+
+  test("a quota wall skips the jittered ladder", async () => {
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY);
+    let callCount = 0;
+    const startTime = Date.now();
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      return Promise.resolve(new Response(WALL, { status: 429 }));
+    });
+
+    expect(response.status).toBe(429);
+    expect(callCount).toBe(1);
+    expect(Date.now() - startTime).toBeLessThan(1000);
+    expect(await response.text()).toBe(WALL); // body preserved for the caller
+  }, 10000);
+
+  test("a BURST still walks the ladder — jitter path unaffected", async () => {
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY);
+    let callCount = 0;
+    const startTime = Date.now();
+
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve(new Response(BURST, { status: 429 }));
+      return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+    });
+
+    expect(response.status).toBe(200);
+    expect(callCount).toBe(2);
+    expect(Date.now() - startTime).toBeGreaterThanOrEqual(1900); // 2s rung + jitter
+  }, 15000);
+});

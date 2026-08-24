@@ -15,6 +15,7 @@ import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { ConcurrencyLimiter } from "../../handlers/shared/concurrency-limiter.js";
 import { log } from "../../logger.js";
 import { KimiOAuth } from "../../auth/kimi-oauth.js";
+import { isQuotaWall } from "./quota-wall.js";
 
 export class AnthropicProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -135,6 +136,9 @@ export class AnthropicProviderTransport implements ProviderTransport {
 
         if (response.status === 429 && attempt < maxRetries) {
           lastResponse = response;
+          // A wall will still be a wall after the ladder — give up now so the
+          // caller's deadline is not spent asleep. Bursts still retry (narrow predicate).
+          if (await isQuotaWall(response, this.displayName)) return response;
           const retryAfter = response.headers.get("Retry-After");
           let delayMs: number;
           if (retryAfter && !Number.isNaN(Number(retryAfter))) {
