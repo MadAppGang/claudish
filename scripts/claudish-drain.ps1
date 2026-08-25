@@ -11,13 +11,15 @@
 # away under it. Restarts are the main way that happens.
 #
 # Measured on the hub, 2026-08-23, 906 samples over 30 min: min 1, p50 5, p90 7,
-# max 10, mean 5.1. It never reached 0 — the hub is never idle. So a restart
-# always costs turns here; the only question is how many.
+# max 10, mean 5.1 — a loaded half-hour that never reached 0. A ~2-day
+# population probe (2026-08-25, 92 364 samples) corrects that window: min 0,
+# 4.62% of samples at zero, P(activeStreams hits 0 within 300s) = 57.5%
+# (73.4% within 600s). The floor IS zero; lulls are just brief (mean 5.9s),
+# so the drain must fire on the FIRST zero sample, without confirmation.
 #
 # Since PR #37 the proxy reports the count:
 #     GET /health -> {"status":"ok","activeStreams":8,"uptimeSec":1132}
-# which lets a restart pick its moment instead of guessing. It cannot wait for
-# silence, because silence does not come.
+# which lets a restart pick its moment instead of guessing.
 #
 # TWO WAYS TO USE IT
 #
@@ -33,7 +35,7 @@
 param(
     [string]$ContainerName = "claudish-proxy",
     [string]$ProxyUrl = "http://localhost:3000",
-    [int]$MaxWaitSec = 300,
+    [int]$MaxWaitSec = 600,
     [string]$Reason = "manual",
     [string]$LogPath = "$env:USERPROFILE\.claudish\drain.log"
 )
@@ -69,38 +71,31 @@ function Invoke-ClaudishDrainedRestart {
     <#
         Restarts the container at the quietest moment it can find.
 
-        NOT "waits for zero". Measured on the hub 2026-08-23, 906 samples over
-        30 min: activeStreams never once reached 0 (min 1, seen twice; p50 5,
-        p90 7, max 10; the longest lull at <=2 lasted 6 seconds). A drain that
-        waits for 0 on this hub can only time out and then restart at an
-        arbitrary moment — which is what the first version of this function did.
+        Phase 1 — wait for a TRUE zero. The hub's floor is zero (92 364-sample
+        population probe, 2026-08-25: min 0, 4.62% of samples at zero) and a
+        zero arrives within 300s on 57.5% of restarts (73.4% within 600s).
+        During $ObserveSec the target stays at -1, so ONLY an activeStreams==0
+        sample breaks the loop — a zero-cost restart. Lulls are brief (mean
+        5.9s), so we fire on the first zero sample without confirmation:
+        confirming costs a whole lull.
 
-        So the target is relative, not absolute. We watch for $ObserveSec to
-        learn what "quiet" means for this hub right now, then fire on the first
-        sample at or below that observed minimum. Each subsequent miss relaxes
-        the target by one, which bounds the wait without a timeout deciding for
-        us: the restart lands at a below-average moment instead of a random one.
+        Phase 2 — adaptive fallback for the ~43% unfavorable draws. After
+        $ObserveSec with no zero, the target becomes the observed $seenMin and
+        each subsequent miss relaxes it by one every $RelaxSec, which bounds
+        the wait: the restart lands at a below-average moment instead of a
+        random one. Replaying the 2026-08-23 samples, this adaptive stage
+        alone shaved per-restart cost from mean 5.19 (blind docker restart)
+        to 3.65, worst 10 -> 6. Relaxing faster undoes the gain (mean 4.67).
 
-        Replaying those 906 real samples through both versions, per restart:
-
-            blind `docker restart`   mean 5.19   p90 7   worst 10
-            this function            mean 3.65   p90 5   worst  6
-
-        The defaults are the knee of that curve. A longer cap buys nothing
-        (600s scored identically to 300s), and relaxing the target faster
-        undoes the whole gain — at one step per poll the target outruns the
-        hub and the mean goes back to 4.67.
-
-        This shaves the cost; it does not remove it. On a hub that is never idle
-        every restart cuts several agent turns, so the real mitigation is
-        restarting less often, not draining better.
+        Budget: $MaxWaitSec defaults to 600 — 300s of true-zero wait, then
+        ~300s of adaptive search. The 04:00 daily restart can afford 10 min.
     #>
     param(
         [string]$Reason = "unspecified",
         [string]$Container = $ContainerName,
         [string]$Url = $ProxyUrl,
         [int]$MaxWait = $MaxWaitSec,
-        [int]$ObserveSec = 60,
+        [int]$ObserveSec = 300,
         [int]$RelaxSec = 30,
         [int]$PollSec = 2
     )
@@ -133,7 +128,7 @@ function Invoke-ClaudishDrainedRestart {
                 if ($waited -ge $ObserveSec) {
                     $target = $seenMin
                     $sinceRelax = 0
-                    Write-DrainLog "RESTART ($Reason): observed ${ObserveSec}s, quietest was $seenMin stream(s) — waiting for a moment at or below that"
+                    Write-DrainLog "RESTART ($Reason): no zero within ${ObserveSec}s — giving up the zero wait, quietest was $seenMin stream(s); waiting for a moment at or below that"
                 }
             } elseif ($sinceRelax -ge $RelaxSec) {
                 # Missed it. Relax by one so the wait ends on a chosen moment
