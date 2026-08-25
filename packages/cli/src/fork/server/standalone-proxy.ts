@@ -61,6 +61,7 @@ if (hostIdx !== -1 && args[hostIdx + 1]) {
 }
 
 import { createProxyServer } from "../../proxy-server.js";
+import { deferSignalExitToHost } from "../../stats-buffer.js";
 import { loadConfig, getModelMapping } from "../../profile-config.js";
 import { createRelayState, startUpstreamProber, type RelayState } from "./relay.js";
 
@@ -109,16 +110,39 @@ console.log(`[claudish-proxy] Standalone proxy running on http://${hostname}:${p
 console.log(`[claudish-proxy] Config: ~/.claudish/config.json`);
 console.log(`[claudish-proxy] Press Ctrl+C to stop`);
 
-// Keep process alive
-process.on("SIGINT", async () => {
-  console.log("\n[claudish-proxy] Shutting down...");
-  stopProber?.();
-  await server.shutdown();
-  process.exit(0);
-});
+// stats-buffer.ts registers SIGTERM/SIGINT listeners while the import graph
+// above is being evaluated — i.e. before this line runs — and they exit the
+// process unless told otherwise. Without this call the two handlers below are
+// unreachable, and every restart cuts the in-flight SSE responses mid-body,
+// which each client reports as `Connection lost mid-response`.
+deferSignalExitToHost();
 
-process.on("SIGTERM", async () => {
+let shuttingDown = false;
+
+/**
+ * Stop accepting new connections, let in-flight responses finish, then exit.
+ *
+ * `server.shutdown()` is `http.Server.close()`: it drops the listening socket
+ * but keeps connections that are still sending a response, so an agent turn in
+ * progress runs to its terminal event instead of dying mid-body.
+ *
+ * The wait is deliberately NOT bounded here. The container runtime's stop
+ * timeout is the bound (`stop_grace_period`, 10s by default), and a shorter
+ * timeout in code would only re-create the abrupt kill this exists to avoid.
+ * For a human at a terminal, the way out is a second signal.
+ */
+const gracefulExit = async (signal: string): Promise<void> => {
+  if (shuttingDown) {
+    console.log(`\n[claudish-proxy] ${signal} again — exiting now, in-flight streams will be cut.`);
+    process.exit(0);
+  }
+  shuttingDown = true;
+  console.log(`\n[claudish-proxy] ${signal} — letting in-flight responses finish (send again to exit now)...`);
   stopProber?.();
   await server.shutdown();
   process.exit(0);
-});
+};
+
+// Keep process alive
+process.on("SIGINT", () => void gracefulExit("SIGINT"));
+process.on("SIGTERM", () => void gracefulExit("SIGTERM"));
