@@ -139,6 +139,12 @@ function Invoke-ClaudishDrainedRestart {
                 $sinceRelax = 0
             }
         }
+        # Decision instant: loop exit. Instrumented 2026-08-25 per the replay
+        # study (msg 14:41/14:47) — the decision->action delay d dominates the
+        # zero-loss rate (5.9s mean lulls), so we measure it instead of
+        # inferring it: script share exactly, Docker share bounded.
+        $decisionAt = Get-Date
+        $decisionCount = $active
         if ($null -eq $active) {
             # signal lost mid-drain; already logged
         } elseif ($active -gt 0) {
@@ -148,11 +154,24 @@ function Invoke-ClaudishDrainedRestart {
         }
     }
 
+    # Latency probe: last sample + clock just before the SIGTERM window.
+    # decision->action (script share of d) is exact; the docker restart
+    # brackets below bound the SIGTERM window (docker share of d).
+    if ($null -ne $decisionCount) {
+        $preRestartCount = Get-ClaudishActiveStreams -Url $Url
+        $preRestartAt = Get-Date
+        $scriptDelayMs = [int](($preRestartAt - $decisionAt).TotalMilliseconds)
+        Write-DrainLog "RESTART ($Reason): decision->action ${scriptDelayMs}ms; streams at decision $decisionCount, at action $($preRestartCount)"
+    }
+    $restartAt = Get-Date
     docker restart $Container 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-DrainLog "RESTART ($Reason): docker restart $Container FAILED (exit $LASTEXITCODE)"
         return $false
     }
+    $restartDoneAt = Get-Date
+    $restartSecs = [int](($restartDoneAt - $restartAt).TotalSeconds)
+    Write-DrainLog "RESTART ($Reason): docker restart returned in ${restartSecs}s — SIGTERM delivered within this window"
     Start-Sleep -Seconds 20
 
     $after = Get-ClaudishActiveStreams -Url $Url
