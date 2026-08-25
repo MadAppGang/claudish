@@ -3,6 +3,22 @@ services:
     build: .
     container_name: ${CLAUDISH_CONTAINER_NAME:-claudish-proxy}
     restart: unless-stopped
+
+    # How long Docker waits after SIGTERM before SIGKILL.
+    #
+    # This is the bound on the proxy's graceful shutdown, and the ONLY one: the
+    # SIGTERM handler in `standalone-proxy.ts` waits for in-flight responses to
+    # finish without an internal deadline, deliberately — a timer there would be
+    # a second, invisible answer to a question this field already answers, and
+    # an operator who needs out now sends the signal twice.
+    #
+    # Docker's default is 10s. A response stream lasts E[S] ~ 18s (measured on
+    # the hub over 45.9h, M/G/inf on 95706 samples), so the default would kill
+    # the majority of them mid-body and surface client-side as the very error
+    # the graceful path exists to remove: `Connection lost mid-response`.
+    # 120s covers the distribution with margin; it is paid only at shutdown, and
+    # only for as long as streams are actually still running.
+    stop_grace_period: 120s
     ports:
       # Host port is per-machine: 3000 is already taken on some sidecar hosts.
       # Container side stays 3000 — see `command:` below.
