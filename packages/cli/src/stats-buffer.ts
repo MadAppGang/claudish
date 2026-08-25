@@ -224,22 +224,62 @@ function syncFlushOnExit(): void {
 // Synchronous flush on normal exit
 process.on("exit", syncFlushOnExit);
 
-// Flush then exit on SIGTERM (sent by process managers, container runtimes, etc.)
-process.on("SIGTERM", () => {
-  try {
-    syncFlushOnExit();
-  } catch {
-    // Silently ignore
-  }
-  process.exit(0);
-});
+/**
+ * Whether a long-running host has taken over the exit on SIGTERM/SIGINT.
+ *
+ * Registering a signal listener suppresses Node's default terminate, so
+ * *someone* has to call `process.exit`. For the CLI that someone is us, and the
+ * handler below still does it, unchanged. But this module is also pulled into
+ * long-running hosts through a plain static import chain:
+ *
+ *     standalone-proxy.ts -> proxy-server.ts -> composed-handler.ts
+ *                                            -> stats.ts -> stats-buffer.ts
+ *
+ * A module body is evaluated before its importer's, and Node runs signal
+ * listeners synchronously in registration order — so this listener is always
+ * FIRST, and an unconditional `process.exit(0)` here returns to nobody. The
+ * host's own handler (`await server.shutdown()` in standalone-proxy.ts) never
+ * ran. Measured 2026-08-25 against the real import graph: exactly one SIGTERM
+ * listener present after the import, and the host's marker never printed.
+ *
+ * That was destructive in the proxy. `server.close()` on @hono/node-server lets
+ * an in-flight SSE response finish (measured: a stream closed mid-flight still
+ * delivered its remaining chunks and its terminal event), so the graceful path
+ * would have saved the agent turns a restart destroys. Instead every restart cut
+ * every in-flight stream mid-body and each client reported
+ * `Connection lost mid-response`.
+ *
+ * The flag is an explicit opt-in and not "some other listener exists, so it owns
+ * the exit": `mcp-server.ts` registers a SIGTERM listener that deliberately does
+ * NOT exit, so inferring ownership from the listener count would leave the MCP
+ * server unable to die on SIGTERM at all.
+ */
+let hostOwnsSignalExit = false;
 
-// Flush then exit on SIGINT (Ctrl+C or pipe close)
-process.on("SIGINT", () => {
+/**
+ * Declare that the host process handles SIGTERM/SIGINT itself.
+ *
+ * Call this from an entrypoint that has its own graceful shutdown *and* exits at
+ * the end of it. Afterwards the handler below still flushes — the flush is the
+ * part that must not wait for anything — but leaves the exit to the host.
+ */
+export function deferSignalExitToHost(): void {
+  hostOwnsSignalExit = true;
+}
+
+// Flush on SIGTERM (process managers, container runtimes) and on SIGINT (Ctrl+C
+// or pipe close). Flushing first is deliberate: if the host then takes tens of
+// seconds to drain, or is SIGKILLed at the end of its grace period, the `exit`
+// handler above may never run.
+function flushOnSignal(): void {
   try {
     syncFlushOnExit();
   } catch {
     // Silently ignore
   }
+  if (hostOwnsSignalExit) return;
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", flushOnSignal);
+process.on("SIGINT", flushOnSignal);
