@@ -83,6 +83,18 @@ export interface TestResult {
    */
   status: "testing" | "valid" | "failed" | "unavailable";
   error?: string;
+  /**
+   * The upstream's own explanation, WITHOUT the `<state> · <status> · <ms> —`
+   * prefix that `error` carries.
+   *
+   * The detail panel shows this rather than `error` because the provider row
+   * directly above already prints that prefix, and repeating it cost ~36
+   * characters of the only place the provider's sentence can be read. On
+   * MiniMax Coding that was the difference between stopping at "Upgrade
+   * you…" and showing "Upgrade your Token Plan or purchase Credits for more
+   * usage. (2056)" — the part that names the plan and the way out.
+   */
+  providerMessage?: string;
   ms?: number;
   /** Optional annotation when status is "valid" but the endpoint reported a
    *  non-fatal condition (e.g. "throttled" for 429-but-healthy). */

@@ -106,6 +106,38 @@ Three properties keep this safe:
   This closes the auth half: a revoked or rotated key, where the wording check has
   nothing to match on.
 
+### "Out of credit" and "plan limit reached" are two different facts
+
+`quota-exhaustion.ts` holds two phrase families, not one list. `BALANCE_PHRASES`
+means the account cannot be billed and the remedy is to pay; `PLAN_LIMIT_PHRASES`
+means a flat-rate allowance is spent and the remedy is to wait or upgrade.
+`EXHAUSTION_PHRASES` is their union, so `hasQuotaExhaustionWording` and every
+caller of it behave exactly as before — the split only adds
+`hasPlanLimitWording`, which `probe-live.ts` uses to choose between the
+`out-of-credit` and `plan-limit` probe states.
+
+Balance wins ties: a body carrying both families is a payment problem with plan
+wording next to it, and "pay" is the safer of the two instructions to give.
+
+Two live 429s, measured the same afternoon, are why the distinction exists:
+
+| Provider | Body | State |
+|---|---|---|
+| MiniMax Coding | `Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)` | `plan-limit` |
+| GLM (metered) | `Insufficient balance or no resource package. Please recharge.` | `out-of-credit` |
+
+Both rendered as `out of credit` before. For a flat-rate subscriber that is
+actively misleading — it sends someone to a billing page to fix a plan that is
+working and resets on its own.
+
+The provider's own sentence is the diagnosis, so it must survive to the screen.
+`extractErrorMessage`'s cap is therefore sized for the WIDEST consumer (400
+chars), not the narrowest: every consumer already bounds itself — the probe row
+clips to its column, the TUI detail panel wraps to 2 lines, and
+`probe-results-printer` word-wraps to `MAX_ERROR_LINES`. At its old 160 the cap
+was no longer protecting a layout, only deleting the remedy from the end of the
+MiniMax sentence.
+
 **`exhaustedChainStatus` had the same defect, and fixing the first one exposed it.**
 It read `e.status` to decide whether a whole chain failed transiently, and by then
 the remap may have rewritten that to 400 — so it was asking a number that no longer

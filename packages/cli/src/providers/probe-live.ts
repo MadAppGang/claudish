@@ -17,6 +17,7 @@ import {
   hasActionableLink,
   hasModelUnsupportedWording,
 } from "../handlers/shared/model-unsupported.js";
+import { hasPlanLimitWording } from "../handlers/shared/quota-exhaustion.js";
 
 export type ProbeState =
   | "live"
@@ -25,6 +26,12 @@ export type ProbeState =
   | "model-not-found"
   | "rate-limited"
   | "out-of-credit"
+  /**
+   * A flat-rate allowance is spent for this cycle. Distinct from
+   * `out-of-credit`: the account CAN be billed, the plan window simply has not
+   * reset, so the remedy is to wait or upgrade rather than to top up a balance.
+   */
+  | "plan-limit"
   | "server-error"
   | "timeout"
   | "network-error"
@@ -386,6 +393,21 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
     };
   }
   if (status === 429) {
+    // A 429 is the channel for BOTH transient throttling and a spent flat-rate
+    // allowance, so the status alone cannot tell them apart — only the body can.
+    // MiniMax Coding answers `429 "Token Plan usage limit reached: Upgrade your
+    // Token Plan or purchase Credits for more usage. (2056)"`, which is a plan
+    // window, not throttling: retrying in a second cannot help, and the TUI
+    // treats throttling as healthy. Wording-gated, so an ordinary throttle with
+    // no allowance vocabulary still reads as "rate limited".
+    if (hasPlanLimitWording(body)) {
+      return {
+        state: "plan-limit",
+        latencyMs,
+        httpStatus: status,
+        errorMessage: extractErrorMessage(body) || "Plan allowance spent for this cycle",
+      };
+    }
     return {
       state: "rate-limited",
       latencyMs,
@@ -404,6 +426,22 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
   // healthy ("throttled" note) — an exhausted account must read as a failure
   // with an honest cause instead of an opaque "error · 400".
   if (upstream === 429 || status === 402) {
+    // Same fork as the raw 429 above, on the remapped shape. This is the path a
+    // TUI probe takes, because the proxy turns a terminal 429 into a 400 that
+    // carries the real upstream status. A spent SUBSCRIPTION reaching the user
+    // as "out of credit" is actively misleading: it sends a flat-rate user to a
+    // billing page to fix a plan that is working and resets on its own.
+    //
+    // 402 is deliberately NOT forked. It means Payment Required, which is a
+    // balance fact whatever wording rides along with it.
+    if (status !== 402 && hasPlanLimitWording(body)) {
+      return {
+        state: "plan-limit",
+        latencyMs,
+        httpStatus: upstream ?? status,
+        errorMessage: extractErrorMessage(body) || "Plan allowance spent for this cycle",
+      };
+    }
     return {
       state: "out-of-credit",
       latencyMs,
@@ -429,16 +467,24 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
 }
 
 /**
- * Shorten a provider message for a probe row WITHOUT severing a URL.
+ * Shorten a provider message WITHOUT severing a URL.
  *
- * The row is one line, so a cap is necessary — but a blind 160-char cut removed
- * the only actionable part of Zen Go's region error, leaving
- * "…requires explicit opt in: https://opencode.ai/workspa..." on screen. The
- * user is told there is a specific fix and then denied the address of it.
+ * A cap is necessary — but a blind cut removed the only actionable part of Zen
+ * Go's region error, leaving "…requires explicit opt in:
+ * https://opencode.ai/workspa..." on screen. The user is told there is a
+ * specific fix and then denied the address of it. So the link is kept whole and
+ * the PROSE around it absorbs the cut instead.
  *
- * So the link is kept whole and the PROSE around it absorbs the cut instead.
+ * The cap is sized for the WIDEST consumer, not the narrowest. It was 160,
+ * chosen when the only consumer was a one-line probe row — but every consumer
+ * now bounds itself (the row clips to its column, the TUI detail panel wraps to
+ * 2 lines, `probe-results-printer` word-wraps to `MAX_ERROR_LINES` 4), so 160
+ * was no longer protecting a layout, only deleting text. It cut MiniMax
+ * Coding's `429 "Token Plan usage limit reached: Upgrade your Token Plan or
+ * purchase Credits for more usage. (2056)"` at "Upgrade you..." — losing the
+ * remedy, which is the only part of the sentence the user can act on.
  */
-function truncateKeepingLink(text: string, max = 160): string {
+function truncateKeepingLink(text: string, max = 400): string {
   if (text.length <= max) return text;
   const url = text.match(/https?:\/\/\S+/i)?.[0];
   if (!url) return `${text.slice(0, max - 3)}...`;
@@ -747,6 +793,11 @@ export function describeProbeState(result: ProbeResult): string {
       return withDetail(`rate limited · ${result.latencyMs}ms`, result.errorMessage);
     case "out-of-credit":
       return withDetail(`out of credit · ${status}${latency}`.trim(), result.errorMessage);
+    case "plan-limit":
+      // "plan limit reached", not "out of credit": the account can be billed,
+      // the allowance simply has not reset. The provider's own sentence follows,
+      // and it is the part that names the plan and the way out.
+      return withDetail(`plan limit reached · ${status}${latency}`.trim(), result.errorMessage);
     case "server-error":
       return withDetail(`server error · ${status} · ${result.latencyMs}ms`, result.errorMessage);
     case "timeout":
@@ -774,6 +825,7 @@ export function isFailureState(state: ProbeState): boolean {
     state === "model-not-found" ||
     state === "rate-limited" ||
     state === "out-of-credit" ||
+    state === "plan-limit" ||
     state === "server-error" ||
     state === "timeout" ||
     state === "network-error" ||

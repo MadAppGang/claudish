@@ -56,7 +56,7 @@ import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/c
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
-import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
+import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
@@ -1594,6 +1594,19 @@ function getRecoveryHint(
     return "Provider overloaded. Retry or use a different model.";
   }
   if (status === 429 && (transportTerminal429 ?? isTerminal429(errorText))) {
+    // Terminal, but WHICH terminal? "Out of quota — check your plan & billing
+    // details" tells a flat-rate subscriber their money ran out when the real
+    // state is a billing cycle that has not reset, sending them to a billing
+    // page to fix a plan that is working. MiniMax Coding is the measured case:
+    // `429 "Token Plan usage limit reached: Upgrade your Token Plan or purchase
+    // Credits for more usage. (2056)"`.
+    //
+    // Same predicate the probe's `plan-limit` state uses, so this hint and the
+    // TUI row cannot disagree about one response — the recurring failure mode
+    // this file already guards against for auth vs model-unsupported.
+    if (hasPlanLimitWording(errorText)) {
+      return "Plan limit reached — your allowance is spent for this cycle and refills on the provider's own schedule (see the message below). Wait, upgrade the plan, or switch provider.";
+    }
     return "Out of quota — check your plan & billing details. This won't recover on retry.";
   }
   // The transport has positively identified this 429 as transient. Return the
@@ -1629,6 +1642,13 @@ function getRecoveryHint(
     // it as one — see shared/quota-exhaustion.ts for why this is shared with the
     // fallback gate rather than duplicated here.
     if (isQuotaExhaustionError(status, errorText)) {
+      // Kimi's coding plan is exactly this shape: `403 permission_error
+      // "You've reached your usage limit for this billing cycle"`. It is a spent
+      // ALLOWANCE arriving on an auth status, so it takes the plan wording, not
+      // the balance wording — same split as the 429 branch above.
+      if (hasPlanLimitWording(errorText)) {
+        return "Plan limit reached — your allowance is spent for this cycle and refills on the provider's own schedule (see the message below). Wait, upgrade the plan, or switch provider.";
+      }
       return "Out of quota — check your plan & billing details. This won't recover on retry.";
     }
     // The provider already said what to do, and it is not "check your key".

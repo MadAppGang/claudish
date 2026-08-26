@@ -34,30 +34,58 @@
  */
 
 /**
- * Phrases that indicate a spent allowance rather than a bad credential.
+ * Phrases that indicate a spent allowance rather than a bad credential, split
+ * into the two families below and re-joined as {@link EXHAUSTION_PHRASES}.
  *
- * Deliberately narrow. A false positive here is not harmless in the other
- * direction: it would tell a user with genuinely broken credentials to go and
- * check their billing. So this matches only wording about limits, cycles and
+ * Both lists are deliberately narrow. A false positive is not harmless in the
+ * other direction: it would tell a user with genuinely broken credentials to go
+ * and check their billing. So they match only wording about limits, cycles and
  * balances — never bare "permission", "denied", "forbidden" or "invalid",
  * which are the vocabulary of real auth failures.
  */
-const EXHAUSTION_PHRASES = [
+
+/**
+ * The account cannot be BILLED: the balance is empty and the remedy is to pay.
+ *
+ * Checked before {@link PLAN_LIMIT_PHRASES}, which is why `insufficient_quota`
+ * lives here rather than being swallowed by the bare `quota` entry below.
+ * OpenAI's `insufficient_quota` is a billing code, not an allowance window.
+ */
+const BALANCE_PHRASES = [
+  "insufficient balance",
+  "insufficient_quota",
+  "out of credits",
+  "credit balance",
+] as const;
+
+/**
+ * A flat-rate ALLOWANCE is spent and refills on a clock. The remedy is to wait,
+ * or to buy a bigger plan — never to top up a balance.
+ *
+ * MiniMax answers `429 "Token Plan usage limit reached: Upgrade your Token Plan
+ * or purchase Credits for more usage. (2056)"`, which is caught by "usage
+ * limit". Reporting that as "out of credit" told a subscriber their money had
+ * run out when their billing cycle had simply not reset.
+ */
+const PLAN_LIMIT_PHRASES = [
   "usage limit",
   "billing cycle",
   "quota",
-  "insufficient balance",
-  "insufficient_quota",
   "upgrade your plan",
   "exceeded your current",
-  "out of credits",
-  "credit balance",
   // Rolling-window wording. Zen Go says "5-hour usage limit reached" (caught by
   // "usage limit"), but "daily limit" / "plan limit" are the same event in other
   // vendors' phrasing and share no vocabulary with an auth failure.
   "daily limit",
   "plan limit",
 ] as const;
+
+/**
+ * The union both families belong to. Callers that only need "is the allowance
+ * spent, whatever the reason" read THIS, so splitting the families above
+ * changed no existing behaviour.
+ */
+const EXHAUSTION_PHRASES = [...BALANCE_PHRASES, ...PLAN_LIMIT_PHRASES] as const;
 
 /**
  * Wording-only check: does this body say the allowance is spent?
@@ -85,6 +113,25 @@ const EXHAUSTION_PHRASES = [
 export function hasQuotaExhaustionWording(errorBody: string): boolean {
   const lower = (errorBody || "").toLowerCase();
   return EXHAUSTION_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * Narrower than {@link hasQuotaExhaustionWording}: true only when the body says
+ * a flat-rate ALLOWANCE is spent, and never when it says the BALANCE is empty.
+ *
+ * The two need different words in front of the user because they need different
+ * actions. "Out of credit" tells a subscriber to go and pay; when the real state
+ * is a spent billing cycle, that sends them to a billing page to fix a plan that
+ * is working and will reset on its own.
+ *
+ * Balance wins ties. A body carrying both families is reporting a payment
+ * problem that some plan wording happens to sit next to, and "pay" is the
+ * safer of the two instructions to give.
+ */
+export function hasPlanLimitWording(errorBody: string): boolean {
+  const lower = (errorBody || "").toLowerCase();
+  if (BALANCE_PHRASES.some((phrase) => lower.includes(phrase))) return false;
+  return PLAN_LIMIT_PHRASES.some((phrase) => lower.includes(phrase));
 }
 
 /**

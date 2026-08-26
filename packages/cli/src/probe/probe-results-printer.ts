@@ -418,6 +418,8 @@ function shortStatusLabel(
       return `${pc.red}⊗ rate-limited${pc.reset}`;
     case "out-of-credit":
       return `${pc.red}⊗ no credit${pc.reset}`;
+    case "plan-limit":
+      return `${pc.red}⊗ plan limit${pc.reset}`;
     case "server-error":
       return `${pc.red}⊗ server ${probe.httpStatus ?? ""}${pc.reset}`;
     case "timeout":

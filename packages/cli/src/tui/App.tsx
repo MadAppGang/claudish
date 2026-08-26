@@ -1423,7 +1423,12 @@ export function App({ requestLogin }: AppProps = {}) {
         const error = tried.size > 1 ? `${baseError} (tried ${tried.size} models)` : baseError;
         setTestResults((prev) => ({
           ...prev,
-          [provName]: { status: "failed", error, ms },
+          // `errorMessage` is carried alongside the rendered `error` rather than
+          // re-derived from it: the detail panel needs the upstream's own words
+          // without the state/status/latency prefix, and splitting a formatted
+          // string back apart would break on any provider whose message
+          // contains the same separator.
+          [provName]: { status: "failed", error, providerMessage: result.errorMessage, ms },
         }));
       }
     } catch (err: unknown) {
