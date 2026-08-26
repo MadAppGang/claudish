@@ -174,11 +174,17 @@ export function lookupVariantPresets(
 ): { modelId: string; preset: string; provider?: string }[] {
   const cache = readAllModelsCache(cachePath);
   if (!cache) return [];
+  // Same key rule as findCacheEntry — the caller passes a BARE name, and on the
+  // OpenRouter route a bare name still carries the vendor prefix
+  // ("openai/gpt-5.6-sol") because OpenRouter's API requires it. Comparing raw
+  // strings here matched nothing on precisely the provider whose presets the
+  // catalog records, i.e. the feature was dead where it was meant to work.
+  const wanted = stripVendorPrefix(baseModelId.toLowerCase());
   const found: { modelId: string; preset: string; provider?: string }[] = [];
   for (const entry of cache.entries) {
     const rv = entry.routeVariant;
-    if (!rv?.preset) continue;
-    if (rv.baseModelId !== baseModelId) continue;
+    if (!rv?.preset || !rv.baseModelId) continue;
+    if (stripVendorPrefix(rv.baseModelId.toLowerCase()) !== wanted) continue;
     if (provider !== undefined && rv.provider !== provider) continue;
     found.push({ modelId: entry.modelId, preset: rv.preset, provider: rv.provider });
   }
@@ -295,6 +301,19 @@ function isSubscriptionPlan(provider: string, cachePath?: string): boolean {
  * on modelId or aliases. Shared by lookupModel / lookupModelForProvider.
  * Throws if `modelId` contains "@" — callers must strip the provider prefix.
  */
+/**
+ * The catalog's matching key for a model id: lowercased, vendor prefix dropped.
+ *
+ * `openai/gpt-5.6-sol` and `gpt-5.6-sol` are the SAME model — the prefix is
+ * aggregator routing vocabulary, and OpenRouter's route keeps it on the bare
+ * name (see the vendor-prefix note in proxy-server's getOpenRouterHandler).
+ * Every catalog lookup must apply this rule or it silently misses exactly the
+ * models reached through an aggregator.
+ */
+function stripVendorPrefix(lowerId: string): string {
+  return lowerId.includes("/") ? lowerId.substring(lowerId.lastIndexOf("/") + 1) : lowerId;
+}
+
 function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | undefined {
   if (modelId.includes("@")) {
     throw new Error(
@@ -306,8 +325,7 @@ function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | u
   if (!cache || cache.entries.length === 0) return undefined;
 
   const lower = modelId.toLowerCase();
-  // Vendor-prefixed IDs like "x-ai/grok-beta" — match on segment after "/"
-  const unprefixed = lower.includes("/") ? lower.substring(lower.lastIndexOf("/") + 1) : lower;
+  const unprefixed = stripVendorPrefix(lower);
 
   for (const entry of cache.entries) {
     const entryId = entry.modelId.toLowerCase();

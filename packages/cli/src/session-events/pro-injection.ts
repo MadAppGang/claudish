@@ -105,6 +105,20 @@ export function applyProInjection(
     if (opts.outputConfig?.effort !== "xhigh") return false;
     if (opts.outputConfig?.format) return false;
     const registry = opts.registry ?? sessionEvents;
+    // Own the session lifecycle here rather than at the call site. getState()
+    // returns undefined until a tailer exists, so without these two lines the
+    // layer is INERT in production and every gate below is unreachable — the
+    // unit tests only passed because the harness called ensureSession itself.
+    //
+    // Both are cheap to repeat: ensureSession is idempotent (and rate-limits
+    // its own misses), sync is a no-op for an unknown session. They run only
+    // after the free gates above, so a request that could never inject does no
+    // filesystem work. sync() closes the enter-event→request race — the
+    // ultracode attachment is written to the transcript moments before the
+    // first ultracode request arrives, and poll-interval latency would
+    // otherwise lose that first turn.
+    registry.ensureSession(opts.sessionId);
+    registry.sync(opts.sessionId);
     const state = registry.getState(opts.sessionId);
     if (!state?.ultracodeActive) return false;
     // Capability gate LAST: it is the only gate that touches the filesystem.

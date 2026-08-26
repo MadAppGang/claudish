@@ -149,6 +149,33 @@ describe("applyProInjection", () => {
     expect(payload.reasoning).toEqual({ effort: "xhigh", mode: "pro" });
   });
 
+  test("applyProInjection ensures+syncs the session itself — production never does it", () => {
+    // Do not use makeHome() here: that shared helper eagerly ensures and syncs,
+    // masking the production lifecycle bug that reached a live run.
+    home = mkdtempSync(join(tmpdir(), "claudish-proinj-"));
+    const projectDir = join(home, "projects", "-fake-cwd");
+    mkdirSync(projectDir, { recursive: true });
+    transcriptFile = join(projectDir, `${FIXTURE_SESSION_ID}.jsonl`);
+    writeFileSync(
+      transcriptFile,
+      `${FIXTURE_EFFORT_ULTRACODE_STDOUT}\n${FIXTURE_ULTRA_EFFORT_ENTER}\n`
+    );
+    cachePath = join(home, "all-models.json");
+    registry = new SessionEventRegistry({ claudeHome: home, pollIntervalMs: 60_000 });
+    writeCatalog();
+
+    const disabledPayload = { marker: "unchanged" };
+    expect(applyProInjection(disabledPayload, makeProOptions({ enabled: false }))).toBe(false);
+    expect(disabledPayload).toEqual({ marker: "unchanged" });
+    expect(registry.getState(FIXTURE_SESSION_ID)).toBeUndefined();
+
+    const payload: { reasoning: { effort: string; mode?: string } } = {
+      reasoning: { effort: "xhigh" },
+    };
+    expect(applyProInjection(payload, makeProOptions())).toBe(true);
+    expect(payload.reasoning).toEqual({ effort: "xhigh", mode: "pro" });
+  });
+
   test("enabled false preserves the default-OFF contract and leaves the payload untouched", () => {
     makeHome(FIXTURE_EFFORT_ULTRACODE_STDOUT, FIXTURE_ULTRA_EFFORT_ENTER);
     writeCatalog();

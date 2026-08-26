@@ -318,11 +318,21 @@ carry a `routeVariant`, all three of them `gpt-5.6-*-pro`, all recorded on
 `gpt-5.6-sol` lists openai, openrouter, opencode-zen and openai-codex — but each
 `-pro` SKU exists on OpenRouter's roster alone.
 
-**Why scoped rather than applied everywhere.** A preset is an observation about ONE
-provider's roster, not a portable fact about the model. Whether OpenAI's own API
-accepts `reasoning.mode=pro` on `gpt-5.6-sol` is UNVERIFIED — plausible, since
-OpenRouter passes parameters through, but plausible is not measured. Injecting it on
-`oai@` would be a guess, and a wrong guess is a 400 on every ultracode turn.
+**Why scoped rather than applied everywhere — now measured, not assumed.** Sending
+`reasoning.mode=pro` to `gpt-5.6-sol` on each vendor (2026-08-27, real requests):
+
+| Vendor | Result |
+|---|---|
+| `openrouter` | accepted (200) |
+| `openai` (`api.openai.com/v1/responses`) | accepted (200) |
+| `openai-codex` (ChatGPT OAuth backend) | **400** — `` `reasoning.mode` is not supported with this model `` |
+
+So the parameter is neither OpenRouter-only nor universal. Applying it unscoped would
+hard-400 every ultracode turn on `cx@`, which is the single most likely route for this
+model family. The provider gate is what prevents that.
+
+`oai@` accepting it means the CATALOG under-reports reality — the fix belongs in
+models-index, not in a client-side exception list.
 
 **Trigger conditions** (either is sufficient):
 
