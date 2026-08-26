@@ -164,7 +164,10 @@ function Invoke-ClaudishDrainedRestart {
         Write-DrainLog "RESTART ($Reason): decision->action ${scriptDelayMs}ms; streams at decision $decisionCount, at action $($preRestartCount)"
     }
     $restartAt = Get-Date
-    docker restart $Container 2>$null
+    # -t must match stop_grace_period (120s, docker-compose.yml): the CLI flag
+    # governs how long Docker waits between SIGTERM and SIGKILL, and without it
+    # a docker-daemon default (10s) can truncate the graceful window #57 added.
+    docker restart -t 120 $Container 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-DrainLog "RESTART ($Reason): docker restart $Container FAILED (exit $LASTEXITCODE)"
         return $false
