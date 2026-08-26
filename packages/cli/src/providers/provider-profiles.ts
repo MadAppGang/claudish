@@ -64,8 +64,19 @@ export interface ProfileContext {
   targetModel: string;
   /** The listening port of the proxy server */
   port: number;
-  /** Shared ComposedHandler options from the outer scope */
-  sharedOpts: Pick<ComposedHandlerOptions, "isInteractive" | "invocationMode">;
+  /**
+   * Shared ComposedHandler options from the outer scope.
+   *
+   * Every profile spreads this verbatim, so widening this Pick is how a new
+   * handler option reaches all ~25 profile and custom-endpoint construction
+   * sites at once. An option added to ComposedHandlerOptions but NOT listed
+   * here is dropped by the spread with no error — the feature then works on
+   * the direct proxy-server routes and silently not on any profile.
+   */
+  sharedOpts: Pick<
+    ComposedHandlerOptions,
+    "isInteractive" | "invocationMode" | "effortOverride" | "modelParams" | "proOnUltracode"
+  >;
 }
 
 /**

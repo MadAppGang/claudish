@@ -421,6 +421,15 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     requested: EffortLevel,
     reasoning: ReasoningCapability
   ): EffortLevel | undefined {
+    // `--effort` pins the level VERBATIM — skip the clamp entirely. This is an
+    // escape hatch, and it can produce a 400: the clamp is what normally keeps
+    // a level the model does not advertise off the wire. Asking for it anyway
+    // is the user's explicit choice.
+    // `--effort` pins the level VERBATIM — skip the clamp entirely. This is an
+    // escape hatch, and it can produce a 400: the clamp is what normally keeps
+    // a level the model does not advertise off the wire. Asking for it anyway
+    // is the user's explicit choice.
+    if (this.pinnedEffort) return this.pinnedEffort;
     const advertised = (reasoning.efforts ?? []).filter(isEffortLevel);
     if (advertised.length === 0) {
       return isEffortLevel(reasoning.defaultEffort) ? reasoning.defaultEffort : undefined;
@@ -479,6 +488,26 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
+   * `--effort <level>`: a user-pinned effort that bypasses BOTH the request's
+   * own signal and the per-model catalog clamp.
+   *
+   * Safe as instance state because every ComposedHandler owns its dialect —
+   * `resolveModelDialect()` builds a fresh object per call and never caches —
+   * so a pin set for one model cannot leak into another.
+   *
+   * Only the seven canonical levels are accepted. A provider-specific value
+   * that is not one of them cannot flow through the `EffortLevel`-typed
+   * pipeline at all; `--model-params reasoning_effort=<value>` is the tool for
+   * that, and it lands on the payload after every adapter has finished.
+   */
+  protected pinnedEffort?: EffortLevel;
+
+  /** Install the `--effort` override for this handler. undefined clears it. */
+  setEffortOverride(level: EffortLevel | undefined): void {
+    this.pinnedEffort = level;
+  }
+
+  /**
    * Normalize Claude Code's effort signal to a canonical {@link EffortLevel}
    * (or undefined when the request carries no effort hint).
    *
@@ -492,6 +521,9 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * accepted value set (or strips, when the provider has no reasoning knob).
    */
   protected resolveEffortLevel(originalRequest: any): EffortLevel | undefined {
+    // `--effort` wins over anything the request carries. Checked first so the
+    // legacy budget_tokens fallback below cannot override an explicit pin.
+    if (this.pinnedEffort) return this.pinnedEffort;
     const lvl = originalRequest?.output_config?.effort;
     if (typeof lvl === "string") {
       const lower = lvl.toLowerCase();

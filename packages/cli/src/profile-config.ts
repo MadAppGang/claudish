@@ -232,6 +232,16 @@ export interface ClaudishProfileConfig {
    * `loadConfig` runs on lightweight startup paths and stays Zod-free.
    */
   behavior?: Record<string, unknown>;
+
+  /**
+   * Apply a model's catalog provider-preset (e.g. `reasoning.mode=pro`) while
+   * the Claude Code session is in ultracode. Opt-in and default OFF — a pro
+   * preset burns quota faster, so it must never turn itself on.
+   * Precedence: --pro-on-ultracode flag > CLAUDISH_PRO_ON_ULTRACODE env >
+   * project `.claudish.json` > this field > false. The scoped read is
+   * `readProOnUltracode()`, NOT this allowlist — see its doc comment.
+   */
+  proOnUltracode?: boolean;
 }
 
 /**
@@ -345,6 +355,12 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.behavior !== undefined) {
       merged.behavior = config.behavior;
     }
+    // Same trap as keychain/onepasswordEnvironments above: omitted from this
+    // allowlist, the field survives on disk until the first global save and is
+    // then silently dropped — quietly turning the feature off with no error.
+    if (config.proOnUltracode !== undefined) {
+      merged.proOnUltracode = config.proOnUltracode;
+    }
     return merged;
   } catch (error) {
     console.error(`Warning: Failed to load config, using defaults: ${error}`);
@@ -420,6 +436,52 @@ export function getLocalConfigPath(): string {
  */
 export function localConfigExists(): boolean {
   return existsSync(getLocalConfigPath());
+}
+
+/**
+ * The two config scopes `readProOnUltracode` consults, as thunks.
+ *
+ * A seam rather than direct calls because `homedir()` cannot be re-pointed at
+ * runtime in Bun — the same approach as onepassword-config.test.ts.
+ */
+export interface ScopedConfigPaths {
+  global: () => string;
+  project: () => string;
+}
+
+const defaultScopedConfigPaths: ScopedConfigPaths = {
+  // activeConfigFile(), NOT the raw CONFIG_FILE constant: `--config <file>` /
+  // CLAUDISH_CONFIG must redirect this read like every other config reader,
+  // and `bun run test:safe` relies on that to stay off the real machine file.
+  global: () => activeConfigFile(),
+  project: () => getLocalConfigPath(),
+};
+
+/**
+ * Read `proOnUltracode` from the project file, else the global file.
+ *
+ * Deliberately a RAW per-file read rather than `loadConfig()`. `loadConfig`
+ * merges only the global scope through its allowlist, so a project
+ * `.claudish.json` that sets ONLY this key would be invisible to it. That is
+ * the whole point of this function, not an oversight.
+ *
+ * Returns undefined when neither scope states a boolean — the caller then
+ * applies its own default (false).
+ */
+export function readProOnUltracode(
+  paths: ScopedConfigPaths = defaultScopedConfigPaths
+): boolean | undefined {
+  for (const pathFn of [paths.project, paths.global]) {
+    try {
+      const path = pathFn();
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      if (typeof parsed?.proOnUltracode === "boolean") return parsed.proOnUltracode;
+    } catch {
+      // Garbled/unreadable file → skip this scope rather than fail the run.
+    }
+  }
+  return undefined;
 }
 
 /**

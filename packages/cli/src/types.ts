@@ -82,6 +82,14 @@ export interface ClaudishConfig {
   classifierModel?: string; // --classifier-model <m> (also enables the passthrough)
   classifierProvider?: string; // --classifier-provider anthropic (enables the passthrough)
 
+  // Request-shaping overrides
+  /** --effort <level>: pin the reasoning effort verbatim, SKIPPING the per-model catalog clamp */
+  effortOverride?: string;
+  /** --model-params k=v[,k=v...]: extra request params deep-merged into the outbound payload */
+  modelParams?: Record<string, unknown>;
+  /** --pro-on-ultracode: apply the model's catalog provider-preset while in ultracode (opt-in) */
+  proOnUltracode?: boolean;
+
   // Cost tracking
   costTracking?: boolean;
   auditCosts?: boolean;

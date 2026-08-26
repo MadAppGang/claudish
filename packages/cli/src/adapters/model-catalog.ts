@@ -143,6 +143,49 @@ export function lookupFamilyDefaultVariant(
 }
 
 /**
+ * Every catalog variant whose preset expands `baseModelId`, optionally narrowed
+ * to one serving provider.
+ *
+ * The inverse of {@link lookupModelRouteVariant}: that answers "which model is
+ * this variant a preset OF?", this answers "which presets exist FOR this
+ * model?".
+ *
+ * This is the sanctioned replacement for a name regex that asks "does this
+ * model support capability X?". The catalog records BOTH halves of the fact —
+ * which base model a preset applies to (`baseModelId`) and what the preset
+ * actually sets (`preset`, in `--model-params` `k=v` syntax) — so the caller
+ * carries neither a model list nor a hardcoded payload. Feed `preset` to
+ * `parseModelParams()` to get the params the provider would have applied.
+ *
+ * Returns [] for a cold cache or a model with no variants. Callers MUST treat
+ * that as "no information" and keep their existing behaviour; absence is never
+ * an error and must never block a request.
+ *
+ * @param provider Only return variants recorded on this serving provider. A
+ *   preset is an observation about ONE provider's roster, not a portable fact
+ *   about the model — the same parameter may not exist on another host — so a
+ *   caller that cannot verify the parameter independently should pass the
+ *   provider it is actually routing to.
+ */
+export function lookupVariantPresets(
+  baseModelId: string,
+  provider?: string,
+  cachePath?: string
+): { modelId: string; preset: string; provider?: string }[] {
+  const cache = readAllModelsCache(cachePath);
+  if (!cache) return [];
+  const found: { modelId: string; preset: string; provider?: string }[] = [];
+  for (const entry of cache.entries) {
+    const rv = entry.routeVariant;
+    if (!rv?.preset) continue;
+    if (rv.baseModelId !== baseModelId) continue;
+    if (provider !== undefined && rv.provider !== provider) continue;
+    found.push({ modelId: entry.modelId, preset: rv.preset, provider: rv.provider });
+  }
+  return found;
+}
+
+/**
  * Coarse capability flags straight from the catalog. Each is undefined when the
  * catalog has no opinion — never defaulted to false, because "unknown" and "no"
  * lead to different behaviour (dropping tools from a request that needs them is

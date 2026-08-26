@@ -21,7 +21,7 @@
  */
 
 import type { Context } from "hono";
-import type { BaseAPIFormat } from "../adapters/base-api-format.js";
+import type { BaseAPIFormat, EffortLevel } from "../adapters/base-api-format.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
@@ -35,12 +35,15 @@ import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
 import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
+import { deepMergeParams } from "../model-params.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
   describeImages,
 } from "../services/vision-proxy.js";
+import { type SessionEventRegistry, extractSessionId } from "../session-events/index.js";
+import { applyProInjection } from "../session-events/pro-injection.js";
 import { recordStats } from "../stats.js";
 import { classifyError, reportError } from "../telemetry.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -108,6 +111,34 @@ export interface ComposedHandlerOptions {
   forceForeignModel?: boolean;
   /** How this handler was invoked (for stats). */
   invocationMode?: "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map";
+  /**
+   * `--effort <level>`: pin the reasoning effort verbatim, skipping the
+   * per-model catalog clamp. Installed on this handler's dialect(s) at
+   * construction; undefined leaves the clamped mapping untouched.
+   */
+  effortOverride?: EffortLevel;
+  /**
+   * `--model-params k=v[,...]`: extra request params deep-merged into the
+   * outbound payload at step 5a — AFTER every adapter has shaped it, so these
+   * win over adapter defaults AND over the step 5a-pre preset injection.
+   */
+  modelParams?: Record<string, unknown>;
+  /**
+   * `--pro-on-ultracode`: apply this model's catalog provider-preset while the
+   * Claude Code session is in ultracode. Opt-in; when falsy the session-event
+   * layer is never consulted and does no filesystem work.
+   */
+  proOnUltracode?: boolean;
+  /**
+   * Test seam for the session-event registry. Defaults to the process-wide
+   * singleton. Only tests should pass this.
+   */
+  sessionEventRegistry?: SessionEventRegistry;
+  /**
+   * Test seam for the model-catalog cache path used by preset resolution.
+   * Defaults to ~/.claudish/all-models.json. Only tests should pass this.
+   */
+  catalogCachePath?: string;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -203,6 +234,23 @@ export class ComposedHandler implements ModelHandler {
     // process-wide; per-request state lives on the session created in handle(),
     // because this handler is cached per model and can serve overlapping requests.
     this.behaviorEngine = getBehaviorEngine();
+
+    // `--effort`: install the pin on EVERY dialect this handler can route
+    // through. getAdapter() picks explicitAdapter or resolvedDialect at request
+    // time and modelAdapter runs in addition to it, so pinning only one leaves
+    // the flag working on some models and silently not on others. Safe to
+    // mutate: resolveModelDialect() returns a fresh instance per handler, and
+    // an explicit adapter is built per handler by its profile.
+    if (options.effortOverride) {
+      for (const dialect of new Set(
+        [this.explicitAdapter, this.resolvedDialect, this.modelAdapter].filter(Boolean)
+      )) {
+        (dialect as BaseAPIFormat).setEffortOverride(options.effortOverride);
+      }
+      log(
+        `[ComposedHandler] --effort ${options.effortOverride} pinned for ${this.targetModel} (catalog clamp skipped)`
+      );
+    }
 
     // Initialize token tracker — model adapter knows the real context window
     this.tokenTracker = new TokenTracker(port, {
@@ -433,6 +481,38 @@ export class ComposedHandler implements ModelHandler {
       this.modelAdapter.prepareRequest(requestPayload, claudeRequest);
     }
     const toolNameMap = adapter.getToolNameMap();
+
+    // 5a-pre. Ultracode → catalog provider-preset injection (opt-in).
+    //
+    // Runs BEFORE the 5a --model-params merge, and that order IS the
+    // precedence rule: an explicit user `--model-params reasoning.mode=x` wins
+    // only because the merge lands last. Swap these two blocks and the
+    // injection silently overrides what the user asked for.
+    //
+    // Both blocks sit after step 5 (prepareRequest) and before 5c
+    // (transformPayload) on purpose: after, so they beat every adapter default;
+    // before, so they write into the payload itself rather than into a
+    // provider envelope that 5c may wrap around it.
+    if (this.options.proOnUltracode) {
+      applyProInjection(requestPayload, {
+        enabled: true,
+        sessionId: extractSessionId(claudeRequest?.metadata),
+        bareModelName: this.bareModelName,
+        provider: this.provider.name,
+        targetModel: this.targetModel,
+        outputConfig: claudeRequest?.output_config,
+        registry: this.options.sessionEventRegistry,
+        cachePath: this.options.catalogCachePath,
+      });
+    }
+
+    // 5a. --model-params: the user's last word on the payload.
+    if (this.options.modelParams) {
+      deepMergeParams(requestPayload, this.options.modelParams);
+      log(
+        `[ComposedHandler] Merged --model-params (${Object.keys(this.options.modelParams).join(", ")}) for ${this.targetModel}`
+      );
+    }
 
     // 5b. Refresh auth / health check (must happen before transformPayload, which may use auth state)
     if (this.provider.refreshAuth) {

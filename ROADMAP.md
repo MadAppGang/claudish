@@ -297,3 +297,73 @@ check.
 
 **Do not start if** the only motivation is tidiness. The comment already prevents the known
 failure; this is worth doing when someone is in these files anyway, not as its own errand.
+
+---
+
+## Ultracode pro-preset: broaden past the OpenRouter-only roster
+
+Status: shipped, deliberately narrow.
+
+`--pro-on-ultracode` applies a model's catalog provider-preset while a Claude Code
+session is in ultracode. It reads BOTH halves of the fact from the slim catalog's
+`routeVariant` — `baseModelId` says which model the preset applies to, `preset`
+(`reasoning.mode=pro`) says what to send — via `lookupVariantPresets()` in
+`adapters/model-catalog.ts`. There is no model name regex and no hardcoded payload;
+the `--model-params` parser doubles as the preset parser.
+
+The gate is PROVIDER-SCOPED, and today that means OpenRouter only. Measured against
+the live catalog on 2026-08-27 (`queryModels?catalog=slim`), exactly 3 of 753 entries
+carry a `routeVariant`, all three of them `gpt-5.6-*-pro`, all recorded on
+`provider: "openrouter"`. The base models are served much more widely —
+`gpt-5.6-sol` lists openai, openrouter, opencode-zen and openai-codex — but each
+`-pro` SKU exists on OpenRouter's roster alone.
+
+**Why scoped rather than applied everywhere.** A preset is an observation about ONE
+provider's roster, not a portable fact about the model. Whether OpenAI's own API
+accepts `reasoning.mode=pro` on `gpt-5.6-sol` is UNVERIFIED — plausible, since
+OpenRouter passes parameters through, but plausible is not measured. Injecting it on
+`oai@` would be a guess, and a wrong guess is a 400 on every ultracode turn.
+
+**Trigger conditions** (either is sufficient):
+
+1. models-index records a `routeVariant` preset (or an equivalent per-vendor preset
+   field) on a non-OpenRouter vendor row for the same base model. The client change is
+   then zero — `lookupVariantPresets(model, provider)` already returns it.
+2. A live run proves the parameter is accepted on another host, at which point the
+   fact belongs in the catalog first (see `TASK_pro_preset_vendor_coverage.md` in the
+   models-index repo), NOT in a claudish-side exception list.
+
+**Do not** work around this by dropping the provider argument or adding a per-provider
+allowlist in the CLI. That reintroduces exactly the hardcoded roster this design
+removed, and `feedback_backend_repo_boundary` puts the data gap in the backend's repo.
+
+**Effort**: none in claudish if trigger 1 lands. The gate already reads whatever the
+catalog says.
+
+Reference: `TASK_pro_preset_vendor_coverage.md` (models-index repo).
+
+---
+
+## `--effort-override` accepts only the seven canonical levels
+
+Status: shipped, deliberately narrow.
+
+`--effort-override <level>` pins reasoning effort verbatim and skips
+`clampToAdvertisedEffort()`. It is NOT `--effort` — that name belongs to Claude Code
+and claudish forwards it untouched in `claudeArgs` (pinned by
+`cli-passthrough.test.ts`). The two compose: `--effort` says what to ask for,
+`--effort-override` says do not clamp what I asked for.
+
+It accepts only `none|minimal|low|medium|high|xhigh|max`, because the value flows
+through the `EffortLevel`-typed pipeline in `base-api-format.ts`. A provider-specific
+value outside that set has an existing escape hatch that needs no new flag:
+`--model-params reasoning_effort=<value>`, which lands on the payload after every
+adapter has finished.
+
+**Trigger condition**: a provider ships a native effort vocabulary that is neither one
+of the seven nor reachable by a single `--model-params` key — e.g. an effort knob whose
+parameter NAME differs per dialect AND whose values are provider-specific. Only then
+does a dialect-aware native-value path earn its complexity.
+
+**Do not** widen `EffortLevel` itself to accommodate one provider. It is the canonical
+vocabulary Claude Code emits, and the clamp table is what maps it onto each provider.

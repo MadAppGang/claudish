@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
+import { isEffortLevel } from "./adapters/base-api-format.js";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
 import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
 import { credentials } from "./auth/credentials/authority.js";
@@ -117,6 +118,22 @@ export interface ProxyServerOptions {
    * disabled by default. See classifier-passthrough.ts.
    */
   classifier?: { enabled: boolean; model: string };
+  /**
+   * `--effort <level>`: pin the reasoning effort verbatim, skipping the
+   * per-model catalog clamp. Undefined leaves the clamped mapping untouched.
+   */
+  effortOverride?: string;
+  /**
+   * `--model-params k=v[,...]`: extra request params deep-merged into every
+   * outbound payload after the adapter has shaped it.
+   */
+  modelParams?: Record<string, unknown>;
+  /**
+   * `--pro-on-ultracode`: apply a model's catalog provider-preset while the
+   * session is in ultracode. Opt-in; when false the session-event layer does
+   * no filesystem work at all.
+   */
+  proOnUltracode?: boolean;
 }
 
 /**
@@ -239,6 +256,25 @@ export async function createProxyServer(
     options.advisorModels,
     options.advisorCollector
   );
+  /**
+   * Request-shaping options that must reach EVERY ComposedHandler, whatever
+   * route built it. Defined once and spread at each construction site (and
+   * into `ProfileContext.sharedOpts`) because a handler that misses them makes
+   * the flags work on some models and silently not on others.
+   */
+  const requestShapingOpts: Pick<
+    ComposedHandlerOptions,
+    "effortOverride" | "modelParams" | "proOnUltracode"
+  > = {
+    // Narrowed HERE, not at the CLI: createProxyServer is also entered from
+    // `serve` and `team`, so the boundary must validate whoever calls it.
+    // A non-canonical value is dropped rather than passed through — it could
+    // not reach the wire anyway, and `--model-params` is its escape hatch.
+    effortOverride: isEffortLevel(options.effortOverride) ? options.effortOverride : undefined,
+    modelParams: options.modelParams,
+    proOnUltracode: options.proOnUltracode,
+  };
+
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
@@ -268,6 +304,7 @@ export async function createProxyServer(
           adapter: orAdapter,
           isInteractive: options.isInteractive,
           invocationMode,
+          ...requestShapingOpts,
         })
       );
     }
@@ -294,6 +331,7 @@ export async function createProxyServer(
         new ComposedHandler(poeTransport, modelId, modelId, port, {
           isInteractive: options.isInteractive,
           invocationMode,
+          ...requestShapingOpts,
         })
       );
     }
@@ -327,6 +365,7 @@ export async function createProxyServer(
         summarizeTools: options.summarizeTools,
         isInteractive: options.isInteractive,
         invocationMode,
+        ...requestShapingOpts,
       });
       localProviderHandlers.set(targetModel, handler);
       log(
@@ -352,6 +391,7 @@ export async function createProxyServer(
           summarizeTools: options.summarizeTools,
           isInteractive: options.isInteractive,
           invocationMode,
+          ...requestShapingOpts,
         }
       );
       localProviderHandlers.set(targetModel, handler);
@@ -464,7 +504,7 @@ export async function createProxyServer(
         apiKey,
         targetModel,
         port,
-        sharedOpts: { isInteractive: options.isInteractive, invocationMode },
+        sharedOpts: { isInteractive: options.isInteractive, invocationMode, ...requestShapingOpts },
       });
       if (!handler) {
         return null; // Profile returned null (missing config) or unknown provider

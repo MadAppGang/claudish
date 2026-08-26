@@ -973,6 +973,9 @@ async function runCli() {
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
           classifier: resolveClassifierConfig(cliConfig, process.env),
+          effortOverride: cliConfig.effortOverride,
+          modelParams: cliConfig.modelParams,
+          proOnUltracode: cliConfig.proOnUltracode,
         }
       )
     );
