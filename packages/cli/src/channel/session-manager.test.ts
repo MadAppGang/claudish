@@ -33,6 +33,10 @@ const __dirname = dirname(__filename);
 const FAKE_CLAUDISH_TS = join(__dirname, "test-helpers", "fake-channel-stream-json.ts");
 const SIGNAL_CHILD_TS = join(__dirname, "test-helpers", "stats-buffer-signal-child.ts");
 const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "cancelled", "timeout"];
+// Must match KILL_GRACE_MS in session-manager.ts:210; post-SIGTERM waits must exceed it.
+const KILL_GRACE_MS = 5000;
+const POST_SIGTERM_WAIT_MS = KILL_GRACE_MS + 2000;
+const TIMEOUT_REGRESSION_TEST_MS = POST_SIGTERM_WAIT_MS * 2 + 1000;
 
 const ORIGINAL_CLAUDISH_BIN = process.env.CLAUDISH_BIN;
 let sessionsDir: string;
@@ -341,40 +345,48 @@ describe("SessionManager", () => {
     expect(manager.cancelSession("ghost-session")).toBe(false);
   });
 
-  test("G1/G2: timeout stays timeout in memory, meta, and on the wire", async () => {
-    const events: ChannelEvent[] = [];
-    const timeoutManager = makeManager({
-      onStateChange: (_sessionId, event) => events.push(event),
-    });
-    const id = timeoutManager.createSession({
-      model: "test-model",
-      timeoutSeconds: 1,
-      claudishFlags: ["--result-then-hang", "--trap-term-exit-zero"],
-    });
+  test(
+    "G1/G2: timeout stays timeout in memory, meta, and on the wire",
+    async () => {
+      const events: ChannelEvent[] = [];
+      const timeoutManager = makeManager({
+        onStateChange: (_sessionId, event) => events.push(event),
+      });
+      const id = timeoutManager.createSession({
+        model: "test-model",
+        timeoutSeconds: 1,
+        claudishFlags: ["--result-then-hang", "--trap-term-exit-zero"],
+      });
 
-    await waitForStatus(timeoutManager, id, ["running"]);
-    expect(timeoutManager.sendInput(id, "interactive turn")).toBe(true);
-    await waitForStatus(timeoutManager, id, ["waiting_for_input"]);
+      await waitForStatus(timeoutManager, id, ["running"]);
+      expect(timeoutManager.sendInput(id, "interactive turn")).toBe(true);
+      await waitForStatus(timeoutManager, id, ["waiting_for_input"]);
 
-    const metaPath = await waitForMeta(id, 4000);
-    const info = timeoutManager.getSession(id);
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as {
-      status: string;
-      exitCode: number | null;
-    };
-    const terminalWireEvents = events
-      .map((event) => event.type)
-      .filter((type) => TERMINAL_STATUSES.includes(type as SessionStatus));
+      // If the SIGTERM trap loses its race, SIGKILL follows only after the full
+      // grace, then exit, pipe drain, and writeArtifacts must finish. Keep these
+      // polling budgets above KILL_GRACE_MS or load makes this a fast-path-only test.
+      await waitForStatus(timeoutManager, id, ["timeout"], POST_SIGTERM_WAIT_MS);
+      const metaPath = await waitForMeta(id, POST_SIGTERM_WAIT_MS);
+      const info = timeoutManager.getSession(id);
+      const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as {
+        status: string;
+        exitCode: number | null;
+      };
+      const terminalWireEvents = events
+        .map((event) => event.type)
+        .filter((type) => TERMINAL_STATUSES.includes(type as SessionStatus));
 
-    // Same test, deliberately: memory, persistent data, and the wire must all
-    // report the honest terminal reason. SEP-1686 projects timeout to failed.
-    expect(info.status).toBe("timeout");
-    expect(meta.status).toBe("timeout");
-    expect(info.exitCode).toBe(0);
-    expect(meta.exitCode).toBe(0);
-    expect(terminalWireEvents).toEqual(["timeout"]);
-    expect(events.some((event) => event.type === "timeout")).toBe(true);
-  }, 10_000);
+      // Same test, deliberately: memory, persistent data, and the wire must all
+      // report the honest terminal reason. SEP-1686 projects timeout to failed.
+      expect(info.status).toBe("timeout");
+      expect(meta.status).toBe("timeout");
+      expect(info.exitCode).toBe(0);
+      expect(meta.exitCode).toBe(0);
+      expect(terminalWireEvents).toEqual(["timeout"]);
+      expect(events.some((event) => event.type === "timeout")).toBe(true);
+    },
+    TIMEOUT_REGRESSION_TEST_MS
+  );
 
   test("G7: a promptless session reaches a usable state and accepts later input", async () => {
     const id = manager.createSession({ model: "test-model", timeoutSeconds: 5 });
