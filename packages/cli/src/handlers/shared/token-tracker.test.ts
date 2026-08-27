@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { TokenTracker } from "./token-tracker.js";
@@ -12,6 +12,7 @@ interface TokenFile {
 }
 
 const createdTokenFiles = new Set<string>();
+const originalTokenFile = process.env.CLAUDISH_TOKEN_FILE;
 let nextPort = 50_000 + (process.pid % 10_000);
 
 function createTracker(contextWindow = 400_000): {
@@ -23,10 +24,11 @@ function createTracker(contextWindow = 400_000): {
 
   do {
     port = nextPort++;
-    tokenFile = join(homedir(), ".claudish", `tokens-${port}.json`);
+    tokenFile = join(tmpdir(), `claudish-token-tracker-${process.pid}-${port}.json`);
   } while (existsSync(tokenFile));
 
   createdTokenFiles.add(tokenFile);
+  process.env.CLAUDISH_TOKEN_FILE = tokenFile;
 
   return {
     tracker: new TokenTracker(port, {
@@ -47,6 +49,8 @@ afterEach(() => {
     if (existsSync(path)) unlinkSync(path);
   }
   createdTokenFiles.clear();
+  if (originalTokenFile === undefined) delete process.env.CLAUDISH_TOKEN_FILE;
+  else process.env.CLAUDISH_TOKEN_FILE = originalTokenFile;
 });
 
 describe("TokenTracker live input-token tracking", () => {
@@ -134,5 +138,26 @@ describe("TokenTracker live input-token tracking", () => {
     expect(tracker.getInputTokens()).toBe(300_000);
     expect(tracker.getLastInputTokens()).toBe(20_000);
     expect(readTokenFile(tokenFile).input_tokens).toBe(20_000);
+  });
+});
+
+describe("TokenTracker tool-name accounting", () => {
+  test("redacts malformed names without changing unknown, normal, or total counts", () => {
+    const { tracker } = createTracker();
+    const malformed = 'web_search_query_listOpposed["private argument value"]';
+
+    tracker.recordToolUse(malformed);
+    tracker.recordToolUse("   ");
+    tracker.recordToolUse("Read");
+    tracker.recordToolUse("Read");
+
+    const toolCalls = tracker.getToolCalls();
+    expect(toolCalls).toEqual([
+      { name: "Read", count: 2 },
+      { name: "malformed", count: 1 },
+      { name: "unknown", count: 1 },
+    ]);
+    expect(JSON.stringify(toolCalls)).not.toContain(malformed);
+    expect(tracker.getToolCallCount()).toBe(4);
   });
 });

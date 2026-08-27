@@ -8,6 +8,7 @@
  * 3. Retry prompt generation with error feedback
  */
 
+import { TOOL_NAME_SHAPE, TOOL_NAME_SOURCE } from "../../adapters/tool-name-utils.js";
 import { log } from "../../logger.js";
 
 export interface ExtractedToolCall {
@@ -27,15 +28,88 @@ export interface ToolSchema {
 }
 
 /**
+ * A tool name is an identifier, so the extractors must never accept anything else.
+ *
+ * Pattern 0 below used to capture `[^>]+`, which accepts every character except
+ * `>`. A model that opened `<function=` in prose and closed it 80 characters
+ * later had all 80 characters taken as the tool name — parameter names, type
+ * fragments and ARGUMENT VALUES included. One such name reached a client:
+ * `web_search_query_listOpposed["macos security add-generic-password …"]`.
+ * See `ai-docs/reports/grok-tool-name-mangling-20260827.md`.
+ */
+const FUNCTION_TAG_SOURCE = `<function=(${TOOL_NAME_SOURCE})>([\\s\\S]*?)(?=<function=|$)`;
+
+/** Unanchored, no `g` flag, so it holds no `lastIndex` and is safe to share. */
+const FUNCTION_TAG_PRESENT = new RegExp(`<function=${TOOL_NAME_SOURCE}>`);
+
+/**
+ * Does this text hold a `<function=NAME>` tag Pattern 0 can actually extract?
+ *
+ * Exported so the openai-sse hold-back test uses the SAME shape the extractor
+ * uses. When the two drifted, text matching the loose hold-back test but not the
+ * extractor was withheld from the client and then never emitted at all: a silent
+ * text loss with no tool call to show for it. Called once per streamed chunk, so
+ * the pattern is built once at module load rather than per call.
+ */
+export function hasExtractableFunctionTag(text: string): boolean {
+  return FUNCTION_TAG_PRESENT.test(text);
+}
+
+/**
+ * Drop extracted calls that are not real tools.
+ *
+ * Two gates. The shape gate rejects a name that is not an identifier, which is
+ * how a swallowed argument value is caught. The allowlist gate rejects a
+ * well-shaped name the client never advertised, which is how a hallucinated tool
+ * is caught. The allowlist is the request's own tool list, so it is exact rather
+ * than a hardcoded roster.
+ */
+function keepOnlyRealTools(
+  extracted: ExtractedToolCall[],
+  knownToolNames?: string[]
+): ExtractedToolCall[] {
+  const kept: ExtractedToolCall[] = [];
+  for (const call of extracted) {
+    if (!TOOL_NAME_SHAPE.test(call.name)) {
+      log(
+        `[ToolRecovery] Dropped extracted call: name is not an identifier: ${JSON.stringify(
+          call.name.slice(0, 120)
+        )}`
+      );
+      continue;
+    }
+    if (!knownToolNames || knownToolNames.length === 0) {
+      kept.push(call);
+      continue;
+    }
+    const canonical = knownToolNames.find((t) => t.toLowerCase() === call.name.toLowerCase());
+    if (!canonical) {
+      log(`[ToolRecovery] Dropped extracted call for unadvertised tool: ${call.name}`);
+      continue;
+    }
+    kept.push(canonical === call.name ? call : { ...call, name: canonical });
+  }
+  return kept;
+}
+
+/**
  * Extract tool calls from text content
  * Many local models output tool calls as JSON in their text rather than using structured tool_calls
+ *
+ * `knownToolNames` is the tool list the client advertised on THIS request. Pass
+ * it whenever it is in hand: every pattern below is then held to it, not just
+ * the natural-language one.
  */
-export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
+export function extractToolCallsFromText(
+  text: string,
+  knownToolNames?: string[]
+): ExtractedToolCall[] {
   const extracted: ExtractedToolCall[] = [];
 
   // Pattern 0: Qwen-style function calls <function=NAME><parameter=PARAM>VALUE
   // Example: <function=SlashCommand><parameter=command>/ls -la
-  const qwenPattern = /<function=([^>]+)>([\s\S]*?)(?=<function=|$)/gi;
+  // Fresh instance per call: a `g` regex carries `lastIndex` across calls.
+  const qwenPattern = new RegExp(FUNCTION_TAG_SOURCE, "gi");
   let match: RegExpExecArray | null;
   // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = qwenPattern.exec(text)) !== null) {
@@ -177,18 +251,24 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Matches: "I'll use the Task tool with subagent_type=Explore"
   // Matches: "I will use the Read tool to read /path/to/file"
   // Matches: "Let me use the Bash tool to run ls -la"
-  const knownTools = [
-    "Task",
-    "Read",
-    "Write",
-    "Edit",
-    "Bash",
-    "Grep",
-    "Glob",
-    "WebFetch",
-    "WebSearch",
-    "ToolSearch",
-  ];
+  // The caller's own tool list is exact; this roster is the fallback for callers
+  // that have none in hand. Natural-language extraction is the loosest pattern
+  // here, so it keeps its own guard even though `keepOnlyRealTools` runs after.
+  const knownTools =
+    knownToolNames && knownToolNames.length > 0
+      ? knownToolNames
+      : [
+          "Task",
+          "Read",
+          "Write",
+          "Edit",
+          "Bash",
+          "Grep",
+          "Glob",
+          "WebFetch",
+          "WebSearch",
+          "ToolSearch",
+        ];
   const nlPatterns = [
     // "I'll use the X tool with param=value" - ends with period, colon, newline, or end
     /(?:I(?:'ll| will| am going to)|Let me|Going to)\s+use\s+(?:the\s+)?(\w+)\s+tool\s+(?:with\s+)?(.+?)(?:[.:\n]|$)/gi,
@@ -315,7 +395,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
     }
   }
 
-  return extracted;
+  return keepOnlyRealTools(extracted, knownToolNames);
 }
 
 /**

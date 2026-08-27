@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { TOOL_NAME_SHAPE } from "../../adapters/tool-name-utils.js";
 import { type PlanUsage, isPlanStale } from "../../auth/quota/types.js";
 import { log } from "../../logger.js";
 import { type ModelPricing, getModelPricing } from "./remote-provider-types.js";
@@ -109,7 +110,14 @@ export class TokenTracker {
    * transcript.
    */
   recordToolUse(name: string): void {
-    const key = name.trim() || "unknown";
+    const trimmed = name.trim();
+    // A tool name is an identifier. A name that is not one did not come from a
+    // tool: it is text a parser swallowed, and it can carry ARGUMENT VALUES.
+    // This map is written to `stats/*.json` and printed in the session summary,
+    // neither of which is a redacted surface, so the value must not land here.
+    // The call is still counted, under `malformed`, so the total keeps agreeing
+    // with the transcript.
+    const key = !trimmed ? "unknown" : TOOL_NAME_SHAPE.test(trimmed) ? trimmed : "malformed";
     this.toolCallsByName.set(key, (this.toolCallsByName.get(key) ?? 0) + 1);
   }
 

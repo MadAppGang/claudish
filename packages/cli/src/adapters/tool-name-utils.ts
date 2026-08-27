@@ -8,6 +8,20 @@
 import { log } from "../logger.js";
 
 /**
+ * The character shape of a tool name, as a pattern fragment.
+ *
+ * Every tool Claude Code advertises is an identifier. Anything else that reaches
+ * a "tool name" slot is text some parser swallowed, and swallowed text carries
+ * argument VALUES. Kept here so the text extractor and the stats recorder hold
+ * the same line: see `handlers/shared/tool-call-recovery.ts` and
+ * `handlers/shared/token-tracker.ts`.
+ */
+export const TOOL_NAME_SOURCE = "[A-Za-z_][A-Za-z0-9_.-]{0,63}";
+
+/** Anchored form of {@link TOOL_NAME_SOURCE}. Stateless, so it is safe to share. */
+export const TOOL_NAME_SHAPE = new RegExp(`^${TOOL_NAME_SOURCE}$`);
+
+/**
  * Simple deterministic string hash that produces an 8-char hex string.
  * Used for tool name truncation to avoid collisions.
  */

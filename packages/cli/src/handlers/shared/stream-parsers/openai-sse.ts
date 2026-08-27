@@ -12,6 +12,7 @@ import { log } from "../../../logger.js";
 import {
   type ToolSchema,
   extractToolCallsFromText,
+  hasExtractableFunctionTag,
   validateAndRepairToolCall,
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
@@ -261,7 +262,24 @@ export function createStreamingResponseHandler(
 
             // Check for text-based tool calls before finalizing
             // Some models (like Qwen) output tool calls as text instead of structured tool_calls
-            const textToolCalls = extractToolCallsFromText(state.accumulatedText);
+            //
+            // Only when the model produced NO structured call. Recovery exists for
+            // models that cannot emit `tool_calls` at all; against a model that
+            // just did, it can only ADD calls, never repair one. Ungated, a turn
+            // holding one real call plus prose mentioning a function tag dispatched
+            // two tool_use blocks, and both were recorded.
+            const textToolCalls =
+              state.tools.size > 0
+                ? []
+                : extractToolCallsFromText(
+                    state.accumulatedText,
+                    toolSchemas?.map((t: any) => t?.name).filter((n: any): n is string => !!n)
+                  );
+            if (state.tools.size > 0 && state.accumulatedText.length > 0) {
+              log(
+                `[Streaming] Skipping text-based tool extraction: ${state.tools.size} structured tool call(s) already present`
+              );
+            }
             log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
             if (textToolCalls.length > 0) {
               log(
@@ -578,8 +596,11 @@ export function createStreamingResponseHandler(
                       // Only hold back for patterns we can actually parse (XML, JSON), not natural language
                       // Natural language patterns are extracted at finalization, not held back
                       const hasStructuredToolPattern =
-                        // Qwen XML-style: <function=ToolName>
-                        /<function=[^>]+>/.test(state.accumulatedText) ||
+                        // Qwen XML-style: <function=ToolName>. Same shape the
+                        // extractor accepts, so text held back here is always text
+                        // the extractor can act on. A looser test here withheld
+                        // text that nothing later emitted.
+                        hasExtractableFunctionTag(state.accumulatedText) ||
                         // JSON tool call in text: {"name": "Task", "arguments":
                         /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
                           state.accumulatedText

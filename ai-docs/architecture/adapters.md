@@ -46,6 +46,39 @@ Located in `handlers/shared/stream-parsers/`:
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
 - `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex)
 
+## Text-based tool recovery is a fallback, and it is load-bearing on the busiest wire
+
+`openai-sse.ts` calls `extractToolCallsFromText` (`handlers/shared/tool-call-recovery.ts`)
+at finalization. That function scrapes tool calls out of assistant PROSE, for local models
+that cannot emit structured `tool_calls` at all. It is the only production caller, so this
+path is exactly the `openai-sse` roster: GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter, LiteLLM.
+
+Three properties are not obvious from the source and each one shipped as a defect
+(v7.68.0, `ai-docs/reports/grok-tool-name-mangling-20260827.md`):
+
+1. **It must not run when the model already emitted a structured call.** Recovery can only
+   ADD calls, never repair one. Ungated, a turn holding one real call plus prose mentioning
+   a function tag dispatched TWO `tool_use` blocks. The gate is `state.tools.size > 0`.
+2. **Every pattern needs the allowlist, not just the last one.** The function stacks six
+   patterns; only Pattern 5 (natural language) had a `knownTools` guard, and its `continue`
+   reads like a function-wide filter. Patterns 0–4 had none. The allowlist is now the
+   request's own advertised tool list, applied to the return value of all six.
+3. **A tool name is an identifier, and nothing else may occupy that slot.** Pattern 0 matched
+   `<function=([^>]+)>`, which accepts every character except `>`. A `<function=` opened in
+   prose swallowed everything up to the next `>`, so parameter names and ARGUMENT VALUES
+   became the tool name. `TOOL_NAME_SHAPE` (`adapters/tool-name-utils.ts`) is the one
+   definition; `hasExtractableFunctionTag` exists so the parser's text hold-back test cannot
+   drift from what the extractor accepts. Drift there withheld text that nothing later emitted.
+
+`TokenTracker.recordToolUse` re-checks the shape and buckets a failure under `malformed`.
+The map is written to `stats/*.json` and printed in the session summary, neither of which is
+redacted, so a swallowed argument value must never reach it.
+
+**Observation and dispatch are the same event.** `onToolCallObserved` is hooked inside
+`send()`, the single frame writer (`openai-sse.ts`), not at the `content_block_start` sites.
+That makes "a tool name was only mis-REPORTED" impossible: anything counted in the stats was
+also dispatched to Claude Code.
+
 ## Errors that ride an HTTP 200 stream (`stream-head-sniffer.ts`)
 
 The Codex backend (`chatgpt.com/backend-api/codex/responses`) reports capacity faults **inside** a 200 body, not via the status code:
