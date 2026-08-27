@@ -445,10 +445,12 @@ describe("custom-endpoints-loader", () => {
     const OP_ENV_VAR = "CUSTOM_OP_EP_KEY";
     const ORIGINAL_VAR = process.env[VAR];
     const ORIGINAL_OP_ENV = process.env[OP_ENV_VAR];
+    const ORIGINAL_DISABLE_KEYCHAIN = process.env.CLAUDISH_DISABLE_KEYCHAIN;
     const ORIGINAL_DISABLE_OP = process.env.CLAUDISH_DISABLE_OP;
 
     beforeEach(() => {
-      // Keep the authority's async op:// step off the real 1Password SDK/config.
+      // Keep credential misses off the host keychain and real 1Password SDK/config.
+      process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
       process.env.CLAUDISH_DISABLE_OP = "1";
       __resetSniffForTests();
       delete process.env[VAR];
@@ -461,6 +463,11 @@ describe("custom-endpoints-loader", () => {
       else process.env[VAR] = ORIGINAL_VAR;
       if (ORIGINAL_OP_ENV === undefined) delete process.env[OP_ENV_VAR];
       else process.env[OP_ENV_VAR] = ORIGINAL_OP_ENV;
+      if (ORIGINAL_DISABLE_KEYCHAIN === undefined) {
+        delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+      } else {
+        process.env.CLAUDISH_DISABLE_KEYCHAIN = ORIGINAL_DISABLE_KEYCHAIN;
+      }
       if (ORIGINAL_DISABLE_OP === undefined) delete process.env.CLAUDISH_DISABLE_OP;
       else process.env.CLAUDISH_DISABLE_OP = ORIGINAL_DISABLE_OP;
       __resetSniffForTests();

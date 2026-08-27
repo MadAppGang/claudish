@@ -12,15 +12,18 @@ const HERMETIC_CONFIG = join(
 );
 
 let savedEnv: string | undefined;
+let savedDisableKeychain: string | undefined;
 let savedDisableOp: string | undefined;
 let savedConfigOverride: string | null;
 
 beforeEach(() => {
   savedEnv = process.env[ENV_VAR];
+  savedDisableKeychain = process.env.CLAUDISH_DISABLE_KEYCHAIN;
   savedDisableOp = process.env.CLAUDISH_DISABLE_OP;
   savedConfigOverride = getConfigFileOverride();
 
   delete process.env[ENV_VAR];
+  process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
   process.env.CLAUDISH_DISABLE_OP = "1";
   // Keep getApiKey() away from both the real global config and any project
   // overlay. A missing override file resolves as an empty config.
@@ -31,6 +34,8 @@ beforeEach(() => {
 afterEach(() => {
   if (savedEnv === undefined) delete process.env[ENV_VAR];
   else process.env[ENV_VAR] = savedEnv;
+  if (savedDisableKeychain === undefined) delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+  else process.env.CLAUDISH_DISABLE_KEYCHAIN = savedDisableKeychain;
   if (savedDisableOp === undefined) delete process.env.CLAUDISH_DISABLE_OP;
   else process.env.CLAUDISH_DISABLE_OP = savedDisableOp;
   setConfigFileOverride(savedConfigOverride);

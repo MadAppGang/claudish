@@ -7,27 +7,32 @@ import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./type
 
 // ── Hermetic op-source gate (mock-free) ─────────────────────────────────────
 //
-// The credential layer's last resolution step is 1Password (op://). On a machine
-// that actually HAS an op source in config, the real SDK would be consulted
-// whenever a provider's env/config/oauth all miss — flaky and non-hermetic (the
-// SDK can be denied / time out).
+// The credential layer resolves env → aliases → config → keychain →
+// 1Password (op://). On a machine with either external source enabled, real
+// credentials could satisfy an intended miss; the SDK can also be denied or
+// time out.
 //
 // We do NOT mock op-source.js: Bun's mock.module is process-global, so a stub
 // here bleeds into sibling files that test the REAL op-source (op-source.test.ts)
 // when both run in one `bun test` process. Instead we use the production escape
-// hatch CLAUDISH_DISABLE_OP=1, which makes hasOpSources() return false WITHOUT
-// touching the SDK. With it set, ApiKeyCredentialProvider.isAvailable()
-// short-circuits before the op path — exactly the env/config-only resolution the
-// tests need, hermetically, with no module mock to leak.
+// hatches CLAUDISH_DISABLE_KEYCHAIN=1 and CLAUDISH_DISABLE_OP=1. The latter
+// makes hasOpSources() return false WITHOUT touching the SDK. Together they
+// preserve the env/config-only resolution these tests need, hermetically, with
+// no module mock to leak.
+let savedDisableKeychain: string | undefined;
 let savedDisableOp: string | undefined;
 
 beforeAll(() => {
+  savedDisableKeychain = process.env.CLAUDISH_DISABLE_KEYCHAIN;
   savedDisableOp = process.env.CLAUDISH_DISABLE_OP;
+  process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
   process.env.CLAUDISH_DISABLE_OP = "1";
   __resetSniffForTests(); // hasOpSources() memoizes — re-sniff with the flag on.
 });
 
 afterAll(() => {
+  if (savedDisableKeychain === undefined) delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+  else process.env.CLAUDISH_DISABLE_KEYCHAIN = savedDisableKeychain;
   if (savedDisableOp === undefined) delete process.env.CLAUDISH_DISABLE_OP;
   else process.env.CLAUDISH_DISABLE_OP = savedDisableOp;
   __resetSniffForTests(); // drop the disabled-state sniff for later files.

@@ -501,9 +501,11 @@ describe("route()", () => {
   // test module's top-level credential probe can prewarm real credentials.
   // Invalidate before and after each test to isolate host and fake keys.
   beforeEach(() => {
-    // Disable 1Password for routing tests so route()'s credential resolution
-    // never pulls a real op:// key from the host config (which would make a
-    // "no credentials → no-route" assertion fail). Mock-free env flag → no bleed.
+    // Credential resolution is env → aliases → config → keychain → op://.
+    // These tests predate the keychain source and originally disabled only
+    // op://, leaving host keychain entries able to satisfy "no credentials"
+    // assertions. Disable both external stores with the mock-free env flags.
+    process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
     credentials.invalidate();
@@ -515,6 +517,7 @@ describe("route()", () => {
   });
 
   afterEach(() => {
+    delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
     // Restore env vars (preserves the host's actual config for other tests).
@@ -772,6 +775,7 @@ describe("route() with defaultProvider", () => {
   // test module's top-level credential probe can prewarm real credentials.
   // Invalidate before and after each test to isolate host and fake keys.
   beforeEach(() => {
+    process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
     credentials.invalidate();
@@ -782,6 +786,7 @@ describe("route() with defaultProvider", () => {
   });
 
   afterEach(() => {
+    delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
     for (const key of ENV_KEYS_TO_CLEAR) {
