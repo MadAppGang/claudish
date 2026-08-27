@@ -53,6 +53,7 @@
 - **`req-*.json`** — Single-line JSON with full Anthropic request body (messages, system, tools, metadata). Extractable: machine (X-Claudish-Machine header), workspace (from system prompt), session_id (from metadata.user_id), CC version (from billing header). Written to `/captures` inside the container, bind-mounted to `D:\claudish-captures` (persists across container recreates).
 - **`resp-*.sse`** — Response SSE with metadata header (elapsed_ms, stop_reason, event count). Correlates with req via shared counter (req-1-0042 → resp-1-r0042).
 - **Archives** — `D:\claudish-captures\archive\captures-YYYY-MM-DD.7z` (LZMA2, ~100-130:1 ratio), mirrored to `G:\Mon Drive\MyIA\backups\claudish-captures\` via Google Drive Desktop (plain Windows file copy, no API). Local purge >30 days (only after confirming the GDrive copy).
+- **Heavy analysis is host-saturating — schedule it.** Decompressing a weeks-old 7z and parsing 100k+ `req-*.json` pegs the hub host and produces the HUB-LENT signature (event-loop stall, gateway latency still clean) for minutes at a time. Measured: same signature as a crisis wave, yet with streams ≈ 1 it costs nobody anything. Rule: heavy capture analysis runs in the **05-07Z trough**, extracts to **D: never C:**, and is *expected + attributed* there — not a crisis.
 
 ## Machine attribution
 
