@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [Unreleased]
+
+### Bug Fixes
+
+- consume the backend subscription route order and exact wire commands instead of letting bundled defaults override fresh catalog data
+- join model `subscriptionPlans` plan IDs through `queryPlans.routing.providerUid`, while keeping client- and hybrid-discovered account rosters dynamic
+
+### Documentation
+
+- document the runtime subscription-plan join, route precedence, and SuperGrok client-discovery contract
+
 ## [9.0.0] - 2026-09-02
 
 ### ⚠ BREAKING CHANGES
@@ -3027,5 +3038,4 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - Add automated release pipeline([`31492fc`](https://github.com/MadAppGang/claudish/commit/31492fcba0d8c1dcdf0c7c745244c42b10cbabfa))
 - Add profile-based model configuration v2.8.0 *(profiles)* ([`a3303a1`](https://github.com/MadAppGang/claudish/commit/a3303a12dbb54b9e5c0d2eb0ff27b19814fd43c1))
-
 

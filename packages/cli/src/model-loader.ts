@@ -39,11 +39,7 @@ export interface RecommendedModelEntry {
   supportsVision?: boolean;
   isModerated?: boolean;
   recommended?: boolean;
-  subscription?: {
-    prefix: string;
-    plan: string;
-    command: string;
-  };
+  subscription?: RecommendedSubscriptionRoute;
   /**
    * Every plan that serves this model, in the order the backend sent them.
    * `subscription` above MIRRORS element 0 — measured across all 18 subscription
@@ -56,7 +52,19 @@ export interface RecommendedModelEntry {
    * (research.md R2). The singular above still declares it required; that type
    * is already lying and is left alone here — see risk R-6.
    */
-  subscriptions?: Array<{ prefix?: string; plan: string; command: string }>;
+  subscriptions?: RecommendedSubscriptionRoute[];
+}
+
+export type RecommendedRouteTier = "native" | "general" | "metered" | "aggregator";
+
+/** Backend-declared callable route. New fields stay optional for old disk caches. */
+export interface RecommendedSubscriptionRoute {
+  prefix?: string;
+  plan: string;
+  command: string;
+  planIds?: string[];
+  routingProvider?: string;
+  tier?: RecommendedRouteTier;
 }
 
 /**
@@ -402,7 +410,8 @@ export function collectRoutingPrefixes(
         : subscriptionRow.subscription
           ? [subscriptionRow.subscription]
           : [];
-    for (const route of routes) {
+    const orderedRoutes = [...routes].sort(compareRecommendedRoutes);
+    for (const route of orderedRoutes) {
       // `route?.` and not `route.`: these are WIRE elements. TypeScript types the
       // array as non-nullable objects (:59) so it will not warn, but a JSON `null`
       // inside `subscriptions[]` would throw a TypeError out of this function and
@@ -419,6 +428,85 @@ export function collectRoutingPrefixes(
     }
   }
   return out;
+}
+
+const RECOMMENDED_ROUTE_TIER_ORDER: Record<RecommendedRouteTier, number> = {
+  native: 0,
+  general: 1,
+  metered: 2,
+  aggregator: 3,
+};
+
+function compareRecommendedRoutes(
+  left: RecommendedSubscriptionRoute,
+  right: RecommendedSubscriptionRoute
+): number {
+  const leftRank =
+    left?.tier && Object.hasOwn(RECOMMENDED_ROUTE_TIER_ORDER, left.tier)
+      ? RECOMMENDED_ROUTE_TIER_ORDER[left.tier]
+      : Number.MAX_SAFE_INTEGER;
+  const rightRank =
+    right?.tier && Object.hasOwn(RECOMMENDED_ROUTE_TIER_ORDER, right.tier)
+      ? RECOMMENDED_ROUTE_TIER_ORDER[right.tier]
+      : Number.MAX_SAFE_INTEGER;
+  return leftRank - rightRank;
+}
+
+/**
+ * Convert the live recommended contract into exact routing rules. Each route
+ * uses routingProvider (not the commercial plan ID) and the backend-confirmed
+ * command wire ID. Tier is the ordering authority; array position is only the
+ * stable tiebreak within one tier or for a legacy cached document.
+ */
+export function buildCatalogRoutingRules(doc: RecommendedModelsDoc): Record<string, string[]> {
+  const routesByModel = new Map<
+    string,
+    Array<{ route: RecommendedSubscriptionRoute; sourceIndex: number }>
+  >();
+  let sourceIndex = 0;
+
+  for (const entry of doc.models) {
+    const routes =
+      entry.subscriptions && entry.subscriptions.length > 0
+        ? entry.subscriptions
+        : entry.subscription
+          ? [entry.subscription]
+          : [];
+    for (const route of routes) {
+      routesByModel.set(entry.id, [...(routesByModel.get(entry.id) ?? []), { route, sourceIndex }]);
+      sourceIndex += 1;
+    }
+  }
+
+  const rules: Record<string, string[]> = {};
+  for (const [modelId, candidates] of routesByModel) {
+    const seen = new Set<string>();
+    const entries = candidates
+      .filter(
+        ({ route }) =>
+          typeof route?.routingProvider === "string" &&
+          route.routingProvider.length > 0 &&
+          typeof route.command === "string" &&
+          route.command.length > 0
+      )
+      .sort(
+        (left, right) =>
+          compareRecommendedRoutes(left.route, right.route) || left.sourceIndex - right.sourceIndex
+      )
+      .map(({ route }) => {
+        const at = route.command.indexOf("@");
+        const wireId = at >= 0 ? route.command.slice(at + 1) : route.command;
+        return `${route.routingProvider}@${wireId}`;
+      })
+      .filter((entry) => {
+        if (seen.has(entry)) return false;
+        seen.add(entry);
+        return true;
+      });
+    if (entries.length > 0) rules[modelId] = entries;
+  }
+
+  return rules;
 }
 
 /** Parse "$1.32/1M" → 1.32, "FREE" → 0, "N/A"/"varies"/undefined → Infinity */

@@ -128,7 +128,7 @@ export interface SlimModelEntry {
    */
   aggregators?: AggregatorEntry[];
   /**
-   * Subscription plan ids that include this model (e.g. `["kimi-coding"]`).
+   * Subscription plan ids that include this model (e.g. `["kimi-code"]`).
    * Populated by Firebase ingest. Used by routing to decide whether a
    * subscription endpoint can serve a given model at all — a plan that doesn't
    * list the model would reject it, so the candidate is dropped rather than
@@ -162,6 +162,22 @@ export interface SlimModelEntry {
   endpoints?: Record<string, ModelEndpoint>;
 }
 
+export type SubscriptionModelDiscovery = "catalog" | "client" | "hybrid";
+
+/** Minimal queryPlans projection needed by the synchronous routing engine. */
+export interface CachedSubscriptionPlan {
+  /** Canonical commercial plan ID referenced by SlimModelEntry.subscriptionPlans. */
+  id: string;
+  /** Where the exact callable roster comes from. */
+  modelDiscovery?: SubscriptionModelDiscovery;
+  /** Consumer routing identity; absent when the catalog has no supported route. */
+  routing?: {
+    providerUid: string;
+    prefix?: string;
+    nativeModelProviders?: string[];
+  };
+}
+
 /**
  * Disk cache format (version 2).
  * Contains both the slim Firebase data (for resolver) and a backward-compatible
@@ -173,6 +189,8 @@ export interface DiskCacheV2 {
   entries: SlimModelEntry[];
   /** Backward-compatible: [{id: "vendor/model"}] for legacy consumers */
   models: Array<{ id: string }>;
+  /** Additive queryPlans cache. Absent on legacy v2 files. */
+  plans?: CachedSubscriptionPlan[];
 }
 
 export const ALL_MODELS_CACHE_PATH = join(homedir(), ".claudish", "all-models.json");
@@ -205,12 +223,14 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
     typeof data.lastUpdated === "string" ? data.lastUpdated : new Date(0).toISOString();
   const models = Array.isArray(data.models) ? (data.models as Array<{ id: string }>) : [];
   const entries = Array.isArray(data.entries) ? (data.entries as SlimModelEntry[]) : [];
+  const plans = Array.isArray(data.plans) ? (data.plans as CachedSubscriptionPlan[]) : undefined;
 
   return {
     version: 2,
     lastUpdated,
     entries,
     models,
+    ...(plans !== undefined ? { plans } : {}),
   };
 }
 
@@ -238,6 +258,9 @@ export function writeAllModelsCache(
     lastUpdated: data.lastUpdated ?? new Date().toISOString(),
     entries: data.entries ?? existing?.entries ?? [],
     models: data.models ?? existing?.models ?? [],
+    ...(data.plans !== undefined || existing?.plans !== undefined
+      ? { plans: data.plans ?? existing?.plans ?? [] }
+      : {}),
   };
 
   mkdirSync(dirname(path), { recursive: true });

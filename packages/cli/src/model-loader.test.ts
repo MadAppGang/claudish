@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import type { RecommendedModelGroup } from "./model-loader.js";
-import { collectRoutingPrefixes, formatListingPrice } from "./model-loader.js";
+import type { RecommendedModelGroup, RecommendedModelsDoc } from "./model-loader.js";
+import {
+  buildCatalogRoutingRules,
+  collectRoutingPrefixes,
+  formatListingPrice,
+} from "./model-loader.js";
 
 const swe17Entry = {
   pricing: { input: "N/A", output: "N/A", average: "N/A" },
@@ -65,6 +69,9 @@ interface WireRoute {
   prefix?: string;
   plan: string;
   command: string;
+  planIds?: string[];
+  routingProvider?: string;
+  tier?: "native" | "general" | "metered" | "aggregator";
 }
 
 const route = (prefix: string, modelId: string): WireRoute => ({
@@ -173,6 +180,15 @@ describe("collectRoutingPrefixes", () => {
     ]);
 
     expect(collectRoutingPrefixes(group, getNativePrefix)).toEqual(["aa", "bb", "cc"]);
+  });
+
+  it("uses declared tier rather than wire-array position", () => {
+    const general = { ...route("gg", "synth-tiered"), tier: "general" as const };
+    const native = { ...route("nn", "synth-tiered"), tier: "native" as const };
+    const metered = { ...route("mm", "synth-tiered"), tier: "metered" as const };
+    const group = groupWithOneSubscriptionRow("synth-tiered", [metered, general, native]);
+
+    expect(collectRoutingPrefixes(group, getNativePrefix)).toEqual(["nn", "gg", "mm"]);
   });
 
   // ── T-2..T-6 are regression guards. They do not prove the fix (T-1 does that);
@@ -305,5 +321,81 @@ describe("collectRoutingPrefixes", () => {
     const collided = collectRoutingPrefixes(collides, getNativePrefix);
     expect(collided[0]).toBe(NATIVE_PREFIX);
     expect(collided).toEqual([NATIVE_PREFIX, "aa", "bb"]);
+  });
+});
+
+describe("buildCatalogRoutingRules", () => {
+  it("uses routingProvider, command wire IDs, and declared tier", () => {
+    const base = {
+      id: "synth-live-route",
+      name: "Synthetic live route",
+      description: "synthetic fixture",
+      provider: "Synthetic",
+      category: "subscription",
+      priority: 1,
+      pricing: { input: "N/A", output: "N/A", average: "N/A" },
+      context: "N/A",
+    };
+    const doc = {
+      version: "2.1.0",
+      lastUpdated: "2026-09-02",
+      models: [
+        {
+          ...base,
+          subscription: {
+            prefix: "np",
+            plan: "Native plan",
+            planIds: ["commercial-native-plan"],
+            routingProvider: "native-provider",
+            tier: "native",
+            command: "np@native-wire-id",
+          },
+          subscriptions: [
+            {
+              prefix: "mp",
+              plan: "Metered route",
+              planIds: [],
+              routingProvider: "metered-provider",
+              tier: "metered",
+              command: "mp@metered/wire-id",
+            },
+            {
+              prefix: "np",
+              plan: "Native plan",
+              planIds: ["commercial-native-plan"],
+              routingProvider: "native-provider",
+              tier: "native",
+              command: "np@native-wire-id",
+            },
+          ],
+        },
+      ],
+    } as RecommendedModelsDoc;
+
+    expect(buildCatalogRoutingRules(doc)).toEqual({
+      "synth-live-route": ["native-provider@native-wire-id", "metered-provider@metered/wire-id"],
+    });
+  });
+
+  it("ignores legacy routes that do not declare routingProvider", () => {
+    const doc = {
+      version: "1",
+      lastUpdated: "2026-08-01",
+      models: [
+        {
+          id: "legacy-model",
+          name: "Legacy",
+          description: "legacy fixture",
+          provider: "Synthetic",
+          category: "subscription",
+          priority: 1,
+          pricing: { input: "N/A", output: "N/A", average: "N/A" },
+          context: "N/A",
+          subscription: { prefix: "old", plan: "Old", command: "old@legacy-model" },
+        },
+      ],
+    } as RecommendedModelsDoc;
+
+    expect(buildCatalogRoutingRules(doc)).toEqual({});
   });
 });

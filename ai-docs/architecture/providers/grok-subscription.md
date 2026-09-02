@@ -106,3 +106,9 @@ first-wins on array order); bare-name reachability comes from the routing chain 
 token — unlike Alibaba's `coding-intl` roster, where a 200 proves nothing) and the served set is
 account-scoped. Note the per-model effort ladders differ — `grok-4.6` offers `xhigh`, `grok-4.5`
 does not — which is exactly the drifting per-account data that must not be hardcoded.
+
+Models Index represents this as the `xai-supergrok` commercial plan, routed through provider UID
+`grok-subscription` with `modelDiscovery: "client"`. Its public `includedModels` value is therefore
+only an account-roster limitation note, not a static allow-list. Claudish keeps the subscription
+candidate when a Grok model is absent from the public slim catalog and lets the authenticated
+provider discovery decide the actual roster.

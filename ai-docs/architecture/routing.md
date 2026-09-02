@@ -105,6 +105,33 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 **Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. Claudish only consumes this hosted catalog at runtime. Catalog extraction, recommendation generation, portal hosting, and API documentation live in the [models-index](https://github.com/MadAppGang/models-index) repo.
 
+## Runtime subscription routes come from the backend contract
+
+Claudish refreshes the slim model catalog and `queryPlans` together and stores both in
+`~/.claudish/all-models.json`. A model's `subscriptionPlans[]` contains canonical commercial
+plan IDs such as `kimi-code`; those values are NOT provider names. The client joins each ID to
+`queryPlans[].routing.providerUid` before deciding whether a provider serves the model.
+
+Plan absence has two different meanings:
+
+- `modelDiscovery: "catalog"`: the published roster is authoritative, so an absent model is
+  dropped from that subscription provider's candidate chain.
+- `modelDiscovery: "client"` or `"hybrid"`: the authenticated account may reveal models the
+  public backend cannot know, so absence remains unknown and the candidate is retained. Devin,
+  Antigravity, and the `xai-supergrok` plan use this account-scoped behavior.
+
+The backend recommendation document supplies `routingProvider`, `tier`, and an exact `command`
+for each callable route. Claudish turns those rows into exact-model routing rules, orders them by
+`tier` (`native` before `general`, `metered`, and `aggregator`), and places them ahead of bundled
+defaults. `DEFAULT_ROUTING_RULES` remain the cold-cache and uncovered-model fallback. Global and
+local user routing config still overlay both backend and bundled rules with the existing
+exact-key merge semantics; an exact backend model route is replaced by a user rule for that same
+model ID.
+
+If `queryPlans` cannot refresh, the model refresh still succeeds and the last-known-good plan
+cache is preserved. Old cache files without a plan snapshot retain their legacy behavior until a
+successful refresh.
+
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
 **Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)

@@ -35,6 +35,7 @@
  */
 
 import {
+  type CachedSubscriptionPlan,
   type DiskCacheV2,
   type SlimModelEntry,
   readAllModelsCache,
@@ -53,6 +54,19 @@ const FIREBASE_CATALOG_URL =
   process.env.CLAUDISH_CATALOG_URL ??
   process.env.FIREBASE_CATALOG_URL ??
   "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=active&catalog=slim&limit=1000";
+
+const FIREBASE_PLANS_URL = process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(FIREBASE_CATALOG_URL);
+
+function derivePlansUrl(catalogUrl: string): string {
+  try {
+    const url = new URL(catalogUrl);
+    url.pathname = url.pathname.replace(/\/queryModels$/, "/queryPlans");
+    url.search = "";
+    return url.toString();
+  } catch {
+    return "https://us-central1-claudish-6da10.cloudfunctions.net/queryPlans";
+  }
+}
 
 // Re-export so existing imports of the DiskCache type keep working.
 export type DiskCache = DiskCacheV2;
@@ -372,6 +386,7 @@ export function logResolution(
  * untouched and returns the reason. Never throws.
  */
 export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome> {
+  const plansPromise = fetchSubscriptionPlans(timeoutMs);
   let response: Response;
   try {
     response = await fetch(FIREBASE_CATALOG_URL, { signal: AbortSignal.timeout(timeoutMs) });
@@ -405,12 +420,36 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
   }
 
   _memCache = data.models;
-  writeAllModelsCache({ entries: data.models, models: backwardCompatModels });
+  const plans = await plansPromise;
+  writeAllModelsCache({
+    entries: data.models,
+    models: backwardCompatModels,
+    ...(plans !== undefined ? { plans } : {}),
+  });
 
   // Short-circuit the proxy-server background warm.
   _warmPromise = Promise.resolve();
 
   return { kind: "refreshed", modelCount: data.models.length };
+}
+
+/**
+ * queryPlans is additive to the model cache. A plan-endpoint failure must not
+ * discard a valid model refresh or erase the last-known-good routing join.
+ */
+async function fetchSubscriptionPlans(
+  timeoutMs: number
+): Promise<CachedSubscriptionPlan[] | undefined> {
+  try {
+    const response = await fetch(FIREBASE_PLANS_URL, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return undefined;
+    const data = (await response.json()) as { plans?: CachedSubscriptionPlan[] };
+    return Array.isArray(data.plans) ? data.plans : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Fire-and-forget warm. Failures fall through to the disk-read fallback. */

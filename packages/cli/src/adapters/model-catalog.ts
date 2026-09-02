@@ -12,6 +12,7 @@
 
 import type { ReasoningModeCapabilities } from "../model-loader.js";
 import {
+  type CachedSubscriptionPlan,
   type ModelEndpoint,
   type ReasoningCapability,
   type RouteVariant,
@@ -282,7 +283,8 @@ export type SubscriptionRouting =
 
 /**
  * Resolve how a subscription provider should route a model, from catalog data
- * alone (`subscriptionPlans[]` + `aggregators[].externalId`).
+ * alone (`subscriptionPlans[]` plan IDs joined through cached `queryPlans`,
+ * plus `aggregators[].externalId`).
  *
  * Nothing about which models a plan includes is hardcoded — that is exactly the
  * data that goes stale. Kimi Code shipping K3 while the CLI pinned
@@ -296,21 +298,58 @@ export function resolveSubscriptionRouting(
   const entry = findCacheEntry(modelId, cachePath);
   if (!entry) return { kind: "unknown" };
 
-  if (entry.subscriptionPlans?.includes(provider)) {
+  const cache = readAllModelsCache(cachePath);
+  const providerPlans =
+    cache?.plans?.filter((plan) => plan.routing?.providerUid === provider) ?? [];
+
+  // Legacy v2 caches predate queryPlans and stored provider UIDs directly in
+  // subscriptionPlans. Preserve their old behavior until the next refresh.
+  if (cache?.plans === undefined) {
+    if (entry.subscriptionPlans?.includes(provider)) {
+      const agg = entry.aggregators?.find((a) => a.provider === provider);
+      return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
+    }
+    return isLegacySubscriptionPlan(provider, cachePath)
+      ? { kind: "not-served" }
+      : { kind: "unknown" };
+  }
+
+  if (providerPlans.length === 0) return { kind: "unknown" };
+
+  const providerPlanIds = new Set(providerPlans.map((plan) => plan.id));
+  const hasMembership = entry.subscriptionPlans?.some((planId) => providerPlanIds.has(planId));
+  if (hasMembership) {
     const agg = entry.aggregators?.find((a) => a.provider === provider);
     // A plan membership without an aggregator entry has no wire id to send;
-    // treat it as unknown rather than inventing one.
+    // keep the candidate as unknown rather than inventing one. The normal
+    // catalog resolver may still know the canonical provider wire ID.
     return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
   }
 
-  // The model doesn't list this plan. Only call that "not served" once we've
-  // confirmed the provider really is a subscription plan somewhere in the
-  // catalog — otherwise a provider with no plan data would lose every route.
-  return isSubscriptionPlan(provider, cachePath) ? { kind: "not-served" } : { kind: "unknown" };
+  // queryModels and queryPlans are separate requests, so a client can briefly
+  // pair a new plan contract with an older slim snapshot. Static absence only
+  // becomes authoritative after this cache demonstrates that it contains at
+  // least one membership row for the provider's plans. Otherwise treating
+  // zero coverage as a complete empty roster would drop every candidate during
+  // a backend rollout (the exact OpenAI/Anthropic gap that motivated the join).
+  const hasPublishedProviderRoster = cache.entries.some((candidate) =>
+    candidate.subscriptionPlans?.some((planId) => providerPlanIds.has(planId))
+  );
+  if (!hasPublishedProviderRoster) return { kind: "unknown" };
+
+  // Static absence is conclusive only for catalog-authoritative plans. Client
+  // and hybrid plans may expose additional account-specific models after auth.
+  return providerPlans.every(isCatalogDiscoveredPlan)
+    ? { kind: "not-served" }
+    : { kind: "unknown" };
 }
 
-/** True if any catalog entry lists `provider` as a subscription plan. */
-function isSubscriptionPlan(provider: string, cachePath?: string): boolean {
+function isCatalogDiscoveredPlan(plan: CachedSubscriptionPlan): boolean {
+  return plan.modelDiscovery === "catalog";
+}
+
+/** Legacy provider-UID membership detection for caches without queryPlans. */
+function isLegacySubscriptionPlan(provider: string, cachePath?: string): boolean {
   const cache = readAllModelsCache(cachePath);
   if (!cache) return false;
   return cache.entries.some((e) => e.subscriptionPlans?.includes(provider));

@@ -27,6 +27,7 @@ import {
   matchRoutingRule,
   mergeRoutingRules,
   normalizeGlmSlug,
+  retainKnownCatalogRoutingRules,
   route,
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
@@ -46,7 +47,8 @@ function makeTempCatalog(
     subscriptionPlans?: string[];
   },
   /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
-  plans: string[] = model.subscriptionPlans ?? []
+  plans: string[] = model.subscriptionPlans ?? [],
+  routingProviderByPlan: Record<string, string> = {}
 ): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
   const path = join(dir, "all-models.json");
@@ -73,8 +75,8 @@ function makeTempCatalog(
     subscriptionPlans: model.subscriptionPlans ?? [],
     aggregators:
       model.externalId && model.subscriptionPlans
-        ? model.subscriptionPlans.map((provider) => ({
-            provider,
+        ? model.subscriptionPlans.map((planId) => ({
+            provider: routingProviderByPlan[planId] ?? planId,
             externalId: model.externalId!,
             confidence: "scrape_verified" as const,
           }))
@@ -86,6 +88,14 @@ function makeTempCatalog(
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
+    plans: plans.map((plan) => ({
+      id: plan,
+      modelDiscovery: "catalog",
+      routing: {
+        providerUid: routingProviderByPlan[plan] ?? plan,
+        nativeModelProviders: [],
+      },
+    })),
   };
   writeAllModelsCache(cache, path);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
@@ -384,6 +394,17 @@ describe("buildRoutingChain", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadRoutingRules merges defaults", () => {
+  test("catalog routes keep known providers and cannot shadow defaults with an unknown provider", () => {
+    expect(
+      retainKnownCatalogRoutingRules({
+        "mixed-model": ["future-provider@future-wire", "openrouter@vendor/model"],
+        "future-only-model": ["future-provider@future-wire"],
+      })
+    ).toEqual({
+      "mixed-model": ["openrouter@vendor/model"],
+    });
+  });
+
   test("with no user rules: merge returns defaults exactly", () => {
     const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, {}, {});
     expect(merged).toEqual(DEFAULT_ROUTING_RULES);
@@ -668,9 +689,10 @@ describe("route()", () => {
       {
         modelId: "kimi-k3",
         externalId: "k3",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlans: ["kimi-code"],
       },
-      ["kimi-coding"]
+      ["kimi-code"],
+      { "kimi-code": "kimi-coding" }
     );
     try {
       const plan = await route("kimi-k3", DEFAULT_ROUTING_RULES, undefined, path);
@@ -680,6 +702,79 @@ describe("route()", () => {
       expect(plan.primary.modelSpec).toBe("kc@k3");
     } finally {
       cleanup();
+    }
+  });
+
+  test("joins commercial plan IDs to provider UIDs before dropping an unserved route", () => {
+    const { path, cleanup } = makeTempCatalog({ modelId: "kimi-unserved" }, ["kimi-code"], {
+      "kimi-code": "kimi-coding",
+    });
+    try {
+      expect(
+        buildRoutingChain(["kimi-coding", "kimi"], "kimi-unserved", path).map(
+          (candidate) => candidate.provider
+        )
+      ).toEqual(["kimi"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("keeps candidates when queryPlans is newer than a zero-coverage slim snapshot", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-routing-skewed-plan-test-"));
+    const path = join(dir, "all-models.json");
+    writeAllModelsCache(
+      {
+        version: 2,
+        lastUpdated: new Date().toISOString(),
+        entries: [{ modelId: "gpt-rollout-model", aliases: [], sources: {} }],
+        models: [],
+        plans: [
+          {
+            id: "openai-codex",
+            modelDiscovery: "catalog",
+            routing: { providerUid: "openai-codex", nativeModelProviders: ["openai"] },
+          },
+        ],
+      },
+      path
+    );
+    try {
+      expect(buildRoutingChain(["openai-codex", "openai"], "gpt-rollout-model", path)).toHaveLength(
+        2
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps client-discovered subscription candidates when static membership is absent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-routing-client-plan-test-"));
+    const path = join(dir, "all-models.json");
+    writeAllModelsCache(
+      {
+        version: 2,
+        lastUpdated: new Date().toISOString(),
+        entries: [{ modelId: "grok-account-model", aliases: [], sources: {} }],
+        models: [],
+        plans: [
+          {
+            id: "xai-supergrok",
+            modelDiscovery: "client",
+            routing: { providerUid: "grok-subscription", nativeModelProviders: ["x-ai"] },
+          },
+        ],
+      },
+      path
+    );
+    try {
+      expect(
+        buildRoutingChain(["grok-subscription", "x-ai"], "grok-account-model", path).map(
+          (candidate) => candidate.provider
+        )
+      ).toEqual(["grok-subscription", "x-ai"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
