@@ -50,6 +50,9 @@ export class CodexOAuthHalf implements CredentialProvider {
     const token = await this.oauth.getAccessToken();
     const accountId = this.oauth.getAccountId();
     return {
+      // The ONLY place an `openai-codex` artifact is stamped "oauth". The
+      // transport turns that into the SUB billing label; nothing else may.
+      arm: "oauth",
       headers: buildOAuthHeaders(token, accountId),
       endpoint: CODEX_RESPONSES_ENDPOINT,
       transformPayload: (p: any) => ({

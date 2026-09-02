@@ -205,6 +205,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` | https://console.sakana.ai/get-started |
 | `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`, `meta@`) | | https://ollama.com/account |
 | `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/ |
+| `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/ |
 | `XAI_API_KEY` | xAI / Grok (direct API, detected in model selector) | | https://x.ai/ |
 | `LITELLM_API_KEY` | LiteLLM proxy (`ll@`, `litellm@`) | | https://docs.litellm.ai/ |
 | `POE_API_KEY` | Poe (`poe@`) | | https://poe.com/ |
@@ -219,6 +220,8 @@ Claudish automatically loads `.env` from the current working directory at startu
 - OAuth mode (`VERTEX_PROJECT` + Application Default Credentials via `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`): Supports all Vertex models including partner models (Anthropic Claude, Mistral, etc.).
 
 **Note on OpenCode Zen (changed 2026-08-22)**: `OPENCODE_API_KEY` is now **required** for every model on the zen endpoint. Claudish previously sent `"Bearer public"` when no key was set, on the basis that free-tier models (cost.input === 0) needed no credential. The endpoint answers `401 — Missing API key` to that token, and because the fallback also made the provider report **Ready** without ever issuing a request, the failure only surfaced under a live test. The fallback has been removed; a Zen row with no key now correctly reads "not set".
+
+**Note on OpenCode Zen Go (changed 2026-09-02)**: `zgo@` used to accept `OPENCODE_API_KEY` as an alias, on the documented claim that a key minted for one OpenCode tier is refused by the other with a `401`. That claim was measured and is false — a Zen Go key is accepted by the plain Zen endpoint (`200`), against a bogus-key control that endpoint answers `401`. The alias is removed: `zgo@` requires `OPENCODE_GO_API_KEY`. The reason is billing, not access — `opencode-zen-go` is classified as a flat-rate plan, so a metered Zen key reaching it would have been reported as `SUB` at `$0` while OpenCode billed per token. If you previously ran `zgo@` on `OPENCODE_API_KEY`, set `OPENCODE_GO_API_KEY` to the key your Lite Plan subscription minted.
 
 ### 3.4 Custom Endpoints (Remote Providers)
 
@@ -412,7 +415,7 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 | `sc` | `sakana-coding` | Sakana Fugu Subscription (`SAKANA_CODING_API_KEY` or `SAKANA_API_KEY`) |
 | `oc`, `llama`, `lc`, `meta` | `ollamacloud` | OllamaCloud hosted API (`OLLAMA_API_KEY`) |
 | `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY` required) |
-| `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan |
+| `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan (`OPENCODE_GO_API_KEY` required) |
 | `v`, `vertex` | `vertex` | Vertex AI (`VERTEX_API_KEY` or `VERTEX_PROJECT`) |
 | `mistral` | `mistralai` | Direct Mistral API (`MISTRAL_API_KEY`) |
 | `ag`, `antigravity` | `antigravity` | Gemini via your Antigravity subscription (`claudish login antigravity`) |

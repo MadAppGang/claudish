@@ -136,6 +136,25 @@ export interface ProviderDefinition {
   apiKeyEnvVar: string;
   /** Alternative env vars to check */
   apiKeyAliases?: string[];
+  /**
+   * Env vars that hold a DIFFERENT tier's key for the SAME vendor — names a user
+   * is likely to already have set, which this provider does NOT accept.
+   *
+   * Purely explanatory: nothing resolves, signs or gates on it. It exists because
+   * "No API key for provider X. Set Y" is an unhelpful sentence to read while
+   * holding a key from the same vendor, and the user's next move — exporting the
+   * key they have under the name we asked for — produces a 401 they cannot
+   * attribute. `describeMissingCredential` appends one clause naming the sibling
+   * and, looked up LIVE from the catalog, which provider it does belong to.
+   *
+   * Declared today only by `opencode-zen-go`, which carried
+   * `apiKeyAliases: ["OPENCODE_API_KEY"]` until 2026-09-02 and so has an
+   * installed base of users for whom that key used to work. `sakana-subscription`
+   * / `sakana`, `qwen-cloud` / `qwen-payg` and `kimi-coding` / `kimi` are the same
+   * two-tier shape and could adopt it; each is a user-visible message change and
+   * belongs to whichever change is looking at that provider.
+   */
+  siblingKeyEnvVars?: string[];
   /** Human-readable API key description */
   apiKeyDescription: string;
   /** URL where user can obtain an API key */
@@ -791,12 +810,44 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrlEnvVars: ["OPENCODE_GO_BASE_URL"],
     apiPath: "/v1/chat/completions",
     modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
-    // Zen Go is a separate paid tier from the free Zen plan — keys for one
-    // tier are not accepted by the other (401). Old single OPENCODE_API_KEY
-    // kept as an alias for backward compat, but new users should set
-    // OPENCODE_GO_API_KEY explicitly to avoid confusion.
+    // Zen Go is a separate paid tier from the METERED Zen plan. This block used
+    // to claim "keys for one tier are not accepted by the other (401)" and kept
+    // `apiKeyAliases: ["OPENCODE_API_KEY"]` — the metered Zen key — on the
+    // strength of it.
+    //
+    // ("the free Zen plan" is what it also said. Zen's keyless tier is dead —
+    // measured 401, see the publicKeyFallback removal ~40 lines above — so Zen is
+    // the metered tier and calling it free contradicted its own file.)
+    //
+    // THE 401 CLAIM IS FALSE. Measured 2026-09-02 on `minimax-m3`, a model BOTH
+    // tiers serve, one POST to chat/completions per row
+    // (ai-docs/reports/data/measurements-20260902.txt):
+    //
+    //   CONTROL  Zen Go key -> https://opencode.ai/zen/go/v1/chat/completions -> 200
+    //   CROSS    Zen Go key -> https://opencode.ai/zen/v1/chat/completions    -> 200
+    //   BOGUS    fake key   -> https://opencode.ai/zen/v1/chat/completions    -> 401
+    //                         {"type":"error","error":{"type":"AuthError",…}}
+    //
+    // The bogus row is what makes the cross-tier 200 mean something: that endpoint
+    // does authenticate, so it ACCEPTED the other tier's key rather than waving
+    // everything through. The two answered with different response-id shapes
+    // (`06e71dee…` vs `chatcmpl-76bdafac…`), i.e. different upstreams honouring one
+    // key. So keys are NOT tier-locked in the direction that was measurable here,
+    // and the symmetric claim the alias rested on is disproven.
+    //
+    // WHAT IS NOT MEASURED, stated plainly: a ZEN-TIER key against /zen/go. No
+    // Zen-tier key exists on this machine. That is the direction that costs money —
+    // `opencode-zen-go` is classified flat-rate BY NAME
+    // (remote-provider-types.ts SUBSCRIPTION_PROVIDERS), so a Zen-tier key
+    // satisfying `zgo@` would be metered usage reported as SUB and $0.
+    //
+    // Hence the alias is GONE (2026-09-02). It was justified by a claim now known
+    // to be false, and it made that money-losing case reachable with no evidence
+    // that the endpoint would refuse it. `zgo@` now requires its own key; a user
+    // holding only OPENCODE_API_KEY gets `siblingKeyEnvVars` named in the
+    // missing-credential sentence instead of a silent `SUB` label.
     apiKeyEnvVar: "OPENCODE_GO_API_KEY",
-    apiKeyAliases: ["OPENCODE_API_KEY"],
+    siblingKeyEnvVars: ["OPENCODE_API_KEY"],
     apiKeyDescription: "OpenCode Zen Go (Lite Plan) API Key",
     apiKeyUrl: "https://opencode.ai/",
     shortcuts: ["zengo", "zgo"],
@@ -1474,12 +1525,16 @@ export function getApiKeyInfo(providerName: string): {
  *    name table is introduced here.
  *
  * 3. Everything else keeps today's text exactly.
+ *
+ * Orthogonal to all three: a provider declaring `siblingKeyEnvVars` gains one
+ * trailing clause naming the same vendor's OTHER key. See that field.
  */
 export function describeMissingCredential(providerName: string): string {
   const info = getApiKeyInfo(providerName);
   const keyNames = info?.envVar ? [info.envVar, ...(info.aliases ?? [])].join(" or ") : undefined;
   const signup = info?.url ? ` Get one at ${info.url}.` : "";
   const def = getProviderByName(providerName);
+  const sibling = describeSiblingKeys(def);
 
   if (isLocalTransport(providerName)) {
     const where = def ? ` Claudish will use ${getEffectiveBaseUrl(def)}.` : "";
@@ -1489,7 +1544,7 @@ export function describeMissingCredential(providerName: string): string {
     return (
       `Provider "${providerName}" is a LOCAL server and is not enabled. ` +
       "Enable it in `claudish config` (Providers tab), or add " +
-      `"localProviders": ["${providerName}"] to ~/.claudish/config.json.${where}${keyClause}`
+      `"localProviders": ["${providerName}"] to ~/.claudish/config.json.${where}${keyClause}${sibling}`
     );
   }
 
@@ -1499,13 +1554,38 @@ export function describeMissingCredential(providerName: string): string {
       : "";
     return (
       `No credential for provider "${providerName}". Sign in with ` +
-      `\`claudish login ${providerName}\` to use your existing subscription.${keyClause}`
+      `\`claudish login ${providerName}\` to use your existing subscription.${keyClause}${sibling}`
     );
   }
 
   return keyNames
-    ? `No API key for provider "${providerName}". Set ${keyNames} (env, config, or 1Password import).${signup}`
-    : `No API key for provider "${providerName}".`;
+    ? `No API key for provider "${providerName}". Set ${keyNames} (env, config, or 1Password import).${signup}${sibling}`
+    : `No API key for provider "${providerName}".${sibling}`;
+}
+
+/**
+ * The trailing clause for a provider that declares `siblingKeyEnvVars`.
+ *
+ * Empty string for everyone else, so the three sentences above are unchanged for
+ * every provider that declares none.
+ *
+ * The OWNER of each sibling variable is looked up live from the catalog rather
+ * than written into the definition beside it. A second spelling of "which
+ * provider does OPENCODE_API_KEY belong to" is exactly the two-table coupling
+ * that produced the mis-routes this file's other comments record, and the answer
+ * is already in the catalog as `apiKeyEnvVar`. A variable no provider claims
+ * (a rename, a removal) degrades to the bare name instead of asserting a
+ * provider that no longer exists.
+ */
+function describeSiblingKeys(def: ProviderDefinition | undefined): string {
+  const vars = def?.siblingKeyEnvVars ?? [];
+  if (vars.length === 0) return "";
+  const all = getAllProviders();
+  const named = vars.map((v) => {
+    const owner = all.find((p) => p.name !== def?.name && p.apiKeyEnvVar === v);
+    return owner ? `${v} (${owner.name})` : v;
+  });
+  return ` Note: ${named.join(" or ")} is a DIFFERENT plan's key and is not accepted here.`;
 }
 
 /**

@@ -8,9 +8,16 @@
  *
  * Hermetic: mock only credentials.getRequestAuth, matching the sibling OAuth
  * transport test, so no real credentials, filesystem, or network are touched.
+ * Both arms are modelled as the artifacts the real halves return (`arm` included);
+ * the api-key half never throws, so nothing here pretends it does. See the sibling
+ * file's header for why that distinction is load-bearing.
+ *
+ * The two tests that call refreshAuth() write the process-wide signed-arm record;
+ * the afterEach clears it. See the sibling file's afterEach.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { clearSignedArm } from "../../auth/credentials/billing-probe.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 
 const FAKE_TOKEN = "codex-oauth-token-abc";
@@ -18,6 +25,9 @@ const FAKE_ACCOUNT = "acct-123";
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
 const CODEX_OAUTH_AUTH = {
+  // Stamped by CodexOAuthHalf; this is what refreshAuth reads to record the SUB
+  // billing arm. A fixture without it is not the OAuth artifact.
+  arm: "oauth" as const,
   headers: {
     Authorization: `Bearer ${FAKE_TOKEN}`,
     "OpenAI-Beta": "responses=experimental",
@@ -33,6 +43,12 @@ const CODEX_OAUTH_AUTH = {
     store: false,
     include: ["reasoning.encrypted_content"],
   }),
+};
+
+/** What ApiKeyCredentialProvider.getRequestAuth() returns: marked, no endpoint. */
+const API_KEY_AUTH = {
+  arm: "api-key" as const,
+  headers: { Authorization: "Bearer sk-codex-key" },
 };
 
 let getRequestAuthMock = mock(async (_name: string, _ctx: any) => CODEX_OAUTH_AUTH as any);
@@ -82,6 +98,9 @@ beforeEach(() => {
 
 afterEach(() => {
   mock.restore();
+  // refreshAuth() always records a billing arm; this suite is about cache keys
+  // and must not decide billing for the next file in the Bun run.
+  clearSignedArm("openai-codex");
 });
 
 describe("OpenAICodexTransport prompt_cache_key", () => {
@@ -161,9 +180,9 @@ describe("OpenAICodexTransport prompt_cache_key", () => {
   });
 
   test("emits a key on the non-OAuth api-key path", async () => {
-    getRequestAuthMock = mock(async () => {
-      throw new Error("no oauth");
-    });
+    // The api-key half's real return: a marked, endpoint-less artifact. Not a
+    // throw — the composite falls THROUGH to this half rather than failing.
+    getRequestAuthMock = mock(async () => API_KEY_AUTH);
     const transport = createTransport();
     await transport.refreshAuth();
 

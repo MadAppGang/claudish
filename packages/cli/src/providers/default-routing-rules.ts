@@ -47,7 +47,7 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // here. No token → route() filters the candidate out and `google` takes over.
   "gemini-*": ["antigravity", "google", "openrouter"],
 
-  // xAI Grok: direct API, then OpenRouter (no subscription tier).
+  // xAI Grok: account-discovered subscription, direct API, then OpenRouter.
   // Subscription BEFORE metered, the same order every other split family uses
   // (glm-coding before glm, qwen-cloud before qwen-payg). A user holding both a
   // Grok subscription and an XAI_API_KEY must never be silently billed per token
@@ -59,8 +59,9 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // Kimi: the subscription endpoint speaks its own wire ids (kimi-for-coding,
   // kimi-for-coding-highspeed, k3, k3-256k) — NOT catalog names like
   // "kimi-k2.7-code". No model is pinned here: buildRoutingChain translates the
-  // catalog name to the plan's wire id via `subscriptionPlans[]` +
-  // `aggregators[].externalId`, and drops the kimi-coding candidate when the
+  // catalog name to the plan's wire id via `subscriptionPlans[]` plan IDs,
+  // cached `queryPlans.routing.providerUid`, and `aggregators[].externalId`.
+  // It drops the kimi-coding candidate when the
   // plan doesn't include the model (e.g. kimi-k2.5) so it falls through to the
   // metered Moonshot API rather than being silently answered by a different
   // model. `k3*` needs its own rule: it doesn't match `kimi-*`, and the catalog
@@ -171,10 +172,10 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // the vendor's metered API (or by OpenRouter, for mimo/hy3 which had no rule).
   //
   // Why this is safe where the same move is NOT safe for qwen-cloud (see the
-  // `qwen3.*` note above): routing filters candidates by CREDENTIAL, not by
-  // model, and the catalog has no `subscriptionPlans[]` data for the Go plan, so
-  // `resolveSubscriptionRouting` returns `unknown` and the candidate is kept for
-  // every model in the family — including ones the plan does not serve. What
+  // `qwen3.*` note above): the catalog join now drops known-unserved Go models.
+  // On a cold or legacy cache, `resolveSubscriptionRouting` remains `unknown`
+  // and the candidate is kept for every model in the family — including ones
+  // the plan does not serve. What
   // happens next is the whole argument, and it is provider-specific:
   //
   //   Zen Go, unserved model  → 401 {"type":"ModelError","message":"Model X is
@@ -192,10 +193,9 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // adding it there would buy a subscription hit on one model in exchange for a
   // wasted 401 on every other call in the family.
   //
-  // When the catalog gains `subscriptionPlans: ["opencode-zen-go"]` + matching
-  // `aggregators[].externalId` entries, the `unknown` branch becomes `serves` /
-  // `not-served` and the wasted round-trip disappears on its own. Filed as a
-  // models-index data gap; nothing here needs to change when it lands.
+  // Current caches get that answer by joining the `opencode-go` commercial plan
+  // ID to provider `opencode-zen-go`; no provider UID is stored in
+  // `subscriptionPlans[]`.
 
   // Catch-all: try OpenRouter (it covers most things). Users disable with
   // routing["*"] = [] for strict no-fallback mode, or replace with their own

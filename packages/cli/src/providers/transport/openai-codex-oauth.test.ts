@@ -13,14 +13,30 @@
  *   No OAuth (key only) → api.openai.com static endpoint + Bearer <apiKey>
  *                 + transformPayload still normalizes model (pure, non-auth) but
  *                   does NOT add the store/include auth bits.
+ *   OAuth present but its refresh REJECTED → the same api-key-shaped result, by a
+ *                 different mechanism (cachedAuth null → super.getHeaders()).
  *
- * Hermetic: mock credentials.getRequestAuth (the delegation target). The OAuth case
- * returns the artifact the real CodexOAuthHalf.getRequestAuth() produces; the
- * no-OAuth case throws (composite would fall to the api-key half, which the
- * transport models by leaving cachedAuth null → super.getHeaders()/static endpoint).
+ * Hermetic: mock credentials.getRequestAuth (the delegation target), with each
+ * fixture shaped like what the REAL half returns, `arm` included.
+ *
+ * "No OAuth" is NOT a throw. `CompositeCredentialProvider.getRequestAuth` falls
+ * through to `this.fallback.getRequestAuth(ctx)`, and `ApiKeyCredentialProvider`
+ * ALWAYS returns an artifact — `{arm:"api-key", headers:{Authorization:"Bearer …"}}`
+ * with a key, `{arm:"api-key", headers:{}}` without one. It never returns null and
+ * never throws. This file used to model the api-key arm as a throw, which is why it
+ * stayed green while `refreshAuth` labelled every metered request `subscription`
+ * (review round 1, C-1). The throw is a real path — an AVAILABLE OAuth primary
+ * whose refresh is then rejected — so it keeps its own test below, and no longer
+ * doubles as the api-key case.
+ *
+ * `refreshAuth()` also writes the process-wide signed-arm record
+ * (auth/credentials/billing-probe.ts). Every test here that calls it must clear
+ * that record, or the next FILE in the Bun run inherits a billing answer from a
+ * fixture — see the afterEach.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { clearSignedArm } from "../../auth/credentials/billing-probe.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 
 const FAKE_TOKEN = "codex-oauth-token-abc";
@@ -29,6 +45,11 @@ const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
 // What the real CodexOAuthHalf.getRequestAuth() returns (buildOAuthHeaders + endpoint + transform).
 const CODEX_OAUTH_AUTH = {
+  // `arm` is part of the artifact the real half returns (codex-credential.ts) and
+  // it is what refreshAuth() turns into the SUB billing label. A fixture that
+  // omits it is not the OAuth artifact — it is an unmarked one, which the
+  // transport reads as metered.
+  arm: "oauth" as const,
   headers: {
     Authorization: `Bearer ${FAKE_TOKEN}`,
     "OpenAI-Beta": "responses=experimental",
@@ -44,6 +65,14 @@ const CODEX_OAUTH_AUTH = {
     store: false,
     include: ["reasoning.encrypted_content"],
   }),
+};
+
+// What the real ApiKeyCredentialProvider.getRequestAuth() returns for the same
+// provider: a marked artifact with a Bearer header, NO endpoint, NO
+// transformPayload. Never null, never a throw.
+const API_KEY_AUTH = {
+  arm: "api-key" as const,
+  headers: { Authorization: "Bearer sk-codex-key" },
 };
 
 let getRequestAuthMock = mock(async (_name: string, _ctx: any) => CODEX_OAUTH_AUTH as any);
@@ -70,6 +99,14 @@ beforeEach(() => {
 
 afterEach(() => {
   mock.restore();
+  // refreshAuth() ALWAYS calls recordSignedArm, so this endpoint/header suite
+  // writes a process-wide billing record it never meant to touch. The record is
+  // read BEFORE the presence probe (billing-probe.ts), and Bun runs every test
+  // file in one process — so without this clear, the OAuth fixture above leaves
+  // "subscription" behind and the next file answers
+  // isSubscriptionProvider("openai-codex") = true on a machine where no
+  // credential would sign. Measured: validation/fix2-residue-leak.txt.
+  clearSignedArm("openai-codex");
 });
 
 describe("OpenAICodexTransport — OAuth present (delegated)", () => {
@@ -101,24 +138,24 @@ describe("OpenAICodexTransport — OAuth present (delegated)", () => {
   });
 });
 
-describe("OpenAICodexTransport — no OAuth (api-key only)", () => {
+describe("OpenAICodexTransport — no OAuth (api-key half answers)", () => {
   beforeEach(() => {
-    // Composite falls through to the api-key half → transport models this by
-    // getRequestAuth throwing, leaving cachedAuth null.
-    getRequestAuthMock = mock(async () => {
-      throw new Error("no oauth");
-    });
+    // What the composite ACTUALLY does with no OAuth: no throw, no null — it
+    // returns the api-key half's artifact verbatim, `arm` and all
+    // (composite-credential.ts, api-key-credential.ts). Endpoint-less, so the
+    // transport lands on the base OpenAI path.
+    getRequestAuthMock = mock(async () => API_KEY_AUTH);
   });
 
-  test("refreshAuth swallows failure → static api.openai.com endpoint + Bearer apiKey", async () => {
+  test("refreshAuth → static api.openai.com endpoint + Bearer apiKey, no OAuth headers", async () => {
     const t = new OpenAICodexTransport(provider, "gpt-5.1-codex", "sk-codex-key");
     await t.refreshAuth();
 
-    // Static fallback endpoint is the codex Responses endpoint on api.openai.com
-    // (the base OpenAI transport routes codex models to /v1/responses).
+    // The artifact carries no endpoint override, so getEndpoint() falls to
+    // super.getEndpoint() — the codex Responses endpoint on api.openai.com.
     expect(t.getEndpoint()).toBe("https://api.openai.com/v1/responses");
 
-    // Headers come from super.getHeaders() → Bearer <apiKey>, no OAuth headers.
+    // Headers are the api-key artifact's: Bearer <key>, nothing OAuth-shaped.
     const headers = await t.getHeaders();
     expect(headers.Authorization).toBe("Bearer sk-codex-key");
     expect(headers["OpenAI-Beta"]).toBeUndefined();
@@ -132,5 +169,34 @@ describe("OpenAICodexTransport — no OAuth (api-key only)", () => {
     expect(out.store).toBeUndefined();
     expect(out.include).toBeUndefined();
     expect(typeof out.model).toBe("string");
+  });
+});
+
+describe("OpenAICodexTransport — OAuth available but its refresh is rejected", () => {
+  beforeEach(() => {
+    // The ONLY way getRequestAuth throws: the composite took an AVAILABLE OAuth
+    // primary and the refresh failed with something other than fallbackSignal
+    // (Codex declares none), so it rethrows rather than falling through.
+    getRequestAuthMock = mock(async () => {
+      throw new Error("refresh_token rejected");
+    });
+  });
+
+  test("refreshAuth swallows the throw → cachedAuth null → super endpoint + Bearer apiKey", async () => {
+    const t = new OpenAICodexTransport(provider, "gpt-5.1-codex", "sk-codex-key");
+    await t.refreshAuth();
+
+    // Same observable result as the api-key arm above, reached by a different
+    // mechanism: null cachedAuth rather than an endpoint-less artifact. Keeping
+    // both is the point — they were conflated once, and the billing label that
+    // was inferred from "cachedAuth is null" was wrong for the api-key arm.
+    expect(t.getEndpoint()).toBe("https://api.openai.com/v1/responses");
+    const headers = await t.getHeaders();
+    expect(headers.Authorization).toBe("Bearer sk-codex-key");
+    expect(headers["chatgpt-account-id"]).toBeUndefined();
+
+    const out = t.transformPayload({ model: "gpt-5.1-codex", input: "y" });
+    expect(out.store).toBeUndefined();
+    expect(out.include).toBeUndefined();
   });
 });

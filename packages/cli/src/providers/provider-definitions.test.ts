@@ -8,7 +8,13 @@ import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigFileOverride } from "../config-override.js";
-import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
+import {
+  CREDENTIAL_DECIDED_PROVIDERS,
+  PROVIDER_DEFAULTS,
+  SUBSCRIPTION_PROVIDERS,
+  getModelPricing,
+  isSubscriptionProvider,
+} from "../handlers/shared/remote-provider-types.js";
 import { setConfigFileOverride } from "../profile-config.js";
 import { API_KEY_MAP } from "./api-key-map.js";
 import {
@@ -496,5 +502,114 @@ describe("MiniMax credential silo endpoints", () => {
     expect(payg.baseUrl).not.toBe(coding.baseUrl);
     expect(payg.apiKeyUrl).toContain("minimaxi.com");
     expect(payg.baseUrl).toContain("minimaxi.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Billing classification — flat plan vs metered
+// ---------------------------------------------------------------------------
+
+/**
+ * Nothing on the billing path reads the model name, so a synthetic id keeps the
+ * assertions about STRUCTURE. Pinning a live id would rot and would say nothing.
+ */
+const SYNTHETIC_MODEL = "synthetic-model-id";
+
+describe("billing classification", () => {
+  test("the paid OpenCode plan bills flat, at zero per-token cost", () => {
+    // `zgo@` is a paid plan, not a metered gateway. Quoting it a per-token rate
+    // makes the picker show an invented price and TokenTracker accrue spend that
+    // is not happening — and it is why plan holders were told, in a stderr
+    // warning, that they were about to be billed per token.
+    const pricing = getModelPricing("opencode-zen-go", SYNTHETIC_MODEL);
+
+    expect(pricing.isSubscription).toBe(true);
+    // The flag alone would be a vacuous assertion: the cost cells read the numbers.
+    expect(pricing.inputCostPer1M).toBe(0);
+    expect(pricing.outputCostPer1M).toBe(0);
+  });
+
+  test("the metered OpenCode gateway is never quoted zero", () => {
+    // This is the direction that costs real money. Over-quoting a subscriber is
+    // cosmetic; telling a metered user their session is free is not.
+    //
+    // SCOPE, so this is not read as more than it proves. The non-zero rate comes
+    // from getModelPricing's catch-all estimate, which is returned for ANY unknown
+    // provider string — the assertions below would pass for "totally-made-up" too.
+    // What is actually pinned is "opencode-zen is not a member of a zero-returning
+    // set", which is exactly the FREE_PROVIDERS resurrection this guards, and is
+    // all it claims. A statement about Zen's real rate would have to come from
+    // live discovery; pinning one here is forbidden (see the defaults test below).
+    const pricing = getModelPricing("opencode-zen", SYNTHETIC_MODEL);
+
+    expect(pricing.inputCostPer1M).toBeGreaterThan(0);
+    expect(pricing.outputCostPer1M).toBeGreaterThan(0);
+    expect(pricing.isSubscription).not.toBe(true);
+    expect(pricing.isFree).not.toBe(true);
+
+    // The session token file carries no "subscription" bit, so every cost surface
+    // downstream collapses a zero-cost pricing into the word FREE by exactly this
+    // derivation. Asserting only the absence of a flag would miss the collapse.
+    const rendersAsFree =
+      pricing.isFree === true || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
+    expect(rendersAsFree).toBe(false);
+  });
+
+  test("no other builtin changed sides", () => {
+    // Asserted over every builtin rather than spot-checked, because the failure
+    // being guarded is a neighbouring name picked up or dropped by accident —
+    // `opencode-zen` and `opencode-zen-go` are one keystroke apart and land on
+    // opposite sides. Credential-decided providers are excluded: their answer
+    // depends on which credential signed, not on the name, so it is not constant
+    // here. Changing this list is a deliberate act; a diff to it wants review.
+    const flatRate = BUILTIN_PROVIDERS.filter(
+      (p) => !CREDENTIAL_DECIDED_PROVIDERS.has(p.name) && isSubscriptionProvider(p.name)
+    )
+      .map((p) => p.name)
+      .sort();
+
+    expect(flatRate).toEqual([
+      "antigravity",
+      "devin",
+      "glm-coding",
+      "grok-subscription",
+      "kimi-coding",
+      "minimax-coding",
+      "opencode-zen-go",
+      "qwen-cloud",
+      "sakana-subscription",
+    ]);
+  });
+
+  test("every billing-set member names a real provider", () => {
+    // The sets hold canonical uids only, deliberately — enumerating shortcut
+    // spellings would be a second hand-written spelling table free to drift from
+    // the shortcuts each definition declares. This test is what makes that choice
+    // safe: a shortcut, a typo or a renamed provider left behind shows up here as
+    // a name no definition answers to, instead of silently classifying nothing.
+    const builtinNames = new Set(BUILTIN_PROVIDERS.map((p) => p.name));
+
+    expect([...SUBSCRIPTION_PROVIDERS].filter((name) => !builtinNames.has(name))).toEqual([]);
+    expect([...CREDENTIAL_DECIDED_PROVIDERS].filter((name) => !builtinNames.has(name))).toEqual([]);
+  });
+
+  test("name-decided and credential-decided billing stay disjoint", () => {
+    // The name check answers first, so a provider in both sets never reaches its
+    // probe: every user of it would be reported as a subscriber, including the
+    // ones paying per token.
+    const inBoth = [...CREDENTIAL_DECIDED_PROVIDERS].filter((name) =>
+      SUBSCRIPTION_PROVIDERS.has(name)
+    );
+
+    expect(inBoth).toEqual([]);
+  });
+
+  test("the metered gateway's rate is not pinned in the defaults table", () => {
+    // The metered gateway now falls through to a rate flagged as an estimate — a
+    // visible guess. The tempting "fix" is to pin its published rate here, which
+    // trades a visible guess for an invisible stale number and hardcodes vendor
+    // pricing the project forbids hardcoding.
+    expect(Object.keys(PROVIDER_DEFAULTS)).not.toContain("opencode-zen");
+    expect(Object.keys(PROVIDER_DEFAULTS)).not.toContain("opencode-zen-go");
   });
 });

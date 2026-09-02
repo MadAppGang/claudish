@@ -38,6 +38,12 @@ export class KimiOAuthHalf implements CredentialProvider {
     // May throw "OAuth_FALLBACK_TO_API_KEY" — the composite catches it.
     const token = await this.oauth.getAccessToken();
     return {
+      // Marked for the same reason the Codex OAuth half is: this is the primary
+      // half of a composite whose fallback also returns an artifact, so nothing
+      // downstream can tell the arms apart without being told. Kimi has no
+      // billing consumer today — note it also sets NO `endpoint`, which is why
+      // "infer the arm from the endpoint override" was rejected as a mechanism.
+      arm: "oauth",
       headers: {
         "anthropic-version": "2023-06-01",
         Authorization: `Bearer ${token}`,

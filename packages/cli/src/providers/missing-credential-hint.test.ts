@@ -25,6 +25,26 @@ import {
 const oauthProviders = BUILTIN_PROVIDERS.filter((d) => d.oauthFallback).map((d) => d.name);
 const localProviders = BUILTIN_PROVIDERS.filter((d) => isLocalTransport(d.name)).map((d) => d.name);
 
+/**
+ * The trailing clause a provider gets for declaring `siblingKeyEnvVars` — the
+ * same vendor's OTHER key, which this provider does not accept.
+ *
+ * Rebuilt here from the definition rather than copied as a literal, so the
+ * exact-sentence test below stays a statement about the OTHER three shapes and
+ * does not silently become a pin on this one. The owner lookup mirrors
+ * `describeSiblingKeys`: whichever provider claims that variable as its primary.
+ */
+function siblingClause(name: string): string {
+  const def = getProviderByName(name);
+  const vars = def?.siblingKeyEnvVars ?? [];
+  if (vars.length === 0) return "";
+  const named = vars.map((v) => {
+    const owner = BUILTIN_PROVIDERS.find((p) => p.name !== name && p.apiKeyEnvVar === v);
+    return owner ? `${v} (${owner.name})` : v;
+  });
+  return ` Note: ${named.join(" or ")} is a DIFFERENT plan's key and is not accepted here.`;
+}
+
 describe("describeMissingCredential — dual-mode (OAuth) providers", () => {
   test("the catalog actually contains some, or the block below is vacuous", () => {
     expect(oauthProviders.length).toBeGreaterThan(0);
@@ -104,10 +124,29 @@ describe("describeMissingCredential — everything else is unchanged", () => {
         ? [info.envVar, ...(info.aliases ?? [])].join(" or ")
         : undefined;
       const signup = info?.url ? ` Get one at ${info.url}.` : "";
+      // `siblingKeyEnvVars` appends one clause and is declared by almost nobody,
+      // so the expectation is derived from the SAME field rather than pinned to
+      // a roster — a provider adopting it later must not have to edit this test,
+      // and one that quietly LOSES the declaration must still fail below.
       const expected = keyNames
-        ? `No API key for provider "${name}". Set ${keyNames} (env, config, or 1Password import).${signup}`
-        : `No API key for provider "${name}".`;
+        ? `No API key for provider "${name}". Set ${keyNames} (env, config, or 1Password import).${signup}${siblingClause(name)}`
+        : `No API key for provider "${name}".${siblingClause(name)}`;
       expect(describeMissingCredential(name)).toBe(expected);
+    }
+  });
+
+  test("the sibling clause is opt-in, and at least one provider opts in", () => {
+    const declaring = BUILTIN_PROVIDERS.filter((d) => (d.siblingKeyEnvVars ?? []).length > 0);
+    // Vacuity guard: with no declarer, `siblingClause` returns "" everywhere and
+    // the test above would pass against a describeMissingCredential that had
+    // dropped the feature entirely.
+    expect(declaring.length).toBeGreaterThan(0);
+    for (const d of declaring) {
+      expect(describeMissingCredential(d.name)).toContain("is not accepted here");
+    }
+    const silent = BUILTIN_PROVIDERS.filter((d) => !(d.siblingKeyEnvVars ?? []).length);
+    for (const d of silent) {
+      expect(describeMissingCredential(d.name)).not.toContain("is not accepted here");
     }
   });
 

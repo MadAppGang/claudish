@@ -264,6 +264,10 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     // than no header, since a gateway that ignores unknown auth may still reject
     // a malformed one.
     if (this.authScheme === "none") {
+      // Deliberately UNMARKED (no `arm`). No credential arm answered here — the
+      // provider declares it needs none — and "unknown" is the honest value. A
+      // consumer that maps arms to money reads unknown as the paid answer, which
+      // is the safe direction.
       return { headers: { ...this.staticHeaders } };
     }
     // No invented fallback: a provider that resolves nothing signs with nothing,
@@ -280,6 +284,12 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     } else {
       headers = { ...this.staticHeaders };
     }
-    return { headers };
+    // Stamped on EVERY return of this branch, including the keyless one above
+    // (`headers = {...staticHeaders}` — an artifact with no Authorization at all).
+    // That is the point: this method never returns null and never throws, so
+    // "something came back" says nothing about which arm won. Only this marker
+    // does. See CompositeCredentialProvider.getRequestAuth and
+    // OpenAICodexTransport.refreshAuth.
+    return { arm: "api-key", headers };
   }
 }

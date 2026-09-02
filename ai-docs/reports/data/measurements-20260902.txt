@@ -1,0 +1,34 @@
+keys resolved through the authority:
+  opencode-zen-go : yes (len 67)
+  opencode-zen    : NO
+  openai          : yes (len 164)
+
+zen/go serves 33 models; zen serves 64
+served by BOTH tiers: 17
+  first few: minimax-m3, minimax-m2.7, minimax-m2.5, kimi-k3, kimi-k2.7-code, kimi-k2.6
+
+==============================================================================
+M1 — cross-tier key acceptance, using "minimax-m3" (served by BOTH tiers)
+==============================================================================
+
+--- CONTROL  Zen Go key -> Zen Go path (must succeed)
+    POST https://opencode.ai/zen/go/v1/chat/completions   model=minimax-m3
+    -> HTTP 200 OK
+    -> {"id":"06e71e2824b528f0a875e6d4d9bafc2f","object":"chat.completion","created":1788341033,"model":"minimax-m3","choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant"}}],"usage":{"prompt_tokens":177,"completion_tokens":1,"total_tokens":178},"cost":"0"}
+
+--- CROSS    Zen Go key -> plain Zen path (401 supports the claim)
+    POST https://opencode.ai/zen/v1/chat/completions   model=minimax-m3
+    -> HTTP 200 OK
+    -> {"id":"chatcmpl-cad3a5b85da74ac89bfb94be4925ba7d","object":"chat.completion","created":1788341035,"model":"minimax-m3","choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant"}}],"usage":{"prompt_tokens":128,"completion_tokens":1,"total_tokens":129,"prompt_tokens_details":{"cache
+
+--- BOGUS    fake key   -> plain Zen path (must be 401)
+    POST https://opencode.ai/zen/v1/chat/completions   model=minimax-m3
+    -> HTTP 401 Unauthorized
+    -> {"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}
+
+==============================================================================
+M2 — does the Codex api-key arm's host serve a metered platform key?
+==============================================================================
+POST https://api.openai.com/v1/responses  (the host the api-key arm signs)
+  -> HTTP 200 OK
+  -> { "id": "resp_0da1a69ebce17ade006a97eb2b5ff487d0ba6e9e117d9377ee", "object": "response", "created_at": 1788341035, "status": "completed", "background": false, "billing": { "payer": "developer" }, "completed_at": 1788341036, "error": null, "frequency_penalty": 0.0, "incomplete_details": null, "instructions": null, "max_output_tokens": 16, "max_tool_calls": null, "m

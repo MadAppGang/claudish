@@ -12,7 +12,10 @@
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { credentials } from "./auth/credentials/authority.js";
-import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import {
+  isSubscriptionProvider,
+  registerSubscriptionCredentialProbe,
+} from "./handlers/shared/remote-provider-types.js";
 import {
   type ModelInfo,
   buildExplicitModelSpec,
@@ -445,6 +448,19 @@ describe("resolveProviderExternalId", () => {
 // ─── resolveProviderDisplayPrice (true per-aggregator pricing) ───────────────
 
 describe("resolveProviderDisplayPrice", () => {
+  // The credential-decided billing probe is run-scoped module state installed by
+  // importing the credential authority (see the import above). A test that pins it
+  // must hand back the probe the registrar RETURNED — restoring `null` uninstalls
+  // the production probe for the rest of the Bun process, and every sibling file
+  // then sees openai-codex billing unwired, failing by run order.
+  let previousProbe: ((p: string) => boolean) | null | undefined;
+
+  afterEach(() => {
+    if (previousProbe === undefined) return; // this test never replaced it
+    registerSubscriptionCredentialProbe(previousProbe);
+    previousProbe = undefined;
+  });
+
   // gpt-5: owner OpenAI lists $1.25/$10; aggregators charge their OWN rates.
   // The slim catalog now carries per-aggregator pricing on each entry.
   const gpt5: ModelInfo = {
@@ -521,11 +537,27 @@ describe("resolveProviderDisplayPrice", () => {
     expect(resolveProviderDisplayPrice("qwen-payg", pricedAcrossBillingModes)).not.toBe("SUB");
   });
 
-  test("does not treat dual-mode openai-codex as a subscription", () => {
-    // It is dual-mode: oauthFallback codex-oauth.json is a subscription, but apiKeyAliases includes
-    // the metered OPENAI_API_KEY, so reporting SUB would under-report real money for an API-key user.
+  test("openai-codex bills by the credential that signs, not by its name", () => {
+    // Replaces an assertion that openai-codex is NEVER a subscription. Its stated
+    // reason — that `apiKeyAliases: ["OPENAI_API_KEY"]` lets a plain metered key
+    // authenticate `cx@` — is false at sign time: authority.ts:157 registers the
+    // Codex composite first, :192-205 blocks the generic API-key provider from
+    // taking the name, and the composite's fallback declares no aliases
+    // (codex-credential.ts:79-82). equivalence.test.ts:302-305 is a checked-in
+    // test that OPENAI_API_KEY alone does NOT authenticate openai-codex; the alias
+    // is read only by display/hint code.
+    //
+    // The real dual mode is two HOSTS — chatgpt.com under OAuth vs api.openai.com
+    // under OPENAI_CODEX_API_KEY — so the answer is a property of the credential
+    // in play, which is what the probe reports. Pinned here in BOTH directions so
+    // this file's answer does not depend on whether the machine running the suite
+    // happens to hold a ChatGPT token.
+    previousProbe = registerSubscriptionCredentialProbe(() => false);
     expect(resolveProviderDisplayPrice("openai-codex", pricedAcrossBillingModes)).toBe("$5.63/1M");
     expect(resolveProviderDisplayPrice("openai-codex", pricedAcrossBillingModes)).not.toBe("SUB");
+
+    registerSubscriptionCredentialProbe(() => true);
+    expect(resolveProviderDisplayPrice("openai-codex", pricedAcrossBillingModes)).toBe("SUB");
   });
 
   test("shows the selected aggregator's TRUE per-gateway price, not the owner price", () => {

@@ -52,6 +52,14 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   "x-ai": { apiKeyEnvVar: "XAI_API_KEY" },
   "z-ai": { apiKeyEnvVar: "ZAI_API_KEY" },
   "opencode-zen": { apiKeyEnvVar: "OPENCODE_API_KEY" },
+  // Added 2026-09-02 with the removal of `opencode-zen-go`'s OPENCODE_API_KEY
+  // alias. `opencode-zen-go` leads seven default chains (kimi-*, glm-*,
+  // minimax-*, deepseek-*, qwen3.*, mimo-*, hy3*) and had no entry here at all,
+  // so a bare `deepseek-v4-pro` with no credentials listed DEEPSEEK_API_KEY and
+  // OpenRouter and never mentioned the plan that heads the chain. Before the
+  // removal a Zen key papered over that; now the omission is what a `zgo@` user
+  // would actually hit, and the remedy has to be nameable.
+  "opencode-zen-go": { apiKeyEnvVar: "OPENCODE_GO_API_KEY" },
 };
 
 /**

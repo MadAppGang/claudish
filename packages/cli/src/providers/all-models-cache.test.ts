@@ -147,6 +147,36 @@ describe("all-models-cache helpers", () => {
     expect(result!.models).toEqual(newModels);
   });
 
+  test("stores queryPlans routing and preserves it across a model-only refresh", () => {
+    const { path, cleanup } = makeTmpCachePath();
+    cleanups.push(cleanup);
+    const plans = [
+      {
+        id: "commercial-plan",
+        modelDiscovery: "catalog" as const,
+        routing: { providerUid: "subscription-provider", nativeModelProviders: [] },
+      },
+    ];
+
+    writeAllModelsCache(
+      {
+        entries: [sampleEntry("model-one", "vendor/model-one")],
+        models: [],
+        plans,
+      },
+      path
+    );
+    writeAllModelsCache(
+      {
+        entries: [sampleEntry("model-two", "vendor/model-two")],
+        models: [],
+      },
+      path
+    );
+
+    expect(readAllModelsCache(path)?.plans).toEqual(plans);
+  });
+
   test("writer creates parent directory if missing", () => {
     // Use a path inside a nested dir that doesn't exist yet
     const base = mkdtempSync(join(tmpdir(), "claudish-cache-test-"));

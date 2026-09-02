@@ -1,0 +1,137 @@
+recommended: version=2.0.0 lastUpdated=2026-09-02 models=38
+slim: found via "?catalog=slim" — 743 models
+
+==============================================================================
+ITEM 1 — subscriptions[] order contract
+==============================================================================
+route object keys present: command, plan, prefix
+declared tier/rank field?  NO — order is still positional only
+
+model                  routes in order            native  at index 0?
+------------------------------------------------------------------------------
+qwen3.8-max            zgo,qc,qc,zen              qc      NO  <-- still wrong
+glm-5.3                zgo,gc,zen,oc              gc      NO  <-- still wrong
+kimi-k3                zgo,kc,oc                  kc      NO  <-- still wrong
+minimax-m3             zgo,mmc,zen,oc             mmc     NO  <-- still wrong
+qwen3.8-flash          zgo,qc,qc,zen              qc      NO  <-- still wrong
+glm-5.3-flash          zgo,gc,zen,oc              gc      NO  <-- still wrong
+
+native-plan-first: 0 correct, 6 still leading with a general plan
+singular mirrors subscriptions[0]: mirrors=18 diverges=0
+
+==============================================================================
+ITEM 2 — retired Gemini Code Assist must not be advertised
+==============================================================================
+FAIL — still advertised:
+  gemini-3.7-flash: prefix=go plan="Gemini Code Assist" command="go@gemini-3.7-flash"
+  gemini-3.7-flash: prefix=go plan="Gemini Code Assist" command="go@gemini-3.7-flash"
+
+==============================================================================
+ITEM 3 — swe-1.7 advertising Devin
+==============================================================================
+still present (category=subscription); routes: dv@ "Devin", dv@ "Devin"
+
+==============================================================================
+ITEM 4 — the subscription category cap
+==============================================================================
+subscription rows now: 18   (10 on 08-29, 15 on 08-30, 18 on 08-31)
+rows holding NO prefix at all (consume capped capacity): 4 — claude-fable-5-1, claude-opus-5, claude-haiku-4-5, claude-sonnet-5
+
+==============================================================================
+ITEM 5 — slim vs recommended, subscriptionPlans[] values
+==============================================================================
+slim models flagged plan-served: 53
+distinct subscriptionPlans values: alibaba-token-plan-individual, alibaba-token-plan-team-edition, kimi-coding, minimax-token-plan, ollama-cloud, opencode-go, streamlake-kwaikat-coding-plan, z-ai-glm-coding-plan
+recommended models advertising a routing prefix: 14
+
+value                                matches a claudish provider uid?
+  alibaba-token-plan-individual        NO
+  alibaba-token-plan-team-edition      NO
+  kimi-coding                          yes
+  minimax-token-plan                   NO
+  ollama-cloud                         NO
+  opencode-go                          NO
+  streamlake-kwaikat-coding-plan       NO
+  z-ai-glm-coding-plan                 NO
+
+==============================================================================
+EXTRA — findings raised by the claudish side this session
+==============================================================================
+  duplicate prefix: qwen3.8-max -> [zgo,qc,qc,zen] repeats qc
+  duplicate prefix: deepseek-v4-pro -> [zgo,qc,qc,oc,zen] repeats qc
+  duplicate prefix: qwen3.8-flash -> [zgo,qc,qc,zen] repeats qc
+lastUpdated=2026-09-02 version=2.0.0 models=38
+
+=== every id in recommended, with category ===
+  claude-fable-5-1           flagship, subscription
+  claude-opus-5              flagship, subscription
+  gpt-5.6-sol                flagship, subscription
+  kimi-k3                    flagship, subscription
+  grok-4.6                   flagship, subscription
+  gemini-3.7-flash           flagship, subscription
+  qwen3.8-max                flagship, subscription
+  glm-5.3                    flagship, subscription
+  minimax-m3                 flagship, subscription
+  deepseek-v4-pro            flagship, subscription
+  claude-haiku-4-5           subscription, lightweight
+  claude-sonnet-5            subscription, lightweight
+  gpt-5.6-luna               subscription
+  gpt-5.4-mini               subscription, lightweight
+  swe-1.7                    subscription
+  mistral-medium-3.1         subscription
+  qwen3.8-flash              subscription, lightweight
+  glm-5.3-flash              subscription, lightweight
+  gemini-3.5-flash-lite      lightweight
+  grok-build-0.1             lightweight
+  minimax-m2.7-highspeed     lightweight
+  deepseek-chat-v3.1         lightweight
+  mistral-small-3.2-24b-instruct-2506 lightweight
+
+=== gemini-3.7-flash, full subscription row ===
+{
+  "id": "gemini-3.7-flash",
+  "subscription": {
+    "prefix": "go",
+    "plan": "Gemini Code Assist",
+    "command": "go@gemini-3.7-flash"
+  },
+  "subscriptions": [
+    {
+      "prefix": "go",
+      "plan": "Gemini Code Assist",
+      "command": "go@gemini-3.7-flash"
+    }
+  ]
+}
+
+=== swe-1.7, full subscription row ===
+{
+  "id": "swe-1.7",
+  "subscription": {
+    "prefix": "dv",
+    "plan": "Devin",
+    "command": "dv@swe-1.7"
+  },
+  "subscriptions": [
+    {
+      "prefix": "dv",
+      "plan": "Devin",
+      "command": "dv@swe-1.7"
+    }
+  ]
+}
+
+=== every distinct plan name advertised ===
+  (no prefix) | Claude Code              4 model(s)
+  cx | OpenAI Codex                      3 model(s)
+  dv | Devin                             1 model(s)
+  gc | GLM Coding Plan                   2 model(s)
+  go | Gemini Code Assist                1 model(s)
+  kc | Kimi Code                         1 model(s)
+  mmc | MiniMax Code Plan                1 model(s)
+  mv | Mistral Vibe                      1 model(s)
+  oc | OllamaCloud                       5 model(s)
+  qc | QwenCloud Token Plan Individual   3 model(s)
+  qc | QwenCloud Token Plan Team Edition 3 model(s)
+  zen | OpenCode Zen                     6 model(s)
+  zgo | OpenCode Go                      9 model(s)

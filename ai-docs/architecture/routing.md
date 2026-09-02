@@ -105,6 +105,33 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 **Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. Claudish only consumes this hosted catalog at runtime. Catalog extraction, recommendation generation, portal hosting, and API documentation live in the [models-index](https://github.com/MadAppGang/models-index) repo.
 
+## Runtime subscription routes come from the backend contract
+
+Claudish refreshes the slim model catalog and `queryPlans` together and stores both in
+`~/.claudish/all-models.json`. A model's `subscriptionPlans[]` contains canonical commercial
+plan IDs such as `kimi-code`; those values are NOT provider names. The client joins each ID to
+`queryPlans[].routing.providerUid` before deciding whether a provider serves the model.
+
+Plan absence has two different meanings:
+
+- `modelDiscovery: "catalog"`: the published roster is authoritative, so an absent model is
+  dropped from that subscription provider's candidate chain.
+- `modelDiscovery: "client"` or `"hybrid"`: the authenticated account may reveal models the
+  public backend cannot know, so absence remains unknown and the candidate is retained. Devin,
+  Antigravity, and the `xai-supergrok` plan use this account-scoped behavior.
+
+The backend recommendation document supplies `routingProvider`, `tier`, and an exact `command`
+for each callable route. Claudish turns those rows into exact-model routing rules, orders them by
+`tier` (`native` before `general`, `metered`, and `aggregator`), and places them ahead of bundled
+defaults. `DEFAULT_ROUTING_RULES` remain the cold-cache and uncovered-model fallback. Global and
+local user routing config still overlay both backend and bundled rules with the existing
+exact-key merge semantics; an exact backend model route is replaced by a user rule for that same
+model ID.
+
+If `queryPlans` cannot refresh, the model refresh still succeeds and the last-known-good plan
+cache is preserved. Old cache files without a plan snapshot retain their legacy behavior until a
+successful refresh.
+
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
 **Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)
@@ -173,15 +200,54 @@ the already-listed `minimax-coding` / `glm-coding`, which were quoting their met
 siblings' dollar rates. When adding a provider, ask "does the user pay per token?", not
 "does it declare discovery?".
 
-**`openai-codex` is deliberately NOT in the set**, and the reasoning generalises. It was
-added in the same pass — its picker row literally says "ChatGPT Plus/Pro subscription" — and
-a multi-model review caught it. The provider is DUAL-MODE: `oauthFallback:
-"codex-oauth.json"` is the subscription, but `apiKeyAliases: ["OPENAI_API_KEY"]` means a
-plain metered key authenticates `cx@` just as well. So the flat-rate answer is right for one
-credential and wrong for the other. **The two errors are not symmetric**: quoting a dollar
-rate to a subscriber is a cosmetic over-estimate, while reporting `SUB` (and zero accrued
-cost) to someone OpenAI is metering silently under-reports real money. Membership is a
-property of the provider NAME today; until it can be decided from the credential actually in
-play, a dual-mode provider stays out. `antigravity` (no `apiKeyEnvVar` at all) and
-`sakana-subscription` (which deliberately does not alias the PAYG `SAKANA_API_KEY`) have no
-such ambiguity.
+**`openai-codex` is decided by the CREDENTIAL, not by the name**, and that is the tier the
+whole `SUBSCRIPTION_PROVIDERS` design could not express. It was once added to the name set —
+its picker row literally says "ChatGPT Plus/Pro subscription" — and a multi-model review
+reverted it, on this reasoning: `apiKeyAliases: ["OPENAI_API_KEY"]` means a plain metered key
+authenticates `cx@` just as well. **That premise is false at sign time, and a checked-in test
+says so.** `authority.ts:157` registers the Codex composite BEFORE the generic provider loop
+and `:192-205` blocks the generic `ApiKeyCredentialProvider` from claiming the name, so the
+provider that would have been built with `aliases: def.apiKeyAliases` is never built for
+`openai-codex`; the composite's own fallback declares no aliases at all
+(`codex-credential.ts:79-82`). `auth/credentials/equivalence.test.ts:302-305` —
+*"OPENAI_API_KEY alias alone → false (excluded)"* — asserts it. The alias survives only in
+display and hint code (`tui/providers.ts`, `keychain-command.ts`, `getApiKeyInfo`), which is
+its own cosmetic bug: the config TUI shows `cx@` as key-configured from a key that cannot
+sign it.
+
+The real dual mode is **two hosts**, which is a code fact rather than an inference: OAuth
+(`codex-oauth.json`) signs `chatgpt.com/backend-api/codex/responses`
+(`codex-credential.ts:17`, `:54`), while `OPENAI_CODEX_API_KEY` signs
+`api.openai.com/v1/responses` (`provider-definitions.ts:408`, `:410`), and
+`transport/openai-codex.ts:11-15` documents that OAuth tokens do not work against
+`api.openai.com` at all. Whether that second host bills per token was inferred until
+**2026-09-02, when it was measured**: a platform key against exactly that host and path
+returns `200` with `"billing": {"payer": "developer"}` in the response body — the endpoint
+names the payer itself, and it is the key holder, not a ChatGPT plan
+(`ai-docs/reports/data/measurements-20260902.txt`). One 200 does not prove every account type
+answers the same way, so the probe's metered-by-default shape is unchanged; it is now backed
+by a measurement instead of by the host name.
+
+**The two errors are not symmetric**: quoting a dollar rate to a subscriber is a cosmetic
+over-estimate, while reporting `SUB` (and zero accrued cost) to someone OpenAI is metering
+silently under-reports real money. So the answer comes from a probe registered by the auth
+layer (`auth/credentials/billing-probe.ts`, installed only as a side effect of importing
+`auth/credentials/authority.ts`), and every uncertainty resolves toward **metered**:
+
+- The transport records which arm actually signed (`transport/openai-codex.ts` calls
+  `recordSignedArm` at the end of `refreshAuth`). That record is read FIRST, because
+  `refreshAuth` catches every failure and falls through to the plain api-key path — so
+  "OAuth present, api-key signing" is reachable per request whenever a token refresh fails.
+- Before any request has been signed, the probe answers "which credential WOULD sign" with
+  `CodexOAuth.getInstance().hasCredentials()` — the same predicate the composite uses to pick
+  its primary (`composite-credential.ts:50` → `codex-credential.ts:45-47`). **Never**
+  `hasOAuthCredentials` or `describeSourceSync`: both return true for an `access_token` with
+  an unexpired `expires_at` and no `refresh_token` (`oauth-registry.ts:88-97`), a state where
+  `hasCredentials()` is false and the API key signs.
+- Unregistered probe ⇒ metered. Safe as money; the cost is one suppressed cost warning at
+  `routing-rules.ts:413`.
+
+`antigravity` (no `apiKeyEnvVar` at all) and `sakana-subscription` (which deliberately does
+not alias the PAYG `SAKANA_API_KEY`) have no such ambiguity, which is why they sit in the
+plain name set. Adding `openai-codex` to that set as well would short-circuit the probe and
+report `SUB` to every API-key user — do not.

@@ -27,10 +27,37 @@ export interface RequestAuthContext {
   allowOpPrompt?: boolean;
 }
 
+/**
+ * Which ARM of a dual-mode credential minted an artifact.
+ *
+ * Names the CREDENTIAL, not the billing outcome, and the distinction is
+ * load-bearing. `ApiKeyCredentialProvider` is the fallback half of every
+ * composite AND the sole provider for ~40 single-mode providers, several of
+ * which are flat-rate plans bought with an API key (`kimi-coding`,
+ * `glm-coding`, `minimax-coding`). Stamping those artifacts `"metered"` would
+ * put a false statement in the type, and the next person to generalise the
+ * billing record would inherit it. `"api-key"` is true of all of them; the
+ * arm→billing mapping is per provider and belongs at the consumer, which is
+ * where the evidence for it lives (for `openai-codex`, the two-host argument in
+ * `handlers/shared/remote-provider-types.ts`).
+ */
+export type CredentialArm = "oauth" | "api-key";
+
 export interface RequestAuth {
   headers: Record<string, string>;
   endpoint?: string;
   transformPayload?(payload: any): any;
+  /**
+   * Which half of a composite produced this. Set by the halves themselves and
+   * passed through untouched by `CompositeCredentialProvider`, so a consumer can
+   * ask the artifact what signed instead of inferring it.
+   *
+   * Optional, and its ABSENCE must be read as "unknown", never as a default arm:
+   * a consumer that maps arms to money resolves unknown toward the metered/paid
+   * answer, so a provider that forgets to set it over-reports cost rather than
+   * hiding a real bill. See `OpenAICodexTransport.refreshAuth`.
+   */
+  arm?: CredentialArm;
 }
 
 export interface CredentialProvider {

@@ -31,7 +31,8 @@ function makeTempCatalog(
     subscriptionPlans?: string[];
   },
   /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
-  plans: string[] = model.subscriptionPlans ?? []
+  plans: string[] = model.subscriptionPlans ?? [],
+  routingProviderByPlan: Record<string, string> = {}
 ): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
   const path = join(dir, "all-models.json");
@@ -58,8 +59,8 @@ function makeTempCatalog(
     subscriptionPlans: model.subscriptionPlans ?? [],
     aggregators:
       model.externalId && model.subscriptionPlans
-        ? model.subscriptionPlans.map((provider) => ({
-            provider,
+        ? model.subscriptionPlans.map((planId) => ({
+            provider: routingProviderByPlan[planId] ?? planId,
             externalId: model.externalId!,
             confidence: "scrape_verified" as const,
           }))
@@ -71,6 +72,14 @@ function makeTempCatalog(
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
+    plans: plans.map((plan) => ({
+      id: plan,
+      modelDiscovery: "catalog",
+      routing: {
+        providerUid: routingProviderByPlan[plan] ?? plan,
+        nativeModelProviders: [],
+      },
+    })),
   };
   writeAllModelsCache(cache, path);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };

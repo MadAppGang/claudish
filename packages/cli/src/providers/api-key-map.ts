@@ -45,7 +45,16 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   // filters candidates by credential — `opencode-zen-go` being dropped from
   // every chain it appears in. Same shape as the sakana-subscription mismatch
   // above: two tiers, two keys, one table naming the wrong one.
-  "opencode-zen-go": { envVar: "OPENCODE_GO_API_KEY", aliases: ["OPENCODE_API_KEY"] },
+  //
+  // NO alias (2026-09-02). The fix above left OPENCODE_API_KEY behind as one,
+  // and the definition dropped its matching `apiKeyAliases` on the day the 401
+  // claim was measured false. Keeping it HERE would have been worse than never
+  // fixing it: this table is what `--probe` uses to decide `hasCredentials`
+  // (`cli.ts` buildDirectChainEntry / buildResultLinks), so the probe would have
+  // printed a credentialed `zgo@` row for a key the credential authority now
+  // refuses to sign with — a row asserting readiness nothing has verified, the
+  // same defect as the removed publicKeyFallback.
+  "opencode-zen-go": { envVar: "OPENCODE_GO_API_KEY" },
   vertex: { envVar: "VERTEX_API_KEY", aliases: ["VERTEX_PROJECT"] },
   poe: { envVar: "POE_API_KEY" },
 };

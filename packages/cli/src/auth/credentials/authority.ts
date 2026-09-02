@@ -15,6 +15,7 @@
 import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
 import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
+import { clearSignedArm, installBillingProbes } from "./billing-probe.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { DevinCredentialProvider } from "./devin-credential.js";
 import { GrokSubscriptionCredentialProvider } from "./grok-credential.js";
@@ -123,8 +124,17 @@ export class CredentialAuthority {
   /**
    * Drop any memoized resolution. With no name, invalidate every registered
    * provider (after a TUI hydrate-on-add or a config change). Idempotent.
+   *
+   * Also forgets which arm last SIGNED. The signed-arm record is a statement
+   * about a credential state, so it cannot outlive an invalidation of that state:
+   * in a long-lived process (the MCP server, `serve`) one successful OAuth request
+   * would otherwise pin `SUB` on preflight, `list_models` and the picker after the
+   * credential was replaced or removed, until the next request rewrote it.
+   * Clearing returns the answer to "which credential WOULD sign", which is the
+   * honest answer when nothing has been signed since.
    */
   invalidate(name?: string): void {
+    clearSignedArm(name);
     if (name) {
       this.registry.get(name)?.invalidate?.();
       return;
@@ -140,10 +150,15 @@ export class CredentialAuthority {
 
   async login(name: string): Promise<void> {
     await this.registry.get(name)?.login?.();
+    // A new credential may sign with a different arm than the last request did.
+    clearSignedArm(name);
   }
 
   async logout(name: string): Promise<void> {
     await this.registry.get(name)?.logout?.();
+    // The OAuth file is gone. Keeping a `subscription` record here is the exact
+    // staleness that reports SUB and $0 for a user who is now on the API key.
+    clearSignedArm(name);
   }
 
   get(name: string): CredentialProvider | undefined {
@@ -233,3 +248,11 @@ export class CredentialAuthority {
 }
 
 export const credentials = CredentialAuthority.buildDefault();
+
+// Teach the pricing leaf to ask the credential layer which arm signs for the
+// dual-mode providers (today: openai-codex). ONE registration site rather than
+// three entry points, and the failure is self-consistent: a process that never
+// imports this module never authenticates, so "metered" is the right answer for
+// it anyway. Unregistered it is silently metered — safe as money, but it also
+// suppresses the routing-rules.ts:413 cost warning. See CLAUDE.md's invariants.
+installBillingProbes();

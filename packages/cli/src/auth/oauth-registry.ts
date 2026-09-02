@@ -75,6 +75,55 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
   // TUI's provider list and failed every Test All run.
 };
 
+/**
+ * This registry's rule for "is a PARSED credential object usable", with no file
+ * access of any kind.
+ *
+ * Split out of `hasValidOAuthCredentials` below so the rule can be exercised
+ * against a credential object directly. The rule and the file lookup used to be
+ * one function, and that made the rule untestable anywhere except on a machine
+ * that happened to have the right file in `~/.claudish` — which the developer
+ * machine has and hermetic CI never does. A test whose discriminating power is a
+ * property of the home directory is not a test; see
+ * `auth/credentials/billing-probe.test.ts`, "THE TRAP".
+ */
+function credentialSatisfies(descriptor: OAuthProviderDescriptor, data: any): boolean {
+  if (!data?.access_token) return false;
+
+  // If a refresh_token is present the handler can refresh at request time,
+  // so the credential is usable regardless of whether the access token has expired.
+  if (data.refresh_token) return true;
+
+  // No refresh token - must verify the access token itself hasn't expired.
+  if (descriptor.expiresAtField && data[descriptor.expiresAtField]) {
+    const buffer = descriptor.expiryBufferMs ?? 0;
+    return data[descriptor.expiresAtField] > Date.now() + buffer;
+  }
+
+  return true;
+}
+
+/**
+ * Would THIS credential object satisfy `hasOAuthCredentials(providerName)`?
+ *
+ * Exported for one purpose: letting a test ask what this oracle WOULD answer for
+ * a given credential state without putting a file under `$HOME`. It shares
+ * `credentialSatisfies` with the real lookup, so the two cannot drift on the rule
+ * — which is the only part a caller can get wrong.
+ *
+ * NOT a production entry point. Production asks `hasOAuthCredentials`, and the
+ * credential layer deliberately does NOT use either of them to decide billing:
+ * this rule accepts an unexpired `access_token` with no `refresh_token`, a state
+ * where `CodexOAuth.hasCredentials()` is false and the API key is what actually
+ * signs (see `auth/credentials/billing-probe.ts`).
+ */
+export function oauthCredentialWouldQualify(providerName: string, data: unknown): boolean {
+  const descriptor = OAUTH_PROVIDERS[providerName];
+  if (!descriptor) return false;
+  if (descriptor.validationMode === "file-exists") return true;
+  return credentialSatisfies(descriptor, data);
+}
+
 function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean {
   const credPath = join(homedir(), ".claudish", descriptor.credentialFile);
   if (!existsSync(credPath)) return false;
@@ -84,20 +133,7 @@ function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean 
   }
 
   try {
-    const data = JSON.parse(readFileSync(credPath, "utf-8"));
-    if (!data.access_token) return false;
-
-    // If a refresh_token is present the handler can refresh at request time,
-    // so the credential is usable regardless of whether the access token has expired.
-    if (data.refresh_token) return true;
-
-    // No refresh token - must verify the access token itself hasn't expired.
-    if (descriptor.expiresAtField && data[descriptor.expiresAtField]) {
-      const buffer = descriptor.expiryBufferMs ?? 0;
-      return data[descriptor.expiresAtField] > Date.now() + buffer;
-    }
-
-    return true;
+    return credentialSatisfies(descriptor, JSON.parse(readFileSync(credPath, "utf-8")));
   } catch {
     return false;
   }

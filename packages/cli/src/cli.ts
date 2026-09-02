@@ -2296,6 +2296,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("SAKANA_SUBSCRIPTION_API_KEY")}     Sakana Fugu Subscription ${dim("(sc@; separate subscription key)")}
   ${blue("OLLAMA_API_KEY")}                  OllamaCloud ${dim("(oc@, llama@)")}
   ${blue("OPENCODE_API_KEY")}                OpenCode Zen ${dim("(zen@)")}
+  ${blue("OPENCODE_GO_API_KEY")}             OpenCode Zen Go plan ${dim("(zgo@, zengo@; separate plan key)")}
   ${blue("POE_API_KEY")}                     Poe ${dim("(poe@)")}
   ${blue("LITELLM_API_KEY")}                 LiteLLM ${dim("(litellm@, ll@; needs LITELLM_BASE_URL)")}
   ${blue("VERTEX_API_KEY")}                  Vertex AI Express ${dim("(v@)")}

@@ -46,6 +46,20 @@ export class CompositeCredentialProvider implements CredentialProvider {
     this.fallback.invalidate?.();
   }
 
+  /**
+   * Both arms return an artifact; NEITHER returns null.
+   *
+   * This is the fact consumers get wrong. The fallback below is normally an
+   * `ApiKeyCredentialProvider`, whose `getRequestAuth` always returns an object —
+   * `{headers:{Authorization:"Bearer …"}}` with a key, `{headers:{}}` without one.
+   * So a caller that treats "I got something back" as "the primary signed" is
+   * wrong on every fallback request. The only way this method throws is a primary
+   * that is AVAILABLE and then fails with something other than `fallbackSignal`.
+   *
+   * The artifact is returned VERBATIM from whichever half produced it, so its
+   * `arm` marker survives — that marker, not the return being non-null, is how a
+   * caller learns which credential won.
+   */
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
     if (await this.primary.isAvailable({ allowOpPrompt: ctx.allowOpPrompt })) {
       try {

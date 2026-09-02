@@ -35,6 +35,8 @@ Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing
 - Terminal errors are remapped to 400, so any `status ===` under `handlers/` is suspect — recover the real one with `extractUpstreamStatus`.
 - Read `C.*` / `tokens.*` at RENDER time; a module-level `const` snapshots the dark palette before detection runs.
 - A provider absent from `SUBSCRIPTION_PROVIDERS` quotes flat-rate users a per-token price and accrues fictional spend.
+- `openai-codex` bills by the CREDENTIAL that signed, never by its name, so it is in `CREDENTIAL_DECIDED_PROVIDERS` and must never also be in `SUBSCRIPTION_PROVIDERS` — the name check short-circuits the probe. The probe is installed only as a side effect of importing `auth/credentials/authority.ts`; unregistered, `cx@` silently reports metered (safe as money, but it also suppresses the `routing-rules.ts:413` cost warning). Probe with `CodexOAuth.hasCredentials()`, never `hasOAuthCredentials`/`describeSourceSync`.
+- What makes an arm the SUBSCRIPTION arm is `RequestAuth.arm === "oauth"`, set by the credential half itself — never "the composite returned an artifact". `CompositeCredentialProvider` falls through to the api-key half, which ALWAYS returns an object (`{headers:{}}` even with no key), so a truthiness test on the cached artifact labels every metered request SUB and accrues $0. Absent `arm` ⇒ metered. This shipped once and three reviewers read it as correct.
 - Providers whose uids collide with another vendor's namespace (`devin`, `qwen-cloud`) declare no `nativeModelPatterns` and no routing rule — explicit `provider@model` access only.
 - `gk@` is the Grok SUBSCRIPTION; `grok@`/`xai@` is the metered `x-ai`. `moonshot-cn@` is a different service from `moonshot@`.
 - A new `ClaudishProfileConfig` field MUST be added to `loadConfig`'s allowlist in `profile-config.ts`; otherwise it survives on disk until the first global save and is then dropped. Bit `onepasswordEnvironments`, then `keychain`.
@@ -76,4 +78,11 @@ for rationale. Three write-ups already died this way.
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->
 - Don't run claudish directly in main bash — use dedicated channel sessions or `/delegate`
+<!-- learned: 2026-09-02 source: near_miss -->
+- NEVER `git stash` from a worktree. The stash stack is shared with the main checkout and
+  every sibling worktree, and concurrent sessions push and pop it. A bare push/pop pair is
+  not symmetric: another session can push between yours, so your `pop` takes THEIR work and
+  buries yours where nobody is looking. Both trees then look plausible and neither errors.
+  Set work aside with a temporary WIP commit, or copy the file out and back. To revert a
+  file for a mutation test, copy it — do not use git.
 - Deep rationale goes in `ai-docs/architecture/`, not here. Add it there and name the trigger in the list above.

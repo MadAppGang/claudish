@@ -2,6 +2,7 @@ import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
+import { buildCatalogRoutingRules, getRecommendedModelsSync } from "../model-loader.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
@@ -10,6 +11,7 @@ import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { providerServesModel } from "./model-availability.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
+import { getProviderByName } from "./provider-definitions.js";
 import { buildCredentialHint } from "./routing-hints.js";
 
 /**
@@ -26,9 +28,10 @@ export function mergeRoutingRules(
 
 /**
  * Load effective routing rules. Layers:
- *   1. DEFAULT_ROUTING_RULES (built-in, see default-routing-rules.ts)
- *   2. Global config (~/.claudish/config.json)
- *   3. Local config (./.claudish.json)
+ *   1. DEFAULT_ROUTING_RULES (cold-cache and uncovered-model fallback)
+ *   2. Exact routes derived from the cached backend recommendation contract
+ *   3. Global config (~/.claudish/config.json)
+ *   4. Local config (./.claudish.json)
  *
  * Local rules overwrite global rules overwrite defaults — same key wins.
  * User patterns OVERWRITE default patterns by exact key match (no glob-vs-glob
@@ -44,7 +47,28 @@ export function loadRoutingRules(): RoutingRules {
   validateRoutingRules(local);
   validateRoutingRules(global_);
 
-  return mergeRoutingRules(DEFAULT_ROUTING_RULES, global_, local);
+  const catalogRules = retainKnownCatalogRoutingRules(
+    buildCatalogRoutingRules(getRecommendedModelsSync())
+  );
+  return mergeRoutingRules({ ...DEFAULT_ROUTING_RULES, ...catalogRules }, global_, local);
+}
+
+/**
+ * The backend owns route preference, but the installed client owns which
+ * provider implementations it can execute. Ignore an ahead-of-client provider
+ * instead of allowing one external row to shadow a working bundled fallback.
+ */
+export function retainKnownCatalogRoutingRules(rules: RoutingRules): RoutingRules {
+  const retained: RoutingRules = {};
+  for (const [modelId, entries] of Object.entries(rules)) {
+    const knownEntries = entries.filter((entry) => {
+      const providerRaw = entry.split("@", 1)[0]?.toLowerCase() ?? "";
+      const provider = PROVIDER_SHORTCUTS[providerRaw] ?? providerRaw;
+      return getProviderByName(provider) !== undefined;
+    });
+    if (knownEntries.length > 0) retained[modelId] = knownEntries;
+  }
+  return retained;
 }
 
 /** Warn about config issues that would silently misbehave. */

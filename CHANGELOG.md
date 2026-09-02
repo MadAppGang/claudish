@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.1] - 2026-09-02
+
+### Bug Fixes
+
+- consume backend subscription routing (#228) *(catalog)* ([`ad7b79b`](https://github.com/MadAppGang/claudish/commit/ad7b79b918a1af106237d43021b946f381bd26b5))
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.0([`a3895fb`](https://github.com/MadAppGang/claudish/commit/a3895fb93b321e629ba0dde9aa9c5dedd1a68151))
+
+## [9.0.0] - 2026-09-02
+
+### ⚠ BREAKING CHANGES
+
+- OPENCODE_API_KEY no longer authenticates `zgo@` / `zengo@`. *(providers)* ([`a01ffb9`](https://github.com/MadAppGang/claudish/commit/a01ffb9659b4ebb0b05c0d4daf1fa675aa86e396))
+
+### Bug Fixes
+
+- render BREAKING CHANGES in the generated changelog *(release)* ([`620ae1f`](https://github.com/MadAppGang/claudish/commit/620ae1fc37a378fe17de12c4fa2f77e34b63e6e5))
+- drop OPENCODE_API_KEY alias from opencode-zen-go *(providers)* ([`a01ffb9`](https://github.com/MadAppGang/claudish/commit/a01ffb9659b4ebb0b05c0d4daf1fa675aa86e396))
+- classify OpenCode correctly and bill Codex by credential *(billing)* ([`1f551d0`](https://github.com/MadAppGang/claudish/commit/1f551d0a05c01d89d28f11d73fb0b8cbccd33712))
+
+### Documentation
+
+- record the findings, the measurements and the backend contract([`f973c77`](https://github.com/MadAppGang/claudish/commit/f973c779cd5c3e858751bbe247cd1650adeedc8b))
+- update CHANGELOG.md for v8.1.0([`44e519f`](https://github.com/MadAppGang/claudish/commit/44e519f711eb3860a1717ae115f1f1f5a5563cc0))
+
+### New Features
+
+- render every subscription route, not just the first *(catalog)* ([`7304daa`](https://github.com/MadAppGang/claudish/commit/7304daadd4aa926dd5e3240ed8e52de39f3f4e6c))
+
+### Other Changes
+
+- release v9.0.0([`e7bcaa9`](https://github.com/MadAppGang/claudish/commit/e7bcaa917afcd8f9c807b254e1076b9fce7c0b56))
+
 ## [8.1.0] - 2026-08-29
 
 ### Bug Fixes
@@ -22,13 +57,28 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [8.0.0] - 2026-08-27
 
+### Bug Fixes
+
+- bun --cwd before `run` silently skips the package *(scripts)* ([`e69be3e`](https://github.com/MadAppGang/claudish/commit/e69be3e410df8a111979702c9ce155c854b1b10d))
+- share the child-supervision mechanism; two latent bugs fall out *(team)* ([`079e7e3`](https://github.com/MadAppGang/claudish/commit/079e7e3d161020b5dac502b2f48fc5efdac3a805))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.67.1([`ca79a7c`](https://github.com/MadAppGang/claudish/commit/ca79a7c5f588f5cef2c6c58a76d975cba1344014))
 
+### New Features
+
+- non-blocking run, caller-owned cancellation, prompts from a file *(team)* ([`beaf889`](https://github.com/MadAppGang/claudish/commit/beaf88968005535f89d05b752ab9eaea6784b2dd))
+- report idle time as data; the caller decides what it means *(channel)* ([`fdde2a7`](https://github.com/MadAppGang/claudish/commit/fdde2a71f112cc60ab2cebda1348085d9689a206))
+
 ### Other Changes
 
 - release v8.0.0([`56e4963`](https://github.com/MadAppGang/claudish/commit/56e4963c341004fb5c476e13cb5ea0c6bde78958))
+
+### Refactoring
+
+- one stream-json parser; team feeds the reducer *(team)* ([`26bc39f`](https://github.com/MadAppGang/claudish/commit/26bc39fea49e92e23df3c62483bf1706f3ff27b6))
+- delete the stall reaper; nothing kills a working slot *(team)* ([`0a4c2f0`](https://github.com/MadAppGang/claudish/commit/0a4c2f02813109fda09604d94977767b19707ce7))
 
 ## [7.67.1] - 2026-08-27
 
@@ -46,11 +96,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.67.0] - 2026-08-27
 
-### Bug Fixes
-
-- bun --cwd before `run` silently skips the package *(scripts)* ([`e69be3e`](https://github.com/MadAppGang/claudish/commit/e69be3e410df8a111979702c9ce155c854b1b10d))
-- share the child-supervision mechanism; two latent bugs fall out *(team)* ([`079e7e3`](https://github.com/MadAppGang/claudish/commit/079e7e3d161020b5dac502b2f48fc5efdac3a805))
-
 ### Documentation
 
 - update CHANGELOG.md for v7.66.1([`1eed670`](https://github.com/MadAppGang/claudish/commit/1eed6701e9767ac4845a592ff9de1507253312bf))
@@ -58,17 +103,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - --model-params, --effort-override, and catalog-driven ultracode presets (#220)([`cf53f4f`](https://github.com/MadAppGang/claudish/commit/cf53f4fe8a949383e3719a37dd409d6b696fc8d4))
-- non-blocking run, caller-owned cancellation, prompts from a file *(team)* ([`beaf889`](https://github.com/MadAppGang/claudish/commit/beaf88968005535f89d05b752ab9eaea6784b2dd))
-- report idle time as data; the caller decides what it means *(channel)* ([`fdde2a7`](https://github.com/MadAppGang/claudish/commit/fdde2a71f112cc60ab2cebda1348085d9689a206))
 
 ### Other Changes
 
 - release v7.67.0([`84622c0`](https://github.com/MadAppGang/claudish/commit/84622c0ad86298c61a98a409b479e720e0d64542))
-
-### Refactoring
-
-- one stream-json parser; team feeds the reducer *(team)* ([`26bc39f`](https://github.com/MadAppGang/claudish/commit/26bc39fea49e92e23df3c62483bf1706f3ff27b6))
-- delete the stall reaper; nothing kills a working slot *(team)* ([`0a4c2f0`](https://github.com/MadAppGang/claudish/commit/0a4c2f02813109fda09604d94977767b19707ce7))
 
 ## [7.66.1] - 2026-08-26
 
@@ -86,9 +124,19 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.66.0] - 2026-08-24
 
+### Bug Fixes
+
+- talk to Antigravity's backend, not Code Assist's *(antigravity)* ([`4af2c14`](https://github.com/MadAppGang/claudish/commit/4af2c14c3b3bedb1c2285c73812745aed4092eb0))
+- paint the page in the terminal's own colour, not a hardcoded slab *(tui)* ([`add2461`](https://github.com/MadAppGang/claudish/commit/add2461baa16a988ce01f12a4710f1545d7aa2cd))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.65.0([`5f14367`](https://github.com/MadAppGang/claudish/commit/5f143677aec3ff3b8ffbd46ec078681e14927de6))
+- the two ways a green local run lied during the v7.65.0 release *(testing)* ([`a8361ef`](https://github.com/MadAppGang/claudish/commit/a8361efc98f3d3ac0eee659a86974e6f25f2ed83))
+
+### New Features
+
+- macOS Keychain as a credential backend *(keychain)* ([`fb37c2d`](https://github.com/MadAppGang/claudish/commit/fb37c2dcb0bae9ca541dfa4c7456b996724072fb))
 
 ### Other Changes
 
@@ -99,41 +147,37 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### Bug Fixes
 
 - track the stream-json captures instead of reading them from a gitignored session dir *(test)* ([`74a6541`](https://github.com/MadAppGang/claudish/commit/74a6541c4414b1f8f8a336cc50f545fdb14dce40))
-
-### Documentation
-
-- the two ways a green local run lied during the v7.65.0 release *(testing)* ([`a8361ef`](https://github.com/MadAppGang/claudish/commit/a8361efc98f3d3ac0eee659a86974e6f25f2ed83))
-- update CHANGELOG.md for v7.64.1([`b1caaa5`](https://github.com/MadAppGang/claudish/commit/b1caaa5e81565a69087fed56219f0aeb5536b12d))
-
-## [7.64.1] - 2026-08-22
-
-### Bug Fixes
-
-- repair account-scoped probe diagnostics *(providers)* ([`73e0233`](https://github.com/MadAppGang/claudish/commit/73e02330bb643d58809525f72f9083642f7151a5))
 - recover evicted sessions from disk, and stop a NUL byte hiding the file from grep *(channel)* ([`bf33054`](https://github.com/MadAppGang/claudish/commit/bf33054a224b9efe9cfe3d3bf4ad6a169e54528a))
 - stop rate_limit_event frames being captured as the model's answer *(team)* ([`8e1e4cb`](https://github.com/MadAppGang/claudish/commit/8e1e4cbdd957e1cbbcba63f6bd40cef6707d7242))
-- talk to Antigravity's backend, not Code Assist's *(antigravity)* ([`4af2c14`](https://github.com/MadAppGang/claudish/commit/4af2c14c3b3bedb1c2285c73812745aed4092eb0))
-- paint the page in the terminal's own colour, not a hardcoded slab *(tui)* ([`add2461`](https://github.com/MadAppGang/claudish/commit/add2461baa16a988ce01f12a4710f1545d7aa2cd))
 
 ### Documentation
 
+- update CHANGELOG.md for v7.64.1([`b1caaa5`](https://github.com/MadAppGang/claudish/commit/b1caaa5e81565a69087fed56219f0aeb5536b12d))
 - prove the cost/latency guards grade, instead of excusing a red control *(benches)* ([`fb911bc`](https://github.com/MadAppGang/claudish/commit/fb911bc1e8689111729f27139438c927188cfc26))
 - how to actually drive a magmux session to completion, and the four traps([`dced29f`](https://github.com/MadAppGang/claudish/commit/dced29f389acda43a82b59f90220bcf2a35be8d0))
 - correct why magmux exists — agent-drives-agent, and headless keeps the PTY([`a901f75`](https://github.com/MadAppGang/claudish/commit/a901f7518d2f54743e21ce11c4fd293ef9482f19))
 - headless is not a faithful subset of interactive — and why magmux exists([`17e1fe9`](https://github.com/MadAppGang/claudish/commit/17e1fe98b2d03b7388cb37c34249a8c4961c43c0))
-- move architecture rationale out of CLAUDE.md into ai-docs/architecture/([`ceeef60`](https://github.com/MadAppGang/claudish/commit/ceeef606ff49c0952ce65794ca1f6ffa312625be))
-- update CHANGELOG.md for v7.64.0([`4daf804`](https://github.com/MadAppGang/claudish/commit/4daf80403122e61b395d0feb550d049fdd151cc1))
 
 ### New Features
 
 - bidirectional stream-json transport, and a timeout that stops reporting success *(channel)* ([`da1b485`](https://github.com/MadAppGang/claudish/commit/da1b4855d89887cf92f452a310d271e56f1f9a13))
 - working driver that runs a magmux Claude session to completion *(scripts)* ([`4ab8966`](https://github.com/MadAppGang/claudish/commit/4ab8966f4e470a8828c7593fb9c2d3be929638de))
 - native Claude is a runnable team slot, with a first-class agent param *(team)* ([`471bbf7`](https://github.com/MadAppGang/claudish/commit/471bbf77ad0677dd97f32024cd6eff4691abfbcf))
-- macOS Keychain as a credential backend *(keychain)* ([`fb37c2d`](https://github.com/MadAppGang/claudish/commit/fb37c2dcb0bae9ca541dfa4c7456b996724072fb))
 
 ### Other Changes
 
 - v7.65.0 *(release)* ([`9b74034`](https://github.com/MadAppGang/claudish/commit/9b7403437e212beb939048a94bc05f857dd87091))
+
+## [7.64.1] - 2026-08-22
+
+### Bug Fixes
+
+- repair account-scoped probe diagnostics *(providers)* ([`73e0233`](https://github.com/MadAppGang/claudish/commit/73e02330bb643d58809525f72f9083642f7151a5))
+
+### Documentation
+
+- move architecture rationale out of CLAUDE.md into ai-docs/architecture/([`ceeef60`](https://github.com/MadAppGang/claudish/commit/ceeef606ff49c0952ce65794ca1f6ffa312625be))
+- update CHANGELOG.md for v7.64.0([`4daf804`](https://github.com/MadAppGang/claudish/commit/4daf80403122e61b395d0feb550d049fdd151cc1))
 
 ## [7.64.0] - 2026-08-19
 
@@ -210,6 +254,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - v7.60.0 - one provider table, roster-fetcher registry([`8103da4`](https://github.com/MadAppGang/claudish/commit/8103da498bf705e8b77a05aaedf589fe8d32a9e8))
 
+### Refactoring
+
+- one provider table, and a registry for roster fetchers *(providers)* ([`2956f18`](https://github.com/MadAppGang/claudish/commit/2956f1814a449a8cf1c2d455aeac6e59e5452296))
+
 ## [7.59.0] - 2026-08-18
 
 ### Documentation
@@ -275,10 +323,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - Grok usage reporting, and Antigravity stops reporting the wrong tier *(quota)* ([`4386b6a`](https://github.com/MadAppGang/claudish/commit/4386b6aa94163457ad0e558ab853a4a9645cf1bb))
 
-### Refactoring
-
-- one provider table, and a registry for roster fetchers *(providers)* ([`2956f18`](https://github.com/MadAppGang/claudish/commit/2956f1814a449a8cf1c2d455aeac6e59e5452296))
-
 ## [7.55.0] - 2026-08-18
 
 ### Bug Fixes
@@ -304,15 +348,21 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - update CHANGELOG.md for v7.53.0([`69dc744`](https://github.com/MadAppGang/claudish/commit/69dc74496c455cdd4fad9e05f1ab77079d3839f8))
 
+### New Features
+
+- Grok Build subscription provider with its own OAuth (gk@) *(providers)* ([`091efe7`](https://github.com/MadAppGang/claudish/commit/091efe7413b374e9ee78db70798ba356c7fcfb49))
+
 ### Other Changes
 
 - v7.54.0 - fix import order, rebase onto 7.53.0([`fcbb933`](https://github.com/MadAppGang/claudish/commit/fcbb9332cb6aec736fab0eb0e1cb983f65cde698))
+- v7.53.0 - Grok Build subscription provider with its own OAuth([`1cf4618`](https://github.com/MadAppGang/claudish/commit/1cf4618380195ce014429fa0fba47df3643de156))
 
 ## [7.53.0] - 2026-08-17
 
 ### Bug Fixes
 
 - stop reporting a transient 429 as terminal quota exhaustion *(antigravity)* ([`889e532`](https://github.com/MadAppGang/claudish/commit/889e532f6063afc82da699f9b807e873ef933805))
+- drive magmux over its socket, not through a pty *(test)* ([`697d9ff`](https://github.com/MadAppGang/claudish/commit/697d9fff361902726b9bc057590e99d1d0b81e38))
 
 ### Documentation
 
@@ -327,7 +377,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Bug Fixes
 
-- drive magmux over its socket, not through a pty *(test)* ([`697d9ff`](https://github.com/MadAppGang/claudish/commit/697d9fff361902726b9bc057590e99d1d0b81e38))
 - close the bug report's remaining findings, and a test-isolation defect([`e46898e`](https://github.com/MadAppGang/claudish/commit/e46898edd46deae43fe8b63893b33c62f56578ed))
 - ignore magmux's control panel when reading pane results *(team-grid)* ([`483cc83`](https://github.com/MadAppGang/claudish/commit/483cc832331a8903ed212e2bcc09d43d4645e1e9))
 - actually stop timed-out children, and stop discarding their answers *(team)* ([`26865dc`](https://github.com/MadAppGang/claudish/commit/26865dccfadcff8ce48de606fff2c535189db62e))
@@ -339,13 +388,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - update CHANGELOG.md for v7.51.0([`1913b82`](https://github.com/MadAppGang/claudish/commit/1913b822152e20f3ecf86250b35d310fa4676728))
 
-### New Features
-
-- Grok Build subscription provider with its own OAuth (gk@) *(providers)* ([`091efe7`](https://github.com/MadAppGang/claudish/commit/091efe7413b374e9ee78db70798ba356c7fcfb49))
-
 ### Other Changes
 
-- v7.53.0 - Grok Build subscription provider with its own OAuth([`1cf4618`](https://github.com/MadAppGang/claudish/commit/1cf4618380195ce014429fa0fba47df3643de156))
 - v7.52.0 - enforce team timeouts, and unbreak grok-4.6 reasoning effort([`59e717b`](https://github.com/MadAppGang/claudish/commit/59e717b110637f26597294a945c9b8cb957da8b6))
 
 ## [7.51.0] - 2026-08-17
@@ -354,6 +398,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - rescue the two session artifacts that tracked files still cite([`d05a62f`](https://github.com/MadAppGang/claudish/commit/d05a62f9b6f9994da3e868fcac7a27c21eddb922))
 - update CHANGELOG.md for v7.50.0([`b5643ca`](https://github.com/MadAppGang/claudish/commit/b5643caf7e0bf8248daec597c39481f750f04538))
+
+### New Features
+
+- predefined custom endpoints — 25 measured OpenAI-compatible vendors, bundled([`bab9d84`](https://github.com/MadAppGang/claudish/commit/bab9d84986142dc5cc16dcb3db603c42a635380c))
 
 ### Other Changes
 
@@ -391,7 +439,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.49.0 — stop reporting a vote-less epilogue as succeeded *(team)* ([`28d4c27`](https://github.com/MadAppGang/claudish/commit/28d4c27016177a9ad2d581be2e37be4a208cc630))
-- predefined custom endpoints — 25 measured OpenAI-compatible vendors, bundled([`bab9d84`](https://github.com/MadAppGang/claudish/commit/bab9d84986142dc5cc16dcb3db603c42a635380c))
 
 ### Other Changes
 
@@ -422,10 +469,22 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - tear down from a finally so a failed finalize cannot hang the turn *(stream-parsers)* ([`a40d2de`](https://github.com/MadAppGang/claudish/commit/a40d2de0f603a67e7ad507bb642d0e2740b42961))
 - cover review comments, gate on write access, skip fork pull_request *(ci)* ([`818ea72`](https://github.com/MadAppGang/claudish/commit/818ea7234dfade123df82b18f2fe1cb47c0a9dd1))
 - check out the PR head for @claude comment-triggered reviews *(ci)* ([`8cbc895`](https://github.com/MadAppGang/claudish/commit/8cbc89502e2bedf5a44ebed85cfde6449480f1f9))
+- address independent review — TTY/non-git fallback, card clipping, resume id *(session)* ([`27b938f`](https://github.com/MadAppGang/claudish/commit/27b938f1a99d3af29bc26700b01f9f69f9faca72))
+- address Claude review — savings basis, worktree matching, Devin, resume spec *(session)* ([`d746cf2`](https://github.com/MadAppGang/claudish/commit/d746cf255db30bab8ff9a1462923b56dc51f2050))
 
 ### Documentation
 
 - update CHANGELOG.md for v7.46.0([`04a466d`](https://github.com/MadAppGang/claudish/commit/04a466d937f6b6a1c762e1233c3e2337b902c3b5))
+
+### New Features
+
+- a full-screen transcript reader, opened with `v` *(session)* ([`723091f`](https://github.com/MadAppGang/claudish/commit/723091f84ee1cb275dfc6eef73b0c82d1f6ec192))
+- text-first picker rows, and a transcript tail that includes the human *(session)* ([`78c7673`](https://github.com/MadAppGang/claudish/commit/78c7673d734542349f90e266e9400a3906bc739a))
+- name-then-status rows, a bigger sidebar, and two bottom panels *(session)* ([`1b02634`](https://github.com/MadAppGang/claudish/commit/1b02634efb983751a00ec9899b12902156b2cbaa))
+- show the conversation tail, and put every row on one grid *(session)* ([`c4b6027`](https://github.com/MadAppGang/claudish/commit/c4b60278fde20a9e41d56027cc80328da09e3e05))
+- chip the worktree state, split stale, and fold agents into a tree *(session)* ([`24d3677`](https://github.com/MadAppGang/claudish/commit/24d36771d2ed4ba5fff28aaf48bf0b0e825a9094))
+- worktree state in the picker, and hide agent-driven sessions *(session)* ([`2fad6ca`](https://github.com/MadAppGang/claudish/commit/2fad6cad9bb4d12f99d5ad7a4bdab487a55d04ce))
+- end-of-session summary card + worktree-aware resume picker *(session)* ([`c2ac8cf`](https://github.com/MadAppGang/claudish/commit/c2ac8cfe244ad907d8c737619431cb15fb559b94))
 
 ### Other Changes
 
@@ -457,11 +516,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.44.0] - 2026-08-07
 
-### Bug Fixes
-
-- address independent review — TTY/non-git fallback, card clipping, resume id *(session)* ([`27b938f`](https://github.com/MadAppGang/claudish/commit/27b938f1a99d3af29bc26700b01f9f69f9faca72))
-- address Claude review — savings basis, worktree matching, Devin, resume spec *(session)* ([`d746cf2`](https://github.com/MadAppGang/claudish/commit/d746cf255db30bab8ff9a1462923b56dc51f2050))
-
 ### Documentation
 
 - update CHANGELOG.md for v7.43.0([`5ec2cc2`](https://github.com/MadAppGang/claudish/commit/5ec2cc2d8f774903a46f112fa8661007a2a705a1))
@@ -469,19 +523,16 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - per-provider roster collapse, and fix two order-dependent resolutions (#160) *(model-resolvers)* ([`c33ce8d`](https://github.com/MadAppGang/claudish/commit/c33ce8d012649e8625d701ffb347210a8406d426))
-- a full-screen transcript reader, opened with `v` *(session)* ([`723091f`](https://github.com/MadAppGang/claudish/commit/723091f84ee1cb275dfc6eef73b0c82d1f6ec192))
-- text-first picker rows, and a transcript tail that includes the human *(session)* ([`78c7673`](https://github.com/MadAppGang/claudish/commit/78c7673d734542349f90e266e9400a3906bc739a))
-- name-then-status rows, a bigger sidebar, and two bottom panels *(session)* ([`1b02634`](https://github.com/MadAppGang/claudish/commit/1b02634efb983751a00ec9899b12902156b2cbaa))
-- show the conversation tail, and put every row on one grid *(session)* ([`c4b6027`](https://github.com/MadAppGang/claudish/commit/c4b60278fde20a9e41d56027cc80328da09e3e05))
-- chip the worktree state, split stale, and fold agents into a tree *(session)* ([`24d3677`](https://github.com/MadAppGang/claudish/commit/24d36771d2ed4ba5fff28aaf48bf0b0e825a9094))
-- worktree state in the picker, and hide agent-driven sessions *(session)* ([`2fad6ca`](https://github.com/MadAppGang/claudish/commit/2fad6cad9bb4d12f99d5ad7a4bdab487a55d04ce))
-- end-of-session summary card + worktree-aware resume picker *(session)* ([`c2ac8cf`](https://github.com/MadAppGang/claudish/commit/c2ac8cfe244ad907d8c737619431cb15fb559b94))
 
 ### Other Changes
 
 - biome clean — organize imports and format([`438a0bc`](https://github.com/MadAppGang/claudish/commit/438a0bc5961a55e94ebcd474f0d47e1f844fedc9))
 
 ## [7.43.0] - 2026-08-06
+
+### ⚠ BREAKING CHANGES
+
+- v7.36.0 — remove the Gemini Code Assist provider, repoint gemini-* at Antigravity([`8258e1f`](https://github.com/MadAppGang/claudish/commit/8258e1fbd46a8067984c5228cfcda04ae6645431))
 
 ### Bug Fixes
 
@@ -706,13 +757,28 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.26.0] - 2026-07-31
 
+### Bug Fixes
+
+- make the app-lock probe inert — the heuristic was falsified *(1password)* ([`32eb641`](https://github.com/MadAppGang/claudish/commit/32eb64150594b42b54ae486d59a92f08d6d28074))
+- stop redacting `your-key` out of credential help text([`4618d6c`](https://github.com/MadAppGang/claudish/commit/4618d6c2b0bed789f25b9d8057f2ccbe313b8ccc))
+- make failures observable, bounded, and safe; add live progress *(team)* ([`056ae29`](https://github.com/MadAppGang/claudish/commit/056ae2904fd131bf8d0236d7eab73f10e94c264f))
+- always serialize tool `parameters` so X-ai stops rejecting requests([`7016311`](https://github.com/MadAppGang/claudish/commit/7016311bb17f10539c46634e3030611bf079a65e))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.25.0([`160554e`](https://github.com/MadAppGang/claudish/commit/160554eae164283ca86880f4bac55f3dd2e39cc8))
 
+### New Features
+
+- v7.25.0 — stop claudish from denying its own 1Password requests([`31d5a02`](https://github.com/MadAppGang/claudish/commit/31d5a02527bf7a7640c4d9a1fcd870a8bdc5d709))
+- serialize the DesktopAuth handshake across processes *(1password)* ([`fa3b988`](https://github.com/MadAppGang/claudish/commit/fa3b98861c4fbb77501728b3dc9fc0f832878219))
+- detect a locked APP, and make lock recovery reachable at all *(1password)* ([`6f933d7`](https://github.com/MadAppGang/claudish/commit/6f933d786d4d89ffcaaa0bed75648c2c082ce24d))
+- add two-level redaction for diagnostics([`118650e`](https://github.com/MadAppGang/claudish/commit/118650ed9256d909f0ee874354a4a36dfcb49148))
+
 ### Other Changes
 
 - release as v7.26.0 — v7.25.0 was taken mid-flight([`fe78ee4`](https://github.com/MadAppGang/claudish/commit/fe78ee491a412904dd4095310fdf04a493da3307))
+- add MCP client capability probes; correct the progress ROADMAP entry([`b214860`](https://github.com/MadAppGang/claudish/commit/b2148607d61ec59537780078f057dfd1345015c2))
 
 ## [7.25.0] - 2026-07-31
 
@@ -723,14 +789,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.25.0 — Layer 4 behavior compatibility layer for foreign models([`0fb80e4`](https://github.com/MadAppGang/claudish/commit/0fb80e48b660cf12acc25f00c41ffcd92e12e902))
-- v7.25.0 — stop claudish from denying its own 1Password requests([`31d5a02`](https://github.com/MadAppGang/claudish/commit/31d5a02527bf7a7640c4d9a1fcd870a8bdc5d709))
 
 ## [7.24.0] - 2026-07-30
-
-### Bug Fixes
-
-- make the app-lock probe inert — the heuristic was falsified *(1password)* ([`32eb641`](https://github.com/MadAppGang/claudish/commit/32eb64150594b42b54ae486d59a92f08d6d28074))
-- stop redacting `your-key` out of credential help text([`4618d6c`](https://github.com/MadAppGang/claudish/commit/4618d6c2b0bed789f25b9d8057f2ccbe313b8ccc))
 
 ### Documentation
 
@@ -739,8 +799,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.24.0 — stop compacting a 1M-window model at 200K, and stop demanding keys routing won't use([`ffac9b3`](https://github.com/MadAppGang/claudish/commit/ffac9b3c33c4671a04e5db9d395411ab314b36bb))
-- serialize the DesktopAuth handshake across processes *(1password)* ([`fa3b988`](https://github.com/MadAppGang/claudish/commit/fa3b98861c4fbb77501728b3dc9fc0f832878219))
-- detect a locked APP, and make lock recovery reachable at all *(1password)* ([`6f933d7`](https://github.com/MadAppGang/claudish/commit/6f933d786d4d89ffcaaa0bed75648c2c082ce24d))
 
 ## [7.23.0] - 2026-07-29
 
@@ -766,26 +824,23 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - disable two plugins, bump browser-use to 1.4.0([`948070e`](https://github.com/MadAppGang/claudish/commit/948070e73a0e3699a33d40fa110ab772175491dc))
 
-## [7.20.0] - 2026-07-29
+## [7.21.0] - 2026-07-29
 
-### Bug Fixes
+### New Features
 
-- make failures observable, bounded, and safe; add live progress *(team)* ([`056ae29`](https://github.com/MadAppGang/claudish/commit/056ae2904fd131bf8d0236d7eab73f10e94c264f))
-- always serialize tool `parameters` so X-ai stops rejecting requests([`7016311`](https://github.com/MadAppGang/claudish/commit/7016311bb17f10539c46634e3030611bf079a65e))
+- v7.21.0 — recover from a 1Password denial caused by a locked Mac([`d201f2a`](https://github.com/MadAppGang/claudish/commit/d201f2a33e01d859d6aabcd922b856a5d9c7d85b))
+
+## [7.20.1] - 2026-07-29
 
 ### Documentation
 
 - update CHANGELOG.md for v7.19.2([`8d71cbd`](https://github.com/MadAppGang/claudish/commit/8d71cbdf7b116208156f30bd317c51112cdb1125))
 
+## [7.20.0] - 2026-07-29
+
 ### New Features
 
 - v7.20.0 — Kimi K3 subscription routing, live discovery, context-window fix([`42b4e81`](https://github.com/MadAppGang/claudish/commit/42b4e81e50e4daddd1cdbd80930c9d017750dc35))
-- v7.21.0 — recover from a 1Password denial caused by a locked Mac([`d201f2a`](https://github.com/MadAppGang/claudish/commit/d201f2a33e01d859d6aabcd922b856a5d9c7d85b))
-- add two-level redaction for diagnostics([`118650e`](https://github.com/MadAppGang/claudish/commit/118650ed9256d909f0ee874354a4a36dfcb49148))
-
-### Other Changes
-
-- add MCP client capability probes; correct the progress ROADMAP entry([`b214860`](https://github.com/MadAppGang/claudish/commit/b2148607d61ec59537780078f057dfd1345015c2))
 
 ## [7.19.2] - 2026-07-29
 
@@ -800,15 +855,15 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.19.1] - 2026-07-27
 
+### Bug Fixes
+
+- v7.18.2 — restore auto-compaction and honest context accounting([`ae8c07f`](https://github.com/MadAppGang/claudish/commit/ae8c07feb99729a145616343ae1cb98d90c87a00))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.19.0([`1cb9a48`](https://github.com/MadAppGang/claudish/commit/1cb9a48a61d736507f56f94fef1bafd2bd0e5f60))
 
 ## [7.19.0] - 2026-07-27
-
-### Bug Fixes
-
-- v7.18.2 — restore auto-compaction and honest context accounting([`ae8c07f`](https://github.com/MadAppGang/claudish/commit/ae8c07feb99729a145616343ae1cb98d90c87a00))
 
 ### Documentation
 
@@ -831,6 +886,13 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.18.0] - 2026-07-26
 
+### Bug Fixes
+
+- treat a 1Password authorization denial as terminal, not transient([`aa71ce3`](https://github.com/MadAppGang/claudish/commit/aa71ce3a4f8d01398ee0c59cbe8fd233fdcecb2f))
+- serve the proxy with Bun.serve, and silence dotenv on the MCP stdio stream([`3086261`](https://github.com/MadAppGang/claudish/commit/3086261d37c222b408aae11a0af568bd5914123e))
+- stop @hono/node-server from clobbering Bun's native fetch/Response globals([`3a67af9`](https://github.com/MadAppGang/claudish/commit/3a67af9dad538889149864f5f158a77393076a97))
+- custom-endpoint ${VAR} apiKey credential bug + de-flake catalog/mock-bleed tests([`d8e37da`](https://github.com/MadAppGang/claudish/commit/d8e37da94de1b9a793e4d96ed4665a6030a9b8f6))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.17.1([`f6bc939`](https://github.com/MadAppGang/claudish/commit/f6bc939c6c6c414f280ff33b4251cacb1539a040))
@@ -838,21 +900,18 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.18.0 — --config override, terminal 1Password cancel, Bun.serve proxy([`90fb741`](https://github.com/MadAppGang/claudish/commit/90fb7417078b65e02cd5d76a6238b8b06559b314))
+- finish --config override — provenance, testable planner, docs([`ae3d47e`](https://github.com/MadAppGang/claudish/commit/ae3d47eb4fc7fe2e8b9d872a470a871708e3c732))
+- --config <file> run-scoped config override (WIP)([`cb76703`](https://github.com/MadAppGang/claudish/commit/cb76703d33089ddb748c2b6c4ba192b151309e70))
 
 ## [7.17.1] - 2026-07-24
 
 ### Bug Fixes
 
 - v7.17.1 — surface DNS/connection failures as network errors, not 500s([`d1a3379`](https://github.com/MadAppGang/claudish/commit/d1a33795e75d7aa6a61bf1648958fcc17f86defc))
-- treat a 1Password authorization denial as terminal, not transient([`aa71ce3`](https://github.com/MadAppGang/claudish/commit/aa71ce3a4f8d01398ee0c59cbe8fd233fdcecb2f))
 
 ### Documentation
 
 - update CHANGELOG.md for v7.17.0([`bc24326`](https://github.com/MadAppGang/claudish/commit/bc243268f73a60bac7e8bb8ab2996ab49037f418))
-
-### New Features
-
-- finish --config override — provenance, testable planner, docs([`ae3d47e`](https://github.com/MadAppGang/claudish/commit/ae3d47eb4fc7fe2e8b9d872a470a871708e3c732))
 
 ## [7.17.0] - 2026-07-23
 
@@ -866,12 +925,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.16.0] - 2026-07-23
 
-### Bug Fixes
-
-- serve the proxy with Bun.serve, and silence dotenv on the MCP stdio stream([`3086261`](https://github.com/MadAppGang/claudish/commit/3086261d37c222b408aae11a0af568bd5914123e))
-- stop @hono/node-server from clobbering Bun's native fetch/Response globals([`3a67af9`](https://github.com/MadAppGang/claudish/commit/3a67af9dad538889149864f5f158a77393076a97))
-- custom-endpoint ${VAR} apiKey credential bug + de-flake catalog/mock-bleed tests([`d8e37da`](https://github.com/MadAppGang/claudish/commit/d8e37da94de1b9a793e4d96ed4665a6030a9b8f6))
-
 ### Documentation
 
 - update CHANGELOG.md for v7.15.0([`4f35271`](https://github.com/MadAppGang/claudish/commit/4f35271e5cbca9853bdf769f64e518699139324c))
@@ -879,7 +932,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.16.0 — codex context-window handling + 1Password point-of-need([`40422ce`](https://github.com/MadAppGang/claudish/commit/40422ce1906648d91becf4b6873886bcd523e26e))
-- --config <file> run-scoped config override (WIP)([`cb76703`](https://github.com/MadAppGang/claudish/commit/cb76703d33089ddb748c2b6c4ba192b151309e70))
 
 ## [7.15.0] - 2026-07-17
 
@@ -898,6 +950,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - v7.14.0 — pass OpenAI reasoning items back across turns (Responses/Codex)([`9090d3e`](https://github.com/MadAppGang/claudish/commit/9090d3e5fdf76a36e515fe828c79d7622ce168cc))
 
 ## [7.13.0] - 2026-07-15
+
+### ⚠ BREAKING CHANGES
+
+- v7.13.0 — rename --log-debug to --debug-claudish([`61ec374`](https://github.com/MadAppGang/claudish/commit/61ec374df98c81d1c3c3d2759a47729e9affcc12))
 
 ### Documentation
 
@@ -1054,6 +1110,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.8.0] - 2026-06-27
 
+### ⚠ BREAKING CHANGES
+
+- consistent flag naming + colorized, validated --help *(cli)* ([`7ec5407`](https://github.com/MadAppGang/claudish/commit/7ec5407afa3403df7c98f541cd1449fc6a3024fb))
+
 ### Bug Fixes
 
 - seed WASM cache from nearby copy (fixes ENOENT core_bg.wasm) *(onepassword)* ([`5a11962`](https://github.com/MadAppGang/claudish/commit/5a11962109fcb362aeee2d7a0956f6c58dcd3b2c))
@@ -1135,6 +1195,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - v7.6.0 — native 1Password integration (SDK-based)([`20686fb`](https://github.com/MadAppGang/claudish/commit/20686fbe061f554dcf29efc0e6c4cc7256403401))
 
 ## [7.5.0] - 2026-06-10
+
+### ⚠ BREAKING CHANGES
+
+- v7.5.0 — claudish serve gateway for Claude Desktop + provider slug alignment([`22df65f`](https://github.com/MadAppGang/claudish/commit/22df65f68abbb095f9d4144b1a212ce77d06c46a))
 
 ### Documentation
 
@@ -1364,6 +1428,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.0.0] - 2026-04-16
 
+### ⚠ BREAKING CHANGES
+
+- v7.0.0 — configurable default provider, custom endpoints([`c5ae212`](https://github.com/MadAppGang/claudish/commit/c5ae2127aee0f27d3d226958490741460f7a88e2))
+
 ### Documentation
 
 - update CHANGELOG.md for v6.14.0([`8f18ec2`](https://github.com/MadAppGang/claudish/commit/8f18ec21e67babcebab862f49e2dade859d1f44c))
@@ -1371,6 +1439,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.0.0 — configurable default provider, custom endpoints([`c5ae212`](https://github.com/MadAppGang/claudish/commit/c5ae2127aee0f27d3d226958490741460f7a88e2))
+- add aggregators[] field to ModelDoc and slim catalog *(firebase)* ([`8a08535`](https://github.com/MadAppGang/claudish/commit/8a08535ceb3fa941e9859adea0926e804728425b))
+- runtime-registered custom endpoints *(providers)* ([`1451aea`](https://github.com/MadAppGang/claudish/commit/1451aea57448417e44d64e1a7d2ccf2d7a8ee789))
+- demote LiteLLM from hardcoded priority *(routing)* ([`5a0d294`](https://github.com/MadAppGang/claudish/commit/5a0d294f63203e068da5e4e241dd56d9ea509964))
+- add defaultProvider key + customEndpoints schemas *(config)* ([`12ff0b1`](https://github.com/MadAppGang/claudish/commit/12ff0b110cedef365dd6146550f0afb2f3af573c))
 
 ### Other Changes
 
@@ -1423,10 +1495,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v6.13.2 — fix #102 GLM/Z.AI 0-byte output + #85/88/99 stdin cleanup([`c959d0e`](https://github.com/MadAppGang/claudish/commit/c959d0e37dce1ce9d7317bcdfaafcdd4d6ade419))
-- add aggregators[] field to ModelDoc and slim catalog *(firebase)* ([`8a08535`](https://github.com/MadAppGang/claudish/commit/8a08535ceb3fa941e9859adea0926e804728425b))
-- runtime-registered custom endpoints *(providers)* ([`1451aea`](https://github.com/MadAppGang/claudish/commit/1451aea57448417e44d64e1a7d2ccf2d7a8ee789))
-- demote LiteLLM from hardcoded priority *(routing)* ([`5a0d294`](https://github.com/MadAppGang/claudish/commit/5a0d294f63203e068da5e4e241dd56d9ea509964))
-- add defaultProvider key + customEndpoints schemas *(config)* ([`12ff0b1`](https://github.com/MadAppGang/claudish/commit/12ff0b110cedef365dd6146550f0afb2f3af573c))
 
 ## [6.13.1] - 2026-04-14
 
@@ -1580,6 +1648,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [6.10.0] - 2026-04-07
 
+### ⚠ BREAKING CHANGES
+
+- v6.10.0 — Codex subscription OAuth, unified login/logout, quota registry([`a2dd1ea`](https://github.com/MadAppGang/claudish/commit/a2dd1ea156b96da16ac8021702edf614ce9ebe3d))
+
 ### Documentation
 
 - update CHANGELOG.md for v6.9.1([`714b1b5`](https://github.com/MadAppGang/claudish/commit/714b1b5166662ea3aac3087faad51be0e896fd25))
@@ -1633,6 +1705,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - v6.8.0 — add DeepSeek as native direct API provider([`a833000`](https://github.com/MadAppGang/claudish/commit/a833000d59d3a4ce5d610201bf967ea867dd9ead))
 
 ## [6.7.0] - 2026-04-06
+
+### ⚠ BREAKING CHANGES
+
+- v6.7.0 — replace mtm with magmux, improve catalog resolver, add OAuth manager([`6759005`](https://github.com/MadAppGang/claudish/commit/675900567be9f139aece1f674ed8f6880843bd89))
 
 ### Documentation
 
@@ -1742,6 +1818,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - bump to v6.5.1([`9ed4074`](https://github.com/MadAppGang/claudish/commit/9ed40745d52c7a278faa7a00a15680a2fddfebd7))
 
 ## [6.5.0] - 2026-04-01
+
+### ⚠ BREAKING CHANGES
+
+- v6.5.0 — Gemini Code Assist overhaul, auth commands, quota CLI, Codex OAuth([`f9b1c54`](https://github.com/MadAppGang/claudish/commit/f9b1c54682d16cf8684d3ec8ce4b4201cddef59d))
 
 ### Bug Fixes
 
@@ -1952,6 +2032,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [6.0.0] - 2026-03-22
 
+### ⚠ BREAKING CHANGES
+
+- All adapter class names, interface names, and file paths have been([`14efceb`](https://github.com/MadAppGang/claudish/commit/14efceb0fdb819f07180bcef7540eab7d7f7fe05))
+
 ### Documentation
 
 - update CHANGELOG.md for v5.19.0([`48c12f5`](https://github.com/MadAppGang/claudish/commit/48c12f5f9479bf121ba3763c992b697681591f02))
@@ -2048,6 +2132,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - always-on structural logging without --debug([`2f1b284`](https://github.com/MadAppGang/claudish/commit/2f1b284e8328146d5c7c96a5af8862992b79bb39))
 
 ## [5.14.0] - 2026-03-18
+
+### ⚠ BREAKING CHANGES
+
+- v5.14.0 - adapter architecture rearchitecture with 3-layer separation([`871f338`](https://github.com/MadAppGang/claudish/commit/871f3387c6e68dba4b3820aa711aaa6f3bcb3bb2))
 
 ### Bug Fixes
 
@@ -2276,6 +2364,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [5.0.0] - 2026-02-18
 
+### ⚠ BREAKING CHANGES
+
+- v5.0.0 - composable handler architecture, minimax-coding provider([`fdcadd5`](https://github.com/MadAppGang/claudish/commit/fdcadd51eac54d27eab34b3b6be9cee29db5cce8))
+
 ### New Features
 
 - v5.0.0 - composable handler architecture, minimax-coding provider([`fdcadd5`](https://github.com/MadAppGang/claudish/commit/fdcadd51eac54d27eab34b3b6be9cee29db5cce8))
@@ -2498,6 +2590,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [4.0.4] - 2026-01-26
 
+### ⚠ BREAKING CHANGES
+
+- Permission prompts are now ENABLED by default.([`54293f2`](https://github.com/MadAppGang/claudish/commit/54293f20d0a433156221d5b2e845ffab2fc8e293))
+
 ### Bug Fixes
 
 - don't skip permissions by default (safer behavior)([`54293f2`](https://github.com/MadAppGang/claudish/commit/54293f20d0a433156221d5b2e845ffab2fc8e293))
@@ -2521,6 +2617,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - explicit provider routing for all CLI commands([`87c4ae0`](https://github.com/MadAppGang/claudish/commit/87c4ae0e494888f9a7f1794d67633f65d0d569d5))
 
 ## [4.0.0] - 2026-01-26
+
+### ⚠ BREAKING CHANGES
+
+- v4.0.0 - New provider@model routing syntax([`f16caf4`](https://github.com/MadAppGang/claudish/commit/f16caf4c06c0140accf5c7d5aa5af8d552442afc))
 
 ### Bug Fixes
 
@@ -2883,6 +2983,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - add CLAUDE.md and update .gitignore([`30c65d1`](https://github.com/MadAppGang/claudish/commit/30c65d1b21dda587ac7e9941a58d276a5790960a))
 
 ## [3.0.0] - 2025-12-14
+
+### ⚠ BREAKING CHANGES
+
+- Major version bump for local model support([`a216c95`](https://github.com/MadAppGang/claudish/commit/a216c9556f2c0b9e20ee68e45ac1579275a72604))
 
 ### New Features
 
