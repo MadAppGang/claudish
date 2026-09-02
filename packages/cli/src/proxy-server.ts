@@ -873,6 +873,22 @@ export async function createProxyServer(
   const app = new Hono();
   app.use("*", cors());
 
+  // Did the child ever ask a MODEL for anything? A failed run with this still at
+  // zero died inside Claude Code before any model was contacted — the one fact
+  // that separates a harness fault from a provider fault. The CLI reads it when
+  // a session exits nonzero, because the session log cannot answer the question:
+  // it records model traffic, and the whole point is that there was none.
+  //
+  // Counts `/v1/messages` ONLY. Claude Code pings discovery and health routes
+  // while it starts up, and a run that got no further than its trust prompt
+  // still leaves those behind — measured, not assumed. Counting every route
+  // therefore masked exactly the case this exists for.
+  let modelRequestCount = 0;
+  app.use("*", async (c, next) => {
+    if (c.req.path === "/v1/messages") modelRequestCount++;
+    await next();
+  });
+
   // Terminal-safety backstop. Hono's DEFAULT error handler is literally
   // `console.error(err)` + a text/plain "Internal Server Error" (see
   // hono/dist/hono-base.js). During an interactive session claudish's stderr IS
@@ -1148,6 +1164,7 @@ export async function createProxyServer(
   return {
     port: resolvedPort,
     url: `http://127.0.0.1:${resolvedPort}`,
+    modelRequestCount: () => modelRequestCount,
     shutdown: async () => {
       // `true` = close active connections too, so a streamed request in flight
       // can't keep the port alive after shutdown resolves.

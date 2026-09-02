@@ -199,6 +199,18 @@ export interface ProxyServer {
    * list from env/config on every call, so dropping handlers is sufficient.
    */
   invalidateHandlerCache: (providerSlug?: string) => void;
+  /**
+   * How many `/v1/messages` requests have reached the proxy this session. Zero
+   * after a failed run means Claude Code exited before contacting any model,
+   * which puts the fault in the harness rather than in the provider — a
+   * distinction the session log cannot draw, since it holds model traffic and
+   * there was none.
+   *
+   * Startup pings to discovery and health routes are deliberately NOT counted:
+   * Claude Code emits them before it has done any work, so counting them would
+   * mask the very case this measures.
+   */
+  modelRequestCount: () => number;
 }
 
 // Model Handler interface

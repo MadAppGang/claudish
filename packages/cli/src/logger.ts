@@ -151,6 +151,11 @@ function isStructuralLogWorthy(msg: string): boolean {
     // a suppressed stdout line need not contain the word.
     msg.startsWith("[Suppressed]") ||
     msg.startsWith("[Proxy]") ||
+    // How the spawned Claude Code process ended: its exit code, or the signal
+    // that killed it. The [Proxy] lines above cannot record a child that died
+    // before its first request, which is exactly the session whose log looks
+    // empty and whose failure the user most needs named.
+    msg.startsWith("[Claude Code]") ||
     msg.startsWith("[Fallback]") ||
     msg.startsWith("[Streaming] ===") || // HANDLER STARTED
     msg.startsWith("[Streaming] Chunk:") ||

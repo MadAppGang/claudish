@@ -80,3 +80,59 @@ bun run packages/cli/src/test-fixtures/extract-sse-from-log.ts logs/claudish_*.l
 ```bash
 bun test packages/cli/src/format-translation.test.ts
 ```
+
+## A session log that stops at `[Proxy] Server started`
+
+That log is not truncated and the proxy did not hang. It means Claude Code
+exited before it sent its first `/v1/messages`, so no handler was ever built and
+no SSE line was ever written. The always-on log records model traffic; a run
+that produced none leaves the header, the port line, and nothing else.
+
+Read the `[Claude Code] Exited …` line that follows it. `claude-runner` writes
+one on every exit, naming either the code or the signal, and
+`isStructuralLogWorthy` keeps it in the always-on log. It is the only durable
+record of why a run ended: without it, the failure notice cites a file that
+cannot explain the failure it was cited for.
+
+### The trust prompt is the usual cause
+
+On a machine where claudish otherwise works, the common cause is Claude Code's
+own first-run workspace trust prompt, shown in a directory it has never been
+trusted in:
+
+```
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ No, exit
+   Yes, I trust this folder
+```
+
+The cursor starts on **"No, exit"**, so pressing Enter accepts that default and
+Claude Code exits 1. Three properties make this hard to see:
+
+- **claudish is not at fault, and cannot waive it.** Plain
+  `claude --dangerously-skip-permissions`, with no claudish involved, shows the
+  identical dialog with the identical default. claudish passes that flag
+  through; it does not skip the trust check.
+- **Declining writes nothing.** `~/.claude.json` gains no entry for the
+  directory, so there is no trace on the Claude Code side either. The *absence*
+  of a project key for the working directory is therefore the confirming
+  evidence, and its presence with `hasTrustDialogAccepted: true` is the fix.
+- **It is once per directory.** After accepting, later runs go straight in. A
+  user who only ever hits it in one scratch directory can reasonably conclude
+  every session is broken.
+
+Verified by reproducing both paths in a terminal: under claudish, and with the
+`claude` binary directly, in a directory absent from `~/.claude.json`.
+
+### Why "did any request arrive?" counts `/v1/messages` only
+
+`modelRequestCount()` on the proxy answers whether a model was ever contacted,
+which is what separates a harness fault from a provider fault. It counts
+`/v1/messages` and nothing else, deliberately.
+
+Claude Code pings discovery and health routes while it starts up, and it emits
+those **even when it gets no further than the trust prompt** — measured, not
+assumed: a counter over all routes stayed non-zero through a real trust-prompt
+exit and so stayed silent in exactly the case it existed to detect. Any future
+widening of that counter reintroduces the blind spot.

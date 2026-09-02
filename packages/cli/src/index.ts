@@ -1057,10 +1057,29 @@ async function runCli() {
       }
     }
 
-    // Suggest sending logs if session had errors
+    // Suggest reviewing the log when the session actually FAILED.
+    //
+    // 130 and 143 are `128 + SIGINT` and `128 + SIGTERM`: the user pressed
+    // Ctrl-C, or a supervisor stopped the run. A quit is not a failure. Telling
+    // someone who quit that their session "ended with errors" sends them to a
+    // log that records nothing wrong. claude-runner only began reporting the two
+    // apart once its exit handler bound `signal` — before that every Ctrl-C
+    // arrived here as a bare 1, indistinguishable from a crash.
     const sessionLogPath = getAlwaysOnLogPath();
-    if (exitCode !== 0 && sessionLogPath && !cliConfig.quiet) {
-      console.error(`\n[claudish] Session ended with errors. Log: ${sessionLogPath}`);
+    const quitBySignal = exitCode === 130 || exitCode === 143;
+    if (exitCode !== 0 && !quitBySignal && sessionLogPath && !cliConfig.quiet) {
+      console.error(`\n[claudish] Session ended with errors (exit code ${exitCode}).`);
+      // A run that never reached the proxy failed inside Claude Code, before any
+      // model was contacted — the session log holds proxy traffic and so cannot
+      // explain it. Name where the fault is instead of sending the user to a
+      // file with one line in it.
+      if (proxy.modelRequestCount() === 0) {
+        console.error(
+          "[claudish] Claude Code exited before sending any model request, so the fault is on its side, not the model's."
+        );
+        console.error(`[claudish] Run \`claude\` in ${process.cwd()} to see its own error.`);
+      }
+      console.error(`[claudish] Log: ${sessionLogPath}`);
       console.error(`[claudish] To review: /debug-logs ${sessionLogPath}`);
     }
 
