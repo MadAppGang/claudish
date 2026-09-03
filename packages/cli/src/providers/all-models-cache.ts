@@ -168,6 +168,14 @@ export type SubscriptionModelDiscovery = "catalog" | "client" | "hybrid";
 export interface CachedSubscriptionPlan {
   /** Canonical commercial plan ID referenced by SlimModelEntry.subscriptionPlans. */
   id: string;
+  /**
+   * The VENDOR selling the plan (`alibaba`, `z-ai`, `moonshotai`) — not a
+   * routing identity. Several plans can share one vendor while only some carry a
+   * `routing` block, which is exactly what `resolveSubscriptionRouting` needs it
+   * for: to notice that its view of a vendor's plans is incomplete and withhold
+   * a `not-served` verdict. Do not use it to route; use `routing.providerUid`.
+   */
+  provider?: string;
   /** Where the exact callable roster comes from. */
   modelDiscovery?: SubscriptionModelDiscovery;
   /** Consumer routing identity; absent when the catalog has no supported route. */

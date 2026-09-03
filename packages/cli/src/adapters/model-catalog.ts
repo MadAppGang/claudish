@@ -337,6 +337,38 @@ export function resolveSubscriptionRouting(
   );
   if (!hasPublishedProviderRoster) return { kind: "unknown" };
 
+  // Absence of evidence is evidence of absence only when the view is whole, and
+  // this one has a hole in it by construction: `providerPlans` above keeps only
+  // plans carrying a `routing.providerUid`, so a plan with no routing block is
+  // never consulted. A SIBLING plan for the same vendor can still publish a
+  // roster, which makes `hasPublishedProviderRoster` true and turns this
+  // provider's silence into a verdict about a plan nobody looked at.
+  //
+  // Measured on the live cache: `alibaba-ai-coding-plan` covers
+  // `qwen3-coder-plus` and carries NO routing block, while
+  // `alibaba-token-plan-individual` and `-team-edition` share
+  // `routing.providerUid: "qwen-cloud"` and do publish memberships. Without this
+  // guard `qwen3-coder-plus` resolved `not-served`, `qwen-cloud` was dropped,
+  // and a holder of Alibaba's $50/month coding plan was billed per token —
+  // the flat-rate-user invariant CLAUDE.md names.
+  //
+  // Deliberately narrow: it only withholds the verdict when a same-vendor plan
+  // is genuinely invisible. Where every plan for the vendor is routable — z-ai's
+  // sole `z-ai-glm-coding-plan`, for one — the view is complete and
+  // `not-served` still stands, so this does not degrade into never dropping
+  // anything. The right long-term fix is a `routing` block on every plan the
+  // backend publishes; this keeps the client honest until then.
+  const vendorsInView = new Set(
+    providerPlans.map((plan) => plan.provider).filter((v): v is string => v !== undefined)
+  );
+  const hasUnroutableSiblingPlan = (cache.plans ?? []).some(
+    (plan) =>
+      plan.provider !== undefined &&
+      vendorsInView.has(plan.provider) &&
+      plan.routing?.providerUid === undefined
+  );
+  if (hasUnroutableSiblingPlan) return { kind: "unknown" };
+
   // Static absence is conclusive only for catalog-authoritative plans. Client
   // and hybrid plans may expose additional account-specific models after auth.
   return providerPlans.every(isCatalogDiscoveredPlan)
