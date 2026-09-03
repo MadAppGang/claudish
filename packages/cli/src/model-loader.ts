@@ -457,6 +457,17 @@ function compareRecommendedRoutes(
  * uses routingProvider (not the commercial plan ID) and the backend-confirmed
  * command wire ID. Tier is the ordering authority; array position is only the
  * stable tiebreak within one tier or for a legacy cached document.
+ *
+ * NO PRODUCTION CALLER as of v9.0.3. Its output was merged into the routing
+ * dictionary in v9.0.1, where its EXACT model-id keys made the default and user
+ * GLOB rules unreachable and deleted every provider it did not name — see the
+ * long note on `loadRoutingRules` in providers/routing-rules.ts. Kept exported
+ * and tested for the catalog-driven redesign; do not wire it back into routing
+ * rules.
+ *
+ * Note also what it reads: `subscriptions[]` on the RECOMMENDED-models document,
+ * which is a 34-model editorial list, not the serving graph. Plan-backed routes
+ * only — never a vendor's metered API, never OpenRouter.
  */
 export function buildCatalogRoutingRules(doc: RecommendedModelsDoc): Record<string, string[]> {
   const routesByModel = new Map<

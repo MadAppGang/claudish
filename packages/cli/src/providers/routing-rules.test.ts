@@ -2,19 +2,19 @@
  * Unit tests for providers/routing-rules.ts
  *
  * Tests matchRoutingRule, buildRoutingChain, loadRoutingRules, mergeRoutingRules,
- * and route() without hitting any real APIs (file-system config is unavoidable
- * for loadRoutingRules itself, so we assert weakly there).
+ * and route() without hitting any real APIs or machine routing configuration.
  *
  * Run: bun test packages/cli/src/providers/routing-rules.test.ts
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
+import type { RecommendedModelsDoc } from "../model-loader.js";
 import type { RoutingRules } from "../profile-config.js";
 import { type DiskCacheV2, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
@@ -24,6 +24,7 @@ import { invalidateModelDiscovery } from "./model-discovery.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import {
   buildRoutingChain,
+  loadRoutingRules,
   matchRoutingRule,
   mergeRoutingRules,
   normalizeGlmSlug,
@@ -34,6 +35,43 @@ import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-provide
 
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
 const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
+const CATALOG_EXACT_MODEL_ID = "grok-4.6";
+
+const CATALOG_EXACT_ROUTE_DOC: RecommendedModelsDoc = {
+  version: "test",
+  lastUpdated: "2026-09-03T00:00:00.000Z",
+  models: [
+    {
+      id: CATALOG_EXACT_MODEL_ID,
+      name: "Grok 4.6",
+      description: "Synthetic catalog route used to isolate rule composition",
+      provider: "xAI",
+      category: "subscription",
+      priority: 1,
+      pricing: { input: "N/A", output: "N/A", average: "N/A" },
+      context: "N/A",
+      subscriptions: [
+        {
+          plan: "OpenCode Zen Go",
+          command: "zengo@grok-4.6",
+          routingProvider: "opencode-zen-go",
+          tier: "general",
+        },
+      ],
+    },
+  ],
+};
+
+function loadRulesWithCatalogExact(
+  globalRules: RoutingRules = {},
+  localRules: RoutingRules = {}
+): RoutingRules {
+  return loadRoutingRules({
+    globalRules,
+    localRules,
+    recommendedModels: CATALOG_EXACT_ROUTE_DOC,
+  });
+}
 
 function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
   _setCatalogEntriesForTest(entries);
@@ -386,14 +424,60 @@ describe("buildRoutingChain", () => {
 });
 
 // ---------------------------------------------------------------------------
-// loadRoutingRules — smoke test (always returns RoutingRules now)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// mergeRoutingRules — pure merge semantics (testable without disk I/O)
+// loadRoutingRules — source composition without disk I/O
 // ---------------------------------------------------------------------------
 
 describe("loadRoutingRules merges defaults", () => {
+  // The three behavioural tests below seed `sources.recommendedModels`, but the
+  // v9.0.1 path bypassed that seam and read a homedir-derived cache path. They
+  // can therefore stay green on a cold CI checkout; this source-boundary guard
+  // survives that cold cache by forbidding model-loader runtime imports here.
+  test("keeps model-loader imports type-only so routing rules cannot read ambient cache state", () => {
+    const source = readFileSync(join(import.meta.dir, "routing-rules.ts"), "utf8");
+    const modelLoaderImports = [
+      ...source.matchAll(
+        /(?:^|\n)\s*import\s+[^;]*?(?:from\s+)?["']\.\.\/model-loader\.js["']\s*;/g
+      ),
+    ].map((match) => match[0].trim());
+    const valueImports = modelLoaderImports.filter(
+      (statement) => !/^import\s+type\b/.test(statement)
+    );
+
+    expect(valueImports).toEqual([]);
+  });
+
+  test("default glob stays reachable when the catalog has an exact model key", () => {
+    // Catalog keys are exact, so retaining one here used to bypass the broader
+    // fallback chain solely because exact matching runs before glob matching.
+    const rules = loadRulesWithCatalogExact();
+
+    expect(matchRoutingRule(CATALOG_EXACT_MODEL_ID, rules)).toEqual(
+      DEFAULT_ROUTING_RULES["grok-*"]
+    );
+  });
+
+  test("user glob wins when the catalog has an exact model key", () => {
+    const userRules: RoutingRules = { "grok-*": ["x-ai", "openrouter"] };
+
+    // Docs recommend family globs; an exact cache row must not silently make a
+    // user's supported configuration style unreachable.
+    const rules = loadRulesWithCatalogExact(userRules);
+
+    expect(matchRoutingRule(CATALOG_EXACT_MODEL_ID, rules)).toEqual(userRules["grok-*"]);
+  });
+
+  test("returns only rule keys supplied by defaults or user config", () => {
+    const globalRules: RoutingRules = { "team-*": ["openrouter"] };
+    const localRules: RoutingRules = { "project-model": ["x-ai"] };
+
+    // Cache contents vary by machine and over time, so they cannot be allowed
+    // to expand the effective configuration's key space.
+    const rules = loadRulesWithCatalogExact(globalRules, localRules);
+    const configuredRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, globalRules, localRules);
+
+    expect(Object.keys(rules).sort()).toEqual(Object.keys(configuredRules).sort());
+  });
+
   test("catalog routes keep known providers and cannot shadow defaults with an unknown provider", () => {
     expect(
       retainKnownCatalogRoutingRules({

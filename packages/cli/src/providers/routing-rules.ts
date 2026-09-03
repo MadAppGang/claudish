@@ -2,7 +2,7 @@ import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
-import { buildCatalogRoutingRules, getRecommendedModelsSync } from "../model-loader.js";
+import type { RecommendedModelsDoc } from "../model-loader.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
@@ -26,12 +26,17 @@ export function mergeRoutingRules(
   return { ...defaults, ...global_, ...local };
 }
 
+export interface RoutingRuleSources {
+  globalRules: RoutingRules;
+  localRules: RoutingRules;
+  recommendedModels?: RecommendedModelsDoc;
+}
+
 /**
  * Load effective routing rules. Layers:
- *   1. DEFAULT_ROUTING_RULES (cold-cache and uncovered-model fallback)
- *   2. Exact routes derived from the cached backend recommendation contract
- *   3. Global config (~/.claudish/config.json)
- *   4. Local config (./.claudish.json)
+ *   1. DEFAULT_ROUTING_RULES (built-in, see default-routing-rules.ts)
+ *   2. Global config (~/.claudish/config.json)
+ *   3. Local config (./.claudish.json)
  *
  * Local rules overwrite global rules overwrite defaults — same key wins.
  * User patterns OVERWRITE default patterns by exact key match (no glob-vs-glob
@@ -39,24 +44,80 @@ export function mergeRoutingRules(
  *
  * Always returns a non-null `RoutingRules` because defaults are baked in.
  * To get strict no-fallback mode, set `routing["*"] = []` in user config.
+ *
+ * ── The catalog does NOT belong here. Do not add it back. ──────────────────
+ *
+ * v9.0.1 merged `buildCatalogRoutingRules(...)` into this dictionary and it
+ * deleted providers from every chain it touched. The mechanism, in two facts
+ * that are individually harmless:
+ *
+ *   - catalog keys are EXACT model ids (`grok-4.6`); default and user keys are
+ *     GLOBS (`grok-*`);
+ *   - `matchRoutingRule` below returns on the first exact hit, before it ever
+ *     looks at a glob.
+ *
+ * So one catalog key makes the matching glob unreachable for that model, and
+ * every provider the catalog did not name is gone. `buildCatalogRoutingRules`
+ * reads `subscriptions[]`, which enumerates PLAN-backed routes only — never a
+ * vendor's metered API, never OpenRouter — so its list is structurally
+ * incomplete. Measured on a real cache: `grok-4.6` became
+ * `["opencode-zen-go@grok-4.6"]`, leaving a user holding XAI_API_KEY and
+ * OPENROUTER_API_KEY with no route at all. A user's own `grok-*` rule was
+ * shadowed the same way, silently.
+ *
+ * Catalog knowledge reaches routing through two other call sites, and they are
+ * NOT equally safe. Be precise about which:
+ *
+ *   - `providerServesModel` in `routeBare` IS safe. It is three-valued and drops
+ *     a candidate only on `not-served`; `unknown` keeps it exactly where it was.
+ *   - `resolveSubscriptionRouting` in `buildRoutingChain` is NOT, as of v9.0.1.
+ *     Its `hasPublishedProviderRoster` check (model-catalog.ts:335) is evaluated
+ *     at PROVIDER granularity across the whole cache, so one model publishing a
+ *     plan membership makes every OTHER model's silence authoritative. Measured
+ *     on the live cache: only `glm-5.3` and `glm-5.3-flash` list
+ *     `z-ai-glm-coding-plan`, so `glm-4.7` resolves to
+ *     `["glm@glm-4.7", "openrouter@z-ai/glm-4.7"]` — both subscriptions deleted,
+ *     and a GLM Coding Plan holder is billed per token. Same shape for
+ *     `qwen-cloud` on `qwen3-coder-plus`. At v9.0.0 this could not happen: the
+ *     old code tested `subscriptionPlans.includes(providerUid)`, which was false
+ *     for every provider, so it returned `unknown` and kept the candidate.
+ *
+ * That second one is a LIVE defect, not fixed here. This change restores the
+ * routing-rule COMPOSITION to v9.0.0; it deliberately retains v9.0.1's
+ * subscription-availability join, gap included. Do not read this file's fix as
+ * "v9.0.3 == v9.0.0 routing" — see ai-docs/reports/ for the follow-up.
+ *
+ * `sources` keeps this composition boundary testable without reading machine
+ * config or the recommended-models cache. `sources.recommendedModels` is
+ * optional and deliberately unused: a regression test hands it a shadowing entry
+ * and asserts it never reaches the output. That test alone is not a sufficient
+ * guard, because the v9.0.1 bug read the cache AMBIENTLY rather than through
+ * this seam — the guard that survives a cold CI checkout is the import-shape
+ * test in routing-rules.test.ts, which fails on any VALUE import from
+ * model-loader.js. Keep this file's model-loader import `import type`.
  */
-export function loadRoutingRules(): RoutingRules {
-  const local = loadLocalConfig()?.routing ?? {};
-  const global_ = loadConfig().routing ?? {};
+export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
+  const local = sources ? sources.localRules : (loadLocalConfig()?.routing ?? {});
+  const global_ = sources ? sources.globalRules : (loadConfig().routing ?? {});
 
   validateRoutingRules(local);
   validateRoutingRules(global_);
 
-  const catalogRules = retainKnownCatalogRoutingRules(
-    buildCatalogRoutingRules(getRecommendedModelsSync())
-  );
-  return mergeRoutingRules({ ...DEFAULT_ROUTING_RULES, ...catalogRules }, global_, local);
+  return mergeRoutingRules(DEFAULT_ROUTING_RULES, global_, local);
 }
 
 /**
- * The backend owns route preference, but the installed client owns which
- * provider implementations it can execute. Ignore an ahead-of-client provider
- * instead of allowing one external row to shadow a working bundled fallback.
+ * Drop catalog entries naming a provider this client cannot execute.
+ *
+ * NO PRODUCTION CALLER as of v9.0.3 — `loadRoutingRules` no longer consumes the
+ * catalog, for the reasons documented there. Kept because the filter itself is
+ * correct and the catalog-driven routing redesign will need it; its test pins
+ * the behaviour meanwhile.
+ *
+ * Note what the premise of the original comment got wrong, since it is the same
+ * mistake that shipped the v9.0.1 regression: the backend does not own route
+ * PREFERENCE. It owns availability — who serves a model, under what id. Order is
+ * the user's, then claudish's defaults.
  */
 export function retainKnownCatalogRoutingRules(rules: RoutingRules): RoutingRules {
   const retained: RoutingRules = {};
