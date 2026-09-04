@@ -1,5 +1,10 @@
 # Backend request: plans without a `routing` block are invisible, and they poison their siblings
 
+> **SUPERSEDED 2026-09-04 by `BACKEND_TASKS-20260904.md`.** That document carries
+> this content as items 1 and 3, alongside everything else claudish needs, in
+> priority order. Send the backend developer that one file, not this one. This is
+> kept only as the record of what shipped with v9.0.4.
+
 **For:** the models-index backend developer
 **From:** claudish, 2026-09-03
 **Cache measured:** `~/.claudish/all-models.json`, `lastUpdated` as served on 2026-09-03
