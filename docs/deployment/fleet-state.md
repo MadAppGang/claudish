@@ -51,8 +51,9 @@ the cascades. Post-mortem: workspace dashboard 14:01Z (format of reference).
 
 | Item | Value | Status |
 | --- | --- | --- |
-| Sidecar | `localhost:3002`, upstream `http://192.168.0.46:3000` (double-hop) | VERIFIED |
-| Cascade | **NOT ARMED** (`.env` `CLAUDISH_FAILOVER_*` empty) — standing P1, awaits user GO (recreate cuts own traffic) | VERIFIED 07/09 |
+| Sidecar | `localhost:3002`, upstream **`http://192.168.0.50:3000`** (direct to hub — double-hop removed) | VERIFIED 07/09 23:12Z (startup line + container env + egress from container) |
+| Client `ANTHROPIC_BASE_URL` | `http://192.168.0.50:3000` (direct) — `settings.json`; profile template `settings.claudish.json` realigned 22:12Z | VERIFIED 07/09 22:12Z |
+| Cascade | **NOT ARMED** (`.env` `CLAUDISH_FAILOVER_*` empty, no `[Failover]` startup line) — standing P1, awaits user GO. The "recreate cuts own traffic" objection is **void since 07/09**: the client no longer transits the sidecar | VERIFIED 07/09 23:12Z |
 | customEndpoints | `vllm-myia` (key rotated 06/09, fp only), `qwen-token-plan` | VERIFIED (config.json) |
 | Capture | on (outage trail) | VERIFIED |
 
@@ -68,5 +69,8 @@ the cascades. Post-mortem: workspace dashboard 14:01Z (format of reference).
 
 | Date (Z) | Machine | Change | Proof |
 | --- | --- | --- | --- |
+| 2026-09-07 23:12 | ai-01 | sidecar recreated: `CLAUDISH_RELAY_UPSTREAM` `.46` → `.50`. Double-hop removed. Under the user's fleet-wide rollout GO (07/09 ~22:10Z) | startup `[Relay] sidecar mode: upstream=http://192.168.0.50:3000` + `docker inspect` env + `/health` + egress `curl` **from inside the container** to `.50` |
+| 2026-09-07 22:16 | ai-01 | sidecar auto-restarted by the Docker daemon coming back up — **kept the OLD `.46` env**: a start does not reload `.env`, only a recreate does | `docker inspect` env vs on-disk `.env` (2 h of divergence, 17 header-timeout local fallbacks in the window) |
+| 2026-09-07 21:33 | ai-01 | Docker Desktop back up after the deliberate stop (CoursIA runners) — 47 containers with `StartedAt` inside 0.4 s = host/daemon event, not a targeted gesture | `docker inspect .State.StartedAt` across all containers |
 | 2026-09-07 13:59 | po-2025 | incident repair: drained recreate with correct `--env-file`, cascades restored, OAuth file bind | startup line + `/health` (DECLARED, corroborated ai-01 14:05Z) |
 | 2026-09-07 ~08:06 | po-2025 | restart (cause TBD — post-mortem pending) | uptime probe ai-01 |
