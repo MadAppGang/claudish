@@ -512,6 +512,7 @@ export async function profileEditCommand(name?: string, scopeFlag?: ProfileScope
       { name: "Opus model only", value: "opus" },
       { name: "Sonnet model only", value: "sonnet" },
       { name: "Haiku model only", value: "haiku" },
+      { name: "Fable model only", value: "fable" },
       { name: "Subagent model only", value: "subagent" },
       { name: "Description", value: "description" },
       { name: "Cancel", value: "cancel" },
@@ -604,6 +605,7 @@ function printModelMapping(models: ModelMapping): void {
   console.log(`  ${CYAN}opus${RESET}:     ${models.opus || DIM + "not set" + RESET}`);
   console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || DIM + "not set" + RESET}`);
   console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || DIM + "not set" + RESET}`);
+  console.log(`  ${CYAN}fable${RESET}:   ${models.fable || DIM + "not set" + RESET}`);
   if (models.subagent) {
     console.log(`  ${CYAN}subagent${RESET}: ${models.subagent}`);
   }

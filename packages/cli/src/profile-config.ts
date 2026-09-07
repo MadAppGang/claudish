@@ -25,9 +25,10 @@ export type ProfileScope = "local" | "global";
  * Maps Claude model types to OpenRouter model IDs
  */
 export interface ModelMapping {
-  opus?: string; // Model for opus (claude-opus-4-*)
-  sonnet?: string; // Model for sonnet (claude-sonnet-4-*)
+  opus?: string; // Model for opus (claude-opus-*)
+  sonnet?: string; // Model for sonnet (claude-sonnet-*)
   haiku?: string; // Model for haiku (claude-haiku-*)
+  fable?: string; // Model for fable (claude-fable-*)
   subagent?: string; // Model for subagents (CLAUDE_CODE_SUBAGENT_MODEL)
 }
 

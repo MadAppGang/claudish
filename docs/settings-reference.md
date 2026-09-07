@@ -24,7 +24,9 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 | `--model-opus` | | string | none | Model for Opus role (planning, complex tasks) |
 | `--model-sonnet` | | string | none | Model for Sonnet role (default coding) |
 | `--model-haiku` | | string | none | Model for Haiku role (fast tasks, background) |
+| `--model-fable` | | string | none | Model for Fable role (version-independent family mapping) |
 | `--model-subagent` | | string | none | Model for sub-agents (Task tool) |
+| `--model-freshness` | | action | | Check configured Fable/Astra pins via catalog metadata; no inference or mutation |
 | `--port` | | number | random (3000–9000) | Proxy server port |
 | `--auto-approve` | `-y` | boolean | false | Skip permission prompts (passes `--dangerously-skip-permissions` to Claude Code) |
 | `--no-auto-approve` | | boolean | | Explicitly enable permission prompts (overrides -y) |
@@ -110,6 +112,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `CLAUDISH_MODEL_OPUS` | Override model for Opus role | none |
 | `CLAUDISH_MODEL_SONNET` | Override model for Sonnet role | none |
 | `CLAUDISH_MODEL_HAIKU` | Override model for Haiku role | none |
+| `CLAUDISH_MODEL_FABLE` | Override model for Fable role | none |
 | `CLAUDISH_MODEL_SUBAGENT` | Override model for sub-agents | none |
 | `CLAUDISH_SUMMARIZE_TOOLS` | Summarize tool descriptions (`true` or `1` to enable) | false |
 | `CLAUDISH_TELEMETRY` | Override telemetry (`0`, `false`, or `off` to disable) | from config |
@@ -128,6 +131,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | Claude Code opus model var | `CLAUDISH_MODEL_OPUS` (lower priority) |
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Claude Code sonnet model var | `CLAUDISH_MODEL_SONNET` (lower priority) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Claude Code haiku model var | `CLAUDISH_MODEL_HAIKU` (lower priority) |
+| `ANTHROPIC_DEFAULT_FABLE_MODEL` | Claude Code fable model var | `CLAUDISH_MODEL_FABLE` (lower priority) |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | Claude Code subagent model var | `CLAUDISH_MODEL_SUBAGENT` (lower priority) |
 | `ANTHROPIC_API_KEY` | Non-secret onboarding placeholder in proxy-only mode | (placeholder set by Claudish) |
 | `ANTHROPIC_AUTH_TOKEN` | Non-secret onboarding placeholder in proxy-only mode | (placeholder set by Claudish) |
@@ -268,7 +272,7 @@ These are only needed if you want to use your own Google Cloud OAuth application
 - **`profiles`**: Map of profile name to profile object. Each profile has:
   - **`name`**: Profile identifier (matches the map key).
   - **`description`**: Optional human-readable description.
-  - **`models`**: Model mapping with optional keys `opus`, `sonnet`, `haiku`, `subagent`. Each value is a full model spec (e.g., `"google@gemini-3-pro"`). Absent keys mean no override for that role.
+  - **`models`**: Model mapping with optional keys `opus`, `sonnet`, `haiku`, `fable`, `subagent`. Each value is a full model spec (e.g., `"google@gemini-3-pro"`). Absent keys mean no override for that role.
   - **`createdAt`** / **`updatedAt`**: ISO 8601 timestamps (managed by Claudish).
 - **`telemetry`**: Consent state.
   - **`enabled`**: Whether telemetry is on. Default is `false` until user explicitly opts in.
@@ -621,11 +625,11 @@ Each valid custom endpoint calls `registerRuntimeProvider()` (injects into the p
 
 ## 8. Model Mapping Priority
 
-For each role slot (opus, sonnet, haiku, subagent), resolution from highest to lowest priority:
+For each role slot (opus, sonnet, haiku, fable, subagent), resolution from highest to lowest priority:
 
-1. CLI flag: `--model-opus`, `--model-sonnet`, `--model-haiku`, `--model-subagent`
-2. `CLAUDISH_MODEL_OPUS`, `CLAUDISH_MODEL_SONNET`, `CLAUDISH_MODEL_HAIKU`, `CLAUDISH_MODEL_SUBAGENT`
-3. `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`
+1. CLI flag: `--model-opus`, `--model-sonnet`, `--model-haiku`, `--model-fable`, `--model-subagent`
+2. `CLAUDISH_MODEL_OPUS`, `CLAUDISH_MODEL_SONNET`, `CLAUDISH_MODEL_HAIKU`, `CLAUDISH_MODEL_FABLE`, `CLAUDISH_MODEL_SUBAGENT`
+3. `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_FABLE_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`
 4. Profile `models` fields from active profile (local `.claudish.json` first, then global `~/.claudish/config.json`)
 5. No mapping set: Claude Code uses its own internal defaults for that role
 

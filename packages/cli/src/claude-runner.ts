@@ -19,6 +19,7 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
     config.modelOpus,
     config.modelSonnet,
     config.modelHaiku,
+    config.modelFable,
     config.modelSubagent,
   ];
   return models.some((m) => m && parseModelSpec(m).provider === "native-anthropic");
@@ -321,7 +322,11 @@ export async function runClaudeWithProxy(
   // In profile/multi-model mode, don't set a single model - let Claude Code use its defaults
   // so the proxy can match tier names (opus/sonnet/haiku) and apply profile mappings
   const hasProfileMappings =
-    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
+    config.modelOpus ||
+    config.modelSonnet ||
+    config.modelHaiku ||
+    config.modelFable ||
+    config.modelSubagent;
   const modelId = config.model || (hasProfileMappings || config.monitor ? undefined : "unknown");
 
   // Extract port from proxy URL for token file path

@@ -17,6 +17,11 @@ import type { ClaudishConfig } from "./types.js";
 // ---------------------------------------------------------------------------
 
 describe("Group 1: Backward compatibility", () => {
+  test("--model-fable configures the version-independent Fable role", async () => {
+    const config = await parseArgs(["--model-fable", "cx@gpt-6-astra", "task"]);
+    expect(config.modelFable).toBe("cx@gpt-6-astra");
+  });
+
   test("basic model + positional arg", async () => {
     const config = await parseArgs(["--model", "grok", "hello"]);
     expect(config.model).toBe("grok");
@@ -182,7 +187,11 @@ describe("Group 5: Dead agent code removed", () => {
  */
 function computeModelId(config: ClaudishConfig): string | undefined {
   const hasProfileMappings =
-    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
+    config.modelOpus ||
+    config.modelSonnet ||
+    config.modelHaiku ||
+    config.modelFable ||
+    config.modelSubagent;
   return config.model || (hasProfileMappings || config.monitor ? undefined : "unknown");
 }
 

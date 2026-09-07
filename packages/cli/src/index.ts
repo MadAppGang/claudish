@@ -160,7 +160,8 @@ if (isMcpMode) {
 async function runCli() {
   const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
-  const { DEFAULT_PORT_RANGE } = await import("./config.js");
+  const { DEFAULT_PORT_RANGE, ENV } = await import("./config.js");
+  const { getModelMapping } = await import("./profile-config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
   const {
     resolveModelProvider,
@@ -322,6 +323,13 @@ async function runCli() {
     // Check for updates (only in interactive mode, skip in JSON output mode)
     if (cliConfig.interactive && !cliConfig.jsonOutput) {
       await checkForUpdates(getVersion(), { quiet: cliConfig.quiet });
+      const { checkModelFreshness } = await import("./providers/model-freshness.js");
+      await checkModelFreshness({
+        currentFable: process.env[ENV.ANTHROPIC_DEFAULT_FABLE_MODEL],
+        currentAstra:
+          process.env[ENV.CLAUDISH_MODEL_FABLE] || getModelMapping(cliConfig.profile).fable,
+        quiet: cliConfig.quiet,
+      });
     }
 
     // Check if Claude Code is installed
@@ -340,6 +348,7 @@ async function runCli() {
       cliConfig.modelOpus ||
       cliConfig.modelSonnet ||
       cliConfig.modelHaiku ||
+      cliConfig.modelFable ||
       cliConfig.modelSubagent;
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
       cliConfig.model = (await selectModel({ freeOnly: cliConfig.freeOnly }).catch(
@@ -372,6 +381,7 @@ async function runCli() {
             cliConfig.modelOpus,
             cliConfig.modelSonnet,
             cliConfig.modelHaiku,
+            cliConfig.modelFable,
             cliConfig.modelSubagent,
           ];
 
@@ -427,6 +437,7 @@ async function runCli() {
         cliConfig.modelOpus,
         cliConfig.modelSonnet,
         cliConfig.modelHaiku,
+        cliConfig.modelFable,
         cliConfig.modelSubagent,
       ].filter((m): m is string => typeof m === "string");
 
@@ -474,6 +485,7 @@ async function runCli() {
       opus: cliConfig.modelOpus,
       sonnet: cliConfig.modelSonnet,
       haiku: cliConfig.modelHaiku,
+      fable: cliConfig.modelFable,
       subagent: cliConfig.modelSubagent,
     };
 

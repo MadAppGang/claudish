@@ -317,6 +317,28 @@ function buildToolResultResponse(model: string, toolResults: any[], streaming: b
   });
 }
 
+export type RoleModelMap = {
+  opus?: string;
+  sonnet?: string;
+  haiku?: string;
+  fable?: string;
+  subagent?: string;
+};
+
+/** Resolve a Claude Code role name without coupling the mapping to a model version. */
+export function resolveRoleMappedModel(
+  requestedModel: string,
+  modelMap?: RoleModelMap
+): string | undefined {
+  if (!modelMap) return undefined;
+  const requested = requestedModel.toLowerCase();
+  if (requested.includes("opus")) return modelMap.opus;
+  if (requested.includes("sonnet")) return modelMap.sonnet;
+  if (requested.includes("haiku")) return modelMap.haiku;
+  if (requested.includes("fable")) return modelMap.fable;
+  return undefined;
+}
+
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
   quiet?: boolean; // Suppress informational stderr output (e.g., [Auto-route])
@@ -333,7 +355,7 @@ export async function createProxyServer(
   model?: string,
   monitorMode: boolean = false,
   anthropicApiKey?: string,
-  modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
+  modelMap?: RoleModelMap,
   options: ProxyServerOptions = {}
 ): Promise<ProxyServer> {
   // Resolve proxy key early — needed for both auth middleware and NativeHandler
@@ -642,15 +664,11 @@ export async function createProxyServer(
     const role = roleFromModelName(requestedModel);
 
     if (modelMap) {
-      // Role-specific mappings take highest priority
-      if (req.includes("opus") && modelMap.opus) {
-        target = modelMap.opus;
-        wasFromModelMap = true;
-      } else if (req.includes("sonnet") && modelMap.sonnet) {
-        target = modelMap.sonnet;
-        wasFromModelMap = true;
-      } else if (req.includes("haiku") && modelMap.haiku) {
-        target = modelMap.haiku;
+      // Role-specific mappings take highest priority. Family matching is
+      // version-independent, so a future claude-fable-* keeps the same role.
+      const roleTarget = resolveRoleMappedModel(req, modelMap);
+      if (roleTarget) {
+        target = roleTarget;
         wasFromModelMap = true;
       }
       // Default model (--model) is fallback for all roles

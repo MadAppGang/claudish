@@ -42,6 +42,7 @@ export interface ClaudishConfig {
   modelOpus?: string;
   modelSonnet?: string;
   modelHaiku?: string;
+  modelFable?: string;
   modelSubagent?: string;
 
   // Cost tracking

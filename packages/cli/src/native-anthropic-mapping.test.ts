@@ -26,6 +26,10 @@ describe("Native Anthropic mapping detection", () => {
       expect(parseModelSpec("claude-haiku-4-5-20251001").provider).toBe("native-anthropic");
     });
 
+    test("claude-fable-5-1", () => {
+      expect(parseModelSpec("claude-fable-5-1").provider).toBe("native-anthropic");
+    });
+
     // Legacy model names
     test("claude-3-opus-20240229", () => {
       expect(parseModelSpec("claude-3-opus-20240229").provider).toBe("native-anthropic");

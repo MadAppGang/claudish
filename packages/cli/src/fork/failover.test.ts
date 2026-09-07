@@ -706,6 +706,7 @@ describe("roleFromModelName", () => {
     expect(roleFromModelName("claude-opus-5")).toBe("opus");
     expect(roleFromModelName("claude-sonnet-5")).toBe("sonnet");
     expect(roleFromModelName("claude-3-5-haiku-20241022")).toBe("haiku");
+    expect(roleFromModelName("claude-fable-5-1")).toBeNull();
   });
 
   it("returns null for anything else (no aliases configured)", () => {

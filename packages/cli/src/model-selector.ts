@@ -30,6 +30,7 @@ import {
   getProviderByName,
   isProviderAvailable,
 } from "./providers/provider-definitions.js";
+import { compareVersionPartsDesc, extractVersionParts } from "./model-version.js";
 
 /**
  * Model data structure
@@ -272,55 +273,6 @@ function dedupeModels(models: ModelInfo[]): ModelInfo[] {
     deduped.push(model);
   }
   return deduped;
-}
-
-function extractVersionParts(modelId: string): number[] {
-  const tokens = modelId.toLowerCase().split(/[\/_-]+/);
-  let started = false;
-  const parts: number[] = [];
-
-  for (const token of tokens) {
-    const match = token.match(/\d+(?:\.\d+)*/);
-    if (!match) {
-      if (started) break;
-      continue;
-    }
-
-    if (!started) {
-      started = true;
-      for (const part of match[0].split(".")) {
-        parts.push(Number.parseInt(part, 10));
-      }
-
-      if (!/^\d+(?:\.\d+)*$/.test(token)) {
-        break;
-      }
-
-      continue;
-    }
-
-    if (!/^\d{1,2}(?:\.\d+)?$/.test(token)) {
-      break;
-    }
-
-    for (const part of token.split(".")) {
-      parts.push(Number.parseInt(part, 10));
-    }
-  }
-
-  return parts;
-}
-
-function compareVersionPartsDesc(a: number[], b: number[]): number {
-  const maxLength = Math.max(a.length, b.length);
-  for (let i = 0; i < maxLength; i++) {
-    const aPart = a[i] ?? -1;
-    const bPart = b[i] ?? -1;
-    if (aPart !== bPart) {
-      return bPart - aPart;
-    }
-  }
-  return 0;
 }
 
 /**
@@ -984,6 +936,7 @@ export async function selectModelsForProfile(): Promise<{
   opus?: string;
   sonnet?: string;
   haiku?: string;
+  fable?: string;
   subagent?: string;
 }> {
   console.log("\nLoading available models...");
@@ -994,10 +947,17 @@ export async function selectModelsForProfile(): Promise<{
     { key: "opus" as const, name: "Opus", description: "Most capable, used for complex reasoning" },
     { key: "sonnet" as const, name: "Sonnet", description: "Balanced, used for general tasks" },
     { key: "haiku" as const, name: "Haiku", description: "Fast & cheap, used for simple tasks" },
+    { key: "fable" as const, name: "Fable", description: "Fast frontier model for focused tasks" },
     { key: "subagent" as const, name: "Subagent", description: "Used for spawned sub-agents" },
   ];
 
-  const result: { opus?: string; sonnet?: string; haiku?: string; subagent?: string } = {};
+  const result: {
+    opus?: string;
+    sonnet?: string;
+    haiku?: string;
+    fable?: string;
+    subagent?: string;
+  } = {};
   let lastProvider: string | undefined;
 
   console.log("\nConfigure models for each Claude tier:");
