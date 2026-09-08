@@ -388,8 +388,9 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 **Priority order**: CLI flags > `CLAUDISH_*` env vars > `ANTHROPIC_*` env vars > profile config > interactive selector.
 
 **Important Notes:**
-- Set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value) to suppress the Claude Code login dialog
-- In interactive mode, if no API key is set, you'll be prompted to enter one
+- When Claudish launches Claude Code in proxy-only mode, it sets non-secret placeholders in both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, and applies `forceLoginMethod: "console"`. Together these bypass local Claude/Anthropic onboarding; they do not authenticate any upstream provider.
+- Hub access is authenticated separately (for example with `x-proxy-key`), while provider credentials remain on the Claudish host.
+- Native Anthropic mappings and monitor mode do not receive placeholders: they intentionally preserve the user's real Claude/Anthropic authentication.
 
 ### Configuration Files
 

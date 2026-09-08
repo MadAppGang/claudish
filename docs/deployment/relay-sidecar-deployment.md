@@ -14,14 +14,42 @@ This runbook deploys a sidecar on each cluster machine **except web1** (which ke
 
 Hysteresis: 2 consecutive heartbeat failures → AUTONOMOUS; recovery needs 3 OK heartbeats + 60s cooldown + a deep tool-call probe before returning to NOMINAL (anti-flap).
 
-## Prerequisite — the client `x-proxy-key` fix
+## Prerequisite — choose the client authentication contract
 
-Every machine's Claude Code `settings.json` must carry the cluster proxy key in the **`x-proxy-key`** custom header (NOT `x-api-key` — that triggers the hub's native swap and strips OAuth, breaking Opus). See memory `proxy-key-custom-header-auth`:
+Every machine's Claude Code `settings.json` must carry the cluster proxy key in the **`x-proxy-key`** custom header (NOT `x-api-key` — that triggers the hub's native swap and strips OAuth, breaking Opus). Keep that real hub credential separate from Claude Code's local authentication fields.
+
+### Hybrid / Anthropic pass-through
+
+Use this contract only on a machine that already has the required Claude/Anthropic OAuth and is authorized to route a native Anthropic lane:
 
 ```json
-"ANTHROPIC_AUTH_TOKEN": "",
-"ANTHROPIC_CUSTOM_HEADERS": "X-Claudish-Machine: <MACHINE>\nx-proxy-key: <CLUSTER_KEY>"
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "",
+    "ANTHROPIC_CUSTOM_HEADERS": "X-Claudish-Machine: <MACHINE>\nx-proxy-key: <CLUSTER_KEY>"
+  }
+}
 ```
+
+The empty token deliberately lets local OAuth authenticate native requests. Do not add proxy-only placeholders or force Console login to this profile.
+
+### Proxy-only / no Anthropic account
+
+Use this contract for a client whose advertised roles all resolve through non-Anthropic providers on the hub:
+
+```json
+{
+  "forceLoginMethod": "console",
+  "disableClaudeAiConnectors": true,
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-api03-placeholder-not-used-proxy-handles-auth-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "ANTHROPIC_AUTH_TOKEN": "placeholder-token-not-used-proxy-handles-auth",
+    "ANTHROPIC_CUSTOM_HEADERS": "X-Claudish-Machine: <MACHINE>\nx-proxy-key: <CLUSTER_KEY>"
+  }
+}
+```
+
+The two constant placeholders only bypass Claude Code's local onboarding checks. They are not provider credentials and must never be replaced with the real cluster key. `x-proxy-key` is the sole real client credential in this example; upstream provider credentials remain on the hub. Do not advertise a `claude-*` target in a proxy-only role mapping.
 
 After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** sidecar (`http://localhost:3000`) instead of the hub IP/subdomain.
 
@@ -49,13 +77,13 @@ After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** si
 # From a clone of the fork (or the installer clones it for you at C:\Dev\claudish)
 cd D:\Dev\claudish   # if already cloned here; else the script clones to C:\Dev\claudish
 
-# ai-01 (LAN, Anthropic authority — NO -NoAnthropic)
+# ai-01 (Anthropic authority — NO -NoAnthropic)
 .\scripts\install-sidecar.ps1 -Machine myia-ai-01 `
-    -Upstream http://192.168.0.46:3000 -ProxyKey b28622...full-cluster-key...
+    -Upstream https://models.myia.io -ProxyKey '<CLUSTER_KEY>'
 
 # po-2025 (WAN external — Compress + NoAnthropic)
 .\scripts\install-sidecar.ps1 -Machine myia-po-2025 `
-    -Upstream https://models.myia.io -ProxyKey b28622...full-cluster-key... -Compress -NoAnthropic
+    -Upstream https://models.myia.io -ProxyKey '<CLUSTER_KEY>' -Compress -NoAnthropic
 ```
 
 The installer is **idempotent**: it pulls latest `main`, (re)writes the `.env`, and recreates the container. It will not clobber an existing `config.json`.
@@ -78,7 +106,7 @@ After the installer reports **SIDECAR INSTALLED … mode: NOMINAL relay**, edit 
 "ANTHROPIC_BASE_URL": "http://localhost:<HostPort>"
 ```
 
-Keep `ANTHROPIC_AUTH_TOKEN` empty and keep the `x-proxy-key` + `X-Claudish-Machine` custom header. Restart Claude Code.
+Keep the selected authentication contract intact: an empty `ANTHROPIC_AUTH_TOKEN` for hybrid/OAuth pass-through, or both non-secret placeholders plus `forceLoginMethod: "console"` for proxy-only. In both cases, keep the `x-proxy-key` + `X-Claudish-Machine` custom header. Restart Claude Code.
 
 > **The repoint is the risky step, and it is the one that caused the 2026-08-10 ai-01 outage.** Stand the container up and validate it *before* touching `ANTHROPIC_BASE_URL`, so a failed install never costs the machine its agents. Keep the previous value at hand to roll back.
 
