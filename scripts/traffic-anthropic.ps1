@@ -11,9 +11,16 @@ This script reads req-*.json captures from the last N hours and attributes every
 Anthropic-native request to its machine AND workspace.
 
 WORKSPACE IS THE PROOF, machine is only the signal. The workspace is extracted from
-the request's system prompt (Get-WorkspaceFromSystem in CaptureUtils), NOT from
-stdout — a machine header can be absent/spoofed, but the system prompt names the
-real working directory. That is why this script uses captures, never `docker logs`.
+the environment updates carried in body.messages (Get-WorkspaceFromBody in
+CaptureUtils), NOT from stdout — a machine header can be absent or spoofed, but the
+session's own environment block names its real working directory. That is why this
+script uses captures, never `docker logs`.
+
+⚠ It is the LAST environment update that counts, and only the structured one. The
+corpus contains transcripts that QUOTE other sessions' environment blocks, so a raw
+text search over a capture is not a discriminator: measured 2026-09-08, the string
+"Argumentum" appeared in 8986 of 9921 requests from three machines, while only 321
+of them actually had it as their workspace.
 
 What counts as "Anthropic" in THIS deployment:
   - opus (claude-opus-4-8 / -4-7) and fable (claude-fable-5) are BARE NATIVE names
