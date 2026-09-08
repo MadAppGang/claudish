@@ -55,6 +55,13 @@ const HAIKU_TO_DEEPSEEK = {
   CLAUDISH_FAILOVER_HAIKU_DIRECTION: "improved",
 } as NodeJS.ProcessEnv;
 
+const FABLE_CASCADE = {
+  CLAUDISH_FAILOVER_FABLE: "cx@gpt-6-astra>ds@deepseek-v4-flash-vision-exp",
+  CLAUDISH_FAILOVER_FABLE_LABEL: "GPT-6 Astra>DeepSeek vision PAYG",
+  CLAUDISH_FAILOVER_FABLE_DIRECTION: "lateral>degraded",
+  CLAUDISH_FAILOVER_FABLE_NOTE: "Equivalent coding lane>Emergency PAYG lane",
+} as NodeJS.ProcessEnv;
+
 beforeEach(() => resetFailoverForTests());
 
 describe("failover — inert by default", () => {
@@ -63,6 +70,7 @@ describe("failover — inert by default", () => {
     expect(isFailoverActive("opus")).toBe(false);
     expect(isFailoverActive("sonnet")).toBe(false);
     expect(isFailoverActive("haiku")).toBe(false);
+    expect(isFailoverActive("fable")).toBe(false);
     expect(getActiveFailovers()).toEqual([]);
     expect(buildFailoverNotice()).toBeNull();
   });
@@ -117,6 +125,27 @@ describe("cascade parsing", () => {
     ]);
   });
 
+  it("parses and aligns a Fable cascade", () => {
+    initFailover({ ...FABLE_CASCADE });
+    const rule = getFailoverRule("fable")!;
+    expect(rule.steps).toEqual([
+      {
+        target: "cx@gpt-6-astra",
+        label: "GPT-6 Astra",
+        direction: "lateral",
+        note: "Equivalent coding lane",
+        resetAt: undefined,
+      },
+      {
+        target: "ds@deepseek-v4-flash-vision-exp",
+        label: "DeepSeek vision PAYG",
+        direction: "degraded",
+        note: "Emergency PAYG lane",
+        resetAt: undefined,
+      },
+    ]);
+  });
+
   it("defaults a missing label to the target string", () => {
     initFailover({
       CLAUDISH_FAILOVER_SONNET: "ds@deepseek-v4-pro",
@@ -155,6 +184,39 @@ describe("failover — arming", () => {
     expect(getActiveFailovers().map((a) => a.role)).toEqual(["opus", "haiku"]);
     // Resolved step is step 0 for each armed role.
     expect(getActiveFailovers().map((a) => a.stepIndex)).toEqual([0, 0]);
+  });
+
+  it("arms Fable and advances through its cascade", () => {
+    initFailover({ ...FABLE_CASCADE, CLAUDISH_FAILOVER_ACTIVE: "fable" });
+    expect(isFailoverActive("fable")).toBe(true);
+    expect(resolveFailoverTarget("fable").step?.target).toBe("cx@gpt-6-astra");
+    expect(buildFailoverNotice("fable")).toContain("GPT-6 Astra");
+
+    markStepFailed("fable", 0, "Astra quota wall");
+    expect(resolveFailoverTarget("fable").step?.target).toBe(
+      "ds@deepseek-v4-flash-vision-exp"
+    );
+    expect(consumeStreamNotice("fable", "fable-session")).toContain("2nd fallback");
+  });
+
+  it("auto-arms Fable and reports recovery after the nominal returns", () => {
+    const realNow = Date.now;
+    let clock = 1_000_000;
+    Date.now = () => clock;
+    try {
+      initFailover({ ...FABLE_CASCADE, CLAUDISH_FAILOVER_AUTO: "1" });
+      expect(armFailover("fable", "HTTP 402")).toBe(true);
+      expect(isFailoverActive("fable")).toBe(true);
+      clock += 11 * 60 * 1000;
+      expect(isFailoverActive("fable")).toBe(false);
+      onNominalSuccess("fable");
+      expect(isRecovering("fable")).toBe(true);
+      expect(consumeStreamNotice("fable", "fable-recovery")).toContain(
+        "back on the nominal Fable"
+      );
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   it("does not arm a role whose target is unconfigured", () => {
@@ -706,7 +768,7 @@ describe("roleFromModelName", () => {
     expect(roleFromModelName("claude-opus-5")).toBe("opus");
     expect(roleFromModelName("claude-sonnet-5")).toBe("sonnet");
     expect(roleFromModelName("claude-3-5-haiku-20241022")).toBe("haiku");
-    expect(roleFromModelName("claude-fable-5-1")).toBeNull();
+    expect(roleFromModelName("claude-fable-5-1")).toBe("fable");
   });
 
   it("returns null for anything else (no aliases configured)", () => {
@@ -718,12 +780,13 @@ describe("roleFromModelName", () => {
 
   it("honors CLAUDISH_FAILOVER_ROLE_MODELS aliases for nominal-by-name clients", () => {
     initFailover({
-      CLAUDISH_FAILOVER_ROLE_MODELS: "glm-5.2:sonnet,minimax-m3:haiku",
+      CLAUDISH_FAILOVER_ROLE_MODELS: "glm-5.2:sonnet,minimax-m3:haiku,story-latest:fable",
     } as NodeJS.ProcessEnv);
     expect(roleFromModelName("glm-5.2")).toBe("sonnet");
     expect(roleFromModelName("gc@glm-5.2")).toBe("sonnet");
     expect(roleFromModelName("mmc@MiniMax-M3")).toBe("haiku");
     expect(roleFromModelName("MiniMax-M3")).toBe("haiku");
+    expect(roleFromModelName("vendor@story-latest")).toBe("fable");
     // Role keywords still win; unmatched names stay null.
     expect(roleFromModelName("claude-sonnet-4-6")).toBe("sonnet");
     expect(roleFromModelName("deepseek-v4-flash")).toBeNull();

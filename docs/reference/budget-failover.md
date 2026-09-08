@@ -4,7 +4,7 @@
 
 ## Not the same thing as `FallbackHandler`
 
-`FallbackHandler` swaps *providers* for the *same* model when a provider is unhealthy — a transport concern. Budget failover substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`) when that role's metered plan is exhausted — a subscription concern. They compose: a failover target still gets the normal provider fallback chain.
+`FallbackHandler` swaps *providers* for the *same* model when a provider is unhealthy — a transport concern. Budget failover substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`/`fable`) when that role's metered plan is exhausted — a subscription concern. They compose: a failover target still gets the normal provider fallback chain.
 
 ## Why it exists
 
@@ -74,6 +74,12 @@ All `>`-separated fields are position-preserving against the step list.
 | `..._NOTE` | Extra guidance appended to that step's notice line. |
 | `..._RESET` | Operator-declared wall-lift time per step, ISO 8601 (empty entry = none). While set and in the future the step is skipped entirely — no probe — then probed the moment it passes, so recovered budget is consumed rather than stranded. For walls whose body carries no date (Mistral's subscription 402). A body-parsed date (Qwen names its reset instant, MiniMax counts down — `parseResetAtFromBody`) **wins over** the declared one. Log surface: `ttl=until <ISO>` instead of `ttl=<N>min`. |
 | `CLAUDISH_FAILOVER_ROLE_MODELS` | Deployment-specific `pattern:role,pattern:role` aliases (lowercase substring match) so clients naming the nominal model directly (`glm-5.3`, `MiniMax-M3`) instead of a role keyword (`claude-sonnet-4-6`) still get cascade protection. Role keywords win when both match; unset = keywords only. Used by `roleFromModelName`, the single role-detection source shared by the swap and the cascade loop. |
+
+### Nominal mapping and failover must not duplicate a target
+
+The nominal itself is never a cascade step. In particular, while the active profile maps Fable directly to `cx@gpt-6-astra`, keep `CLAUDISH_FAILOVER_FABLE` empty. Putting Astra in both places would make a quota wall retry the same target, consume an extra upstream round trip, and emit a misleading fallback notice.
+
+The future Fable cutover is atomic: remove the direct Astra mapping so native `claude-fable-5-1` becomes nominal, and set Astra as Fable step 0 in the same configuration change. Native Anthropic Fable remains restricted to ai-01 by the fleet leak policy.
 
 ⚠ **Compose passes these one by one.** `_RESET` was missing from the passthrough until `ffb7f39`,
 so only the body-parsed path (Qwen) worked; Mistral's silent 402 fell back to a 10-60 min backoff and

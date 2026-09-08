@@ -320,7 +320,7 @@ export async function runClaudeWithProxy(
   // Use actual OpenRouter model ID (no translation)
   // This ensures ANY model works, not just our shortlist
   // In profile/multi-model mode, don't set a single model - let Claude Code use its defaults
-  // so the proxy can match tier names (opus/sonnet/haiku) and apply profile mappings
+  // so the proxy can match tier names (opus/sonnet/haiku/fable) and apply profile mappings
   const hasProfileMappings =
     config.modelOpus ||
     config.modelSonnet ||

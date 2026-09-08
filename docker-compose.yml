@@ -85,7 +85,7 @@ services:
       # Measured on ai-01 over 5 days: 124 requests served locally, 70 done,
       # 54 lost to one walled lane with no cascade to fall to. Arm these here
       # too. Arming alone is not enough: roleFromModelName() matches only
-      # opus|sonnet|haiku, so a bare provider id (glm-5.2) resolves to null
+      # opus|sonnet|haiku|fable, so a bare provider id (glm-5.2) resolves to null
       # and the cascade stays blind. Set CLAUDISH_FAILOVER_ROLE_MODELS, or
       # have clients name roles neutrally.
       # See CLAUDE.md § "Budget Failover".
@@ -104,6 +104,11 @@ services:
       - CLAUDISH_FAILOVER_HAIKU_DIRECTION=${CLAUDISH_FAILOVER_HAIKU_DIRECTION:-}
       - CLAUDISH_FAILOVER_HAIKU_NOTE=${CLAUDISH_FAILOVER_HAIKU_NOTE:-}
       - CLAUDISH_FAILOVER_HAIKU_RESET=${CLAUDISH_FAILOVER_HAIKU_RESET:-}
+      - CLAUDISH_FAILOVER_FABLE=${CLAUDISH_FAILOVER_FABLE:-}
+      - CLAUDISH_FAILOVER_FABLE_LABEL=${CLAUDISH_FAILOVER_FABLE_LABEL:-}
+      - CLAUDISH_FAILOVER_FABLE_DIRECTION=${CLAUDISH_FAILOVER_FABLE_DIRECTION:-}
+      - CLAUDISH_FAILOVER_FABLE_NOTE=${CLAUDISH_FAILOVER_FABLE_NOTE:-}
+      - CLAUDISH_FAILOVER_FABLE_RESET=${CLAUDISH_FAILOVER_FABLE_RESET:-}
       - CLAUDISH_FAILOVER_ROLE_MODELS=${CLAUDISH_FAILOVER_ROLE_MODELS:-}
       - CLAUDISH_FAILOVER_ACTIVE=${CLAUDISH_FAILOVER_ACTIVE:-}
       - CLAUDISH_FAILOVER_AUTO=${CLAUDISH_FAILOVER_AUTO:-}

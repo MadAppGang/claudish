@@ -369,7 +369,7 @@ async function runCli() {
     // This happens AFTER model selection so we know exactly which provider(s) are being used
     // The centralized ProviderResolver handles all provider detection and key requirements
     if (!cliConfig.monitor) {
-      // When --model is explicitly set, it overrides ALL role mappings (opus/sonnet/haiku/subagent)
+      // When --model is explicitly set, it overrides ALL role mappings (opus/sonnet/haiku/fable/subagent)
       // So we only need to validate the explicit model, not the profile mappings
       const hasExplicitModel = typeof cliConfig.model === "string";
 
@@ -478,7 +478,7 @@ async function runCli() {
 
     // Start proxy server
     // explicitModel is the default/fallback model
-    // modelMap provides per-role overrides (opus/sonnet/haiku) that take priority
+    // modelMap provides per-role overrides (opus/sonnet/haiku/fable) that take priority
     const explicitModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
     // Always pass modelMap - role mappings should work even when a default model is set
     const modelMap = {

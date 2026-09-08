@@ -811,7 +811,7 @@ export async function createProxyServer(
       // api.anthropic.com. An unmapped claude-* (or any bare native string that
       // slipped through the modelMap) would otherwise leak. Reroute to the budget
       // sonnet mapping — keeps the agent alive during an outage without leaking.
-      // This sits ABOVE the per-machine config (opus/sonnet/haiku already
+      // This sits ABOVE the per-machine config (opus/sonnet/haiku/fable already
       // budget-mapped) because we have leaked on an undefined field before
       // (memory: leak-policy-binary-by-machine).
       //
