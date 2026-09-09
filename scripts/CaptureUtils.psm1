@@ -29,15 +29,30 @@ function Get-CaptureRequests {
                 $raw = Get-Content $_.FullName -Raw -Encoding UTF8
                 $j = $raw | ConvertFrom-Json -ErrorAction Stop
 
-                # Extract metadata from body
-                $workspace = Get-WorkspaceFromSystem $j.body.system
+                # Extract metadata from body. The environment block ("Primary working
+                # directory") is NOT in body.system — measured 2026-09-08 over the hub
+                # corpus: body.system holds only the billing header, the identity line and
+                # the system prompt. It lives in the env updates carried by body.messages.
+                $workspace = Get-WorkspaceFromBody $j.body
                 $sessionInfo = Get-SessionIdFromMetadata $j.body.metadata
                 $ccInfo = Get-CCVersionFromSystem $j.body.system
                 $msgCount = if ($j.body.messages) { @($j.body.messages).Count } else { 0 }
                 $toolCount = if ($j.body.tools) { @($j.body.tools).Count } else { 0 }
 
-                # Extract filename counter for resp correlation
-                $counter = if ($_.Name -match 'req-\d+-(\d+)-') { [int]$Matches[1] } else { 0 }
+                # The filename carries pid, counter AND request time:
+                #   req-{pid}-{counter}-{ts}-{src}.json
+                # All three are needed to pair a response. The counter alone is ambiguous
+                # because it restarts with the proxy — 5001 counters were reused within the
+                # single day of 2026-09-08. See Get-ResponseForRequest.
+                $procId = 0; $counter = 0; $reqTime = $null
+                if ($_.Name -match '^req-(\d+)-(\d+)-(.+Z)-') {
+                    $procId  = [int]$Matches[1]
+                    $counter = [int]$Matches[2]
+                    try {
+                        $reqTime = [datetime]::ParseExact($Matches[3], 'yyyy-MM-ddTHH-mm-ss-fffZ',
+                                                          $null, 'AssumeUniversal,AdjustToUniversal')
+                    } catch { $reqTime = $null }
+                }
 
                 [PSCustomObject]@{
                     File       = $_.Name
@@ -60,6 +75,8 @@ function Get-CaptureRequests {
                     ToolCount  = $toolCount
                     MaxTokens  = $j.body.max_tokens
                     Counter    = $counter
+                    ProcId     = $procId
+                    ReqTime    = $reqTime
                     Size       = $_.Length
                     FileTime   = $_.LastWriteTime
                 }
@@ -69,11 +86,66 @@ function Get-CaptureRequests {
         }
 }
 
+function Get-WorkspaceFromBody {
+    <#
+    .SYNOPSIS
+    Extract the CURRENT workspace path of the session that issued a request.
+
+    .DESCRIPTION
+    The environment block ("Primary working directory: <path>") is NOT in body.system.
+    Measured 2026-09-08 over the hub corpus: body.system carries exactly three blocks —
+    the x-anthropic-billing-header, the one-line identity, and the system prompt — and
+    none of them ever contains the path. It is injected as an environment UPDATE inside
+    body.messages, either as an inline `role: "system"` message or copied into a
+    tool_result. Scanning body.system therefore always returned '(no workspace)'.
+
+    Environment updates are chronological, so the LAST one is the current cwd; earlier
+    ones are the same path in different case ("D:\x" then "d:\x (was D:\x)").
+
+    ⚠ The corpus contains transcripts that QUOTE other sessions' environment blocks, so a
+    raw text search over the file is worthless as a discriminator: on 2026-09-08 the string
+    "Argumentum" appeared in 8986 of 9921 requests from three machines, while only 321 had
+    it as their actual workspace. Anchoring on message structure — and taking the last
+    update — is what separates the session's own cwd from prose that mentions a path.
+    #>
+    [CmdletBinding()]
+    param($Body)
+
+    if (-not $Body) { return '(no body)' }
+
+    $last = $null
+    foreach ($m in @($Body.messages)) {
+        foreach ($blk in @($m.content)) {
+            $text = if ($blk -is [string]) { $blk }
+                    elseif ($blk.type -eq 'text') { $blk.text }
+                    elseif ($blk.type -eq 'tool_result') { "$($blk.content)" }
+                    else { '' }
+            if (-not $text) { continue }
+            foreach ($hit in [regex]::Matches("$text", 'Primary working directory:\s*([^\r\n]+)')) {
+                # "D:\x (was d:\x)" -> "D:\x": keep the current cwd, drop the previous one.
+                $last = ($hit.Groups[1].Value -replace '\s*\(was\s.*$', '').Trim()
+            }
+        }
+    }
+    if ($last) { return $last }
+
+    # Fallback for capture shapes that predate the inline env update.
+    $fromSystem = Get-WorkspaceFromSystem $Body.system
+    if ($fromSystem -notmatch '^\(') { return $fromSystem }
+    return '(no workspace)'
+}
+
 function Get-WorkspaceFromSystem {
     <#
     .SYNOPSIS
-    Extract the workspace path from the system prompt blocks.
-    Looks for "Primary working directory:" in system[2].text.
+    Scan the system prompt blocks for a workspace path. Kept for API compatibility.
+
+    .DESCRIPTION
+    ⚠ On current captures this ALWAYS returns '(not in system)': the environment block
+    does not live in body.system. Use Get-WorkspaceFromBody instead. The marker is
+    deliberately distinct from '(no workspace)' so a caller can tell "looked in the wrong
+    place" apart from "looked in the right place and found nothing" — a silent empty
+    string is what made this defect invisible for so long.
     #>
     [CmdletBinding()]
     param($System)
@@ -81,11 +153,12 @@ function Get-WorkspaceFromSystem {
     if (-not $System) { return '(no system)' }
 
     foreach ($block in $System) {
-        if ($block.text -match 'Primary working directory:\s*(.+?)[\r\n]') {
-            return $Matches[1].Trim()
+        $text = if ($block -is [string]) { $block } else { $block.text }
+        if ("$text" -match 'Primary working directory:\s*([^\r\n]+)') {
+            return ($Matches[1] -replace '\s*\(was\s.*$', '').Trim()
         }
     }
-    return '(no workspace)'
+    return '(not in system)'
 }
 
 function Get-SessionIdFromMetadata {
@@ -165,13 +238,45 @@ function Get-ResponseForRequest {
     #>
     [CmdletBinding()]
     param(
-        [int]$Counter,
-        [string]$Dir = $script:DefaultCaptureDir
+        [Parameter(Mandatory)][int]$Counter,
+        [Parameter(Mandatory)][int]$ProcId,
+        [Parameter(Mandatory)][datetime]$RequestTime,
+        [string]$Dir = $script:DefaultCaptureDir,
+        [int]$WindowSec = 180
     )
 
-    $pattern = "resp-*-r$($Counter.ToString('0000'))-*.sse"
-    $respFile = Get-ChildItem (Join-Path $Dir $pattern) -File | Select-Object -First 1
+    # Pair on (pid, counter) AND a bounded delay. The rNNNN counter restarts with the
+    # proxy, so (pid, counter) alone has several candidates spread across the day —
+    # 5001 counters were reused within 2026-09-08 alone. The previous implementation
+    # filtered on the counter only and took `Select-Object -First 1`; Get-ChildItem
+    # yields alphabetical order, so that picked the OLDEST occurrence of the day,
+    # frequently one written BEFORE the request. Measured consequence on 2026-09-08:
+    # req-1-1819 (03:37:55Z) was credited a deepseek response captured at 08:34 — a
+    # backend it never touched — while its real state (no response at all) was masked.
+    #
+    # The window is measured, not guessed: over 16629 pairable responses that day the
+    # delay was p50 9.4s / p95 49.1s / p99 106.3s, and 180s covers 99.7% of them.
+    # Widening to 300s recovers exactly one more.
+    $pattern = "resp-$ProcId-r$($Counter.ToString('0000'))-*"
+    $reqUtc = $RequestTime.ToUniversalTime()
 
+    $respFile = Get-ChildItem (Join-Path $Dir $pattern) -File |
+        ForEach-Object {
+            if ($_.Name -notmatch '^resp-\d+-r\d+-(.+Z)-.+\.(sse|json)$') { return }
+            try {
+                $ts = [datetime]::ParseExact($Matches[1], 'yyyy-MM-ddTHH-mm-ss-fffZ',
+                                             $null, 'AssumeUniversal,AdjustToUniversal')
+            } catch { return }
+            $lag = ($ts - $reqUtc).TotalSeconds
+            if ($lag -lt -2 -or $lag -gt $WindowSec) { return }
+            [PSCustomObject]@{ File = $_; Ts = $ts }
+        } |
+        Sort-Object Ts | Select-Object -First 1 -ExpandProperty File
+
+    # No candidate inside the window is a RESULT — the request went unanswered, or was
+    # served by a path that writes no capture (Codex/Gemini/Ollama: only native-handler,
+    # anthropic-sse and openai-sse call createResponseCapture). It is never a licence to
+    # relax the window until something matches.
     if (-not $respFile) { return $null }
 
     # Parse header lines for stop_reason and elapsed_ms
@@ -313,5 +418,5 @@ function Resolve-MachineFromDevice {
     return "device:$($DeviceId.Substring(0,8))"
 }
 
-Export-ModuleMember -Function Get-CaptureRequests, Get-WorkspaceFromSystem, Get-SessionIdFromMetadata,
+Export-ModuleMember -Function Get-CaptureRequests, Get-WorkspaceFromBody, Get-WorkspaceFromSystem, Get-SessionIdFromMetadata,
     Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Get-OutageArchives, Expand-ArchiveDay, Resolve-MachineFromDevice
