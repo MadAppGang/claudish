@@ -1008,6 +1008,70 @@ describe("sanitizeSchemaForOpenAI", () => {
     expect(result.properties.value.oneOf).toHaveLength(2);
   });
 
+  test("removes the exact Artifact regex rejected by OpenAI", async () => {
+    const sanitize = await getSanitizer();
+    const schema = {
+      type: "object",
+      properties: {
+        doc_id: {
+          type: "string",
+          pattern: String.raw`^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\./[\]]{1,200}$`,
+        },
+      },
+    };
+
+    const result = sanitize(schema);
+
+    expect(result.properties.doc_id.pattern).toBeUndefined();
+    expect(result.properties.doc_id.type).toBe("string");
+  });
+
+  test("removes pattern recursively from nested schema positions", async () => {
+    const sanitize = await getSanitizer();
+    const constrained = { type: "string", pattern: "^[a-z]+$" };
+    const schema = {
+      type: "object",
+      properties: {
+        array: { type: "array", items: constrained },
+        map: { type: "object", additionalProperties: constrained },
+        choice: {
+          anyOf: [
+            constrained,
+            { allOf: [{ oneOf: [constrained, { type: "number" }] }] },
+          ],
+        },
+      },
+    };
+
+    const result = sanitize(schema);
+
+    expect(result.properties.array.items.pattern).toBeUndefined();
+    expect(result.properties.map.additionalProperties.pattern).toBeUndefined();
+    expect(result.properties.choice.anyOf[0].pattern).toBeUndefined();
+    expect(result.properties.choice.anyOf[1].allOf[0].oneOf[0].pattern).toBeUndefined();
+  });
+
+  test("preserves a user property literally named pattern", async () => {
+    const sanitize = await getSanitizer();
+    const schema = {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "A user-supplied search pattern" },
+        field: { type: "string", pattern: "^[a-z]+$" },
+      },
+      required: ["pattern"],
+    };
+
+    const result = sanitize(schema);
+
+    expect(result.properties.pattern).toEqual({
+      type: "string",
+      description: "A user-supplied search pattern",
+    });
+    expect(result.required).toContain("pattern");
+    expect(result.properties.field.pattern).toBeUndefined();
+  });
+
   test("removes uri format via removeUriFormat after sanitization", async () => {
     const sanitize = await getSanitizer();
     const schema = {

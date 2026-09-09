@@ -6,6 +6,70 @@
 
 import { removeUriFormat } from "../../../transform.js";
 
+const SCHEMA_MAP_KEYWORDS = new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties",
+]);
+
+const SCHEMA_ARRAY_KEYWORDS = new Set([
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "prefixItems",
+]);
+
+const SCHEMA_KEYWORDS = new Set([
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
+
+/**
+ * Remove regex constraints unsupported by OpenAI while preserving property names.
+ *
+ * A blind recursive key deletion would also remove a user parameter literally
+ * named "pattern" from a `properties` map. Traverse only JSON Schema positions
+ * so `pattern` is removed as a schema keyword, never as a property name.
+ */
+function removeUnsupportedPatterns(schema: any): any {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+
+  const result: any = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "pattern") continue;
+
+    if (SCHEMA_MAP_KEYWORDS.has(key) && value && typeof value === "object") {
+      result[key] = Object.fromEntries(
+        Object.entries(value).map(([name, child]) => [
+          name,
+          removeUnsupportedPatterns(child),
+        ])
+      );
+    } else if (SCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(value)) {
+      result[key] = value.map(removeUnsupportedPatterns);
+    } else if (SCHEMA_KEYWORDS.has(key)) {
+      result[key] = Array.isArray(value)
+        ? value.map(removeUnsupportedPatterns)
+        : removeUnsupportedPatterns(value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /**
  * Sanitize a JSON Schema for OpenAI function calling compatibility.
  *
@@ -55,7 +119,7 @@ export function sanitizeSchemaForOpenAI(schema: any): any {
   root.type = "object";
   if (!root.properties) root.properties = {};
 
-  return removeUriFormat(root);
+  return removeUnsupportedPatterns(removeUriFormat(root));
 }
 
 /**

@@ -4,6 +4,7 @@ import { log, maskCredential } from "../logger.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
 import { createResponseCapture, appendUpstreamError } from "./shared/response-capture.js";
 import { requestNumberFor } from "../fork/middleware/request-logger.js";
+import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import {
   fetchMultiModelAdvice,
   findPendingAdvisorToolResults,
@@ -130,6 +131,19 @@ export class NativeHandler implements ModelHandler {
           body: trimForLog(payload),
         });
       }
+    }
+
+    // Strip thinking blocks that arrived without a valid Anthropic signature.
+    // They originate from non-Anthropic providers (GLM/Kimi/DeepSeek reasoning
+    // surfaced as type:"thinking" with signature:"") and poison mixed-provider
+    // sessions: the Anthropic API rejects them with
+    // "messages.N.content.M: Invalid signature in thinking block" once a turn
+    // routes here. Genuine signed Anthropic thinking is preserved.
+    const strippedThinking = stripUnsignedThinkingBlocks(payload.messages);
+    if (strippedThinking > 0) {
+      log(
+        `[Native] Stripped ${strippedThinking} unsigned thinking block(s) (non-Anthropic origin) from message history for ${target}`
+      );
     }
 
     log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
