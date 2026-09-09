@@ -1,5 +1,11 @@
 # Design review: Backend Catalog Contract Implementation Plan
 
+> **SUPERSEDED 2026-09-09.** This reviews the *additive* contract plan, which
+> was replaced by Catalog Contract v3 — a breaking rewrite that adopts B1's
+> rename direction, B3's separate redirect type, and B4's exposed freshness.
+> Work from `AGREED_PLAN_backend_contract-20260909.md`. Kept as the record of
+> the round-one findings and the evidence behind them.
+
 **Reviewing:** "Backend Catalog Contract Implementation Plan" (models-index), 2026-09-09
 **Reviewer:** claudish
 **Against:** `BACKEND_TASKS-20260904.md` (revised 2026-09-09) and the shipped claudish resolver

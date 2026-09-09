@@ -1,5 +1,12 @@
 # models-index: what claudish needs, in priority order
 
+> **SUPERSEDED 2026-09-09 by Catalog Contract v3**
+> (`~/.claude/plans/gleaming-discovering-marble.md`). v3 closes seven of the
+> items below outright. Work from `AGREED_PLAN_backend_contract-20260909.md`,
+> which carries only the residual: the Codex roster predicate, the Mistral
+> pointer rows, and the cutover risk. Kept as the record of what was asked for
+> and why.
+
 **For:** the models-index backend developer
 **From:** claudish
 **First issued:** 2026-09-04. **Revised:** 2026-09-09, in response to your
