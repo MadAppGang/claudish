@@ -171,10 +171,28 @@ function defaultReadStore(): string | null {
   if (cachedRawStore && now - cachedRawStore.at < READ_STORE_TTL_MS) return cachedRawStore.value;
   let value: string | null = null;
   try {
+    // `stdio` MUST be named. Node documents execFileSync's default as "pipe",
+    // but carves out stderr: without an explicit `stdio` the child writes fd 2
+    // straight to the PARENT's terminal. The miss here is the common case — a
+    // user who is not signed in to Antigravity — and `security` announces it
+    // with "security: SecKeychainSearchCopyNext: The specified item could not
+    // be found in the keychain." The catch below cannot suppress that: it owns
+    // the exception, while the CHILD already owned the file descriptor.
+    //
+    // That line is not an error. It is "not signed in", which this function
+    // reports as `null` by design. Printing it corrupts the config TUI, which
+    // shares its terminal with the Claude Code TUI, and it repeats forever
+    // because READ_STORE_TTL_MS is 3s and the provider roster is rebuilt on
+    // every render. Same policy as providers/keychain.ts — see the spawn
+    // comment there, and terminal-isolation.ts for the display corruption.
+    //
+    // stdout stays PIPED because it carries the token; ignoring it the way the
+    // write/delete siblings do would make every read return null. stdin is
+    // ignored so this can never interact with a parent terminal in raw mode.
     const out = execFileSync(
       "security",
       ["find-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT, "-w"],
-      { encoding: "utf8" }
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
     );
     const trimmed = out.trim();
     value = trimmed.length > 0 ? trimmed : null;

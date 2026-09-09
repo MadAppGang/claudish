@@ -68,7 +68,7 @@ Keychain Access.app and another claudish process can write it while this one run
 collapsing a burst inside one operation, not caching across a session — the same reasoning, and
 the same TTL, as `antigravity-token.ts`'s shared-token memo.
 
-## Two `security` behaviours that are traps
+## `security` behaviours that are traps
 
 ### 1. `-w` returns HEX for values containing control characters
 
@@ -111,6 +111,42 @@ A related trap this exposed: `exitCode` is `null` for a signal-killed process, a
 version collapsed that to `1`, reporting a ten-second timeout as "security exited 1". A fabricated
 exit code sends the next investigation in the wrong direction — `normalizeResult` now reports
 `-1` and names the signal instead.
+
+### 4. `execFileSync` INHERITS stderr unless `stdio` is named
+
+Node documents `execFileSync`'s `stdio` default as `'pipe'`, then carves out one exception:
+stderr goes to the **parent's** stderr unless `stdio` is given explicitly. So
+`execFileSync("security", args, { encoding: "utf8" })` — no `stdio` — writes the child's
+complaints straight into claudish's terminal.
+
+That matters here because the most common keychain operation is a **miss**, and a miss is not an
+error: exit 44 means "the user has not stored this", which every caller already handles by
+returning `null`. `security` still announces it:
+
+```
+security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.
+```
+
+A surrounding `try`/`catch` does **not** suppress that line. The catch owns the *exception*; the
+child already owned the *file descriptor*, and the write happened in another process before
+`execFileSync` ever threw.
+
+Shipped in `auth/antigravity-token.ts`'s `defaultReadStore` up to v9.0.7. The config TUI rebuilds
+its provider roster on every render and each rebuild calls `hasSharedAntigravityToken()`, so the
+two memos only collapse a burst — one spawn, and one leaked line, still got through every
+`HAS_TOKEN_TTL_MS` (5 s) for as long as the view was open. claudish shares a terminal with the
+Claude Code TUI, so the result was a display corrupted every five seconds for any user not signed
+in to Antigravity. `providers/keychain.ts` was never affected: `syncRun` and `asyncRun` both pipe
+stderr deliberately.
+
+The fix names `stdio`, and **stdout must stay piped** — it carries the secret. The write and
+delete siblings in the same file can use `["ignore","ignore","ignore"]` only because they read
+nothing but an exit code; copying that shape onto a read silently returns `null` for every user.
+
+Reproducing a miss needs no real keychain and no logout: `antigravity-token.ts` resolves bare
+`"security"` through `PATH` while `providers/keychain.ts` uses the absolute `/usr/bin/security`,
+so a `PATH` shim that exits 44 intercepts exactly the one call. Measured that way against the real
+`hasSharedAntigravityToken()`: **2 leaked lines before the fix, 0 after.**
 
 ### Other measured constants
 
