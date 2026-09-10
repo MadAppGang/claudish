@@ -25,6 +25,23 @@
  * back on every subsequent start, until a compatible response is seen again and
  * {@link clearCatalogIncompatibility} removes it.
  *
+ * ## Why the record is RE-JUDGED on every read, never merely read back
+ *
+ * What is persisted is not a fact about the world. It is a RELATIONSHIP between
+ * two versions — what the server was serving, and what the build that met it
+ * could read — and persisting a relationship only freezes one half of it. The
+ * other half, {@link SUPPORTED_CONTRACT_VERSION}, changes underneath the file
+ * the moment `claudish update` runs.
+ *
+ * Keyed on presence alone, a record written by a v2 build against a v3 server
+ * still fires on the v3 build shipped to end it, and
+ * {@link catalogIncompatibilityMessage} then reads "the catalog serves contract
+ * version 3; this build reads version 3 ... run `claudish update`" — naming the
+ * remedy the user has just applied. That is a permanent brick delivered by the
+ * release meant to fix the problem, and it needs no network to happen. So every
+ * read re-evaluates the record against the CURRENT constant
+ * ({@link isSentinelStale}) and drops it once this build has caught up.
+ *
  * ## Why the disk write is best-effort but the flag is not
  *
  * A read-only home, a full disk or a sandboxed test must never turn a billing
@@ -62,6 +79,21 @@ export interface CatalogIncompatibility {
   serverContractVersion: number | null;
   /** The lowest version the server will serve, when it said one. */
   minimumContractVersion?: number;
+  /**
+   * The {@link SUPPORTED_CONTRACT_VERSION} of the build that WROTE this record.
+   *
+   * Stamped by {@link markCatalogIncompatible} like `detectedAt`, never supplied
+   * by a caller. It exists for the one case the server-side fields cannot
+   * decide: a 426 with no body records `serverContractVersion: null`, so the
+   * record says nothing about what the server wanted, and only the writer's own
+   * version can tell a later build whether the finding is about a build that no
+   * longer exists.
+   *
+   * Optional because a record written before this field existed is still a valid
+   * finding. Absent, it means "written by a build older than this scheme", which
+   * licenses no conclusion in either direction — see {@link isSentinelStale}.
+   */
+  clientContractVersion?: number;
 }
 
 /** Where the sentinel lives. Sibling of `~/.claudish/all-models.json`. */
@@ -178,16 +210,22 @@ export function isIncompatibleContractVersion(version: number | null): version i
  * best-effort write must not make the guard best-effort), then attempts the
  * file.
  *
- * @param info Everything but `detectedAt`, which is stamped here.
+ * `detectedAt` and `clientContractVersion` are stamped here rather than passed
+ * in: both describe the act of recording, not the response, and a caller that
+ * could set `clientContractVersion` could write a record that outlives its own
+ * staleness test.
+ *
+ * @param info What the RESPONSE said. Everything else is stamped here.
  * @param path Override the sentinel path. Only tests should pass this.
  */
 export function markCatalogIncompatible(
-  info: Omit<CatalogIncompatibility, "detectedAt">,
+  info: Omit<CatalogIncompatibility, "detectedAt" | "clientContractVersion">,
   path: string = CATALOG_INCOMPATIBLE_PATH
 ): void {
   const record: CatalogIncompatibility = {
     detectedAt: new Date().toISOString(),
     serverContractVersion: info.serverContractVersion,
+    clientContractVersion: SUPPORTED_CONTRACT_VERSION,
     ...(info.minimumContractVersion !== undefined
       ? { minimumContractVersion: info.minimumContractVersion }
       : {}),
@@ -217,6 +255,12 @@ export function markCatalogIncompatible(
  * "compatible" would put the user back on the silent-mis-billing path, which is
  * the one outcome the whole mechanism exists to rule out.
  *
+ * Presence is not the whole answer, though: a record this build has outgrown is
+ * dropped and deleted here, before any caller sees it ({@link isSentinelStale}).
+ * That judgement applies to the FILE only. `_memFlag` was set by a response this
+ * very process read off the wire — a live observation, not persisted state — and
+ * a 426 outranks any version arithmetic we could do against it.
+ *
  * @param path Override the sentinel path. Only tests should pass this.
  */
 export function readCatalogIncompatibility(
@@ -233,8 +277,73 @@ export function readCatalogIncompatibility(
     // process can act on beyond what the next fetch rediscovers.
   }
 
+  if (value !== null && isSentinelStale(value)) {
+    // Delete as well as ignore, so the next process does no work at all and the
+    // user never trips over a file describing a problem they no longer have.
+    // Best-effort, like every other fs call here; the read-time test is what
+    // actually protects them, the removal is housekeeping. This also parks the
+    // `null` in `_fileMemo`, so the whole check runs at most once per process.
+    clearCatalogIncompatibility(path);
+    return null;
+  }
+
   _fileMemo = { path, value };
   return value;
+}
+
+/**
+ * Has this build caught up with what the record describes?
+ *
+ * The trap, stated once: persisted state that describes a RELATIONSHIP between
+ * two versions must be re-evaluated against the current version, never merely
+ * read back. Only the server's half of this record is frozen on disk; ours moves
+ * every time the user updates. See the header section on re-judging.
+ *
+ * Three questions, ordered by how much each one actually knows:
+ *
+ *  1. **Did the server name a floor we are still below?** Then no amount of
+ *     other evidence matters — the server has said in as many words that it will
+ *     not serve this build. Decisive, and it cannot brick: a build at or above
+ *     the floor never reaches this branch.
+ *
+ *  2. **Did the server name the version it was serving?** Then judge by that
+ *     alone: `<=` ours means we now read what it was serving, so the finding is
+ *     spent. `>` ours means we still cannot, and the message stays true and
+ *     actionable ("publishes 4, this build reads 3"). Note this deliberately
+ *     answers the question WITHOUT consulting the writer's version — a record
+ *     saying "server 4" written by a v2 build still applies to this v3 build,
+ *     and clearing it on the writer's age alone would hand a stale v2 cache to
+ *     bare-name routing, which is the mis-billing this module exists to stop.
+ *
+ *  3. **Nothing on the wire to judge** (a body-less 426 records `null` for both
+ *     server fields). Then judge the WRITER: a record from a build that read an
+ *     OLDER contract than we do describes a client that no longer exists, and
+ *     nothing else will ever clear it — the updated user who is offline, or whom
+ *     the server has since started answering, would carry it forever. Strictly
+ *     less than, so the ordinary "same build, still too old" record keeps firing.
+ *
+ * An absent `clientContractVersion` (a record from before that field existed)
+ * falls out of question 3 as "not stale": unknown, so assume nothing. Question 2
+ * is then the only thing that can clear it, which is exactly the pre-existing
+ * behaviour for those records.
+ */
+function isSentinelStale(record: CatalogIncompatibility): boolean {
+  if (
+    typeof record.minimumContractVersion === "number" &&
+    record.minimumContractVersion > SUPPORTED_CONTRACT_VERSION
+  ) {
+    return false;
+  }
+
+  if (record.serverContractVersion !== null) {
+    return record.serverContractVersion <= SUPPORTED_CONTRACT_VERSION;
+  }
+
+  if (typeof record.clientContractVersion === "number") {
+    return record.clientContractVersion < SUPPORTED_CONTRACT_VERSION;
+  }
+
+  return false;
 }
 
 /** Coerce whatever is on disk into a finding. Never throws. */
@@ -260,16 +369,25 @@ function parseSentinelFile(raw: string): CatalogIncompatibility {
     ...(typeof data.minimumContractVersion === "number"
       ? { minimumContractVersion: data.minimumContractVersion }
       : {}),
+    // Carried through only when the file really has it. Defaulting it to
+    // anything would be a lie about which build wrote the record, and
+    // `isSentinelStale` reads a missing field as "unknown" on purpose.
+    ...(typeof data.clientContractVersion === "number"
+      ? { clientContractVersion: data.clientContractVersion }
+      : {}),
   };
 }
 
 /**
  * Forget the finding — the server answered in a contract this build reads.
  *
- * Called on every fully successful refresh, which is what makes the sentinel
- * self-healing: `claudish update` installs a build with a higher
+ * Called on every fully successful refresh, which is one of the two ways the
+ * sentinel heals: `claudish update` installs a build with a higher
  * {@link SUPPORTED_CONTRACT_VERSION}, its first refresh parses cleanly, and the
- * file is gone before the user notices it existed. Never throws.
+ * file is gone before the user notices it existed. That route needs a network
+ * round trip, which is why it is not the only one — {@link readCatalogIncompatibility}
+ * also clears through here the moment the RECORD shows this build has caught up,
+ * offline or not. Never throws.
  *
  * @param path Override the sentinel path. Only tests should pass this.
  */

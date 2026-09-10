@@ -18,6 +18,7 @@
 import { type DiskCacheV2, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
 import {
+  type CatalogIncompatibility,
   catalogIncompatibilityMessage,
   readCatalogIncompatibility,
 } from "../providers/catalog-compatibility.js";
@@ -36,6 +37,12 @@ export type WarmOutcome = "ok" | "warned" | "skipped" | "hard_fail";
 /**
  * Verbatim hard-fail copy from FR-4. Printed when the catalog is missing AND
  * the network refresh failed — claudish cannot route cloud models without it.
+ *
+ * "No cached copy found" is a claim about the disk, so this must never be the
+ * message for a contract mismatch: there a copy exists and is merely unreadable,
+ * the network is fine, and every line below sends the user to debug the wrong
+ * thing. `warmCatalogIfNeeded` checks the sentinel before it can reach here for
+ * exactly that reason — see the guard above `reportFetchFailure`.
  *
  * Trailing newline included so the message reads as one paragraph terminated
  * cleanly when written to stderr.
@@ -219,11 +226,21 @@ function startSpinner(label: string, quiet = false): Spinner {
  *      - else (stale, missing, or forceUpdate=true on fresh) → call
  *        `OpenRouterCatalogResolver.refreshCatalog(8000)`:
  *          - refreshed → print indexed-count line, return "ok".
+ *          - incompatible → contract-mismatch message + return "warned".
  *          - fetch_failed:
+ *              - a sentinel is already recorded → contract-mismatch message +
+ *                return "warned" (the cache state is not what it looks like;
+ *                see the guard at the call to `reportFetchFailure`).
  *              - prior state was "stale"   → WARN + return "warned".
  *              - prior state was "missing" → hard-fail message + return "hard_fail".
  *              - prior state was "fresh"   → treat as "warned" (we still have
  *                the fresh cache; the user explicitly asked to refresh it).
+ *
+ * Only ONE branch here ever returns "hard_fail", and it means one thing: there
+ * is no catalog data on this machine at all and none can be fetched. An
+ * unreadable catalog is a different failure with a different remedy, and it
+ * never exits — routing decides that one per model name, where the explicit
+ * `provider@model` carve-out lives.
  *
  * `--quiet` suppresses the preparing/indexed lines but never WARNINGs or
  * the hard-fail error (Q2 in architecture.md §10).
@@ -249,6 +266,13 @@ export async function warmCatalogIfNeeded(
     opts?.ttlHours ?? Number.parseFloat(process.env.CLAUDISH_CATALOG_TTL_HOURS ?? "24");
   const ttlHours = Number.isFinite(ttlHoursRaw) && ttlHoursRaw > 0 ? ttlHoursRaw : 24;
   const now = opts?.now ?? new Date();
+  // This read is GATED: it returns null while a contract sentinel is set, so
+  // `state` is "missing" for a cache that is sitting right there on disk. Two
+  // consequences, both wanted, and both undone by "simplifying" this to an
+  // ungated read. (1) A sentinel can never take the `fresh` early-return below,
+  // so every launch under one attempts the refresh that would heal it. (2) Every
+  // downstream branch that reasons from `state` has to be sentinel-aware — the
+  // reason `reportFetchFailure` is guarded rather than trusted.
   const cache = readAllModelsCache();
   const state = classifyCatalogState(cache, ttlHours, now);
 
@@ -277,6 +301,24 @@ export async function warmCatalogIfNeeded(
     return "ok";
   }
 
+  return reportUnusableCatalog(outcome, state, cache, now);
+}
+
+/**
+ * The refresh came back with no usable catalog. Decide which failure it was.
+ *
+ * Extracted from `warmCatalogIfNeeded` purely to hold that function at its
+ * pre-existing complexity budget; the branch ORDER is the argument, and it is
+ * "unreadable before unreachable" throughout — an unreadable catalog is the
+ * finding that survives on disk, so it outranks whatever this one refresh did or
+ * did not manage to fetch.
+ */
+function reportUnusableCatalog(
+  outcome: Exclude<RefreshOutcome, { kind: "refreshed" }>,
+  state: ReturnType<typeof classifyCatalogState>,
+  cache: DiskCacheV2 | null,
+  now: Date
+): WarmOutcome {
   // The server answered in a contract this build cannot read. This is NOT a
   // fetch failure and must not fall into the branches below, every one of which
   // says some version of "using cached version" — the cached version is exactly
@@ -289,7 +331,35 @@ export async function warmCatalogIfNeeded(
   // the launcher says it once, plainly, and proceeds; the bare-name path fails
   // loudly per-request in `routeBare` with this same text. Printed regardless of
   // `--quiet`, like every other warning here.
-  if (outcome.kind === "incompatible") return reportIncompatibleCatalog(outcome);
+  if (outcome.kind === "incompatible") {
+    // `refreshCatalog` has already recorded the finding; the fallback only
+    // covers a sentinel whose disk write failed, where the message still has to
+    // name the version the server just reported.
+    return reportIncompatibleCatalog(
+      readCatalogIncompatibility() ?? {
+        detectedAt: new Date().toISOString(),
+        serverContractVersion: outcome.serverContractVersion,
+      }
+    );
+  }
+
+  // The refresh never got an answer — offline, DNS, a corporate proxy, or just
+  // slower than the 8s budget. Before classifying that against the cache, ask
+  // whether an EARLIER run already recorded a contract mismatch, because if it
+  // did, `state` is a lie: `readAllModelsCache()` refuses to hand out a cache
+  // while the sentinel is set, so a present-but-unreadable catalog classifies as
+  // "missing" and `reportFetchFailure` would hard-fail with "no cached copy
+  // found" — false, unactionable, and pointing at the network when the remedy is
+  // `claudish update`.
+  //
+  // Exiting is wrong on its own terms too. `hard_fail` ends the launch before
+  // routing runs, so an explicit `gk@grok-4` dies with it — and that spec names
+  // its own provider, infers no subscription and substitutes nothing, so there
+  // is nothing to protect it from. Deciding per name is the routing gate's job
+  // and it already does it: `routeBare` throws, `routeExplicit` proceeds. The
+  // launcher's job is to say so once, and get out of the way.
+  const recorded = readCatalogIncompatibility();
+  if (recorded !== null) return reportIncompatibleCatalog(recorded);
 
   return reportFetchFailure(state, cache, now);
 }
@@ -304,15 +374,14 @@ export async function warmCatalogIfNeeded(
  * launcher therefore says it once, plainly, and proceeds; the bare-name path
  * fails loudly per request in `routeBare` with this same text.
  *
+ * Both callers reach this with the RECORD rather than the refresh outcome, so
+ * the two paths in — the server answered in a contract we cannot read, and a
+ * previous run already found that out — print the identical text. The second is
+ * the common one after a cutover: most launches never get an answer at all.
+ *
  * Printed regardless of `--quiet`, like every other warning in this file.
  */
-function reportIncompatibleCatalog(
-  outcome: Extract<RefreshOutcome, { kind: "incompatible" }>
-): WarmOutcome {
-  const recorded = readCatalogIncompatibility() ?? {
-    detectedAt: new Date().toISOString(),
-    serverContractVersion: outcome.serverContractVersion,
-  };
+function reportIncompatibleCatalog(recorded: CatalogIncompatibility): WarmOutcome {
   process.stderr.write(`${catalogIncompatibilityMessage(recorded)}\n`);
   return "warned";
 }
@@ -321,10 +390,15 @@ function reportIncompatibleCatalog(
  * The fetch-failed decision tree, keyed on what was already on disk.
  *
  * Split out of `warmCatalogIfNeeded` unchanged. Every branch here ends in some
- * form of "using cached version", which is what makes it the wrong home for a
- * contract mismatch: there, the cached version is precisely what stopped being
- * usable. Keeping the two apart is the whole reason `incompatible` is not a
- * `fetch_failed` variant.
+ * form of "using cached version" or "no cached copy found", which is what makes
+ * it the wrong home for a contract mismatch: there, the cached version is
+ * precisely what stopped being usable while still sitting on disk. Keeping the
+ * two apart is the whole reason `incompatible` is not a `fetch_failed` variant.
+ *
+ * PRECONDITION, and the caller enforces it: no sentinel is set. `state` is
+ * computed from the GATED `readAllModelsCache()`, so under a sentinel it reads
+ * "missing" for a cache that exists — every branch below would then be
+ * describing a different failure than the one that happened.
  */
 function reportFetchFailure(
   state: ReturnType<typeof classifyCatalogState>,
