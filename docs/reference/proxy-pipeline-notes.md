@@ -156,3 +156,11 @@ Use the patient overload budget (5/10/20/40/80/150 seconds plus jitter), not the
 used for isolated `server_error`. If all six attempts fail, the parser still emits a complete terminal
 Anthropic stream with the API error; it must never leave the client hanging. Regression coverage lives
 in `openai-responses-sse.test.ts` for both recovery and bounded exhaustion.
+
+A rejected `reader.read()` is a separate failure channel from a provider SSE `error` event. A socket
+close before the first client-visible text or tool block uses the fast transparent retry budget
+(1/3 seconds plus jitter). Once a block has been emitted, retrying could duplicate text or execute a
+tool twice, so the parser preserves partial output and emits a friendly terminal interruption with
+`message_stop` instead. Exhausted retries terminate the same way. Runtime-specific diagnostics such
+as Bun's `pass verbose: true` advice remain in proxy logs and never become conversation content. This
+does not add a whole-stream timeout: healthy long responses remain unrestricted after headers.
