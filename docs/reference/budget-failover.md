@@ -62,6 +62,20 @@ weekly quota; DeepSeek PAYG fills GLM's holes. Modeling the cascade as a walk me
 end-of-week state (GLM down 3-4h, PAYG holding everyone for ~1h until the GLM reset) needs no new
 routing: each step simply walls in sequence.
 
+## Pin the PAYG step to a rolling alias, not a versioned id (2026-09-10)
+
+A versioned id pinned in a cascade never updates itself: a new provider build arrives and the step
+keeps serving the old one until an operator edits the env and recreates. DeepSeek PAYG exposes
+`deepseek-flash` as a **rolling alias** alongside versioned ids — and its `/models` listing is
+incomplete: versioned ids it does not list still serve (probe before trusting either direction).
+Pinning the final PAYG step to the alias (`ds@deepseek-flash`, hub po-2025 since 2026-09-10) adopts
+each new Flash release **the moment the provider rolls the alias**, no nudge. Trade-off: an alias
+roll is unreviewed — after any provider release, check which build the alias actually serves.
+Subscription steps (`qwen-token-plan@deepseek-v4-flash-0731`) stay version-pinned because plans
+publish versioned builds only: those DO need the manual env-edit + drained recreate. When probing
+an id one-shot (`stream:false`), give it `max_tokens ≥ 64` — the thinking block consumes the budget
+first and a low cap returns empty text, which reads like a failure but is not.
+
 ## Environment, per step
 
 All `>`-separated fields are position-preserving against the step list.
