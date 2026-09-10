@@ -166,6 +166,12 @@ export function createResponsesStreamHandler(
     "internal_error",
     "temporarily_unavailable",
     "overloaded_error",
+    // invalid_prompt is OpenAI's usage-policy moderation flag and it is
+    // probabilistic: the identical prompt usually passes a plain retry
+    // (2026-09-10 02:10Z: a single flag on the opus cascade's cx@gpt-5.6-sol
+    // step killed the session turn). A genuinely malformed prompt burns the
+    // same two fast attempts (~4s) and then surfaces identically.
+    "invalid_prompt",
   ]);
 
   // Track function calls being streamed
