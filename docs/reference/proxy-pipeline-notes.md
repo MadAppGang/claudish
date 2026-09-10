@@ -141,3 +141,18 @@ Measured the same day: Mistral's `zai-glm-5-2` emits **no** reasoning traces at 
 blocks, 0 `reasoning_content` in its SSE) — it reasons in plain text inside the answer. So nothing is
 lost by stripping, and that step is `degraded`, not `lateral`: a non-thinking GLM 5.2 standing in for
 a thinking nominal.
+
+---
+
+## Responses overload after `response.created`
+
+The OpenAI Responses backend can acknowledge a request with `response.created` and then emit
+`server_is_overloaded` before any text or tool block. This shape bypasses the start-of-stream peek:
+`response.created` deliberately classifies the stream as healthy because a later error may follow
+client-visible output. It must instead be retried inside `openai-responses-sse.ts`, where the parser
+can prove that `nextBlockIndex === 0` and therefore reissue the request without duplicating output.
+
+Use the patient overload budget (5/10/20/40/80/150 seconds plus jitter), not the two quick retries
+used for isolated `server_error`. If all six attempts fail, the parser still emits a complete terminal
+Anthropic stream with the API error; it must never leave the client hanging. Regression coverage lives
+in `openai-responses-sse.test.ts` for both recovery and bounded exhaustion.

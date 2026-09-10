@@ -71,8 +71,8 @@ export function createResponsesStreamHandler(
      * pings). Returns null / throws → the original error is surfaced as before.
      */
     retryUpstream?: () => Promise<Response | null>;
-    /** Backoff before each transparent-retry attempt (tests pass [1,1]). */
-    retryBackoffMs?: [number, number];
+    /** Backoff before each transparent-retry attempt (tests inject millisecond delays). */
+    retryBackoffMs?: readonly number[];
   }
 ): Response {
   let reader = response.body?.getReader();
@@ -115,12 +115,18 @@ export function createResponsesStreamHandler(
   let totalBytes = 0;
   // Transparent-retry state: bounded, and only while nothing is client-visible.
   let retryAttempts = 0;
-  const MAX_TRANSPARENT_RETRIES = 2;
+  const FAST_RETRY_BACKOFF_MS = [1_000, 3_000];
+  // Match the patient admission-overload budget in ComposedHandler. The Responses
+  // backend may emit response.created before rejecting with server_is_overloaded,
+  // which makes the start peek classify the stream as healthy. Five coordinators
+  // hit that exact gap within five minutes on 2026-09-10.
+  const OVERLOAD_RETRY_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 80_000, 150_000];
   // server_error = the observed OpenAI transient (2026-09-02: 10 hits in 3h,
   // each one killing an agent turn). Deterministic codes are excluded — a
   // retry would fail identically and just burn the attempt.
   const RETRYABLE_ERROR_CODES = new Set([
     "server_error",
+    "server_is_overloaded",
     "internal_error",
     "temporarily_unavailable",
     "overloaded_error",
@@ -325,19 +331,25 @@ export function createResponsesStreamHandler(
                 // context. Safe ONLY while zero content blocks were emitted
                 // (nextBlockIndex === 0, no open text block, no tool calls):
                 // past that, a retry would duplicate client-visible content.
+                const retryBackoff =
+                  errCode === "server_is_overloaded" || errCode === "overloaded_error"
+                    ? OVERLOAD_RETRY_BACKOFF_MS
+                    : FAST_RETRY_BACKOFF_MS;
                 if (
                   opts.retryUpstream &&
-                  retryAttempts < MAX_TRANSPARENT_RETRIES &&
+                  retryAttempts < retryBackoff.length &&
                   RETRYABLE_ERROR_CODES.has(errCode) &&
                   nextBlockIndex === 0 &&
                   textBlockIndex === null &&
                   functionCalls.size === 0
                 ) {
                   retryAttempts++;
+                  const configuredBackoff = opts.retryBackoffMs?.[retryAttempts - 1];
                   const backoffMs =
-                    opts.retryBackoffMs?.[retryAttempts - 1] ?? (retryAttempts === 1 ? 1_000 : 3_000);
+                    configuredBackoff ??
+                    retryBackoff[retryAttempts - 1] + Math.floor(Math.random() * 1_000);
                   log(
-                    `[ResponsesSSE] ${errCode} before any client-visible block — transparent retry ${retryAttempts}/${MAX_TRANSPARENT_RETRIES} in ${backoffMs}ms (reqN=${reqN})`,
+                    `[ResponsesSSE] ${errCode} before any client-visible block — transparent retry ${retryAttempts}/${retryBackoff.length} in ${backoffMs}ms (reqN=${reqN})`,
                     true
                   );
                   await new Promise((r) => setTimeout(r, backoffMs));

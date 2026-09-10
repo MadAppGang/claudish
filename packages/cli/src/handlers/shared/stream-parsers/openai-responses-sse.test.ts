@@ -227,14 +227,15 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
 
   async function runWithRetry(
     events: Array<Record<string, unknown>>,
-    retryUpstream: () => Promise<Response | null>
+    retryUpstream: () => Promise<Response | null>,
+    retryBackoffMs: readonly number[] = [1, 1]
   ) {
     let output = "";
     const lines = await captureStdout(() => {
       const result = createResponsesStreamHandler(mockContext(), sseResponse(events), {
         modelName: "gpt-5.6-sol",
         retryUpstream,
-        retryBackoffMs: [1, 1],
+        retryBackoffMs,
       }) as Response;
       return result.body?.pipeTo(
         new WritableStream({
@@ -264,6 +265,53 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
     // The client saw the RETRIED stream, not the error.
     expect(output).toContain("recovered");
     expect(output).not.toContain("[API Error:");
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("server_is_overloaded after response.created but before content is retried transparently", async () => {
+    let calls = 0;
+    const { lines, output } = await runWithRetry(
+      [
+        { type: "response.created", response: { id: "resp_overloaded" } },
+        {
+          type: "error",
+          code: "server_is_overloaded",
+          message: "Our servers are currently overloaded. Please try again later.",
+        },
+      ],
+      async () => {
+        calls++;
+        return sseResponse([
+          { type: "response.output_text.delta", delta: "recovered from overload" },
+          { type: "response.completed", response: { usage: { input_tokens: 9, output_tokens: 4 } } },
+        ]);
+      }
+    );
+    expect(calls).toBe(1);
+    expect(lines.some((l) => l.includes("server_is_overloaded before any client-visible block"))).toBe(true);
+    expect(output).toContain("recovered from overload");
+    expect(output).not.toContain("[API Error:");
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("persistent server_is_overloaded uses the six-attempt patient budget", async () => {
+    let calls = 0;
+    const overload = {
+      type: "error",
+      code: "server_is_overloaded",
+      message: "Our servers are currently overloaded. Please try again later.",
+    };
+    const { lines, output } = await runWithRetry(
+      [{ type: "response.created", response: { id: "resp_overloaded" } }, overload],
+      async () => {
+        calls++;
+        return sseResponse([{ type: "response.created", response: { id: `resp_retry_${calls}` } }, overload]);
+      },
+      [1, 1, 1, 1, 1, 1]
+    );
+    expect(calls).toBe(6);
+    expect(lines.some((l) => l.includes("transparent retry 6/6"))).toBe(true);
+    expect(output).toContain("[API Error: server_is_overloaded");
     expect(output).toContain("event: message_stop");
   });
 
