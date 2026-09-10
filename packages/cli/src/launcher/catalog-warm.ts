@@ -17,6 +17,10 @@
 
 import { type DiskCacheV2, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
+import {
+  catalogIncompatibilityMessage,
+  readCatalogIncompatibility,
+} from "../providers/catalog-compatibility.js";
 import type { ClaudishConfig } from "../types.js";
 import { VERSION } from "../version.js";
 
@@ -273,7 +277,60 @@ export async function warmCatalogIfNeeded(
     return "ok";
   }
 
-  // Fetch failed. Decide based on prior cache state.
+  // The server answered in a contract this build cannot read. This is NOT a
+  // fetch failure and must not fall into the branches below, every one of which
+  // says some version of "using cached version" — the cached version is exactly
+  // what `readAllModelsCache` has just stopped handing out, so that line would
+  // be false at the moment it matters most.
+  //
+  // "warned", not "hard_fail", and the distinction is the point: hard_fail exits
+  // the CLI, which would strand a user running an explicit `gk@grok-code-fast`.
+  // That spec names its own provider, infers no subscription, and is safe. So
+  // the launcher says it once, plainly, and proceeds; the bare-name path fails
+  // loudly per-request in `routeBare` with this same text. Printed regardless of
+  // `--quiet`, like every other warning here.
+  if (outcome.kind === "incompatible") return reportIncompatibleCatalog(outcome);
+
+  return reportFetchFailure(state, cache, now);
+}
+
+/**
+ * Announce a catalog this build cannot read, and let the launch proceed.
+ *
+ * "warned", not "hard_fail", and the distinction is the point: hard_fail exits
+ * the CLI, which would strand a user running an explicit `gk@grok-code-fast`.
+ * That spec names its own provider, so claudish infers no subscription and
+ * substitutes nothing — there is no mis-billing to protect them from. The
+ * launcher therefore says it once, plainly, and proceeds; the bare-name path
+ * fails loudly per request in `routeBare` with this same text.
+ *
+ * Printed regardless of `--quiet`, like every other warning in this file.
+ */
+function reportIncompatibleCatalog(
+  outcome: Extract<RefreshOutcome, { kind: "incompatible" }>
+): WarmOutcome {
+  const recorded = readCatalogIncompatibility() ?? {
+    detectedAt: new Date().toISOString(),
+    serverContractVersion: outcome.serverContractVersion,
+  };
+  process.stderr.write(`${catalogIncompatibilityMessage(recorded)}\n`);
+  return "warned";
+}
+
+/**
+ * The fetch-failed decision tree, keyed on what was already on disk.
+ *
+ * Split out of `warmCatalogIfNeeded` unchanged. Every branch here ends in some
+ * form of "using cached version", which is what makes it the wrong home for a
+ * contract mismatch: there, the cached version is precisely what stopped being
+ * usable. Keeping the two apart is the whole reason `incompatible` is not a
+ * `fetch_failed` variant.
+ */
+function reportFetchFailure(
+  state: ReturnType<typeof classifyCatalogState>,
+  cache: DiskCacheV2 | null,
+  now: Date
+): WarmOutcome {
   if (state === "stale") {
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
     const ageStr = humanizeAge(ageMs);

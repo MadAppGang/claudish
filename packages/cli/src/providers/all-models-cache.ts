@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AggregatorEntry } from "../model-loader.js";
+import { readCatalogIncompatibility } from "./catalog-compatibility.js";
 
 /**
  * Slim catalog entry from the Firebase queryModels?catalog=slim endpoint.
@@ -211,10 +212,36 @@ export const ALL_MODELS_CACHE_PATH = join(homedir(), ".claudish", "all-models.js
  * `{version: 2, lastUpdated, entries: [], models}` so callers can treat both
  * the same way.
  *
+ * Returns null unconditionally once a catalog incompatibility has been
+ * recorded, whatever is on disk. This file is v2 and the reader is v2, so a
+ * parse would SUCCEED — that is the trap. The rows would be structurally valid
+ * and semantically obsolete: `subscriptionPlans` naming plan ids the server has
+ * since redefined, `aggregators` missing whatever v3 added. `adapters/model-catalog.ts`
+ * joins on those fields to decide whether a subscription covers a model, and a
+ * confident wrong "no" there is the mis-billing this whole mechanism exists to
+ * stop. The stale file stays put rather than being deleted — it is the last
+ * known good catalog for the build that CAN read it, and `claudish update`
+ * should not have to re-download it.
+ *
  * @param path Override the cache path. Defaults to `ALL_MODELS_CACHE_PATH`.
  *             Only tests should pass this.
  */
 export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCacheV2 | null {
+  if (readCatalogIncompatibility()) return null;
+  return readCacheFile(path);
+}
+
+/**
+ * The parse, without the contract gate.
+ *
+ * Split out for exactly one caller — {@link writeAllModelsCache}'s anti-clobber
+ * merge, which is asking "what is already in this FILE?", not "may this process
+ * route off it?". Routing them both through the gated read would make a legacy
+ * `models`-only writer silently erase the `entries` catalog whenever a sentinel
+ * was set, destroying the last-known-good file for the updated build that could
+ * still have read it.
+ */
+function readCacheFile(path: string): DiskCacheV2 | null {
   if (!existsSync(path)) return null;
 
   let raw: unknown;
@@ -259,7 +286,8 @@ export function writeAllModelsCache(
   data: Partial<DiskCacheV2>,
   path: string = ALL_MODELS_CACHE_PATH
 ): void {
-  const existing = readAllModelsCache(path);
+  // Ungated on purpose — see readCacheFile.
+  const existing = readCacheFile(path);
 
   const merged: DiskCacheV2 = {
     version: 2,

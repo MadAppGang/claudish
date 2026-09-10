@@ -28,6 +28,7 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
+import { CatalogIncompatibleError } from "./providers/catalog-compatibility.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -63,6 +64,19 @@ class RoutingError extends Error {
     super(message);
     this.name = "RoutingError";
   }
+}
+
+/**
+ * Terminal for the same reason a RoutingError is: no provider can be chosen.
+ *
+ * `routeBare` throws `CatalogIncompatibleError` rather than returning a
+ * `no-route`, so it arrives here as an exception and would otherwise fall into
+ * the 500 branch below — where Claude Code's own retry loop would replay the
+ * request ten times and show "API error · Retrying" instead of the one sentence
+ * that names the fix. Grouped with RoutingError so it renders inline as a 400.
+ */
+function isTerminalRoutingFailure(e: unknown): e is Error {
+  return e instanceof RoutingError || e instanceof CatalogIncompatibleError;
 }
 
 /**
@@ -1060,7 +1074,7 @@ export async function createProxyServer(
       const txt = JSON.stringify(body);
       return c.json({ input_tokens: Math.ceil(txt.length / 4) });
     } catch (e) {
-      if (e instanceof RoutingError) {
+      if (isTerminalRoutingFailure(e)) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
       }
       return c.json(wrapAnthropicError(500, String(e)), 500);
@@ -1113,7 +1127,7 @@ export async function createProxyServer(
       // Routing failures are terminal — surface as a non-retryable 400 so the
       // client shows the real reason (e.g. missing key) instead of looping on
       // "API error · Retrying". Other errors stay 500.
-      if (e instanceof RoutingError) {
+      if (isTerminalRoutingFailure(e)) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
       }
       return c.json(wrapAnthropicError(500, String(e)), 500);

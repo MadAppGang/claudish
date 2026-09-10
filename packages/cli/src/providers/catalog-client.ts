@@ -41,6 +41,14 @@ import {
   readAllModelsCache,
   writeAllModelsCache,
 } from "./all-models-cache.js";
+import {
+  type ContractEnvelope,
+  clearCatalogIncompatibility,
+  isIncompatibleContractVersion,
+  markCatalogIncompatible,
+  parseContractEnvelope,
+  readCatalogIncompatibility,
+} from "./catalog-compatibility.js";
 
 /**
  * Firebase slim catalog endpoint. Override via:
@@ -79,7 +87,16 @@ export type DiskCache = DiskCacheV2;
  */
 export type RefreshOutcome =
   | { kind: "refreshed"; modelCount: number }
-  | { kind: "fetch_failed"; reason: "timeout" | "network" | "http_error" | "empty" };
+  | { kind: "fetch_failed"; reason: "timeout" | "network" | "http_error" | "empty" }
+  /**
+   * The server answered, and its answer is in a contract this build cannot
+   * read. Deliberately NOT a `fetch_failed`: every caller of that variant
+   * degrades to the cached file, which is the exact wrong move here — the cache
+   * is v2 data whose subscription joins the server has since redefined, and
+   * trusting it is what bills a flat-rate user per token. A refresh that ends
+   * here has already written the persistent sentinel.
+   */
+  | { kind: "incompatible"; serverContractVersion: number | null };
 
 /** Result of resolving a user-typed model name for a provider. */
 export interface ModelResolutionResult {
@@ -112,6 +129,28 @@ let _warmPromise: Promise<void> | null = null;
  */
 export function getCatalogEntries(): SlimModelEntry[] | null {
   if (_catalogEntriesForTest !== undefined) return _catalogEntriesForTest;
+
+  // Contract gate — BEFORE `_memCache`, and that ordering is the non-obvious
+  // part. The obvious placement (next to the disk read below) would protect a
+  // fresh process and no one else: a long-running session that warmed its
+  // memory cache MINUTES BEFORE the server cut over keeps answering every
+  // lookup from `_memCache` forever, and the sentinel it just wrote would never
+  // be consulted. That session is the dangerous one — it is mid-conversation,
+  // already routing requests, and its v2 entries are precisely the stale
+  // subscription joins that send a flat-rate user to a metered provider. So the
+  // gate goes ahead of every cache in the chain, and a warm process starts
+  // refusing the moment the incompatibility is recorded.
+  //
+  // `_catalogEntriesForTest` still wins, above: it is an explicit tri-state
+  // override, so a test that hands over entries is stating the catalog's
+  // contents outright and must stay hermetic from the machine's sentinel file.
+  //
+  // Null keeps this function's existing contract — "cold", never "empty
+  // catalog" — so every caller degrades to passthrough exactly as it does for a
+  // missing cache file. The loud half of the response lives in `routing-rules`,
+  // which is where a bare name would otherwise be silently re-billed.
+  if (readCatalogIncompatibility()) return null;
+
   if (_memCache) return _memCache;
 
   const cache = readAllModelsCache();
@@ -397,14 +436,37 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
     return { kind: "fetch_failed", reason };
   }
 
-  if (!response.ok) return { kind: "fetch_failed", reason: "http_error" };
+  // Contract check on the ERROR path, ahead of the generic http_error return —
+  // this is the branch that actually fires at cutover. See
+  // `contractVerdictForError` for why, and for why it tests two things.
+  if (!response.ok) {
+    return (
+      (await contractVerdictForError(response)) ?? { kind: "fetch_failed", reason: "http_error" }
+    );
+  }
 
-  let data: { models: SlimModelEntry[]; total?: number };
+  let data: { models: SlimModelEntry[]; total?: number; contractVersion?: number };
   try {
-    data = (await response.json()) as { models: SlimModelEntry[]; total?: number };
+    data = (await response.json()) as {
+      models: SlimModelEntry[];
+      total?: number;
+      contractVersion?: number;
+    };
   } catch {
     // Got a response but could not read it — network-class, distinct from "empty".
     return { kind: "fetch_failed", reason: "network" };
+  }
+
+  // Contract check on the SUCCESS path. Unreachable while negotiation is by
+  // Accept header (a v3 server 426s this build rather than serving it a v3
+  // 200), and kept anyway because it costs one comparison and covers the day
+  // negotiation changes. Placed HERE — after the parse, before `_memCache` and
+  // before `writeAllModelsCache` — so a v3 body is never written into our v2
+  // cache file, where it would outlive this process as a catalog that looks
+  // present and reads as empty.
+  const bodyEnvelope = parseContractEnvelope(data);
+  if (isIncompatibleContractVersion(bodyEnvelope.contractVersion)) {
+    return recordIncompatibility(bodyEnvelope);
   }
 
   if (!Array.isArray(data.models) || data.models.length === 0) {
@@ -419,8 +481,29 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
     if (id) backwardCompatModels.push({ id });
   }
 
+  // Settle queryPlans BEFORE mutating shared state. The two requests were
+  // issued together and a staged cutover can move them independently, so
+  // queryModels answering in v2 does not prove queryPlans did. A plans 426 is
+  // the more dangerous half of that pair: it is the endpoint that answers
+  // "which plan covers this model", and taking the model refresh as proof of
+  // health would clear the sentinel the plans fetch had just written and put
+  // the user straight back on a metered route.
+  const plansResult = await plansPromise;
+  if (plansResult.incompatible) return plansResult.incompatible;
+  const plans = plansResult.plans;
+
+  // A complete, parseable, non-empty refresh in a contract this build reads is
+  // the only proof that an earlier incompatibility is over. Clearing on that and
+  // not on any 200 is what makes the sentinel self-healing without making it
+  // flappy: every partial outcome — bad body, empty roster, plans mismatch —
+  // returned above and left the flag standing.
+  //
+  // Before the write, not after: `writeAllModelsCache`'s merge is gated on the
+  // flag through `readAllModelsCache`, so clearing afterwards would have this
+  // refresh merge against a catalog it was told to ignore.
+  clearCatalogIncompatibility();
+
   _memCache = data.models;
-  const plans = await plansPromise;
   writeAllModelsCache({
     entries: data.models,
     models: backwardCompatModels,
@@ -434,22 +517,116 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
 }
 
 /**
+ * The contract verdict for a NON-2xx response, or null when the failure is an
+ * ordinary one this build should just retry or report.
+ *
+ * Shared by both endpoints because both negotiate the same version and both go
+ * wrong at the same instant. Two checks, deliberately:
+ *
+ *   - **status 426** is the documented signal, and the one that actually fires
+ *     at cutover. Every v3 endpoint negotiates on
+ *     `Accept: application/vnd.models-index.catalog+json;version=3`, and this
+ *     build sends no Accept header at all, so post-cutover it gets 426 and never
+ *     once sees a v3 200 body. (Not sending that header is deliberate: it
+ *     belongs to the v3 READER work. Asking for a contract we cannot parse would
+ *     be worse than not asking.)
+ *   - **a body `contractVersion` above ours**, because that field rides on every
+ *     v3 error body — 410 and 503 included — so this catches a cutover that
+ *     arrives wearing a status nobody wrote down.
+ *
+ * A body-less 426 still counts: the status alone is enough, and the sentinel
+ * then records `serverContractVersion: null`, which the message renders as "a
+ * newer catalog contract" rather than inventing a number.
+ */
+async function contractVerdictForError(
+  response: Response
+): Promise<Extract<RefreshOutcome, { kind: "incompatible" }> | null> {
+  const envelope = parseContractEnvelope(await readJsonBody(response));
+  if (response.status === 426 || isIncompatibleContractVersion(envelope.contractVersion)) {
+    return recordIncompatibility(envelope);
+  }
+  return null;
+}
+
+/**
+ * Read a response body as JSON, or undefined. Never throws.
+ *
+ * An error response may legitimately carry no body at all, an HTML proxy page,
+ * or a truncated one — none of which is a reason for a catalog refresh to
+ * explode. Returning undefined lets {@link parseContractEnvelope} answer "no
+ * version stated", which is the same as no evidence.
+ */
+async function readJsonBody(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * queryPlans is additive to the model cache. A plan-endpoint failure must not
  * discard a valid model refresh or erase the last-known-good routing join.
+ *
+ * The one failure that is NOT merely additive is a contract mismatch. queryPlans
+ * negotiates the same version as queryModels, so it 426s at the same instant —
+ * and it is the endpoint that answers "which plan covers this model", which is
+ * the exact question a mis-billed user needed answered. It still returns
+ * undefined (the caller must not lose a model refresh over it), but it records
+ * the sentinel on its way out, so whichever of the two requests lands first
+ * protects the process.
  */
-async function fetchSubscriptionPlans(
-  timeoutMs: number
-): Promise<CachedSubscriptionPlan[] | undefined> {
+async function fetchSubscriptionPlans(timeoutMs: number): Promise<PlansFetch> {
   try {
     const response = await fetch(FIREBASE_PLANS_URL, {
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return undefined;
-    const data = (await response.json()) as { plans?: CachedSubscriptionPlan[] };
-    return Array.isArray(data.plans) ? data.plans : undefined;
+    if (!response.ok) {
+      const verdict = await contractVerdictForError(response);
+      return verdict ? { incompatible: verdict } : {};
+    }
+    const data = (await response.json()) as {
+      plans?: CachedSubscriptionPlan[];
+      contractVersion?: number;
+    };
+    const envelope = parseContractEnvelope(data);
+    if (isIncompatibleContractVersion(envelope.contractVersion)) {
+      return { incompatible: recordIncompatibility(envelope) };
+    }
+    return { plans: Array.isArray(data.plans) ? data.plans : undefined };
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/** Outcome of the additive queryPlans fetch. */
+interface PlansFetch {
+  /** The plans, when the endpoint answered with a readable list. */
+  plans?: CachedSubscriptionPlan[];
+  /** Set when THIS fetch recorded a contract incompatibility. */
+  incompatible?: Extract<RefreshOutcome, { kind: "incompatible" }>;
+}
+
+/**
+ * Write the sentinel for a contract mismatch and shape the outcome.
+ *
+ * One helper for all three detection sites — both in `refreshCatalog` and the
+ * one in `fetchSubscriptionPlans` — because they must record IDENTICAL facts.
+ * `minimumContractVersion` is the field a hand-inlined copy drops, since it sits
+ * nested under `error` while `contractVersion` is top-level, and dropping it is
+ * invisible in testing: the guard still fires, the message just stops naming the
+ * version the user needs to reach.
+ */
+function recordIncompatibility(
+  envelope: ContractEnvelope
+): Extract<RefreshOutcome, { kind: "incompatible" }> {
+  markCatalogIncompatible({
+    serverContractVersion: envelope.contractVersion,
+    ...(envelope.minimumContractVersion !== undefined
+      ? { minimumContractVersion: envelope.minimumContractVersion }
+      : {}),
+  });
+  return { kind: "incompatible", serverContractVersion: envelope.contractVersion };
 }
 
 /** Fire-and-forget warm. Failures fall through to the disk-read fallback. */

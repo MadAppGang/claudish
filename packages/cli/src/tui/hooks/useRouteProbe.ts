@@ -11,10 +11,30 @@ const REASON_NATIVE =
   "Native Claude Code auth — not probed — served on Claude Code's own auth, which this process cannot forward";
 import { describeProbeState } from "../../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
-import { type Route, route } from "../../providers/routing-rules.js";
+import { type Route, type RoutePlan, route } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
 import { getProviderDefs, providerIsReady } from "../providers.js";
 import type { ProbeEntry, ProbeMode } from "../types.js";
+
+/**
+ * `route()`, with its one throwing case folded into the plan it already renders.
+ *
+ * A bare name makes `route()` THROW when the catalog contract is one this build
+ * cannot read (providers/routing-rules.ts) — deliberately, so no caller mistakes
+ * "claudish cannot look" for "claudish looked and found nothing". The probe is
+ * the caller that wants exactly that flattening, though: it is a diagnostic
+ * panel, its whole job is to display why a model will not route, and an
+ * unhandled rejection inside an Ink render tree would take the config UI down
+ * instead of answering the question. The message survives verbatim into the
+ * panel's error column via `plan.reason`.
+ */
+async function routeForProbe(model: string): Promise<RoutePlan> {
+  try {
+    return await route(model);
+  } catch (err) {
+    return { kind: "no-route", reason: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 /**
  * Discriminated-union state for the route probe wizard.
@@ -115,7 +135,7 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
       if (native) {
         chain = [native];
       } else {
-        const plan = await route(model);
+        const plan = await routeForProbe(model);
         if (plan.kind !== "ok") {
           setProbeResults([
             {
