@@ -74,7 +74,72 @@ function writeCatalog(entries: SlimModelEntry[], plans: VendorPlan[]): void {
 }
 
 describe("resolveSubscriptionRouting", () => {
-  test("returns unknown when an unrouted sibling makes the provider plan view partial", () => {
+  test("returns serves only when every Qwen plan sharing the route includes the model", () => {
+    writeCatalog(
+      [
+        modelEntry(
+          "qwen3-coder-plus",
+          ["alibaba-token-plan-individual", "alibaba-token-plan-team-edition"],
+          "qwen-cloud",
+          "qwen3-coder-plus-wire"
+        ),
+      ],
+      [
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+      ]
+    );
+
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+      kind: "serves",
+      externalId: "qwen3-coder-plus-wire",
+    });
+  });
+
+  test("returns unknown when only some Qwen plans sharing the route include the model", () => {
+    writeCatalog(
+      [
+        modelEntry(
+          "qwen3-coder-plus",
+          ["alibaba-token-plan-team-edition"],
+          "qwen-cloud",
+          "qwen3-coder-plus-wire"
+        ),
+      ],
+      [
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+      ]
+    );
+
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+      kind: "unknown",
+    });
+  });
+
+  test("preserves not-served when no Qwen plan includes the model and both rosters are catalog-authoritative", () => {
+    writeCatalog(
+      [
+        modelEntry("qwen3-coder-plus", [], "qwen-cloud"),
+        modelEntry("qwen-roster-proof", [
+          "alibaba-token-plan-individual",
+          "alibaba-token-plan-team-edition",
+        ]),
+      ],
+      [
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+      ]
+    );
+
+    // This is not a new destructive verdict: the pre-bc7fd79 implementation
+    // already returned not-served for a complete, catalog-authoritative view.
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+      kind: "not-served",
+    });
+  });
+
+  test("keeps the v9.0.4 guard: a same-vendor plan without routing forces unknown", () => {
     writeCatalog(
       [
         modelEntry("qwen3-coder-plus", [], "qwen-cloud"),
