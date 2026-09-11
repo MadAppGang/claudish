@@ -33,9 +33,16 @@
 # 3. Deploying — a RESTART reloads neither the image nor .env, so shipping a
 #    rebuilt image needs -Recreate (`docker compose up -d`) instead:
 #      . "$PSScriptRoot\claudish-drain.ps1"
-#      Invoke-ClaudishDrainedRestart -Reason "deploy vX.Y" -Recreate
+#      Invoke-ClaudishDrainedRestart -Reason "deploy vX.Y" -Recreate -EnvFile "D:\claudish-shadow\.env"
 #    Same drain, different action. Plain `docker compose up -d` would deploy
 #    the image just as well, but at the cost of every in-flight agent turn.
+#    -EnvFile is REQUIRED alongside -Recreate: docker compose interpolates
+#    every ${VAR:-} in docker-compose.yml from its env file, and the hub keeps
+#    the real one OUTSIDE the compose dir — a bare recreate re-created the
+#    container with every CLAUDISH_FAILOVER_* empty (incident 2026-09-07,
+#    cascades silently gutted). The compose dir's own .env is NOT trusted
+#    either: on the hub it holds only CLAUDISH_PROXY_KEY. The script refuses
+#    the recreate without a passing -EnvFile, before spending a drain.
 #
 # Targets PowerShell 5.1: scheduled tasks run `powershell`, not `pwsh`.
 #
@@ -65,7 +72,10 @@ param(
     [string]$ProxyUrl = "http://localhost:3000",
     [int]$MaxWaitSec = 600,
     [string]$Reason = "manual",
-    [string]$LogPath = "$env:USERPROFILE\.claudish\drain.log"
+    [string]$LogPath = "$env:USERPROFILE\.claudish\drain.log",
+    # Interpolation env file for `docker compose` under -Recreate. See the
+    # header: refusing beats silently recreating with empty ${VAR:-} values.
+    [string]$EnvFile = ""
 )
 
 function Write-DrainLog {
@@ -132,8 +142,33 @@ function Invoke-ClaudishDrainedRestart {
         # only recreate available was an undrained `docker compose up -d` —
         # so every deployment cost every in-flight agent turn.
         [switch]$Recreate,
+        # Interpolation env file for `docker compose up -d` ($Recreate only).
+        [string]$EnvFile = "",
         [string]$ComposeDir = (Split-Path -Parent $PSScriptRoot)
     )
+
+    # --env-file guard (incident 2026-09-07, EISDIR aftermath): docker compose
+    # interpolates every ${VAR:-} in docker-compose.yml from its env file. The
+    # hub's real values live OUTSIDE the compose dir (D:\claudish-shadow\.env),
+    # so a bare `compose up -d` re-creates the container with every
+    # CLAUDISH_FAILOVER_* empty — the cascades silently gutted, startup logs
+    # `configured=0` instead of `configured=3`. Do NOT trust the compose dir's
+    # own .env either: on the hub it holds only CLAUDISH_PROXY_KEY, so an
+    # auto-detected "project .env" recreate would pass the guard and still gut
+    # the cascades. -EnvFile is therefore REQUIRED with -Recreate, checked to
+    # exist. Verified BEFORE the drain so a doomed recreate costs no
+    # 10-minute drain wait.
+    if ($Recreate) {
+        if (-not $EnvFile) {
+            Write-DrainLog "RECREATE REFUSED ($Reason): -Recreate requires -EnvFile — docker compose interpolates every `$\{VAR:-\} from it, and the hub's real file lives outside the compose dir (incident 2026-09-07: bare recreate emptied every CLAUDISH_FAILOVER_*). Pass -EnvFile D:\claudish-shadow\.env on the hub."
+            return $false
+        }
+        if (-not (Test-Path -LiteralPath $EnvFile)) {
+            Write-DrainLog "RECREATE REFUSED ($Reason): -EnvFile '$EnvFile' does not exist — nothing done (a recreate against a wrong or missing env file empties every CLAUDISH_FAILOVER_* variable)"
+            return $false
+        }
+        Write-DrainLog "RECREATE ($Reason): interpolating from -EnvFile '$EnvFile'"
+    }
 
     $active = Get-ClaudishActiveStreams -Url $Url
     if ($null -eq $active) {
@@ -205,7 +240,9 @@ function Invoke-ClaudishDrainedRestart {
     if ($Recreate) {
         Push-Location $ComposeDir
         try {
-            docker compose up -d --timeout 120 2>&1 | ForEach-Object { Write-DrainLog "RECREATE ($Reason): $_" }
+            $envArgs = @()
+            if ($EnvFile) { $envArgs = @("--env-file", $EnvFile) }
+            docker compose @envArgs up -d --timeout 120 2>&1 | ForEach-Object { Write-DrainLog "RECREATE ($Reason): $_" }
             $code = $LASTEXITCODE
         } finally { Pop-Location }
         if ($code -ne 0) {
@@ -237,6 +274,6 @@ function Invoke-ClaudishDrainedRestart {
 
 # Standalone mode: run the restart. Dot-sourced, define the functions only.
 if ($MyInvocation.InvocationName -ne '.') {
-    $ok = Invoke-ClaudishDrainedRestart -Reason $Reason
+    $ok = Invoke-ClaudishDrainedRestart -Reason $Reason -EnvFile $EnvFile
     exit $(if ($ok) { 0 } else { 1 })
 }
