@@ -145,6 +145,24 @@ const RECOVERY_MAX_MS = 60 * 60 * 1000;
 /** Per-step probe backoff: ~10m, 30m, 1h, 4h, then a 24h cap. */
 const BACKOFF_MS = [10 * 60_000, 30 * 60_000, 60 * 60_000, 4 * 60 * 60_000, 24 * 60 * 60_000];
 
+// ─── #91: grace before arming ──────────────────────────────────────────────────
+// One transient refusal used to exile the role for a full AUTO_ARM_TTL_MS and
+// flip the serving model twice (cold prompt cache at both ends). For this fleet
+// a brief stall is cheaper than a silent provider switch, so arming now needs
+// CLAUDISH_FAILOVER_ARM_AFTER consecutive qualifying refusals (1 restores the
+// pre-#91 arm-on-first-refusal), and a 429 naming a SHORT retry delay never
+// counts at all — a wall speaks in hours, a burst says seconds.
+
+/** Consecutive qualifying nominal refusals required before arming. >= 1. */
+let armAfterRefusals = 2;
+/** When > 0, an under-threshold refusal waits this long and retries the NOMINAL
+ * once inside the same request before surfacing the 429. 0 = off (default). */
+let armGraceMs = 0;
+/** A retry-after below this is a burst, never a wall. Tunable, 120 s start. */
+let armRetryAfterCeilingMs = 120_000;
+/** Run of consecutive qualifying nominal refusals, per role (#91 gate). */
+const nominalRefusals = new Map<FailoverRole, { count: number; lastAt: number }>();
+
 function parseDirection(raw: string | undefined): FailoverDirection {
   const v = (raw || "").trim().toLowerCase();
   if (v === "improved" || v === "degraded" || v === "lateral") return v;
@@ -247,6 +265,14 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   recovering.clear();
   pendingRecovery.clear();
   notifiedSessions.clear();
+  nominalRefusals.clear();
+  const parseIntEnv = (raw: string | undefined, fallback: number): number => {
+    const n = Number.parseInt((raw || "").trim(), 10);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  armAfterRefusals = Math.max(1, parseIntEnv(env.CLAUDISH_FAILOVER_ARM_AFTER, 2));
+  armGraceMs = Math.max(0, parseIntEnv(env.CLAUDISH_FAILOVER_ARM_GRACE_MS, 0));
+  armRetryAfterCeilingMs = Math.max(0, parseIntEnv(env.CLAUDISH_FAILOVER_ARM_RETRY_AFTER_CEILING_MS, 120_000));
 
   const activeRaw = (env.CLAUDISH_FAILOVER_ACTIVE || "").trim().toLowerCase();
   if (activeRaw && activeRaw !== "none") {
@@ -479,6 +505,90 @@ export function armFailover(role: FailoverRole, reason: string): boolean {
 }
 
 /**
+ * #91 burst/wall discriminator. A 429 that names a SHORT retry delay — the
+ * `retry-after` header in seconds, or a body-named relative delay ("Resets in
+ * 2 days 13 hr", "try again in 30 seconds") — is a burst: it must not exile the
+ * role for AUTO_ARM_TTL_MS. A wall speaks in hours. Returns the delay in ms
+ * when one is found AND it is below the ceiling (burst), else null (wall, or
+ * no signal — the body predicate decides, exactly as before). Absolute body
+ * resets ("reset at 08-25 22:28:00 UTC", GLM's "for 5 hour … will reset at …")
+ * intentionally do NOT match: those are walls, and parseResetAtFromBody owns
+ * them for the steps.
+ */
+export function burstRetryAfterMs(headerValue: string | null, body: string): number | null {
+  const headerSecs = Number.parseFloat((headerValue || "").trim());
+  if (Number.isFinite(headerSecs) && headerSecs >= 0) {
+    return headerSecs * 1000 < armRetryAfterCeilingMs ? headerSecs * 1000 : null;
+  }
+  const m = /(?:reset|retry|try again)[^.\n]{0,40}?\bin (\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b/i.exec(body || "");
+  if (m) {
+    const unitMs: Record<string, number> = {
+      second: 1000, sec: 1000,
+      minute: 60_000, min: 60_000,
+      hour: 3_600_000, hr: 3_600_000,
+      day: 86_400_000,
+    };
+    const unit = m[2].toLowerCase().replace(/s$/, "");
+    const ms = Number(m[1]) * (unitMs[unit] ?? 0);
+    return ms > 0 && ms < armRetryAfterCeilingMs ? ms : null;
+  }
+  return null;
+}
+
+export type NominalRefusalVerdict =
+  | { outcome: "armed" }
+  | { outcome: "burst"; retryAfterMs: number }
+  | { outcome: "grace"; count: number; needed: number };
+
+/** Test/config seam for the proxy's wait-and-retry (#91 ARM_GRACE_MS). */
+export function getArmGraceMs(): number {
+  return armGraceMs;
+}
+
+/**
+ * #91 gate for a qualifying refusal from the NOMINAL model — the single
+ * decision point the cascade loop consults instead of calling armFailover
+ * directly. Order matters:
+ *  1. already armed (typically a concurrent request armed between this
+ *     request's handler resolution and its 429) → "armed", the loop serves
+ *     from the cascade rather than surfacing a raw 429;
+ *  2. burst (short retry-after) → never counts, never arms;
+ *  3. under CLAUDISH_FAILOVER_ARM_AFTER consecutive refusals → "grace",
+ *     the caller surfaces the 429 (the client ladder retries; a nominal
+ *     success clears the run via onNominalSuccess);
+ *  4. threshold met → armFailover fires, "armed".
+ */
+export function onNominalRefusal(
+  role: FailoverRole,
+  reason: string,
+  retryAfterHeader: string | null,
+  errBody: string
+): NominalRefusalVerdict {
+  if (isFailoverActive(role)) return { outcome: "armed" };
+  const burst = burstRetryAfterMs(retryAfterHeader, errBody);
+  if (burst !== null) {
+    logStderr(
+      `[Failover] BURST ${role} — retry-after ${Math.round(burst / 1000)}s names a short window; not arming (a wall speaks in hours)`
+    );
+    return { outcome: "burst", retryAfterMs: burst };
+  }
+  const rec = nominalRefusals.get(role);
+  const count = (rec?.count || 0) + 1;
+  if (count >= armAfterRefusals) {
+    nominalRefusals.delete(role);
+    if (armFailover(role, reason)) return { outcome: "armed" };
+    // autoArmEnabled off or unconfigured rule: behave like the old call site —
+    // not armed, not active, the caller surfaces the raw response.
+    return { outcome: "grace", count, needed: armAfterRefusals };
+  }
+  nominalRefusals.set(role, { count, lastAt: Date.now() });
+  logStderr(
+    `[Failover] ARM-GRACE ${role} — qualifying refusal ${count}/${armAfterRefusals} (CLAUDISH_FAILOVER_ARM_AFTER); not arming yet`
+  );
+  return { outcome: "grace", count, needed: armAfterRefusals };
+}
+
+/**
  * Does this upstream failure mean "the budget for this role is gone"? Deliberately
  * narrower than FallbackHandler.isRetryableError: a 404/401 is a wiring mistake, and
  * swapping the model would hide it. Only quota/credit exhaustion arms a failover.
@@ -636,6 +746,9 @@ export function isWiringError(status: number, body: string): boolean {
  * pending recovery (its auto-arm just expired), seeds the recovery notice state.
  */
 export function onNominalSuccess(role: FailoverRole): void {
+  // #91: a healthy nominal means a fresh episode — the consecutive-refusal run
+  // that was building toward an arm is void.
+  nominalRefusals.delete(role);
   resetAllStepFailures(role);
   const pending = pendingRecovery.get(role);
   if (pending) {
@@ -896,5 +1009,9 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     recovering.clear();
     pendingRecovery.clear();
     notifiedSessions.clear();
+    nominalRefusals.clear();
+    armAfterRefusals = 2;
+    armGraceMs = 0;
+    armRetryAfterCeilingMs = 120_000;
   }
 }

@@ -40,7 +40,6 @@ import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createH
 import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/server/relay.js";
 import {
   initFailover,
-  armFailover,
   isFailoverActive,
   isQuotaExhaustion,
   isWiringError,
@@ -51,6 +50,8 @@ import {
   parseResetAtFromBody,
   resetStepSuccess,
   onNominalSuccess,
+  onNominalRefusal,
+  getArmGraceMs,
   consumeStreamNotice,
   appendFailoverNoticeToMessage,
   extractSessionKey,
@@ -865,6 +866,8 @@ export async function createProxyServer(
     const role = roleFromModelName(requestedModel);
     const rule = role ? getFailoverRule(role) : undefined;
     const maxAttempts = rule ? rule.steps.length + 1 : 1; // nominal + each step
+    const armGraceMs = getArmGraceMs();
+    let graceRetried = false; // #91: one wait-and-retry on the nominal per request
     let response: Response | undefined;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const handler = await getHandlerForRequest(requestedModel);
@@ -921,14 +924,33 @@ export async function createProxyServer(
       }
       const reason = `HTTP ${response.status} from ${requestedModel}`;
       if (stepIndex === -1) {
-        // Nominal walled: arm the role (reactive, AUTO only). armFailover also
-        // returns false when the role is ALREADY armed — typically a concurrent
-        // request armed it between this request's handler resolution and its 429.
-        // That is success for this request, not a failure to arm: proceeding to
-        // the retry serves it from the cascade instead of surfacing a raw 429
-        // (production 2026-08-20: the disarm-probe window at each 10-min TTL
-        // raced two opus requests; the loser died client-side with "API Error").
-        if (!armFailover(role, reason) && !isFailoverActive(role)) return response;
+        // Nominal walled (#91 gate: burst discrimination + grace before arming —
+        // see onNominalRefusal). "armed" also covers the concurrent-request race
+        // where another request armed the role between this one's handler
+        // resolution and its 429: proceeding to the retry serves it from the
+        // cascade instead of surfacing a raw 429 (production 2026-08-20: the
+        // disarm-probe window at each 10-min TTL raced two opus requests; the
+        // loser died client-side with "API Error").
+        const verdict = onNominalRefusal(role, reason, response.headers.get("retry-after"), errBody);
+        if (verdict.outcome === "burst") {
+          // A short retry-after names a burst: surface it, the client ladder
+          // absorbs it, the role never exiles for a 10-min TTL off a blip.
+          return response;
+        }
+        if (verdict.outcome === "grace") {
+          // Under CLAUDISH_FAILOVER_ARM_AFTER consecutive refusals. With
+          // ARM_GRACE_MS configured, buy the nominal a few seconds of patience
+          // inside this same request (one retry) before surfacing the 429.
+          if (armGraceMs > 0 && !graceRetried) {
+            graceRetried = true;
+            await new Promise((r) => setTimeout(r, armGraceMs));
+            attempt--; // replay the nominal attempt, not a cascade step
+            continue;
+          }
+          return response;
+        }
+        // "armed" — fall through: the retry below re-resolves the handler and
+        // serves from the cascade.
       } else {
         markStepFailed(role, stepIndex, reason, parseResetAtFromBody(errBody));
         if (rule && stepIndex === rule.steps.length - 1) return response; // last step also walled

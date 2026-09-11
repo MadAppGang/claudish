@@ -29,6 +29,9 @@ import {
   parseResetAtFromBody,
   resetStepSuccess,
   onNominalSuccess,
+  onNominalRefusal,
+  burstRetryAfterMs,
+  getArmGraceMs,
   isRecovering,
   consumeStreamNotice,
   extractSessionKey,
@@ -1096,5 +1099,101 @@ describe("auto-arm expiry (self-clearing failover)", () => {
     expect(isFailoverActive("sonnet")).toBe(true);
     clock += 24 * 60 * 60 * 1000;
     expect(isFailoverActive("sonnet")).toBe(true);
+  });
+});
+
+// #91 — damp the nominal/substitute flap: grace before arming, and a short
+// retry-after means burst, not wall. One transient 429 must cost a few seconds
+// of patience, never a 10-minute model exile plus two cold prompt caches.
+describe("#91 — grace before arming + retry-after burst discrimination", () => {
+  // Anthropic weekly-cap wording: passes isQuotaExhaustion via the
+  // "exceed your account" branch — the exact false-positive #91 point 2 targets.
+  const WALL_BODY = JSON.stringify({
+    error: { message: "This request would exceed your account's rate limit. Please try again later." },
+  });
+
+  const AUTO_ON = {
+    ...OPUS_TO_QWEN,
+    CLAUDISH_FAILOVER_AUTO: "1",
+  } as NodeJS.ProcessEnv;
+
+  it("a single isolated qualifying refusal does not arm the role (ARM_AFTER=2 default)", () => {
+    initFailover({ ...AUTO_ON });
+    const v = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    expect(v.outcome).toBe("grace");
+    if (v.outcome === "grace") expect(v.count).toBe(1);
+    expect(isFailoverActive("opus")).toBe(false);
+  });
+
+  it("the second CONSECUTIVE qualifying refusal arms the role", () => {
+    initFailover({ ...AUTO_ON });
+    onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    const v2 = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    expect(v2.outcome).toBe("armed");
+    expect(isFailoverActive("opus")).toBe(true);
+  });
+
+  it("a nominal success voids the refusal run (fresh episode)", () => {
+    initFailover({ ...AUTO_ON });
+    onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    onNominalSuccess("opus");
+    const v2 = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    expect(v2.outcome).toBe("grace");
+    expect(isFailoverActive("opus")).toBe(false);
+  });
+
+  it("ARM_AFTER=1 restores the pre-#91 arm-on-first-refusal", () => {
+    initFailover({ ...AUTO_ON, CLAUDISH_FAILOVER_ARM_AFTER: "1" });
+    const v = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    expect(v.outcome).toBe("armed");
+    expect(isFailoverActive("opus")).toBe(true);
+  });
+
+  it("a 429 carrying a short retry-after never arms, however often it repeats", () => {
+    initFailover({ ...AUTO_ON, CLAUDISH_FAILOVER_ARM_AFTER: "1" });
+    for (let i = 0; i < 3; i++) {
+      const v = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", "30", WALL_BODY);
+      expect(v.outcome).toBe("burst");
+    }
+    expect(isFailoverActive("opus")).toBe(false);
+  });
+
+  it("a retry-after ABOVE the ceiling is a wall signal, not a burst", () => {
+    initFailover({ ...AUTO_ON, CLAUDISH_FAILOVER_ARM_AFTER: "1" });
+    const v = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", "3600", WALL_BODY);
+    expect(v.outcome).toBe("armed");
+  });
+
+  it("burstRetryAfterMs — header seconds, body-named delays, walls stay walls", () => {
+    initFailover({ ...AUTO_ON });
+    // Header forms.
+    expect(burstRetryAfterMs("30", WALL_BODY)).toBe(30_000);
+    expect(burstRetryAfterMs("0", WALL_BODY)).toBe(0);
+    expect(burstRetryAfterMs("119.5", WALL_BODY)).toBe(119_500);
+    expect(burstRetryAfterMs("120", WALL_BODY)).toBe(null); // at ceiling = wall
+    expect(burstRetryAfterMs("3600", WALL_BODY)).toBe(null);
+    expect(burstRetryAfterMs(null, WALL_BODY)).toBe(null); // no signal → body predicate
+    // Body-named RELATIVE delays.
+    expect(burstRetryAfterMs(null, "Rate limited. Please retry in 45 seconds.")).toBe(45_000);
+    expect(burstRetryAfterMs(null, "try again in 1 minute")).toBe(60_000);
+    expect(burstRetryAfterMs(null, "Resets in 2 days 13 hr")).toBe(null); // > ceiling: wall
+    // ABSOLUTE resets are walls by design — parseResetAtFromBody owns them.
+    expect(burstRetryAfterMs(null, "The quota will reset at 08-25 22:28:00 UTC")).toBe(null);
+    expect(burstRetryAfterMs(null, "Usage limit reached for 5 hour. Your limit will reset at 2026-09-11 20:04:03")).toBe(null);
+  });
+
+  it("ARM_GRACE_MS is parsed from env and reset by the test seam", () => {
+    initFailover({ ...AUTO_ON, CLAUDISH_FAILOVER_ARM_GRACE_MS: "2500" });
+    expect(getArmGraceMs()).toBe(2500);
+    resetFailoverForTests();
+    expect(getArmGraceMs()).toBe(0);
+    initFailover({ ...AUTO_ON, CLAUDISH_FAILOVER_ARM_GRACE_MS: "bogus" });
+    expect(getArmGraceMs()).toBe(0); // invalid falls back, never NaN
+  });
+
+  it("an already-armed role reports armed (concurrent-request race preserved)", () => {
+    initFailover({ ...AUTO_ON, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+    const v = onNominalRefusal("opus", "HTTP 429 from claude-opus-5", null, WALL_BODY);
+    expect(v.outcome).toBe("armed");
   });
 });
