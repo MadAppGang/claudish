@@ -17,6 +17,15 @@ Planned-but-unimplemented work — the SEP-1686 channel migration, optional `not
 | Channel wire format, client gating, tracing | `docs/reference/channel-mode.md` |
 | Sidecar deployment runbook | `docs/deployment/relay-sidecar-deployment.md` |
 
+## Fleet-Rollout Verification (hard rule, mandate 2026-09-12)
+
+**A fleet-affecting change declared DONE requires a measured per-consumer verification artifact, produced in the same session** — for every client: where it actually lands, read from the live config/path, not from the change's intent. "The container moved" is not "the fleet migrated". The 2026-09-05 cutover had this and passed — then the ARR flip was silently reverted on 07/09 15:37 (byte-identical restore of the pre-flip `web.config`), and no cycle caught it until the 11/09 hub outage exposed it: 2 779 requests / 263.6M tokens served by the po-203 local cascade (106M on PAYG), invisible to the hub. Consequences, now standing:
+
+- **Surveillance covers the path, not just the traffic**: a cycle checking hub health also checks the entry points that feed it (ARR backend, per-machine base URLs) — a silent revert must be catchable within one cycle, not one outage.
+- **An outage detected is an outage escalated — in the SAME cycle** (DM URGENT + dashboard). "Chronic" thresholds (#80-style counts) never apply to a total outage.
+- **An issue treated halfway is an issue in failure**: no next grain until the current issue's DoD is met or the rescope is explicitly recorded.
+- Rollback of a fleet change goes through the same channel as the change: an unlogged revert of shared infra (IIS web.config, .env, NAT) is an incident, not a fix.
+
 ## Build, Release, Versioning
 
 - `bun run build` (CLI + macOS bridge bundles) · `bun run dev`. Use **bun**, never npm or yarn.

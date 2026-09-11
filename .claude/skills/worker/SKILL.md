@@ -49,6 +49,27 @@ et centralise ; le hub (po-2023) observe ; les machines consomment.
 - **Leak policy** : Opus/Fable/Sonnet = ai-01 uniquement. `traffic-anthropic.ps1` exige
   `pwsh`. Ne jamais grepper `cc_is_subagent` à la main.
 
+## Protocole affermi (mandat user 2026-09-12 — non négociable)
+
+Le user a jugé notre protocole insuffisant après trois échecs réels : migration
+déclarée FAITE sans vérification clients (flip ARR annulé le 07/09, personne ne
+l'a vu), matrice #3574 laissée à 3/7 sans relance, panne hub non escaladée
+pendant la panne. Règles effectives :
+
+1. **Issue à moitié traitée = issue en échec.** Pas de grain suivant tant que
+   le DoD de l'issue en cours n'est pas atteint, ou re-scope explicite enregistré.
+2. **Tout « FAIT » sur un changement flotte exige un artefact de vérification
+   MESURÉ, par consommateur, dans la même session** — où atterrit chaque client,
+   lu sur le chemin vivant (web.config ARR, ANTHROPIC_BASE_URL par machine,
+   docker inspect), pas sur l'intention du changement.
+3. **Une panne détectée se escalade dans LE cycle qui la détecte** (DM URGENT +
+   dashboard). Les seuils « chronique » ne s'appliquent jamais à une panne totale.
+4. **Une vérification doit détecter les REVERTS silencieux** : un chemin
+   critique vérifié hier peut avoir été annulé cette nuit — re-lire l'artefact
+   (ex. backend ARR de models.myia.io), pas seulement la mémoire qu'il fut vérifié.
+5. **Un revert de config partagée non loggé = incident** (GitHub issue +
+   escalade), jamais une anomalie à absorber.
+
 ## Harness partagé
 
 Le harness vit dans CE dépôt (`.claude/`, plus gitignoré en bloc — seuls
