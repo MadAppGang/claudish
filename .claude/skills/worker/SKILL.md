@@ -40,7 +40,7 @@ et centralise ; le hub (po-2023) observe ; les machines consomment.
   via Event Log System AVANT le proxy. Leviers : pagefile, cap WSL2, migration po-2025.
 - **`docker restart` ≠ reload .env/image** : hotfix config/image = `docker compose up -d`.
   Toujours `Invoke-ClaudishDrainedRestart -Recreate` pour déployer.
-- **Failover** : `roleFromModelName()` matche que `opus|sonnet|haiku` → un client qui
+- **Failover** : `roleFromModelName()` matche que `opus|sonnet|haiku|fable` → un client qui
   nomme `glm-5.2` rate la cascade sans `CLAUDISH_FAILOVER_ROLE_MODELS`. Ne pas config-armer
   un failover qui tourne déjà correctement (sonnet ARMED sur Mistral GLM 5.2 = attendu).
 - **Leak policy** : Opus/Fable/Sonnet = ai-01 uniquement. `traffic-anthropic.ps1` exige

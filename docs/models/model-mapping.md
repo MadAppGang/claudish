@@ -6,7 +6,8 @@ Claude Code uses different model "tiers" internally:
 - **Opus** - Complex planning, architecture decisions
 - **Sonnet** - Default coding tasks (most work happens here)
 - **Haiku** - Fast, simple tasks, background operations
-- **Subagent** - When Claude spawns child agents
+- **Fable** - Fast frontier tasks selected explicitly by Claude Code
+- **Subagent** - Generic default for spawned child agents
 
 With model mapping, you can route each tier to a different model.
 
@@ -54,6 +55,7 @@ Set defaults so you don't type flags every time:
 export CLAUDISH_MODEL_OPUS='google@gemini-2.5-pro'      # Explicit provider
 export CLAUDISH_MODEL_SONNET='gpt-4o'                    # Auto-detected → OpenAI
 export CLAUDISH_MODEL_HAIKU='llama-3.1-8b'               # Auto-detected → OllamaCloud
+export CLAUDISH_MODEL_FABLE='cx@gpt-6-astra'              # OpenAI Codex transport; entitlement required
 export CLAUDISH_MODEL_SUBAGENT='llama-3.1-8b'
 
 # For OpenRouter models, use explicit routing
@@ -63,6 +65,7 @@ export CLAUDISH_MODEL_OPUS='openrouter@anthropic/claude-3.5-sonnet'
 export ANTHROPIC_DEFAULT_OPUS_MODEL='gemini-2.5-pro'
 export ANTHROPIC_DEFAULT_SONNET_MODEL='gpt-4o'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL='llama-3.1-8b'
+export ANTHROPIC_DEFAULT_FABLE_MODEL='claude-fable-5-1'
 export CLAUDE_CODE_SUBAGENT_MODEL='llama-3.1-8b'
 ```
 
@@ -71,7 +74,9 @@ Now just run:
 claudish "do something"
 ```
 
-Each tier uses its mapped model automatically.
+Each tier uses its mapped model automatically. Role matching is family-based: a mapping for Fable applies to `claude-fable-5-1` and future `claude-fable-*` IDs without a version-specific routing rule.
+
+Run `claudish --model-freshness` to compare the configured Fable and Astra pins with the active model catalog. The check uses metadata only (no paid inference), reports newer stable base candidates, and never changes configuration automatically. Review compatibility and cost, then promote manually.
 
 ---
 

@@ -70,8 +70,9 @@ import { createRelayState, startUpstreamProber, type RelayState } from "./relay.
 // because its model selector didn't resolve the "Sonnet" alias to glm-5.2 —
 // fell through to the native-anthropic passthrough check (proxy-server.ts isNative)
 // and leaked budget Anthropic credits on the Sonnet route. Loading the profile's
-// opus/sonnet/haiku map activates proxy-server.ts's role remapping:
-//   claude-sonnet-* → glm-5.2 (gc@), claude-haiku-* → qwen, claude-opus-* → claude-opus-4-8 (native, ai-01).
+// opus/sonnet/haiku/fable map activates proxy-server.ts's role remapping:
+//   claude-sonnet-* → glm-5.2 (gc@), claude-haiku-* → qwen, claude-fable-* → Astra,
+//   claude-opus-* → claude-opus-4-8 (native, ai-01).
 // Models already sent by their budgeted name (glm-5.2, qwen3.6-…) are unaffected.
 const profileConfig = loadConfig();
 const modelMap = getModelMapping(profileConfig.defaultProfile);

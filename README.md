@@ -276,7 +276,9 @@ claudish [OPTIONS] <claude-args...>
 | `--model-opus <model>` | | Model for Opus role (planning, complex tasks) | |
 | `--model-sonnet <model>` | | Model for Sonnet role (default coding) | |
 | `--model-haiku <model>` | | Model for Haiku role (fast tasks) | |
+| `--model-fable <model>` | | Model for Fable role (version-independent family mapping) | |
 | `--model-subagent <model>` | | Model for sub-agents (Task tool) | |
+| `--model-freshness` | | Check configured Fable/Astra pins without inference | |
 | `--profile <name>` | `-p` | Named profile for model mapping | Default profile |
 | `--interactive` | `-i` | Interactive mode (persistent session) | Auto when no prompt |
 | `--auto-approve` | `-y` | Skip permission prompts | `false` |
@@ -347,6 +349,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `CLAUDISH_MODEL_OPUS` | Model for Opus role | |
 | `CLAUDISH_MODEL_SONNET` | Model for Sonnet role | |
 | `CLAUDISH_MODEL_HAIKU` | Model for Haiku role | |
+| `CLAUDISH_MODEL_FABLE` | Model for Fable role | |
 | `CLAUDISH_MODEL_SUBAGENT` | Model for sub-agents | |
 | `CLAUDISH_SUMMARIZE_TOOLS` | Summarize tool descriptions (`true`/`1`) | `false` |
 | `CLAUDISH_TELEMETRY` | Override telemetry (`0`/`false`/`off` to disable) | From config |
@@ -363,6 +366,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | Fallback for `CLAUDISH_MODEL_OPUS` |
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Fallback for `CLAUDISH_MODEL_SONNET` |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Fallback for `CLAUDISH_MODEL_HAIKU` |
+| `ANTHROPIC_DEFAULT_FABLE_MODEL` | Fallback for `CLAUDISH_MODEL_FABLE` |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | Fallback for `CLAUDISH_MODEL_SUBAGENT` |
 | `CLAUDE_PATH` | Custom path to Claude Code binary |
 

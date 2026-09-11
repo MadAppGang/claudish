@@ -71,6 +71,12 @@ export CLAUDISH_MODEL_HAIKU='llama-3.1-8b'            # Auto-detected → Ollama
 export CLAUDISH_MODEL_HAIKU='mm@MiniMax-M2'           # MiniMax direct
 ```
 
+### `CLAUDISH_MODEL_FABLE`
+Model for Fable-role requests. Matching is family-based, so new `claude-fable-*` versions keep the same mapping.
+```bash
+export CLAUDISH_MODEL_FABLE='cx@gpt-6-astra'  # Requires Codex OAuth entitlement for this model
+```
+
 ### `CLAUDISH_MODEL_SUBAGENT`
 Model for sub-agents spawned via Task tool.
 ```bash
@@ -85,6 +91,7 @@ Claude Code standard equivalents (used if `CLAUDISH_MODEL_*` not set):
 export ANTHROPIC_DEFAULT_OPUS_MODEL='...'
 export ANTHROPIC_DEFAULT_SONNET_MODEL='...'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL='...'
+export ANTHROPIC_DEFAULT_FABLE_MODEL='...'
 export CLAUDE_CODE_SUBAGENT_MODEL='...'
 ```
 

@@ -4,7 +4,7 @@
  *
  * This is NOT `FallbackHandler` (handlers/fallback-handler.ts). That one swaps
  * *providers* for the *same* model when a provider is unhealthy — a transport
- * concern. This one swaps the *model itself* for a whole role (opus/sonnet/haiku)
+ * concern. This one swaps the *model itself* for a whole role (opus/sonnet/haiku/fable)
  * when the nominal model's budget is exhausted — a subscription concern.
  *
  * Each role has an ORDERED CASCADE of substitutes, `>`-separated in env:
@@ -46,9 +46,14 @@
 
 import { logStderr } from "../logger.js";
 
-export type FailoverRole = "opus" | "sonnet" | "haiku";
+export type FailoverRole = "opus" | "sonnet" | "haiku" | "fable";
 
-export const FAILOVER_ROLES: readonly FailoverRole[] = ["opus", "sonnet", "haiku"] as const;
+export const FAILOVER_ROLES: readonly FailoverRole[] = [
+  "opus",
+  "sonnet",
+  "haiku",
+  "fable",
+] as const;
 
 /** Which way the substitution moves capability, from the agent's point of view. */
 export type FailoverDirection = "degraded" | "improved" | "lateral";
@@ -294,6 +299,7 @@ export function roleFromModelName(model: string | undefined): FailoverRole | nul
   if (m.includes("opus")) return "opus";
   if (m.includes("sonnet")) return "sonnet";
   if (m.includes("haiku")) return "haiku";
+  if (m.includes("fable")) return "fable";
   // Fall back to deployment-specific aliases: a client that names the nominal
   // model directly ("glm-5.2") instead of a role keyword must still be cascaded.
   for (const alias of roleAliases) {

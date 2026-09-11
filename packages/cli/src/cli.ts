@@ -195,6 +195,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
   config.modelHaiku =
     process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
+  config.modelFable =
+    process.env[ENV.CLAUDISH_MODEL_FABLE] || process.env[ENV.ANTHROPIC_DEFAULT_FABLE_MODEL];
   config.modelSubagent =
     process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
 
@@ -252,6 +254,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--model-haiku") {
       const val = args[++i];
       if (val) config.modelHaiku = val;
+    } else if (arg === "--model-fable") {
+      const val = args[++i];
+      if (val) config.modelFable = val;
     } else if (arg === "--model-subagent") {
       const val = args[++i];
       if (val) config.modelSubagent = val;
@@ -392,6 +397,29 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         live: !noProbeFlag,
         timeoutMs: probeTimeoutMs,
       });
+      process.exit(0);
+    } else if (arg === "--model-freshness") {
+      const { checkModelFreshness } = await import("./providers/model-freshness.js");
+      const profileFable = getModelMapping(config.profile).fable;
+      const results = await checkModelFreshness({
+        currentFable: process.env[ENV.ANTHROPIC_DEFAULT_FABLE_MODEL],
+        currentAstra: process.env[ENV.CLAUDISH_MODEL_FABLE] || profileFable,
+        force: true,
+        quiet: true,
+      });
+      if (args.includes("--json")) {
+        console.log(JSON.stringify({ results }, null, 2));
+      } else if (results.length === 0) {
+        console.log("Model freshness is unavailable: configure both Fable and Astra pins.");
+      } else {
+        console.log("\nModel freshness:\n");
+        for (const result of results) {
+          console.log(
+            `  ${result.family.padEnd(7)} ${result.current} -> ${result.latest ?? "unknown"} (${result.status})`
+          );
+        }
+        console.log("\nDetection is read-only; model promotion requires explicit configuration changes.\n");
+      }
       process.exit(0);
     } else if (arg === "--top-models") {
       // Show recommended/top models (curated Firebase catalog)
@@ -584,6 +612,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelOpus ||
     !config.modelSonnet ||
     !config.modelHaiku ||
+    !config.modelFable ||
     !config.modelSubagent
   ) {
     const profileModels = getModelMapping(config.profile);
@@ -597,6 +626,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     }
     if (!config.modelHaiku && profileModels.haiku) {
       config.modelHaiku = profileModels.haiku;
+    }
+    if (!config.modelFable && profileModels.fable) {
+      config.modelFable = profileModels.fable;
     }
     if (!config.modelSubagent && profileModels.subagent) {
       config.modelSubagent = profileModels.subagent;
@@ -1765,7 +1797,9 @@ MODEL MAPPING (per-role override):
   --model-opus <model>     Model for Opus role (planning, complex tasks)
   --model-sonnet <model>   Model for Sonnet role (default coding)
   --model-haiku <model>    Model for Haiku role (fast tasks, background)
+  --model-fable <model>    Model for Fable role (focused frontier tasks)
   --model-subagent <model> Model for sub-agents (Task tool)
+  --model-freshness       Check configured Fable/Astra pins (metadata only, no inference)
 
 CUSTOM MODELS:
   Claudish accepts ANY valid model ID from the Firebase catalog, even if not in --list-models

@@ -160,7 +160,8 @@ if (isMcpMode) {
 async function runCli() {
   const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
-  const { DEFAULT_PORT_RANGE } = await import("./config.js");
+  const { DEFAULT_PORT_RANGE, ENV } = await import("./config.js");
+  const { getModelMapping } = await import("./profile-config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
   const {
     resolveModelProvider,
@@ -322,6 +323,13 @@ async function runCli() {
     // Check for updates (only in interactive mode, skip in JSON output mode)
     if (cliConfig.interactive && !cliConfig.jsonOutput) {
       await checkForUpdates(getVersion(), { quiet: cliConfig.quiet });
+      const { checkModelFreshness } = await import("./providers/model-freshness.js");
+      await checkModelFreshness({
+        currentFable: process.env[ENV.ANTHROPIC_DEFAULT_FABLE_MODEL],
+        currentAstra:
+          process.env[ENV.CLAUDISH_MODEL_FABLE] || getModelMapping(cliConfig.profile).fable,
+        quiet: cliConfig.quiet,
+      });
     }
 
     // Check if Claude Code is installed
@@ -340,6 +348,7 @@ async function runCli() {
       cliConfig.modelOpus ||
       cliConfig.modelSonnet ||
       cliConfig.modelHaiku ||
+      cliConfig.modelFable ||
       cliConfig.modelSubagent;
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
       cliConfig.model = (await selectModel({ freeOnly: cliConfig.freeOnly }).catch(
@@ -360,7 +369,7 @@ async function runCli() {
     // This happens AFTER model selection so we know exactly which provider(s) are being used
     // The centralized ProviderResolver handles all provider detection and key requirements
     if (!cliConfig.monitor) {
-      // When --model is explicitly set, it overrides ALL role mappings (opus/sonnet/haiku/subagent)
+      // When --model is explicitly set, it overrides ALL role mappings (opus/sonnet/haiku/fable/subagent)
       // So we only need to validate the explicit model, not the profile mappings
       const hasExplicitModel = typeof cliConfig.model === "string";
 
@@ -372,6 +381,7 @@ async function runCli() {
             cliConfig.modelOpus,
             cliConfig.modelSonnet,
             cliConfig.modelHaiku,
+            cliConfig.modelFable,
             cliConfig.modelSubagent,
           ];
 
@@ -427,6 +437,7 @@ async function runCli() {
         cliConfig.modelOpus,
         cliConfig.modelSonnet,
         cliConfig.modelHaiku,
+        cliConfig.modelFable,
         cliConfig.modelSubagent,
       ].filter((m): m is string => typeof m === "string");
 
@@ -467,13 +478,14 @@ async function runCli() {
 
     // Start proxy server
     // explicitModel is the default/fallback model
-    // modelMap provides per-role overrides (opus/sonnet/haiku) that take priority
+    // modelMap provides per-role overrides (opus/sonnet/haiku/fable) that take priority
     const explicitModel = typeof cliConfig.model === "string" ? cliConfig.model : undefined;
     // Always pass modelMap - role mappings should work even when a default model is set
     const modelMap = {
       opus: cliConfig.modelOpus,
       sonnet: cliConfig.modelSonnet,
       haiku: cliConfig.modelHaiku,
+      fable: cliConfig.modelFable,
       subagent: cliConfig.modelSubagent,
     };
 
