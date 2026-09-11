@@ -12,12 +12,13 @@ Usage:
 """
 import glob, re, json, os, sys
 from collections import defaultdict
+from datetime import date
 
 CAP = sys.argv[1] if len(sys.argv) > 1 else r"D:\claudish-captures"
-DAYS = sys.argv[2].split(",") if len(sys.argv) > 2 else ["2026-08-24", "2026-08-25", "2026-08-26"]
+DAYS = sys.argv[2].split(",") if len(sys.argv) > 2 else [date.today().isoformat()]
 WS_RE = re.compile(r"Primary working directory:\s*(.+?)[\r\n]")
-FN_REQ = re.compile(r"^req-\d+-r?(\d+)-(2026-08-\d\d)T[\d\-]+Z.*\.json$")
-FN_RESP = re.compile(r"^resp-\d+-r(\d+)-(2026-08-\d\d)T([\d\-]+)-\d+Z-(\w+)-([a-z0-9.\-]+)\.sse$")
+FN_REQ = re.compile(r"^req-\d+-r?(\d+)-(\d{4}-\d{2}-\d{2})T[\d\-]+Z.*\.json$")
+FN_RESP = re.compile(r"^resp-\d+-r(\d+)-(\d{4}-\d{2}-\d{2})T([\d\-]+)-\d+Z-(\w+)-([a-z0-9.\-]+)\.sse$")
 
 def machine_short(m):
     return (m or "?").replace("myia-", "")
@@ -46,12 +47,27 @@ for f in glob.glob(os.path.join(CAP, "req-*.json")):
         continue
     body = j.get("body") or {}
     ws = "(no workspace)"
-    for block in body.get("system") or []:
-        t = block.get("text") or ""
+    sysv = body.get("system")
+    blocks = sysv if isinstance(sysv, list) else ([{"text": sysv}] if isinstance(sysv, str) and sysv else [])
+    for block in blocks:
+        t = (block.get("text") if isinstance(block, dict) else str(block)) or ""
         mm = WS_RE.search(t)
         if mm:
             ws = mm.group(1).strip()
             break
+    # Claude Code puts "Primary working directory" in the position-0 harness block
+    # of the FIRST USER MESSAGE, not in `system` -- search it as a fallback.
+    if ws == "(no workspace)":
+        for m in (body.get("messages") or [])[:2]:
+            c = m.get("content")
+            texts = [c] if isinstance(c, str) else ([b.get("text") or "" for b in c if isinstance(b, dict)] if isinstance(c, list) else [])
+            for t in texts[:3]:
+                mm = WS_RE.search(t or "")
+                if mm:
+                    ws = mm.group(1).strip()
+                    break
+            if ws != "(no workspace)":
+                break
     rec = {
         "machine": machine_short(j.get("machine")),
         "ws": ws.split("\\")[-1] if "\\" in ws else ws.split("/")[-1],
