@@ -129,9 +129,13 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Claude Code sonnet model var | `CLAUDISH_MODEL_SONNET` (lower priority) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Claude Code haiku model var | `CLAUDISH_MODEL_HAIKU` (lower priority) |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | Claude Code subagent model var | `CLAUDISH_MODEL_SUBAGENT` (lower priority) |
-| `ANTHROPIC_API_KEY` | Placeholder to suppress Claude Code API key dialog | (placeholder set by Claudish) |
-| `ANTHROPIC_AUTH_TOKEN` | Placeholder to suppress Claude Code login screen | (placeholder set by Claudish) |
+| `ANTHROPIC_API_KEY` | Non-secret onboarding placeholder in proxy-only mode | (placeholder set by Claudish) |
+| `ANTHROPIC_AUTH_TOKEN` | Non-secret onboarding placeholder in proxy-only mode | (placeholder set by Claudish) |
 | `CLAUDE_PATH` | Custom path to Claude Code binary | `~/.claude/local/claude`, then global `PATH` |
+
+The two placeholder values only satisfy Claude Code's local API/login checks. They do **not** authenticate an upstream provider or the Claudish hub. Hub access is authenticated separately, commonly through `x-proxy-key` in `ANTHROPIC_CUSTOM_HEADERS`; provider credentials remain on the Claudish host.
+
+Claudish applies the placeholders together with `forceLoginMethod: "console"` only when every configured role is proxied to a non-native provider. Monitor mode and any configuration containing a `native-anthropic` mapping preserve the user's Claude/Anthropic authentication instead. An OS-managed policy forcing `forceLoginMethod: "claudeai"` cannot be overridden by a temporary `--settings` file and blocks proxy-only onboarding until an administrator permits Console/API authentication.
 
 **Priority for model selection (highest to lowest)**:
 1. CLI flag (`--model`, `--model-opus`, etc.)

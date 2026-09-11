@@ -24,6 +24,41 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   return models.some((m) => m && parseModelSpec(m).provider === "native-anthropic");
 }
 
+/** True when Claude Code authenticates to Claudish rather than claude.ai. */
+export function isProxyAuthMode(config: ClaudishConfig): boolean {
+  return !config.monitor && !hasNativeAnthropicMapping(config);
+}
+
+function managedSettingsPath(): string {
+  if (isWindows()) {
+    return join(
+      process.env.PROGRAMDATA || "C:\\ProgramData",
+      "ClaudeCode",
+      "managed-settings.json"
+    );
+  }
+  if (process.platform === "darwin") {
+    return "/Library/Application Support/ClaudeCode/managed-settings.json";
+  }
+  return "/etc/claude-code/managed-settings.json";
+}
+
+/**
+ * Managed settings have higher precedence than Claudish's --settings overlay.
+ * Missing, unreadable, or malformed files are treated as absent.
+ */
+export function managedSettingsForcesClaudeAi(
+  readFile: typeof readFileSync = readFileSync
+): boolean {
+  try {
+    const raw = readFile(managedSettingsPath(), "utf-8");
+    const parsed = JSON.parse(raw as string) as { forceLoginMethod?: unknown };
+    return parsed.forceLoginMethod === "claudeai";
+  } catch {
+    return false;
+  }
+}
+
 // Use process.platform directly to ensure runtime evaluation
 // (module-level constants can be inlined by bundlers at build time)
 function isWindows(): boolean {
@@ -148,7 +183,8 @@ process.stdin.on('end', () => {
  */
 function createTempSettingsFile(
   modelDisplay: string,
-  port: string
+  port: string,
+  proxyAuthMode: boolean
 ): { path: string; statusLine: { type: string; command: string; padding: number } } {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
@@ -195,10 +231,20 @@ function createTempSettingsFile(
     padding: 0,
   };
 
-  const settings = { statusLine };
+  const settings = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
 
   writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
   return { path: tempPath, statusLine };
+}
+
+/** Build the CLI-precedence settings overlay for one Claudish session. */
+export function buildClaudishSettingsOverlay(
+  statusLine: { type: string; command: string; padding: number },
+  proxyAuthMode: boolean
+): Record<string, unknown> {
+  const settings: Record<string, unknown> = { statusLine, disableClaudeAiConnectors: true };
+  if (proxyAuthMode) settings.forceLoginMethod = "console";
+  return settings;
 }
 
 /**
@@ -216,7 +262,8 @@ function createTempSettingsFile(
 function mergeUserSettingsIfPresent(
   config: ClaudishConfig,
   tempSettingsPath: string,
-  statusLine: { type: string; command: string; padding: number }
+  statusLine: { type: string; command: string; padding: number },
+  proxyAuthMode: boolean
 ): void {
   const idx = config.claudeArgs.indexOf("--settings");
   if (idx === -1 || !config.claudeArgs[idx + 1]) {
@@ -239,6 +286,12 @@ function mergeUserSettingsIfPresent(
 
     // Inject claudish statusLine into user settings (overrides any existing statusLine)
     userSettings.statusLine = statusLine;
+    if (!("disableClaudeAiConnectors" in userSettings)) {
+      userSettings.disableClaudeAiConnectors = true;
+    }
+    if (proxyAuthMode && !("forceLoginMethod" in userSettings)) {
+      userSettings.forceLoginMethod = "console";
+    }
 
     // Overwrite the temp settings file with the merged result
     writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");
@@ -274,12 +327,29 @@ export async function runClaudeWithProxy(
   // Extract port from proxy URL for token file path
   const portMatch = proxyUrl.match(/:(\d+)/);
   const port = portMatch ? portMatch[1] : "unknown";
+  const proxyAuthMode = isProxyAuthMode(config);
+
+  // Managed settings outrank the CLI --settings overlay, so this policy cannot be bypassed.
+  if (proxyAuthMode && managedSettingsForcesClaudeAi()) {
+    console.error(
+      "[claudish] Error: managed Claude Code settings force the claude.ai login method.\n" +
+        "  Claudish proxy-only mode does not require an Anthropic account, but this managed " +
+        "policy blocks API/proxy authentication and cannot be overridden.\n" +
+        "  Ask your Claude Code administrator to allow console/API authentication."
+    );
+    onCleanup?.();
+    return 1;
+  }
 
   // Create temporary settings file with custom status line for this instance
-  const { path: tempSettingsPath, statusLine } = createTempSettingsFile(modelId, port);
+  const { path: tempSettingsPath, statusLine } = createTempSettingsFile(
+    modelId ?? "default",
+    port,
+    proxyAuthMode
+  );
 
   // Merge user's --settings into our temp settings file if user provided one
-  mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine);
+  mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, proxyAuthMode);
 
   // Build claude arguments
   const claudeArgs: string[] = [];
