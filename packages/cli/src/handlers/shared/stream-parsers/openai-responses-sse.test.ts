@@ -528,4 +528,53 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
     expect(calls).toBe(0);
     expect(output).toContain("[API Error: context_length_exceeded too big]");
   });
+
+  test("invalid_prompt moderation flag is retried transparently (2026-09-10 Sol flag)", async () => {
+    let calls = 0;
+    const { lines, output } = await runWithRetry(
+      [
+        {
+          type: "error",
+          error: {
+            code: "invalid_prompt",
+            message:
+              "Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting",
+          },
+        },
+      ],
+      async () => {
+        calls++;
+        return sseResponse([
+          { type: "response.output_text.delta", delta: "recovered from moderation flag" },
+          { type: "response.completed", response: { usage: { input_tokens: 9, output_tokens: 4 } } },
+        ]);
+      }
+    );
+    expect(calls).toBe(1);
+    expect(
+      lines.some((l) => l.includes("invalid_prompt") && l.includes("transparent retry 1/2"))
+    ).toBe(true);
+    expect(output).toContain("recovered from moderation flag");
+    expect(output).not.toContain("[API Error:");
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("persistent invalid_prompt surfaces after the two fast retries", async () => {
+    let calls = 0;
+    const flag = {
+      type: "error",
+      error: {
+        code: "invalid_prompt",
+        message: "Invalid prompt: your prompt was flagged as potentially violating our usage policy.",
+      },
+    };
+    const { lines, output } = await runWithRetry([flag], async () => {
+      calls++;
+      return sseResponse([flag]);
+    });
+    expect(calls).toBe(2);
+    expect(lines.some((l) => l.includes("transparent retry 2/2"))).toBe(true);
+    expect(output).toContain("[API Error: invalid_prompt");
+    expect(output).toContain("event: message_stop");
+  });
 });
