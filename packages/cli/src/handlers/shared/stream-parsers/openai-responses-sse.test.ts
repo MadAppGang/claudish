@@ -225,16 +225,39 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
     return new Response(stream, { headers: new Headers(SSE_HEADERS) });
   }
 
-  async function runWithRetry(
-    events: Array<Record<string, unknown>>,
-    retryUpstream: () => Promise<Response | null>
+  function failingResponse(events: Array<Record<string, unknown>>, error: Error): Response {
+    const stream = new ReadableStream({
+      start(controller) {
+        if (events.length > 0) {
+          controller.enqueue(new TextEncoder().encode(sseChunks(events)));
+        }
+        setTimeout(() => controller.error(error), 1);
+      },
+    });
+    return new Response(stream, { headers: new Headers(SSE_HEADERS) });
+  }
+
+  function socketCloseError(): Error {
+    const cause = Object.assign(
+      new Error(
+        "The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()"
+      ),
+      { code: "UND_ERR_SOCKET" }
+    );
+    return Object.assign(new TypeError("fetch failed"), { cause });
+  }
+
+  async function runResponseWithRetry(
+    response: Response,
+    retryUpstream: () => Promise<Response | null>,
+    retryBackoffMs: readonly number[] = [1, 1]
   ) {
     let output = "";
     const lines = await captureStdout(() => {
-      const result = createResponsesStreamHandler(mockContext(), sseResponse(events), {
+      const result = createResponsesStreamHandler(mockContext(), response, {
         modelName: "gpt-5.6-sol",
         retryUpstream,
-        retryBackoffMs: [1, 1],
+        retryBackoffMs,
       }) as Response;
       return result.body?.pipeTo(
         new WritableStream({
@@ -245,6 +268,14 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
       );
     });
     return { lines, output };
+  }
+
+  async function runWithRetry(
+    events: Array<Record<string, unknown>>,
+    retryUpstream: () => Promise<Response | null>,
+    retryBackoffMs: readonly number[] = [1, 1]
+  ) {
+    return runResponseWithRetry(sseResponse(events), retryUpstream, retryBackoffMs);
   }
 
   test("server_error with zero blocks emitted is retried transparently", async () => {
@@ -264,6 +295,53 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
     // The client saw the RETRIED stream, not the error.
     expect(output).toContain("recovered");
     expect(output).not.toContain("[API Error:");
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("server_is_overloaded after response.created but before content is retried transparently", async () => {
+    let calls = 0;
+    const { lines, output } = await runWithRetry(
+      [
+        { type: "response.created", response: { id: "resp_overloaded" } },
+        {
+          type: "error",
+          code: "server_is_overloaded",
+          message: "Our servers are currently overloaded. Please try again later.",
+        },
+      ],
+      async () => {
+        calls++;
+        return sseResponse([
+          { type: "response.output_text.delta", delta: "recovered from overload" },
+          { type: "response.completed", response: { usage: { input_tokens: 9, output_tokens: 4 } } },
+        ]);
+      }
+    );
+    expect(calls).toBe(1);
+    expect(lines.some((l) => l.includes("server_is_overloaded before any client-visible block"))).toBe(true);
+    expect(output).toContain("recovered from overload");
+    expect(output).not.toContain("[API Error:");
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("persistent server_is_overloaded uses the six-attempt patient budget", async () => {
+    let calls = 0;
+    const overload = {
+      type: "error",
+      code: "server_is_overloaded",
+      message: "Our servers are currently overloaded. Please try again later.",
+    };
+    const { lines, output } = await runWithRetry(
+      [{ type: "response.created", response: { id: "resp_overloaded" } }, overload],
+      async () => {
+        calls++;
+        return sseResponse([{ type: "response.created", response: { id: `resp_retry_${calls}` } }, overload]);
+      },
+      [1, 1, 1, 1, 1, 1]
+    );
+    expect(calls).toBe(6);
+    expect(lines.some((l) => l.includes("transparent retry 6/6"))).toBe(true);
+    expect(output).toContain("[API Error: server_is_overloaded");
     expect(output).toContain("event: message_stop");
   });
 
@@ -297,6 +375,145 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
     expect(calls).toBe(2);
     expect(lines.some((l) => l.includes("transparent retry 2/2"))).toBe(true);
     expect(output).toContain("[API Error: server_error again]");
+  });
+
+  test("socket close before content is retried transparently through a nested cause", async () => {
+    let calls = 0;
+    const { lines, output } = await runResponseWithRetry(
+      failingResponse([], socketCloseError()),
+      async () => {
+        calls++;
+        return sseResponse([
+          { type: "response.output_text.delta", delta: "recovered after socket close" },
+          { type: "response.completed", response: { usage: { input_tokens: 8, output_tokens: 4 } } },
+        ]);
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(lines.some((line) => line.includes("socket close before any client-visible block"))).toBe(true);
+    expect(output).toContain("recovered after socket close");
+    expect(output).not.toContain("[Stream error:");
+    expect(output).not.toContain("verbose: true");
+    expect(output.match(/event: message_stop/g)?.length).toBe(1);
+  });
+
+  test("ECONNRESET before content uses the fast retry budget", async () => {
+    let calls = 0;
+    const resetError = Object.assign(new Error("read failed"), { code: "ECONNRESET" });
+    const { lines, output } = await runResponseWithRetry(
+      failingResponse([], resetError),
+      async () => {
+        calls++;
+        return sseResponse([
+          { type: "response.output_text.delta", delta: "reset recovered" },
+          { type: "response.completed", response: { usage: { input_tokens: 4, output_tokens: 2 } } },
+        ]);
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(lines.some((line) => line.includes("transparent retry 1/2"))).toBe(true);
+    expect(output).toContain("reset recovered");
+  });
+
+  test("persistent pre-content socket closes exhaust two retries then terminate cleanly", async () => {
+    let calls = 0;
+    const { lines, output } = await runResponseWithRetry(
+      failingResponse([], socketCloseError()),
+      async () => {
+        calls++;
+        return failingResponse([], socketCloseError());
+      }
+    );
+
+    expect(calls).toBe(2);
+    expect(lines.some((line) => line.includes("transparent retry 2/2"))).toBe(true);
+    expect(output).toContain("connection to the model provider was interrupted");
+    expect(output).not.toContain("[Stream error:");
+    expect(output).not.toContain("socket connection was closed unexpectedly");
+    expect(output).not.toContain("verbose: true");
+    expect(output.match(/event: message_stop/g)?.length).toBe(1);
+  });
+
+  test("a failed replacement fetch terminates without an unbounded retry", async () => {
+    let calls = 0;
+    const { output } = await runResponseWithRetry(
+      failingResponse([], socketCloseError()),
+      async () => {
+        calls++;
+        return null;
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(output).toContain("connection to the model provider was interrupted");
+    expect(output).toContain('"stop_reason":"end_turn"');
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("socket close after partial text preserves content and never retries", async () => {
+    let calls = 0;
+    const { output } = await runResponseWithRetry(
+      failingResponse(
+        [{ type: "response.output_text.delta", delta: "partial answer" }],
+        socketCloseError()
+      ),
+      async () => {
+        calls++;
+        return sseResponse([]);
+      }
+    );
+
+    expect(calls).toBe(0);
+    expect(output).toContain("partial answer");
+    expect(output).toContain("connection to the model provider was interrupted");
+    expect(output).not.toContain("[Stream error:");
+    expect(output).not.toContain("verbose: true");
+    const stops = [...output.matchAll(/event: content_block_stop\ndata: ([^\n]*)/g)].map((match) =>
+      JSON.parse(match[1]).index
+    );
+    expect(stops).toEqual([0, 1]);
+    expect(output.match(/event: message_stop/g)?.length).toBe(1);
+  });
+
+  test("socket close during a tool call closes its aliased block exactly once", async () => {
+    let calls = 0;
+    const { output } = await runResponseWithRetry(
+      failingResponse(
+        [
+          {
+            type: "response.output_item.added",
+            item: {
+              type: "function_call",
+              id: "item_1",
+              call_id: "fc_1",
+              name: "read_file",
+              arguments: "",
+            },
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "item_1",
+            delta: '{"path":"partial',
+          },
+        ],
+        socketCloseError()
+      ),
+      async () => {
+        calls++;
+        return sseResponse([]);
+      }
+    );
+
+    expect(calls).toBe(0);
+    const stops = [...output.matchAll(/event: content_block_stop\ndata: ([^\n]*)/g)].map((match) =>
+      JSON.parse(match[1]).index
+    );
+    expect(stops).toEqual([0, 1]);
+    expect(output).toContain('"stop_reason":"end_turn"');
+    expect(output).not.toContain('"stop_reason":"tool_use"');
+    expect(output.match(/event: message_stop/g)?.length).toBe(1);
   });
 
   test("deterministic codes (context overflow) never retry", async () => {

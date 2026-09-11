@@ -54,6 +54,42 @@ export function parseContextOverflow(
   return { used, limit };
 }
 
+type StreamReadError = {
+  isSocketClose: boolean;
+  detail: string;
+};
+
+function classifyStreamReadError(error: unknown): StreamReadError {
+  const details: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  for (let depth = 0; current != null && depth < 4 && !seen.has(current); depth++) {
+    seen.add(current);
+    if (current instanceof Error) {
+      details.push(`${current.name}: ${current.message}`);
+    } else {
+      details.push(String(current));
+    }
+
+    const code =
+      typeof current === "object" && current !== null && "code" in current
+        ? String((current as { code?: unknown }).code || "")
+        : "";
+    if (code) details.push(`code=${code}`);
+    current =
+      typeof current === "object" && current !== null && "cause" in current
+        ? (current as { cause?: unknown }).cause
+        : null;
+  }
+
+  const detail = details.join(" <- ").slice(0, 300);
+  const isSocketClose =
+    /socket.*closed|connection (?:was )?closed|connection reset/i.test(detail) ||
+    /(?:^|\W)(?:ECONNRESET|UND_ERR_SOCKET|ERR_STREAM_PREMATURE_CLOSE)(?:$|\W)/i.test(detail);
+  return { isSocketClose, detail };
+}
+
 export function createResponsesStreamHandler(
   c: Context,
   response: Response,
@@ -71,8 +107,8 @@ export function createResponsesStreamHandler(
      * pings). Returns null / throws → the original error is surfaced as before.
      */
     retryUpstream?: () => Promise<Response | null>;
-    /** Backoff before each transparent-retry attempt (tests pass [1,1]). */
-    retryBackoffMs?: [number, number];
+    /** Backoff before each transparent-retry attempt (tests inject millisecond delays). */
+    retryBackoffMs?: readonly number[];
   }
 ): Response {
   let reader = response.body?.getReader();
@@ -115,12 +151,18 @@ export function createResponsesStreamHandler(
   let totalBytes = 0;
   // Transparent-retry state: bounded, and only while nothing is client-visible.
   let retryAttempts = 0;
-  const MAX_TRANSPARENT_RETRIES = 2;
+  const FAST_RETRY_BACKOFF_MS = [1_000, 3_000];
+  // Match the patient admission-overload budget in ComposedHandler. The Responses
+  // backend may emit response.created before rejecting with server_is_overloaded,
+  // which makes the start peek classify the stream as healthy. Five coordinators
+  // hit that exact gap within five minutes on 2026-09-10.
+  const OVERLOAD_RETRY_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 80_000, 150_000];
   // server_error = the observed OpenAI transient (2026-09-02: 10 hits in 3h,
   // each one killing an agent turn). Deterministic codes are excluded — a
   // retry would fail identically and just burn the attempt.
   const RETRYABLE_ERROR_CODES = new Set([
     "server_error",
+    "server_is_overloaded",
     "internal_error",
     "temporarily_unavailable",
     "overloaded_error",
@@ -131,6 +173,7 @@ export function createResponsesStreamHandler(
     string,
     { name: string; arguments: string; index: number; claudeId?: string }
   > = new Map();
+  const closedFunctionBlocks = new Set<number>();
 
   const stream = new ReadableStream({
     start: async (controller) => {
@@ -138,6 +181,109 @@ export function createResponsesStreamHandler(
         if (!isClosed) {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         }
+      };
+
+      const closeOpenBlocks = () => {
+        if (textBlockIndex !== null) {
+          send("content_block_stop", { type: "content_block_stop", index: textBlockIndex });
+          textBlockIndex = null;
+        }
+        for (const fnCall of new Set(functionCalls.values())) {
+          if (!closedFunctionBlocks.has(fnCall.index)) {
+            send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
+            closedFunctionBlocks.add(fnCall.index);
+          }
+        }
+      };
+
+      const finishInterruptedStream = (error: unknown) => {
+        if (isClosed) return;
+        const { detail } = classifyStreamReadError(error);
+        log(`[ResponsesSSE] Stream error model=${opts.modelName} reqN=${reqN}: ${detail}`, true);
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+
+        try {
+          closeOpenBlocks();
+          const errorIdx = nextBlockIndex++;
+          send("content_block_start", {
+            type: "content_block_start",
+            index: errorIdx,
+            content_block: { type: "text", text: "" },
+          });
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index: errorIdx,
+            delta: {
+              type: "text_delta",
+              text: "\n\n[The connection to the model provider was interrupted. This is usually temporary — please retry.]",
+            },
+          });
+          send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+          send("message_delta", {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          });
+          send("message_stop", { type: "message_stop" });
+        } catch {
+          // The downstream may already be gone. Never let finalization throw.
+        }
+
+        isClosed = true;
+        if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
+      };
+
+      const retryBeforeVisibleContent = async (
+        label: string,
+        retryBackoff: readonly number[]
+      ): Promise<boolean> => {
+        if (
+          !opts.retryUpstream ||
+          retryAttempts >= retryBackoff.length ||
+          nextBlockIndex !== 0 ||
+          textBlockIndex !== null ||
+          functionCalls.size !== 0
+        ) {
+          return false;
+        }
+
+        retryAttempts++;
+        const configuredBackoff = opts.retryBackoffMs?.[retryAttempts - 1];
+        const backoffMs =
+          configuredBackoff ??
+          retryBackoff[retryAttempts - 1] + Math.floor(Math.random() * 1_000);
+        log(
+          `[ResponsesSSE] ${label} before any client-visible block — transparent retry ${retryAttempts}/${retryBackoff.length} in ${backoffMs}ms (reqN=${reqN})`,
+          true
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+
+        let retryResp: Response | null = null;
+        try {
+          retryResp = await opts.retryUpstream();
+        } catch (retryError) {
+          log(
+            `[ResponsesSSE] retry fetch failed (reqN=${reqN}): ${classifyStreamReadError(retryError).detail}`
+          );
+        }
+        if (!retryResp?.ok || !retryResp.body) return false;
+
+        try {
+          await reader.cancel();
+        } catch {
+          // old upstream body — best-effort release
+        }
+        reader = retryResp.body.getReader();
+        buffer = "";
+        return true;
       };
 
       send("message_start", {
@@ -166,7 +312,21 @@ export function createResponsesStreamHandler(
       try {
         // readLoop: a transparent retry swaps the upstream reader and restarts here.
         readLoop: while (true) {
-          const { done, value } = await reader.read();
+          let readResult: ReadableStreamReadResult<Uint8Array>;
+          try {
+            readResult = await reader.read();
+          } catch (readError) {
+            const classified = classifyStreamReadError(readError);
+            if (
+              classified.isSocketClose &&
+              (await retryBeforeVisibleContent("socket close", FAST_RETRY_BACKOFF_MS))
+            ) {
+              continue readLoop;
+            }
+            finishInterruptedStream(readError);
+            return;
+          }
+          const { done, value } = readResult;
           if (done) break;
           lastActivity = Date.now();
 
@@ -279,8 +439,9 @@ export function createResponsesStreamHandler(
                 if (event.item?.type === "function_call") {
                   const callId = event.item.call_id || event.item.id;
                   const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
-                  if (fnCall) {
+                  if (fnCall && !closedFunctionBlocks.has(fnCall.index)) {
                     send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
+                    closedFunctionBlocks.add(fnCall.index);
                   }
                 }
               } else if (event.type === "response.incomplete") {
@@ -325,39 +486,15 @@ export function createResponsesStreamHandler(
                 // context. Safe ONLY while zero content blocks were emitted
                 // (nextBlockIndex === 0, no open text block, no tool calls):
                 // past that, a retry would duplicate client-visible content.
+                const retryBackoff =
+                  errCode === "server_is_overloaded" || errCode === "overloaded_error"
+                    ? OVERLOAD_RETRY_BACKOFF_MS
+                    : FAST_RETRY_BACKOFF_MS;
                 if (
-                  opts.retryUpstream &&
-                  retryAttempts < MAX_TRANSPARENT_RETRIES &&
                   RETRYABLE_ERROR_CODES.has(errCode) &&
-                  nextBlockIndex === 0 &&
-                  textBlockIndex === null &&
-                  functionCalls.size === 0
+                  (await retryBeforeVisibleContent(errCode, retryBackoff))
                 ) {
-                  retryAttempts++;
-                  const backoffMs =
-                    opts.retryBackoffMs?.[retryAttempts - 1] ?? (retryAttempts === 1 ? 1_000 : 3_000);
-                  log(
-                    `[ResponsesSSE] ${errCode} before any client-visible block — transparent retry ${retryAttempts}/${MAX_TRANSPARENT_RETRIES} in ${backoffMs}ms (reqN=${reqN})`,
-                    true
-                  );
-                  await new Promise((r) => setTimeout(r, backoffMs));
-                  let retryResp: Response | null = null;
-                  try {
-                    retryResp = await opts.retryUpstream();
-                  } catch (e) {
-                    log(`[ResponsesSSE] retry fetch failed (reqN=${reqN}): ${(e as Error).message}`);
-                  }
-                  if (retryResp && retryResp.ok && retryResp.body) {
-                    try {
-                      await reader.cancel();
-                    } catch {
-                      // old upstream body — best-effort release
-                    }
-                    reader = retryResp.body.getReader();
-                    buffer = "";
-                    continue readLoop;
-                  }
-                  // Retry unavailable or failed → fall through, surface the error.
+                  continue readLoop;
                 }
 
                 // A context overflow must not be reported as `usage 0+0`: see
@@ -372,13 +509,7 @@ export function createResponsesStreamHandler(
                   );
                 }
 
-                if (textBlockIndex !== null) {
-                  send("content_block_stop", { type: "content_block_stop", index: textBlockIndex });
-                  textBlockIndex = null;
-                }
-                for (const [, fnCall] of functionCalls) {
-                  send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
-                }
+                closeOpenBlocks();
 
                 const errorIdx = nextBlockIndex++;
                 send("content_block_start", {
@@ -448,52 +579,7 @@ export function createResponsesStreamHandler(
         if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
         controller.close();
       } catch (error) {
-        if (pingInterval) {
-          clearInterval(pingInterval);
-          pingInterval = null;
-        }
-        log(
-          `[ResponsesSSE] Stream error model=${opts.modelName} reqN=${reqN}: ${error}`,
-          true
-        );
-
-        if (!isClosed) {
-          try {
-            if (textBlockIndex !== null) {
-              send("content_block_stop", { type: "content_block_stop", index: textBlockIndex });
-              textBlockIndex = null;
-            }
-            for (const [, fnCall] of functionCalls) {
-              send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
-            }
-
-            const errorIdx = nextBlockIndex++;
-            send("content_block_start", {
-              type: "content_block_start",
-              index: errorIdx,
-              content_block: { type: "text", text: "" },
-            });
-            send("content_block_delta", {
-              type: "content_block_delta",
-              index: errorIdx,
-              delta: { type: "text_delta", text: `\n\n[Stream error: ${error}]` },
-            });
-            send("content_block_stop", { type: "content_block_stop", index: errorIdx });
-
-            send("message_delta", {
-              type: "message_delta",
-              delta: { stop_reason: "end_turn", stop_sequence: null },
-              usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-            });
-            send("message_stop", { type: "message_stop" });
-          } catch {}
-
-          isClosed = true;
-          if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
-          try {
-            controller.close();
-          } catch {}
-        }
+        finishInterruptedStream(error);
       }
     },
   });

@@ -141,3 +141,26 @@ Measured the same day: Mistral's `zai-glm-5-2` emits **no** reasoning traces at 
 blocks, 0 `reasoning_content` in its SSE) — it reasons in plain text inside the answer. So nothing is
 lost by stripping, and that step is `degraded`, not `lateral`: a non-thinking GLM 5.2 standing in for
 a thinking nominal.
+
+---
+
+## Responses overload after `response.created`
+
+The OpenAI Responses backend can acknowledge a request with `response.created` and then emit
+`server_is_overloaded` before any text or tool block. This shape bypasses the start-of-stream peek:
+`response.created` deliberately classifies the stream as healthy because a later error may follow
+client-visible output. It must instead be retried inside `openai-responses-sse.ts`, where the parser
+can prove that `nextBlockIndex === 0` and therefore reissue the request without duplicating output.
+
+Use the patient overload budget (5/10/20/40/80/150 seconds plus jitter), not the two quick retries
+used for isolated `server_error`. If all six attempts fail, the parser still emits a complete terminal
+Anthropic stream with the API error; it must never leave the client hanging. Regression coverage lives
+in `openai-responses-sse.test.ts` for both recovery and bounded exhaustion.
+
+A rejected `reader.read()` is a separate failure channel from a provider SSE `error` event. A socket
+close before the first client-visible text or tool block uses the fast transparent retry budget
+(1/3 seconds plus jitter). Once a block has been emitted, retrying could duplicate text or execute a
+tool twice, so the parser preserves partial output and emits a friendly terminal interruption with
+`message_stop` instead. Exhausted retries terminate the same way. Runtime-specific diagnostics such
+as Bun's `pass verbose: true` advice remain in proxy logs and never become conversation content. This
+does not add a whole-stream timeout: healthy long responses remain unrestricted after headers.
