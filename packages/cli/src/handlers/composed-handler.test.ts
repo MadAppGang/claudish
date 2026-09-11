@@ -1,10 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { Hono } from "hono";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import {
   ComposedHandler,
   STRIPPED_IMAGE_PLACEHOLDER,
   stripImageBlocksFromMessages,
 } from "./composed-handler.js";
+import {
+  rememberOverflowCap,
+  getOverflowCap,
+  resetOverflowCapsForTests,
+} from "./shared/context-overflow.js";
 
 // REGRESSION: structural weakness that allowed #102 — ComposedHandler must reject
 // provider-routed strings in the modelName slot so dialect selection cannot be
@@ -20,6 +26,150 @@ function makeFakeTransport(): ProviderTransport {
     getHeaders: () => ({}),
   } as unknown as ProviderTransport;
 }
+
+// ---------------------------------------------------------------------------
+// Context-overflow interception (#79 — incident 2026-09-10/11)
+//
+// A pre-stream 400 "Prompt exceeds max length" (GLM 1261) used to be relayed as
+// a bare error with no `usage`: the client gauge never moved, auto-compact never
+// fired, and `/continue` re-sent the same prompt all night. These pin the full
+// contract: recoverable 200 turn (SSE and JSON), untouched relay for every other
+// error, and the learned-cap pre-flight that skips the doomed upstream call.
+// ---------------------------------------------------------------------------
+
+const GLM_1261 = JSON.stringify({ error: { code: "1261", message: "Prompt exceeds max length" } });
+
+function overflowTransport(): ProviderTransport {
+  return {
+    name: "glm-coding",
+    displayName: "GLM Coding",
+    streamFormat: "openai-sse",
+    getEndpoint: () => "http://upstream.test/v1/chat/completions",
+    getHeaders: () => ({}),
+  } as unknown as ProviderTransport;
+}
+
+function countingFetch(status: number, body: string) {
+  let calls = 0;
+  const impl = (async (_input: any, _init?: any) => {
+    calls++;
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  return { impl, getCalls: () => calls };
+}
+
+async function runHandle(
+  payload: any,
+  fetchImpl: typeof fetch
+): Promise<Response> {
+  const original = (globalThis as any).fetch;
+  (globalThis as any).fetch = fetchImpl;
+  try {
+    const handler = new ComposedHandler(overflowTransport(), "glm-5.3", "glm-5.3", 8462, {});
+    const app = new Hono();
+    app.post("/v1/messages", async (c: any) => handler.handle(c, payload));
+    return await app.request("/v1/messages", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { "content-type": "application/json" },
+    });
+  } finally {
+    (globalThis as any).fetch = original;
+  }
+}
+
+function overflowPayload(stream: boolean, sizeChars = 40_000): any {
+  return {
+    model: "glm-5.3",
+    max_tokens: 1024,
+    stream,
+    messages: [{ role: "user", content: "context payload ".repeat(Math.ceil(sizeChars / 17)) }],
+  };
+}
+
+describe("ComposedHandler — context-overflow interception (#79)", () => {
+  beforeEach(() => resetOverflowCapsForTests());
+  afterEach(() => resetOverflowCapsForTests());
+
+  test("400 GLM 1261 + stream:true → 200 SSE recoverable turn with gauge-advancing usage", async () => {
+    const fx = countingFetch(400, GLM_1261);
+    const res = await runHandle(overflowPayload(true), fx.impl as typeof fetch);
+
+    expect(res.status).toBe(200); // NOT 400 — a replayed error wedges the client
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    expect(fx.getCalls()).toBe(1); // exactly one upstream attempt (first occurrence learns)
+
+    const body = await res.text();
+    const types = [...body.matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
+    expect(types[0]).toBe("message_start");
+    expect(types[types.length - 1]).toBe("message_stop"); // never-hang: terminal frame present
+
+    const delta = body
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice(6)))
+      .find((e: any) => e.type === "message_delta") as any;
+    expect(delta.usage.input_tokens).toBeGreaterThanOrEqual(280_000); // crosses the compaction threshold
+    expect(body).toContain("maximum prompt size");
+  });
+
+  test("same 400 + stream:false → single JSON message with usage ≥ floor", async () => {
+    const fx = countingFetch(400, GLM_1261);
+    const res = await runHandle(overflowPayload(false), fx.impl as typeof fetch);
+
+    expect(res.status).toBe(200);
+    const msg = (await res.json()) as any;
+    expect(msg.type).toBe("message");
+    expect(msg.stop_reason).toBe("end_turn");
+    expect(msg.usage.input_tokens).toBeGreaterThanOrEqual(280_000);
+    expect(msg.content[0].text).toContain("maximum prompt size");
+  });
+
+  test("the learned cap is recorded from the first rejection (provider + resolved model)", async () => {
+    const fx = countingFetch(400, GLM_1261);
+    await runHandle(overflowPayload(false), fx.impl as typeof fetch);
+    expect(getOverflowCap("GLM Coding", "glm-5.3")).toBeGreaterThan(0);
+  });
+
+  test("second oversized request ≥ learned cap → NO upstream call, direct recovery", async () => {
+    rememberOverflowCap("GLM Coding", "glm-5.3", 1_000); // tiny cap → any payload trips it
+    const fx = countingFetch(400, GLM_1261);
+    const res = await runHandle(overflowPayload(true), fx.impl as typeof fetch);
+
+    expect(fx.getCalls()).toBe(0); // pre-flight short-circuit: the doomed round-trip is skipped
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    const body = await res.text();
+    expect(body).toContain("message_stop");
+    expect(body).toContain("maximum prompt size");
+  });
+
+  test("request under the learned cap still reaches upstream (cap is a threshold, not a block)", async () => {
+    rememberOverflowCap("GLM Coding", "glm-5.3", 10_000_000); // huge cap → nothing trips it
+    const fx = countingFetch(200, "not relevant — we only assert the call happened");
+    await runHandle(overflowPayload(false, 1_000), fx.impl as typeof fetch);
+    expect(fx.getCalls()).toBe(1);
+  });
+
+  test("400 non-overflow is relayed unchanged as an Anthropic error envelope", async () => {
+    const fx = countingFetch(400, JSON.stringify({ error: { message: "unsupported content type" } }));
+    const res = await runHandle(overflowPayload(false), fx.impl as typeof fetch);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.type).toBe("error");
+    expect(body.error.message).toContain("unsupported content type");
+  });
+
+  test("401 and 404 keep their statuses (wiring mistakes must stay visible)", async () => {
+    const f401 = countingFetch(401, JSON.stringify({ error: { message: "invalid api key" } }));
+    const r401 = await runHandle(overflowPayload(false), f401.impl as typeof fetch);
+    expect(r401.status).toBe(401);
+
+    const f404 = countingFetch(404, JSON.stringify({ error: { message: "model not found" } }));
+    const r404 = await runHandle(overflowPayload(false), f404.impl as typeof fetch);
+    expect(r404.status).toBe(404);
+  });
+});
 
 describe("ComposedHandler — modelName invariant (#102 structural fix)", () => {
   test("throws when modelName contains '@' (routed string leaked into bare slot)", () => {
