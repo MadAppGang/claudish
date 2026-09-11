@@ -112,30 +112,10 @@ export function resetOverflowCapsForTests(): void {
   overflowCaps.clear();
 }
 
-/**
- * Floor applied to the REPORTED `usage.input_tokens`. The real rejected size can sit
- * below the client's compaction threshold yet above the provider cap (the exact wedge
- * of the incident): reporting the raw size would leave the gauge under the threshold
- * and the session would keep looping. The floor guarantees the gauge crosses it.
- * Env `CLAUDISH_OVERFLOW_REPORT_FLOOR` (default 280 000 — the fleet compaction
- * threshold); `0` disables the floor and reports the raw numbers.
- */
-export function overflowReportFloor(): number {
-  const raw = process.env.CLAUDISH_OVERFLOW_REPORT_FLOOR;
-  if (raw === undefined) return 280_000;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 280_000;
-  return Math.floor(n);
-}
-
-/** The `input_tokens` to report: the largest of body-stated, estimated, floor. */
-export function overflowReportedTokens(
-  used: number | undefined,
-  estimate: number,
-  floor: number
-): number {
-  return Math.max(used ?? 0, estimate, floor);
-}
+// The reported-usage floor lives in its own leaf module: the Responses parser needs
+// it too, and it is the module this one imports — re-exported here so callers keep a
+// single import site.
+export { overflowReportFloor, overflowReportedTokens } from "./overflow-report-floor.js";
 
 // ── Recoverable-turn constructors ─────────────────────────────────────────────
 

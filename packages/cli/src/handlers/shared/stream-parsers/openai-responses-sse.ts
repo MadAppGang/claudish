@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { log, getLogLevel } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
+import { overflowReportedTokens, overflowReportFloor } from "../overflow-report-floor.js";
 
 /**
  * Extract the token counts named by a context-overflow error.
@@ -506,11 +507,19 @@ export function createResponsesStreamHandler(
                 // A context overflow must not be reported as `usage 0+0`: see
                 // parseContextOverflow above — a zero wedges the client's
                 // auto-compact and the session never recovers on its own.
+                //
+                // The provider does not always state the counts. OpenAI's
+                // "…exceeds the context window of this model" names neither the
+                // used count nor the limit (gpt-5.6-sol, 2026-09-11), so
+                // extraction yields nothing — and a truthiness-guarded assignment
+                // then left the report at its 0 initializer, reproducing the very
+                // wedge this branch exists to prevent. The floor bounds the report
+                // from below whatever the body does or does not say.
                 const overflow = parseContextOverflow(errMsg, errCode);
                 if (overflow) {
-                  if (overflow.used) inputTokens = overflow.used;
+                  inputTokens = overflowReportedTokens(overflow.used, 0, overflowReportFloor());
                   process.stdout.write(
-                    `  [resp] responses CONTEXT-OVERFLOW model=${opts.modelName} reqN=${reqN} used=${overflow.used ?? "?"} limit=${overflow.limit ?? "?"}
+                    `  [resp] responses CONTEXT-OVERFLOW model=${opts.modelName} reqN=${reqN} used=${overflow.used ?? "?"} limit=${overflow.limit ?? "?"} reported=${inputTokens}
 `
                   );
                 }

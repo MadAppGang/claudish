@@ -206,6 +206,30 @@ describe("context overflow must not report usage 0+0", () => {
     ]);
     expect(firstMessageDelta(output).usage.input_tokens).toBe(0);
   });
+
+  // Regression 2026-09-11: the two wordings above both STATE numbers. OpenAI's real
+  // count-free wording names neither, so extraction yields nothing — and the
+  // truthiness guard on the assignment left the report at its 0 initializer,
+  // reintroducing the wedge this block exists to prevent. Measured in production:
+  // reqN=2258 at 21:28:57Z and reqN=2541 at 21:35:36Z, same session, same wording,
+  // with the client re-sending the error text as conversation content.
+  const COUNT_FREE_MSG =
+    "Your input exceeds the context window of this model. Please adjust your input and try again.";
+
+  test("the count-free wording matches, yet extracts neither used nor limit", () => {
+    const r = parseContextOverflow(COUNT_FREE_MSG, "context_length_exceeded");
+    expect(r).toBeDefined();
+    expect(r?.used).toBeUndefined();
+    expect(r?.limit).toBeUndefined();
+  });
+
+  test("a count-free overflow is reported at the floor, not 0", async () => {
+    const { output, lines } = await runStreamCollect([
+      { type: "error", error: { code: "context_length_exceeded", message: COUNT_FREE_MSG } },
+    ]);
+    expect(firstMessageDelta(output).usage.input_tokens).toBeGreaterThanOrEqual(280_000);
+    expect(lines.some((l) => l.includes("CONTEXT-OVERFLOW") && l.includes("used=?"))).toBe(true);
+  });
 });
 
 describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () => {
