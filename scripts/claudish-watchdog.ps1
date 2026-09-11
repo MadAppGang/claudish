@@ -15,12 +15,33 @@
 # Install (run as admin):
 #   schtasks /create /tn "ClaudishWatchdog" /tr "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File D:\Dev\claudish\scripts\claudish-watchdog.ps1" /sc minute /mo 15 /ru SYSTEM /rl HIGHEST /f
 #
-# Logs to: C:\Users\jsboi\.claudish\watchdog.log
+# On a machine whose operator is not `jsboi`, append the home to that -File
+# argument:  -File D:\Dev\claudish\scripts\claudish-watchdog.ps1 -ClaudishHome C:\Users\<op>\.claudish
+#
+# Logs to: <ClaudishHome>\watchdog.log
+
+param(
+    # Root of the .claudish directory this watchdog logs and checkpoints into.
+    #
+    # It cannot be derived at runtime: the scheduled task runs as SYSTEM, whose
+    # $env:USERPROFILE is the system profile, where no .claudish exists. So the
+    # install line passes it, and the default is the hub operator's home — which
+    # leaves every existing install byte-identical.
+    [string]$ClaudishHome = "C:\Users\jsboi\.claudish"
+)
 
 $ErrorActionPreference = "Stop"
-# Absolute paths: the scheduled task runs as SYSTEM, whose $env:USERPROFILE is
-# the system profile — the user's .claudish dir would not exist there.
-$LogPath = "C:\Users\jsboi\.claudish\watchdog.log"
+
+# Fail loudly rather than log nowhere. With $ErrorActionPreference = "Stop" an
+# unwritable log path kills this script at its first Add-Content, before it can
+# say why — which on a scheduled task is indistinguishable from "the
+# watchdog is fine and quiet". This one line is the difference between a
+# diagnosable install and a silent one.
+if (-not (Test-Path $ClaudishHome)) {
+    throw "ClaudishHome '$ClaudishHome' does not exist. Pass -ClaudishHome <path> in the scheduled-task command line."
+}
+
+$LogPath = "$ClaudishHome\watchdog.log"
 $ProxyUrl = "http://localhost:3000"
 $ContainerName = "claudish-proxy"
 $StreamTimeoutSec = 90
@@ -37,7 +58,7 @@ $ProactiveRestartHours = 11
 # outage.
 $DrainMaxWaitProactiveSec = 300
 $DrainMaxWaitHangSec = 120
-$StateFile = "C:\Users\jsboi\.claudish\watchdog-state.json"
+$StateFile = "$ClaudishHome\watchdog-state.json"
 $QuietHourStart = 3             # local hour; proactive restarts only in [start,end)
 $QuietHourEnd = 6
 
@@ -214,7 +235,7 @@ function Test-ProxyWithTools {
 # reassigns $LogPath to ...\.claudish\drain.log — silently misdirecting this
 # script's log when run as the user, and fatally (missing dir + Stop) when run
 # by the SYSTEM scheduled task (2026-08-30: exit 1, no log). Re-pin it.
-$LogPath = "C:\Users\jsboi\.claudish\watchdog.log"
+$LogPath = "$ClaudishHome\watchdog.log"
 
 function Get-State {
     if (Test-Path $StateFile) {
