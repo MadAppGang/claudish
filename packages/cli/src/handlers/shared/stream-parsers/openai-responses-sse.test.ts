@@ -6,7 +6,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { createResponsesStreamHandler, parseContextOverflow } from "./openai-responses-sse.js";
+import { __resetCaptureDirMemo } from "../response-capture.js";
 
 const SSE_HEADERS: Record<string, string> = {
   "Content-Type": "text/event-stream",
@@ -49,6 +53,38 @@ async function captureStdout(run: () => Promise<void> | void): Promise<string[]>
   return lines;
 }
 
+/**
+ * Run with response capture pointed at a throwaway dir, then restore. Capture is
+ * OFF by default in this suite (CLAUDISH_CAPTURE_DIR unset -> createResponseCapture
+ * returns NOOP), so every capture assertion has to opt in explicitly — which is
+ * also the honest shape of the contract: the [resp] marker only exists when a
+ * capture dir is configured, exactly like the anthropic/openai/native lanes.
+ */
+async function withCapture<T>(run: (dir: string) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "claudish-resp-cap-"));
+  const prev = process.env.CLAUDISH_CAPTURE_DIR;
+  process.env.CLAUDISH_CAPTURE_DIR = dir;
+  __resetCaptureDirMemo();
+  try {
+    return await run(dir);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDISH_CAPTURE_DIR;
+    else process.env.CLAUDISH_CAPTURE_DIR = prev;
+    __resetCaptureDirMemo();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The single resp-*.sse this run wrote, once the fire-and-forget write lands. */
+async function readCaptureFile(dir: string): Promise<{ name: string; body: string }> {
+  for (let i = 0; i < 40; i++) {
+    const name = readdirSync(dir).find((f) => f.endsWith(".sse"));
+    if (name) return { name, body: readFileSync(join(dir, name), "utf8") };
+    await Bun.sleep(25);
+  }
+  throw new Error(`no resp-*.sse written in ${dir} (contents: ${readdirSync(dir).join(", ")})`);
+}
+
 async function runStream(events: Array<Record<string, unknown>>) {
   const { lines, output } = await runStreamCollect(events);
   return { lines, output };
@@ -81,21 +117,47 @@ async function runStreamCollect(events: Array<Record<string, unknown>>) {
 }
 
 describe("openai-responses-sse instrumentation", () => {
-  test("response.completed emits a [resp] responses marker with usage and events", async () => {
+  test("response.completed writes a resp capture, and the marker carries usage", async () => {
+    await withCapture(async (dir) => {
+      const { lines } = await runStream([
+        { type: "response.output_text.delta", delta: "ok" },
+        {
+          type: "response.completed",
+          response: { usage: { input_tokens: 12, output_tokens: 5 } },
+        },
+      ]);
+
+      const respLine = lines.find((l) => l.startsWith("  [resp] responses"));
+      expect(respLine).toBeDefined();
+      expect(respLine).toContain("model=gpt-5.6-sol");
+      expect(respLine).toContain("closed=true stop=end_turn");
+
+      // The whole point of #90: this lane used to emit a marker and write NO
+      // file, so the corpus had no row for it at all.
+      const { name, body } = await readCaptureFile(dir);
+      expect(name).toMatch(/^resp-\d+-r\d+-.+-responses-gpt-5\.6-sol\.sse$/);
+      expect(body).toContain("parser=responses");
+      expect(body).toContain('"input_tokens":12');
+      // The tap mirrors the bytes the parser actually SENT — the translated
+      // Anthropic stream the client sees. (The upstream `response.completed` is
+      // consumed by the parser and never tapped; asserting on it was the wrong
+      // mental model, caught by running the test.)
+      expect(body).toContain("event: content_block_delta");
+      expect(body).toContain('"text":"ok"');
+      expect(body).toContain("event: message_stop");
+
+      // No premature-termination warning on a clean completed stream.
+      expect(lines.some((l) => l.includes("EOF-WITHOUT-COMPLETION"))).toBe(false);
+    });
+  });
+
+  test("with capture off the lane emits no [resp] marker at all (documented dependency)", async () => {
     const { lines } = await runStream([
       { type: "response.output_text.delta", delta: "ok" },
-      {
-        type: "response.completed",
-        response: { usage: { input_tokens: 12, output_tokens: 5 } },
-      },
+      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
     ]);
-    const respLine = lines.find((l) => l.startsWith("  [resp] responses"));
-    expect(respLine).toBeDefined();
-    expect(respLine).toContain("model=gpt-5.6-sol");
-    expect(respLine).toContain("closed=true stop=end_turn");
-    expect(respLine).toContain("usage=12+5");
-    // No premature-termination warning on a clean completed stream.
-    expect(lines.some((l) => l.includes("EOF-WITHOUT-COMPLETION"))).toBe(false);
+    // Same contract as the other three lanes: the marker IS the capture's.
+    expect(lines.some((l) => l.startsWith("  [resp] "))).toBe(false);
   });
 
   test("early EOF without completion logs EOF-WITHOUT-COMPLETION (previously silent)", async () => {
@@ -607,5 +669,153 @@ describe("transparent retry on early server_error (2026-09-02 Sol crashes)", () 
     expect(lines.some((l) => l.includes("transparent retry 2/2"))).toBe(true);
     expect(output).toContain("[API Error: invalid_prompt");
     expect(output).toContain("event: message_stop");
+  });
+});
+
+describe("#90 — the Sol/Codex lane closes its capture on every exit path", () => {
+  // The marker is now emitted by the capture, at CLOSE. That is the one position
+  // that also fires on a stream that HANGS, where the old completion-only marker
+  // never did — which is why traffic-live.ps1's "NOT closed = HANG SUSPECTS"
+  // count finally covers this lane.
+
+  function sseResponse(events: Array<Record<string, unknown>>): Response {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(sseChunks(events)));
+        controller.close();
+      },
+    });
+    return new Response(stream, { headers: new Headers(SSE_HEADERS) });
+  }
+
+  function failingResponse(events: Array<Record<string, unknown>>, error: Error): Response {
+    const stream = new ReadableStream({
+      start(controller) {
+        if (events.length > 0) {
+          controller.enqueue(new TextEncoder().encode(sseChunks(events)));
+        }
+        setTimeout(() => controller.error(error), 1);
+      },
+    });
+    return new Response(stream, { headers: new Headers(SSE_HEADERS) });
+  }
+
+  function socketCloseError(): Error {
+    const cause = Object.assign(new Error("The socket connection was closed unexpectedly."), {
+      code: "UND_ERR_SOCKET",
+    });
+    return Object.assign(new TypeError("fetch failed"), { cause });
+  }
+
+  async function runResponse(response: Response, retryUpstream?: () => Promise<Response | null>) {
+    let output = "";
+    const lines = await captureStdout(() => {
+      const result = createResponsesStreamHandler(mockContext(), response, {
+        modelName: "gpt-5.6-sol",
+        ...(retryUpstream ? { retryUpstream, retryBackoffMs: [1, 1] as const } : {}),
+      }) as Response;
+      return result.body?.pipeTo(
+        new WritableStream({
+          write(chunk: Uint8Array) {
+            output += new TextDecoder().decode(chunk, { stream: true });
+          },
+        })
+      );
+    });
+    return { lines, output };
+  }
+
+  test("an interrupted stream closes its capture with stop=interrupted", async () => {
+    await withCapture(async (dir) => {
+      // Text already visible -> no retry is safe -> the interrupt is terminal.
+      const { lines } = await runResponse(
+        failingResponse(
+          [{ type: "response.output_text.delta", delta: "partial" }],
+          socketCloseError()
+        )
+      );
+      const respLine = lines.find((l) => l.startsWith("  [resp] responses"));
+      expect(respLine).toBeDefined();
+      expect(respLine).toContain("closed=true stop=interrupted");
+
+      const { body } = await readCaptureFile(dir);
+      expect(body).toContain('"path":"interrupted"');
+      // The partial text the client actually received is IN the capture — that
+      // is what makes an offline replay of a killed turn possible.
+      expect(body).toContain("partial");
+    });
+  });
+
+  test("a deterministic API error closes its capture with path=api-error", async () => {
+    await withCapture(async (dir) => {
+      const { lines } = await runResponse(
+        sseResponse([
+          { type: "error", error: { code: "server_error", message: "boom, not retryable here" } },
+        ])
+      );
+      const respLine = lines.find((l) => l.startsWith("  [resp] responses"));
+      expect(respLine).toBeDefined();
+      const { body } = await readCaptureFile(dir);
+      expect(body).toContain('"path":"api-error"');
+      expect(body).toContain('"error":"server_error"');
+    });
+  });
+
+  test("a context overflow is ONE response, counted once by the capture", async () => {
+    await withCapture(async (dir) => {
+      const { lines } = await runResponse(
+        sseResponse([
+          {
+            type: "error",
+            error: {
+              code: "context_length_exceeded",
+              message: "Your input exceeds the context window of this model.",
+            },
+          },
+        ])
+      );
+      // The relabelled diagnostic keeps the greppable field...
+      expect(lines.some((l) => l.includes("[ResponsesSSE] CONTEXT-OVERFLOW"))).toBe(true);
+      expect(lines.some((l) => l.includes("synthetic=true"))).toBe(true);
+      // ...and must NOT inflate traffic-live.ps1's "$responses" count, which is
+      // /\[resp\]/ — a second [resp] line here would double every overflow.
+      expect(lines.some((l) => l.includes("[resp] responses CONTEXT-OVERFLOW"))).toBe(false);
+      expect(lines.filter((l) => l.startsWith("  [resp] responses")).length).toBe(1);
+
+      const { body } = await readCaptureFile(dir);
+      expect(body).toContain('"synthetic":true');
+      expect(body).toContain('"overflow"');
+    });
+  });
+
+  test("a client cancel closes the capture with closed=false and clears the ping", async () => {
+    await withCapture(async (dir) => {
+      // Upstream never closes: the CLIENT is the one who walks away.
+      const upstream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              sseChunks([{ type: "response.output_text.delta", delta: "partial" }])
+            )
+          );
+        },
+      });
+      const response = new Response(upstream, { headers: new Headers(SSE_HEADERS) });
+      const lines = await captureStdout(async () => {
+        const result = createResponsesStreamHandler(mockContext(), response, {
+          modelName: "gpt-5.6-sol",
+        }) as Response;
+        const reader = result.body!.getReader();
+        await reader.read();
+        await reader.cancel();
+        await Bun.sleep(60);
+      });
+      const respLine = lines.find((l) => l.startsWith("  [resp] responses"));
+      expect(respLine).toBeDefined();
+      expect(respLine).toContain("closed=false stop=client-cancel");
+
+      const { body } = await readCaptureFile(dir);
+      expect(body).toContain('"path":"cancel"');
+    });
   });
 });
