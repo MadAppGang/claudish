@@ -725,6 +725,49 @@ describe("#90 — the Sol/Codex lane closes its capture on every exit path", () 
     return { lines, output };
   }
 
+  /** Replay a Responses-wire fixture from test-fixtures/sse-responses/ verbatim. */
+  function fixtureResponse(name: string): Response {
+    const body = readFileSync(
+      join(__dirname, "..", "..", "..", "test-fixtures", "sse-responses", name)
+    );
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(body));
+        controller.close();
+      },
+    });
+    return new Response(stream, { headers: new Headers(SSE_HEADERS) });
+  }
+
+  // AC of #90: "a regression test replays a captured Responses stream fixture and
+  // asserts the capture is written and its token counts match the fixture."
+  //
+  // No REAL captured fixture can exist for this lane — the lane is what never
+  // wrote a capture — so this seeds one, following the SEED-* convention of the
+  // other parsers' fixtures. Once the lane is live on the hub, a capture from the
+  // corpus can replace it and turn this into a true replay.
+  test("replaying the SEED Responses fixture writes a capture whose tokens match", async () => {
+    await withCapture(async (dir) => {
+      const { lines, output } = await runResponse(
+        fixtureResponse("SEED-responses-text-only.sse")
+      );
+
+      // The replay really flowed through the parser to the client...
+      expect(output).toContain("Bonjour depuis la lane Sol.");
+      expect(lines.some((l) => l.startsWith("  [resp] responses"))).toBe(true);
+
+      // ...and the corpus row carries the fixture's own counts. These two fields
+      // are exactly what traffic-consumption.py's usage_max() reads out of the
+      // SSE body to attribute the Sol lane, so a Sol request stops being dropped
+      // from the per-lane rollup.
+      const { name, body } = await readCaptureFile(dir);
+      expect(name).toMatch(/^resp-\d+-r\d+-.+-responses-gpt-5\.6-sol\.sse$/);
+      expect(body).toContain('"input_tokens":1234');
+      expect(body).toContain('"output_tokens":567');
+      expect(body).toContain("event: message_stop");
+    });
+  });
+
   test("an interrupted stream closes its capture with stop=interrupted", async () => {
     await withCapture(async (dir) => {
       // Text already visible -> no retry is safe -> the interrupt is terminal.
