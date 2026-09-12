@@ -363,16 +363,11 @@ export async function createProxyServer(
   // Resolve proxy keys early — needed for both auth middleware and NativeHandler.
   // CLAUDISH_PROXY_KEY_PREVIOUS keeps the retiring key accepted during a
   // rotation window (see handlers/shared/proxy-keys.ts); unset = single key.
-  const proxyKey = process.env.CLAUDISH_PROXY_KEY || loadConfig().proxyKey;
+  const loadedConfig = loadConfig();
   const proxyKeys = resolveProxyKeys(
-    proxyKey,
-    process.env.CLAUDISH_PROXY_KEY_PREVIOUS || loadConfig().proxyKeyPrevious
+    process.env.CLAUDISH_PROXY_KEY || loadedConfig.proxyKey,
+    process.env.CLAUDISH_PROXY_KEY_PREVIOUS || loadedConfig.proxyKeyPrevious
   );
-  if (proxyKeys.length > 1) {
-    log(
-      `[Proxy] Proxy-key rotation active: ${proxyKeys.length} keys accepted (lengths ${proxyKeys.map((k) => k.length).join("/")})`
-    );
-  }
 
   // Budget failover config (fork extension). Inert with no CLAUDISH_FAILOVER_*
   // env; when set, diverts a whole role to another pool and announces it at the

@@ -29,7 +29,11 @@ export function registerForkExtensions(app: Hono, opts: ForkExtensionsOptions): 
   // 1. Proxy authentication middleware
   if (opts.proxyKeys?.length) {
     app.use("/v1/*", createProxyAuthMiddleware(opts.proxyKeys));
-    log("[Proxy] Authentication enabled (Anthropic pass-through; proxy key required for other providers)");
+    // Count logged unconditionally (lengths, never values): closing a rotation
+    // window must be as greppable as opening one (review feedback on #95).
+    log(
+      `[Proxy] Authentication enabled (Anthropic pass-through; ${opts.proxyKeys.length} proxy key(s) accepted, lengths ${opts.proxyKeys.map((k) => k.length).join("/")}; proxy key required for other providers)`
+    );
   }
 
   // 2. Model discovery endpoint
