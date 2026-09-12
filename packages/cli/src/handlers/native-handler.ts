@@ -5,6 +5,7 @@ import { wrapAnthropicError } from "./shared/anthropic-error.js";
 import { createResponseCapture, appendUpstreamError } from "./shared/response-capture.js";
 import { requestNumberFor } from "../fork/middleware/request-logger.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
+import { matchesProxyKey } from "./shared/proxy-keys.js";
 import {
   fetchMultiModelAdvice,
   findPendingAdvisorToolResults,
@@ -22,14 +23,14 @@ export class NativeHandler implements ModelHandler {
   private baseUrl: string;
   private advisorModels?: string[];
   private advisorCollector?: string | null;
-  private proxyKey?: string;
+  private proxyKeys?: string[];
 
-  constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null, proxyKey?: string) {
+  constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null, proxyKeys?: string[]) {
     this.apiKey = apiKey;
     this.baseUrl = "https://api.anthropic.com";
     this.advisorModels = advisorModels;
     this.advisorCollector = advisorCollector;
-    this.proxyKey = proxyKey;
+    this.proxyKeys = proxyKeys;
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
@@ -176,16 +177,17 @@ export class NativeHandler implements ModelHandler {
       headers[key] = value;
     }
 
-    // Proxy key override: if the client auth matches our proxy key, replace it
-    // with the stored Anthropic key (proxy key is for the local proxy only,
-    // not for api.anthropic.com). When no proxy key is configured (pass-through
+    // Proxy key override: if the client auth matches one of our proxy keys
+    // (primary or previous, during a rotation), replace it with the stored
+    // Anthropic key (proxy key is for the local proxy only, not for
+    // api.anthropic.com). When no proxy key is configured (pass-through
     // mode), everything flows through unmodified.
-    if (this.proxyKey) {
+    if (this.proxyKeys?.length) {
       const bearerToken = originalHeaders["authorization"]?.startsWith("Bearer ")
         ? originalHeaders["authorization"].slice(7)
         : originalHeaders["authorization"];
       const clientAuthToken = originalHeaders["x-api-key"] || bearerToken;
-      if (clientAuthToken === this.proxyKey) {
+      if (matchesProxyKey(clientAuthToken, this.proxyKeys)) {
         // Strip proxy key from forwarded headers
         delete headers["x-api-key"];
         delete headers["authorization"];

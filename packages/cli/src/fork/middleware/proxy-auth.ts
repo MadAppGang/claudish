@@ -8,9 +8,10 @@
 
 import type { MiddlewareHandler } from "hono";
 import { wrapAnthropicError } from "../../handlers/shared/anthropic-error.js";
+import { matchesProxyKey } from "../../handlers/shared/proxy-keys.js";
 import { parseModelSpec } from "../../providers/model-parser.js";
 
-export function createProxyAuthMiddleware(proxyKey: string): MiddlewareHandler {
+export function createProxyAuthMiddleware(proxyKeys: string[]): MiddlewareHandler {
   return async (c, next) => {
     if (c.req.method === "GET") {
       return await next();
@@ -46,7 +47,7 @@ export function createProxyAuthMiddleware(proxyKey: string): MiddlewareHandler {
       : authHeader;
 
     const provided = proxyKeyHeader || apiKeyHeader || bearerToken;
-    if (!provided || provided !== proxyKey) {
+    if (!matchesProxyKey(provided, proxyKeys)) {
       return c.json(wrapAnthropicError(401, "invalid proxy authentication"), 401);
     }
     await next();

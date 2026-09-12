@@ -30,6 +30,7 @@ import {
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
+import { resolveProxyKeys, matchesProxyKey } from "./handlers/shared/proxy-keys.js";
 import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
@@ -359,8 +360,19 @@ export async function createProxyServer(
   modelMap?: RoleModelMap,
   options: ProxyServerOptions = {}
 ): Promise<ProxyServer> {
-  // Resolve proxy key early — needed for both auth middleware and NativeHandler
+  // Resolve proxy keys early — needed for both auth middleware and NativeHandler.
+  // CLAUDISH_PROXY_KEY_PREVIOUS keeps the retiring key accepted during a
+  // rotation window (see handlers/shared/proxy-keys.ts); unset = single key.
   const proxyKey = process.env.CLAUDISH_PROXY_KEY || loadConfig().proxyKey;
+  const proxyKeys = resolveProxyKeys(
+    proxyKey,
+    process.env.CLAUDISH_PROXY_KEY_PREVIOUS || loadConfig().proxyKeyPrevious
+  );
+  if (proxyKeys.length > 1) {
+    log(
+      `[Proxy] Proxy-key rotation active: ${proxyKeys.length} keys accepted (lengths ${proxyKeys.map((k) => k.length).join("/")})`
+    );
+  }
 
   // Budget failover config (fork extension). Inert with no CLAUDISH_FAILOVER_*
   // env; when set, diverts a whole role to another pool and announces it at the
@@ -389,7 +401,7 @@ export async function createProxyServer(
   }
 
   // Define handlers for different roles
-  const nativeHandler = new NativeHandler(anthropicApiKey, options.advisorModels, options.advisorCollector, proxyKey);
+  const nativeHandler = new NativeHandler(anthropicApiKey, options.advisorModels, options.advisorCollector, proxyKeys);
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
@@ -1013,7 +1025,7 @@ export async function createProxyServer(
   app.use("*", cors());
 
   // Fork extensions: proxy auth + model discovery
-  registerForkExtensions(app, { proxyKey });
+  registerForkExtensions(app, { proxyKeys });
 
   app.get("/", (c) =>
     c.json({
@@ -1080,11 +1092,11 @@ export async function createProxyServer(
           reqHeaders[key] = value;
         }
         // Proxy key override (same logic as NativeHandler)
-        if (proxyKey) {
+        if (proxyKeys.length > 0) {
           const authHeader = c.req.header("authorization");
           const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
           const clientAuthToken = c.req.header("x-api-key") || bearerToken;
-          if (clientAuthToken === proxyKey) {
+          if (matchesProxyKey(clientAuthToken, proxyKeys)) {
             delete reqHeaders["x-api-key"];
             delete reqHeaders["authorization"];
             if (anthropicApiKey) {

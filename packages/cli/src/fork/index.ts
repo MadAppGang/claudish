@@ -18,7 +18,7 @@ export { resolveSourceIp, logRequest } from "./middleware/request-logger.js";
 export { createHostnameConfig, type HostnameConfig } from "./server/hostname-binding.js";
 
 export interface ForkExtensionsOptions {
-  proxyKey?: string;
+  proxyKeys?: string[];
 }
 
 /**
@@ -27,8 +27,8 @@ export interface ForkExtensionsOptions {
  */
 export function registerForkExtensions(app: Hono, opts: ForkExtensionsOptions): void {
   // 1. Proxy authentication middleware
-  if (opts.proxyKey) {
-    app.use("/v1/*", createProxyAuthMiddleware(opts.proxyKey));
+  if (opts.proxyKeys?.length) {
+    app.use("/v1/*", createProxyAuthMiddleware(opts.proxyKeys));
     log("[Proxy] Authentication enabled (Anthropic pass-through; proxy key required for other providers)");
   }
 
