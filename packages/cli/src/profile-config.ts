@@ -154,6 +154,8 @@ export interface ClaudishProfileConfig {
   providerConcurrency?: Record<string, number>;
   /** Proxy authentication key — clients must send x-proxy-key matching this value */
   proxyKey?: string;
+  /** Retiring proxy key, still accepted during a rotation window (env: CLAUDISH_PROXY_KEY_PREVIOUS) */
+  proxyKeyPrevious?: string;
 }
 
 /**
@@ -237,6 +239,9 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.proxyKey !== undefined) {
       merged.proxyKey = config.proxyKey;
+    }
+    if (config.proxyKeyPrevious !== undefined) {
+      merged.proxyKeyPrevious = config.proxyKeyPrevious;
     }
     return merged;
   } catch (error) {
