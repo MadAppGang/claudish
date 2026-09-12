@@ -30,6 +30,7 @@ Planned-but-unimplemented work — the SEP-1686 channel migration, optional `not
 
 - `bun run build` (CLI + macOS bridge bundles) · `bun run dev`. Use **bun**, never npm or yarn.
 - **Releases are handled by CI/CD — never run `npm publish` by hand.** Bump version → conventional commit → `git tag -a vX.Y.Z -m "…"` → `git push origin main --tags`.
+- **Every PR that resolves an issue carries `Closes #NN` in its body.** GitHub only auto-closes on merge when the keyword is present: a descriptive "Issue #79 asked for…" leaves the issue open with its fix already merged and live, and the registry drifts silently. Measured 2026-09-12 — #65, #79 and #80 were all in exactly that state (three merged fixes, three orphaned issues).
 - **A version bump touches three files, all mandatory**: root `package.json`; `packages/cli/package.json` (**this is what CI publishes — stale here and `npm publish` fails**); `packages/cli/src/version.ts` (fallback `VERSION`, so compiled binaries with no package.json still report correctly).
 
 ## Model Routing (v4.0+)
