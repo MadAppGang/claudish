@@ -518,8 +518,11 @@ export function createResponsesStreamHandler(
                 const overflow = parseContextOverflow(errMsg, errCode);
                 if (overflow) {
                   inputTokens = overflowReportedTokens(overflow.used, 0, overflowReportFloor());
+                  // `synthetic` marks a count the floor (not the body) produced, so
+                  // downstream aggregators of `usage` can exclude it in one grep.
+                  const synthetic = inputTokens > (overflow.used ?? 0);
                   process.stdout.write(
-                    `  [resp] responses CONTEXT-OVERFLOW model=${opts.modelName} reqN=${reqN} used=${overflow.used ?? "?"} limit=${overflow.limit ?? "?"} reported=${inputTokens}
+                    `  [resp] responses CONTEXT-OVERFLOW model=${opts.modelName} reqN=${reqN} used=${overflow.used ?? "?"} limit=${overflow.limit ?? "?"} reported=${inputTokens} synthetic=${synthetic}
 `
                   );
                 }

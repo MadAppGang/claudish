@@ -855,8 +855,14 @@ export class ComposedHandler implements ModelHandler {
         if (overflow.matched) {
           const est = estimatePayloadTokens(payload);
           rememberOverflowCap(this.provider.displayName, this.targetModel, est);
+          // `reported`/`synthetic` make the synthetic count greppable: downstream
+          // aggregators of `usage` (#41/#89 cost attribution, writeTokenFile) must be
+          // able to exclude a number nothing measured — the floor, not the body, put it
+          // there.
+          const floor = overflowReportFloor();
+          const reported = overflowReportedTokens(overflow.used, est, floor);
           logStderr(
-            `[ContextGuard] overflow provider=${this.provider.displayName} model=${this.targetModel} used=${overflow.used ?? "?"} est=${est} floor=${overflowReportFloor()}`,
+            `[ContextGuard] overflow provider=${this.provider.displayName} model=${this.targetModel} used=${overflow.used ?? "?"} est=${est} floor=${floor} reported=${reported} synthetic=${reported > (overflow.used ?? 0)}`,
             true // forceConsole — operational event
           );
           return this.buildOverflowRecoveryResponse(c, payload, est, overflow.used);

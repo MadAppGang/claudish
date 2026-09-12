@@ -198,6 +198,10 @@ describe("context overflow must not report usage 0+0", () => {
     expect(lines.some((l) => l.includes("CONTEXT-OVERFLOW") && l.includes("used=285000"))).toBe(
       true
     );
+    // A body-stated count is not synthetic — aggregators may keep it.
+    expect(lines.some((l) => l.includes("reported=285000") && l.includes("synthetic=false"))).toBe(
+      true
+    );
   });
 
   test("a generic error still reports zero usage (behavior unchanged)", async () => {
@@ -229,6 +233,9 @@ describe("context overflow must not report usage 0+0", () => {
     ]);
     expect(firstMessageDelta(output).usage.input_tokens).toBeGreaterThanOrEqual(280_000);
     expect(lines.some((l) => l.includes("CONTEXT-OVERFLOW") && l.includes("used=?"))).toBe(true);
+    // The floor produced this count, not the body — it must be greppable as synthetic
+    // so #41/#89 aggregators can exclude it.
+    expect(lines.some((l) => l.includes("synthetic=true"))).toBe(true);
   });
 });
 
