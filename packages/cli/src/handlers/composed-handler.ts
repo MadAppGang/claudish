@@ -36,6 +36,17 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { appendUpstreamError } from "./shared/response-capture.js";
+import {
+  classifyContextOverflow,
+  estimatePayloadTokens,
+  rememberOverflowCap,
+  getOverflowCap,
+  overflowReportFloor,
+  overflowReportedTokens,
+  overflowRecoveryText,
+  buildOverflowRecoveryStream,
+  buildOverflowRecoveryMessage,
+} from "./shared/context-overflow.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
@@ -512,6 +523,24 @@ export class ComposedHandler implements ModelHandler {
       stream: true,
     });
 
+    // 6b. Context-overflow pre-flight (2026-09-10/11 incident): once a provider
+    // has rejected a prompt for size, the learned cap lets later oversized
+    // requests short-circuit here — no upstream round-trip, immediate
+    // recoverable turn. The first rejection per (provider, model) per process
+    // lifetime is unavoidable: the cap is learned, not configured, because the
+    // provider-side maximum prompt size is variable and undocumented.
+    const overflowCap = getOverflowCap(this.provider.displayName, this.targetModel);
+    if (overflowCap !== undefined) {
+      const est = estimatePayloadTokens(requestPayload);
+      if (est >= overflowCap) {
+        logStderr(
+          `[ContextGuard] short-circuit provider=${this.provider.displayName} model=${this.targetModel} est=${est} cap=${overflowCap} (learned) — no upstream call`,
+          true
+        );
+        return this.buildOverflowRecoveryResponse(c, payload, est, undefined);
+      }
+    }
+
     const endpoint = this.provider.getEndpoint(this.targetModel);
     const headers = await this.provider.getHeaders();
     headers["Content-Type"] = "application/json";
@@ -815,6 +844,30 @@ export class ComposedHandler implements ModelHandler {
           );
         }
 
+        // Context-overflow interception (2026-09-10/11 incident): this pre-stream
+        // 400 used to reach the client as a bare error JSON with no `usage` — the
+        // context gauge never advanced, auto-compact never fired, and `/continue`
+        // re-sent the same oversized prompt forever. Emit the recoverable turn
+        // instead (same doctrine as the Responses lane, openai-responses-sse.ts):
+        // HTTP 200 + factual text + usage.input_tokens at or above the real size.
+        // `appendUpstreamError` above keeps the durable provider-wording evidence.
+        const overflow = classifyContextOverflow(response.status, errorText);
+        if (overflow.matched) {
+          const est = estimatePayloadTokens(payload);
+          rememberOverflowCap(this.provider.displayName, this.targetModel, est);
+          // `reported`/`synthetic` make the synthetic count greppable: downstream
+          // aggregators of `usage` (#41/#89 cost attribution, writeTokenFile) must be
+          // able to exclude a number nothing measured — the floor, not the body, put it
+          // there.
+          const floor = overflowReportFloor();
+          const reported = overflowReportedTokens(overflow.used, est, floor);
+          logStderr(
+            `[ContextGuard] overflow provider=${this.provider.displayName} model=${this.targetModel} used=${overflow.used ?? "?"} est=${est} floor=${floor} reported=${reported} synthetic=${reported > (overflow.used ?? 0)}`,
+            true // forceConsole — operational event
+          );
+          return this.buildOverflowRecoveryResponse(c, payload, est, overflow.used);
+        }
+
         return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
       }
     }
@@ -1017,6 +1070,29 @@ export class ComposedHandler implements ModelHandler {
     const message = await collectAnthropicSseToMessage(streamResponse, this.bareModelName);
 
     return c.json(message, {
+      headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
+    });
+  }
+
+  /**
+   * Recoverable turn for a context overflow: HTTP 200 so the client treats the
+   * turn as completed (not an API error to replay identically), a factual text
+   * block, and `usage.input_tokens` at or above the real size so its
+   * auto-compact fires on the next turn. SSE when the client asked to stream,
+   * single JSON otherwise — same split as the success path (`payload?.stream === true`).
+   */
+  private buildOverflowRecoveryResponse(
+    c: Context,
+    payload: any,
+    est: number,
+    used: number | undefined
+  ): Response {
+    const inputTokens = overflowReportedTokens(used, est, overflowReportFloor());
+    const text = overflowRecoveryText(this.provider.displayName, this.targetModel, est);
+    if (payload?.stream === true) {
+      return buildOverflowRecoveryStream(text, inputTokens, this.bareModelName);
+    }
+    return c.json(buildOverflowRecoveryMessage(text, inputTokens, this.bareModelName), {
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
     });
   }
