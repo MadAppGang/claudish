@@ -162,10 +162,27 @@ So no acceptance check is credited to a change we have not made.
 | model `(routeId, routeProfileId)` so a metered route and a subscription route on one vendor bill differently | before cutover |
 | read `plan.route.routeId` and `sourceProviderId` instead of the v2 fields | before cutover |
 | generation pinning, `410` and `503` handling | before cutover |
-| read `rosterCoverage`; drop our own over-broad roster test at `model-catalog.ts:335` | after v3 is live |
+| read `rosterCoverage` and let expiry withdraw a negative verdict | after v3 is live |
 
-Independent of v3, shipping on the current contract: rank aggregator rows instead of
-taking the first, scope membership to the plan rather than the route, and log
+**Correction, 2026-09-13.** An earlier revision of this row also committed us to
+dropping "our own over-broad roster test at `model-catalog.ts:335`". That was
+wrong, and the claim behind it was wrong. We described the `.some()` there as
+licensing a `not-served` verdict from a single membership row. Reading to the end
+of the function shows the actual licence is
+`providerPlans.every(isCatalogDiscoveredPlan)` — which landed on `main` in
+`9c6947f` on 2026-09-03 and is the check we said was missing. The `.some()` two
+guards earlier can only produce an *early* `unknown`; it makes the verdict safer,
+never harsher, and its own comment says so — it guards against pairing a new plan
+contract with an older slim snapshot mid-rollout.
+
+We are therefore **keeping** it, renamed `hasAnyMembershipRow` and documented as
+a snapshot-skew guard. Deleting it would create *new* `not-served` verdicts
+during your rollout, which is the opposite of this document's purpose. The error
+was ours: the analysis ran in a worktree branched before that fix, so an
+already-fixed defect read as live.
+
+Independent of v3, shipping on the current contract: rank aggregator rows instead
+of taking the first, scope membership to the plan rather than the route, and log
 unresolvable routes instead of dropping them.
 
 ---
