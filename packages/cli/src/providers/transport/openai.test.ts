@@ -182,3 +182,82 @@ describe("isTerminal429", () => {
     expect(isTerminal429(transient)).toBe(false);
   });
 });
+
+/**
+ * OpenCode Go rejects any request that carries no `x-opencode-session`:
+ *
+ *   400 {"type":"error","error":{"type":"MissingSessionID","message":
+ *        "Error from provider (Console Go): Request is missing
+ *         x-opencode-session and cannot be routed efficiently."}}
+ *
+ * Measured 2026-09-12 on `/v1/chat/completions`: `glm-5.3-flash` and
+ * `deepseek-v4.1-flash` both return 200 with the header and this 400 without
+ * it, so the header is the whole difference. Before the fix, every Go model
+ * failed in Claudish with `zengo@…` despite a valid key.
+ */
+describe("OpenAIProviderTransport OpenCode session header", () => {
+  const goProvider: RemoteProvider = {
+    name: "opencode-zen-go",
+    baseUrl: "https://opencode.ai/zen/go",
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "OPENCODE_GO_API_KEY",
+    prefixes: ["zengo@"],
+  };
+
+  test("opencode-zen-go carries an x-opencode-session id and identifies itself", async () => {
+    const headers = await new OpenAIProviderTransport(
+      goProvider,
+      "deepseek-v4.1-flash",
+      "test-key"
+    ).getHeaders();
+
+    // A `claudish-<uuid>` shape, not an empty placeholder: the relay routes on
+    // the value, so a constant or empty string would collapse every user onto
+    // one routing bucket.
+    expect(headers["x-opencode-session"]).toMatch(/^claudish-[0-9a-f-]{36}$/);
+    // The relay asks clients to name themselves rather than present a generic
+    // HTTP-library User-Agent.
+    expect(headers["User-Agent"]).toMatch(/^claudish\//);
+  });
+
+  test("the id is stable across calls, so a retry cannot move routing mid-turn", async () => {
+    const transport = new OpenAIProviderTransport(goProvider, "deepseek-v4.1-flash", "test-key");
+
+    const first = await transport.getHeaders();
+    const second = await transport.getHeaders();
+
+    expect(second["x-opencode-session"]).toBe(first["x-opencode-session"]);
+  });
+
+  test("two conversations do not share an id", async () => {
+    const a = await new OpenAIProviderTransport(goProvider, "m", "k").getHeaders();
+    const b = await new OpenAIProviderTransport(goProvider, "m", "k").getHeaders();
+
+    expect(a["x-opencode-session"]).not.toBe(b["x-opencode-session"]);
+  });
+
+  test("other providers are not given the header", async () => {
+    const provider: RemoteProvider = {
+      name: "some-openai-compatible",
+      baseUrl: "https://gateway.example.com/v1",
+      apiPath: "/chat/completions",
+      apiKeyEnvVar: "CUSTOM_SOME_OPENAI_COMPATIBLE_KEY",
+      prefixes: ["some@"],
+    };
+
+    const headers = await new OpenAIProviderTransport(provider, "m", "k").getHeaders();
+
+    expect("x-opencode-session" in headers).toBe(false);
+  });
+
+  test("a provider-declared header still wins over the generated one", async () => {
+    const provider: RemoteProvider = {
+      ...goProvider,
+      headers: { "x-opencode-session": "pinned-by-config" },
+    };
+
+    const headers = await new OpenAIProviderTransport(provider, "m", "k").getHeaders();
+
+    expect(headers["x-opencode-session"]).toBe("pinned-by-config");
+  });
+});
