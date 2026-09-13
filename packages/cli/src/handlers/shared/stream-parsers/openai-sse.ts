@@ -119,6 +119,44 @@ export function createStreamingState(): StreamingState {
 }
 
 /**
+ * Anthropic `usage` fields derived from an OpenAI-style `usage` object.
+ *
+ * OpenAI reports `prompt_tokens` as the FULL input — cached and uncached
+ * together — and, where the provider caches, breaks the cached share out
+ * beside it. Anthropic splits that same total across `input_tokens` (the part
+ * billed at full rate) and `cache_read_input_tokens` (cache hits). Emitting
+ * `prompt_tokens` as `input_tokens` *and* the cached count as
+ * `cache_read_input_tokens` therefore counts the cached share TWICE — and the
+ * client's context gauge sums the fields, so such a session would compact far
+ * too early. Net it out and the total is preserved.
+ *
+ * Not netting would also corrupt our own accounting: `harness-injection-measure.py`
+ * sums `input + cache_creation + cache_read` as the context size, so doubling
+ * the cache inflates every openai-lane request there. This lane is ~72% of the
+ * hub's volume and its cache was entirely invisible before — the `openai-sse`
+ * parser never read the upstream's cache field at all (jsboige/claudish#99).
+ */
+function toAnthropicUsage(u: any): {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+} {
+  const prompt = Number(u?.prompt_tokens) || 0;
+  // `prompt_tokens_details.cached_tokens` — OpenAI, z.ai/GLM Coding, xAI, Kimi;
+  // `prompt_cache_hit_tokens` — DeepSeek. Clamped to the prompt because a
+  // provider reporting more cached than total would otherwise emit a negative
+  // `input_tokens`, which no consumer tolerates.
+  const raw =
+    Number(u?.prompt_tokens_details?.cached_tokens ?? u?.prompt_cache_hit_tokens) || 0;
+  const cached = Math.min(Math.max(raw, 0), prompt);
+  return {
+    input_tokens: prompt - cached,
+    output_tokens: Number(u?.completion_tokens) || 0,
+    cache_read_input_tokens: cached,
+  };
+}
+
+/**
  * Handle streaming response conversion from OpenAI SSE to Claude SSE format
  */
 export function createStreamingResponseHandler(
@@ -512,10 +550,7 @@ export function createStreamingResponseHandler(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: "end_turn", stop_sequence: null },
-              usage: {
-                input_tokens: state.usage?.prompt_tokens || 0,
-                output_tokens: state.usage?.completion_tokens || 0,
-              },
+              usage: toAnthropicUsage(state.usage),
             });
             send("message_stop", { type: "message_stop" });
             terminalSent = true;
@@ -574,10 +609,7 @@ export function createStreamingResponseHandler(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
-              usage: {
-                input_tokens: state.usage?.prompt_tokens || 0,
-                output_tokens: state.usage?.completion_tokens || 0,
-              },
+              usage: toAnthropicUsage(state.usage),
             });
             send("message_stop", { type: "message_stop" });
             terminalSent = true;
@@ -613,10 +645,7 @@ export function createStreamingResponseHandler(
                 send("message_delta", {
                   type: "message_delta",
                   delta: { stop_reason: "end_turn", stop_sequence: null },
-                  usage: {
-                    input_tokens: state.usage?.prompt_tokens || 0,
-                    output_tokens: state.usage?.completion_tokens || 0,
-                  },
+                  usage: toAnthropicUsage(state.usage),
                 });
                 send("message_stop", { type: "message_stop" });
                 terminalSent = true;
