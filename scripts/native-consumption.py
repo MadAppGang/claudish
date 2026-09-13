@@ -44,6 +44,15 @@ a wrong-but-plausible number during development:
      call ("CRITICAL: Respond with TEXT ONLY"), a continuation summary
      ("This session is being continued") or a slash command each identify
      the turn's nature with no workload marker at all.
+  9. Index req captures WITHOUT the --since/--until filter: a req filed at
+     23:xx the previous day pairs a 00:0x response, and window-filtering
+     the index turns those into fake "non appariées" at day edges (found
+     cross-seat by myia-ai-01: 57 unp vs 10 on the same corpus). The
+     35-min pairing window on the response side is the only gate needed.
+  10. A KNOWN_ROOTS entry can collide with a USERNAME path segment:
+      "myia" matches C:\\Users\\MYIA\\... inside every ai-01 conversation
+      path, biasing attribution toward the "myia" workspace. Scrub
+      users/<name> path segments before counting roots.
 """
 
 import argparse
@@ -53,6 +62,9 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta
+
+USER_PATH_RE = re.compile(r"[\\/]+users[\\/]+[a-z_0-9-]+")
+SUB_RE = re.compile(r'"cc_is_subagent":\s*true')
 
 RESP_RE = re.compile(
     r"^resp-(\d+)-r\d+-(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-\d{2}-\d+Z-(.+)\.sse$")
@@ -85,7 +97,8 @@ def fname_dt(date_h, minutes):
 
 
 def workspace_of(body_text):
-    counts = {r: body_text.count(r) for r in KNOWN_ROOTS}
+    scrubbed = USER_PATH_RE.sub(" /users/x/", body_text)
+    counts = {r: scrubbed.count(r) for r in KNOWN_ROOTS}
     best = max(counts, key=lambda r: counts[r])
     return best if counts[best] >= 3 else "(inconnu)"
 
@@ -104,10 +117,6 @@ def main():
                 m = REQ_RE.match(n)
                 if m:
                     dt = fname_dt(m.group(3), m.group(4))
-                    if since and dt < since:
-                        continue
-                    if until and dt >= until:
-                        continue
                     req_index[(m.group(1), m.group(2))].append((dt, e.path))
             elif n.startswith("resp-") and "-native-" in n and n.endswith(".sse"):
                 m = RESP_RE.match(n)
@@ -204,7 +213,7 @@ def main():
             d["compact"] += 1
         elif lu.startswith("This session is being continued"):
             d["cont"] += 1
-        if "cc_is_subagent" in raw:
+        if SUB_RE.search(raw):
             d["sub"] += 1
         k = (dv.group(1) if dv else "?", w, "cron" if cron else "interactif")
         dev[k]["n"] += 1
@@ -222,12 +231,13 @@ def main():
         print(f"  {h}  {'#' * (hours[h] // 2 or 1)} {hours[h]}")
     print()
     print(f"Workspace ({'heuristic — racine la plus citee'}), trie par OUT:")
-    print(f"  {'workspace':22s} {'n':>5s} {'marqC':>5s} {'nonM':>5s} "
+    print(f"  {'workspace':22s} {'n':>5s} {'marqC':>5s} {'nonM':>5s} {'sub':>4s} "
           f"{'OUT tok':>11s} {'in frais':>10s} {'cache_read':>12s} "
           f"{'compact':>7s} {'continu':>7s}")
-    print("  (marqC = marque cc_workload=cron SUR CETTE requete — voir piege 8)")
+    print("  (marqC = marque cc_workload=cron SUR CETTE requete — voir piege 8 ;"
+          " sub = cc_is_subagent, signature leak-policy)")
     for w, d in sorted(ws.items(), key=lambda kv: -kv[1]["out"])[:a.top]:
-        print(f"  {w:22s} {d['n']:5d} {d['cron']:5d} {d['int']:5d} "
+        print(f"  {w:22s} {d['n']:5d} {d['cron']:5d} {d['int']:5d} {d['sub']:4d} "
               f"{d['out']:11,d} {d['in']:10,d} {d['cr']:12,d} "
               f"{d['compact']:7d} {d['cont']:7d}")
     print()
