@@ -36,6 +36,14 @@ a wrong-but-plausible number during development:
      numbers heuristic, not exact.
   7. cc_workload=cron / cc_entrypoint live in system[0] (the
      x-anthropic-billing-header block), device_id in metadata.user_id.
+  8. cc_workload=cron is a PER-REQUEST stamp. A cron-fired turn in a REPL
+     session carries it on the turn's requests only — tool-loop continuations
+     and later turns of the same session do NOT. "Unmarked" therefore means
+     "not stamped on this request", NEVER "a human is driving". To tell what
+     a request actually is, classify the LAST user message: a compaction
+     call ("CRITICAL: Respond with TEXT ONLY"), a continuation summary
+     ("This session is being continued") or a slash command each identify
+     the turn's nature with no workload marker at all.
 """
 
 import argparse
@@ -118,7 +126,7 @@ def main():
 
     ws = collections.defaultdict(lambda: {
         "n": 0, "out": 0, "in": 0, "cr": 0, "cc": 0,
-        "cron": 0, "int": 0, "sub": 0})
+        "cron": 0, "int": 0, "sub": 0, "compact": 0, "cont": 0})
     dev = collections.defaultdict(lambda: {"n": 0, "out": 0})
     hours = collections.Counter()
     top_out = []
@@ -177,6 +185,25 @@ def main():
         d["cr"] += cr
         d["cc"] += cc
         d["cron" if cron else "int"] += 1
+        last_user = ""
+        for m in reversed(body.get("messages", [])):
+            if m.get("role") != "user":
+                continue
+            c = m.get("content")
+            if isinstance(c, str):
+                last_user = c
+                break
+            if isinstance(c, list):
+                texts = [x.get("text", "") for x in c
+                         if isinstance(x, dict) and x.get("type") == "text"]
+                if texts:
+                    last_user = texts[0]
+                    break
+        lu = last_user.strip()
+        if lu.startswith("CRITICAL: Respond with TEXT"):
+            d["compact"] += 1
+        elif lu.startswith("This session is being continued"):
+            d["cont"] += 1
         if "cc_is_subagent" in raw:
             d["sub"] += 1
         k = (dv.group(1) if dv else "?", w, "cron" if cron else "interactif")
@@ -195,11 +222,14 @@ def main():
         print(f"  {h}  {'#' * (hours[h] // 2 or 1)} {hours[h]}")
     print()
     print(f"Workspace ({'heuristic — racine la plus citee'}), trie par OUT:")
-    print(f"  {'workspace':22s} {'n':>5s} {'cron':>5s} {'int':>5s} "
-          f"{'OUT tok':>11s} {'in frais':>10s} {'cache_read':>12s} {'sub':>4s}")
+    print(f"  {'workspace':22s} {'n':>5s} {'marqC':>5s} {'nonM':>5s} "
+          f"{'OUT tok':>11s} {'in frais':>10s} {'cache_read':>12s} "
+          f"{'compact':>7s} {'continu':>7s}")
+    print("  (marqC = marque cc_workload=cron SUR CETTE requete — voir piege 8)")
     for w, d in sorted(ws.items(), key=lambda kv: -kv[1]["out"])[:a.top]:
         print(f"  {w:22s} {d['n']:5d} {d['cron']:5d} {d['int']:5d} "
-              f"{d['out']:11,d} {d['in']:10,d} {d['cr']:12,d} {d['sub']:4d}")
+              f"{d['out']:11,d} {d['in']:10,d} {d['cr']:12,d} "
+              f"{d['compact']:7d} {d['cont']:7d}")
     print()
     print("Par device + workload (top):")
     for (dv, w, wl), c in sorted(dev.items(), key=lambda kv: -kv[1]["out"])[:a.top]:
