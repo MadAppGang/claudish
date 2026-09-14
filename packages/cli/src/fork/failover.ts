@@ -136,7 +136,7 @@ const pendingRecovery = new Map<
  * substitute. Cleared on auto-arm TTL expiry (a fresh episode re-notifies) and on
  * full reset. Condensation notices are independent of this map.
  */
-const notifiedSessions = new Map<FailoverRole, Map<string, number>>();
+const notifiedSessions = new Map<FailoverRole, Map<string, Set<number>>>();
 
 const AUTO_ARM_TTL_MS = 10 * 60 * 1000;
 const RECOVERY_CONDENSATIONS = 3;
@@ -941,8 +941,13 @@ function buildStreamRecoveryText(role: FailoverRole, st: RecoveryState): string 
  * Return the one-time stream notice for this role+session, marking the session
  * notified at the current depth. Returns null when there is nothing to announce.
  * Recovery takes precedence (a recovering role is not armed). For an armed role, the
- * notice re-fires when the resolved step CHANGES since the session was last notified
- * (Qwen→GLM mid-session) so the agent recalibrates to the new substitute. Atomic
+ * notice fires ONCE PER DISTINCT STEP per session (Qwen→GLM mid-session still
+ * announces the new substitute), so the agent recalibrates to a change without a
+ * re-probe that drops back to an already-announced step re-spamming the notice.
+ * Tracking the SET of announced depths (not the last one) is what bounds the notices:
+ * a step whose failure state is cleared (resetStepSuccess / resetAllStepFailures —
+ * neither clears this map) resolves again, and under the old last-depth comparison
+ * that return fired a fresh notice every time the resolver oscillated. Atomic
  * (check + mark in one call) so two concurrent in-flight requests can't both win.
  */
 export function consumeStreamNotice(role: FailoverRole, sessionKey: string | null): string | null {
@@ -963,8 +968,13 @@ export function consumeStreamNotice(role: FailoverRole, sessionKey: string | nul
     perRole = new Map();
     notifiedSessions.set(role, perRole);
   }
-  if (perRole.get(sessionKey) === stepIndex) return null; // already notified at this depth
-  perRole.set(sessionKey, stepIndex);
+  let announced = perRole.get(sessionKey);
+  if (!announced) {
+    announced = new Set();
+    perRole.set(sessionKey, announced);
+  }
+  if (announced.has(stepIndex)) return null; // already announced this depth in this session
+  announced.add(stepIndex);
   return buildStreamNoticeText(role, step, stepIndex);
 }
 

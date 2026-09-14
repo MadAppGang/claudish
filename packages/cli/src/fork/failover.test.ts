@@ -919,6 +919,18 @@ describe("consumeStreamNotice — depth-aware", () => {
     expect(consumeStreamNotice("opus", "sess-A")).toBeNull(); // dedup at depth 1
   });
 
+  it("does not re-announce a depth already announced when the resolver drops back to it", () => {
+    initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+    expect(consumeStreamNotice("opus", "sess-osc")).toContain("1st fallback");
+    markStepFailed("opus", 0, "qwen walled mid-session"); // now serving step 1
+    expect(consumeStreamNotice("opus", "sess-osc")).toContain("2nd fallback");
+    // A re-probed step whose failure state is cleared resolves again — without the
+    // announced-depth SET the notice fired on every oscillation (observed as a
+    // per-turn spam of the same fallback warning).
+    resetStepSuccess("opus", 0);
+    expect(consumeStreamNotice("opus", "sess-osc")).toBeNull();
+  });
+
   it("returns null without a stable session key (skip rather than spam)", () => {
     initFailover({ ...OPUS_TO_QWEN, CLAUDISH_FAILOVER_ACTIVE: "opus" });
     expect(consumeStreamNotice("opus", null)).toBeNull();
