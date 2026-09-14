@@ -1,0 +1,30 @@
+{
+  "$schema_note": "Calibration of the CC client-version marker for capture analysis. Consumers (fleet canary, audit) MUST read this file instead of recoding the correspondence as a heuristic. Ground truth per request: the 'x-anthropic-billing-header: cc_version=' line (sits after messages, deep in the req file); system length is the cheap head-side proxy.",
+  "version": 1,
+  "calibrated_on": "2026-09-14",
+  "provenance": "jsboige/claudish issue #102, comments of 2026-09-14 (three same-lane control pairs across CoursIA/roo-extensions/Argumentum/Epita-IS; ramp dated minute-by-minute 12/09)",
+  "marker": {
+    "field": "body.system (string, or concatenated text blocks)",
+    "proxy": "character length of system",
+    "authoritative": "x-anthropic-billing-header cc_version line"
+  },
+  "anchors": [
+    {
+      "cc_version": "2.1.268",
+      "sys_chars": [10500, 11800],
+      "typical": 11100,
+      "regime": "frugal (pre-ramp baseline)"
+    },
+    {
+      "cc_version": "2.1.269",
+      "sys_chars": [8800, 9700],
+      "typical": 9200,
+      "regime": "verbose (cohort born 2026-09-12T21:54Z)"
+    }
+  ],
+  "caveats": [
+    "A CC process keeps its version until restart: a session crossing a deployment keeps its old harness.",
+    "Ranges are calibrated on ai-01 5-lane traffic (fr-FR instructions); re-anchor if the fleet prompt language changes.",
+    "Ambiguous lengths (outside both ranges) fall back to the authoritative billing-header line."
+  ]
+}

@@ -5,6 +5,10 @@ Compare, par session et par phase (premiere/derniere requete) :
   - system : longueur + hash STRUCTUREL (chiffres normalises -> dates/heures neutralisees)
   - tools  : nombre + hash exact des noms + volume des schemas
 Usage: python harnesscmp.py 2026-09-12 [2026-09-13 ...]
+
+Marqueur cc_version : la longueur du system identifie la version du client ;
+la calibration (ancres 2.1.268/2.1.269, verite terrain = ligne cc_version du
+billing header) vit dans cc-version-calibration.json — la consommer, pas la recoder.
 """
 import hashlib
 import json
