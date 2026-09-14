@@ -17,7 +17,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
-D = '//192.168.0.50/d$/claudish-captures'
+D = os.environ.get('CLAUDISH_CAPTURES_ROOT', '//192.168.0.50/d$/claudish-captures')
 
 USAGE_RE = re.compile(
     r'"input_tokens":(\d+),"cache_creation_input_tokens":(\d+),'

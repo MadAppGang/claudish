@@ -10,7 +10,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 
-D = '//192.168.0.50/d$/claudish-captures'
+D = os.environ.get('CLAUDISH_CAPTURES_ROOT', '//192.168.0.50/d$/claudish-captures')
 DAYS = sys.argv[1:] or ['2026-09-14']
 
 # resp-<pid>-r<counter4>-<ts>-<clientinfo>.<ext>   -> le backend est DANS clientinfo

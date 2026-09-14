@@ -1,11 +1,14 @@
 #!/bin/bash
 # Extrait les resp natives d'un jour d'archive GDrive vers w-<jour>.
 set -u
-SP="C:/Users/MYIA/AppData/Local/Temp/claude/d--claudish/fe8a18f1-2f91-4169-877b-56eabe48f53d/scratchpad"
-SEVEN="C:/Program Files/7-Zip/7z.exe"
+# Convention unifiée : les repertoires w-<jour> vivent A COTE des scripts (comme les
+# scripts Python, qui derivent SP de leur propre chemin). Surchargeables par env.
+SP="${CLAUDISH_AUDIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+SEVEN="${SEVENZIP:-C:/Program Files/7-Zip/7z.exe}"
+ARCHIVE_DIR="${CLAUDISH_CAPTURES_ARCHIVE_DIR:-G:/Mon Drive/Backups-Cloud/claudish}"
 for D in "$@"; do
   W="$SP/w-$D"
-  ARCH="G:/Mon Drive/Backups-Cloud/claudish/captures-$D.7z"
+  ARCH="$ARCHIVE_DIR/captures-$D.7z"
   if [ ! -f "$ARCH" ]; then echo "$D : archive ABSENTE ($ARCH)"; continue; fi
   rm -rf "$W"; mkdir -p "$W"
   t0=$(date +%s)

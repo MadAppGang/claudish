@@ -1,11 +1,13 @@
 #!/bin/bash
 # Extrait les req apparies aux resp natives DEJA presents dans w-<jour> (sans ecraser).
 set -u
-SP="C:/Users/MYIA/AppData/Local/Temp/claude/d--claudish/fe8a18f1-2f91-4169-877b-56eabe48f53d/scratchpad"
-SEVEN="C:/Program Files/7-Zip/7z.exe"
+# Meme convention que getnatives.sh : w-<jour> a cote des scripts, surchargeable par env.
+SP="${CLAUDISH_AUDIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+SEVEN="${SEVENZIP:-C:/Program Files/7-Zip/7z.exe}"
+ARCHIVE_DIR="${CLAUDISH_CAPTURES_ARCHIVE_DIR:-G:/Mon Drive/Backups-Cloud/claudish}"
 for D in "$@"; do
   W="$SP/w-$D"
-  ARCH="G:/Mon Drive/Backups-Cloud/claudish/captures-$D.7z"
+  ARCH="$ARCHIVE_DIR/captures-$D.7z"
   if [ ! -d "$W" ]; then echo "$D : w-$D ABSENT (natives non extraites)"; continue; fi
   if [ ! -f "$ARCH" ]; then echo "$D : archive ABSENTE"; continue; fi
   # motifs req depuis les resp natives presentes
