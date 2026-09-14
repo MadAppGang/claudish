@@ -7,6 +7,12 @@ import {
   logAdvisorEvent,
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
+import {
+  type ResolvedCachingConfig,
+  ensureExtendedCacheBeta,
+  exactPrefixTokens,
+  injectAnthropicCacheBreakpoints,
+} from "./shared/anthropic-cache.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
@@ -16,13 +22,20 @@ export class NativeHandler implements ModelHandler {
   private baseUrl: string;
   private advisorModels?: string[];
   private advisorCollector?: string | null;
+  private caching: ResolvedCachingConfig;
 
-  constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
+  constructor(
+    apiKey?: string,
+    advisorModels?: string[],
+    advisorCollector?: string | null,
+    caching?: ResolvedCachingConfig
+  ) {
     this.apiKey = apiKey;
     // Always forward to real Anthropic API
     this.baseUrl = "https://api.anthropic.com";
     this.advisorModels = advisorModels;
     this.advisorCollector = advisorCollector;
+    this.caching = caching ?? { enabled: false, extendedTtl: false };
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
@@ -117,6 +130,25 @@ export class NativeHandler implements ModelHandler {
       } else {
         headers["anthropic-beta"] = incomingBeta;
       }
+    }
+
+    // Prompt-cache injection (opt-in). This is the only path where claudish owns
+    // the outbound headers, so the 1h extended TTL, which needs the beta flag, is
+    // available here; the composed path is limited to the 5m default.
+    if (this.caching.enabled) {
+      const prefixTtl = this.caching.extendedTtl ? "1h" : "5m";
+      const prefixTokens = await exactPrefixTokens(payload, target, this.caching);
+      const { tag } = injectAnthropicCacheBreakpoints(payload, {
+        prefixTtl,
+        tailTtl: "5m",
+        // Haiku's minimum cacheable prefix is 2048 tokens; every other Claude is 1024.
+        minCacheTokens: /haiku/i.test(target) ? 2048 : 1024,
+        prefixTokens,
+      });
+      if (this.caching.extendedTtl) {
+        headers["anthropic-beta"] = ensureExtendedCacheBeta(headers["anthropic-beta"]);
+      }
+      if (tag !== "none") log(`[Native] cache injection: ${tag}`);
     }
 
     // Execute fetch

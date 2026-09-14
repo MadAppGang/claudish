@@ -87,7 +87,7 @@ export interface ProfileContext {
    */
   sharedOpts: Pick<
     ComposedHandlerOptions,
-    "isInteractive" | "invocationMode" | "effortOverride" | "modelParams" | "proOnUltracode"
+    "isInteractive" | "invocationMode" | "effortOverride" | "modelParams" | "proOnUltracode" | "caching"
   >;
 }
 

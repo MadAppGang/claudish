@@ -9,6 +9,8 @@ interface TokenFile {
   input_tokens: number;
   output_tokens: number;
   context_left_percent: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
 }
 
 const createdTokenFiles = new Set<string>();
@@ -159,5 +161,18 @@ describe("TokenTracker tool-name accounting", () => {
     ]);
     expect(JSON.stringify(toolCalls)).not.toContain(malformed);
     expect(tracker.getToolCallCount()).toBe(4);
+  });
+});
+
+describe("recordCacheTokens", () => {
+  test("accumulates cache tokens and writes them to the token file", () => {
+    const { tracker, tokenFile } = createTracker();
+    tracker.recordCacheTokens(1000, 200);
+    tracker.recordCacheTokens(500, 0);
+    // The billing strategy's writeFile fires here and must include the counts.
+    tracker.update(3000, 100);
+    const data = readTokenFile(tokenFile);
+    expect(data.cache_read_tokens).toBe(1500);
+    expect(data.cache_creation_tokens).toBe(200);
   });
 });

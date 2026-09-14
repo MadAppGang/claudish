@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { activeGlobalConfigFile, getConfigFileOverride } from "./config-override.js";
+import type { TokenizerSource } from "./handlers/shared/anthropic-cache.js";
 
 // Config directory and file paths
 const CONFIG_DIR = join(homedir(), ".claudish");
@@ -180,6 +181,37 @@ export interface ClaudishProfileConfig {
    * --anthropic-api-billing.
    */
   anthropicApiBilling?: boolean;
+  /**
+   * Anthropic prompt-cache injection. When enabled, claudish adds cache_control
+   * breakpoints to the uncached static prefix (tool catalog, system prompt, and
+   * the first message's static reminders) of a request bound for an
+   * Anthropic-wire target, so the expensive prefix is cached across turns even
+   * where Claude Code left it unmarked.
+   *
+   * OFF by default: Anthropic caps a request at four breakpoints, so this must
+   * not double-inject with a tweakcc cache patch on the same binary. Opting in
+   * is an explicit either/or with that patch. Overridden by CLAUDISH_CACHE and
+   * CLAUDISH_CACHE_EXTENDED_TTL.
+   */
+  caching?: {
+    /** Master switch. Absent/false means no injection. */
+    enabled?: boolean;
+    /**
+     * Upgrade the static-prefix breakpoints from the 5m default to the 1h
+     * extended TTL (adds the `anthropic-beta: extended-cache-ttl-2025-04-11`
+     * header). Applied only on the native Anthropic passthrough, where claudish
+     * controls the outbound headers and the endpoint honours the beta; the
+     * rolling conversation tail stays 5m because it moves every turn.
+     */
+    extendedTtl?: boolean;
+    /**
+     * Optional `model glob -> tokenizer source` map, so the cache min-size gate
+     * counts prefix tokens exactly instead of estimating from characters. The
+     * source is a discriminated union: `{kind:"file",path}`, `{kind:"hub",repo}`,
+     * or `{kind:"url",url}`. Absent = char estimate (no tokenizer loaded).
+     */
+    tokenizers?: Record<string, TokenizerSource>;
+  };
   /** Built-in local providers explicitly enabled in global config. */
   localProviders?: string[];
   /** ISO timestamp when user confirmed auto-approve behavior. Absent = never confirmed. */
@@ -331,6 +363,12 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.anthropicApiBilling !== undefined) {
       merged.anthropicApiBilling = config.anthropicApiBilling;
+    }
+    // Same trap as keychain/onepasswordEnvironments above: omitted from this
+    // allowlist, the block survives on disk until the first global save and is
+    // then silently dropped, quietly turning caching off with no error.
+    if (config.caching !== undefined) {
+      merged.caching = config.caching;
     }
     if (config.localProviders !== undefined) {
       merged.localProviders = Array.from(new Set(config.localProviders)).sort();

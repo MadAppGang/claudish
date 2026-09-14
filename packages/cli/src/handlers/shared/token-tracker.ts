@@ -97,6 +97,9 @@ export class TokenTracker {
    * full context on the assignment paths, the running total on accumulate-both.
    */
   private sessionBilledInputTokens = 0;
+  /** Cumulative prompt-cache tokens this session, for cache-effectiveness reporting (not billing). */
+  private sessionCacheReadTokens = 0;
+  private sessionCacheCreationTokens = 0;
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
@@ -174,6 +177,17 @@ export class TokenTracker {
   /** Force rewrite the token file with current state */
   rewrite(): void {
     this.writeFile(this.getLastInputTokens(), this.sessionOutputTokens);
+  }
+
+  /**
+   * Record prompt-cache tokens from a response's usage (cache_read /
+   * cache_creation). Additive and informational, deliberately outside the
+   * billing strategies; surfaced by writeFile so the status line and session
+   * summary can show how much of the prefix was served from cache.
+   */
+  recordCacheTokens(read: number, creation: number): void {
+    this.sessionCacheReadTokens += read;
+    this.sessionCacheCreationTokens += creation;
   }
 
   /**
@@ -390,6 +404,8 @@ export class TokenTracker {
         updated_at: Date.now(),
         is_free: isFreeModel,
         is_estimated: isEstimate || false,
+        cache_read_tokens: this.sessionCacheReadTokens,
+        cache_creation_tokens: this.sessionCacheCreationTokens,
         // Session-summary fields. The status line ignores both; they exist because
         // the token file is the only durable record of a session that survives the
         // proxy exiting, and the summary is printed AFTER shutdown (see

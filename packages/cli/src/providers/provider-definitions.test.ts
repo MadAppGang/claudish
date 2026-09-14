@@ -21,6 +21,7 @@ import {
   BUILTIN_PROVIDERS,
   getApiKeyEnvVars,
   getApiKeyInfo,
+  getCacheControl,
   getDisplayName,
   getEffectiveBaseUrl,
   getLegacyPrefixPatterns,
@@ -611,5 +612,32 @@ describe("billing classification", () => {
     // pricing the project forbids hardcoding.
     expect(Object.keys(PROVIDER_DEFAULTS)).not.toContain("opencode-zen");
     expect(Object.keys(PROVIDER_DEFAULTS)).not.toContain("opencode-zen-go");
+  });
+});
+
+describe("cacheControl descriptor (per-provider cache_control mode)", () => {
+  test("z-ai strips, because its endpoint rejects cache_control (400)", () => {
+    expect(getCacheControl("z-ai").mode).toBe("strip");
+  });
+
+  test("MiniMax and Qwen inject (endpoints honour explicit breakpoints)", () => {
+    expect(getCacheControl("minimax").mode).toBe("inject");
+    expect(getCacheControl("qwen-cloud").mode).toBe("inject");
+    expect(getCacheControl("qwen-payg").mode).toBe("inject");
+  });
+
+  test("Kimi passes through (automatic caching; the field is ignored)", () => {
+    expect(getCacheControl("kimi").mode).toBe("passthrough");
+  });
+
+  test("native-anthropic carries no descriptor (NativeHandler owns the native path)", () => {
+    // native-anthropic is a no-handler steering entry; the real Anthropic path is
+    // NativeHandler, which injects and applies the 1h TTL from config directly, so
+    // the descriptor (which only the composed path reads) defaults to passthrough.
+    expect(getCacheControl("native-anthropic").mode).toBe("passthrough");
+  });
+
+  test("an unannotated provider defaults to passthrough", () => {
+    expect(getCacheControl("openrouter").mode).toBe("passthrough");
   });
 });
