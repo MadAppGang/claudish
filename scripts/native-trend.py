@@ -59,7 +59,13 @@ def parse_args():
     ap.add_argument("--loose-dir", default="")
     ap.add_argument("--loose-date", default="",
                     help="add the (partial) loose day from --loose-dir")
-    ap.add_argument("--7z", default=r"C:\Program Files\NVIDIA Corporation\NVIDIA App\7z.exe")
+    # dest= is mandatory: argparse derives the attribute from the leading
+    # option name, and "7z" is not a valid Python identifier — without the
+    # explicit dest, day_dir()'s `a.seven_z` raised AttributeError the first
+    # time it actually had to extract (it never fired while the nat-* dirs
+    # pre-existed).
+    ap.add_argument("--7z", dest="seven_z",
+                    default=r"C:\Program Files\NVIDIA Corporation\NVIDIA App\7z.exe")
     ap.add_argument("--keep", action="store_true",
                     help="keep extracted day dirs (default: temp, deleted)")
     return ap.parse_args()
