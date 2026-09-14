@@ -288,6 +288,28 @@ export function parseAnthropicSse(raw: string): {
   return { text, usage: hasUsage ? { input: inputTokens, output: outputTokens } : undefined };
 }
 
+/**
+ * Append the contents of local files to a prompt as labeled fenced blocks.
+ *
+ * Paths resolve against the process working directory. An unreadable or missing
+ * file does not fail the call: it is reported inline as a short warning line so
+ * the model still sees which file was requested, and the readable files are
+ * appended regardless. Returns the prompt unchanged when no files are given.
+ */
+export function appendFilesToPrompt(prompt: string, files: string[] | undefined): string {
+  if (!Array.isArray(files) || files.length === 0) return prompt;
+  const blocks = files.map((file) => {
+    try {
+      const contents = readFileSync(file, "utf-8");
+      return `--- ${file} ---\n\`\`\`\n${contents}\n\`\`\``;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return `--- ${file} (could not be read: ${msg}) ---`;
+    }
+  });
+  return `${prompt}\n\n${blocks.join("\n\n")}`;
+}
+
 export async function runPromptViaProxy(
   model: string,
   prompt: string,
@@ -666,6 +688,12 @@ function defineTools(
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
         max_tokens: { type: "number", description: "Maximum tokens in response (default: 4096)" },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Local file paths whose contents are appended to the prompt as labeled code blocks",
+        },
       },
       required: ["model", "prompt"],
     },
@@ -677,7 +705,7 @@ function defineTools(
       try {
         const result = await runPromptViaProxy(
           args.model as string,
-          args.prompt as string,
+          appendFilesToPrompt(args.prompt as string, args.files as string[] | undefined),
           args.system_prompt as string | undefined,
           args.max_tokens as number | undefined
         );
@@ -938,6 +966,12 @@ function defineTools(
           type: "number",
           description: "Maximum tokens in response (omit to let model decide)",
         },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Local file paths whose contents are appended to the prompt as labeled code blocks",
+        },
       },
       required: ["models", "prompt"],
     },
@@ -948,7 +982,10 @@ function defineTools(
     heartbeat: true,
     handler: async (args, ctx) => {
       const modelIds = args.models as string[];
+      // `prompt` stays the user's text for the comparison header and progress
+      // notes; the file-augmented form is what each model actually receives.
       const prompt = args.prompt as string;
+      const promptWithFiles = appendFilesToPrompt(prompt, args.files as string[] | undefined);
       const systemPrompt = args.system_prompt as string | undefined;
       const maxTokens = args.max_tokens as number | undefined;
 
@@ -963,7 +1000,7 @@ function defineTools(
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPromptViaProxy(model, prompt, systemPrompt, maxTokens);
+          const result = await runPromptViaProxy(model, promptWithFiles, systemPrompt, maxTokens);
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
