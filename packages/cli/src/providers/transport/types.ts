@@ -77,9 +77,11 @@ export interface ProviderTransport {
   /**
    * Extra fields to merge into the request payload.
    * Used for provider-specific keys like `extra_headers` (LiteLLM),
-   * `provider` overrides (OpenRouter), etc.
+   * `provider` overrides (OpenRouter), etc. Async because a transport may need
+   * I/O to decide the fields: the local transport probes to detect an Ollama
+   * backend before setting num_ctx.
    */
-  getExtraPayloadFields?(): Record<string, any>;
+  getExtraPayloadFields?(): Promise<Record<string, any>>;
 
   /**
    * Optional request queue for rate limiting / concurrency control.
