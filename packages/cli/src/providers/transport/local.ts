@@ -51,6 +51,8 @@ export class LocalTransport implements ProviderTransport {
   private healthChecked = false;
   private isHealthy = false;
   private _contextWindow = 32768;
+  /** Cached result of the Ollama-backend probe; undefined until first probed. */
+  private _isOllamaBackend?: boolean;
 
   constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
     this.config = config;
@@ -113,7 +115,7 @@ export class LocalTransport implements ProviderTransport {
       displayName: this.displayName,
       exclude,
     };
-    if (this.config.name === "ollama") {
+    if (await this.isOllamaBackend()) {
       return discoverViaOllama(this.config.baseUrl, {
         ...cacheKey,
         key: `ollama:${this.config.baseUrl}`,
@@ -137,9 +139,11 @@ export class LocalTransport implements ProviderTransport {
     };
   }
 
-  getExtraPayloadFields(): Record<string, any> {
-    // Ollama defaults to 2048 context and silently truncates — set it explicitly
-    if (this.config.name === "ollama") {
+  async getExtraPayloadFields(): Promise<Record<string, any>> {
+    // Ollama defaults to 2048 context and silently truncates, so set it
+    // explicitly for any endpoint that is actually an Ollama server, not only
+    // the one literally named "ollama".
+    if (await this.isOllamaBackend()) {
       const numCtx = Math.max(this._contextWindow, 32768);
       log(`[${this.displayName}] Setting num_ctx: ${numCtx} (detected: ${this._contextWindow})`);
       return { options: { num_ctx: numCtx } };
@@ -177,6 +181,42 @@ export class LocalTransport implements ProviderTransport {
   }
 
   // ─── Health checks ──────────────────────────────────────────────────
+
+  /**
+   * Whether this endpoint is actually an Ollama server, so the Ollama-only
+   * treatment (num_ctx injection, /api/show context detection, /api/tags model
+   * discovery) reaches a custom endpoint pointed at Ollama under a different
+   * name, not just the provider literally named "ollama".
+   *
+   * The literal "ollama" provider is authoritative and answers without a probe;
+   * any other recognized local provider (LM Studio, vLLM, MLX) names its own
+   * backend and is never Ollama. Only a "custom"/unrecognized endpoint is probed
+   * once against Ollama's /api/tags, whose {models:[...]} shape a generic
+   * OpenAI-compatible server does not return. The result is cached, and a
+   * network failure is treated as "not Ollama" rather than thrown.
+   */
+  private async isOllamaBackend(): Promise<boolean> {
+    if (this.config.name === "ollama") return true;
+    if (this.config.name !== "custom" && this.config.name in DISPLAY_NAMES) return false;
+    if (this._isOllamaBackend !== undefined) return this._isOllamaBackend;
+
+    try {
+      const response = await fetch(`${this.config.baseUrl}/api/tags`, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as any;
+        this._isOllamaBackend = Array.isArray(data?.models);
+      } else {
+        this._isOllamaBackend = false;
+      }
+    } catch {
+      this._isOllamaBackend = false;
+    }
+    log(`[${this.displayName}] Ollama backend probe (${this.config.baseUrl}): ${this._isOllamaBackend}`);
+    return this._isOllamaBackend;
+  }
 
   private async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
@@ -233,7 +273,7 @@ export class LocalTransport implements ProviderTransport {
     if (process.env.CLAUDISH_CONTEXT_WINDOW) return;
 
     log(`[${this.displayName}] Fetching context window...`);
-    if (this.config.name === "ollama") {
+    if (await this.isOllamaBackend()) {
       await this.fetchOllamaContextWindow();
     } else if (this.config.name === "lmstudio") {
       await this.fetchLMStudioContextWindow();

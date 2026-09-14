@@ -61,7 +61,7 @@ export class LiteLLMProviderTransport implements ProviderTransport {
     });
   }
 
-  getExtraPayloadFields(): Record<string, any> {
+  async getExtraPayloadFields(): Promise<Record<string, any>> {
     const fields: Record<string, any> = {};
 
     // Add provider-specific extra headers that LiteLLM forwards downstream
