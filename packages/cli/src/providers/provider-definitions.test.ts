@@ -33,6 +33,37 @@ import {
 import { getProviderApiKeyEnv } from "./routing-hints.js";
 
 // ---------------------------------------------------------------------------
+// GitHub Models (gh@) — OpenAI-compatible built-in
+// ---------------------------------------------------------------------------
+
+describe("github-models (gh@) provider", () => {
+  test("is a first-class OpenAI-transport built-in", () => {
+    const def = getProviderByName("github-models");
+    expect(def).toBeDefined();
+    expect(def!.transport).toBe("openai");
+    expect(def!.baseUrl).toBe("https://models.github.ai");
+    expect(def!.apiPath).toBe("/inference/chat/completions");
+    expect(def!.apiKeyEnvVar).toBe("GITHUB_MODELS_TOKEN");
+    expect(def!.isDirectApi).toBe(true);
+  });
+
+  test("gh shortcut and prefix resolve to github-models", () => {
+    expect(getShortcuts()["gh"]).toBe("github-models");
+    expect(getShortestPrefix("github-models")).toBe("gh");
+  });
+
+  test("key info and display name derive from the single entry", () => {
+    expect(getApiKeyInfo("github-models")?.envVar).toBe("GITHUB_MODELS_TOKEN");
+    expect(getDisplayName("github-models")).toBe("GitHub Models");
+  });
+
+  test("is prefix-only: no native model pattern claims it, so bare gpt-*/o1-* still route elsewhere", () => {
+    const owned = getNativeModelPatterns().filter((e) => e.provider === "github-models");
+    expect(owned).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Structural validation
 // ---------------------------------------------------------------------------
 

@@ -417,6 +417,29 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Direct OpenAI API (oai@)",
   },
 
+  // ── GitHub Models (OpenAI-compatible) ───────────────────────────────
+  // Prefix-only (gh@): no nativeModelPatterns, so a bare `gpt-*`/`o1-*` still
+  // routes to openai/openrouter — you opt in with the gh@ prefix. Reuses the
+  // shared openaiHandler; the endpoint is GitHub Models' OpenAI-compatible
+  // inference API, keyed by a fine-grained PAT with the models:read permission.
+  {
+    createHandler: openaiHandler,
+    name: "github-models",
+    displayName: "GitHub Models",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://models.github.ai",
+    apiPath: "/inference/chat/completions",
+    apiKeyEnvVar: "GITHUB_MODELS_TOKEN",
+    apiKeyDescription: "GitHub Models token (fine-grained PAT, models:read)",
+    apiKeyUrl: "https://github.com/settings/tokens?type=beta",
+    shortcuts: ["gh"],
+    shortestPrefix: "gh",
+    legacyPrefixes: [{ prefix: "gh/", stripPrefix: true }],
+    isDirectApi: true,
+    description: "GitHub Models, OpenAI-compatible (gh@)",
+  },
+
   // ── OpenAI Codex (Responses API — ChatGPT Plus/Pro subscription) ────
   {
     createHandler: openaiCodexHandler,
