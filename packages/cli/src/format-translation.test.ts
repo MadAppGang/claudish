@@ -2262,3 +2262,99 @@ describe("Regression: empty-response cause classification", () => {
     expect(extractStopReason(events)).toBe("end_turn");
   });
 });
+
+// ─── OpenAI SSE: cache accounting (G2, jsboige/claudish#99) ─────────────────
+
+describe("Regression: OpenAI-lane cache visibility (G2, #99)", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getDefaultAdapter() {
+    const mod = await import("./adapters/base-api-format.js");
+    return new mod.DefaultAPIFormat("test-model");
+  }
+
+  function sseToResponse(content: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(content));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  /** Upstream chunks carrying `text` plus one final chunk carrying `usage`. */
+  function chunks(usage: object): string {
+    return [
+      `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
+      ``,
+      `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":${JSON.stringify(usage)}}`,
+      ``,
+      `data: [DONE]`,
+      ``,
+    ].join("\n");
+  }
+
+  /** Replay one upstream stream and return the usage on the final message_delta. */
+  async function usageOf(usage: object) {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(chunks(usage)),
+      adapter,
+      "glm-5.3",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const delta = events.find((e) => e.data?.type === "message_delta");
+    expect(delta).toBeDefined();
+    return delta?.data?.usage;
+  }
+
+  test("the cached share is split OUT of input_tokens, never added on top", async () => {
+    const usage = await usageOf({
+      prompt_tokens: 1000,
+      completion_tokens: 20,
+      prompt_tokens_details: { cached_tokens: 900 },
+    });
+    expect(usage.cache_read_input_tokens).toBe(900);
+    expect(usage.input_tokens).toBe(100);
+    // The client's context gauge SUMS the fields — the total must not grow.
+    expect(usage.input_tokens + usage.cache_read_input_tokens).toBe(1000);
+  });
+
+  test("DeepSeek's prompt_cache_hit_tokens is read too", async () => {
+    const usage = await usageOf({
+      prompt_tokens: 1000,
+      completion_tokens: 20,
+      prompt_cache_hit_tokens: 750,
+    });
+    expect(usage.cache_read_input_tokens).toBe(750);
+    expect(usage.input_tokens).toBe(250);
+  });
+
+  test("no cache detail → input unchanged, cache zero (backward compatible)", async () => {
+    const usage = await usageOf({ prompt_tokens: 1000, completion_tokens: 20 });
+    expect(usage.input_tokens).toBe(1000);
+    expect(usage.cache_read_input_tokens).toBe(0);
+  });
+
+  test("a provider reporting more cached than total cannot emit negative input", async () => {
+    const usage = await usageOf({
+      prompt_tokens: 1000,
+      completion_tokens: 5,
+      prompt_tokens_details: { cached_tokens: 1200 },
+    });
+    expect(usage.input_tokens).toBe(0);
+    expect(usage.cache_read_input_tokens).toBe(1000);
+  });
+});
