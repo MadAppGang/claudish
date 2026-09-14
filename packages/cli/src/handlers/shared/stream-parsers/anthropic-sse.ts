@@ -12,10 +12,11 @@
 import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
+import type { UsageCacheDetail } from "../token-tracker.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
-  onTokenUpdate?: (input: number, output: number) => void;
+  onTokenUpdate?: (input: number, output: number, detail?: UsageCacheDetail) => void;
   /** Optional adapter — used to check shouldFilterThinking(). */
   adapter?: BaseAPIFormat;
   /**
@@ -187,6 +188,8 @@ export function createAnthropicPassthroughStream(
   // createAnthropicPassthroughStream is called per request.
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let stopReason: string | null = null;
   /** Upstream opened the message. If not, a synthetic close needs its own message_start. */
   let sawMessageStart = false;
@@ -547,10 +550,16 @@ export function createAnthropicPassthroughStream(
                       if (data.message?.usage) {
                         inputTokens = data.message.usage.input_tokens || inputTokens;
                         outputTokens = data.message.usage.output_tokens || outputTokens;
+                        cacheReadTokens = data.message.usage.cache_read_input_tokens || cacheReadTokens;
+                        cacheCreationTokens =
+                          data.message.usage.cache_creation_input_tokens || cacheCreationTokens;
                       }
                       if (data.usage) {
                         inputTokens = data.usage.input_tokens || inputTokens;
                         outputTokens = data.usage.output_tokens || outputTokens;
+                        cacheReadTokens = data.usage.cache_read_input_tokens || cacheReadTokens;
+                        cacheCreationTokens =
+                          data.usage.cache_creation_input_tokens || cacheCreationTokens;
                       }
                       if (
                         data.type === "content_block_delta" &&
@@ -620,10 +629,16 @@ export function createAnthropicPassthroughStream(
                   if (data.message?.usage) {
                     inputTokens = data.message.usage.input_tokens || inputTokens;
                     outputTokens = data.message.usage.output_tokens || outputTokens;
+                    cacheReadTokens = data.message.usage.cache_read_input_tokens || cacheReadTokens;
+                    cacheCreationTokens =
+                      data.message.usage.cache_creation_input_tokens || cacheCreationTokens;
                   }
                   if (data.usage) {
                     inputTokens = data.usage.input_tokens || inputTokens;
                     outputTokens = data.usage.output_tokens || outputTokens;
+                    cacheReadTokens = data.usage.cache_read_input_tokens || cacheReadTokens;
+                    cacheCreationTokens =
+                      data.usage.cache_creation_input_tokens || cacheCreationTokens;
                   }
                   if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
                     opts.onAssistantText?.(data.delta.text || "", "text");
@@ -652,7 +667,7 @@ export function createAnthropicPassthroughStream(
           opts.onTurnEnd?.();
 
           if (opts.onTokenUpdate) {
-            opts.onTokenUpdate(inputTokens, outputTokens);
+            opts.onTokenUpdate(inputTokens, outputTokens, { cacheReadTokens, cacheCreationTokens });
           }
 
           if (!isClosed) {
@@ -675,7 +690,7 @@ export function createAnthropicPassthroughStream(
             opts.onTurnEnd?.();
           } catch {}
           try {
-            opts.onTokenUpdate?.(inputTokens, outputTokens);
+            opts.onTokenUpdate?.(inputTokens, outputTokens, { cacheReadTokens, cacheCreationTokens });
           } catch {}
           if (!isClosed) {
             isClosed = true;

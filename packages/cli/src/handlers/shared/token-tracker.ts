@@ -155,16 +155,21 @@ export class TokenTracker {
    */
   private sessionBilledInputTokens = 0;
   /**
-   * Cache-read tokens summed across the session, for the accumulate-both
-   * strategy ALONE.
-   *
-   * That strategy ASSIGNS `sessionTotalCost` from cumulative totals rather than
-   * accumulating per-turn costs, so a per-turn discount subtracted there is
-   * simply overwritten on the next turn. The discount has to be recomputed from
-   * a cumulative cache-read total to survive, which is what this counter is.
-   * Every other strategy accumulates and needs no such counter.
+   * Cache-read tokens summed across the session. Two readers: the accumulate-both
+   * strategy, which ASSIGNS `sessionTotalCost` from cumulative totals rather than
+   * accumulating per-turn costs, so a per-turn discount subtracted there is simply
+   * overwritten on the next turn and the discount has to be recomputed from a
+   * cumulative cache-read total to survive; and `writeFile`, which surfaces it as
+   * `cache_read_tokens` for the status line and session summary. Every other
+   * strategy accumulates per-turn cost and needs no cumulative counter for billing.
    */
   private sessionCacheReadTokens = 0;
+  /**
+   * Cache-creation tokens summed across the session, surfaced by `writeFile` as
+   * `cache_creation_tokens` for cache-effectiveness reporting. No billing use:
+   * cache writes are priced as ordinary input, so there is no discount to recompute.
+   */
+  private sessionCacheCreationTokens = 0;
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
@@ -254,6 +259,7 @@ export class TokenTracker {
     this.sessionOutputTokens += outputTokens;
     this.sessionBilledInputTokens += inputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    this.sessionCacheCreationTokens += detail?.cacheCreationTokens ?? 0;
 
     const pricing = this.getPricing();
     // This strategy charges the whole context every turn, so the whole context
@@ -276,6 +282,7 @@ export class TokenTracker {
     this.lastInputTokens = this.sessionInputTokens;
     this.sessionOutputTokens += outputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    this.sessionCacheCreationTokens += detail?.cacheCreationTokens ?? 0;
 
     const pricing = this.getPricing();
     // ASSIGNED from cumulative totals, so the discount must be cumulative too: a
@@ -339,6 +346,7 @@ export class TokenTracker {
 
     this.sessionOutputTokens += outputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    this.sessionCacheCreationTokens += detail?.cacheCreationTokens ?? 0;
 
     const pricing = this.getPricing();
     this.sessionBilledInputTokens += incrementalInputTokens;
@@ -370,6 +378,7 @@ export class TokenTracker {
     this.sessionOutputTokens += outputTokens;
     this.sessionBilledInputTokens += inputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    this.sessionCacheCreationTokens += detail?.cacheCreationTokens ?? 0;
 
     if (typeof actualCost === "number" && actualCost > 0) {
       // NO DISCOUNT on this branch. The provider's own figure is already net of
@@ -497,6 +506,8 @@ export class TokenTracker {
         updated_at: Date.now(),
         is_free: isFreeModel,
         is_estimated: isEstimate || false,
+        cache_read_tokens: this.sessionCacheReadTokens,
+        cache_creation_tokens: this.sessionCacheCreationTokens,
         // Session-summary fields. The status line ignores both; they exist because
         // the token file is the only durable record of a session that survives the
         // proxy exiting, and the summary is printed AFTER shutdown (see
