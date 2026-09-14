@@ -415,6 +415,8 @@ gh pr list --repo jsboige/claudish --state open --json number,title,headRefName,
 
 Pour chaque décision pendante, donner assez de contexte pour trancher **sans ouvrir GitHub** : ce que ça change concrètement, risque si approuvé, risque si rejeté, recommandation. Représenter les arbitrages différés au cycle suivant tant qu'ils ne sont pas tranchés.
 
+**Registre des questions ouvertes (gouvernance user 15/09)** : toute question ou askuser non bloquant vit dans `C:\Users\MYIA\.claude\projects\d--claudish\memory\open-questions-ledger.md` (+ scratchpad à présenter si matériel). Une entrée n'en sort **que sur réponse user** — jamais auto-expirée. Le registre est représenté à chaque fin de cycle (Phase 6), de façon non bloquante : on n'attend jamais une réponse pour exécuter. Les outils plan-mode/`AskUserQuestion` sont deny dans `settings.json` (ordre user 15/09) — ne pas les contourner ; les notebooks passent par le MCP papermill maison, activé au besoin.
+
 ### Phase 5b — Contrôle des gestes (mandat user 07/09)
 
 **Arbitrage user du 07/09 (~16:00 locale), après l'incident hub po-2025** (flotte à l'arrêt par bind EISDIR, puis cascades vidées par un `up -d` de réparation) : le coordinateur **valide ex-ante tout geste infra/trafic du workspace**, urgence exceptée (validée ex-post). La règle lie toutes les machines, coordinateur compris.
@@ -434,6 +436,8 @@ roosync_dashboard(action:"append", type:"workspace", content:"[DONE] ...")
 ```
 
 Les rapports vont sur le dashboard, **pas** dans des fichiers du dépôt.
+
+Le bilan **représente le registre des questions ouvertes** (entrées en attente, non bloquant) — section obligatoire tant que le registre n'est pas vide.
 
 ### Phase 7 — Cron : garde-fou de sortie (CRITIQUE)
 
