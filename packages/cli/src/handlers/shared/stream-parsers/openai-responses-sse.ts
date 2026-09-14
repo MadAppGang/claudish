@@ -16,6 +16,7 @@ import { log, getLogLevel } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
 import { overflowReportedTokens, overflowReportFloor } from "../overflow-report-floor.js";
+import { createResponseCapture } from "../response-capture.js";
 
 /**
  * Extract the token counts named by a context-overflow error.
@@ -127,6 +128,16 @@ export function createResponsesStreamHandler(
   // latest number.
   const tHeaders = performance.now();
   const reqN = requestNumberFor(c.req);
+  // Response capture for the Sol/Codex lane (#90). This parser used to emit its
+  // own stdout marker but write NO resp-*.sse file, so every capture-based
+  // analysis (traffic-summary, traffic-consumption, the #60 report) was blind to
+  // the lane: the corpus had no rows for it at all. The [resp] marker now comes
+  // from the capture, at CLOSE — the one position that also fires on a hung
+  // stream, where the old completion-only marker never did.
+  const cap = createResponseCapture("responses", opts.modelName, true, reqN);
+  // Populated on a context-overflow refusal so the capture file carries the same
+  // reported/synthetic counts the live marker prints.
+  let overflowInfo: Record<string, unknown> | undefined;
   let ttftLogged = false;
 
   let buffer = "";
@@ -184,6 +195,15 @@ export function createResponsesStreamHandler(
 
   const stream = new ReadableStream({
     start: async (controller) => {
+      // Diagnostic tap (no-op unless CLAUDISH_CAPTURE_DIR is set): mirror every
+      // outgoing byte into the response capture, so the Sol/Codex lane lands in
+      // the corpus and a hung stream stays visible offline.
+      const _origEnqueue = controller.enqueue.bind(controller);
+      controller.enqueue = ((chunk: any) => {
+        cap.tap(chunk);
+        return _origEnqueue(chunk);
+      }) as typeof controller.enqueue;
+
       const send = (event: string, data: any) => {
         if (!isClosed) {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -241,6 +261,14 @@ export function createResponsesStreamHandler(
 
         isClosed = true;
         if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+        cap.done({
+          closed: true,
+          stop_reason: "interrupted",
+          path: "interrupted",
+          detail,
+          tools: functionCalls.size,
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        });
         try {
           controller.close();
         } catch {
@@ -471,11 +499,10 @@ export function createResponsesStreamHandler(
                   outputTokens = event.usage.output_tokens || 0;
                 }
                 completed = true;
-                const elapsed = Math.round(performance.now() - tHeaders);
-                const stop = hasToolUse ? "tool_use" : "end_turn";
-                process.stdout.write(
-                  `  [resp] responses model=${opts.modelName} reqN=${reqN} events~=${dataEvents} bytes=${totalBytes} closed=true stop=${stop} ${elapsed}ms usage=${inputTokens}+${outputTokens}\n`
-                );
+                // No [resp] marker here. The marker is emitted once, at CLOSE, by
+                // the response capture: emitting one here as well would double
+                // every count in traffic-live.ps1 ($responses matches /\[resp\]/),
+                // and this site cannot report a hang — it only runs on success.
               } else if (event.type === "error" || event.type === "response.failed") {
                 const err = event.error || event.response?.error || {};
                 const errMsg = err.message || event.message || "Unknown API error";
@@ -521,8 +548,18 @@ export function createResponsesStreamHandler(
                   // `synthetic` marks a count the floor (not the body) produced, so
                   // downstream aggregators of `usage` can exclude it in one grep.
                   const synthetic = inputTokens > (overflow.used ?? 0);
+                  overflowInfo = {
+                    used: overflow.used ?? null,
+                    limit: overflow.limit ?? null,
+                    reported: inputTokens,
+                    synthetic,
+                  };
+                  // Deliberately NOT a `[resp]` line: traffic-live.ps1 counts
+                  // /\[resp\]/ and this is one response, already counted once by
+                  // the capture marker at close. `synthetic=` stays greppable,
+                  // which is the contract that field exists for.
                   process.stdout.write(
-                    `  [resp] responses CONTEXT-OVERFLOW model=${opts.modelName} reqN=${reqN} used=${overflow.used ?? "?"} limit=${overflow.limit ?? "?"} reported=${inputTokens} synthetic=${synthetic}
+                    `  [ResponsesSSE] CONTEXT-OVERFLOW model=${opts.modelName} reqN=${reqN} used=${overflow.used ?? "?"} limit=${overflow.limit ?? "?"} reported=${inputTokens} synthetic=${synthetic}
 `
                   );
                 }
@@ -554,6 +591,15 @@ export function createResponsesStreamHandler(
                   pingInterval = null;
                 }
                 if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+                cap.done({
+                  closed: true,
+                  stop_reason: "end_turn",
+                  path: "api-error",
+                  error: errCode,
+                  tools: functionCalls.size,
+                  overflow: overflowInfo,
+                  usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+                });
                 controller.close();
                 return;
               }
@@ -595,9 +641,29 @@ export function createResponsesStreamHandler(
 
         isClosed = true;
         if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+        cap.done({
+          closed: true,
+          stop_reason: stopReason,
+          path: "normal",
+          tools: functionCalls.size,
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        });
         controller.close();
       } catch (error) {
         finishInterruptedStream(error);
+      }
+    },
+    // Client disconnected before the stream ended: no terminal event was sent, so
+    // this is the one path that legitimately reports closed=false. The capture is
+    // closed out anyway — a cancelled Sol/Codex stream belongs in the corpus, not
+    // missing from it — and the ping interval is cleared here, which it was not
+    // before (it kept firing for the life of the process).
+    cancel() {
+      cap.done({ closed: false, stop_reason: "client-cancel", path: "cancel" });
+      isClosed = true;
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
       }
     },
   });
