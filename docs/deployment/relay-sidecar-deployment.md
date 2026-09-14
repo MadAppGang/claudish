@@ -2,13 +2,13 @@
 
 The relay/sidecar design (v7.2+, see `CLAUDE.md` → "Relay / Sidecar Mode") removes po-2023 as a single point of failure: each machine runs its own claudish container that **relays** to the hub in nominal mode and **takes over locally** (AUTONOMOUS) when the hub dies. The relay code lives in [`packages/cli/src/fork/server/relay.ts`](../../packages/cli/src/fork/server/relay.ts); the per-machine installer is [`scripts/install-sidecar.ps1`](../../scripts/install-sidecar.ps1).
 
-This runbook deploys a sidecar on each cluster machine **except web1** (which keeps pointing at `models.myia.io` directly) and **except po-2023** (the hub).
+This runbook deploys a sidecar on each cluster machine **except web1** (which keeps pointing at `models.myia.io` directly) and **except the hub machine** — po-2025 since the 2026-09 migration (`192.168.0.50`), po-2023 (`192.168.0.46`) before it.
 
 ## Architecture reminder — one binary, three modes
 
 | `CLAUDISH_RELAY_UPSTREAM` | Mode | Behavior |
 | --- | --- | --- |
-| **unset** | HUB (po-2023) | Always local. Unchanged. |
+| **unset** | HUB | Always local. Unchanged. |
 | set + hub **alive** | **NOMINAL relay** | Forwards the raw request to the hub; response repiped through the never-hang passthrough. No local capture (hub captures centrally). |
 | set + hub **dead** | **AUTONOMOUS** | Local pipeline + local capture. Leak-policy hard (never Anthropic on machines with `CLAUDISH_NO_ANTHROPIC=1`). |
 
@@ -58,12 +58,29 @@ After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** si
 | Machine | `-Upstream` | `-Compress` | `-NoAnthropic` | Note |
 |---|---|---|---|---|
 | myia-ai-01 | `https://models.myia.io` | — | **no** | The one Anthropic authority; Opus traverses the relay via the header fix (OAuth preserved). **Not the LAN IP** — this machine's Docker has no route to it (see "Docker cannot reach the LAN hub"). Also needs `-HostPort 3002 -ContainerName claudish-sidecar` (3000 taken by a third-party service). |
-| myia-po-2024 | `http://192.168.0.46:3000` | — | yes | LAN |
-| myia-po-2025 | `https://models.myia.io` | yes | yes | WAN external |
-| myia-po-2026 | `http://192.168.0.46:3000` | — | yes | LAN |
+| myia-po-2024 | `http://192.168.0.50:3000` | — | yes | LAN — ⚠ **measured stale 2026-09-14**: the installed sidecar still carries `192.168.0.46` (see "A hub migration does not propagate") |
+| myia-po-2025 | `https://models.myia.io` | yes | yes | WAN external — **this machine is the hub** |
+| myia-po-2026 | `http://192.168.0.50:3000` | — | yes | LAN — repointed `.46`→`.50` by hand on 2026-09-13 |
 
 - **web1**: no sidecar — stays on `https://models.myia.io` directly.
-- **po-2023**: the hub (`RELAY_UPSTREAM` unset). Unchanged.
+- **po-2023**: no longer the hub; it runs a relay sidecar like the others.
+
+### A hub migration does not propagate to a sidecar's upstream
+
+`CLAUDISH_RELAY_UPSTREAM` is a **literal baked into the sidecar's `.env` at install time**. Nothing re-resolves it: move the hub and every sidecar keeps forwarding to the old address until someone edits that file by hand.
+
+The 2026-09 migration (hub po-2023 `192.168.0.46` → po-2025 `192.168.0.50`) exposed this on **po-2024**, where a standalone sidecar (`:3914`, auto-started from HKCU `Run` via `.start-claudish-sidecar.ps1`) still carries the hardcoded `http://192.168.0.46:3000`. It relays po-2024 → po-203 → hub, re-introducing po-203 into a path the sidecar design exists to remove. po-2026's `.env` was repointed to `.50` by hand on 2026-09-13; po-2024's was not, and nothing flagged it — the drift surfaced only by cross-reading that machine's *four* seats against the relay's own traffic.
+
+**Why a per-consumer verification misses it**: `ANTHROPIC_BASE_URL` on po-2024 reads `http://192.168.0.50:3000` — correct. The drift lives in a **second, independent consumer** (an auto-start process), not in the settings file. Verifying "where each client lands" therefore means **enumerating processes**, not reading `~/.claude/settings.json`:
+
+```powershell
+Get-NetTCPConnection -State Established | Where-Object RemotePort -in 3000,3001,3002 |
+  ForEach-Object { "$($_.OwningProcess) -> $($_.RemoteAddress):$($_.RemotePort)" }
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'claudish|sidecar|proxy' } |
+  Select-Object ProcessId, CommandLine
+```
+
+Any hub move must walk this list on every machine. A machine whose only evidence of migration is its settings file is **unverified**, not migrated.
 
 ## Prerequisites on each sidecar machine
 
