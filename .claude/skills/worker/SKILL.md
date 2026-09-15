@@ -48,6 +48,26 @@ et centralise ; le hub (po-2023) observe ; les machines consomment.
   config en mémoire. Preuve : `uptimeSec` non reset. Il faut drainer à zéro flux puis
   `docker compose up -d --force-recreate` (mesuré 15/09 bascule claudish-2 po-203 :
   1er passage no-op en 0s, 2e passage Recreated + uptime 12s).
+  ✅ **Alternative mesurée (po-2025, même bascule, 15/09 08:07Z)** : un **`docker restart` drainé
+  suffit** quand ni l'image ni le `.env` ne changent — le process redémarre et **relit le
+  fichier bind-monté**, tout en **préservant l'env du container** (donc zéro risque de vider les
+  `CLAUDISH_FAILOVER_*`). Effet secondaire mesuré : restart = **pas de zéro garanti**, 5 flux en
+  vol coupés. Le no-op ne concerne QUE `compose up -d` (qui décide ou non de recréer). Si le
+  « conteneur » est en fait un process bun lancé par script (sidecar hors compose) : kill +
+  relance = recreate effectif, preuve = **PID neuf** (mesuré po-2024 : 170412 → 242088).
+- **Acceptation d'une clé z.ai quand la fenêtre 5 h est épuisée** (aucun 200 atteignable) :
+  un **1308** (quota, avec horodatage de reset) prouve que la clé est **acceptée** — une clé
+  bidon renvoie **401 « token expired or incorrect »**. Comparer les **deux lanes** (`gc@`
+  OpenAI-shaped `/api/coding/paas/v4/chat/completions` et `zai@` anthropic
+  `/api/anthropic/v1/messages`) : **même instant de reset ⇒ même compte/bucket** (une clé neuve
+  du même compte = rotation, pas un 2ᵉ quota). Plus rapide que d'attendre le reset (po-2025, 15/09).
+- **Sous pénurie de quota flotte, la latence headers du hub est gonflée par la MARCHE DE CASCADE** —
+  chaque marche murée est essayée avant que les headers ne partent. Mesuré po-203, 3 h de pénurie
+  totale (15/09 ~07:30-10:30Z) : **1 390 forwards `[ttft]`, 44 replis `header-timeout` servis localement,
+  2 épisodes AUTONOMOUS** (déclenchés par `hub HTTP 500`, pas par le budget 30 s). Un canary
+  d'acceptation peut alors **dépasser 90 s** sans que le hub soit en panne (`/health` 200, streams
+  actifs) : c'est la cascade qui marche. Le flap du relais est ici un **instrument de l'état des
+  lanes du hub**, pas un défaut local.
 - **Failover** : `roleFromModelName()` matche que `opus|sonnet|haiku|fable` → un client qui
   nomme `glm-5.2` rate la cascade sans `CLAUDISH_FAILOVER_ROLE_MODELS`. Ne pas config-armer
   un failover qui tourne déjà correctement (sonnet ARMED sur Mistral GLM 5.2 = attendu).
