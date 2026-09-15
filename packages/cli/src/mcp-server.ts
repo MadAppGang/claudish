@@ -307,11 +307,15 @@ export async function runPromptViaProxy(
     body.system = systemPrompt;
   }
 
-  const response = await fetch(`${proxy.url}/v1/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // In-process dispatch through the proxy's Hono app (no TCP loopback). The URL
+  // host is irrelevant; the app routes on the path.
+  const response = await proxy.fetch(
+    new Request("http://proxy.local/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
 
   if (!response.ok) {
     const error = await response.text();
