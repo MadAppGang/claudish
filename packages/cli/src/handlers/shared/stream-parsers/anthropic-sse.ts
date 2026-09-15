@@ -104,6 +104,18 @@ export function createAnthropicPassthroughStream(
           }
           return idx;
         };
+        // Upstream→emitted index mapping for the block currently open.
+        // clampIndex only corrects UPWARD jumps (idx > highest+1). When a
+        // content_block_start is remapped DOWNWARD — which is what suppressing a
+        // block does to every block after it — the following deltas/stop still
+        // carry the upstream index, clampIndex sees nothing out of range, and the
+        // client gets deltas addressed to a block that was opened under a
+        // different index ("Content block not found"). Latent until two blocks
+        // were suppressed in one stream, which is exactly what Z.AI does
+        // (server_tool_use + tool_result). Remembering the pair fixes it for any
+        // number of suppressions.
+        let openBlockUpstreamIndex: number | null = null;
+        let openBlockEmittedIndex: number | null = null;
         const trackIndex = (idx: number) => {
           if (idx > highestSeenIndex) highestSeenIndex = idx;
         };
@@ -177,6 +189,18 @@ export function createAnthropicPassthroughStream(
           let serverToolName = "";
           let serverToolInput = "";
           let serverToolsSuppressed = 0;
+
+          // tool_result suppression state.
+          // Live capture (2026-08-11, api.z.ai /api/anthropic/v1/messages, glm-5.2):
+          // Z.AI does not stop at server_tool_use — it runs the tool server-side and
+          // streams the OUTCOME back as an assistant-side `tool_result` content block:
+          //   idx1 server_tool_use(web_search_prime) → idx3 tool_result(tool_use_id, content)
+          // In the Anthropic wire format `tool_result` is a USER-turn block; an
+          // assistant one is off-spec, so it reaches Claude Code as the very same
+          // "Unsupported content type" failure the server_tool_use suppression above
+          // exists to prevent. Suppress the whole block lifecycle for the same reason.
+          let insideToolResultBlock = false;
+          let toolResultsSuppressed = 0;
 
           // (highestSeenIndex / lastBlockOpen / clampIndex / trackIndex declared
           //  earlier in start() scope — shared with handleServerToolResult's closure.)
@@ -433,7 +457,19 @@ export function createAnthropicPassthroughStream(
                     ) {
                       insideServerToolBlock = true;
                       serverToolName = data.content_block.name || "(unnamed)";
-                      serverToolInput = "";
+                      // Z.AI delivers the COMPLETE input object inside
+                      // content_block_start and then emits zero deltas (live
+                      // capture 2026-08-11: start → stop, no input_json_delta).
+                      // Seeding from it is what makes the input visible at all;
+                      // accumulating deltas alone left rawInput = "" on every
+                      // real stream, so even a genuine webReader silently
+                      // degraded to the "not available locally" notice instead
+                      // of being fetched. Deltas still append below for
+                      // providers that stream the input incrementally.
+                      serverToolInput =
+                        data.content_block.input && typeof data.content_block.input === "object"
+                          ? JSON.stringify(data.content_block.input)
+                          : "";
                       serverToolsSuppressed++;
                       log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}: ${serverToolName}`);
                       continue; // drop this start event
@@ -455,6 +491,31 @@ export function createAnthropicPassthroughStream(
                       continue; // drop all events inside the suppressed block
                     }
 
+                    // ── tool_result suppression ──────────────────────────────────
+                    // Same guard, same reason, sibling block: Z.AI streams the
+                    // server-side tool OUTCOME as an assistant `tool_result` block
+                    // right after the server_tool_use it suppressed above. That block
+                    // type is USER-turn-only in the Anthropic wire format, so it hits
+                    // Claude Code as "Unsupported content type" exactly like its
+                    // sibling did. Nothing is lost by dropping it: Z.AI also emits the
+                    // same results as a plain text block ("**Output:** …") immediately
+                    // before it, and authors its final answer from them afterwards.
+                    // Must run BEFORE the passthrough below, for the ordering reason
+                    // spelled out above.
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "tool_result"
+                    ) {
+                      insideToolResultBlock = true;
+                      toolResultsSuppressed++;
+                      log(`[AnthropicSSE] Suppressing tool_result block at index ${data.index} (tool_use_id=${data.content_block.tool_use_id ?? "?"})`);
+                      continue; // drop this start event
+                    }
+                    if (insideToolResultBlock) {
+                      if (data.type === "content_block_stop") insideToolResultBlock = false;
+                      continue; // drop all events inside the suppressed block
+                    }
+
                     // No error — check index bounds before passing through
                     if (typeof data.index === "number") {
                       if (data.type === "content_block_start") {
@@ -464,6 +525,9 @@ export function createAnthropicPassthroughStream(
                         // "Content block not found" on the client. Remap to
                         // sequential indices to keep the client happy.
                         const expected = highestSeenIndex + 1;
+                        // Remember the pair so this block's deltas/stop follow it.
+                        openBlockUpstreamIndex = data.index;
+                        openBlockEmittedIndex = expected;
                         if (data.index !== expected) {
                           log(
                             `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
@@ -479,18 +543,30 @@ export function createAnthropicPassthroughStream(
                         }
                         trackIndex(expected);
                       } else {
-                        // delta / stop — clamp to highestSeenIndex
+                        // delta / stop — follow the open block's remap, else clamp
                         if (data.type === "content_block_stop") lastBlockOpen = false;
-                        const clamped = clampIndex(data.index, `${data.type} (passthrough)`);
-                        if (clamped !== data.index) {
-                          const modified = { ...data, index: clamped };
-                          if (!isClosed) {
-                            controller.enqueue(encoder.encode("data: " + JSON.stringify(modified) + "\n"));
-                          }
-                        } else {
-                          if (!isClosed) {
-                            controller.enqueue(encoder.encode(line + "\n"));
-                          }
+                        const followed =
+                          openBlockUpstreamIndex !== null && data.index === openBlockUpstreamIndex
+                            ? openBlockEmittedIndex!
+                            : data.index;
+                        if (followed !== data.index) {
+                          log(
+                            `[AnthropicSSE] ${data.type} index ${data.index} follows remapped block → ${followed}`
+                          );
+                        }
+                        if (data.type === "content_block_stop") {
+                          openBlockUpstreamIndex = null;
+                          openBlockEmittedIndex = null;
+                        }
+                        const finalIdx = clampIndex(followed, `${data.type} (passthrough)`);
+                        if (!isClosed) {
+                          // Re-serialize only when the index actually moved; an
+                          // untouched line is forwarded byte-for-byte as before.
+                          const payload =
+                            finalIdx === data.index
+                              ? line
+                              : "data: " + JSON.stringify({ ...data, index: finalIdx });
+                          controller.enqueue(encoder.encode(payload + "\n"));
                         }
                       }
                     } else {

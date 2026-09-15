@@ -102,6 +102,53 @@ function extractText(events: ClaudeEvent[]): string {
     .join("");
 }
 
+/**
+ * Parse an already-drained SSE buffer into events.
+ *
+ * `parseClaudeSseStream` consumes a Response; some tests must drain the stream
+ * first (to prove it completes without throwing) and inspect it afterwards.
+ */
+function rawToEvents(raw: string): ClaudeEvent[] {
+  const events: ClaudeEvent[] = [];
+  let eventType = "";
+  // Line-based, NOT frame-based (`raw.split("\n\n")`). The anthropic-sse
+  // passthrough terminates forwarded lines with a single "\n" while the
+  // server-tool injection writes "\n\n" frames, so splitting on blank lines
+  // groups two independent JSON objects into one part; `dataStr +=` then builds
+  // `{…}{…}`, JSON.parse throws, and BOTH events vanish from the parsed list —
+  // silently, as a dropped content_block_start whose deltas still arrive. Each
+  // `data:` line here is exactly one JSON object, so scanning lines is both
+  // simpler and immune to frame separation.
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event: ")) {
+      eventType = line.slice(7).trim();
+    } else if (line.startsWith("data: ")) {
+      try {
+        events.push({ event: eventType, data: JSON.parse(line.slice(6)) });
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    }
+  }
+  return events;
+}
+
+/**
+ * The `content_block.type` of every block opened in a raw SSE buffer.
+ *
+ * Use this instead of `raw.toContain('"type":"…"')` when asserting that an
+ * unsupported block type does NOT reach the client: providers differ in JSON
+ * spacing (Z.AI emits `"type": "tool_result"`, with a space), so a substring
+ * assertion silently passes on real output and only ever "worked" against
+ * hand-written fixtures.
+ */
+function blockTypesOf(raw: string): string[] {
+  return rawToEvents(raw)
+    .filter((e) => e.data?.type === "content_block_start")
+    .map((e) => e.data?.content_block?.type)
+    .filter((t): t is string => typeof t === "string");
+}
+
 /** Extract tool_use block names from parsed Claude events */
 function extractToolNames(events: ClaudeEvent[]): string[] {
   return events
@@ -1841,11 +1888,103 @@ describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
 
     // server_tool_use blocks are suppressed — no content_block with that type
     // reaches the client (which cannot render it).
-    expect(raw).not.toContain('"type":"server_tool_use"');
+    //
+    // Asserted on the PARSED block type, not on a substring of the raw stream:
+    // Z.AI serializes with spaces (`"type": "server_tool_use"`), so the obvious
+    // `expect(raw).not.toContain('"type":"server_tool_use"')` passes even when
+    // the block leaks verbatim. An assertion that cannot fail on real provider
+    // output is worse than no assertion — it reads green over a live defect.
+    expect(blockTypesOf(raw)).not.toContain("server_tool_use");
 
     // The turn terminates cleanly with message_stop (proves no proxy crash /
     // unterminated stream, which is the never-hang-priority contract).
     expect(raw).toContain('"type":"message_stop"');
+  });
+
+  // ── Live capture, api.z.ai /api/anthropic/v1/messages, glm-5.2, 2026-08-11 ──
+  //
+  // The fixture above was hand-written from the shape we BELIEVED Z.AI emits. A
+  // direct capture against the live endpoint shows four divergences that the
+  // synthetic fixture could not have surfaced:
+  //
+  //   1. the tool is `web_search_prime`, not `webReader`;
+  //   2. the COMPLETE input object arrives inside content_block_start and the
+  //      block emits ZERO input_json_delta events (start → stop). Accumulating
+  //      deltas alone therefore left rawInput = "" on every real stream;
+  //   3. Z.AI does not stop at the call — it runs the tool server-side and
+  //      streams the outcome back as an assistant-side `tool_result` block,
+  //      which is USER-turn-only in the Anthropic wire format and reached the
+  //      client as the very "Unsupported content type" failure the
+  //      server_tool_use suppression exists to prevent;
+  //   4. suppressing that second block shifts every later block down by one,
+  //      which exposed a latent remap bug: content_block_start was remapped
+  //      downward while its deltas/stop kept the upstream index (clampIndex only
+  //      corrects UPWARD jumps), i.e. deltas addressed to a block opened under a
+  //      different index — "Content block not found".
+  //
+  // This test replays the real bytes and asserts the whole emitted stream is
+  // well-formed, structurally. Not with substring checks: Z.AI serializes with
+  // spaces, so `toContain('"type":"tool_result"')` never matches its output.
+  test("live Z.AI capture: tool_result suppressed and indices stay contiguous", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "regression-zai-server-tool-use-live.sse")
+    );
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, { modelName: "glm-5.2" });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+    }
+    // Let the async handleServerToolResult injection settle.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const events = rawToEvents(raw);
+
+    // Neither unsupported block type survives to the client.
+    const types = blockTypesOf(raw);
+    expect(types).not.toContain("server_tool_use");
+    expect(types).not.toContain("tool_result");
+
+    // Every emitted block is well-formed: opened before it is written to,
+    // closed exactly once, and addressed by a single index throughout. This is
+    // what "Content block not found" actually means when it fails.
+    const open = new Set<number>();
+    const closed = new Set<number>();
+    const starts: number[] = [];
+    for (const e of events) {
+      const t = e.data?.type;
+      const i = e.data?.index;
+      if (t === "content_block_start") {
+        expect(open.has(i)).toBe(false); // no double-open
+        open.add(i);
+        starts.push(i);
+      } else if (t === "content_block_delta") {
+        expect(open.has(i)).toBe(true); // delta must land in an OPEN block
+      } else if (t === "content_block_stop") {
+        expect(open.has(i)).toBe(true);
+        expect(closed.has(i)).toBe(false);
+        closed.add(i);
+        open.delete(i);
+      }
+    }
+    // Indices are contiguous from 0 — no hole left by the suppressed blocks.
+    expect(starts).toEqual(starts.map((_, n) => n));
+    expect(starts.length).toBeGreaterThan(0);
+    // Every block was closed.
+    expect(open.size).toBe(0);
+    expect(closed.size).toBe(starts.length);
+
+    // The model's real answer survives the suppression around it.
+    expect(extractText(events)).toContain("current stable version of Bun");
+
+    // Terminal message_stop — never-hang contract.
+    expect(events.some((e) => e.data?.type === "message_stop")).toBe(true);
   });
 });
 

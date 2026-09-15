@@ -1,0 +1,204 @@
+event: message_start
+data: {"type": "message_start", "message": {"id": "msg_2026081110065868a5d62e4569453c", "type": "message", "role": "assistant", "model": "glm-5.2", "content": [], "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "**🌐 Z.ai Built-in Tool: web_search_prime**\n\n**Input:**\n```json\n"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "{\""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "search"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "_query"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "\":\""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "B"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "un"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " current"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " stable"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " version"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " "}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "202"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "5"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "\""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": ",\""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "search"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "_rec"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ency"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "_filter"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "server_tool_use", "id": "call_7be4783d453f4d1cbe2fa4d9", "name": "web_search_prime", "input": {"search_query": "Bun current stable version 2025", "search_recency_filter": "oneMonth", "location": "cn"}}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 1}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "**Output:**\n**web_search_prime_result_summary:** [{\"text\": [{\"title\": \"Bun — A fast all-in-one JavaScript runtime\", \"link\": \"https://bun.com/\", \"content\": \"Bundle, install, and run JavaScript & TypeScript — all in Bun. Bun is a new JavaScript runtime with a native bundler, transpiler, task runner, ...\", \"refer\": \"ref_1\"}, {\"title\": \"Issue #27664 ·...\n                                                "}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 2}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 3, "content_block": {"type": "tool_result", "tool_use_id": "call_7be4783d453f4d1cbe2fa4d9", "content": "[[{\"title\": \"Bun — A fast all-in-one JavaScript runtime\", \"link\": \"https://bun.com/\", \"content\": \"Bundle, install, and run JavaScript & TypeScript — all in Bun. Bun is a new JavaScript runtime with a native bundler, transpiler, task runner, ...\", \"refer\": \"ref_1\"}, {\"title\": \"Issue #27664 · oven-sh/… (truncated for fixture)\"]]"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 3}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 4, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "Based"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " on"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " the"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " web"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " search"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " results"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": ","}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " the"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " **"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "current"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " stable"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " version"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " of"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " Bun"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " is"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " "}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "1"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "."}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "3"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "."}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "5"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "**,"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " released"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " around"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " mid"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "-"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "December"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " "}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "202"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "5"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": ".\n\n"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": "Here"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " are"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 4, "delta": {"type": "text_delta", "text": " some"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 4}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"input_tokens": 925, "output_tokens": 283, "cache_read_input_tokens": 768, "server_tool_use": {"web_search_requests": 0}, "service_tier": "standard"}}
+
+event: message_stop
+data: {"type": "message_stop"}
+
