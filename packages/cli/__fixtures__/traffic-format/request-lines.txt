@@ -1,0 +1,10 @@
+# Canonical producer format — MUST match the RSM consumer contract.
+# Consumer: mcps/internal/.../claudish-traffic.ts REQUEST_RE (#3391).
+# Grammar:
+#   [claudish] [Request] model=<m> handler=<H> src=<ip> <stream|sync> msgs=<n> max_tokens=<mt> [machine=<id>] ua=<ua<=80>
+# Guard: if you change how request-logger.ts writes this line, update BOTH the
+# RSM consumer regex AND these fixtures in lockstep — the pinning test fails.
+
+[claudish] [Request] model=claude-sonnet-5 handler=NativeHandler src=1.2.3.4 stream msgs=5 max_tokens=1024 machine=myia-po-2023 ua=anthropic-cli/2.0.0
+[claudish] [Request] model=glm-5.3 handler=ComposedHandler src=10.0.0.1 sync msgs=2 max_tokens=256 machine=myia-ai-01 ua=workload/cron-claude-executor
+[claudish] [Request] model=claude-haiku-4-5-20251001 handler=NativeHandler src=192.168.0.77 stream msgs=1 max_tokens=- ua=curl/8.4.0

@@ -95,3 +95,79 @@ describe("request-logger capture (fork)", () => {
     ).not.toThrow();
   });
 });
+
+// Pinning of the stdout `[Request]` line — the contract the RSM consumer
+// `claudish_traffic` (#3391) parses. If request-logger.ts changes the shape
+// (renames a field, changes a separator, drops `machine=`), these tests fail,
+// which is the point: the producer cannot drift silently from its consumer.
+describe("request-logger stdout format (pinning — RSM consumer contract)", () => {
+  // Mirrors claudish-traffic.ts REQUEST_RE: model, handler, src, stream|sync,
+  // msgs, max_tokens, optional machine=, then ua to end of line.
+  const consumerRe =
+    /^\[claudish\] \[Request\] model=(\S+) handler=(\S+) src=(\S+) (stream|sync) msgs=(\d+) max_tokens=(\S+)(?: machine=(\S+))? ua=(.*)$/;
+
+  function captureRequestLine(
+    body: Record<string, unknown>,
+    handler: string,
+    headers: Record<string, string>
+  ): string {
+    const out: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: unknown) => {
+      out.push(String(s));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      logRequest(body, handler, mkRequest(headers), new WeakMap());
+    } finally {
+      process.stdout.write = orig;
+    }
+    const req = out.find((l) => l.startsWith("[claudish] [Request]"));
+    expect(req, "must emit a [Request] line").toBeDefined();
+    return req!.trim();
+  }
+
+  it("emits a line matching the consumer contract (stream + machine)", () => {
+    const line = captureRequestLine(
+      { model: "claude-sonnet-5", stream: true, messages: [{ role: "user", content: "x" }], max_tokens: 1024 },
+      "NativeHandler",
+      { "x-claudish-machine": "myia-po-2023" }
+    );
+    const m = consumerRe.exec(line);
+    expect(m).not.toBeNull();
+    expect(m![1]).toBe("claude-sonnet-5");
+    expect(m![2]).toBe("NativeHandler");
+    expect(m![4]).toBe("stream");
+    expect(m![5]).toBe("1");
+    expect(m![6]).toBe("1024");
+    expect(m![7]).toBe("myia-po-2023");
+  });
+
+  it("emits a line matching the contract (sync, no machine, max_tokens default)", () => {
+    const line = captureRequestLine(
+      { model: "glm-5.3", messages: [], max_tokens: 256 },
+      "ComposedHandler",
+      {}
+    );
+    const m = consumerRe.exec(line);
+    expect(m).not.toBeNull();
+    expect(m![4]).toBe("sync");
+    expect(m![6]).toBe("256");
+    expect(m![7]).toBeUndefined();
+  });
+
+  it("documented fixtures in __fixtures__/traffic-format still match the contract", () => {
+    const fixture = readFileSync(
+      join(import.meta.dir, "../../../__fixtures__/traffic-format/request-lines.txt"),
+      "utf8"
+    );
+    const lines = fixture
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) {
+      expect(consumerRe.exec(l), `fixture line must match contract: ${l}`).not.toBeNull();
+    }
+  });
+});
