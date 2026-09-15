@@ -55,6 +55,25 @@ upstream's routing identity, so under `serve` every sessionless conversation sha
 one `x-opencode-session`. OpenCode's error text calls a missing header a routing
 inefficiency, so a shared value is not expected to fail, but it is less precise.
 
+### Zen also needs a User-Agent, and its two routes proved it separately
+
+`OpenCodeZenTransport` sends `User-Agent: claudish/<version>` beside the session
+id. OpenCode's docs ask a client to identify itself "rather than a generic SDK or
+HTTP-library name", and this relay enforces it: `providers/model-discovery.ts`
+records that a UA-less roster request to Zen Go answers `403 error code: 1010`,
+Cloudflare's browser-integrity block, while the identical request carrying one
+returns 200 with 26 models (measured 2026-08-18). The chat path sits behind the
+same edge and went without a UA until 2026-09-15.
+
+Read the two together, because the failure modes are unalike and each is mistaken
+for a credential problem. A missing UA is a Cloudflare 403 at the edge, before the
+relay sees the request. A missing session id is a 400 from the relay itself. Both
+send a user to check a key that is fine.
+
+Precedence is the same on both routes: the generated headers are written FIRST and
+the provider definition's own `headers` merge over them, so an endpoint that pins
+either value keeps it. Auth is applied last and nothing can displace it.
+
 ## Composition in ComposedHandler
 ```
 ComposedHandler = FormatConverter (explicit adapter) + ModelTranslator (auto-selected) + ProviderTransport
