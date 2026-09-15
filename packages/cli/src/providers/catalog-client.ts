@@ -79,7 +79,7 @@ export type DiskCache = DiskCacheV2;
  */
 export type RefreshOutcome =
   | { kind: "refreshed"; modelCount: number }
-  | { kind: "fetch_failed"; reason: "timeout" | "network" | "http_error" | "empty" };
+  | { kind: "fetch_failed"; reason: "timeout" | "network" | "http_error" | "empty" | "disabled" };
 
 /** Result of resolving a user-typed model name for a provider. */
 export interface ModelResolutionResult {
@@ -386,6 +386,30 @@ export function logResolution(
  * untouched and returns the reason. Never throws.
  */
 export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome> {
+  // `CLAUDISH_DISABLE_CATALOG_WARM=1` turns every refresh into a no-op, which is
+  // the same contract `CLAUDISH_DISABLE_KEYCHAIN` and `CLAUDISH_DISABLE_OP` give
+  // the other two shared resources a test must not reach.
+  //
+  // This is the gate for ALL callers rather than one inside `warmCatalog`,
+  // because `ensureCatalogReady` refreshes too and a second entry point is how
+  // the first gate stops being true.
+  //
+  // Measured 2026-09-15: `handlers/explicit-spec-no-credential.test.ts` calls
+  // `createProxyServer`, `proxy-server.ts:1193` fires `warmCatalog()` on every
+  // create, and the fetch below then rewrote the developer's real
+  // `~/.claudish/all-models.json` with a fresh `lastUpdated` — a live network
+  // read inside a suite that is supposed to be hermetic. It hid itself by
+  // RACING: a sibling file that leaves a sticky empty-catalog override lets the
+  // process exit before the ~2s fetch resolves, so whether the leak appeared
+  // depended on which files ran alongside it.
+  //
+  // Returning `disabled` rather than `network` matters. A caller that logs
+  // "the catalog could not be reached" when nobody tried to reach it sends the
+  // reader to debug their connection.
+  if (process.env.CLAUDISH_DISABLE_CATALOG_WARM === "1") {
+    return { kind: "fetch_failed", reason: "disabled" };
+  }
+
   const plansPromise = fetchSubscriptionPlans(timeoutMs);
   let response: Response;
   try {

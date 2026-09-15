@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { _setCatalogEntriesForTest } from "../providers/catalog-client.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "../providers/catalog-client.js";
 import {
   ADVISOR_STUB_PATHS,
   _debug_resetTrackedAdvisorIds,
@@ -56,11 +56,12 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  _setCatalogEntriesForTest(null);
+  _resetCatalogClient();
 });
 
 afterEach(() => {
-  _setCatalogEntriesForTest(null);
+  // `null` is a sticky empty-catalog override, not a reset between tests.
+  _resetCatalogClient();
 });
 
 describe("advisorRouteFor", () => {

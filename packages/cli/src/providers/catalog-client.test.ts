@@ -1,6 +1,83 @@
-import { describe, expect, test } from "bun:test";
-import { resolveTargetForCatalog } from "./catalog-client.js";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import * as allModelsCache from "./all-models-cache.js";
+import { _resetCatalogClient, refreshCatalog, resolveTargetForCatalog } from "./catalog-client.js";
 import { parseModelSpec } from "./model-parser.js";
+
+const realFetch = globalThis.fetch;
+let previousDisableCatalogWarm: string | undefined;
+
+beforeEach(() => {
+  previousDisableCatalogWarm = process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+  _resetCatalogClient();
+});
+
+afterEach(() => {
+  if (previousDisableCatalogWarm === undefined) {
+    delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+  } else {
+    process.env.CLAUDISH_DISABLE_CATALOG_WARM = previousDisableCatalogWarm;
+  }
+  globalThis.fetch = realFetch;
+  _resetCatalogClient();
+});
+
+describe("refreshCatalog catalog-warm kill switch", () => {
+  // This regression is a race: a sibling test's sticky empty-catalog override
+  // could let the process exit before the live fetch wrote the developer's
+  // cache. Keep the network and disk assertions so the leak cannot hide again.
+  test("returns disabled before network or disk side effects", async () => {
+    process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
+    const fetchStub = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            models: [
+              {
+                modelId: "offline-test-model",
+                aliases: [],
+                sources: { test: { externalId: "test/offline-test-model" } },
+              },
+            ],
+            plans: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+    );
+    globalThis.fetch = fetchStub as unknown as typeof fetch;
+    const cacheWrite = spyOn(allModelsCache, "writeAllModelsCache").mockImplementation(
+      () => undefined
+    );
+
+    try {
+      const outcome = await refreshCatalog(100);
+
+      expect(outcome).toEqual({ kind: "fetch_failed", reason: "disabled" });
+      expect(fetchStub).not.toHaveBeenCalled();
+      expect(cacheWrite).not.toHaveBeenCalled();
+      expect(outcome.kind).toBe("fetch_failed");
+      if (outcome.kind === "fetch_failed") {
+        expect(outcome.reason).toBe("disabled");
+        expect(outcome.reason).not.toBe("network");
+        expect(outcome.reason).not.toBe("timeout");
+      }
+    } finally {
+      cacheWrite.mockRestore();
+    }
+  });
+
+  for (const switchValue of ["true", "0"]) {
+    test(`does not disable refresh for ${switchValue}`, async () => {
+      process.env.CLAUDISH_DISABLE_CATALOG_WARM = switchValue;
+      const fetchStub = mock(async () => new Response("unavailable", { status: 503 }));
+      globalThis.fetch = fetchStub as unknown as typeof fetch;
+
+      const outcome = await refreshCatalog(100);
+
+      expect(fetchStub).toHaveBeenCalled();
+      expect(outcome).toEqual({ kind: "fetch_failed", reason: "http_error" });
+    });
+  }
+});
 
 describe("resolveTargetForCatalog", () => {
   test("rewrites a changed explicit MiniMax spec and returns its resolution", () => {
