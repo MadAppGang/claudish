@@ -5,6 +5,7 @@ import {
   ComposedHandler,
   STRIPPED_IMAGE_PLACEHOLDER,
   stripImageBlocksFromMessages,
+  getRecoveryHint,
 } from "./composed-handler.js";
 import {
   rememberOverflowCap,
@@ -281,5 +282,30 @@ describe("stripImageBlocksFromMessages — empty-content regression", () => {
     const messages = [{ role: "user", content: "plain text" }];
     stripImageBlocksFromMessages(messages, ["image_url"]);
     expect(messages[0].content).toBe("plain text");
+  });
+});
+
+describe("getRecoveryHint — a quota 403 is not an auth fault", () => {
+  // Verbatim Kimi Coding 5-hour wall (2026-09-15). The client renders this 403
+  // as "Failed to authenticate" and the old hint said "Check API key / OAuth
+  // credentials" — a wall misread as a wiring fault, which is exactly the
+  // diagnosis detour this assertion closes.
+  const KIMI_5H_WALL =
+    '{"error":{"type":"invalid_request_error","message":"You\'ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan"}}';
+
+  test("names the wall instead of sending the reader after a key", () => {
+    const hint = getRecoveryHint(403, KIMI_5H_WALL, "Kimi Coding");
+    expect(hint).toMatch(/quota/i);
+    expect(hint).not.toMatch(/API key/i);
+  });
+
+  test("a genuine auth 403 keeps the credential hint", () => {
+    const hint = getRecoveryHint(403, '{"error":{"message":"Invalid API key provided"}}', "Kimi");
+    expect(hint).toMatch(/API key/i);
+  });
+
+  test("401 for an unsupported model still reads as a model problem", () => {
+    const hint = getRecoveryHint(401, '{"error":"unsupported model"}', "Zen");
+    expect(hint).toMatch(/model not supported/i);
   });
 });

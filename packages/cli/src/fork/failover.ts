@@ -633,7 +633,21 @@ export function isQuotaExhaustion(status: number, body: string): boolean {
       lower.includes("insufficient credit") ||
       lower.includes("insufficient_quota") ||
       lower.includes("quota exceeded") ||
-      lower.includes("allocationquota")
+      lower.includes("allocationquota") ||
+      // Kimi Coding (kc@k3) spends a 5-HOUR ROLLING window and answers HTTP 403
+      // when it is gone: "You've reached your 5-hour usage limit. Your quota will
+      // reset when the current 5-hour window ends. To continue now, purchase extra
+      // usage or upgrade your plan". Clients render that 403 as "Failed to
+      // authenticate", which is why it was never recognized as a wall at all —
+      // and it is ALSO caught by isWiringError's blanket `403 → wiring` rule, so
+      // the cascade surfaced it to the client instead of advancing to the step
+      // below. A 5-hour subscription window is a wall like any other: without
+      // these two wordings the Kimi step never armed and the whole cascade
+      // stalled on a spent window (production 2026-09-15, user-reported).
+      // Quota is evaluated BEFORE wiring in handleWithCascade, so matching here
+      // is what makes the advance happen inside the same request.
+      lower.includes("usage limit") ||
+      lower.includes("upgrade your plan")
     );
   }
   return false;

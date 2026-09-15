@@ -142,8 +142,11 @@ describe("AnthropicAPIFormat — tool_reference stripping", () => {
     const messages = adapter.convertMessages(request);
     const toolResult = messages[1].content[0];
     expect(toolResult.type).toBe("tool_result");
-    // tool_reference blocks stripped, replaced with minimal text placeholder
-    expect(toolResult.content).toEqual([{ type: "text", text: "" }]);
+    // tool_reference blocks stripped, replaced with a non-empty placeholder.
+    // Kimi Coding rejects empty text blocks with HTTP 400 `text content is empty`.
+    expect(toolResult.content).toEqual([
+      { type: "text", text: "[unsupported tool references omitted]" },
+    ]);
   });
 
   it("preserves non-tool_reference content inside tool_result", () => {

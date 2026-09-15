@@ -671,6 +671,20 @@ const QWEN_WEEKLY_WALL =
   '{"code":"Throttling.AllocationQuota","message":"Your token-plan 1-week quota has been exhausted. The quota will reset at 08-18 10:07:00 UTC.","request_id":"fb4c609e-73a3-419f-8a3a-b4dbea11889e"}';
 
 /**
+ * Kimi Coding (kc@k3) — 5-hour rolling window spent. 2026-09-15, user-reported.
+ * Verbatim upstream message; the client renders the 403 as "Failed to
+ * authenticate", and a blanket `403 → wiring` rule compounded it, so the
+ * cascade surfaced the error instead of advancing to DeepSeek Flash beneath.
+ * MUST arm — a spent 5-hour window is a wall like any other.
+ */
+const KIMI_5H_WALL =
+  '{"error":{"type":"invalid_request_error","message":"You\'ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota"}}';
+
+/** A genuine auth 403 — no quota vocabulary. MUST NOT arm: swapping the model
+ *  would hide a bad key behind a plausible-looking answer. */
+const GENUINE_AUTH_403 = '{"error":{"type":"forbidden","message":"Invalid API key provided"}}';
+
+/**
  * Anthropic — weekly usage cap on the subscription account. 2026-08-20, the
  * full opus exhaustion window (reset landed the next morning). The client
  * rendered: "Server is temporarily limiting requests (not your usage limit) ·
@@ -763,6 +777,21 @@ describe("isQuotaExhaustion — captured production bodies (7d, 6 providers)", (
   it("recognizes the real Qwen envelope on the 400/403/500 branch too", () => {
     expect(isQuotaExhaustion(400, QWEN_WEEKLY_WALL)).toBe(true);
     expect(isQuotaExhaustion(403, QWEN_WEEKLY_WALL)).toBe(true);
+  });
+
+  // Kimi Coding's 5-hour window arrives as a 403 that ALSO matches isWiringError's
+  // blanket `403 → wiring` rule. The cascade checks quota FIRST (proxy-server
+  // handleWithCascade), so recognizing the wall here is what makes the step
+  // advance to DeepSeek Flash within the same request instead of surfacing
+  // "Failed to authenticate" to the client.
+  it("arms on Kimi's 5-hour 403 wall, and keeps genuine auth 403s as wiring", () => {
+    expect(isQuotaExhaustion(403, KIMI_5H_WALL)).toBe(true);
+    // Both predicates fire on the spent window — the ORDER is the safety property.
+    expect(isWiringError(403, KIMI_5H_WALL)).toBe(true);
+    // A bare auth 403 names no quota: it must stay wiring (never advance).
+    expect(isQuotaExhaustion(403, GENUINE_AUTH_403)).toBe(false);
+    expect(isWiringError(403, GENUINE_AUTH_403)).toBe(true);
+    expect(isQuotaExhaustion(403, "forbidden")).toBe(false);
   });
 });
 
