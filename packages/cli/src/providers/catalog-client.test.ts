@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   _resetCatalogClient,
-  catalogWarmDisabled,
+  catalogWarmDisabledFor,
   refreshCatalog,
   resolveTargetForCatalog,
 } from "./catalog-client.js";
@@ -56,11 +56,12 @@ describe("refreshCatalog catalog-warm kill switch", () => {
   });
 
   test('recognizes only "1" as disabled', () => {
-    expect(catalogWarmDisabled("1")).toBe(true);
+    expect(catalogWarmDisabledFor("1")).toBe(true);
   });
 
-  // Pass negative values as arguments: putting them in the shared process env
-  // would temporarily open the network gate this suite is meant to keep shut.
+  // Pass negative values as arguments: this avoids writing a process-global
+  // another file's detached warmCatalog() may read, and a required parameter is
+  // the only way to express "explicitly unset" because a default fires on undefined.
   for (const [label, switchValue] of [
     ['"true"', "true"],
     ['"0"', "0"],
@@ -68,7 +69,7 @@ describe("refreshCatalog catalog-warm kill switch", () => {
     ["undefined", undefined],
   ] as const) {
     test(`does not disable catalog warm for ${label}`, () => {
-      expect(catalogWarmDisabled(switchValue)).toBe(false);
+      expect(catalogWarmDisabledFor(switchValue)).toBe(false);
     });
   }
 });

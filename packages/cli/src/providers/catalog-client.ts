@@ -386,26 +386,36 @@ export function logResolution(
  * untouched and returns the reason. Never throws.
  */
 /**
- * Whether `CLAUDISH_DISABLE_CATALOG_WARM` is switched on. Exactly `"1"`; every
- * other value, including `"true"`, leaves the warm enabled.
+ * The RULE for `CLAUDISH_DISABLE_CATALOG_WARM`: exactly `"1"` disables the warm.
+ * Every other value — `"true"`, `"0"`, `""`, and unset — leaves it enabled.
  *
- * `value` is a parameter so the rule can be tested WITHOUT writing the real
- * `process.env`. That is not a convenience — it closes a hole the obvious test
- * opens. `proxy-server.ts` fires an un-awaited `warmCatalog()` on every
- * `createProxyServer`, so a detached refresh can reach this check at any moment
- * during a suite. A test that proves "only 1 disables" by assigning `"true"` to
- * the shared env var opens a window in which such a refresh passes the gate and
- * hits the live catalog — the exact leak the switch exists to stop, now
- * intermittent and dependent on which files run alongside it. Measured
- * 2026-09-15: that is how a full `test:safe` run rewrote the real
- * `~/.claudish/all-models.json` while every assertion passed.
+ * Separated from the environment read, and taking a REQUIRED parameter, because
+ * both halves of that shape matter:
  *
- * Pass a value to test the rule; call it bare to read the environment.
+ * - Taking the value as an argument is what lets the rule be tested WITHOUT
+ *   writing the real `process.env`. That is not a convenience. `proxy-server.ts`
+ *   fires an un-awaited `warmCatalog()` on every `createProxyServer`, so a
+ *   detached refresh can reach this check at any instant during a suite. A test
+ *   that proves "only 1 disables" by assigning `"true"` to the shared variable
+ *   opens a window in which such a refresh passes the gate and reads the live
+ *   catalog — the leak the switch exists to stop, reintroduced by the test for
+ *   it, and intermittent because it depends on file ordering. Measured
+ *   2026-09-15: that is how a full `test:safe` run rewrote the real
+ *   `~/.claudish/all-models.json` while every assertion passed.
+ *
+ * - The parameter is required rather than defaulted to the env var, because a
+ *   default fires on `undefined` and so cannot express "explicitly unset". The
+ *   defaulted version made `catalogWarmDisabled(undefined)` read the real
+ *   environment — which the guard sets to `"1"` — so the case asserting that an
+ *   unset variable leaves the warm ENABLED could never pass under `test:safe`.
  */
-export function catalogWarmDisabled(
-  value: string | undefined = process.env.CLAUDISH_DISABLE_CATALOG_WARM
-): boolean {
+export function catalogWarmDisabledFor(value: string | undefined): boolean {
   return value === "1";
+}
+
+/** The rule above, applied to the live environment. */
+function catalogWarmDisabled(): boolean {
+  return catalogWarmDisabledFor(process.env.CLAUDISH_DISABLE_CATALOG_WARM);
 }
 
 export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome> {
