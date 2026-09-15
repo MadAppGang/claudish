@@ -6,12 +6,38 @@
  * Includes 30-second timeout with detailed error reporting.
  */
 
+import { randomUUID } from "node:crypto";
 import { isQuotaExhaustionError } from "../../handlers/shared/quota-exhaustion.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
+import { VERSION } from "../../version.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
+
+/**
+ * Providers that reject a request carrying no per-conversation session id.
+ *
+ * OpenCode Go answers `400 {"type":"error","error":{"type":"MissingSessionID",
+ * "message":"… Request is missing x-opencode-session and cannot be routed
+ * efficiently."}}` to every request that omits the header. Measured 2026-09-12
+ * against `/v1/chat/completions`, one POST per row: a model the tier serves
+ * (`glm-5.3-flash`, `deepseek-v4.1-flash`) returns 200 with the header and 400
+ * without it, so the header is the only difference between the two outcomes.
+ *
+ * The relay's "Where can I use it" section states the contract: a client should
+ * send "a stable session ID in `x-opencode-session` for each conversation so we
+ * can optimize routing and prompt caching", and should "identify itself with
+ * its own user agent … rather than a generic SDK or HTTP-library name". Both are
+ * emitted below. The User-Agent half is not decoration: the same Cloudflare edge
+ * answered a UA-less roster request with `403 error code: 1010` — see the
+ * measured note in `model-discovery.ts` — and the chat endpoint sits behind it.
+ *
+ * `opencode-zen` (the metered sibling) shares the apiPath and the transport and
+ * is expected to share the contract; it is listed alongside Go rather than
+ * waiting for a separate measurement.
+ */
+const SESSION_ID_PROVIDERS = new Set(["opencode-zen-go", "opencode-zen"]);
 
 export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -21,6 +47,23 @@ export class OpenAIProviderTransport implements ProviderTransport {
   protected provider: RemoteProvider;
   private apiKey: string;
   protected modelName: string;
+
+  /**
+   * The `x-opencode-session` value sent with every request (see
+   * `SESSION_ID_PROVIDERS`).
+   *
+   * Generated once per transport and therefore stable for the life of the
+   * conversation this transport serves: a retry re-sends the SAME id, which is
+   * the point — the relay uses it to keep a turn pinned to one backend and one
+   * prompt cache, so an id that changed between the first attempt and its retry
+   * would move both mid-turn. Two concurrent conversations hold two transports
+   * and so get two ids, which is what keeps their routing independent.
+   *
+   * A `claudish-` prefix keeps the value identifiable in relay logs without
+   * implying it is a Claude Code session id — it is not, and must not be
+   * confused with the `metadata.user_id`-derived id used for codex caching.
+   */
+  private readonly sessionId = `claudish-${randomUUID()}`;
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string) {
     this.provider = provider;
@@ -83,6 +126,14 @@ export class OpenAIProviderTransport implements ProviderTransport {
       } else {
         headers.Authorization = `Bearer ${this.apiKey}`;
       }
+    }
+    // A relay that routes on a session id gets one, plus an identifying
+    // User-Agent. Emitted BEFORE the provider merge below so a definition that
+    // declares its own value still wins — the same precedence
+    // `model-discovery.ts` uses for its roster request.
+    if (SESSION_ID_PROVIDERS.has(this.provider.name)) {
+      headers["User-Agent"] = `claudish/${VERSION}`;
+      headers["x-opencode-session"] = this.sessionId;
     }
     // Provider headers are merged whether or not a key resolved: for a gateway
     // whose auth lives in a custom header, they ARE the credential.
