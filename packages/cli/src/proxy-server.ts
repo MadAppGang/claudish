@@ -1197,6 +1197,9 @@ export async function createProxyServer(
   return {
     port: resolvedPort,
     url: `http://127.0.0.1:${resolvedPort}`,
+    // In-process dispatch through the same Hono app the TCP server runs, so an
+    // in-process caller reuses the whole pipeline without a loopback.
+    fetch: (request: Request) => app.fetch(request),
     modelRequestCount: () => modelRequestCount,
     shutdown: async () => {
       // `true` = close active connections too, so a streamed request in flight

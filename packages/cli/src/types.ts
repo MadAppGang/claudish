@@ -205,6 +205,13 @@ export interface OpenRouterResponse {
 export interface ProxyServer {
   port: number;
   url: string;
+  /**
+   * In-process request dispatch through the proxy's Hono app (`app.fetch`), with
+   * no TCP socket. Lets an in-process caller (the MCP tools) reuse the whole
+   * pipeline (routing, fallback, middleware, handlers) without a loopback over
+   * `url`.
+   */
+  fetch: (request: Request) => Response | Promise<Response>;
   shutdown: () => Promise<void>;
   /**
    * Drop any cached per-provider handlers so the next request rebuilds
