@@ -47,6 +47,7 @@ import {
   buildOverflowRecoveryStream,
   buildOverflowRecoveryMessage,
 } from "./shared/context-overflow.js";
+import { isQuotaExhaustion } from "../fork/failover.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
@@ -1324,8 +1325,14 @@ export function isTransientOverload(status: number, errorText: string): boolean 
 
 /**
  * Return a human-readable recovery hint based on HTTP status and error body.
+ *
+ * Exported for tests: this hint is the line an operator reads first, and a wrong
+ * one costs real diagnosis time — on 2026-09-15 it printed "Check API key /
+ * OAuth credentials" for Kimi's spent 5-hour window, which reads as a wiring
+ * fault while the true condition is a quota wall the cascade is supposed to
+ * advance over.
  */
-function getRecoveryHint(status: number, errorText: string, providerName: string): string {
+export function getRecoveryHint(status: number, errorText: string, providerName: string): string {
   const lower = errorText.toLowerCase();
 
   if (status === 503 || lower.includes("overloaded")) {
@@ -1335,6 +1342,12 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
   if (status === 401 || status === 403) {
+    // A 401/403 is not automatically an auth fault. Kimi Coding answers 403 with
+    // "You've reached your 5-hour usage limit" and clients render it as "Failed
+    // to authenticate" — name the wall instead of sending the reader after a key.
+    if (isQuotaExhaustion(status, errorText)) {
+      return "Plan/quota window exhausted — a wall, not an auth fault. The cascade advances to the next step.";
+    }
     // Some providers (e.g. OpenCode Zen) return 401 for unsupported models, not auth failures
     if (
       lower.includes("not supported") ||
