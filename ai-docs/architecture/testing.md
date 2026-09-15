@@ -13,6 +13,57 @@
 
 **Adding regression tests**: After extracting fixtures from a debug log, add a `describe("Regression: <model>")` block. Template is at the bottom of the test file.
 
+## Three shared resources a test must never reach, and why prevention beats restore
+
+`scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite
+under — does two separate jobs, and conflating them is how each keeps decaying.
+
+**It SNAPSHOTS files.** `GUARDED` lists `~/.claudish/config.json` and
+`~/.claudish/all-models.json`. Each is read before the run and compared after.
+Present and changed → restored from the snapshot. Absent before and present
+after → DELETED, because on a clean machine a test fixture that survives becomes
+the machine's first real catalog, and a cold cache is indistinguishable from a
+poisoned one to every caller. Present but unreadable → it refuses and says so,
+which is why `snapshot()` establishes presence with `existsSync` separately from
+reading the bytes: folding "unreadable" into "absent" would make the delete
+branch destroy the file.
+
+**It PREVENTS three things outright,** via env vars set on the child:
+
+| Variable | Stops | Why prevention, not restore |
+|---|---|---|
+| `CLAUDISH_DISABLE_KEYCHAIN=1` | `security` against the login keychain | A keychain mutation cannot be snapshotted the way JSON bytes can |
+| `CLAUDISH_DISABLE_OP=1` | 1Password handshakes | Denials suppress authorization machine-wide for 15s, for every process |
+| `CLAUDISH_DISABLE_CATALOG_WARM=1` | the live hosted-catalog fetch | The restore returns the bytes; it cannot return the hermeticity |
+
+The third was added 2026-09-15 and is gated inside `refreshCatalog()` rather than
+`warmCatalog()`, because `ensureCatalogReady()` refreshes through the same
+function — a gate on one of two entry points is how a gate stops being true. It
+returns `reason: "disabled"`, never `"network"`: a caller that logs "the catalog
+could not be reached" when nothing tried to reach it sends the reader to debug a
+working connection.
+
+**What it caught, and how the leak hid.** `createProxyServer` fires
+`warmCatalog().catch(() => {})` unconditionally (`proxy-server.ts:1193`), so
+`handlers/explicit-spec-no-credential.test.ts` live-fetched the hosted catalog
+and rewrote the real `all-models.json` with a fresh `lastUpdated` — even though
+that file's own header says "no network call happens", which was true of the
+upstream model call and wrong about the proxy.
+
+It hid itself by RACING. A sibling file cleaned up with
+`_setCatalogEntriesForTest(null)`, and `null` is not a reset: the read path
+short-circuits on `!== undefined`, so it is a sticky process-wide "catalog is
+empty" override. Every later lookup returned instantly, the process exited
+before the ~2s fetch resolved, and the write never landed. Whether the leak was
+visible depended on which files ran alongside it. `_resetCatalogClient()` is the
+real teardown; `_setCatalogEntriesForTest(null)` belongs only inside a test body
+that wants the cold-catalog state.
+
+Evidence: that file tripped the guard 3/3 times alone at ~2.0s, ran clean at 55ms
+against a dead catalog host, and runs at 66ms with the kill switch. This is the
+same non-hermeticity that turned two DeepSeek tests red mid-release when the
+hosted catalog changed its answer.
+
 ## A gate must not also gate its own diagnostic
 
 `e2e-channel.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
@@ -96,3 +147,22 @@ that compares against a runtime-provided oracle is only as stable as the runtime
 
 Distinct from the credential-gated live tests, which skip in CI and are documented as
 non-blocking; this one is hermetic and still environmental.
+
+**Since 2026-09-15 the two budgeted sweeps enforce this themselves.** They read
+`bun-version` out of `test.yml` at test time and `test.skipIf` when `Bun.version`
+differs, naming both versions in the skip. Three details are load-bearing:
+
+- The pin is PARSED, never copied. A second hardcoded `"1.3.10"` in the test file
+  would drift from the workflow, which is the failure being fixed.
+- A parse failure FAILS OPEN and runs the tests. A gate that silently disables
+  coverage when it cannot find its input is worse than no gate.
+- Only the two oracle-calibrated sweeps are gated. The first test in the block
+  asserts five literal widths, is not oracle-dependent, and runs everywhere.
+
+The 2026-09-04 measurement above named `U+2630–U+2637` and `U+268A–U+268F`. The
+full sweep on bun 1.4.0 is wider: `total 3017`, of which the `other` bucket —
+budgeted at 17 — is 576, almost all `U+1160..U+11FF`, conjoining Hangul Jamo that
+1.4.0 measures as zero-width. Same cause, larger blast radius than first recorded.
+
+When the pin is bumped, RE-BASELINE the budgets against the new oracle. Never
+widen them to clear a red run: the budget is the entire assertion.
