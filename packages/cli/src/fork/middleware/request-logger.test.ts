@@ -161,7 +161,10 @@ describe("request-logger stdout format (pinning — RSM consumer contract)", () 
       join(import.meta.dir, "../../../__fixtures__/traffic-format/request-lines.txt"),
       "utf8"
     );
-    const lines = fixture.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+    const lines = fixture
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) {
       expect(consumerRe.exec(l), `fixture line must match contract: ${l}`).not.toBeNull();
