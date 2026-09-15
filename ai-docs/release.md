@@ -127,9 +127,20 @@ Two constraints hold regardless of who authorises:
 
 TODO — not settled by detection, and worth answering on the next release:
 - whether a failed magmux download from `MadAppGang/magmux` should block a release
-  or pin to a known-good magmux tag instead of `latest`;
-- whether the two known-red `displayWidth` oracle tests in
-  `packages/cli/src/tui/viz/color.test.ts` should be quarantined, since they fail
-  on `main` and every release ships over them.
+  or pin to a known-good magmux tag instead of `latest`.
 
-verified: 2026-09-14 @ 22cef36
+SETTLED 2026-09-15 — the two `displayWidth` tests in
+`packages/cli/src/tui/viz/color.test.ts`. They were NOT flaky and must NOT be
+quarantined. They compare `fallbackClusterWidth` against `Bun.stringWidth`, which
+is a LIVE ORACLE whose Unicode tables move between Bun releases, and their budgets
+(1081 total, 17 in `other`) are calibrated to one build. `test.yml` pins CI to Bun
+`1.3.10`; a developer on Bun `1.4.0` measures `total 3017` with `other` at 576,
+almost all `U+1160..U+11FF` — conjoining Hangul Jamo, which 1.4.0 measures as
+zero-width. No claudish code changed. The tests now read the pin out of
+`test.yml` and skip with a message naming both versions when the running Bun is
+not the pinned one, so the local red is gone and the gate's coverage is not.
+
+When the Bun pin is bumped, RE-BASELINE those budgets against the new oracle.
+Never widen them to clear a red run: the budget is the whole assertion.
+
+verified: 2026-09-15 @ 22cef36

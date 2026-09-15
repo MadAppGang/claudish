@@ -1,6 +1,7 @@
 /** Every assertion fails on a SPECIFIC known regression, not on "it runs". All
  * `color.ts` output is lowercase `#rrggbb`, so tokens compare through `lo()`. */
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { blend1D, blendStops, darken, heatRamp, lighten, pickInk } from "./color";
 import {
   displayWidth,
@@ -14,6 +15,31 @@ import { ramps, tokens } from "./tokens";
 
 const lo = (s: string) => s.toLowerCase();
 const chan = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+
+const readPinnedBunVersion = (): string | undefined => {
+  try {
+    const workflow = readFileSync(
+      new URL("../../../../../.github/workflows/test.yml", import.meta.url),
+      "utf8"
+    );
+    const lines = workflow.split(/\r?\n/);
+    const setupBunLine = lines.findIndex((line) =>
+      /^\s*-\s+uses:\s*oven-sh\/setup-bun@/.test(line)
+    );
+    if (setupBunLine === -1) return undefined;
+
+    const stepIndent = lines[setupBunLine]!.search(/\S/);
+    for (const line of lines.slice(setupBunLine + 1)) {
+      if (line.trim() === "") continue;
+      if (line.search(/\S/) === stepIndent && /^\s*-\s+/.test(line)) break;
+      const pin = line.match(/^\s*bun-version:\s*"(\d+\.\d+\.\d+)"\s*$/);
+      if (pin) return pin[1];
+    }
+  } catch {
+    // Fail open: an unavailable workflow must not silently disable coverage.
+  }
+  return undefined;
+};
 
 /** WCAG 2.x relative luminance and contrast ratio, reimplemented from the spec.
  * INDEPENDENT of `color.ts` on purpose — a test that measures contrast with the
@@ -368,7 +394,29 @@ describe("displayWidth fallback — measured against the oracle, with a budget",
     expect(fbWidth("\u{1F5A5}")).toBe(1);
   });
 
-  test("zero disagreement on every class that reaches a dashboard", () => {
+  // These budgets are calibrated against one Bun build; `Bun.stringWidth` is a live
+  // oracle whose Unicode tables move. Bun 1.4.0 measured total=3017 and
+  // { marks: 2146, unassigned: 246, format: 23, regionalIndicator: 26, other: 576 },
+  // with other sample U+980, U+C80, U+D3A, and U+1160..U+1168, plus band extras
+  // U+2630..U+2637 and U+268A..U+268F. When the pin is bumped, re-baseline the
+  // budgets; do not widen them because of a red local run.
+  const pinnedBunVersion = readPinnedBunVersion();
+  const skipOracleBudgets = pinnedBunVersion !== undefined && Bun.version !== pinnedBunVersion;
+  const oracleBudgetSkipReason = skipOracleBudgets
+    ? `running Bun ${Bun.version}; budgets are pinned to Bun ${pinnedBunVersion}`
+    : "";
+  const oracleBudgetTestNames = [
+    "zero disagreement on every class that reaches a dashboard",
+    "the whole-Unicode disagreement budget holds, by category",
+  ] as const;
+  const oracleBudgetName = (name: string) =>
+    oracleBudgetSkipReason === "" ? name : `${name} — SKIPPED: ${oracleBudgetSkipReason}`;
+  if (skipOracleBudgets) {
+    for (const name of oracleBudgetTestNames)
+      console.warn(`SKIPPED ${name} — ${oracleBudgetSkipReason}`);
+  }
+
+  test.skipIf(skipOracleBudgets)(oracleBudgetName(oracleBudgetTestNames[0]), () => {
     const REAL = [
       "CPU 78%",
       "日本語テスト",
@@ -402,32 +450,37 @@ describe("displayWidth fallback — measured against the oracle, with a budget",
   // The full oracle sweep, and the numbers the source comment quotes. These are a
   // RATCHET: 11,205 was the old table's score and 1,081 is this one's. Widening a run
   // by guess moves this number and fails here.
-  test("the whole-Unicode disagreement budget holds, by category", () => {
-    const isMark = /^\p{M}/u;
-    const isUnassigned = /^\p{Cn}/u;
-    const isFormat = /^\p{Cf}/u;
-    let total = 0;
-    const cat = { marks: 0, unassigned: 0, format: 0, regionalIndicator: 0, other: 0 };
-    for (let cp = 0; cp <= 0x10ffff; cp++) {
-      if (cp >= 0xd800 && cp <= 0xdfff) continue;
-      const c = String.fromCodePoint(cp);
-      if (fallbackClusterWidth(c) === Bun.stringWidth(c)) continue;
-      total++;
-      if (isMark.test(c)) cat.marks++;
-      else if (isUnassigned.test(c)) cat.unassigned++;
-      else if (isFormat.test(c)) cat.format++;
-      else if (cp >= 0x1f1e6 && cp <= 0x1f1ff) cat.regionalIndicator++;
-      else cat.other++;
-    }
-    expect(total).toBeLessThanOrEqual(1081); // the previous hand table scored 11,205
-    // None of the residual is reachable from real single-line text: a lone combining
-    // mark, a codepoint this engine's Unicode tables predate, a bidi format control,
-    // or one half of a flag pair (the PAIR is one cluster and measures 2 correctly).
-    expect(cat.marks + cat.unassigned + cat.format + cat.regionalIndicator).toBeGreaterThanOrEqual(
-      total - 17
-    );
-    expect(cat.other).toBeLessThanOrEqual(17);
-  }, 30_000);
+  test.skipIf(skipOracleBudgets)(
+    oracleBudgetName(oracleBudgetTestNames[1]),
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exhaustive oracle categorization
+    () => {
+      const isMark = /^\p{M}/u;
+      const isUnassigned = /^\p{Cn}/u;
+      const isFormat = /^\p{Cf}/u;
+      let total = 0;
+      const cat = { marks: 0, unassigned: 0, format: 0, regionalIndicator: 0, other: 0 };
+      for (let cp = 0; cp <= 0x10ffff; cp++) {
+        if (cp >= 0xd800 && cp <= 0xdfff) continue;
+        const c = String.fromCodePoint(cp);
+        if (fallbackClusterWidth(c) === Bun.stringWidth(c)) continue;
+        total++;
+        if (isMark.test(c)) cat.marks++;
+        else if (isUnassigned.test(c)) cat.unassigned++;
+        else if (isFormat.test(c)) cat.format++;
+        else if (cp >= 0x1f1e6 && cp <= 0x1f1ff) cat.regionalIndicator++;
+        else cat.other++;
+      }
+      expect(total).toBeLessThanOrEqual(1081); // the previous hand table scored 11,205
+      // None of the residual is reachable from real single-line text: a lone combining
+      // mark, a codepoint this engine's Unicode tables predate, a bidi format control,
+      // or one half of a flag pair (the PAIR is one cluster and measures 2 correctly).
+      expect(
+        cat.marks + cat.unassigned + cat.format + cat.regionalIndicator
+      ).toBeGreaterThanOrEqual(total - 17);
+      expect(cat.other).toBeLessThanOrEqual(17);
+    },
+    30_000
+  );
 });
 
 // ---------------------------------------------------------------------------
