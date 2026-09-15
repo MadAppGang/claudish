@@ -42,7 +42,7 @@
  * no equivalent. Until it does, this guard is the backstop.
  */
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -74,13 +74,29 @@ interface Snapshot {
 }
 
 /**
- * Presence and content are established SEPARATELY. Folding an unreadable file
- * into "absent" would be a data-loss bug now that absence authorises a delete
- * below: a file the guard could not read at snapshot time would be removed after
- * the run as though the command had created it.
+ * Presence and content are established SEPARATELY, and ONLY `ENOENT` counts as
+ * absent. Folding any other failure into "absent" is a data-loss bug, because
+ * absence authorises a delete below: a file the guard merely could not STAT
+ * would be removed after the run as though the command had created it, and the
+ * backup loop skips `existed: false` files, so that is the single branch with no
+ * `.guard-backup` to recover from.
+ *
+ * `existsSync` is wrong here for exactly that reason — it answers `false` on
+ * every stat error, not just a missing file. A transient `EACCES` on
+ * `~/.claudish` (a macOS TCC denial, a sandbox, a stalled network mount) is
+ * enough. `statSync` with an explicit `ENOENT` test is the same check without
+ * the conflation; anything else routes to `unreadable`, which refuses to act.
  */
 function snapshot(path: string): Snapshot {
-  if (!existsSync(path)) return { existed: false, content: null, unreadable: false };
+  try {
+    statSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      return { existed: false, content: null, unreadable: false };
+    }
+    // Present-or-unknown. Never absent, so the delete branch cannot fire.
+    return { existed: true, content: null, unreadable: true };
+  }
   try {
     return { existed: true, content: readFileSync(path, "utf-8"), unreadable: false };
   } catch {
@@ -198,12 +214,24 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
           "  so there is no snapshot to put back. Its current contents are whatever the run left.\n"
       );
     } else {
-      // Absent before, present after: the run CREATED a real file. Removing it is
-      // the restore. Leaving it is worse than it looks — on a clean machine a
-      // two-entry fixture becomes the catalog, and a cold cache and a poisoned
-      // one are indistinguishable to every caller.
-      rmSync(guarded.path, { force: true });
-      process.stderr.write("\n  Removed it — no such file existed before the run.\n");
+      // Absent before, present after: the run CREATED a real file. Taking it out
+      // of the way is the restore. Leaving it is worse than it looks — on a clean
+      // machine a two-entry fixture becomes the catalog, and a cold cache and a
+      // poisoned one are indistinguishable to every caller.
+      //
+      // RENAMED, never deleted, even though the diagnosis says the run made it.
+      // The guard exists to prevent irreversible loss, so its own most
+      // destructive branch must not be the one place it cannot be wrong: a
+      // concurrent writer — a live `claudish serve`, an MCP server, a sibling
+      // agent session — can legitimately create this file during a multi-minute
+      // run, and that is indistinguishable from a test creating it. Renaming
+      // costs a stray file; deleting costs someone's API keys.
+      renameSync(guarded.path, `${guarded.path}.guard-created`);
+      process.stderr.write(
+        "\n  No such file existed before the run, so it was moved aside to\n" +
+          `  ${guarded.path}.guard-created rather than deleted.\n` +
+          "  If a concurrent process created it legitimately, move it back.\n"
+      );
     }
   } catch (err) {
     process.stderr.write(

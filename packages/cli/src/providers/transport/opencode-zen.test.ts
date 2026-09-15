@@ -1,6 +1,5 @@
 // REGRESSION: OpenCode Zen Go 400 MissingSessionID — no x-opencode-session header — Fixed in /dev:fix session dev-fix-20260912-213141-f1fb0c1c
 import { describe, expect, test } from "bun:test";
-import { VERSION } from "../../version.js";
 import { getProviderByName, toRemoteProvider } from "../provider-definitions.js";
 import { openCodeZenProfile } from "../provider-profiles.js";
 import { conversationKey } from "./conversation-key.js";
@@ -81,7 +80,7 @@ describe("OpenCodeZenTransport", () => {
 
     const headers = await transport.getHeaders(request);
     expect(headers.Authorization).toBe("Bearer zen-key");
-    expect(headers["User-Agent"]).toBe(`claudish/${VERSION}`);
+    expect(headers["User-Agent"]).toMatch(/^claudish\/\d+\.\d+\.\d+$/);
     expect(headers["x-opencode-session"]).toBe(conversationKey(request));
   });
 

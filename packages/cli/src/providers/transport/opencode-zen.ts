@@ -34,8 +34,16 @@ export class OpenCodeZenTransport extends OpenAIProviderTransport {
    * Both headers are written BEFORE the base transport's, so auth and any
    * provider-declared `headers` still win — the precedence `model-discovery.ts`
    * uses for the roster request on this same relay. No builtin declares either
-   * key today, so the merge changes nothing in practice; it means a custom
-   * endpoint that pins its own value keeps it.
+   * key today, so nothing changes in practice; it means a custom endpoint that
+   * pins its own value keeps it.
+   *
+   * The two are not equally inert, though. For the User-Agent, losing to a
+   * pinned value is harmless — it is an identity string either way. For
+   * `x-opencode-session` it is a REVERSAL: this header used to be spread after
+   * the base headers and always won. A custom endpoint that pins a static
+   * session id now collapses every conversation onto one upstream routing
+   * identity, silently. That is the right default (an explicit config should
+   * beat a derived value) but it is a real trade, not a no-op.
    *
    * The session id is derived from `claudeRequest` on every call, never cached
    * on the instance: one transport is shared by every request for a model, so

@@ -20,7 +20,7 @@
     "typecheck": "bun run --cwd packages/cli typecheck && bun run --cwd packages/macos-bridge typecheck",
     "lint": "bun run --cwd packages/cli lint && bun run --cwd packages/macos-bridge lint",
     "format": "bun run --cwd packages/cli format && bun run --cwd packages/macos-bridge format",
-    "test": "bun run --cwd packages/cli test && bun run --cwd packages/macos-bridge test",
+    "test": "bun run --cwd packages/cli test && bun run --cwd packages/macos-bridge test && bun test ./scripts/*.test.ts",
     "test:safe": "bun run scripts/guard-real-config.ts -- bun run test",
     "test:mcp": "bun run packages/cli/src/mcp-e2e/runner.ts",
     "test:mcp:op": "bun run packages/cli/src/mcp-e2e/runner.ts --group op",

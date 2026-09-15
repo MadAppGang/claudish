@@ -293,7 +293,21 @@ describe("warmCatalogIfNeeded", () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("missing cache + fetch_failed → 'hard_fail' with verbatim error on stderr", async () => {
+  test("missing cache + disabled refresh → 'skipped' without hard-fail copy", async () => {
+    mockReadResult = null;
+    mockRefreshOutcome = { kind: "fetch_failed", reason: "disabled" };
+    const config = makeConfig({ model: "gpt-4o", quiet: false });
+
+    const result = await warmCatalogIfNeeded(config, { now: NOW });
+
+    expect(result).toBe("skipped");
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    const stderrText = stderrChunks.join("");
+    expect(stderrText).toContain("Catalog refresh disabled");
+    expect(stderrText).not.toContain("Error: cannot reach model catalog and no cached copy found.");
+  });
+
+  test("missing cache + genuine network failure → 'hard_fail' with verbatim error", async () => {
     mockReadResult = null;
     mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
     const config = makeConfig({ model: "gpt-4o" });

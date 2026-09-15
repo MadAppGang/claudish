@@ -56,7 +56,10 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  // Reset process-global state, then pin an empty catalog so these tests never
+  // fall through to the developer's real disk cache.
   _resetCatalogClient();
+  _setCatalogEntriesForTest(null);
 });
 
 afterEach(() => {

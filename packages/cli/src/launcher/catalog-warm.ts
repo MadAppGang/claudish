@@ -273,6 +273,29 @@ export async function warmCatalogIfNeeded(
     return "ok";
   }
 
+  // `disabled` is not a failure and must never reach the branches below. Nobody
+  // attempted a fetch, so the cache state is irrelevant: with no cache at all
+  // the `missing` branch would print HARD_FAIL_MESSAGE — "cannot reach model
+  // catalog… Check network connection" — and `index.ts` turns `hard_fail` into
+  // `process.exit(1)`. That sends a reader to debug a working connection over a
+  // condition their own harness created, which is the entire reason this reason
+  // exists as a distinct value rather than reusing `network`.
+  //
+  // It reaches here through `CLAUDISH_DISABLE_CATALOG_WARM=1`, which
+  // `scripts/guard-real-config.ts` sets on the whole test run — and the e2e
+  // suites spawn `src/index.ts` as a child, which inherits it. So on a machine
+  // with no `~/.claudish/all-models.json`, the untreated path fails those tests
+  // with a network diagnosis.
+  //
+  // "skipped" is the accurate answer, and it is the same one
+  // `--models-skip-update` already produces: a refresh nobody attempted.
+  if (outcome.reason === "disabled") {
+    if (!config.quiet) {
+      process.stderr.write("  Catalog refresh disabled (CLAUDISH_DISABLE_CATALOG_WARM=1).\n");
+    }
+    return "skipped";
+  }
+
   // Fetch failed. Decide based on prior cache state.
   if (state === "stale") {
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
