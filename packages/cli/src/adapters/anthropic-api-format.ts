@@ -50,10 +50,14 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
         // Strip tool_reference from tool_result content arrays
         if (block.type === "tool_result" && Array.isArray(block.content)) {
           const filtered = block.content.filter((c: any) => c.type !== "tool_reference");
-          // Keep at least a minimal text block so tool_result content is never empty
+          // Keep a non-empty placeholder: Kimi Coding rejects empty text blocks
+          // with HTTP 400 `text content is empty`.
           return {
             ...block,
-            content: filtered.length > 0 ? filtered : [{ type: "text", text: "" }],
+            content:
+              filtered.length > 0
+                ? filtered
+                : [{ type: "text", text: "[unsupported tool references omitted]" }],
           };
         }
         return block;
