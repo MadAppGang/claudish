@@ -43,6 +43,11 @@ et centralise ; le hub (po-2023) observe ; les machines consomment.
   `-EnvFile` est **obligatoire** avec `-Recreate` et refuse vite sans lui — compose interpole
   chaque `${VAR:-}` depuis ce fichier, et le vrai `.env` du hub vit **hors** du répertoire
   compose (07/09 : un recreate nu a vidé tous les `CLAUDISH_FAILOVER_*`).
+  ⚠ Et si seul un **fichier bind-mounté** a changé (ex. `config.json`), `compose up -d`
+  est un **no-op silencieux** — compose ne voit aucun delta, le process garde l'ancienne
+  config en mémoire. Preuve : `uptimeSec` non reset. Il faut drainer à zéro flux puis
+  `docker compose up -d --force-recreate` (mesuré 15/09 bascule claudish-2 po-203 :
+  1er passage no-op en 0s, 2e passage Recreated + uptime 12s).
 - **Failover** : `roleFromModelName()` matche que `opus|sonnet|haiku|fable` → un client qui
   nomme `glm-5.2` rate la cascade sans `CLAUDISH_FAILOVER_ROLE_MODELS`. Ne pas config-armer
   un failover qui tourne déjà correctement (sonnet ARMED sur Mistral GLM 5.2 = attendu).
