@@ -740,14 +740,14 @@ describe("DeepSeek V4 reasoning_effort + thinking", () => {
   });
 
   test("catalog reasoning opinion overrides the V4 alias name rule", () => {
-    // Measured 2026-09-14: deepseek-chat advertises supported:false, control:"none";
-    // control is omitted here only because ReasoningControl does not model "none".
+    // Mirrors the live catalog shape measured 2026-09-14: deepseek-chat
+    // advertises supported:false, control:"none".
     const cleanupOpinionCatalog = seedDefaultCatalog([
       {
         modelId: "deepseek-chat",
         aliases: [],
         sources: {},
-        reasoning: { supported: false },
+        reasoning: { supported: false, control: "none" },
       },
     ]);
 

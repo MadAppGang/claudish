@@ -37,12 +37,24 @@ import type { AggregatorEntry } from "../model-loader.js";
  * - `effort`   — a discrete level from the model's own `efforts` list.
  * - `adaptive` — the model chooses; a level may optionally be suggested.
  * - `budget`   — a token budget (`budget_tokens`).
+ * - `none`     — the model exposes no knob. The catalog pairs it with
+ *   `supported: false`, and `query-handler.ts` also uses it as the default for
+ *   an entry that carries no `reasoning` block at all, so it is the single
+ *   commonest value on the wire rather than an edge case.
  *
  * Kept as a string union of what Firebase currently emits, but consumers must
  * treat an unrecognized value as "no information" rather than an error —
  * the catalog is external data and may grow new kinds.
+ *
+ * `none` was missing here until 2026-09-15 while the backend had always sent
+ * it (`models-index/functions/src/schema.ts:105` declares the same five, and
+ * `schema-runtime.ts:610` validates against them). Nothing failed at runtime,
+ * because every consumer tests for the value it wants — `control === "effort"`,
+ * `control === "budget"` — so an unlisted member falls through to the right
+ * answer. It failed at the type level instead: a test fixture could not write
+ * the value the live catalog returns, which is how the gap surfaced.
  */
-export type ReasoningControl = "toggle" | "effort" | "adaptive" | "budget";
+export type ReasoningControl = "toggle" | "effort" | "adaptive" | "budget" | "none";
 
 /**
  * Per-model reasoning capability from the Firebase slim catalog.
