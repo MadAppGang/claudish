@@ -385,6 +385,29 @@ export function logResolution(
  * disk cache, and marks the warm as settled. On any failure leaves both caches
  * untouched and returns the reason. Never throws.
  */
+/**
+ * Whether `CLAUDISH_DISABLE_CATALOG_WARM` is switched on. Exactly `"1"`; every
+ * other value, including `"true"`, leaves the warm enabled.
+ *
+ * `value` is a parameter so the rule can be tested WITHOUT writing the real
+ * `process.env`. That is not a convenience — it closes a hole the obvious test
+ * opens. `proxy-server.ts` fires an un-awaited `warmCatalog()` on every
+ * `createProxyServer`, so a detached refresh can reach this check at any moment
+ * during a suite. A test that proves "only 1 disables" by assigning `"true"` to
+ * the shared env var opens a window in which such a refresh passes the gate and
+ * hits the live catalog — the exact leak the switch exists to stop, now
+ * intermittent and dependent on which files run alongside it. Measured
+ * 2026-09-15: that is how a full `test:safe` run rewrote the real
+ * `~/.claudish/all-models.json` while every assertion passed.
+ *
+ * Pass a value to test the rule; call it bare to read the environment.
+ */
+export function catalogWarmDisabled(
+  value: string | undefined = process.env.CLAUDISH_DISABLE_CATALOG_WARM
+): boolean {
+  return value === "1";
+}
+
 export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome> {
   // `CLAUDISH_DISABLE_CATALOG_WARM=1` turns every refresh into a no-op, which is
   // the same contract `CLAUDISH_DISABLE_KEYCHAIN` and `CLAUDISH_DISABLE_OP` give
@@ -406,7 +429,7 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
   // Returning `disabled` rather than `network` matters. A caller that logs
   // "the catalog could not be reached" when nobody tried to reach it sends the
   // reader to debug their connection.
-  if (process.env.CLAUDISH_DISABLE_CATALOG_WARM === "1") {
+  if (catalogWarmDisabled()) {
     return { kind: "fetch_failed", reason: "disabled" };
   }
 

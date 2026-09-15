@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { _resetCatalogClient, refreshCatalog, resolveTargetForCatalog } from "./catalog-client.js";
+import {
+  _resetCatalogClient,
+  catalogWarmDisabled,
+  refreshCatalog,
+  resolveTargetForCatalog,
+} from "./catalog-client.js";
 import { parseModelSpec } from "./model-parser.js";
 
 const realFetch = globalThis.fetch;
@@ -50,16 +55,20 @@ describe("refreshCatalog catalog-warm kill switch", () => {
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
-  for (const switchValue of ["true", "0"]) {
-    test(`does not disable refresh for ${switchValue}`, async () => {
-      process.env.CLAUDISH_DISABLE_CATALOG_WARM = switchValue;
-      const fetchStub = mock(async () => new Response("unavailable", { status: 503 }));
-      globalThis.fetch = fetchStub as unknown as typeof fetch;
+  test('recognizes only "1" as disabled', () => {
+    expect(catalogWarmDisabled("1")).toBe(true);
+  });
 
-      const outcome = await refreshCatalog(100);
-
-      expect(fetchStub).toHaveBeenCalled();
-      expect(outcome).toEqual({ kind: "fetch_failed", reason: "http_error" });
+  // Pass negative values as arguments: putting them in the shared process env
+  // would temporarily open the network gate this suite is meant to keep shut.
+  for (const [label, switchValue] of [
+    ['"true"', "true"],
+    ['"0"', "0"],
+    ['""', ""],
+    ["undefined", undefined],
+  ] as const) {
+    test(`does not disable catalog warm for ${label}`, () => {
+      expect(catalogWarmDisabled(switchValue)).toBe(false);
     });
   }
 });
