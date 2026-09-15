@@ -87,6 +87,24 @@ function Write-DrainLog {
     Write-Host $line
 }
 
+# The probe must hit the container being drained. $ProxyUrl defaults to :3000
+# (the hub), but sidecars publish other host ports (ai-01's listens on :3002),
+# and a -ContainerName that leaves the default URL probes the WRONG process:
+# the health call answers nothing, Get-ClaudishActiveStreams returns $null
+# ("no signal"), and the restart silently degrades to undrained — measured on
+# ai-01, 2026-09-15: container passed, :3000 probed, restart undrained. Derive
+# the URL from the container's published 3000/tcp mapping unless -ProxyUrl was
+# given explicitly.
+if (-not $PSBoundParameters.ContainsKey('ProxyUrl')) {
+    try {
+        $published = (docker port $ContainerName 3000/tcp 2>$null | Select-Object -First 1)
+        if ($published -and $published -match ':(\d+)\s*$') {
+            $ProxyUrl = "http://localhost:$($Matches[1])"
+            Write-DrainLog "DRAIN: probe URL derived from container '$ContainerName' -> $ProxyUrl"
+        }
+    } catch { }
+}
+
 function Get-ClaudishActiveStreams {
     <#
         Returns the number of SSE responses currently streaming, or $null when
@@ -172,7 +190,7 @@ function Invoke-ClaudishDrainedRestart {
 
     $active = Get-ClaudishActiveStreams -Url $Url
     if ($null -eq $active) {
-        Write-DrainLog "RESTART ($Reason): no activeStreams signal from $Url/health (proxy down, or image predates #37) — restarting without drain"
+        Write-DrainLog "RESTART ($Reason): no activeStreams signal from $Url/health for container '$Container' (wrong port? proxy down? image predates #37?) — restarting without drain"
     } else {
         $initial = $active
         $waited = 0

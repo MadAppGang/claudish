@@ -90,7 +90,9 @@ if ($requests.Count -eq 0) {
 # ── Classify verdict for a single request ───────────────────────────────────
 function Get-Verdict {
     param([string]$Machine, [string]$Model, [bool]$IsSubagent)
-    $m = ($Machine ?? '').ToLower()
+    # [string]-typed param coerces $null to '' — the `??` form was a PS7-only
+    # parse error under the documented `powershell -File` (PS 5.1) invocation.
+    $m = $Machine.ToLower()
     if ($AnthropicMachines -contains $m) { return @{ Tag = '[OK]';     Color = 'Green'  } }
     if ($ReviewMachines    -contains $m) { return @{ Tag = '[REVIEW]'; Color = 'Yellow' } }
     if ($FableOverrideActive -and $Model -match 'fable') {
