@@ -22,6 +22,7 @@ import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
+import { loadCachingConfig } from "./handlers/shared/anthropic-cache.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { log, logStderr } from "./logger.js";
@@ -257,10 +258,14 @@ export async function createProxyServer(
   }
 
   // Define handlers for different roles
+  // Prompt-cache config, resolved once here and threaded into every handler
+  // (native + composed) via options, so no handler reads config from disk.
+  const cachingConfig = loadCachingConfig();
   const nativeHandler = new NativeHandler(
     anthropicApiKey,
     options.advisorModels,
-    options.advisorCollector
+    options.advisorCollector,
+    cachingConfig
   );
 
   /**
@@ -292,7 +297,7 @@ export async function createProxyServer(
    */
   const requestShapingOpts: Pick<
     ComposedHandlerOptions,
-    "effortOverride" | "modelParams" | "proOnUltracode"
+    "effortOverride" | "modelParams" | "proOnUltracode" | "caching"
   > = {
     // Narrowed HERE, not at the CLI: createProxyServer is also entered from
     // `serve` and `team`, so the boundary must validate whoever calls it.
@@ -301,6 +306,7 @@ export async function createProxyServer(
     effortOverride: isEffortLevel(options.effortOverride) ? options.effortOverride : undefined,
     modelParams: options.modelParams,
     proOnUltracode: options.proOnUltracode,
+    caching: cachingConfig,
   };
 
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler

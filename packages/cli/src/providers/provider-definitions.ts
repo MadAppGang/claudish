@@ -105,6 +105,25 @@ function lazyHandler(pick: (m: ProfileBuilders) => ProviderProfile): LazyHandler
   return async (ctx) => pick(await import("./provider-profiles.js")).createHandler(ctx);
 }
 
+/**
+ * How a provider's endpoint handles Anthropic `cache_control` breakpoints.
+ * - "inject": the endpoint honours explicit breakpoints, so claudish may place
+ *   them on the uncached prefix (Anthropic, MiniMax M2.x, Qwen).
+ * - "strip": the endpoint rejects `cache_control` (Zhipu/GLM answers 400), so
+ *   every breakpoint is removed before sending, including the ones Claude Code
+ *   set. This runs whether or not injection is enabled — it is a correctness
+ *   requirement for that endpoint, not part of the opt-in feature.
+ * - "passthrough": the endpoint caches on its own and ignores `cache_control`
+ *   (Kimi), so the payload is left exactly as received.
+ */
+export interface CacheControlDescriptor {
+  mode: "inject" | "strip" | "passthrough";
+  /** Permit the 1h extended TTL (needs the extended-cache-ttl beta). Anthropic only. */
+  extendedTtl?: boolean;
+  /** Minimum tokens a segment needs before a breakpoint on it caches. Default 1024. */
+  minCacheTokens?: number;
+}
+
 export interface ProviderDefinition {
   /**
    * How this provider builds a handler — or an explicit statement that it does
@@ -182,6 +201,11 @@ export interface ProviderDefinition {
    * window varies by tier (see providers/model-discovery.ts).
    */
   modelDiscovery?: ModelDiscoveryDescriptor;
+  /**
+   * How this provider's endpoint handles Anthropic cache_control breakpoints.
+   * Absent means "passthrough" (leave whatever the client sent untouched).
+   */
+  cacheControl?: CacheControlDescriptor;
   /** Provider capabilities */
   capabilities?: ProviderCapabilities;
   /** Custom HTTP headers to include with requests */
@@ -548,6 +572,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "minimax",
+    cacheControl: { mode: "inject" },
     displayName: "MiniMax",
     transport: "anthropic",
     // NOT api.minimax.io — that host is the CODING PLAN's, and the two are
@@ -584,6 +609,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "minimax-coding",
+    cacheControl: { mode: "inject" },
     displayName: "MiniMax Coding",
     transport: "anthropic",
     baseUrl: "https://api.minimax.io",
@@ -633,6 +659,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "kimi",
+    cacheControl: { mode: "passthrough" },
     displayName: "Kimi",
     transport: "anthropic",
     baseUrl: "https://api.moonshot.ai",
@@ -715,6 +742,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "z-ai",
+    cacheControl: { mode: "strip" },
     displayName: "Z.AI",
     transport: "anthropic",
     baseUrl: "https://api.z.ai",
@@ -1231,6 +1259,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "qwen-cloud",
+    cacheControl: { mode: "inject" },
     displayName: "Qwen Plan",
     transport: "anthropic",
     baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com",
@@ -1288,6 +1317,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "qwen-payg",
+    cacheControl: { mode: "inject" },
     // "Qwen API", not "Qwen PAYG". Every other metered provider in this catalog
     // is named "<vendor> API" (Gemini/MiniMax/GLM/Kimi/DeepSeek/Mistral/Sakana),
     // and this row sits directly beneath "Qwen Plan (qc@)" — so "PAYG" made the
@@ -1595,6 +1625,14 @@ function describeSiblingKeys(def: ProviderDefinition | undefined): string {
 export function getDisplayName(providerName: string): string {
   const def = getProviderByName(providerName);
   return def?.displayName || providerName.charAt(0).toUpperCase() + providerName.slice(1);
+}
+
+/**
+ * How to treat Anthropic cache_control for a provider's endpoint. Falls back to
+ * "passthrough" for a provider that declares nothing (leave the payload as-is).
+ */
+export function getCacheControl(providerName: string): CacheControlDescriptor {
+  return getProviderByName(providerName)?.cacheControl ?? { mode: "passthrough" };
 }
 
 /** Where a base-URL override came from, so a caller can phrase the remedy. */
