@@ -2497,3 +2497,82 @@ describe("Regression: OpenAI-lane cache visibility (G2, #99)", () => {
     expect(usage.cache_read_input_tokens).toBe(1000);
   });
 });
+
+describe("Regression: Responses-lane cache visibility (#115)", () => {
+  // #115: the Responses wire (Codex/Sol lane) carries the cached share inside
+  // usage.input_tokens_details.cached_tokens on response.completed. The parser
+  // previously read only input_tokens/output_tokens, so the client's context
+  // gauge saw a gross input and was blind to the cache. Same netting contract
+  // as the chat-completions lane above (#99). The SEED fixture is synthetic —
+  // provider proof is the AC-3 raw-upstream probe (issue #115), not this test.
+
+  async function responsesUsageOf(sse: string) {
+    const mod = await import("./handlers/shared/stream-parsers/openai-responses-sse.js");
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sse));
+        controller.close();
+      },
+    });
+    const response = new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const handler = mod.createResponsesStreamHandler(createMockContext(), response, {
+      modelName: "gpt-5.6-sol",
+    });
+    const events = await parseClaudeSseStream(handler);
+    const delta = events.find((e) => e.data?.type === "message_delta");
+    expect(delta).toBeDefined();
+    return delta?.data?.usage;
+  }
+
+  test("input_tokens_details.cached_tokens is split OUT of input_tokens (SEED fixture)", async () => {
+    const sse = readFileSync(join(FIXTURES_DIR, "SEED-responses-cached-tokens.sse"), "utf-8");
+    const usage = await responsesUsageOf(sse);
+    expect(usage.cache_read_input_tokens).toBe(95312);
+    expect(usage.input_tokens).toBe(3453);
+    // The client's context gauge SUMS the fields — the total must not grow.
+    expect(usage.input_tokens + usage.cache_read_input_tokens).toBe(98765);
+    expect(usage.output_tokens).toBe(214);
+  });
+
+  test("no cache detail → input unchanged, cache zero (backward compatible)", async () => {
+    const sse = readFileSync(join(FIXTURES_DIR, "SEED-responses-text-only.sse"), "utf-8");
+    const usage = await responsesUsageOf(sse);
+    expect(usage.input_tokens).toBe(1234);
+    expect(usage.cache_read_input_tokens).toBe(0);
+    expect(usage.output_tokens).toBe(567);
+  });
+
+  test("top-level event.usage (response.done variant) is read too", async () => {
+    const usage = await responsesUsageOf(
+      [
+        `event: response.created`,
+        `data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+        ``,
+        `event: response.done`,
+        `data: {"type":"response.done","usage":{"input_tokens":2000,"input_tokens_details":{"cached_tokens":500},"output_tokens":40}}`,
+        ``,
+      ].join("\n")
+    );
+    expect(usage.cache_read_input_tokens).toBe(500);
+    expect(usage.input_tokens).toBe(1500);
+  });
+
+  test("a provider reporting more cached than total cannot emit negative input", async () => {
+    const usage = await responsesUsageOf(
+      [
+        `event: response.created`,
+        `data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+        ``,
+        `event: response.completed`,
+        `data: {"type":"response.completed","response":{"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":1200},"output_tokens":5}}}`,
+        ``,
+      ].join("\n")
+    );
+    expect(usage.input_tokens).toBe(0);
+    expect(usage.cache_read_input_tokens).toBe(1000);
+  });
+});

@@ -92,6 +92,21 @@ function classifyStreamReadError(error: unknown): StreamReadError {
   return { isSocketClose, detail };
 }
 
+/**
+ * #115: the Responses wire reports the cached share of the prompt inside
+ * usage.input_tokens_details.cached_tokens. Mirror the chat-completions lane
+ * (#99/#101): clamp to the prompt, net it out of input_tokens, surface it as
+ * cache_read_input_tokens. A gross input double-counts on the client's context
+ * gauge, which sums the fields.
+ */
+function readCacheReadTokens(
+  usage: { input_tokens_details?: { cached_tokens?: unknown } },
+  promptTokens: number
+): number {
+  const raw = Number(usage.input_tokens_details?.cached_tokens) || 0;
+  return Math.min(Math.max(raw, 0), promptTokens);
+}
+
 export function createResponsesStreamHandler(
   c: Context,
   response: Response,
@@ -152,6 +167,7 @@ export function createResponsesStreamHandler(
   let textBlockIndex: number | null = null;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
   let hasTextContent = false;
   let hasToolUse = false;
   let lastActivity = Date.now();
@@ -252,7 +268,7 @@ export function createResponsesStreamHandler(
           send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: "end_turn", stop_sequence: null },
-            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+            usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
           });
           send("message_stop", { type: "message_stop" });
         } catch {
@@ -267,7 +283,7 @@ export function createResponsesStreamHandler(
           path: "interrupted",
           detail,
           tools: functionCalls.size,
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
         });
         try {
           controller.close();
@@ -489,14 +505,17 @@ export function createResponsesStreamHandler(
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || inputTokens;
                   outputTokens = event.response.usage.output_tokens || outputTokens;
+                  cacheReadTokens = readCacheReadTokens(event.response.usage, inputTokens);
                 }
               } else if (event.type === "response.completed" || event.type === "response.done") {
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || 0;
                   outputTokens = event.response.usage.output_tokens || 0;
+                  cacheReadTokens = readCacheReadTokens(event.response.usage, inputTokens);
                 } else if (event.usage) {
                   inputTokens = event.usage.input_tokens || 0;
                   outputTokens = event.usage.output_tokens || 0;
+                  cacheReadTokens = readCacheReadTokens(event.usage, inputTokens);
                 }
                 completed = true;
                 // No [resp] marker here. The marker is emitted once, at CLOSE, by
@@ -582,7 +601,7 @@ export function createResponsesStreamHandler(
                 send("message_delta", {
                   type: "message_delta",
                   delta: { stop_reason: "end_turn", stop_sequence: null },
-                  usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+                  usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
                 });
                 send("message_stop", { type: "message_stop" });
                 isClosed = true;
@@ -598,7 +617,7 @@ export function createResponsesStreamHandler(
                   error: errCode,
                   tools: functionCalls.size,
                   overflow: overflowInfo,
-                  usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+                  usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
                 });
                 controller.close();
                 return;
@@ -635,7 +654,7 @@ export function createResponsesStreamHandler(
         send("message_delta", {
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
         });
         send("message_stop", { type: "message_stop" });
 
@@ -646,7 +665,7 @@ export function createResponsesStreamHandler(
           stop_reason: stopReason,
           path: "normal",
           tools: functionCalls.size,
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
         });
         controller.close();
       } catch (error) {

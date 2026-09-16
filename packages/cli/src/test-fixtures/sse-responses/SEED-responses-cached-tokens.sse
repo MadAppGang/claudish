@@ -1,0 +1,8 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_seed_sol_cache_1","status":"in_progress"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"ok"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_seed_sol_cache_1","status":"completed","usage":{"input_tokens":98765,"input_tokens_details":{"cached_tokens":95312},"output_tokens":214}}}
