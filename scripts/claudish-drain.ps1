@@ -87,22 +87,27 @@ function Write-DrainLog {
     Write-Host $line
 }
 
-# The probe must hit the container being drained. $ProxyUrl defaults to :3000
-# (the hub), but sidecars publish other host ports (ai-01's listens on :3002),
-# and a -ContainerName that leaves the default URL probes the WRONG process:
-# the health call answers nothing, Get-ClaudishActiveStreams returns $null
-# ("no signal"), and the restart silently degrades to undrained — measured on
-# ai-01, 2026-09-15: container passed, :3000 probed, restart undrained. Derive
-# the URL from the container's published 3000/tcp mapping unless -ProxyUrl was
-# given explicitly.
-if (-not $PSBoundParameters.ContainsKey('ProxyUrl')) {
+function Get-ClaudishProbeUrl {
+    <#
+        Derives the probe URL from the container's published 3000/tcp mapping,
+        or $null when docker cannot answer. Resolution must happen PER CALL on
+        the container actually being drained (#110): $ProxyUrl defaults to
+        :3000 (the hub), but sidecars publish other host ports (ai-01's
+        listens on :3002), and a URL resolved at script/dot-source time binds
+        to whatever $ContainerName held THEN — so a dot-sourced
+        `Invoke-ClaudishDrainedRestart -Container <sidecar>` probed the hub's
+        port, the health call answered nothing, Get-ClaudishActiveStreams
+        returned $null ("no signal"), and the restart silently degraded to
+        undrained. Measured on ai-01, 2026-09-14 and 2026-09-15.
+    #>
+    param([string]$Container)
     try {
-        $published = (docker port $ContainerName 3000/tcp 2>$null | Select-Object -First 1)
+        $published = (docker port $Container 3000/tcp 2>$null | Select-Object -First 1)
         if ($published -and $published -match ':(\d+)\s*$') {
-            $ProxyUrl = "http://localhost:$($Matches[1])"
-            Write-DrainLog "DRAIN: probe URL derived from container '$ContainerName' -> $ProxyUrl"
+            return "http://localhost:$($Matches[1])"
         }
     } catch { }
+    return $null
 }
 
 function Get-ClaudishActiveStreams {
@@ -186,6 +191,19 @@ function Invoke-ClaudishDrainedRestart {
             return $false
         }
         Write-DrainLog "RECREATE ($Reason): interpolating from -EnvFile '$EnvFile'"
+    }
+
+    # Resolve the probe URL per call, from the container actually being
+    # drained (#110): an explicit -Url wins; otherwise the container's
+    # published 3000/tcp mapping overrides the :3000 default. Without this,
+    # a dot-sourced call draining a sidecar probed the URL bound at
+    # dot-source time (the hub's) and silently skipped the drain phase.
+    if (-not $PSBoundParameters.ContainsKey('Url')) {
+        $resolved = Get-ClaudishProbeUrl -Container $Container
+        if ($resolved -and $resolved -ne $Url) {
+            $Url = $resolved
+            Write-DrainLog "DRAIN: probe URL derived from container '$Container' -> $Url"
+        }
     }
 
     $active = Get-ClaudishActiveStreams -Url $Url
