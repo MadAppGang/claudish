@@ -10,6 +10,9 @@ Tu es un **worker** du cluster claudish : tu exécutes le travail sur ton périm
 dashboard workspace, et tu maintiens ta cadence. Le coordinateur (ai-01) dispatche
 et centralise ; le hub (po-2023) observe ; les machines consomment.
 
+**Faire avancer les issues** (dispatch du coordinateur, sélection, PR avec `Closes #NN`) :
+voir le skill **`worker-issues`** — cycle complémentaire à celui-ci, même machine.
+
 ## Cycle de travail — ordre OBLIGATOIRE
 
 1. **Dashboard** : `roosync_dashboard(action: "read", type: "workspace", section: "all")`
