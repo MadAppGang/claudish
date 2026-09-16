@@ -23,8 +23,13 @@ text search over a capture is not a discriminator: measured 2026-09-08, the stri
 of them actually had it as their workspace.
 
 What counts as "Anthropic" in THIS deployment:
-  - opus (claude-opus-4-8 / -4-7) and fable (claude-fable-5) are BARE NATIVE names
-    → NativeHandler → api.anthropic.com. These ARE Anthropic traffic.
+  - opus (claude-opus-4-8 / -4-7) and fable (claude-fable-5) normally resolve
+    to NativeHandler → api.anthropic.com.
+  - UNDER THE WEEKLY WALL the opus/fable cascade (…→ gc@glm-5.3 → PAYG) serves
+    those requests from budget lanes: a request named `claude-opus-5` is NOT
+    proof of Anthropic spend. The billed proof is a `resp-*-native-*.sse`
+    capture in the window; this script counts it separately ($NativeRespProof)
+    and labels the rows "REQUESTED". Leak tags stay machine-level regardless.
   - claude-sonnet-4-6 is REMAPPED to gc@glm-5.2 (ComposedHandler) → NOT Anthropic.
   - haiku is REMAPPED to mmc@MiniMax-M3 → NOT Anthropic.
 So the Anthropic filter defaults to the model pattern 'opus|fable'. Sonnet is shown
@@ -77,6 +82,13 @@ Import-Module (Join-Path $PSScriptRoot 'CaptureUtils.psm1') -Force
 
 $requests = @(Get-CaptureRequests -Dir $Dir -Hours $Hours)
 
+# Billed-proof: a resp-* capture carrying the native handler label in the
+# window. Absent under the weekly wall even when opus/fable are being
+# requested heavily (cascade serves them from budget lanes).
+$winStart = (Get-Date).ToUniversalTime().AddHours(-$Hours)
+$nativeResp = @(Get-ChildItem -Path $Dir -Filter 'resp-*-native-*.sse' -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -ge $winStart })
+
 Write-Host ""
 Write-Host "=== Anthropic Traffic Attribution (last ${Hours}h) ===" -ForegroundColor Cyan
 Write-Host "Captures scanned: $($requests.Count)   (workspace = proof, from system prompt)" -ForegroundColor Gray
@@ -113,9 +125,10 @@ foreach ($r in $anthropic) {
     $r | Add-Member -NotePropertyName VerdictColor -NotePropertyValue $v.Color -Force
 }
 
-Write-Host "--- ANTHROPIC-native (opus/fable → api.anthropic.com) ---" -ForegroundColor Yellow
+Write-Host "--- ANTHROPIC-native REQUESTED (opus/fable — billed only if served native) ---" -ForegroundColor Yellow
+Write-Host ("  billed-proof in window: {0} resp-*-native-* capture(s)" -f $nativeResp.Count) -ForegroundColor DarkGray
 if (-not $anthropic) {
-    Write-Host "  (none — 0 Anthropic-billed requests in this window)" -ForegroundColor Green
+    Write-Host "  (none — 0 requests naming opus/fable in this window)" -ForegroundColor Green
 } else {
     $groups = $anthropic |
         Group-Object Machine, Workspace, Model, VerdictTag |
@@ -164,7 +177,10 @@ if ($sonnet) {
 # ── Final verdict ───────────────────────────────────────────────────────────
 $totalAnthropic = @($anthropic).Count
 Write-Host "=== Verdict ===" -ForegroundColor Cyan
-Write-Host ("  Anthropic-billed total: {0} req" -f $totalAnthropic)
+Write-Host ("  Opus/Fable REQUESTED: {0} req · billed-proof (resp-*-native-*): {1}" -f $totalAnthropic, $nativeResp.Count)
+if ($totalAnthropic -gt 0 -and $nativeResp.Count -eq 0) {
+    Write-Host "  [NOT-BILLED] all opus/fable requests were served by the cascade (wall-active) — real Anthropic spend 0 in this window" -ForegroundColor DarkGray
+}
 if ($leakCount -gt 0) {
     Write-Host ("  [LEAK-SUBAGENT] {0} req — rogue Opus sub-agent on a non-authorized machine. INVESTIGATE." -f $leakCount) -ForegroundColor Red
 } else {
