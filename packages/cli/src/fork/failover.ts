@@ -923,19 +923,26 @@ function buildStreamNoticeText(role: FailoverRole, step: FailoverStep, stepIndex
   const prefix = `[claudish] You are serving this session as ${step.label} (\`${step.target}\`) — the ${ordinal(
     stepIndex
   )} fallback for the ${roleLabel} role, because the nominal ${roleLabel} model${ahead} temporarily exhausted. `;
+  // Name the steps still downstream — a serving step read alone looks like the
+  // rest of the cascade (e.g. Kimi) was dropped from the config.
+  const remaining = rules.get(role)!.steps.slice(stepIndex + 1);
+  const remainder =
+    remaining.length > 0 ? `Remaining fallbacks: ${remaining.map((s) => s.label).join(", ")}. ` : "";
   if (step.direction === "degraded") {
     return (
       prefix +
-      `The context you inherit was built under a stronger model. Adjust accordingly: be more conservative, verify assumptions before acting, prefer well-trodden solutions over speculative ones, and take fewer risks than you would under ${roleLabel}.`
+      remainder +
+      `Capability note: ${step.label} is weaker than the nominal ${roleLabel} model; the inherited context may reflect the nominal's stronger output.`
     );
   }
   if (step.direction === "improved") {
     return (
       prefix +
-      `You are stronger than the nominal model here — use the extra capability to keep the work on track and clean up any loose ends in the inherited context.`
+      remainder +
+      `Capability note: ${step.label} is stronger than the nominal ${roleLabel} model.`
     );
   }
-  return prefix + `Capability is roughly equivalent; continue the work as normal.`;
+  return prefix + remainder + `Capability is roughly equivalent; continue the work as normal.`;
 }
 
 /** One-time stream notice for a RECOVERING role: the nominal is back. */
@@ -944,11 +951,11 @@ function buildStreamRecoveryText(role: FailoverRole, st: RecoveryState): string 
   if (st.prevDirection === "improved") {
     return `[claudish] You are back on the nominal ${roleLabel} model after serving as ${st.prevLabel} (the ${ordinal(
       st.prevStepIndex
-    )} fallback), which was stronger than nominal. Scale back to your normal ${roleLabel} working scope.`;
+    )} fallback), which was stronger than nominal.`;
   }
   return `[claudish] You are back on the nominal ${roleLabel} model after serving as ${st.prevLabel} (the ${ordinal(
     st.prevStepIndex
-  )} fallback). The context you inherit was built under a weaker model. Resume your normal working scope: you can take on tasks you deferred under the substitute.`;
+  )} fallback). The context above may include work done under that substitute.`;
 }
 
 /**
