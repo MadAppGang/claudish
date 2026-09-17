@@ -283,6 +283,75 @@ describe("forwardToUpstream — failover hysteresis (FAIL path)", () => {
   });
 });
 
+describe("forwardToUpstream — connect retry (#80 part 2)", () => {
+  // The container → host.docker.internal tunnel resets chronically (~1 per 8 min
+  // measured over 12 h, 87 failures, hub answering /health in 4 ms throughout).
+  // A connect failure is fast, so one retry absorbs the blip — and an absorbed
+  // blip feeds neither the hysteresis nor the local-cascade diversion.
+  function freshState(): RelayState {
+    return createRelayState({ upstream: "http://hub:3000" });
+  }
+
+  it("a connect failure is retried once; success on retry forwards and does NOT markFail", async () => {
+    let calls = 0;
+    fetchImpl = async () => {
+      calls++;
+      if (calls === 1) throw new Error("The socket connection was closed unexpectedly.");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const state = freshState();
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "m" }, state);
+    expect(calls).toBe(2);
+    expect(r).not.toBeNull();
+    expect(state.consecutiveFail).toBe(0); // absorbed: no hysteresis food
+    expect(state.alive).toBe(true);
+  });
+
+  it("both attempts fail → falls through to local and marks ONE failure (not two)", async () => {
+    let calls = 0;
+    fetchImpl = async () => {
+      calls++;
+      throw new Error("ECONNREFUSED");
+    };
+    const state = freshState();
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "m" }, state);
+    expect(calls).toBe(2);
+    expect(r).toBeNull();
+    expect(state.consecutiveFail).toBe(1); // per-request, not per-attempt
+  });
+
+  it("a header deadline is NOT retried — one attempt only (retrying would double the stall)", async () => {
+    let calls = 0;
+    fetchImpl = async (_url: any, init: any) => {
+      calls++;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal.reason));
+      });
+    };
+    const state = freshState();
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 50);
+    expect(calls).toBe(1);
+    expect(r).toBeNull();
+    expect(state.consecutiveFail).toBe(0); // a deadline is not liveness evidence (existing rule)
+  });
+
+  it("an HTTP 500 is NOT retried — the hub answered, hysteresis owns it", async () => {
+    let calls = 0;
+    fetchImpl = async () => {
+      calls++;
+      return new Response("boom", { status: 500 });
+    };
+    const state = freshState();
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "m" }, state);
+    expect(calls).toBe(1);
+    expect(r).toBeNull();
+    expect(state.consecutiveFail).toBe(1);
+  });
+});
+
 describe("forwardToUpstream — a header deadline is not liveness evidence", () => {
   // The bound documents itself as "NOT a liveness detector — the heartbeat prober
   // owns that", yet its abort used to call markFail. So a slow PROVIDER drove the

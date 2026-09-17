@@ -78,6 +78,10 @@ const HEARTBEAT_TIMEOUT_MS = 4_000;
  */
 export const FORWARD_HEADERS_TIMEOUT_MS = 30_000;
 const DEEP_PROBE_TIMEOUT_MS = 30_000;
+/** #80 part 2: one retry on a connect-phase failure before falling through
+ * (the Docker Desktop tunnel's chronic resets — see forwardToUpstream). */
+const CONNECT_RETRIES = 1;
+const CONNECT_RETRY_DELAY_MS = 250;
 
 /**
  * Read the JSON request body, inflating a gzipped body if present.
@@ -203,29 +207,60 @@ export async function forwardToUpstream(
   // AbortController and clear the timer the instant fetch() resolves (= headers
   // received); the body then streams unbounded, and a mid-stream hub death is
   // handled by createAnthropicPassthroughStream's finalizeWithError (never-hang).
-  let res: Response;
-  const headerController = new AbortController();
-  const headerTimer = setTimeout(() => headerController.abort(), headerTimeoutMs);
-  const fetchStartedAt = performance.now();
-  try {
-    // Path-aware forward: relay to the SAME route the client hit, so an OpenAI
-    // request (/v1/chat/completions) reaches the hub's OpenAI ingress rather
-    // than /v1/messages. Falls back to /v1/messages when the path is missing
-    // (older callers / tests) to preserve the historical behavior.
-    const reqPath =
-      typeof c.req?.path === "string" && c.req.path.startsWith("/v1/")
-        ? c.req.path
-        : "/v1/messages";
-    res = await fetch(`${state.upstream}${reqPath}`, {
-      method: "POST",
-      headers,
-      body: payload,
-      signal: headerController.signal,
-    });
-    clearTimeout(headerTimer); // headers in → stop bounding; body is unbounded
-  } catch (e) {
-    clearTimeout(headerTimer);
-    // Two failures of opposite natures land in this catch, and only one of them
+  //
+  // #80 part 2 — one connect retry before falling through. The container →
+  // host.docker.internal tunnel resets chronically (~1 per 8 min measured over
+  // 12 h, 87 failures, while the hub itself answered /health in 4 ms throughout:
+  // the defect is the Docker Desktop transport, not the hub). A connect failure
+  // is a FAST failure (socket refused/reset in ms), so one retry at +250 ms
+  // absorbs the blip at no perceptible cost — and an ABSORBED retry does not
+  // markFail, so the chronic blips stop feeding the AUTONOMOUS hysteresis and
+  // stop diverting requests to the local cascades (which the central capture
+  // never sees, and which may bill PAYG the hub's subscriptions would have
+  // covered). A header deadline is NOT retried (that would double the 30 s
+  // stall), and neither is an HTTP 5xx (the hub answered; hysteresis owns it).
+  let res: Response | null = null;
+  let lastErr: unknown = null;
+  let lastWasHeaderDeadline = false;
+  let fetchStartedAt = performance.now();
+  // Path-aware forward: relay to the SAME route the client hit, so an OpenAI
+  // request (/v1/chat/completions) reaches the hub's OpenAI ingress rather
+  // than /v1/messages. Falls back to /v1/messages when the path is missing
+  // (older callers / tests) to preserve the historical behavior.
+  const reqPath =
+    typeof c.req?.path === "string" && c.req.path.startsWith("/v1/")
+      ? c.req.path
+      : "/v1/messages";
+  for (let attempt = 0; attempt <= CONNECT_RETRIES; attempt++) {
+    const headerController = new AbortController();
+    const headerTimer = setTimeout(() => headerController.abort(), headerTimeoutMs);
+    fetchStartedAt = performance.now();
+    try {
+      res = await fetch(`${state.upstream}${reqPath}`, {
+        method: "POST",
+        headers,
+        body: payload,
+        signal: headerController.signal,
+      });
+      clearTimeout(headerTimer); // headers in → stop bounding; body is unbounded
+      lastErr = null;
+      break;
+    } catch (e) {
+      clearTimeout(headerTimer);
+      lastErr = e;
+      lastWasHeaderDeadline = (e as any)?.name === "AbortError";
+      if (lastWasHeaderDeadline) break; // slow upstream: retrying doubles the stall
+      if (attempt < CONNECT_RETRIES) {
+        log(
+          `[Relay] forward connect failed (${String(e).slice(0, 80)}) — retrying ${attempt + 1}/${CONNECT_RETRIES}`,
+          true
+        );
+        await new Promise((r) => setTimeout(r, CONNECT_RETRY_DELAY_MS));
+      }
+    }
+  }
+  if (lastErr !== null) {
+    // Two failures of opposite natures land here, and only one of them
     // says anything about whether the HUB is alive.
     //
     // A refused / reset / DNS-failed connection is direct evidence the hub is
@@ -258,19 +293,19 @@ export async function forwardToUpstream(
     //
     // The request itself still falls through, and every fallthrough is still logged.
     // Only the machine-wide contagion is removed.
-    const isHeaderDeadline = (e as any)?.name === "AbortError";
-    const detail = String(e).slice(0, 80);
-    if (!isHeaderDeadline) {
+    const detail = String(lastErr).slice(0, 80);
+    if (!lastWasHeaderDeadline) {
       markFail(state, `forward-connect: ${detail}`);
     }
     // Label the two apart. Reporting a header deadline as `connect:` is what hid
     // this: the log named a connection failure while the cause was latency.
     logFallthrough(
       state,
-      isHeaderDeadline ? `header-timeout after ${headerTimeoutMs}ms` : `connect: ${detail}`
+      lastWasHeaderDeadline ? `header-timeout after ${headerTimeoutMs}ms` : `connect: ${detail}`
     );
     return null;
   }
+  if (!res) return null; // unreachable: loop exits with res set or lastErr set
 
   if (res.status >= 500) {
     // Hub answered 5xx → treat as unhealthy, fall back to local for this request.
