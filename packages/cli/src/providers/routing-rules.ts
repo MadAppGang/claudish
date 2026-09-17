@@ -40,13 +40,49 @@ export function mergeRoutingRules(
  * To get strict no-fallback mode, set `routing["*"] = []` in user config.
  */
 export function loadRoutingRules(): RoutingRules {
+  return mergeRoutingRules(DEFAULT_ROUTING_RULES, loadUserRoutingRules());
+}
+
+/**
+ * User-authored routing layers only (global config ← local config), without
+ * the baked-in defaults. This is the "the user explicitly spoke about this
+ * model" set — see matchUserRoutingOverride for its one load-bearing use.
+ */
+export function loadUserRoutingRules(): RoutingRules {
   const local = loadLocalConfig()?.routing ?? {};
   const global_ = loadConfig().routing ?? {};
 
   validateRoutingRules(local);
   validateRoutingRules(global_);
 
-  return mergeRoutingRules(DEFAULT_ROUTING_RULES, global_, local);
+  return { ...global_, ...local };
+}
+
+/**
+ * Whether a user-authored routing rule (exact key or glob, EXCLUDING the "*"
+ * catch-all) matches this model name.
+ *
+ * Load-bearing in the proxy's handler selection: bare names that no prefix
+ * heuristic recognizes are classified `native-anthropic` by parseModelSpec,
+ * which normally skips the routing engine and sends the request to the
+ * Anthropic passthrough. When the user explicitly routed that name
+ * (e.g. `routing: { "local-coding": ["vllm-myia@qwen3.6-35b-a3b"] }`), the
+ * override must win over the heuristic — measured 2026-09-17, fleet issue
+ * roo-extensions #3401: the alias was announced in /v1/models but every POST
+ * 401'd against api.anthropic.com. The catch-all is deliberately excluded: it
+ * speaks about "everything", so honoring it here would divert every claude-*
+ * passthrough request too.
+ */
+export function matchUserRoutingOverride(
+  modelName: string,
+  userRules: RoutingRules
+): boolean {
+  const model = normalizeGlmSlug(modelName);
+  if (userRules[model]) return true;
+  const globKeys = Object.keys(userRules)
+    .filter((k) => k !== "*" && k.includes("*"))
+    .sort((a, b) => b.length - a.length);
+  return globKeys.some((pattern) => globMatch(pattern, model));
 }
 
 /** Warn about config issues that would silently misbehave. */

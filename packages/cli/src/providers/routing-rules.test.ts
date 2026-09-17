@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   matchRoutingRule,
+  matchUserRoutingOverride,
   buildRoutingChain,
   loadRoutingRules,
   mergeRoutingRules,
@@ -220,6 +221,64 @@ describe("matchRoutingRule", () => {
     expect(matchRoutingRule("anything-at-all", rules)).toEqual(["openrouter"]);
     expect(matchRoutingRule("gemini-2.5-pro", rules)).toEqual(["openrouter"]);
     expect(matchRoutingRule("gpt-4o", rules)).toEqual(["openrouter"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchUserRoutingOverride — user-authored entries beat the bare-name
+// native-anthropic heuristic (fleet issue roo-extensions #3401)
+// ---------------------------------------------------------------------------
+
+describe("matchUserRoutingOverride", () => {
+  let savedOpenaiKey: string | undefined;
+  beforeEach(() => {
+    savedOpenaiKey = process.env.OPENAI_API_KEY;
+  });
+  afterEach(() => {
+    if (savedOpenaiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedOpenaiKey;
+  });
+
+  test("exact user key matches", () => {
+    const userRules: RoutingRules = { "local-coding": ["vllm-myia@qwen3.6-35b-a3b"] };
+    expect(matchUserRoutingOverride("local-coding", userRules)).toBe(true);
+  });
+
+  test("user glob matches, longest-first like matchRoutingRule", () => {
+    const userRules: RoutingRules = { "local-*": ["openrouter"] };
+    expect(matchUserRoutingOverride("local-coding", userRules)).toBe(true);
+    expect(matchUserRoutingOverride("other-model", userRules)).toBe(false);
+  });
+
+  test("the '*' catch-all is NOT an override — claude-* passthrough must not be diverted", () => {
+    const userRules: RoutingRules = { "*": ["openrouter"] };
+    expect(matchUserRoutingOverride("claude-opus-4-8", userRules)).toBe(false);
+    expect(matchUserRoutingOverride("anything", userRules)).toBe(false);
+  });
+
+  test("empty user rules never match", () => {
+    expect(matchUserRoutingOverride("local-coding", {})).toBe(false);
+  });
+
+  test("slugified GLM name matches a dotted user key (same tolerance as route())", () => {
+    const userRules: RoutingRules = { "glm-5.2": ["gc@glm-5.2"] };
+    expect(matchUserRoutingOverride("glm-5-2", userRules)).toBe(true);
+  });
+
+  test("an exact user override on a native-classified name routes (end-to-end routing semantics)", () => {
+    // "local-coding" parses as provider native-anthropic (unknown bare name),
+    // but an exact user routing entry must still produce an ok plan through
+    // route() — this is the half the proxy's handler-selection guard now
+    // unlocks (#3401: the alias 401'd against api.anthropic.com instead).
+    process.env.OPENAI_API_KEY = "oai-test";
+    const rules: RoutingRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, {
+      "local-coding": ["openai"],
+    });
+    const plan = route("local-coding", rules);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openai");
+    expect(plan.primary.modelSpec).toBe("oai@local-coding");
   });
 });
 
