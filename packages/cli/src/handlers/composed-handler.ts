@@ -34,6 +34,7 @@ import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-res
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
+import { withFirstUsefulEventWatchdog } from "./shared/first-event-watchdog.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { appendUpstreamError } from "./shared/response-capture.js";
 import {
@@ -1140,6 +1141,15 @@ export class ComposedHandler implements ModelHandler {
 
     // See resolveStreamFormat() for the priority rules and the #102 history.
     const streamFormat = this.resolveStreamFormat();
+    // First-useful-event watchdog (#108): a stream admitted with 200 that
+    // produces only keep-alive comments held hub slots for ~900s during the
+    // 14/09 deepseek-flash scheduler incident. Wrapped for every SSE format;
+    // ollama-jsonl is excluded because its wire format has no `data:` prefix,
+    // so the watchdog could never see its useful events. Expiry cancels the
+    // upstream and the parser below finalizes synthetically (never-hang).
+    if (streamFormat !== "ollama-jsonl") {
+      response = withFirstUsefulEventWatchdog(response, this.bareModelName);
+    }
     // Stream parsers receive bareModelName: it is used both as the middleware-identity
     // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in
     // `message_start.message.model` for display. Passing the routed form here was the
