@@ -31,7 +31,12 @@ import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { resolveProxyKeys, matchesProxyKey } from "./handlers/shared/proxy-keys.js";
-import { route, loadRoutingRules } from "./providers/routing-rules.js";
+import {
+  loadRoutingRules,
+  loadUserRoutingRules,
+  matchUserRoutingOverride,
+  route,
+} from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
@@ -605,7 +610,10 @@ export async function createProxyServer(
   // Load effective routing rules once at startup. Returns a merged view of
   // DEFAULT_ROUTING_RULES + global config + local config (local wins). The
   // routing engine consults these via route() for every bare-name request.
+  // `userRoutingRules` keeps the user-authored subset apart: it is what lets a
+  // user routing override beat the native-anthropic heuristic below (2c).
   const effectiveRoutingRules = loadRoutingRules();
+  const userRoutingRules = loadUserRoutingRules();
 
   // Cache fallback handlers by target model string.
   // No TTL/invalidation: claudish is ephemeral per session, so env changes
@@ -735,7 +743,13 @@ export async function createProxyServer(
       const parsedForFallback = parseModelSpec(target);
       if (
         !parsedForFallback.isExplicitProvider &&
-        parsedForFallback.provider !== "native-anthropic" &&
+        (parsedForFallback.provider !== "native-anthropic" ||
+          // A user-authored routing entry for this exact name (or glob) wins
+          // over the bare-name heuristic: without this, an alias the user
+          // routed to a custom endpoint is classified native-anthropic, the
+          // routing engine is skipped entirely, and the request 401s against
+          // api.anthropic.com (#3401).
+          matchUserRoutingOverride(parsedForFallback.model, userRoutingRules)) &&
         !isPoeModel(target)
       ) {
         const cacheKey = `fallback:${target}`;
