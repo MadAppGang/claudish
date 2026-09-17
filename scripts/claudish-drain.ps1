@@ -31,7 +31,10 @@
 #      Invoke-ClaudishDrainedRestart -Reason "confirmed hang"
 #
 # 3. Deploying — a RESTART reloads neither the image nor .env, so shipping a
-#    rebuilt image needs -Recreate (`docker compose up -d`) instead:
+#    rebuilt image needs -Recreate (`docker compose up -d`) instead. Both forms
+#    carry it (#124 — the standalone path used to drop the switch and silently
+#    drain into a plain restart):
+#      powershell -ExecutionPolicy Bypass -File scripts\claudish-drain.ps1 -Reason "deploy vX.Y" -Recreate -EnvFile "D:\claudish-shadow\.env"
 #      . "$PSScriptRoot\claudish-drain.ps1"
 #      Invoke-ClaudishDrainedRestart -Reason "deploy vX.Y" -Recreate -EnvFile "D:\claudish-shadow\.env"
 #    Same drain, different action. Plain `docker compose up -d` would deploy
@@ -75,7 +78,11 @@ param(
     [string]$LogPath = "$env:USERPROFILE\.claudish\drain.log",
     # Interpolation env file for `docker compose` under -Recreate. See the
     # header: refusing beats silently recreating with empty ${VAR:-} values.
-    [string]$EnvFile = ""
+    [string]$EnvFile = "",
+    # Standalone form of the function's deploy switch (#124): forwarded to
+    # Invoke-ClaudishDrainedRestart below so `-File -Recreate` recreates
+    # instead of silently draining into a plain `docker restart`.
+    [switch]$Recreate
 )
 
 function Write-DrainLog {
@@ -310,6 +317,6 @@ function Invoke-ClaudishDrainedRestart {
 
 # Standalone mode: run the restart. Dot-sourced, define the functions only.
 if ($MyInvocation.InvocationName -ne '.') {
-    $ok = Invoke-ClaudishDrainedRestart -Reason $Reason -EnvFile $EnvFile
+    $ok = Invoke-ClaudishDrainedRestart -Reason $Reason -Recreate:$Recreate -EnvFile $EnvFile
     exit $(if ($ok) { 0 } else { 1 })
 }
