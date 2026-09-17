@@ -169,6 +169,10 @@ let armAfterRefusals = 2;
 let armGraceMs = 0;
 /** A retry-after below this is a burst, never a wall. Tunable, 120 s start. */
 let armRetryAfterCeilingMs = 120_000;
+/** #91 point 4: minimum time a session keeps its resolved cascade step, so an
+ * in-flight conversation cannot flip providers mid-work (each flip = cold
+ * prompt-cache at both ends). 0 disables the per-session dwell. */
+let sessionDwellMs = 600_000;
 /** Run of consecutive qualifying nominal refusals, per role (#91 gate). */
 const nominalRefusals = new Map<FailoverRole, { count: number; lastAt: number }>();
 /** #91 point 3: TTL-expiry disarms per role that led back to an arm (the wall
@@ -287,6 +291,8 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   pendingRecovery.clear();
   notifiedSessions.clear();
   nominalRefusals.clear();
+  armTtlEscalation.clear();
+  dwellPins.clear();
   const parseIntEnv = (raw: string | undefined, fallback: number): number => {
     const n = Number.parseInt((raw || "").trim(), 10);
     return Number.isFinite(n) ? n : fallback;
@@ -294,6 +300,7 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   armAfterRefusals = Math.max(1, parseIntEnv(env.CLAUDISH_FAILOVER_ARM_AFTER, 2));
   armGraceMs = Math.max(0, parseIntEnv(env.CLAUDISH_FAILOVER_ARM_GRACE_MS, 0));
   armRetryAfterCeilingMs = Math.max(0, parseIntEnv(env.CLAUDISH_FAILOVER_ARM_RETRY_AFTER_CEILING_MS, 120_000));
+  sessionDwellMs = Math.max(0, parseIntEnv(env.CLAUDISH_FAILOVER_SESSION_DWELL_MS, 600_000));
 
   const activeRaw = (env.CLAUDISH_FAILOVER_ACTIVE || "").trim().toLowerCase();
   if (activeRaw && activeRaw !== "none") {
@@ -440,6 +447,107 @@ export function resolveFailoverTarget(role: FailoverRole): { step: FailoverStep 
   const rule = rules.get(role);
   if (!rule || !isFailoverActive(role)) return { step: null, stepIndex: -1 };
   return resolveSkippingFailed(role, rule);
+}
+
+// ─── #91 point 4: per-session dwell ────────────────────────────────────────────
+// Each provider switch re-cold the prompt cache at BOTH ends — on a large agentic
+// context the dominant avoidable cost of the failover feature. The role-level
+// dampers (points 1-3) bound how often SWITCHES HAPPEN; the dwell bounds how often
+// one CONVERSATION rides them: a session keeps its resolved cascade step for at
+// least CLAUDISH_FAILOVER_SESSION_DWELL_MS (default 10 min, 0 = off), so the
+// disarm→nominal→re-arm oscillation moves traffic only between conversations,
+// never under one.
+
+/** Live dwell pins: role → session → the step it must keep serving until `until`.
+ * Set only while armed at a step (stepIndex >= 0) — nominal is never pinned. */
+const dwellPins = new Map<FailoverRole, Map<string, { stepIndex: number; until: number }>>();
+/** Prune guard so the pin map cannot grow without bound across a long uptime. */
+const DWELL_PINS_MAX = 512;
+
+function pruneDwellPins(role: FailoverRole): void {
+  const pins = dwellPins.get(role);
+  if (!pins || pins.size <= DWELL_PINS_MAX) return;
+  const now = Date.now();
+  for (const [k, v] of pins) {
+    if (v.until <= now) pins.delete(k);
+  }
+  if (pins.size > DWELL_PINS_MAX) {
+    // Still over: drop the oldest pins (Map preserves insertion order).
+    const excess = pins.size - DWELL_PINS_MAX;
+    let i = 0;
+    for (const k of pins.keys()) {
+      if (i++ >= excess) break;
+      pins.delete(k);
+    }
+  }
+}
+
+/** Test/config seam for the dwell window (#91 point 4). */
+export function getSessionDwellMs(): number {
+  return sessionDwellMs;
+}
+
+/**
+ * Session-aware cascade resolution — the routing seam `getHandlerForRequest` and
+ * the cascade loop use when a session key is available. Same walk as
+ * {@link resolveFailoverTarget}, plus the dwell:
+ *
+ *  - A live pin HOLDS while its step is still servable, even when the role-level
+ *    state moved on (disarmed to probe the nominal, re-armed, escalated) — that
+ *    oscillation is exactly what the dwell exists to keep off one conversation.
+ *  - The pin YIELDS on genuine advancement: the pinned step itself TTL-failed
+ *    (markStepFailed walked past it), or the pin expired. Yielding re-pins at
+ *    the new step.
+ *  - Nominal (stepIndex -1) is never pinned: pinning it would feed a session
+ *    into an armed wall when its own refusal just caused the arm.
+ */
+export function resolveFailoverTargetForSession(
+  role: FailoverRole,
+  sessionKey: string | null
+): { step: FailoverStep | null; stepIndex: number } {
+  const rule = rules.get(role);
+  if (!rule) return { step: null, stepIndex: -1 };
+  const dwell = sessionDwellMs;
+  if (!sessionKey || dwell <= 0) return resolveFailoverTarget(role);
+
+  const now = Date.now();
+  const pins = dwellPins.get(role);
+  const pin = pins?.get(sessionKey);
+
+  if (pin && pin.until > now) {
+    const fails = stepFailures.get(role);
+    const pinnedStillServable = pin.stepIndex < rule.steps.length && !isStepTtlFailed(fails?.[pin.stepIndex]);
+    if (pinnedStillServable) {
+      // Sliding dwell: an in-flight conversation (one that keeps resolving)
+      // renews, so the hold lasts as long as the session is active. An idle
+      // session's pin expires dwell after its last request.
+      pin.until = Math.max(pin.until, now + dwell);
+      return { step: rule.steps[pin.stepIndex], stepIndex: pin.stepIndex };
+    }
+    // Pinned step TTL-failed (genuine advancement) — fall through, re-pin below.
+  }
+
+  const resolved = resolveFailoverTarget(role);
+  if (resolved.stepIndex >= 0) {
+    const m = dwellPins.get(role) ?? new Map();
+    // Pin (or re-pin at a new step) only on change: resolve runs twice per
+    // cascade attempt (swap + loop read) and identical results must not churn
+    // the map or the log.
+    const prev = m.get(sessionKey);
+    if (!prev || prev.stepIndex !== resolved.stepIndex) {
+      m.set(sessionKey, { stepIndex: resolved.stepIndex, until: now + dwell });
+      dwellPins.set(role, m);
+      pruneDwellPins(role);
+      logStderr(
+        `[Failover] DWELL ${role} session …${sessionKey.slice(-8)} pinned to step ${resolved.stepIndex} (${resolved.step?.label}) for ${Math.round(dwell / 60000)}min — one provider switch per dwell`
+      );
+    } else {
+      prev.until = Math.max(prev.until, now + dwell);
+    }
+  } else if (pins) {
+    pins.delete(sessionKey); // back at nominal: no pin
+  }
+  return resolved;
 }
 
 /** Resolution that does NOT call isFailoverActive (used inside isFailoverActive's
@@ -1077,8 +1185,10 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     notifiedSessions.clear();
     nominalRefusals.clear();
     armTtlEscalation.clear();
+    dwellPins.clear();
     armAfterRefusals = 2;
     armGraceMs = 0;
     armRetryAfterCeilingMs = 120_000;
+    sessionDwellMs = 600_000;
   }
 }

@@ -25,6 +25,7 @@ import {
   appendFailoverNoticeToMessage,
   resetFailoverForTests,
   resolveFailoverTarget,
+  resolveFailoverTargetForSession,
   markStepFailed,
   parseResetAtFromBody,
   resetStepSuccess,
@@ -1269,6 +1270,111 @@ describe("#91 point 3 — arm-TTL hysteresis (the re-probe backoff)", () => {
     // Pre-#91-point-3 this was ~6 arms in the same hour (flat 10-min TTL).
     expect(arms).toBeLessThanOrEqual(3);
     expect(switches).toBeLessThanOrEqual(2);
+  });
+});
+
+// #91 point 4 — per-session dwell. Every provider switch re-colds the prompt
+// cache at BOTH ends; the role-level dampers (points 1-3) bound how often
+// switches happen, this bounds how often ONE CONVERSATION rides them: a session
+// keeps its resolved step for at least CLAUDISH_FAILOVER_SESSION_DWELL_MS
+// (default 10 min, 0 = off), so the disarm→nominal→re-arm oscillation moves
+// traffic only BETWEEN conversations, never under one.
+describe("#91 point 4 — per-session dwell", () => {
+  const ENV = {
+    CLAUDISH_FAILOVER_SONNET: "ds@deepseek-v4-flash>ds@deepseek-payg",
+    CLAUDISH_FAILOVER_SONNET_LABEL: "Flash>PAYG",
+    CLAUDISH_FAILOVER_AUTO: "1",
+  } as NodeJS.ProcessEnv;
+
+  const realNow = Date.now;
+  let clock = 1_000_000;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+    initFailover(ENV);
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  it("a session holds its step across the disarm/re-arm oscillation (the anti-flap core)", () => {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0); // pinned
+    // The session stays active (renewing the sliding dwell) while the role
+    // disarms at its TTL — a fresh walk would serve the nominal…
+    clock += 9 * 60 * 1000;
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0); // renewal
+    clock += 2 * 60 * 1000; // t=11min: role-arm TTL (10 min) has elapsed
+    expect(isFailoverActive("sonnet")).toBe(false);
+    // …but the pinned session still gets its step: one conversation, one switch.
+    const held = resolveFailoverTargetForSession("sonnet", "sess-A");
+    expect(held.stepIndex).toBe(0);
+    expect(held.step?.target).toBe("ds@deepseek-v4-flash");
+    // A DIFFERENT session (no pin) probes the nominal as designed.
+    expect(resolveFailoverTargetForSession("sonnet", "sess-B").stepIndex).toBe(-1);
+  });
+
+  it("an idle session's dwell expires: it re-resolves at the fresh walk", () => {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+    clock += 9 * 60 * 1000;
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0); // pin until t=19min
+    clock += 2 * 60 * 1000; // role disarmed at 10min
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0); // still held
+    // The session goes IDLE; its pin (renewed at t=9min, expires t=19min) lapses.
+    clock += 11 * 60 * 1000; // t=20min > pin.until
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(-1);
+    // Re-arm; the next resolve re-pins at the current walk.
+    expect(armFailover("sonnet", "still walled")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+  });
+
+  it("the pin YIELDS when the pinned step itself walls (genuine advancement, not oscillation)", () => {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+    // Step 0 walls twice → 30-min step TTL: the walk advances past it.
+    markStepFailed("sonnet", 0, "flash weekly");
+    markStepFailed("sonnet", 0, "flash weekly");
+    const advanced = resolveFailoverTargetForSession("sonnet", "sess-A");
+    expect(advanced.stepIndex).toBe(1); // pin yielded, re-pinned at step 1
+    expect(advanced.step?.target).toBe("ds@deepseek-payg");
+  });
+
+  it("nominal is never pinned — arming does not feed a session back into the wall", () => {
+    // Session resolves while healthy (nominal, no pin).
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(-1);
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    // No nominal pin means the armed walk serves step 0 immediately.
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+  });
+
+  it("inert with CLAUDISH_FAILOVER_SESSION_DWELL_MS=0 (today's behaviour)", () => {
+    resetFailoverForTests({ ...ENV, CLAUDISH_FAILOVER_SESSION_DWELL_MS: "0" });
+    Date.now = () => clock;
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false);
+    // Dwell off: the session follows the role state to nominal immediately.
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(-1);
+  });
+
+  it("an in-flight session does not change provider more than once per dwell period", () => {
+    // The acceptance criterion, end to end: the role-level state machine churns
+    // (disarm at the base arm TTL of 10 min, escalation, re-arm) for 25 minutes
+    // while the session makes a request every minute — its resolved target must
+    // be IDENTICAL throughout. Pre-dwell this oscillation flipped the serving
+    // model under the conversation at every state transition.
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    const seen = new Set<string>();
+    for (let t = 0; t < 25; t++) {
+      clock += 60 * 1000;
+      isFailoverActive("sonnet"); // drives the role-level state machine
+      seen.add(resolveFailoverTargetForSession("sonnet", "sess-A").step?.target || "nominal");
+    }
+    expect(seen.size).toBe(1); // step 0 the whole way: one switch (the arm), zero after
   });
 });
 

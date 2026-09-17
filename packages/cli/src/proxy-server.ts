@@ -46,7 +46,7 @@ import {
   isWiringError,
   roleFromModelName,
   getFailoverRule,
-  resolveFailoverTarget,
+  resolveFailoverTargetForSession,
   markStepFailed,
   parseResetAtFromBody,
   resetStepSuccess,
@@ -651,7 +651,8 @@ export async function createProxyServer(
 
   const getHandlerForRequest = async (
     requestedModel: string,
-    depth = 0
+    depth = 0,
+    sessionKey: string | null = null
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
@@ -690,10 +691,11 @@ export async function createProxyServer(
     // pools because its nominal plan is exhausted or being conserved. Sits AFTER
     // the modelMap cascade so it overrides the nominal mapping, and BEFORE
     // catalog/route resolution so the substitute is resolved like any other target.
-    // resolveFailoverTarget walks the cascade skipping TTL-failed steps. Inert
-    // unless CLAUDISH_FAILOVER_* is configured. See fork/failover.ts.
+    // resolveFailoverTargetForSession walks the cascade skipping TTL-failed
+    // steps, plus the per-session dwell (#91 point 4) when a session key is
+    // available. Inert unless CLAUDISH_FAILOVER_* is configured. See fork/failover.ts.
     if (role) {
-      const resolved = resolveFailoverTarget(role);
+      const resolved = resolveFailoverTargetForSession(role, sessionKey);
       if (resolved.step && resolved.step.target !== target) {
         log(
           `[Proxy] Failover: role '${role}' ${target} → ${resolved.step.target} step[${resolved.stepIndex}] (${resolved.step.label})`
@@ -837,7 +839,7 @@ export async function createProxyServer(
             `[Proxy] NO_ANTHROPIC: rerouting native '${target}' → budget '${modelMap.sonnet}'`,
             true
           );
-          return getHandlerForRequest(modelMap.sonnet, depth + 1);
+          return getHandlerForRequest(modelMap.sonnet, depth + 1, sessionKey);
         }
         // depth > 0 (the budget mapping itself resolved native → misconfig) or no
         // sonnet mapping: fail closed. Never leak.
@@ -861,8 +863,8 @@ export async function createProxyServer(
    * Context before returning a non-ok Response (the FallbackHandler invariant),
    * which is what makes the retry safe.
    *
-   * `getHandlerForRequest`'s internal swap reads `resolveFailoverTarget` — the SAME
-   * source of truth this loop reads — so mutating failover state between attempts
+   * `getHandlerForRequest`'s internal swap reads `resolveFailoverTargetForSession` —
+   * the SAME source of truth this loop reads — so mutating failover state between attempts
    * is enough; no override target is passed in (that would race two resolutions).
    */
   const handleWithCascade = async (
@@ -874,11 +876,12 @@ export async function createProxyServer(
     const rule = role ? getFailoverRule(role) : undefined;
     const maxAttempts = rule ? rule.steps.length + 1 : 1; // nominal + each step
     const armGraceMs = getArmGraceMs();
+    const sessionKey = extractSessionKey(body); // #91 point 4: per-session dwell
     let graceRetried = false; // #91: one wait-and-retry on the nominal per request
     let response: Response | undefined;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const handler = await getHandlerForRequest(requestedModel);
-      const { stepIndex } = role ? resolveFailoverTarget(role) : { stepIndex: -1 };
+      const handler = await getHandlerForRequest(requestedModel, 0, sessionKey);
+      const { stepIndex } = role ? resolveFailoverTargetForSession(role, sessionKey) : { stepIndex: -1 };
       response = await handler.handle(c, body);
       if (response.ok) {
         if (role) {
@@ -1073,7 +1076,7 @@ export async function createProxyServer(
           400
         );
       }
-      const handler = await getHandlerForRequest(body.model);
+      const handler = await getHandlerForRequest(body.model, 0, extractSessionKey(body));
 
       // If native, forward transparently (all client headers passthrough).
       if (handler instanceof NativeHandler) {
@@ -1160,7 +1163,7 @@ export async function createProxyServer(
 
       // Resolve once for the request log + billing-header strip decision. The
       // cascade below re-resolves as failover state mutates (same source of truth).
-      const handler = await getHandlerForRequest(body.model);
+      const handler = await getHandlerForRequest(body.model, 0, extractSessionKey(body));
       logRequest(body, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
       stripBillingHeaderFromBody(body, handler instanceof NativeHandler);
 
@@ -1208,7 +1211,7 @@ export async function createProxyServer(
       const anthropicBody = convertOpenAIRequestToAnthropic(openaiBody);
       const wantsStream = openaiBody.stream === true;
 
-      const handler = await getHandlerForRequest(anthropicBody.model);
+      const handler = await getHandlerForRequest(anthropicBody.model, 0, extractSessionKey(anthropicBody));
       logRequest(anthropicBody, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
       stripBillingHeaderFromBody(anthropicBody, handler instanceof NativeHandler);
 
