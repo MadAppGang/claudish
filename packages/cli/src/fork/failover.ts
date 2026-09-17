@@ -85,6 +85,9 @@ export interface ArmedFailover {
   since: Date;
   /** "config" when armed by CLAUDISH_FAILOVER_ACTIVE, else the upstream error. */
   reason: string;
+  /** How long THIS arm holds before the nominal is probed again (#91 point 3:
+   * grows with each disarm→re-arm cycle while the wall holds). */
+  ttlMs: number;
 }
 
 /** A role + the cascade step currently serving it. */
@@ -139,6 +142,12 @@ const pendingRecovery = new Map<
 const notifiedSessions = new Map<FailoverRole, Map<string, Set<number>>>();
 
 const AUTO_ARM_TTL_MS = 10 * 60 * 1000;
+/** #91 point 3: the re-probe TTL grows while the wall holds. A flat 10-minute
+ * disarm/re-arm cycle flips the serving model ~6×/hour for the whole duration of
+ * a wall (measured on the hub: 107 arms ≈ 214 model transitions per 24 h), cold
+ * prompt-cache on BOTH ends each time. Steps: 10 m → 20 m → 40 m, capped. */
+const ARM_TTL_STEPS_MS = [AUTO_ARM_TTL_MS, 20 * 60_000, 40 * 60_000];
+const ARM_TTL_MAX_MS = ARM_TTL_STEPS_MS[ARM_TTL_STEPS_MS.length - 1];
 const RECOVERY_CONDENSATIONS = 3;
 /** Safety TTL: clear recovery even if no compactions fire to decrement it. */
 const RECOVERY_MAX_MS = 60 * 60 * 1000;
@@ -162,6 +171,18 @@ let armGraceMs = 0;
 let armRetryAfterCeilingMs = 120_000;
 /** Run of consecutive qualifying nominal refusals, per role (#91 gate). */
 const nominalRefusals = new Map<FailoverRole, { count: number; lastAt: number }>();
+/** #91 point 3: TTL-expiry disarms per role that led back to an arm (the wall
+ * still held). Grows the NEXT arm's TTL; reset by any nominal success. */
+const armTtlEscalation = new Map<FailoverRole, { disarms: number; lastDisarmAt: number }>();
+
+/** TTL for a fresh arm of `role`: base, or the escalated step when the previous
+ * disarm re-armed (wall still up). A re-arm more than ARM_TTL_MAX_MS after the
+ * last disarm is a fresh episode — the escalation decayed. */
+function armTtlFor(role: FailoverRole): number {
+  const esc = armTtlEscalation.get(role);
+  if (!esc || Date.now() - esc.lastDisarmAt > ARM_TTL_MAX_MS) return ARM_TTL_STEPS_MS[0];
+  return ARM_TTL_STEPS_MS[Math.min(esc.disarms, ARM_TTL_STEPS_MS.length - 1)];
+}
 
 function parseDirection(raw: string | undefined): FailoverDirection {
   const v = (raw || "").trim().toLowerCase();
@@ -293,7 +314,7 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
       }
       // Date.now() (not new Date()) so `since` and the TTL comparison read the same
       // clock — otherwise a test that fakes Date.now cannot exercise the expiry.
-      armed.set(role, { since: new Date(Date.now()), reason: "config" });
+      armed.set(role, { since: new Date(Date.now()), reason: "config", ttlMs: Number.POSITIVE_INFINITY });
     }
   }
 
@@ -455,7 +476,7 @@ export function isFailoverActive(role: FailoverRole): boolean {
   const entry = armed.get(role);
   if (!entry) return false;
   if (entry.reason === "config") return true; // operator-held: never self-clears
-  if (Date.now() - entry.since.getTime() < AUTO_ARM_TTL_MS) return true;
+  if (Date.now() - entry.since.getTime() < entry.ttlMs) return true;
   // TTL expired. Capture what this role was serving so the loop can seed recovery on
   // a successful nominal probe, then disarm.
   const rule = rules.get(role);
@@ -465,10 +486,17 @@ export function isFailoverActive(role: FailoverRole): boolean {
   }
   armed.delete(role);
   notifiedSessions.delete(role); // a fresh episode may re-notify at a new depth
+  // #91 point 3: this disarm escalates the NEXT arm's TTL if the wall is still
+  // up (the re-arm reads this count). A nominal success clears it first.
+  const esc = armTtlEscalation.get(role);
+  armTtlEscalation.set(role, { disarms: (esc?.disarms || 0) + 1, lastDisarmAt: Date.now() });
+  const nextTtlMs = armTtlFor(role);
   logStderr(
     `[Failover] DISARMED ${role} → probing nominal (auto-arm TTL elapsed after ${Math.round(
       (Date.now() - entry.since.getTime()) / 60000
-    )}min). Re-arms if the wall is still up.`
+    )}min). Re-arms if the wall is still up${
+      nextTtlMs > ARM_TTL_STEPS_MS[0] ? ` (next arm TTL grows to ${Math.round(nextTtlMs / 60000)}min)` : ""
+    }.`
   );
   return false;
 }
@@ -496,11 +524,16 @@ export function armFailover(role: FailoverRole, reason: string): boolean {
   if (isFailoverActive(role)) return false;
   const rule = rules.get(role);
   if (!rule) return false;
-  armed.set(role, { since: new Date(Date.now()), reason });
+  const ttlMs = armTtlFor(role);
+  armed.set(role, { since: new Date(Date.now()), reason, ttlMs });
   pendingRecovery.delete(role);
   recovering.delete(role);
   const { step } = resolveFailoverTarget(role);
-  logStderr(`[Failover] ARMED ${role} → ${step ? step.label : "cascade"} — ${reason}`);
+  logStderr(
+    `[Failover] ARMED ${role} → ${step ? step.label : "cascade"} — ${reason}${
+      ttlMs > ARM_TTL_STEPS_MS[0] ? ` (ttl ${Math.round(ttlMs / 60000)}min, escalated)` : ""
+    }`
+  );
   return true;
 }
 
@@ -761,8 +794,10 @@ export function isWiringError(status: number, body: string): boolean {
  */
 export function onNominalSuccess(role: FailoverRole): void {
   // #91: a healthy nominal means a fresh episode — the consecutive-refusal run
-  // that was building toward an arm is void.
+  // that was building toward an arm is void, and so is the TTL escalation it
+  // was feeding (point 3: the wall is gone; prompt recovery over damping).
   nominalRefusals.delete(role);
+  armTtlEscalation.delete(role);
   resetAllStepFailures(role);
   const pending = pendingRecovery.get(role);
   if (pending) {
@@ -1041,6 +1076,7 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     pendingRecovery.clear();
     notifiedSessions.clear();
     nominalRefusals.clear();
+    armTtlEscalation.clear();
     armAfterRefusals = 2;
     armGraceMs = 0;
     armRetryAfterCeilingMs = 120_000;

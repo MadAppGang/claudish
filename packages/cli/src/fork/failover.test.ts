@@ -1170,6 +1170,108 @@ describe("auto-arm expiry (self-clearing failover)", () => {
   });
 });
 
+// #91 point 3 — hysteresis on the re-probe. A flat 10-minute arm TTL oscillates
+// for as long as a real wall holds: disarm → probe (a live user request) → 429 →
+// re-arm, ~6 provider switches per hour, cold prompt-cache on both ends every
+// time (measured: 107 arms ≈ 214 model transitions per 24 h). The TTL now grows
+// with each disarm→re-arm cycle (10 m → 20 m → 40 m, capped) and resets on any
+// nominal success — fresh episode.
+describe("#91 point 3 — arm-TTL hysteresis (the re-probe backoff)", () => {
+  const ENV = {
+    CLAUDISH_FAILOVER_SONNET: "ds@deepseek-v4-flash",
+    CLAUDISH_FAILOVER_SONNET_LABEL: "DeepSeek",
+    CLAUDISH_FAILOVER_AUTO: "1",
+  } as NodeJS.ProcessEnv;
+
+  const realNow = Date.now;
+  let clock = 1_000_000;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+    initFailover(ENV);
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  it("the FIRST arm holds the base 10 min (no escalation from nothing)", () => {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    clock += 9 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(true);
+    clock += 2 * 60 * 1000; // 11 min — past base TTL
+    expect(isFailoverActive("sonnet")).toBe(false);
+  });
+
+  it("a disarm→re-arm escalates the next arm to 20 min, then caps at 40 min", () => {
+    // Episode 1: base 10 min.
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false); // disarm #1
+    expect(armFailover("sonnet", "still walled")).toBe(true); // re-arm → 20 min
+    clock += 15 * 60 * 1000; // 15 min — would have expired a base arm
+    expect(isFailoverActive("sonnet")).toBe(true);
+    clock += 6 * 60 * 1000; // 21 min total — past 20 min
+    expect(isFailoverActive("sonnet")).toBe(false); // disarm #2
+    expect(armFailover("sonnet", "still walled")).toBe(true); // re-arm → 40 min (cap)
+    clock += 35 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(true);
+    clock += 6 * 60 * 1000; // 41 min — past 40 min
+    expect(isFailoverActive("sonnet")).toBe(false); // disarm #3
+    expect(armFailover("sonnet", "still walled")).toBe(true); // stays capped at 40 min
+    clock += 39 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(true);
+    clock += 2 * 60 * 1000; // 41 min
+    expect(isFailoverActive("sonnet")).toBe(false);
+  });
+
+  it("a nominal success resets the escalation — the next episode starts at 10 min", () => {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false); // disarm #1
+    expect(armFailover("sonnet", "still walled")).toBe(true); // 20 min
+    clock += 21 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false); // disarm #2 — but the wall lifted:
+    onNominalSuccess("sonnet"); // the probe SUCCEEDED → fresh episode
+    expect(armFailover("sonnet", "a NEW wall hours later")).toBe(true); // back to base
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false); // base 10 min held
+  });
+
+  it("a re-arm long after the last disarm is a fresh episode (escalation decayed)", () => {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false); // disarm #1
+    clock += 45 * 60 * 1000; // > ARM_TTL_MAX_MS with no re-arm — episode is over
+    expect(armFailover("sonnet", "a new wall, much later")).toBe(true); // base, not 20 min
+    clock += 11 * 60 * 1000;
+    expect(isFailoverActive("sonnet")).toBe(false); // base 10 min held
+  });
+
+  it("bounded switches: with a wall held for an hour, at most 2 re-arms (was ~6)", () => {
+    let arms = 0;
+    let switches = 0;
+    const min = (n: number) => n * 60 * 1000;
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    arms++;
+    for (let t = 0; t < 60 * 60 * 1000; t += min(1)) {
+      clock += min(1);
+      if (!isFailoverActive("sonnet")) {
+        // Disarmed at the TTL boundary: the wall still holds, the next request
+        // re-arms (that re-arm is one more provider switch).
+        if (armFailover("sonnet", "wall holds")) {
+          arms++;
+          switches++;
+        }
+      }
+    }
+    // 60 min of wall: base 10 + escalated 20 + part of the 40 → 2 re-arms, 3 arms.
+    // Pre-#91-point-3 this was ~6 arms in the same hour (flat 10-min TTL).
+    expect(arms).toBeLessThanOrEqual(3);
+    expect(switches).toBeLessThanOrEqual(2);
+  });
+});
+
 // #91 — damp the nominal/substitute flap: grace before arming, and a short
 // retry-after means burst, not wall. One transient 429 must cost a few seconds
 // of patience, never a 10-minute model exile plus two cold prompt caches.
