@@ -483,6 +483,26 @@ $startTime = [DateTimeOffset]::Parse($startedAt)
 $uptime = [DateTimeOffset]::UtcNow - $startTime
 $uptimeHours = [Math]::Round($uptime.TotalHours, 1)
 
+# Step 2b: Failover cascade gate. A bare `docker compose up` (no --env-file)
+# interpolates every ${CLAUDISH_FAILOVER_*:-} to EMPTY — the container boots
+# green and /health stays OK, but no role can ever arm (measured 2026-09-07 and
+# 2026-09-17 13:45Z: 3h17 serving with voided cascades, agents grinding against
+# upstream 429s with nowhere to fall). Warn on EVERY cycle until fixed: the
+# repeating banner is the signal. No restart here — a plain restart PRESERVES the
+# voided env; the fix is a recreate WITH the real env file.
+$envRes = Invoke-DockerBounded @("inspect", $ContainerName, "--format", "{{range .Config.Env}}{{println .}}{{end}}")
+if ($envRes.Ok) {
+    $voided = @()
+    foreach ($var in @("CLAUDISH_FAILOVER_OPUS", "CLAUDISH_FAILOVER_SONNET",
+                       "CLAUDISH_FAILOVER_HAIKU", "VLLM_API_KEY")) {
+        $m = [regex]::Match($envRes.Out, "(?m)^${var}=(.*)$")
+        if (-not $m.Success -or $m.Groups[1].Value.Trim().Length -eq 0) { $voided += $var }
+    }
+    if ($voided.Count -gt 0) {
+        Write-Log "FAILOVER-CONFIG-VOID: empty/missing env for $($voided -join ',') — a bare 'docker compose up' voided the env; fix = recreate WITH the real .env (claudish-drain.ps1 -Recreate -EnvFile <path>), NOT a restart"
+    }
+}
+
 # Step 3: Proactive restart if uptime > threshold (prevent degradation BEFORE it happens)
 # An uptime THRESHOLD drifts through the clock: an 11h period restarts at 09:00,
 # then 20:00, then 07:00... landing mid-workday roughly every other time. Gate it
