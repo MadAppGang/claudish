@@ -184,9 +184,14 @@ def main():
         ) if isinstance(s, list) else (s or "")
         raw = json.dumps(body)
         w = workspace_of((stext + " " + raw).lower())
-        cron = "cc_workload=cron" in stext
+        # #98: les champs d'attribution persistent dans l'enveloppe (device_id8,
+        # workload) — exacts quand presents, regex du body en fallback (captures
+        # pre-#98). Le piege 8 tient pour les deux sources : stamp PAR requete.
+        wl_env = env.get("workload")
+        cron = (wl_env == "cron") if wl_env is not None else ("cc_workload=cron" in stext)
         md = str(body.get("metadata", {}).get("user_id", ""))
         dv = DEV_RE.search(md)
+        device = env.get("device_id8") or (dv.group(1) if dv else "?")
         d = ws[w]
         d["n"] += 1
         d["out"] += o
@@ -215,7 +220,7 @@ def main():
             d["cont"] += 1
         if SUB_RE.search(raw):
             d["sub"] += 1
-        k = (dv.group(1) if dv else "?", w, "cron" if cron else "interactif")
+        k = (device, w, "cron" if cron else "interactif")
         dev[k]["n"] += 1
         dev[k]["out"] += o
 
