@@ -109,3 +109,146 @@ export function parseCapabilityDeclaration(text: string): CapabilityDeclaration 
 export function isCapabilityVocabEnabled(env: NodeJS.ProcessEnv): boolean {
   return /^(1|true|yes|on)$/i.test((env.CLAUDISH_CAPABILITY_VOCAB ?? "").trim());
 }
+
+/**
+ * Ask cap as an env knob (arbitration 18/09): `CLAUDISH_CAPABILITY_QUERY_MAX_ASKS`,
+ * default 3, re-read per call like the gate. 0 disables asking (lift stays active).
+ */
+export function capabilityQueryMaxAsks(env: NodeJS.ProcessEnv): number {
+  const raw = (env.CLAUDISH_CAPABILITY_QUERY_MAX_ASKS ?? "").trim();
+  if (raw === "") return CAPABILITY_QUERY_MAX_ASKS; // Number("") === 0 would zero the cap
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : CAPABILITY_QUERY_MAX_ASKS;
+}
+
+// --- Grain 2 (wiring): the per-session channel state --------------------------------
+//
+// One state entry per extractSessionKey identity (the #91 p4 dwell seam — a single
+// definition of session identity, no parallel key scheme). The declaration is
+// lifted ONCE (first successful parse registers and short-circuits every later
+// scan); the query is appended to at most `maxAsks` condensations while the
+// session stays undeclared, and stops the moment a declaration lands.
+
+interface CapabilitySessionState {
+  declaration: CapabilityDeclaration | null;
+  asks: number;
+}
+
+const sessions = new Map<string, CapabilitySessionState>();
+const SESSION_CAP = 512;
+
+function ensureState(sessionKey: string): CapabilitySessionState {
+  const existing = sessions.get(sessionKey);
+  if (existing) {
+    // LRU touch — delete + reinsert moves the entry to the tail. Without this,
+    // eviction below is FIFO and a long-lived ACTIVE session is evicted while
+    // it still talks: its asks counter resets (re-asked past MAX_ASKS) and a
+    // registered declaration is lost. Review of #135, reproduced on dfbe576.
+    sessions.delete(sessionKey);
+    sessions.set(sessionKey, existing);
+    return existing;
+  }
+  const state: CapabilitySessionState = { declaration: null, asks: 0 };
+  sessions.set(sessionKey, state);
+  if (sessions.size > SESSION_CAP) {
+    // Map preserves insertion order and every access reinserts, so the head is
+    // the least-recently-USED entry — an evicted session is an idle one.
+    sessions.delete(sessions.keys().next().value as string);
+  }
+  return state;
+}
+
+/** How many trailing assistant messages the lift scans. Bounded per request;
+ * a declaration survives in history until compaction drops it, and a summary
+ * that re-emits it is the newest statement (parseCapabilityDeclaration takes
+ * the last fence within one text). */
+const LIFT_SCAN_DEPTH = 6;
+
+function assistantText(msg: any): string | null {
+  if (msg?.role !== "assistant") return null;
+  const content = msg.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("\n");
+  }
+  return null;
+}
+
+/**
+ * Lift the session's declaration from the trailing assistant history of an
+ * Anthropic request payload, once per session. Returns the registration (old or
+ * new) or null. Never throws — a malformed or degenerate history is simply
+ * undeclared (the K3 echo-loop lesson: degenerate text must arm nothing).
+ * Callers gate on `isCapabilityVocabEnabled` first; this helper is pure state.
+ */
+export function liftCapabilityDeclaration(
+  sessionKey: string | null,
+  payload: any
+): CapabilityDeclaration | null {
+  try {
+    if (!sessionKey) return null;
+    const state = ensureState(sessionKey);
+    if (state.declaration) return state.declaration;
+
+    const messages = payload?.messages;
+    if (!Array.isArray(messages)) return null;
+    let scanned = 0;
+    for (let i = messages.length - 1; i >= 0 && scanned < LIFT_SCAN_DEPTH; i--) {
+      const text = assistantText(messages[i]);
+      if (text === null) continue;
+      scanned++;
+      const decl = parseCapabilityDeclaration(text);
+      if (decl) {
+        state.declaration = decl;
+        return decl;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append the capability query to a collected (non-streaming) message — the
+ * condensation rail, same append shape as the failover notice. Returns whether
+ * the query was appended: false once the session has declared, once the ask cap
+ * is reached, or while the gate is off. Never throws.
+ */
+export function appendCapabilityQueryToMessage(
+  message: any,
+  sessionKey: string | null,
+  env: NodeJS.ProcessEnv
+): boolean {
+  try {
+    if (!isCapabilityVocabEnabled(env)) return false;
+    if (!sessionKey) return false;
+    const state = ensureState(sessionKey);
+    if (state.declaration) return false;
+    if (state.asks >= capabilityQueryMaxAsks(env)) return false;
+    state.asks++;
+
+    const query = buildCapabilityQuery();
+    if (!message || !Array.isArray(message.content)) return true; // ask consumed, nowhere to append
+    for (let i = message.content.length - 1; i >= 0; i--) {
+      const block = message.content[i];
+      if (block?.type === "text" && typeof block.text === "string") {
+        block.text += query;
+        return true;
+      }
+    }
+    message.content.push({ type: "text", text: query.replace(/^\n+/, "") });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Test seam: drop the session channel state. */
+export function resetCapabilityVocabForTests(): void {
+  sessions.clear();
+}
+

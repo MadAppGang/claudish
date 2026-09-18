@@ -63,6 +63,11 @@ import {
   extractSessionKey,
   type FailoverRole,
 } from "./fork/failover.js";
+import {
+  appendCapabilityQueryToMessage,
+  isCapabilityVocabEnabled,
+  liftCapabilityDeclaration,
+} from "./fork/capability-vocabulary.js";
 import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFromWebContent, cleanRawWebContent } from "./handlers/shared/web-search-executor.js";
 import { convertOpenAIRequestToAnthropic } from "./handlers/shared/format/openai-request-to-anthropic.js";
 import { anthropicMessageToChatCompletion, createOpenAIChatStreamFromAnthropic } from "./handlers/shared/anthropic-to-openai.js";
@@ -1033,6 +1038,34 @@ export async function createProxyServer(
   // Fork extension: hostname binding + remote address tracking
   const hostnameConfig = createHostnameConfig(options.hostname);
 
+  /**
+   * #83 grain 2: append the capability query to a collected (non-streaming)
+   * response — the condensation rail, mirroring applyFailoverNotices'
+   * non-streaming branch but independent of any failover role. Streaming passes
+   * through untouched (condensation is the non-stream path). Gate re-read per
+   * call (`CLAUDISH_CAPABILITY_VOCAB`, default off). Never throws.
+   */
+  const applyCapabilityQueryAtCondensation = async (
+    response: Response,
+    sessionKey: string | null,
+    wantsStreaming: boolean
+  ): Promise<Response> => {
+    if (wantsStreaming || !response.ok) return response;
+    if (!sessionKey || !isCapabilityVocabEnabled(process.env)) return response;
+    try {
+      const message = await response.clone().json();
+      if (appendCapabilityQueryToMessage(message, sessionKey, process.env)) {
+        log(`[Capability] query appended to condensation (session=${sessionKey.slice(0, 8)})`);
+        const headers = new Headers(response.headers);
+        headers.set("Content-Type", "application/json");
+        return new Response(JSON.stringify(message), { status: response.status, headers });
+      }
+      return response;
+    } catch {
+      return response;
+    }
+  };
+
   const app = new Hono();
   app.use("*", cors());
 
@@ -1177,19 +1210,30 @@ export async function createProxyServer(
 
       // Resolve once for the request log + billing-header strip decision. The
       // cascade below re-resolves as failover state mutates (same source of truth).
-      const handler = await getHandlerForRequest(body.model, 0, extractSessionKey(body));
+      const sessionKey = extractSessionKey(body);
+
+      // #83 grain 2: capability vocabulary — lift the session's declaration from
+      // trailing assistant history, once per session (the #91 p4 dwell seam),
+      // gated CLAUDISH_CAPABILITY_VOCAB (default off → zero work).
+      if (sessionKey && isCapabilityVocabEnabled(process.env)) {
+        const declared = liftCapabilityDeclaration(sessionKey, body);
+        if (declared) log(`[Capability] session=${sessionKey.slice(0, 8)} declared ${JSON.stringify(declared)}`);
+      }
+
+      const handler = await getHandlerForRequest(body.model, 0, sessionKey);
       logRequest(body, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
       stripBillingHeaderFromBody(body, handler instanceof NativeHandler);
 
       // Route through the budget-failover cascade (nominal → step0 → step1 …),
       // then inject onset/recovery notices. See handleWithCascade / applyFailoverNotices.
       const response = await handleWithCascade(c, body, body.model);
-      return applyFailoverNotices(
+      const noticed = await applyFailoverNotices(
         response,
         roleFromModelName(body.model),
-        extractSessionKey(body),
+        sessionKey,
         body.stream === true
       );
+      return applyCapabilityQueryAtCondensation(noticed, sessionKey, body.stream === true);
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       return c.json(wrapAnthropicError(500, String(e)), 500);
