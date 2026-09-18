@@ -9,6 +9,8 @@ interface TokenFile {
   input_tokens: number;
   output_tokens: number;
   context_left_percent: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
 }
 
 const createdTokenFiles = new Set<string>();
@@ -270,5 +272,18 @@ describe("TokenTracker cache-read discount", () => {
     tracker.updateWithDelta(CAPTURE_PROMPT_TOKENS, 100, detail);
     tracker.updateWithDelta(CAPTURE_PROMPT_TOKENS + CAPTURE_GROWTH, 5, detail);
     expect(tracker.getTotalCost()).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("TokenTracker cache-effectiveness counters", () => {
+  test("accumulates cache tokens from usage detail into the token file", () => {
+    const { tracker, tokenFile } = createTracker();
+    // The read/creation split rides on the usage `detail`, summed across turns and
+    // surfaced by writeFile for the status line and session summary.
+    tracker.update(3000, 100, { cacheReadTokens: 1000, cacheCreationTokens: 200 });
+    tracker.update(3000, 100, { cacheReadTokens: 500, cacheCreationTokens: 0 });
+    const data = readTokenFile(tokenFile);
+    expect(data.cache_read_tokens).toBe(1500);
+    expect(data.cache_creation_tokens).toBe(200);
   });
 });

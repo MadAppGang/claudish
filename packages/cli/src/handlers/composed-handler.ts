@@ -67,6 +67,13 @@ import {
 } from "./shared/request-shape.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
+import {
+  type ResolvedCachingConfig,
+  exactPrefixTokens,
+  injectAnthropicCacheBreakpoints,
+  stripAnthropicCacheBreakpoints,
+} from "./shared/anthropic-cache.js";
+import { getCacheControl } from "../providers/provider-definitions.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
@@ -134,6 +141,8 @@ export interface ComposedHandlerOptions {
    * layer is never consulted and does no filesystem work.
    */
   proOnUltracode?: boolean;
+  /** Resolved prompt-cache config, threaded from the proxy (never read from disk here). */
+  caching?: ResolvedCachingConfig;
   /**
    * Test seam for the session-event registry. Defaults to the process-wide
    * singleton. Only tests should pass this.
@@ -174,6 +183,8 @@ export class ComposedHandler implements ModelHandler {
    * per-handler rather than global — two providers refresh independently.
    */
   private lastPlanPollAt = 0;
+  /** Prompt-cache injection config, resolved once per handler (cached per model). */
+  private caching: ResolvedCachingConfig;
 
   constructor(
     provider: ProviderTransport,
@@ -286,6 +297,8 @@ export class ComposedHandler implements ModelHandler {
       modelName: this.bareModelName,
       providerDisplayName: provider.displayName,
     });
+
+    this.caching = options.caching ?? { enabled: false, extendedTtl: false };
   }
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
@@ -539,6 +552,40 @@ export class ComposedHandler implements ModelHandler {
       log(
         `[ComposedHandler] Merged --model-params (${Object.keys(this.options.modelParams).join(", ")}) for ${this.targetModel}`
       );
+    }
+
+    // 5a-cache. Anthropic cache_control handling for an anthropic-wire target,
+    // driven by the provider's declared mode. Runs on the fully assembled body,
+    // after the user's --model-params last word and before 5c transformPayload
+    // wraps any provider envelope. strip runs regardless of the caching toggle
+    // (an endpoint that 400s on cache_control must never receive it, including
+    // the breakpoints Claude Code set); inject is the opt-in optimization;
+    // passthrough leaves the payload. The 1h extended TTL is native-only (it
+    // needs a beta header claudish controls only on the passthrough), so the
+    // composed path caches at the 5m default every such endpoint honours.
+    if (this.getAdapter().getStreamFormat() === "anthropic-sse") {
+      const cacheControl = getCacheControl(this.provider.name);
+      if (cacheControl.mode === "strip") {
+        const removed = stripAnthropicCacheBreakpoints(requestPayload);
+        if (removed > 0) {
+          log(`[ComposedHandler] stripped ${removed} cache_control block(s) for ${this.provider.name}`);
+        }
+      } else if (cacheControl.mode === "inject" && this.caching.enabled) {
+        const prefixTokens = await exactPrefixTokens(
+          requestPayload,
+          this.bareModelName,
+          this.caching
+        );
+        const { tag } = injectAnthropicCacheBreakpoints(requestPayload, {
+          prefixTtl: "5m",
+          tailTtl: "5m",
+          minCacheTokens: cacheControl.minCacheTokens ?? 1024,
+          prefixTokens,
+        });
+        if (tag !== "none") {
+          log(`[ComposedHandler] cache injection for ${this.targetModel}: ${tag}`);
+        }
+      }
     }
 
     // 5b. Refresh auth / health check (must happen before transformPayload, which may use auth state)
@@ -1459,9 +1506,11 @@ export class ComposedHandler implements ModelHandler {
     let pendingOnComplete = onComplete;
     // `input` is the FULL context size, always — never the cache-reduced figure
     // that rides on the wire. `detail` is the optional cached breakdown of that
-    // same number and is used for COST ONLY; see UsageCacheDetail and
-    // `context-window.md`, which records what happens when a reduced count
-    // reaches the context accounting (auto-compaction silently disarms).
+    // same number; the token tracker reads it for the cache-read cost discount
+    // and the cache-effectiveness counters, never as a substitute for `input`.
+    // See UsageCacheDetail and `context-window.md`, which records what happens
+    // when a reduced count reaches the context accounting (auto-compaction
+    // silently disarms).
     const onTokenUpdate = (input: number, output: number, detail?: UsageCacheDetail) => {
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
