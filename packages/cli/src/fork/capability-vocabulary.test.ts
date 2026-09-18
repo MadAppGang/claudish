@@ -277,4 +277,43 @@ describe("capability vocabulary — wiring: the session channel (grain 2, #83)",
       liftCapabilityDeclaration(key, payloadWith(assistantMsg("Recovered.\n" + fence('{"v":1,"cost_class":"budget"}'))))
     ).toEqual({ v: 1, cost_class: "budget" });
   });
+
+  // Review of #135 (CHANGES REQUESTED, reproduced by the coordinator): FIFO
+  // eviction let a CAPPED but still-active session be evicted by newer ones —
+  // its asks counter reset and it was re-asked past MAX_ASKS; a DECLARED
+  // session lost its declaration and re-entered an ask cycle. Eviction must
+  // be LRU: touched entries move to the tail, only idle ones are evicted.
+  test("REGRESSION (review #135): eviction is LRU — an active capped session is never re-asked past the cap", () => {
+    resetCapabilityVocabForTests();
+    const victim = "sess-lru-victim";
+    // The victim reaches the ask cap…
+    for (let i = 0; i < 3; i++) {
+      appendCapabilityQueryToMessage(collectedMessage(), victim, ENV_ON);
+    }
+    expect(appendCapabilityQueryToMessage(collectedMessage(), victim, ENV_ON)).toBe(false);
+    // …then KEEPS TALKING while 600 newer sessions register behind it (> SESSION_CAP).
+    for (let round = 0; round < 600; round++) {
+      liftCapabilityDeclaration(`sess-lru-newer-${round}`, payloadWith());
+      liftCapabilityDeclaration(victim, payloadWith()); // the touch that FIFO ignored
+    }
+    // The victim was the most-recently-used entry every round: never evicted,
+    // its cap survives the churn — no re-ask.
+    expect(appendCapabilityQueryToMessage(collectedMessage(), victim, ENV_ON)).toBe(false);
+  });
+
+  test("REGRESSION (review #135): a declared session keeps its declaration under eviction pressure", () => {
+    resetCapabilityVocabForTests();
+    const declared = "sess-lru-declared";
+    liftCapabilityDeclaration(declared, payloadWith(assistantMsg(fence('{"v":1,"vision":true}'))));
+    // Churn past SESSION_CAP; the declared session stays active (touch) and its
+    // history NO LONGER carries the fence (compaction dropped it).
+    for (let round = 0; round < 600; round++) {
+      liftCapabilityDeclaration(`sess-lru-d-${round}`, payloadWith());
+      liftCapabilityDeclaration(declared, payloadWith());
+    }
+    // Under FIFO the entry was gone and this empty-history scan returned null;
+    // under LRU the registry answers from state.
+    expect(liftCapabilityDeclaration(declared, payloadWith())).toEqual({ v: 1, vision: true });
+    expect(appendCapabilityQueryToMessage(collectedMessage(), declared, ENV_ON)).toBe(false);
+  });
 });

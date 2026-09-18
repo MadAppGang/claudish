@@ -138,15 +138,22 @@ const sessions = new Map<string, CapabilitySessionState>();
 const SESSION_CAP = 512;
 
 function ensureState(sessionKey: string): CapabilitySessionState {
-  let state = sessions.get(sessionKey);
-  if (!state) {
-    state = { declaration: null, asks: 0 };
-    sessions.set(sessionKey, state);
-    if (sessions.size > SESSION_CAP) {
-      // FIFO eviction — Map preserves insertion order; a session evicted while
-      // still active simply re-registers on its next request.
-      sessions.delete(sessions.keys().next().value as string);
-    }
+  const existing = sessions.get(sessionKey);
+  if (existing) {
+    // LRU touch — delete + reinsert moves the entry to the tail. Without this,
+    // eviction below is FIFO and a long-lived ACTIVE session is evicted while
+    // it still talks: its asks counter resets (re-asked past MAX_ASKS) and a
+    // registered declaration is lost. Review of #135, reproduced on dfbe576.
+    sessions.delete(sessionKey);
+    sessions.set(sessionKey, existing);
+    return existing;
+  }
+  const state: CapabilitySessionState = { declaration: null, asks: 0 };
+  sessions.set(sessionKey, state);
+  if (sessions.size > SESSION_CAP) {
+    // Map preserves insertion order and every access reinserts, so the head is
+    // the least-recently-USED entry — an evicted session is an idle one.
+    sessions.delete(sessions.keys().next().value as string);
   }
   return state;
 }
