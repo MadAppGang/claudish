@@ -11,7 +11,7 @@ un instrument.
                                         [--workspace=CoursIA] [--all-parsers]
 
 --------------------------------------------------------------------------
-SIX PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
+SEPT PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
 --------------------------------------------------------------------------
 
 1) APPARIEMENT. Le nom du fichier reponse porte `r0001`, son en-tete porte
@@ -55,6 +55,20 @@ SIX PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
    toutes les candidates et on tranche par le temps : la requete PRECEDE sa
    reponse. Sans candidate anterieure, on REFUSE d'apparier plutot que deviner
    (d'ou des `non appariees` non nulles : c'est le signal, pas un defaut).
+
+7) POSITION. Le bloc d'auto-chargement n'est PAS garanti en `messages[0]` :
+   CC >= 2.1.268 injecte des `<system-reminder>` multiples (instruction
+   re-reads, resumes de condensation), et apres une condensation le message
+   initial est REMPLACE par le resume -- le harnais est re-injecte plus loin
+   dans la conversation. Le chercher uniquement en position 0 excluait une
+   population entiere de la mesure : #23 lot 2 a verifie sur l'echantillon
+   natif `req-1-9999` que l'appariement passe, que l'usage passe (cache_read
+   = 211 963), et que `harness_block()` rendait False -- les lanes natives
+   etaient donc majoritairement hors population pour une raison
+   STRUCTURELLE, pas par defaut d'appariement. `harness_blocks()` scanne
+   donc tous les messages et tous les blocs texte, et rend le NOMBRE de
+   blocs trouves avec leur position : un total sans cette ventilation
+   recompterait un bloc historique deplace comme s'il etait toujours en 0.
 --------------------------------------------------------------------------
 """
 import json
@@ -149,19 +163,31 @@ def request_text(body):
     return "\n".join(p for p in parts if p)
 
 
-def harness_block(body):
-    """Le bloc <system-reminder> d'auto-chargement : messages[0].content[0].text."""
-    msgs = body.get("messages") or []
-    if not msgs:
-        return None
-    c = msgs[0].get("content")
-    if isinstance(c, list) and c and isinstance(c[0], dict):
-        t = c[0].get("text") or ""
-    elif isinstance(c, str):
-        t = c
-    else:
-        return None
-    return t if "Contents of " in t else None
+def harness_blocks(body):
+    """Tous les blocs d'auto-chargement, OU QU'ILS SOIENT.
+
+    PIEGE 7 : le bloc n'est pas garanti en `messages[0]` -- CC >= 2.1.268
+    injecte des system-reminders multiples, et une condensation remplace le
+    message initial par le resume (le harnais est alors re-injecte plus loin).
+    L'ancienne detection `messages[0].content[0]` excluant les lanes natives
+    de la population (preuve #23 lot 2 : `req-1-9999`, appariement et usage
+    OK, detection False).
+    Rend [(index_message, index_bloc, texte)] pour tout bloc texte portant
+    "Contents of " -- l'ordre du scan suit l'ordre de la conversation.
+    """
+    out = []
+    for mi, msg in enumerate(body.get("messages") or []):
+        c = msg.get("content")
+        texts = []
+        if isinstance(c, list):
+            texts = [b.get("text") or "" for b in c
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        elif isinstance(c, str):
+            texts = [c]
+        for bi, t in enumerate(texts):
+            if "Contents of " in t:
+                out.append((mi, bi, t))
+    return out
 
 
 def load_requests(cdir, since):
@@ -225,6 +251,8 @@ def main():
     stamps = []          # PIEGE 5 : la fenetre reellement couverte
     cached = 0
     per_file = defaultdict(list)
+    block_pats = defaultdict(int)  # PIEGE 7 : (nb_blocs, positions) -> requetes
+    block_elsewhere = 0            # PIEGE 7 : 1er bloc hors messages[0]
     skipped_unpaired = 0
 
     for fn in os.listdir(cdir):
@@ -249,13 +277,17 @@ def main():
         if not all_parsers and not model.lower().startswith("claude"):
             continue  # natives seulement : leur usage est compte par le tokenizer d'Anthropic
         body = req.get("body") or {}
-        hb = harness_block(body)
-        # PIEGE 4 : cadrer sur le workspace par les CHEMINS ANNONCES dans le bloc
-        # harnais, jamais par une recherche de sous-chaine dans tout le corps --
-        # le nom d'un workspace apparait dans les MEMORY.md des autres, et le
-        # filtre retenait alors 178 requetes sur 179 en ayant l'air de cadrer.
+        hbs = harness_blocks(body)
+        # PIEGE 4 : cadrer sur le workspace par les CHEMINS ANNONCES dans les
+        # blocs harnais, jamais par une recherche de sous-chaine dans tout le
+        # corps -- le nom d'un workspace apparait dans les MEMORY.md des autres,
+        # et le filtre retenait alors 178 requetes sur 179 en ayant l'air de
+        # cadrer. L'UNION des blocs (et non le seul messages[0]) laisse entrer
+        # les requetes dont le CLAUDE.md du workspace est annonce dans un bloc
+        # re-injecte hors position 0 -- la population naguere invisible.
         if workspace:
-            paths = [m.group(1) for m in CONTENTS_OF.finditer(hb)] if hb else []
+            paths = [m.group(1) for _, _, t in hbs
+                     for m in CONTENTS_OF.finditer(t)]
             if not any(re.search(r"[\\/]" + re.escape(workspace) + r"[\\/]CLAUDE\.md$", p)
                        for p in paths):
                 continue
@@ -270,12 +302,19 @@ def main():
             pairs.append((chars / total_tok, fresh, cache_read))
         if cache_read > 0:
             cached += 1
-        if hb:
-            harness_hits.append(injected_len(hb))  # PIEGE 2 : unite injectee
-            pos = [(m.start(), m.group(1)) for m in CONTENTS_OF.finditer(hb)]
-            for i, (start, path) in enumerate(pos):
-                end = pos[i + 1][0] if i + 1 < len(pos) else len(hb)
-                per_file[path.strip()].append(end - start)
+        if hbs:
+            # PIEGE 2 : unite injectee. Le total PAR REQUETE somme tous les
+            # blocs : un bloc re-injecte apres condensation est paye comme le
+            # premier, l'omettre sous-compte le portage.
+            harness_hits.append(sum(injected_len(t) for _, _, t in hbs))
+            block_pats[(len(hbs), tuple(mi for mi, _, _ in hbs))] += 1
+            if hbs[0][0] != 0:
+                block_elsewhere += 1
+            for _, _, t in hbs:
+                pos = [(m.start(), m.group(1)) for m in CONTENTS_OF.finditer(t)]
+                for i, (start, path) in enumerate(pos):
+                    end = pos[i + 1][0] if i + 1 < len(pos) else len(t)
+                    per_file[path.strip()].append(end - start)
 
     if not pairs:
         print("Aucune paire (pid, reqN) exploitable.")
@@ -300,9 +339,18 @@ def main():
         return
     med = statistics.median(harness_hits)
     print()
-    print("Bloc harnais auto-charge, en CARACTERES INJECTES")
+    print("Bloc(s) harnais auto-charge(s), en CARACTERES INJECTES"
+          " (total/requete, tous blocs)")
     print(f"  mediane {med:.0f} ch  ~= {med / med_ratio:.0f} tok"
           f"   sur {len(harness_hits)} requetes")
+    # PIEGE 7 : sans cette ventilation, un bloc deplace par condensation se
+    # recompte comme s'il etait reste en position 0 -- et les requetes natifs
+    # a bloc hors 0 restaient invisibles (le faux `harness_block() = False`).
+    print(f"  1er bloc en messages[0] : {len(harness_hits) - block_elsewhere} req"
+          f"   · ailleurs : {block_elsewhere} req (exclus de l'ancienne mesure)")
+    pats = sorted(block_pats.items(), key=lambda kv: -kv[1])[:6]
+    print("  motifs : " + " · ".join(
+        f"{n} bloc(s) @ msg{list(p)} ({c})" for (n, p), c in pats))
     print()
     # PIEGE 5 : une ligne dont le fichier a bouge APRES la derniere capture
     # decrit un etat revolu. On le dit, on ne laisse pas le lecteur le deduire.
