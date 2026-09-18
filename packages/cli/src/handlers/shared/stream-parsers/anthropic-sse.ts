@@ -15,6 +15,13 @@ import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { createResponseCapture } from "../response-capture.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
 import { executeWebFetch } from "../web-search-executor.js";
+import {
+  isPolicyRefusal,
+  logPolicyRefusal,
+  policyRefusalNotice,
+  POLICY_RETRY_BACKOFF_MS,
+  type PolicyRetryOpts,
+} from "./policy-refusal.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -29,6 +36,11 @@ interface AnthropicPassthroughOpts {
    * double-capture nor emit an orphan response file.
    */
   capture?: boolean;
+  /** invalid_prompt transparent retry (#65) — absent = inert (relay, tests). */
+  retryUpstream?: () => Promise<Response | null>;
+  retryBackoffMs?: readonly number[];
+  /** Provider id for the [PolicyRefusal] counting marker (#65 AC2). */
+  providerName?: string;
 }
 
 /**
@@ -163,10 +175,17 @@ export function createAnthropicPassthroughStream(
         };
 
         try {
-          const reader = response.body!.getReader();
+          let reader = response.body!.getReader();
           let buffer = "";
           let inputTokens = 0;
           let outputTokens = 0;
+
+          // invalid_prompt-class transparent retry state (#65): only while
+          // NOTHING client-visible has been forwarded (no message_start —
+          // unlike the responses lane it comes from upstream here, so a retry
+          // after it would duplicate message_start and break the client).
+          let policyRetryAttempts = 0;
+          const policyRetryBackoff = opts.retryBackoffMs ?? POLICY_RETRY_BACKOFF_MS;
 
           let totalLines = 0;
           let textChunks = 0;
@@ -217,14 +236,16 @@ export function createAnthropicPassthroughStream(
           // ComposedHandler's peek/retry catches most start-of-stream rate limits
           // before they reach here (it retries + falls back to a second provider);
           // this is the last-resort safety net for whatever still slips through.
-          const finalizeWithError = (errMsg: string, path: string) => {
+          const finalizeWithError = (errMsg: string, path: string, noticeOverride?: string) => {
             if (!isClosed) {
               if (!sawMessageStart) {
                 const isRateLimit =
                   /rate.?limit|\b1302\b|\b429\b|too many requests|overloaded/i.test(errMsg);
-                const notice = isRateLimit
-                  ? "[The model provider is rate limited right now. The proxy retried and exhausted fallback capacity — please try again in a moment.]"
-                  : `[Upstream provider error: ${errMsg}]`;
+                const notice =
+                  noticeOverride ??
+                  (isRateLimit
+                    ? "[The model provider is rate limited right now. The proxy retried and exhausted fallback capacity — please try again in a moment.]"
+                    : `[Upstream provider error: ${errMsg}]`);
                 const synthId = `msg_${Date.now()}`;
                 controller.enqueue(
                   encoder.encode(
@@ -249,18 +270,45 @@ export function createAnthropicPassthroughStream(
                     "event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}\n\n`
                   )
                 );
-              } else if (highestSeenIndex >= 0 && lastBlockOpen) {
+              } else {
                 // Mid-stream: close whatever content block was open when the error hit,
                 // otherwise the client sees an unterminated block.
                 // Only emit if the block is actually still open — if the provider
                 // already sent a content_block_stop, a duplicate would cause
                 // "Content block not found" on the client.
-                controller.enqueue(
-                  encoder.encode(
-                    "event: content_block_stop\n" +
-                      `data: {"type":"content_block_stop","index":${highestSeenIndex}}\n\n`
-                  )
-                );
+                if (highestSeenIndex >= 0 && lastBlockOpen) {
+                  controller.enqueue(
+                    encoder.encode(
+                      "event: content_block_stop\n" +
+                        `data: {"type":"content_block_stop","index":${highestSeenIndex}}\n\n`
+                    )
+                  );
+                }
+                // A policy-refusal notice (#65) must reach the agent even
+                // mid-stream: the labeled text is the only signal of WHAT was
+                // refused, so the agent can adapt instead of guessing.
+                if (noticeOverride) {
+                  const noticeIdx = highestSeenIndex + 1;
+                  controller.enqueue(
+                    encoder.encode(
+                      "event: content_block_start\n" +
+                        `data: ${JSON.stringify({ type: "content_block_start", index: noticeIdx, content_block: { type: "text", text: "" } })}\n\n`
+                    )
+                  );
+                  controller.enqueue(
+                    encoder.encode(
+                      "event: content_block_delta\n" +
+                        `data: ${JSON.stringify({ type: "content_block_delta", index: noticeIdx, delta: { type: "text_delta", text: noticeOverride } })}\n\n`
+                    )
+                  );
+                  controller.enqueue(
+                    encoder.encode(
+                      "event: content_block_stop\n" +
+                        `data: ${JSON.stringify({ type: "content_block_stop", index: noticeIdx })}\n\n`
+                    )
+                  );
+                  highestSeenIndex = noticeIdx;
+                }
               }
               controller.enqueue(
                 encoder.encode(
@@ -292,6 +340,69 @@ export function createAnthropicPassthroughStream(
             }
           };
 
+          // ── In-stream error dispatch (#65) ──────────────────────────────
+          // Shared by the filterThinking and passthrough detection sites.
+          // Policy-class refusals get the arbitrated treatment: bounded
+          // transparent retry of the identical body (the flag is probabilistic
+          // — 2026-09-10 datapoint), then a labeled terminal turn if
+          // persistent. Every other in-stream error keeps its pre-existing
+          // behavior (generic graceful finalization).
+          const handleInStreamError = async (
+            errObj: any,
+            path: string
+          ): Promise<"retried" | "surfaced"> => {
+            const errCode = typeof errObj?.code === "string" ? errObj.code : "";
+            const errMsg = errObj?.message || JSON.stringify(errObj);
+            if (isPolicyRefusal(errCode, errMsg)) {
+              const nothingVisible =
+                !sawMessageStart && highestSeenIndex === -1 && !lastBlockOpen;
+              const canRetry =
+                !!opts.retryUpstream &&
+                policyRetryAttempts < policyRetryBackoff.length &&
+                nothingVisible;
+              logPolicyRefusal({
+                lane: "anthropic",
+                model: opts.modelName,
+                provider: opts.providerName,
+                attempt: policyRetryAttempts + 1,
+                action: canRetry ? "retry" : "surface",
+              });
+              if (canRetry) {
+                policyRetryAttempts++;
+                const backoffMs =
+                  policyRetryBackoff[policyRetryAttempts - 1] +
+                  Math.floor(Math.random() * 1_000);
+                log(
+                  `[AnthropicSSE] invalid_prompt before any client-visible event — transparent retry ${policyRetryAttempts}/${policyRetryBackoff.length} in ${backoffMs}ms (reqN=${reqN})`,
+                  true
+                );
+                await new Promise((resolve) => setTimeout(resolve, backoffMs));
+                let retryResp: Response | null = null;
+                try {
+                  retryResp = await opts.retryUpstream!();
+                } catch {
+                  // retry fetch failed — fall through to surface
+                }
+                if (retryResp?.ok && retryResp.body) {
+                  try {
+                    await reader.cancel();
+                  } catch {
+                    // old upstream body — best-effort release
+                  }
+                  reader = retryResp.body.getReader();
+                  buffer = "";
+                  return "retried";
+                }
+              }
+              log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
+              finalizeWithError(errMsg, path, policyRefusalNotice(errMsg));
+              return "surfaced";
+            }
+            log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
+            finalizeWithError(errMsg, path);
+            return "surfaced";
+          };
+
           // Wrap the read loop so a mid-stream upstream socket close (Z.AI / GLM
           // Coding connection reset) is caught HERE — where finalizeWithError is
           // in scope — instead of escaping to the outer catch which can only do a
@@ -299,7 +410,9 @@ export function createAnthropicPassthroughStream(
           // terminal event, Claude Code reports "socket connection was closed
           // unexpectedly" and freezes the turn. See never-hang-priority.
           try {
-          while (true) {
+          // A transparent policy-refusal retry swaps the upstream reader and
+          // restarts the read here.
+          readLoop: while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
@@ -347,9 +460,12 @@ export function createAnthropicPassthroughStream(
                   // HTTP 200 with {"error":{...}} embedded in the SSE payload.
                   // Detect and surface as a proper error event.
                   if (data.error) {
-                    const errMsg = data.error.message || JSON.stringify(data.error);
-                    log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
-                    finalizeWithError(errMsg, "in-stream-error-filtered");
+                    if (
+                      (await handleInStreamError(data.error, "in-stream-error-filtered")) ===
+                      "retried"
+                    ) {
+                      continue readLoop;
+                    }
                     return; // stop processing further lines
                   }
 
@@ -435,9 +551,11 @@ export function createAnthropicPassthroughStream(
 
                     // ── In-stream error detection (GitHub #106) ──
                     if (data.error) {
-                      const errMsg = data.error.message || JSON.stringify(data.error);
-                      log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
-                      finalizeWithError(errMsg, "in-stream-error");
+                      if (
+                        (await handleInStreamError(data.error, "in-stream-error")) === "retried"
+                      ) {
+                        continue readLoop;
+                      }
                       return; // stop processing further lines
                     }
 

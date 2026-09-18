@@ -1107,7 +1107,7 @@ export class ComposedHandler implements ModelHandler {
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
     headerLatencyMs?: number, // dispatch → upstream headers (for the [ttft] marker)
-    retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (openai-responses-sse)
+    retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (#65: responses + openai-sse + anthropic-sse lanes)
   ): Response {
     const onTokenUpdate = (input: number, output: number) => {
       const strategy = this.options.tokenStrategy || "standard";
@@ -1166,7 +1166,10 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           claudeRequest.tools,
           toolNameMap,
-          headerLatencyMs
+          headerLatencyMs,
+          // invalid_prompt transparent retry (#65) — same doFetch re-issue the
+          // responses lane uses; the marker carries the provider for counting.
+          { retryUpstream, providerName: this.provider.name }
         );
 
       case "openai-responses-sse":
@@ -1176,6 +1179,7 @@ export class ComposedHandler implements ModelHandler {
           toolNameMap: adapter.getToolNameMap(),
           headerLatencyMs,
           retryUpstream,
+          providerName: this.provider.name,
         });
 
       case "anthropic-sse":
@@ -1184,6 +1188,8 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           adapter: adapter as BaseAPIFormat,
           headerLatencyMs,
+          retryUpstream,
+          providerName: this.provider.name,
         });
 
       case "gemini-sse": {

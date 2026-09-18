@@ -21,6 +21,13 @@ import { isWebSearchToolCall } from "../web-search-detector.js";
 import { executeWebSearch, extractSearchQuery } from "../web-search-executor.js";
 import { createResponseCapture } from "../response-capture.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
+import {
+  isPolicyRefusal,
+  logPolicyRefusal,
+  policyRefusalNotice,
+  POLICY_RETRY_BACKOFF_MS,
+  type PolicyRetryOpts,
+} from "./policy-refusal.js";
 
 export interface StreamingState {
   usage: any;
@@ -168,7 +175,8 @@ export function createStreamingResponseHandler(
   onTokenUpdate?: (input: number, output: number) => void,
   toolSchemas?: any[], // Tool schemas for validation
   toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
-  headerLatencyMs?: number // dispatch → upstream headers, from ComposedHandler
+  headerLatencyMs?: number, // dispatch → upstream headers, from ComposedHandler
+  retryOpts?: PolicyRetryOpts // invalid_prompt transparent retry (#65) — absent = inert
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -672,10 +680,18 @@ export function createStreamingResponseHandler(
         };
 
         try {
-          const reader = response.body!.getReader();
+          let reader = response.body!.getReader();
           let buffer = "";
 
-          while (true) {
+          // invalid_prompt-class transparent retry state (#65): the flag is
+          // probabilistic, the identical body usually passes on a plain retry.
+          // Bounded at two fast attempts, only while NOTHING client-visible
+          // has been emitted (no text/reasoning/tool block ever started).
+          let policyRetryAttempts = 0;
+          const policyRetryBackoff = retryOpts?.retryBackoffMs ?? POLICY_RETRY_BACKOFF_MS;
+
+          // A transparent retry swaps the upstream reader and restarts here.
+          readLoop: while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
@@ -701,6 +717,129 @@ export function createStreamingResponseHandler(
 
               try {
                 const chunk = JSON.parse(dataStr);
+
+                // ── In-stream policy refusal (#65) ─────────────────────────
+                // OpenAI-compat providers can deliver the error INSIDE a 200
+                // SSE stream as a `{"error":{...}}` chunk. Before this branch,
+                // such a chunk matched neither `usage` nor `choices` and was
+                // silently dropped — the stream then ended as an unexplained
+                // "empty response". An invalid_prompt-class refusal gets the
+                // arbitrated treatment: bounded transparent retry of the
+                // identical body, then a labeled well-formed terminal turn.
+                if (chunk.error) {
+                  const errCode = chunk.error.code || "";
+                  const errMsg = chunk.error.message || JSON.stringify(chunk.error);
+                  if (isPolicyRefusal(errCode, errMsg)) {
+                    const nothingVisible =
+                      !state.textStarted &&
+                      !state.reasoningStarted &&
+                      state.tools.size === 0 &&
+                      state.accumulatedText.length === 0;
+                    const canRetry =
+                      !!retryOpts?.retryUpstream &&
+                      policyRetryAttempts < policyRetryBackoff.length &&
+                      nothingVisible;
+                    logPolicyRefusal({
+                      lane: "openai",
+                      model: target,
+                      provider: retryOpts?.providerName,
+                      attempt: policyRetryAttempts + 1,
+                      action: canRetry ? "retry" : "surface",
+                    });
+                    if (canRetry) {
+                      policyRetryAttempts++;
+                      const backoffMs =
+                        policyRetryBackoff[policyRetryAttempts - 1] +
+                        Math.floor(Math.random() * 1_000);
+                      log(
+                        `[OpenAISSE] invalid_prompt before any client-visible block — transparent retry ${policyRetryAttempts}/${policyRetryBackoff.length} in ${backoffMs}ms (reqN=${reqN})`,
+                        true
+                      );
+                      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+                      let retryResp: Response | null = null;
+                      try {
+                        retryResp = await retryOpts!.retryUpstream!();
+                      } catch {
+                        // retry fetch failed — fall through to surface
+                      }
+                      if (retryResp?.ok && retryResp.body) {
+                        try {
+                          await reader.cancel();
+                        } catch {
+                          // old upstream body — best-effort release
+                        }
+                        reader = retryResp.body.getReader();
+                        buffer = "";
+                        continue readLoop;
+                      }
+                    }
+                    // Persistent (or already visible content) — surface as a
+                    // labeled, well-formed terminal turn. Never a bare refusal.
+                    log(
+                      `[OpenAISSE] policy refusal surfaced model=${target} reqN=${reqN} code=${errCode}`,
+                      true
+                    );
+                    if (state.reasoningStarted) {
+                      send("content_block_stop", {
+                        type: "content_block_stop",
+                        index: state.reasoningIdx,
+                      });
+                      state.reasoningStarted = false;
+                    }
+                    if (state.textStarted) {
+                      send("content_block_stop", {
+                        type: "content_block_stop",
+                        index: state.textIdx,
+                      });
+                      state.textStarted = false;
+                    }
+                    const refusalIdx = state.curIdx++;
+                    send("content_block_start", {
+                      type: "content_block_start",
+                      index: refusalIdx,
+                      content_block: { type: "text", text: "" },
+                    });
+                    send("content_block_delta", {
+                      type: "content_block_delta",
+                      index: refusalIdx,
+                      delta: { type: "text_delta", text: policyRefusalNotice(errMsg) },
+                    });
+                    send("content_block_stop", {
+                      type: "content_block_stop",
+                      index: refusalIdx,
+                    });
+                    send("message_delta", {
+                      type: "message_delta",
+                      delta: { stop_reason: "end_turn", stop_sequence: null },
+                      usage: toAnthropicUsage(state.usage),
+                    });
+                    send("message_stop", { type: "message_stop" });
+                    isClosed = true;
+                    if (ping) clearInterval(ping);
+                    if (onTokenUpdate) {
+                      onTokenUpdate(state.usage?.prompt_tokens || 0, state.usage?.completion_tokens || 0);
+                    }
+                    try {
+                      cap.note("policy-refusal->surface");
+                      cap.done({
+                        closed: true,
+                        reason: "policy-refusal",
+                        tools: 0,
+                        text_len: state.accumulatedText.length,
+                        err: `invalid_prompt: ${errMsg.slice(0, 120)}`,
+                      });
+                    } catch {}
+                    try {
+                      controller.close();
+                    } catch {
+                      // already closed
+                    }
+                    return;
+                  }
+                  // Non-policy in-stream error: out of #65 scope — keep the
+                  // pre-existing behavior (chunk ignored, stream end governs).
+                }
+
                 if (chunk.usage) {
                   state.usage = chunk.usage;
                   log(

@@ -17,6 +17,7 @@ import { wrapAnthropicError } from "../anthropic-error.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
 import { overflowReportedTokens, overflowReportFloor } from "../overflow-report-floor.js";
 import { createResponseCapture } from "../response-capture.js";
+import { isPolicyRefusal, logPolicyRefusal } from "./policy-refusal.js";
 
 /**
  * Extract the token counts named by a context-overflow error.
@@ -126,6 +127,8 @@ export function createResponsesStreamHandler(
     retryUpstream?: () => Promise<Response | null>;
     /** Backoff before each transparent-retry attempt (tests inject millisecond delays). */
     retryBackoffMs?: readonly number[];
+    /** Provider id for the [PolicyRefusal] counting marker (#65 AC2, #41/#60). */
+    providerName?: string;
   }
 ): Response {
   let reader = response.body?.getReader();
@@ -543,6 +546,26 @@ export function createResponsesStreamHandler(
                   errCode === "server_is_overloaded" || errCode === "overloaded_error"
                     ? OVERLOAD_RETRY_BACKOFF_MS
                     : FAST_RETRY_BACKOFF_MS;
+
+                // Policy-class refusal counting marker (#65 AC2): one line per
+                // detected refusal, before the retry decision — retries surface
+                // here too, so the count reflects upstream flags, not outcomes.
+                if (isPolicyRefusal(errCode, errMsg)) {
+                  const willRetry =
+                    !!opts.retryUpstream &&
+                    retryAttempts < retryBackoff.length &&
+                    nextBlockIndex === 0 &&
+                    textBlockIndex === null &&
+                    functionCalls.size === 0;
+                  logPolicyRefusal({
+                    lane: "responses",
+                    model: opts.modelName,
+                    provider: opts.providerName,
+                    attempt: retryAttempts + 1,
+                    action: willRetry ? "retry" : "surface",
+                  });
+                }
+
                 if (
                   RETRYABLE_ERROR_CODES.has(errCode) &&
                   (await retryBeforeVisibleContent(errCode, retryBackoff))
