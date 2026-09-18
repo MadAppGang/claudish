@@ -182,7 +182,10 @@ export function createStreamingResponseHandler(
   let isClosed = false;
   let ping: NodeJS.Timeout | null = null;
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  // `let`: re-created on a policy-refusal reader swap — a TextDecoder keeps
+  // partial multi-byte state across decode(stream:true) calls, and bytes from
+  // the OLD stream must not leak into the first chunk of the new one.
+  let decoder = new TextDecoder();
   const streamMetadata = new Map<string, any>();
 
   // TTFT anchor: headers are in the moment this handler is built. The first
@@ -770,6 +773,7 @@ export function createStreamingResponseHandler(
                         }
                         reader = retryResp.body.getReader();
                         buffer = "";
+                        decoder = new TextDecoder();
                         continue readLoop;
                       }
                     }

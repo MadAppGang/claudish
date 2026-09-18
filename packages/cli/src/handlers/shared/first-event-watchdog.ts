@@ -146,3 +146,22 @@ export function withFirstUsefulEventWatchdog(response: Response, label: string):
     headers: response.headers,
   });
 }
+
+/**
+ * Wrap an in-stream retry closure so the REPLACEMENT stream carries its own
+ * watchdog (#65 review). The original wrap has disarmed by the time a retry
+ * fires — the triggering in-stream error chunk is itself a `data:` line, and
+ * "once seen, the timer is cleared and never rearmed" — so a bare doFetch()
+ * response would be unbounded: a mute-but-200 replacement upstream hangs the
+ * client exactly as #108 confines. Non-ok / bodyless responses pass through
+ * unchanged (the caller surfaces the original error for those).
+ */
+export function boundRetryUpstream(
+  retryUpstream: () => Promise<Response | null>,
+  label: string
+): () => Promise<Response | null> {
+  return async () => {
+    const r = await retryUpstream();
+    return r?.ok && r.body ? withFirstUsefulEventWatchdog(r, label) : r;
+  };
+}

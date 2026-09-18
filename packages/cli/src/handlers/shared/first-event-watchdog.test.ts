@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import {
   withFirstUsefulEventWatchdog,
+  boundRetryUpstream,
   firstEventWatchdogWindowMs,
 } from "./first-event-watchdog.js";
 
@@ -125,5 +126,62 @@ describe("first-useful-event watchdog (#108)", () => {
     expect(firstEventWatchdogWindowMs()).toBe(1500);
     process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS = "not-a-number";
     expect(firstEventWatchdogWindowMs()).toBe(300_000);
+  });
+});
+
+describe("boundRetryUpstream — the retried stream carries its own watchdog (#65 review)", () => {
+  // The original wrap has already disarmed when a retry fires (the triggering
+  // in-stream error chunk is a `data:` line), so the replacement stream must
+  // bring its own bound — a mute-but-200 replacement upstream hung the client
+  // indefinitely before this (measured by the coordinator's probe: control A
+  // terminated, B — the bare retry stream — did not, same window in force).
+  const origEnv = process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS;
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS;
+    else process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS = origEnv;
+  });
+
+  it("a mute-but-200 retried upstream is terminated at the window, not held open", async () => {
+    process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS = "200";
+    const src = keepAliveOnlySource(20);
+    const retry = boundRetryUpstream(
+      async () =>
+        new Response(src.body, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      "test-model"
+    );
+    const resp = (await retry())!;
+    const [text, elapsed] = await drain(resp);
+    expect(text).not.toContain("data:");
+    expect(elapsed).toBeLessThan(2000);
+    expect(src.stopped()).toBe(true);
+  });
+
+  it("a non-ok retry response passes through unwrapped (identity), for the caller to surface", async () => {
+    const err500 = new Response("upstream boom", { status: 500 });
+    const retry = boundRetryUpstream(async () => err500, "test-model");
+    const resp = await retry();
+    expect(resp).toBe(err500); // same object — no watchdog wrapper added
+  });
+
+  it("a healthy retried upstream streams through unchanged", async () => {
+    process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS = "600";
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(`data: {"type":"message_start"}\n\n`));
+        controller.enqueue(encoder.encode(`data: {"type":"message_stop"}\n\n`));
+        controller.close();
+      },
+    });
+    const retry = boundRetryUpstream(
+      async () => new Response(body, { status: 200 }),
+      "test-model"
+    );
+    const resp = (await retry())!;
+    const [text] = await drain(resp);
+    expect(text).toContain("message_start");
+    expect(text).toContain("message_stop");
   });
 });

@@ -57,7 +57,10 @@ export function createAnthropicPassthroughStream(
   opts: AnthropicPassthroughOpts
 ): Response {
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  // `let`: re-created on a policy-refusal reader swap — a TextDecoder keeps
+  // partial multi-byte state across decode(stream:true) calls, and bytes from
+  // the OLD stream must not leak into the first chunk of the new one.
+  let decoder = new TextDecoder();
   let isClosed = false;
   let lastActivity = Date.now();
   let pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -391,6 +394,7 @@ export function createAnthropicPassthroughStream(
                   }
                   reader = retryResp.body.getReader();
                   buffer = "";
+                  decoder = new TextDecoder();
                   return "retried";
                 }
               }

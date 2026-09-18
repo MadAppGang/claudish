@@ -137,7 +137,10 @@ export function createResponsesStreamHandler(
   }
 
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  // `let`: re-created on a transparent-retry reader swap — a TextDecoder keeps
+  // partial multi-byte state across decode(stream:true) calls, and bytes from
+  // the OLD stream must not leak into the first chunk of the new one.
+  let decoder = new TextDecoder();
   // TTFT anchors — headers arrived when this handler was built; the first
   // upstream `data:` line completes the measurement. reqN resolved from the
   // request object itself (assigned at ingestion): the global counter read at
@@ -337,6 +340,7 @@ export function createResponsesStreamHandler(
         }
         reader = retryResp.body.getReader();
         buffer = "";
+        decoder = new TextDecoder();
         return true;
       };
 
