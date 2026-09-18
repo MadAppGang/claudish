@@ -1,6 +1,7 @@
 # Negotiated Capability Vocabulary (#83) — design
 
-Status: **specification — module landed inert, wiring awaits coordinator arbitration.**
+Status: **wired (grain 2, 2026-09-18) — gate `CLAUDISH_CAPABILITY_VOCAB` default off, so the
+feature is inert on every machine until an operator opts in.**
 User directive 2026-09-08 (pivot mandate, track 2): propose a vocabulary of injected messages
 that interrogate the session on the capabilities it needs at each condensation — the proxy and
 the session negotiate, instead of the proxy guessing from model ids.
@@ -100,9 +101,9 @@ surface, and it contains no verbs.
   the whole block, returns `null`, and the session is simply undeclared. Nothing throws —
   same contract as the notice rail.
 
-## 7. What landed in this grain (inert)
+## 7. What landed
 
-`packages/cli/src/fork/capability-vocabulary.ts` + tests:
+**Grain 1 (inert, #133)** — `packages/cli/src/fork/capability-vocabulary.ts` + tests:
 
 - `buildCapabilityQuery()` — the factual query block.
 - `parseCapabilityDeclaration(text)` — strict, never-throws lifter; last-block-wins; whitelist +
@@ -110,10 +111,26 @@ surface, and it contains no verbs.
 - `isCapabilityVocabEnabled(env)` — the `CLAUDISH_CAPABILITY_VOCAB` gate, default off.
 - `CAPABILITY_VOCAB_FENCE`, `CapabilityDeclaration`, `CAPABILITY_QUERY_MAX_ASKS`.
 
-No pipeline wiring, no behavior change with the gate on or off — wiring is the next grain, and
-it starts only on the coordinator's arbitration of this document (open questions worth
-arbitrating: the 3-ask cap, the once-per-session record keyed by `extractSessionKey`, and
-whether v1 ships text-block-only or with the MCP tool in parallel).
+**Grain 2 (wiring, 2026-09-18, arbitrated by ai-01 the same day)** — same module + `proxy-server.ts`:
+
+- Per-session channel state keyed on `extractSessionKey` (the #91 p4 dwell seam — one definition
+  of session identity, FIFO-evicted at 512 entries).
+- `liftCapabilityDeclaration(sessionKey, payload)` — scans the trailing 6 assistant messages on
+  each `/v1/messages` request (gate on); the first successful parse registers and short-circuits
+  every later scan. Malformed/degenerate history → undeclared, never throws (K3 echo-loop
+  regression fixture).
+- `appendCapabilityQueryToMessage(message, sessionKey, env)` — appends the query to the
+  **non-streaming** response at the condensation rail (the `applyFailoverNotices` seam), at most
+  `CLAUDISH_CAPABILITY_QUERY_MAX_ASKS` times per session while undeclared (default 3, `0` =
+  never ask, re-read per call), stopping the moment a declaration lands.
+- The arbitration's added requirement (18/09, after the K3 degeneration episodes of 13-14 and
+  17/09): degenerate echo-loop text carrying a *malformed* `claudish-needs` fence must arm
+  nothing and leave the session eligible for later asks — covered by a dedicated regression test.
+
+With the gate off (the default) the wired path is: one `isCapabilityVocabEnabled` check per
+request, zero work beyond it. Route: lift sits before `getHandlerForRequest` in `/v1/messages`
+(after the relay branch, so relayed requests stay untouched — the hub owns them); the append
+sits at the end of the return chain, after `applyFailoverNotices`.
 
 Ties: #21 (cost-aware routing — this is its intelligence input), #79 (window pre-flight),
 #65 (same injection family, same surface-not-terminal discipline), #91 point 4 (the session-key
