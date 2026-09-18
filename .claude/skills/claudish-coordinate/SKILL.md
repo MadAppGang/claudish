@@ -1,19 +1,17 @@
 ---
 name: claudish-coordinate
-description: Cycle de coordination du workspace claudish sur myia-ai-01 (rôle coordinateur, cadence 6h). Lit dashboard + inbox, sonde le hub et le sidecar, contrôle le trafic et la leak-policy Anthropic, fait le point PRs, présente les arbitrages au user, publie un bilan [DONE]. À invoquer au réveil du cron ou quand le user demande un tour de coordination claudish.
+description: Cycle de coordination du workspace claudish sur myia-ai-01 (rôle coordinateur, cadence 5h sous Opus). Dispatche du grain aux 3 workers et fait avancer les issues, review/merge exigeants, lit dashboard + inbox, sonde le hub et le sidecar, contrôle le trafic et la leak-policy Anthropic, fait le point PRs, présente les arbitrages au user, publie un bilan [DONE]. À invoquer au réveil du cron ou quand le user demande un tour de coordination claudish.
 ---
 
 # Cycle de coordination claudish — myia-ai-01
 
-**Cadence :** **3h** via `CronCreate` (`37 */3 * * *`, heure locale) — **temporaire**, le temps de
-l'audit de consommation (voir ci-dessous).
+**Cadence :** **5h** via `CronCreate` (`37 */5 * * *`, heure locale), **sous Opus**.
 
-⚠️ **Cette valeur suit le budget Anthropic et a changé cinq fois** : 12h → 24h le 01/09
+⚠️ **Cette valeur suit le budget Anthropic et a changé sept fois** : 12h → 24h le 01/09
 (famine annoncée pour le jeudi, reset vendredi 03h), puis 24h → **5h** le soir même (reset Anthropic
 couvrant ~2 jours), puis 5h → **12h** le 03/09, puis 12h → **6h** le 06/09, puis 6h → **3h** le
-14/09 — toutes sur demande du user. **Ne jamais la changer de sa propre initiative** — elle est un
-arbitrage de dépense qui appartient au user. Revenir à 6h reste la décision du user une fois
-l'audit clos.
+14/09, puis 3h → **5h** le 18/09 — toutes sur demande du user. **Ne jamais la changer de sa propre
+initiative** — elle est un arbitrage de dépense qui appartient au user.
 
 🔎 **Piège de lecture du delta en Phase 0** : avec `*/N`, les créneaux sont des heures fixes, pas un
 intervalle depuis le dernier tour. `*/5` donnait 0,5,10,15,20 — donc un saut de **4h** entre 20:37 et
@@ -39,6 +37,29 @@ facture Anthropic, rampe de verbosité ×3-4 démarrée le 12/09 ~18:00Z). Cron 
 parallèlement relevé de 20k le seuil de condensation de CoursIA (« ça empirera les coûts mais libère
 la pression sur les condensations ») et averti CoursIA, qui collabore à l'audit — **effet de bord
 précieux : c'est une expérience naturelle sur le taux de compaction, à surveiller dans l'audit**.
+
+📌 **Tranché le 18/09 (~13:25 locale)** : demande user directe « Reprends et réarme un cron de 5h stp,
+cette fois-ci sous Opus », formulée alors que la Phase 0 constatait le cron **absent** (`df787f61`
+perdu après le cycle 08:07Z — dernier [DONE] coordinateur, ~5 h de trou). Cron `6acc6058` armé à
+`37 */5 * * *`, ce paragraphe et la ligne de cadence patchés dans le même geste. « Sous Opus » = la
+session qui porte le cron tourne sous `claude-opus-5[1m]` : **le cron n'a pas de paramètre de modèle,
+il hérite du modèle de la session** — donc réarmer depuis une session Sonnet reviendrait à annuler la
+demande en silence. Vérifier le modèle de session avant tout réarmement.
+
+🔴 **MANDAT COORDINATEUR (user, 18/09 ~13:30 locale)** — verbatim : « J'attends de toi que tu endosses
+ton rôle de coordinateur et que tu fasses avancer les issues en dispatchant du travail à tes désormais
+3 workers, tout en faisant des reviews et des merges exigeants. OK pour le mandat, après quelques jours
+de flottements ? » Conséquences opératoires, à tenir **chaque cycle** :
+1. **Aucun cycle idle** — un cycle qui ne fait que sonder l'infra et publier un [DONE] de surveillance
+   est un cycle raté. La surveillance est le socle, pas le livrable.
+2. **Dispatch explicite aux 3 workers** (`po-2023`, `po-2024`, `po-2025`) : chaque worker sort du cycle
+   avec un grain nommé, borné, et une issue de rattachement. Un worker qui signale « file vide » est
+   un défaut de dispatch, pas un état acceptable (po-2024 l'a signalé le 18/09 11:18Z).
+3. **Reviews et merges exigeants** — lecture intégrale (body, commentaires, reviews avec `state`, diff),
+   `Closes #NN` vérifié, et refus assumé quand le grain ne tient pas. « Exigeant » veut dire que le
+   merge n'est pas l'issue par défaut d'une PR.
+4. Le mandat couvre les **« quelques jours de flottements »** que le user nomme : la période 14-18/09
+   où les cycles étaient devenus de la surveillance pure. Ne pas y retourner.
 
 `ScheduleWakeup` est clampé à 1h max : il ne peut **pas** porter ce cycle. Ne pas en armer un par-dessus.
 ⚠️ **Armer le cron juste APRÈS un créneau déclenche un tir de rattrapage immédiat.** Mesuré le
