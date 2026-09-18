@@ -44,6 +44,11 @@ RESP_TS = re.compile(r"resp-\d+-r\d+-(\d{4}-\d{2}-\d{2}T[\d-]+Z)-")
 MACHINE_FIELD = re.compile(r'"machine"\s*:\s*"([^"]*)"')
 BILLING_EP = re.compile(r"cc_entrypoint=([^;\s]+)")
 BILLING_WL = re.compile(r"cc_workload=([^;\s]+)")
+# #98: champs d'attribution persistes dans l'enveloppe (avant le body dans le
+# fichier => premier match = champ enveloppe quand present ; fallback regex du
+# bloc billing pour les captures pre-#98).
+ENTRYPOINT_FIELD = re.compile(r'"entrypoint"\s*:\s*"([^"]*)"')
+WORKLOAD_FIELD = re.compile(r'"workload"\s*:\s*"([^"]*)"')
 
 HEAD_BYTES = 200_000
 TAIL_BYTES = 100_000
@@ -162,8 +167,8 @@ def load_requests(cdir, cutoff_dt):
         except OSError:
             continue
         mm = MACHINE_FIELD.search(head)
-        em = BILLING_EP.search(head)
-        wm = BILLING_WL.search(head)
+        em = ENTRYPOINT_FIELD.search(head) or BILLING_EP.search(head)
+        wm = WORKLOAD_FIELD.search(head) or BILLING_WL.search(head)
         reqs[(int(m.group(1)), int(m.group(2)))].append({
             "ts": m.group(3),
             "machine": mm.group(1) if mm else "",
