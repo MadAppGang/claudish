@@ -84,6 +84,59 @@ function extractText(content: unknown): string {
   return "";
 }
 
+/**
+ * #98: attribution fields the proxy already sees at capture time, persisted into
+ * the envelope so traffic attribution (leak hunts, consumption analyses) is exact
+ * instead of heuristic — the scripts' per-request regex re-derivations (and their
+ * documented traps) collapse to a field read. Values only, never secrets; absent
+ * fields simply omitted. Best-effort: never throws.
+ *
+ * Shapes pinned on the live fleet (native-consumption.py trap 7): device_id is a
+ * hex prefix inside metadata.user_id; cc_entrypoint/cc_workload live in the
+ * x-anthropic-billing-header line inside system[0]. Capture runs BEFORE
+ * stripBillingHeaderFromBody, so the billing line is still present here.
+ */
+export function extractAttributionFields(body: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const uid = (body.metadata as Record<string, unknown> | undefined)?.user_id;
+    const uidStr =
+      typeof uid === "string"
+        ? uid
+        : uid && typeof uid === "object" && typeof (uid as any).device_id === "string"
+          ? JSON.stringify(uid)
+          : "";
+    const dv = uidStr.match(/"device_id"\s*:\s*"([0-9a-f]{8})/);
+    if (dv) out.device_id8 = dv[1];
+
+    const epRe = /cc_entrypoint=([^;\s]+)/;
+    const wlRe = /cc_workload=([^;\s]+)/;
+    const scanText = (text: string): boolean => {
+      if (!out.entrypoint) {
+        const ep = text.match(epRe);
+        if (ep) out.entrypoint = ep[1];
+      }
+      if (!out.workload) {
+        const wl = text.match(wlRe);
+        if (wl) out.workload = wl[1];
+      }
+      return !!out.entrypoint && !!out.workload;
+    };
+    const sys = body.system;
+    if (typeof sys === "string") {
+      scanText(sys);
+    } else if (Array.isArray(sys)) {
+      for (const block of sys) {
+        const b = block as Record<string, unknown>;
+        if (b?.type === "text" && typeof b.text === "string" && scanText(b.text)) break;
+      }
+    }
+  } catch {
+    /* attribution is best-effort — an unparsable body captures without the fields */
+  }
+  return out;
+}
+
 export function logRequest(
   body: Record<string, unknown>,
   handlerName: string,
@@ -113,7 +166,7 @@ export function logRequest(
     const safeSrc = src.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const file = `${captureDir}/req-${process.pid}-${String(n).padStart(4, "0")}-${ts}-${safeSrc}.json`;
-    const payload = JSON.stringify({ ts, src, machine, model, pid: process.pid, body });
+    const payload = JSON.stringify({ ts, src, machine, model, pid: process.pid, ...extractAttributionFields(body), body });
     // Never block the request path: fire-and-forget with a silent catch.
     writeFile(file, payload).catch((e) => {
       process.stdout.write(`  [capture] error: ${String(e)}\n`);

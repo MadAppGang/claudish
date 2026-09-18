@@ -94,6 +94,90 @@ describe("request-logger capture (fork)", () => {
       logRequest({ model: "m", messages: [] }, "h", mkRequest(), new WeakMap())
     ).not.toThrow();
   });
+
+  // #98: attribution fields the proxy already sees at capture time, persisted
+  // top-level in the envelope next to machine/model. Absent → simply omitted.
+  it("persists device_id8 / entrypoint / workload from the live CC shapes (#98)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      {
+        model: "claude-sonnet-5",
+        stream: true,
+        messages: [{ role: "user", content: "x" }],
+        metadata: {
+          user_id:
+            '{"customer_id":"cus_abc","device_id":"a1b2c3d4e5f60708","session_id":"11111111-2222-3333-4444-555555555555"}',
+        },
+        system: [
+          {
+            type: "text",
+            text: "You are Claude Code.\nx-anthropic-billing-header: cc_version=2.1.258; cc_entrypoint=cli; cc_workload=cron;\nrest of the system prompt",
+          },
+        ],
+      },
+      "ComposedHandler",
+      mkRequest({ "x-claudish-machine": "myia-po-2023" }),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    expect(json.device_id8).toBe("a1b2c3d4");
+    expect(json.entrypoint).toBe("cli");
+    expect(json.workload).toBe("cron");
+    // Top level, next to machine/model — not nested.
+    expect(Object.keys(json)).toContain("device_id8");
+  });
+
+  it("omits absent attribution fields instead of writing empties (#98)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      {
+        model: "glm-5.3",
+        messages: [{ role: "user", content: "x" }],
+        system: "plain system prompt, no billing line",
+      },
+      "ComposedHandler",
+      mkRequest(),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    expect(json.device_id8).toBeUndefined();
+    expect(json.entrypoint).toBeUndefined();
+    expect(json.workload).toBeUndefined();
+  });
+
+  it("reads the billing line from a string-form system too, and never throws on garbage metadata (#98)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      {
+        model: "glm-5.3",
+        messages: [],
+        metadata: { user_id: "not json at all" },
+        system: "x-anthropic-billing-header: cc_version=2.1.258; cc_entrypoint=agentSdk; cch=xyz;\nbody",
+      },
+      "ComposedHandler",
+      mkRequest(),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    expect(json.entrypoint).toBe("agentSdk");
+    expect(json.workload).toBeUndefined();
+    expect(json.device_id8).toBeUndefined();
+  });
 });
 
 // Pinning of the stdout `[Request]` line — the contract the RSM consumer
