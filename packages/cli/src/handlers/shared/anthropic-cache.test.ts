@@ -14,6 +14,7 @@ import {
   stripAnthropicCacheBreakpoints,
   stripIntermediateMessageBreakpoints,
 } from "./anthropic-cache.js";
+import { loadConfig } from "../../profile-config.js";
 
 const EPHEMERAL = { type: "ephemeral" as const };
 
@@ -214,8 +215,17 @@ describe("loadCachingConfig — env override", () => {
     expect(loadCachingConfig().extendedTtl).toBe(true);
   });
 
-  test("an unset env var does not force the flag on", () => {
-    expect(loadCachingConfig().enabled).toBe(false);
+  test("an unset env var leaves the config file's value alone", () => {
+    // Establish the precondition rather than assume it: the suite's afterEach
+    // clears these, but a value already in the caller's environment would
+    // otherwise decide the result.
+    delete process.env.CLAUDISH_CACHE;
+    delete process.env.CLAUDISH_CACHE_EXTENDED_TTL;
+    // CLAUDISH_CACHE is an override, not a default: unset, the resolved value is
+    // whatever the file says. Asserting a literal false would only hold on a
+    // machine with caching off, so it fails for exactly the users who opted in.
+    const fromFile = loadConfig().caching ?? {};
+    expect(loadCachingConfig().enabled).toBe(fromFile.enabled ?? false);
   });
 });
 
