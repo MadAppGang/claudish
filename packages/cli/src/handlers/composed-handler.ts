@@ -34,7 +34,7 @@ import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-res
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
-import { withFirstUsefulEventWatchdog } from "./shared/first-event-watchdog.js";
+import { withFirstUsefulEventWatchdog, boundRetryUpstream } from "./shared/first-event-watchdog.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { appendUpstreamError } from "./shared/response-capture.js";
 import {
@@ -1107,7 +1107,7 @@ export class ComposedHandler implements ModelHandler {
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
     headerLatencyMs?: number, // dispatch → upstream headers (for the [ttft] marker)
-    retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (openai-responses-sse)
+    retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (#65: responses + openai-sse + anthropic-sse lanes)
   ): Response {
     const onTokenUpdate = (input: number, output: number) => {
       const strategy = this.options.tokenStrategy || "standard";
@@ -1150,6 +1150,16 @@ export class ComposedHandler implements ModelHandler {
     if (streamFormat !== "ollama-jsonl") {
       response = withFirstUsefulEventWatchdog(response, this.bareModelName);
     }
+    // Same watchdog for the RETRIED stream (#65 review): the wrap above disarms
+    // on the first `data:` line — and the in-stream error chunk that triggers a
+    // policy-refusal retry IS one — and never rearms, so the bare doFetch()
+    // response the closure used to return was unbounded: a mute-but-200
+    // replacement upstream would hang the client exactly as #108 confines.
+    // Bounded here, once, for every lane that receives retryUpstream.
+    const retryUpstreamBounded =
+      streamFormat !== "ollama-jsonl" && retryUpstream
+        ? boundRetryUpstream(retryUpstream, this.bareModelName)
+        : retryUpstream;
     // Stream parsers receive bareModelName: it is used both as the middleware-identity
     // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in
     // `message_start.message.model` for display. Passing the routed form here was the
@@ -1166,7 +1176,10 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           claudeRequest.tools,
           toolNameMap,
-          headerLatencyMs
+          headerLatencyMs,
+          // invalid_prompt transparent retry (#65) — same doFetch re-issue the
+          // responses lane uses; the marker carries the provider for counting.
+          { retryUpstream: retryUpstreamBounded, providerName: this.provider.name }
         );
 
       case "openai-responses-sse":
@@ -1175,7 +1188,8 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           toolNameMap: adapter.getToolNameMap(),
           headerLatencyMs,
-          retryUpstream,
+          retryUpstream: retryUpstreamBounded,
+          providerName: this.provider.name,
         });
 
       case "anthropic-sse":
@@ -1184,6 +1198,8 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           adapter: adapter as BaseAPIFormat,
           headerLatencyMs,
+          retryUpstream: retryUpstreamBounded,
+          providerName: this.provider.name,
         });
 
       case "gemini-sse": {
