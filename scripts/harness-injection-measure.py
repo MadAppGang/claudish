@@ -84,6 +84,13 @@ HUIT PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
    reponse -- le filtre ne peut donc s'appliquer qu'APRES appariement, et
    une reponse non appariee n'est attribuable a aucune machine. Une machine
    absente du corpus rend 0 paire (controle negatif), jamais "tout".
+
+NB garde --since : le ts d'enveloppe et le prefixe du nom de fichier
+   partagent le format a TIRETS du producteur de captures, c'est ce qui
+   autorise la garde sur le nom (avant open(), I/O borne). Si l'enveloppe
+   passait un jour a l'ISO canonique (`:` trie apres `-`), l'ancienne
+   garde-enveloppe deviendrait fausse face a --since=...T13-30 -- la
+   garde-nom, qui compare un format a lui-meme, resterait correcte.
 --------------------------------------------------------------------------
 """
 import json
