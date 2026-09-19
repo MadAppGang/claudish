@@ -81,10 +81,10 @@
 
 .EXAMPLE
   # ai-01 (LAN, Anthropic authority — NO NoAnthropic)
-  .\install-sidecar.ps1 -Machine myia-ai-01 -Upstream http://192.168.0.46:3000 -ProxyKey b28622...
+  .\install-sidecar.ps1 -Machine myia-ai-01 -Upstream http://192.168.0.46:3000 -ProxyKey '<CLUSTER_KEY>'
 
   # po-2025 (WAN external — Compress + NoAnthropic)
-  .\install-sidecar.ps1 -Machine myia-po-2025 -Upstream https://models.myia.io -ProxyKey b28622... -Compress -NoAnthropic
+  .\install-sidecar.ps1 -Machine myia-po-2025 -Upstream https://models.myia.io -ProxyKey '<CLUSTER_KEY>' -Compress -NoAnthropic
 #>
 
 [CmdletBinding()]
