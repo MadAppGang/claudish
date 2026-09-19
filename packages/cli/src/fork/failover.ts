@@ -739,15 +739,27 @@ export function isQuotaExhaustion(status: number, body: string): boolean {
   const lower = (body || "").toLowerCase();
   if (status === 429) {
     // A plain per-minute rate limit is transient and must NOT burn the weekly budget
-    // switch; only a plan/quota exhaustion should.
+    // switch; only a plan/quota exhaustion should. A body that names a WINDOW
+    // ("per minute"/"per second"/"per hour") is a burst even when it speaks
+    // quota vocabulary — Google's per-minute 429 says "Quota exceeded for quota
+    // metric 'Generate requests per minute'" (#140). Deliberately NOT handled
+    // here: Google's windowless "Resource has been exhausted (e.g. check
+    // quota)." is structurally ambiguous (same wording for per-minute and
+    // per-day) and must stay arming in the classifier — disambiguating it
+    // would reproduce this bug in the other direction. Its burst side is
+    // caught one layer up by burstRetryAfterMs: a sub-ceiling Retry-After
+    // never arms (a wall speaks in hours).
     if (
-      lower.includes("quota") ||
-      lower.includes("credit") ||
-      lower.includes("balance") ||
-      lower.includes("weekly") ||
-      lower.includes("usage limit") ||
-      lower.includes("plan limit") ||
-      lower.includes("exhaust")
+      (lower.includes("quota") ||
+        lower.includes("credit") ||
+        lower.includes("balance") ||
+        lower.includes("weekly") ||
+        lower.includes("usage limit") ||
+        lower.includes("plan limit") ||
+        lower.includes("exhaust")) &&
+      !lower.includes("per minute") &&
+      !lower.includes("per second") &&
+      !lower.includes("per hour")
     ) {
       return true;
     }
