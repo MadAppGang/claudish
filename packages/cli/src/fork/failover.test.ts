@@ -568,6 +568,18 @@ describe("isQuotaExhaustion — narrow on purpose", () => {
     expect(isQuotaExhaustion(404, "model not found")).toBe(false);
     expect(isQuotaExhaustion(500, "internal server error")).toBe(false);
   });
+
+  // S4-0 boundary pin (#28): the upstream twin predicate
+  // (handlers/shared/quota-exhaustion.ts — not in our tree) gates on
+  // 401|403|429 because it feeds user-facing hints and chain-advance
+  // warnings. OURS decides model substitution, where 401 is a wiring
+  // mistake: substituting would hide a bad key behind a plausible-looking
+  // answer. A wall-worded 401 must still never arm here — pinned so any
+  // future unification "upward" fails on this line first.
+  it("401 NEVER arms, even when the body carries wall wording (S4-0 asymmetry pin)", () => {
+    expect(isQuotaExhaustion(401, "You've reached your usage limit for this billing cycle")).toBe(false);
+    expect(isQuotaExhaustion(401, '{"error":{"message":"quota exceeded for this plan"}}')).toBe(false);
+  });
 });
 
 // ── isWiringError ──────────────────────────────────────────────────────────────
@@ -645,6 +657,24 @@ describe("isWiringError — what must never be advanced over", () => {
 // and therefore never conflict. git will happily keep both, and which one runs
 // is decided at the call site in `composed-handler.ts`. There will be no merge
 // marker to warn you.
+//
+// S4-0 reconciliation rules (#28, decided 2026-09-19) — do NOT unify:
+//  - the two predicates answer DIFFERENT questions. Upstream's module feeds
+//    user-facing hints, PAYG-hop warnings and per-provider terminality; ours
+//    decides MODEL SUBSTITUTION (arming, cascade advance, relay deep-probe
+//    liveness, retry-ladder skip) — the costliest decision, hence the
+//    narrowness: 401/404 never arm, and the #140 window guard keeps a
+//    per-minute burst from burning the weekly switch.
+//  - absorbing the upstream module requires, BEFORE its first call site
+//    runs on an arming path:
+//      (a) a window guard (per minute/second/hour) on PLAN_LIMIT_PHRASES —
+//          it still carries bare "quota", the exact defect #140 closed here;
+//      (b) 401 out of its status gate, or the module restricted to
+//          hint/warning call sites only;
+//      (c) compound balance phrases ("credit balance", "insufficient
+//          balance", "out of credits") preferred over our bare
+//          credit/balance keywords — ours is the looser side of that
+//          boundary (see the S4-0 disagreement table on #28).
 //
 // Deliberately NOT pinned: the only 402 in the capture store is a
 // `"provider":"Mockwall"` simulated record. No real 402 exists on any production
