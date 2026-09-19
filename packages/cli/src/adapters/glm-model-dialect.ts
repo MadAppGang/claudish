@@ -31,7 +31,7 @@ export class GLMModelDialect extends BaseAPIFormat {
    * `zai@` both serve Z.AI GLM models; they differ in the WIRE, not the vendor.
    *
    * Not called on the Anthropic wire, which is `zai@` (z-ai →
-   * anthropicCompatProfile, /api/anthropic/v1/messages) and `qc@glm-5.2` (Qwen
+   * anthropicCompatProfile, /api/anthropic/v1/messages) and `qtoken@glm-5.2` (Qwen
    * Plan, also anthropicCompatProfile, serves GLM alongside Qwen). There
    * BaseAPIFormat.applyAnthropicWireReasoning() takes over.
    *

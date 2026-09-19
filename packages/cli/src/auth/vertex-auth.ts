@@ -199,6 +199,17 @@ export function getVertexConfig(): VertexConfig | null {
   };
 }
 
+/** A configured project selects OAuth; Express applies only without a project. */
+export function selectVertexAuthMode(
+  configured: { project?: string; expressKey?: string } = {
+    project: getVertexConfig()?.projectId,
+    expressKey: process.env.VERTEX_API_KEY,
+  }
+): "project" | "express" | null {
+  if (configured.project) return "project";
+  return configured.expressKey ? "express" : null;
+}
+
 /**
  * Validate Vertex AI OAuth configuration
  * Returns error message if invalid, null if OK

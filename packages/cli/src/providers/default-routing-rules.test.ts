@@ -1,3 +1,4 @@
+import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 /**
  * Unit tests for providers/default-routing-rules.ts
  *
@@ -15,7 +16,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DiskCacheV2, writeAllModelsCache } from "./all-models-cache.js";
+import { type DiskCacheV3, writeAllModelsCache } from "./all-models-cache.js";
 import {
   DEFAULT_ROUTING_RULES,
   validateDefaultRoutingRules,
@@ -28,57 +29,68 @@ function makeTempCatalog(
   model: {
     modelId: string;
     externalId?: string;
-    subscriptionPlans?: string[];
+    subscriptionPlanIds?: string[];
   },
   /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
-  plans: string[] = model.subscriptionPlans ?? [],
+  plans: string[] = model.subscriptionPlanIds ?? [],
   routingProviderByPlan: Record<string, string> = {}
 ): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
   const path = join(dir, "all-models.json");
-  const entries: DiskCacheV2["entries"] = [];
+  const entries: DiskCacheV3["entries"] = [];
 
   // Plan-owner entries: a provider is only treated as a subscription plan if
-  // some catalog entry lists it in subscriptionPlans[]. Add markers so tests can
+  // some catalog entry lists it in subscriptionPlanIds[]. Add markers so tests can
   // model the "model is not in this plan" drop path without duplicating real
   // plan members.
   for (const plan of plans) {
     entries.push({
       modelId: `${plan}-plan-marker`,
       aliases: [],
-      sources: {},
-      subscriptionPlans: [plan],
-      aggregators: [{ provider: plan, externalId: "any", confidence: "scrape_verified" as const }],
+
+      subscriptionPlanIds: [plan],
+      aggregators: [
+        {
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider(plan),
+          sourceProviderId: plan,
+          externalModelId: "any",
+          confidence: "scrape_verified" as const,
+        },
+      ],
     });
   }
 
   entries.push({
     modelId: model.modelId,
     aliases: [],
-    sources: {},
-    subscriptionPlans: model.subscriptionPlans ?? [],
+
+    subscriptionPlanIds: model.subscriptionPlanIds ?? [],
     aggregators:
-      model.externalId && model.subscriptionPlans
-        ? model.subscriptionPlans.map((planId) => ({
-            provider: routingProviderByPlan[planId] ?? planId,
-            externalId: model.externalId!,
+      model.externalId && model.subscriptionPlanIds
+        ? model.subscriptionPlanIds.map((planId) => ({
+            sourceProviderId: routingProviderByPlan[planId] ?? planId,
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider(routingProviderByPlan[planId] ?? planId),
+            externalModelId: model.externalId!,
             confidence: "scrape_verified" as const,
           }))
         : undefined,
   });
 
-  const cache: DiskCacheV2 = {
-    version: 2,
+  const cache: DiskCacheV3 = {
+    catalogGenerationId: "test-generation",
+    version: 3,
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
     plans: plans.map((plan) => ({
       id: plan,
       modelDiscovery: "catalog",
-      routing: {
-        providerUid: routingProviderByPlan[plan] ?? plan,
-        nativeModelProviders: [],
-      },
+      routeStatus: "supported",
+      route: catalogRouteForProvider(routingProviderByPlan[plan] ?? plan),
     })),
   };
   writeAllModelsCache(cache, path);
@@ -125,7 +137,7 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     const { path, cleanup } = makeTempCatalog({
       modelId: "grok-4.6",
       externalId: "grok-4.6",
-      subscriptionPlans: ["grok-subscription"],
+      subscriptionPlanIds: ["grok-subscription"],
     });
     try {
       const [route] = buildRoutingChain(["grok-subscription"], "grok-4.6", path);
@@ -177,7 +189,7 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
       {
         modelId: "kimi-k3",
         externalId: "k3",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
@@ -203,7 +215,7 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
       {
         modelId: "kimi-k3",
         externalId: "k3",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
@@ -252,22 +264,33 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["glm-coding", "opencode-zen-go", "glm", "openrouter"]);
   });
 
-  test("'qwen3.7-plus' matches qwen3.* → [qwen-cloud, opencode-zen-go, qwen-payg, openrouter]", () => {
+  test("'qwen3.7-plus' offers both Alibaba subscriptions before PAYG", () => {
     const matched = matchRoutingRule("qwen3.7-plus", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["qwen-cloud", "opencode-zen-go", "qwen-payg", "openrouter"]);
+    expect(matched).toEqual([
+      "qwen-coding",
+      "qwen-token-plan",
+      "opencode-zen-go",
+      "qwen-payg",
+      "openrouter",
+    ]);
   });
 
-  test("'qwen3-coder-next' does not match the dotted Qwen Plan rule", () => {
+  test("'qwen3-coder-next' offers the Coding Plan before PAYG", () => {
     const matched = matchRoutingRule("qwen3-coder-next", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["openrouter"]);
-    expect(matched).not.toContain("qwen-cloud");
+    expect(matched).toEqual([
+      "qwen-coding",
+      "qwen-token-plan",
+      "opencode-zen-go",
+      "qwen-payg",
+      "openrouter",
+    ]);
   });
 
-  test("cross-vendor default chains never include qwen-cloud", () => {
+  test("cross-vendor default chains never include qwen-token-plan", () => {
     for (const model of ["glm-4.6", "glm-5.2", "deepseek-v4-pro"]) {
       const matched = matchRoutingRule(model, DEFAULT_ROUTING_RULES);
       expect(matched).not.toBeNull();
-      expect(matched!).not.toContain("qwen-cloud");
+      expect(matched!).not.toContain("qwen-token-plan");
     }
   });
 

@@ -344,16 +344,16 @@ describe("model discovery cache and context lookup", () => {
     ) as unknown as typeof fetch;
 
     await discoverProviderModels("kimi-coding");
-    await discoverProviderModels("qwen-cloud");
+    await discoverProviderModels("qwen-token-plan");
     expect(getDiscoveryFailure("kimi-coding")?.kind).toBe("http-error");
-    expect(getDiscoveryFailure("qwen-cloud")?.kind).toBe("http-error");
+    expect(getDiscoveryFailure("qwen-token-plan")?.kind).toBe("http-error");
 
     invalidateModelDiscovery("kimi-coding");
     expect(getDiscoveryFailure("kimi-coding")).toBeUndefined();
-    expect(getDiscoveryFailure("qwen-cloud")?.kind).toBe("http-error");
+    expect(getDiscoveryFailure("qwen-token-plan")?.kind).toBe("http-error");
 
     invalidateModelDiscovery();
-    expect(getDiscoveryFailure("qwen-cloud")).toBeUndefined();
+    expect(getDiscoveryFailure("qwen-token-plan")).toBeUndefined();
   });
 
   test("caches within the TTL and provider invalidation forces a refetch", async () => {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeAllModelsCache } from "../providers/all-models-cache.js";
+import { catalogRouteForProvider } from "../providers/catalog-route-bindings.js";
 import { lookupRouteReasoningMode, lookupVariantPresets } from "./model-catalog.js";
 
 const BASE_MODEL_ID = "gpt-5.6-sol";
@@ -18,15 +19,23 @@ beforeEach(() => {
   cachePath = join(tempDir, "all-models.json");
   writeAllModelsCache(
     {
+      version: 3,
+      catalogGenerationId: "test-generation",
+      lastUpdated: new Date().toISOString(),
+      models: [],
+      plans: [],
       entries: [
         {
           modelId: BASE_MODEL_ID,
           aliases: ["openai/gpt-5.6-sol"],
-          sources: {},
+
           aggregators: [
             {
-              provider: "openai",
-              externalId: BASE_MODEL_ID,
+              sourceCollectorId: "test",
+              routeStatus: "mapped",
+              route: catalogRouteForProvider("openai"),
+              sourceProviderId: "openai",
+              externalModelId: BASE_MODEL_ID,
               confidence: "api_official",
               reasoning: {
                 mode: {
@@ -37,14 +46,20 @@ beforeEach(() => {
               },
             },
             {
-              provider: "openai-codex",
-              externalId: BASE_MODEL_ID,
+              sourceCollectorId: "test",
+              routeStatus: "mapped",
+              route: catalogRouteForProvider("openai-codex"),
+              sourceProviderId: "openai-codex",
+              externalModelId: BASE_MODEL_ID,
               confidence: "gateway_official",
               reasoning: { mode: { status: "rejected" } },
             },
             {
-              provider: "opencode-zen",
-              externalId: BASE_MODEL_ID,
+              sourceCollectorId: "test",
+              routeStatus: "mapped",
+              route: catalogRouteForProvider("opencode-zen"),
+              sourceProviderId: "opencode-zen",
+              externalModelId: BASE_MODEL_ID,
               confidence: "gateway_official",
               reasoning: { mode: { status: "unknown" } },
             },
@@ -53,7 +68,7 @@ beforeEach(() => {
         {
           modelId: VARIANT_MODEL_ID,
           aliases: [],
-          sources: {},
+
           routeVariant: {
             kind: "provider-preset",
             baseModelId: BASE_MODEL_ID,

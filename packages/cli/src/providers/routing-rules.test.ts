@@ -1,3 +1,4 @@
+import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 /**
  * Unit tests for providers/routing-rules.ts
  *
@@ -16,7 +17,7 @@ import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { RecommendedModelsDoc } from "../model-loader.js";
 import type { RoutingRules } from "../profile-config.js";
-import { type DiskCacheV2, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
+import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
@@ -73,7 +74,7 @@ function loadRulesWithCatalogExact(
   });
 }
 
-function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
+function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   _setCatalogEntriesForTest(entries);
   return _resetCatalogClient;
 }
@@ -82,57 +83,68 @@ function makeTempCatalog(
   model: {
     modelId: string;
     externalId?: string;
-    subscriptionPlans?: string[];
+    subscriptionPlanIds?: string[];
   },
   /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
-  plans: string[] = model.subscriptionPlans ?? [],
+  plans: string[] = model.subscriptionPlanIds ?? [],
   routingProviderByPlan: Record<string, string> = {}
 ): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
   const path = join(dir, "all-models.json");
-  const entries: DiskCacheV2["entries"] = [];
+  const entries: DiskCacheV3["entries"] = [];
 
   // Plan-owner entries: a provider is only treated as a subscription plan if
-  // some catalog entry lists it in subscriptionPlans[]. Add markers so tests can
+  // some catalog entry lists it in subscriptionPlanIds[]. Add markers so tests can
   // model the "model is not in this plan" drop path without duplicating real
   // plan members.
   for (const plan of plans) {
     entries.push({
       modelId: `${plan}-plan-marker`,
       aliases: [],
-      sources: {},
-      subscriptionPlans: [plan],
-      aggregators: [{ provider: plan, externalId: "any", confidence: "scrape_verified" as const }],
+
+      subscriptionPlanIds: [plan],
+      aggregators: [
+        {
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider(routingProviderByPlan[plan] ?? plan),
+          sourceProviderId: plan,
+          externalModelId: "any",
+          confidence: "scrape_verified" as const,
+        },
+      ],
     });
   }
 
   entries.push({
     modelId: model.modelId,
     aliases: [],
-    sources: {},
-    subscriptionPlans: model.subscriptionPlans ?? [],
+
+    subscriptionPlanIds: model.subscriptionPlanIds ?? [],
     aggregators:
-      model.externalId && model.subscriptionPlans
-        ? model.subscriptionPlans.map((planId) => ({
-            provider: routingProviderByPlan[planId] ?? planId,
-            externalId: model.externalId!,
+      model.externalId && model.subscriptionPlanIds
+        ? model.subscriptionPlanIds.map((planId) => ({
+            sourceProviderId: routingProviderByPlan[planId] ?? planId,
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider(routingProviderByPlan[planId] ?? planId),
+            externalModelId: model.externalId!,
             confidence: "scrape_verified" as const,
           }))
         : undefined,
   });
 
-  const cache: DiskCacheV2 = {
-    version: 2,
+  const cache: DiskCacheV3 = {
+    catalogGenerationId: "test-generation",
+    version: 3,
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
     plans: plans.map((plan) => ({
       id: plan,
       modelDiscovery: "catalog",
-      routing: {
-        providerUid: routingProviderByPlan[plan] ?? plan,
-        nativeModelProviders: [],
-      },
+      routeStatus: "supported",
+      route: catalogRouteForProvider(routingProviderByPlan[plan] ?? plan),
     })),
   };
   writeAllModelsCache(cache, path);
@@ -306,11 +318,14 @@ describe("buildRoutingChain", () => {
       {
         modelId: SYNTHETIC_MODEL_ID,
         aliases: [],
-        sources: {},
+
         aggregators: [
           {
-            provider: "minimax",
-            externalId: SYNTHETIC_MINIMAX_EXTERNAL_ID,
+            sourceCollectorId: "test",
+            routeStatus: "mapped",
+            route: catalogRouteForProvider("minimax"),
+            sourceProviderId: "minimax",
+            externalModelId: SYNTHETIC_MINIMAX_EXTERNAL_ID,
             confidence: "scrape_verified",
           },
         ],
@@ -582,9 +597,9 @@ const ENV_KEYS_TO_CLEAR = [
   "MOONSHOT_API_KEY",
   "KIMI_API_KEY",
   "KIMI_CODING_API_KEY",
-  "QWEN_CLOUD_PLAN_API_KEY",
+  "QWEN_TOKEN_PLAN_API_KEY",
+  "QWEN_CODING_PLAN_API_KEY",
   "DASHSCOPE_API_KEY",
-  "QWEN_API_KEY",
   "MINIMAX_API_KEY",
   "MINIMAX_CODING_API_KEY",
   "ZHIPU_API_KEY",
@@ -745,22 +760,49 @@ describe("route()", () => {
     }
   });
 
-  test("qwen3.7-plus prefers qwen-cloud over qwen-payg when both credentials are present", async () => {
-    process.env.QWEN_CLOUD_PLAN_API_KEY = "qwen-plan-test";
+  test("qwen3.7-plus prefers qwen-token-plan over qwen-payg when both credentials are present", async () => {
+    process.env.QWEN_TOKEN_PLAN_API_KEY = "qwen-plan-test";
     process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
     const { path, cleanup } = makeTempCatalog({
       modelId: "qwen3.7-plus",
       externalId: "qwen3.7-plus",
-      subscriptionPlans: ["qwen-cloud"],
+      subscriptionPlanIds: ["qwen-token-plan"],
     });
     try {
       const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
-      expect(plan.primary.provider).toBe("qwen-cloud");
-      expect(plan.primary.modelSpec).toBe("qc@qwen3.7-plus");
+      expect(plan.primary.provider).toBe("qwen-token-plan");
+      expect(plan.primary.modelSpec).toBe("qtoken@qwen3.7-plus");
       expect(plan.fallbacks.map((fallback) => fallback.provider)).toEqual(["qwen-payg"]);
-      expect(plan.fallbacks[0]?.modelSpec).toBe("qp@qwen3.7-plus");
+      expect(plan.fallbacks[0]?.modelSpec).toBe("qpay@qwen3.7-plus");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("qwen3.7-plus prefers Coding Plan when all three Alibaba credentials are present", async () => {
+    process.env.QWEN_CODING_PLAN_API_KEY = "coding-test";
+    process.env.QWEN_TOKEN_PLAN_API_KEY = "token-test";
+    process.env.DASHSCOPE_API_KEY = "payg-test";
+    const planIds = ["alibaba-ai-coding-plan", "alibaba-token-plan-individual"];
+    const { path, cleanup } = makeTempCatalog(
+      { modelId: "qwen3.7-plus", externalId: "qwen3.7-plus", subscriptionPlanIds: planIds },
+      planIds,
+      {
+        "alibaba-ai-coding-plan": "qwen-coding",
+        "alibaba-token-plan-individual": "qwen-token-plan",
+      }
+    );
+    try {
+      const result = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(result.kind).toBe("ok");
+      if (result.kind !== "ok") return;
+      expect(result.primary.modelSpec).toBe("qcode@qwen3.7-plus");
+      expect(result.fallbacks.map((candidate) => candidate.modelSpec)).toEqual([
+        "qtoken@qwen3.7-plus",
+        "qpay@qwen3.7-plus",
+      ]);
     } finally {
       cleanup();
     }
@@ -771,14 +813,14 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog({
       modelId: "qwen3.7-plus",
       externalId: "qwen3.7-plus",
-      subscriptionPlans: ["qwen-cloud"],
+      subscriptionPlanIds: ["qwen-token-plan"],
     });
     try {
       const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("qwen-payg");
-      expect(plan.primary.modelSpec).toBe("qp@qwen3.7-plus");
+      expect(plan.primary.modelSpec).toBe("qpay@qwen3.7-plus");
     } finally {
       cleanup();
     }
@@ -790,7 +832,7 @@ describe("route()", () => {
       {
         modelId: "kimi-k3",
         externalId: "k3",
-        subscriptionPlans: ["kimi-code"],
+        subscriptionPlanIds: ["kimi-code"],
       },
       ["kimi-code"],
       { "kimi-code": "kimi-coding" }
@@ -826,15 +868,17 @@ describe("route()", () => {
     const path = join(dir, "all-models.json");
     writeAllModelsCache(
       {
-        version: 2,
+        catalogGenerationId: "test-generation",
+        version: 3,
         lastUpdated: new Date().toISOString(),
-        entries: [{ modelId: "gpt-rollout-model", aliases: [], sources: {} }],
+        entries: [{ modelId: "gpt-rollout-model", aliases: [] }],
         models: [],
         plans: [
           {
             id: "openai-codex",
             modelDiscovery: "catalog",
-            routing: { providerUid: "openai-codex", nativeModelProviders: ["openai"] },
+            routeStatus: "supported",
+            route: catalogRouteForProvider("openai-codex"),
           },
         ],
       },
@@ -854,15 +898,17 @@ describe("route()", () => {
     const path = join(dir, "all-models.json");
     writeAllModelsCache(
       {
-        version: 2,
+        catalogGenerationId: "test-generation",
+        version: 3,
         lastUpdated: new Date().toISOString(),
-        entries: [{ modelId: "grok-account-model", aliases: [], sources: {} }],
+        entries: [{ modelId: "grok-account-model", aliases: [] }],
         models: [],
         plans: [
           {
             id: "xai-supergrok",
             modelDiscovery: "client",
-            routing: { providerUid: "grok-subscription", nativeModelProviders: ["x-ai"] },
+            routeStatus: "supported",
+            route: catalogRouteForProvider("grok-subscription"),
           },
         ],
       },
@@ -885,7 +931,7 @@ describe("route()", () => {
       {
         modelId: "kimi-k3",
         externalId: "k3",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
@@ -906,7 +952,7 @@ describe("route()", () => {
       {
         modelId: "kimi-k3-256k",
         externalId: "k3-256k",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
@@ -927,7 +973,7 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k2.5",
-        // No subscriptionPlans — this model is not part of the kimi-coding plan,
+        // No subscriptionPlanIds — this model is not part of the kimi-coding plan,
         // so the subscription candidate is dropped instead of silently substituting.
       },
       ["kimi-coding"]
@@ -1099,10 +1145,13 @@ function routingCatalogEntry(modelId: string, providers: string[]): SlimModelEnt
   return {
     modelId,
     aliases: [],
-    sources: { test: { externalId: modelId } },
+
     aggregators: providers.map((provider) => ({
-      provider,
-      externalId: modelId,
+      sourceProviderId: provider,
+      sourceCollectorId: "test",
+      routeStatus: "mapped" as const,
+      route: catalogRouteForProvider(provider),
+      externalModelId: modelId,
       confidence: "api_official",
     })),
   };

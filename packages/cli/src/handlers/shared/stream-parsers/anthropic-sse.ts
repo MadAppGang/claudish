@@ -43,7 +43,7 @@ interface AnthropicPassthroughOpts {
  * leading space. Every anthropic-transport provider we had fixtures for
  * (MiniMax, Z.AI) emits the spaced form, so the older
  * `startsWith("data: ")` gate silently skipped every line from Alibaba Model
- * Studio (qwen-cloud), which emits the bare form. The stream still reached
+ * Studio (qwen-token-plan), which emits the bare form. The stream still reached
  * Claude Code verbatim, so sessions worked — but claudish's own inspection
  * (token accounting, in-stream error detection, thinking re-indexing,
  * Layer-4 repairToolArgs) never ran.

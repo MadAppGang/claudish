@@ -98,7 +98,7 @@ export function isEffortLevel(value: unknown): value is EffortLevel {
  *
  * Two of them (`enable_thinking`, `thinking_budget`) are DashScope's; the third
  * (`reasoning_effort`) is OpenAI's and is also accepted by DeepSeek's and xAI's
- * own APIs. Measured against Qwen Plan's Anthropic endpoint on 2026-08-02:
+ * own APIs. Measured against Alibaba Token Plan's Anthropic endpoint on 2026-08-02:
  * a top-level `reasoning_effort` of `"max"` AND of `"banana"` both return 200,
  * i.e. the field is silently ignored — a dialect emitting it there believes it
  * set the depth and did nothing.
@@ -202,14 +202,14 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * own it cannot tell whether the same model is being reached over the
    * OpenAI/Chat-Completions wire or the Anthropic Messages wire. Providers do
    * exist that serve one model family over both (Qwen: DashScope
-   * OpenAI-compatible vs. Qwen Plan's /apps/anthropic/v1/messages), and their
+   * OpenAI-compatible vs. Alibaba Token Plan's /apps/anthropic/v1/messages), and their
    * reasoning knobs are named differently on each.
    *
    * DIALECTS SHOULD NOT READ THIS. It is consumed by {@link prepareRequest}'s
    * template and by {@link shouldFilterThinking}, which is what makes the
    * Anthropic-wire behaviour automatic for every dialect — including ones
    * written before the endpoint existed. A dialect that branches on it is
-   * re-creating the bug this replaced (see the qwen-cloud session log).
+   * re-creating the bug this replaced (see the qwen-token-plan session log).
    *
    * `undefined` means "not composed / caller didn't say" — treat it as the
    * historical OpenAI default so nothing changes for existing call sites.
@@ -441,7 +441,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * The split exists because WHICH reasoning knob a request must carry is a
    * property of the WIRE, not of the model family — and dialects are selected
    * by model NAME (see DialectManager), so a dialect cannot know the wire.
-   * Alibaba's Qwen Plan is the worked example: one Anthropic-compatible
+   * Alibaba's Alibaba Token Plan is the worked example: one Anthropic-compatible
    * endpoint serving qwen3.x AND glm-5.2 AND deepseek-v4-*, i.e. three
    * different dialects reaching the SAME wire. Before this hoist only
    * QwenModelDialect had been taught the wire, so glm/deepseek on that endpoint
@@ -524,7 +524,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * it, for every dialect.
    *
    * The SHAPE of the knob is a PER-MODEL fact read from the slim catalog's
-   * `reasoning` record, never from a table here. Alibaba's Qwen Plan roster is
+   * `reasoning` record, never from a table here. Alibaba's Alibaba Token Plan roster is
    * why a fixed ladder is wrong: `qwen3.7-plus` is `control: "toggle"` (it
    * exposes no depth parameter at all, so a `budget_tokens` would be an
    * invented field), while `glm-5.2` and `deepseek-v4-pro` on the SAME endpoint
@@ -536,7 +536,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * Anthropic Messages endpoint and which AnthropicAPIFormat drops when
    * rebuilding the payload. Restoring it (clamped) is how a discrete level
    * reaches a model whose only other knob is `budget_tokens`, which these
-   * models do not accept. Verified live 2026-08-02 against Qwen Plan:
+   * models do not accept. Verified live 2026-08-02 against Alibaba Token Plan:
    * `output_config.effort: "high"` → 200, `"banana"` → 400 naming the seven
    * accepted levels, so the field IS read.
    *
@@ -1025,8 +1025,8 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    *
    * Gating on the WIRE rather than a model roster is deliberate — a hardcoded
    * list would silently miss the next model added to a multi-vendor plan, which
-   * is exactly how `qc@glm-5.2` and `qc@deepseek-v4-pro` kept leaking after
-   * `qc@qwen3.7-plus` was fixed. `wireFormat` is the composition hint
+   * is exactly how `qtoken@glm-5.2` and `qtoken@deepseek-v4-pro` kept leaking after
+   * `qtoken@qwen3.7-plus` was fixed. `wireFormat` is the composition hint
    * ComposedHandler supplies from `explicitAdapter.getStreamFormat()`.
    *
    * NOTE this is keyed on the composed `wireFormat`, which is supplied ONLY by

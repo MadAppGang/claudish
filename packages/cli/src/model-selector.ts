@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "./providers/catalog-route-bindings.js";
 /**
  * Model Selector with Fuzzy Search
  *
@@ -120,7 +121,7 @@ export const pickerProviderToFirebaseSlug: Record<string, string> = {
   "opencode-zen": "opencode-zen",
   "opencode-zen-go": "opencode-zen-go",
   ollamacloud: "ollamacloud",
-  // NOTE: "qwen-cloud" is deliberately absent. `selectModelFromProvider` tries
+  // NOTE: "qwen-token-plan" is deliberately absent. `selectModelFromProvider` tries
   // `modelDiscovery` BEFORE this map, and the plan's /compatible-mode/v1/models
   // endpoint is authenticated — it answers with exactly what the subscription
   // is entitled to. The catalog's "qwen" vendor would be a bad fall-through
@@ -128,7 +129,7 @@ export const pickerProviderToFirebaseSlug: Record<string, string> = {
   // plan host does not serve. Adding it would also poison
   // `firebaseSlugToProviderName`, whose reverse lookup takes the FIRST picker
   // value for a slug — with no canonical `qwen` entry above it, every plain
-  // catalog Qwen model would render as "Qwen Plan". Discovery failure
+  // catalog Qwen model would render as "Alibaba Token Plan". Discovery failure
   // already degrades to the free-text prompt below, which is the right answer.
 };
 
@@ -360,7 +361,8 @@ function catalogModelToModelInfo(model: CatalogModel): ModelInfo {
   // Catalog models from the slim cache don't carry the owner provider — fall
   // back to the first aggregator's name so the picker still shows something
   // useful in the column.
-  const ownerOrFirstAggregator = model.provider || model.aggregators?.[0]?.provider || "unknown";
+  const ownerOrFirstAggregator =
+    model.provider || model.aggregators?.[0]?.sourceProviderId || "unknown";
   const providerLabel = formatFirebaseProviderLabel(ownerOrFirstAggregator);
   const contextLength = model.contextWindow || 0;
 
@@ -860,8 +862,12 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   "minimax-coding": { name: "MiniMax Coding", description: "Coding subscription" },
   kimi: { name: "Kimi / Moonshot", description: "Direct API" },
   "kimi-coding": { name: "Kimi Coding", description: "Coding subscription" },
-  "qwen-cloud": { name: "Qwen Plan", description: "Alibaba Model Studio subscription" },
-  "qwen-payg": { name: "Qwen API", description: "Alibaba Model Studio pay-as-you-go" },
+  "qwen-token-plan": {
+    name: "Alibaba Token Plan",
+    description: "Model Studio subscription credits",
+  },
+  "qwen-coding": { name: "Alibaba Coding Plan", description: "Model Studio subscription requests" },
+  "qwen-payg": { name: "Alibaba PAYG", description: "Model Studio pay-as-you-go tokens" },
   glm: { name: "GLM / Zhipu", description: "Direct API" },
   "glm-coding": { name: "GLM Coding Plan", description: "Coding subscription" },
   "z-ai": { name: "Z.AI", description: "Direct API" },
@@ -896,7 +902,8 @@ const PICKER_ORDER = [
   "minimax-coding",
   "kimi",
   "kimi-coding",
-  "qwen-cloud",
+  "qwen-token-plan",
+  "qwen-coding",
   "qwen-payg",
   "glm",
   "glm-coding",
@@ -1101,7 +1108,7 @@ export function buildExplicitModelSpec(provider: string, modelId: string): strin
  */
 export function resolveProviderExternalId(provider: string, model: ModelInfo): string {
   const match = resolveProviderAggregatorEntry(provider, model);
-  if (match?.externalId) return match.externalId;
+  if (match?.externalModelId) return match.externalModelId;
   return model.id;
 }
 
@@ -1119,9 +1126,10 @@ function resolveProviderAggregatorEntry(
   // actually holds. Without this, removing an alias silently degrades the row
   // to the catalog id — `kc@kimi-k2.7-code` instead of the wire id
   // `kc@kimi-for-coding` — and drops the per-aggregator price with it.
-  const firebaseSlug = pickerProviderToFirebaseSlug[provider] ?? provider;
   if (!model.aggregators) return undefined;
-  return model.aggregators.find((a) => a.provider.toLowerCase() === firebaseSlug.toLowerCase());
+  return model.aggregators.find(
+    (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
+  );
 }
 
 /**

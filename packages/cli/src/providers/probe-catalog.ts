@@ -1,54 +1,35 @@
-/**
- * Probe-model catalog client.
- *
- * Fetches `{ providers: { <slug>: <modelId> } }` from the models-index
- * `/probeModels` endpoint and caches it at `~/.claudish/probe-models.json`.
- * The TUI's "Test Connections" feature uses this to ask the catalog
- * "what model should I send to provider X to verify the link?" instead of
- * carrying stale string literals in source.
- *
- * Selection logic (cheapest active model per provider, tiebreak by recency)
- * lives server-side in models-index — see
- * `models-index/TASK_probe_models_endpoint.md`.
- *
- * Lazy fetch: the first caller to need a probe model triggers a network
- * fetch. Subsequent reads hit the disk cache. A failed fetch never overwrites
- * the cache, and `getProbeModel` returns the last cached pick whatever its age.
- *
- * Using an old pick is safe, which is why a failed fetch is not fatal to the
- * TUI. The pick is only the first model to TRY: the probe is a live request to
- * the provider, so an outdated pick cannot produce a false pass. At worst it
- * fails model-not-found and the TUI moves on to endpoint discovery. Failing
- * every provider on a failed fetch — the previous behaviour — turned the v3
- * cutover (this endpoint answers 426 to a v2 build) into 18 red rows, none of
- * which had contacted its provider.
- */
-
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { isIncompatibleContractVersion, parseContractEnvelope } from "./catalog-compatibility.js";
+import { providerForCatalogRoute } from "./catalog-route-bindings.js";
+import { CATALOG_V3_ACCEPT, parseCatalogV3Envelope } from "./catalog-v3.js";
 
 const PROBE_MODELS_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
-// 1h TTL (matches the server's own instance cache). A 24h TTL meant a
-// server-side catalog correction (e.g. fixing a probe model that 404s) took up
-// to a day to reach users. 1h propagates fixes promptly without re-fetching on
-// every probe; a stale-but-fresh wrong pick is additionally self-healed by the
-// refresh-on-404 path in the TUI (forceRefreshProbeModels).
 const CACHE_TTL_MS = 60 * 60 * 1000;
-// Generous timeout — the endpoint typically responds in ~400ms, but the TUI
-// fires this concurrently with proxy startup and N parallel probe handlers.
-// Under load on a cold cache we've seen the network round-trip pushed past
-// 5s. 15s matches the per-probe timeout, so the fetch budget is bounded by
-// the same UX deadline the user already accepts for a single probe.
 const FETCH_TIMEOUT_MS = 15000;
 
 export const PROBE_MODELS_CACHE_PATH = join(homedir(), ".claudish", "probe-models.json");
 
 export interface ProbeModelsResponse {
-  version: number;
+  version: 3;
+  generationId: string;
   generatedAt: string;
   providers: Record<string, string>;
+  unavailable: Record<string, string>;
+}
+
+interface ProbeRoute {
+  modelId: string;
+  externalModelId: string;
+  route: { routeId: string; routeProfileId: string };
+}
+
+interface ProbeData {
+  routes: Record<string, ProbeRoute>;
+  unavailableRoutes: Record<
+    string,
+    { route: { routeId: string; routeProfileId: string }; reason: string }
+  >;
 }
 
 export type FetchOutcome =
@@ -57,31 +38,18 @@ export type FetchOutcome =
   | { kind: "network"; reason: string }
   | { kind: "http"; status: number }
   | { kind: "invalid"; reason: string }
-  /**
-   * The endpoint answered in a catalog contract this build cannot read: a 426,
-   * or a body whose `contractVersion` is newer than this build supports. Kept
-   * apart from `http` because it is not a connectivity problem, and a caller
-   * that reports it as one sends the user to debug a working network.
-   */
   | { kind: "incompatible"; serverContractVersion: number | null };
 
 let _inFlight: Promise<FetchOutcome> | null = null;
 
-/**
- * One line naming why the probe catalog supplied no fresh pick, for the TUI.
- *
- * Only a connectivity failure says "could not reach". A contract mismatch says
- * what it is: the network is fine, and a message that blames it sends the user
- * to debug the wrong thing.
- */
 export function describeProbeCatalogFailure(
   outcome: Exclude<FetchOutcome, { kind: "ok" }>
 ): string {
   switch (outcome.kind) {
     case "incompatible":
       return outcome.serverContractVersion === null
-        ? "model catalog uses a newer contract than this build reads"
-        : `model catalog uses contract v${outcome.serverContractVersion}, newer than this build reads`;
+        ? "model catalog contract is not supported by this build"
+        : `model catalog contract v${outcome.serverContractVersion} is not supported by this build`;
     case "http":
       return `model catalog returned HTTP ${outcome.status}`;
     case "timeout":
@@ -103,8 +71,7 @@ export function readProbeModelsCache(
   } catch {
     return null;
   }
-  if (!isValidResponse(raw)) return null;
-  return raw;
+  return isValidResponse(raw) ? raw : null;
 }
 
 export function writeProbeModelsCache(
@@ -119,10 +86,9 @@ export function isCacheFresh(
   data: ProbeModelsResponse | null,
   ttlMs: number = CACHE_TTL_MS
 ): boolean {
-  if (!data?.generatedAt) return false;
+  if (!data) return false;
   const generatedMs = Date.parse(data.generatedAt);
-  if (Number.isNaN(generatedMs)) return false;
-  return Date.now() - generatedMs < ttlMs;
+  return !Number.isNaN(generatedMs) && Date.now() - generatedMs < ttlMs;
 }
 
 export async function fetchProbeModels(
@@ -131,79 +97,83 @@ export async function fetchProbeModels(
 ): Promise<FetchOutcome> {
   let response: Response;
   try {
-    response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  } catch (e: unknown) {
-    const name = (e as { name?: string } | null)?.name ?? "";
-    if (name === "TimeoutError" || name === "AbortError") {
-      return { kind: "timeout" };
-    }
-    return {
-      kind: "network",
-      reason: e instanceof Error ? e.message : String(e),
-    };
-  }
-
-  if (!response.ok) {
-    // /probeModels negotiates the catalog contract like queryModels does, so at
-    // the v3 cutover it answers this build 426. Read the body before calling it
-    // a plain HTTP failure. The body is optional: a bare 426 is still a verdict.
-    let errorBody: unknown = null;
-    try {
-      errorBody = await response.json();
-    } catch {
-      // No JSON body. The status alone decides below.
-    }
-    const envelope = parseContractEnvelope(errorBody);
-    if (response.status === 426 || isIncompatibleContractVersion(envelope.contractVersion)) {
-      return { kind: "incompatible", serverContractVersion: envelope.contractVersion };
-    }
-    return { kind: "http", status: response.status };
+    response = await fetch(url, {
+      headers: { Accept: CATALOG_V3_ACCEPT },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const name = (error as { name?: string } | null)?.name;
+    if (name === "TimeoutError" || name === "AbortError") return { kind: "timeout" };
+    return { kind: "network", reason: error instanceof Error ? error.message : String(error) };
   }
 
   let body: unknown;
   try {
     body = await response.json();
-  } catch (e: unknown) {
-    return {
-      kind: "invalid",
-      reason: e instanceof Error ? e.message : "json parse error",
-    };
+  } catch {
+    if (response.status === 426) {
+      return { kind: "incompatible", serverContractVersion: null };
+    }
+    return response.ok
+      ? { kind: "invalid", reason: "json parse error" }
+      : { kind: "http", status: response.status };
   }
-  // A 200 in a newer contract is the same verdict. It must be caught here,
-  // before `isValidResponse`, which would otherwise report it as "missing
-  // providers map" and hide the real cause.
-  const bodyEnvelope = parseContractEnvelope(body);
-  if (isIncompatibleContractVersion(bodyEnvelope.contractVersion)) {
-    return { kind: "incompatible", serverContractVersion: bodyEnvelope.contractVersion };
+
+  const statedVersion =
+    body &&
+    typeof body === "object" &&
+    typeof (body as { contractVersion?: unknown }).contractVersion === "number"
+      ? (body as { contractVersion: number }).contractVersion
+      : null;
+  if (response.status === 426 || (statedVersion !== null && statedVersion !== 3)) {
+    return { kind: "incompatible", serverContractVersion: statedVersion };
   }
-  if (!isValidResponse(body)) {
-    return { kind: "invalid", reason: "missing providers map" };
+  if (!response.ok) return { kind: "http", status: response.status };
+
+  const envelope = parseCatalogV3Envelope<ProbeData>(body);
+  if (
+    !envelope ||
+    !envelope.data.routes ||
+    typeof envelope.data.routes !== "object" ||
+    !envelope.data.unavailableRoutes ||
+    typeof envelope.data.unavailableRoutes !== "object"
+  ) {
+    return { kind: "invalid", reason: "missing route maps" };
   }
-  return { kind: "ok", data: body };
+
+  const providers: Record<string, string> = {};
+  for (const route of Object.values(envelope.data.routes)) {
+    if (!route || typeof route !== "object" || typeof route.externalModelId !== "string") continue;
+    const provider = providerForCatalogRoute(route.route);
+    if (provider) providers[provider] = route.externalModelId;
+  }
+  const unavailable: Record<string, string> = {};
+  for (const route of Object.values(envelope.data.unavailableRoutes)) {
+    if (!route || typeof route !== "object" || typeof route.reason !== "string") continue;
+    const provider = providerForCatalogRoute(route.route);
+    if (provider) unavailable[provider] = route.reason;
+  }
+  if (Object.keys(providers).length + Object.keys(unavailable).length === 0) {
+    return { kind: "invalid", reason: "no supported probe routes" };
+  }
+
+  return {
+    kind: "ok",
+    data: {
+      version: 3,
+      generationId: envelope.generationId,
+      generatedAt: envelope.generatedAt,
+      providers,
+      unavailable,
+    },
+  };
 }
 
-/**
- * Ensure the probe-models cache is fresh. If the cached file is missing or
- * older than the TTL, fetch fresh data and write it.
- *
- * Concurrent calls share a single in-flight fetch via `_inFlight` so the
- * TUI's parallel "test all" loop only opens one network connection.
- *
- * Returns the outcome so callers can render an error state on failure.
- * Never throws.
- */
 export async function ensureProbeModelsCached(): Promise<FetchOutcome> {
   const cached = readProbeModelsCache();
   if (isCacheFresh(cached)) return { kind: "ok", data: cached! };
-
   if (_inFlight) return _inFlight;
-
-  _inFlight = (async () => {
-    const outcome = await fetchProbeModels();
-    if (outcome.kind === "ok") writeProbeModelsCache(outcome.data);
-    return outcome;
-  })();
-
+  _inFlight = fetchAndCacheProbeModels();
   try {
     return await _inFlight;
   } finally {
@@ -211,26 +181,9 @@ export async function ensureProbeModelsCached(): Promise<FetchOutcome> {
   }
 }
 
-/**
- * Force a re-fetch of the probe catalog, IGNORING the TTL, and overwrite the
- * cache on success. Used as a self-heal when the cached probe model for a
- * provider fails with model-not-found/404 — the catalog may have been corrected
- * server-side while the local cache is still "fresh" by its generatedAt clock.
- *
- * Shares the same in-flight dedupe as ensureProbeModelsCached so a parallel
- * "test all" only triggers ONE forced refetch. Returns the outcome; never throws.
- * On success the in-memory + on-disk cache is updated, so a subsequent
- * getProbeModel() returns the fresh pick.
- */
 export async function forceRefreshProbeModels(): Promise<FetchOutcome> {
   if (_inFlight) return _inFlight;
-
-  _inFlight = (async () => {
-    const outcome = await fetchProbeModels();
-    if (outcome.kind === "ok") writeProbeModelsCache(outcome.data);
-    return outcome;
-  })();
-
+  _inFlight = fetchAndCacheProbeModels();
   try {
     return await _inFlight;
   } finally {
@@ -238,42 +191,26 @@ export async function forceRefreshProbeModels(): Promise<FetchOutcome> {
   }
 }
 
-/**
- * Sync lookup of the probe model for a claudish provider slug.
- *
- * The backend `/probeModels` endpoint is the single source of truth and emits
- * one entry per claudish provider name. Direct lookup, no shortcut walking,
- * no fallback heuristics. A missing entry means the catalog doesn't yet have
- * coverage for that slug — that's a backend gap, not a client problem.
- *
- * Returns `null` if no cache, no entry, or invalid entry. Callers must call
- * `ensureProbeModelsCached()` first if they need a fresh fetch.
- */
+async function fetchAndCacheProbeModels(): Promise<FetchOutcome> {
+  const outcome = await fetchProbeModels();
+  if (outcome.kind === "ok") writeProbeModelsCache(outcome.data);
+  return outcome;
+}
+
 export function getProbeModel(claudishSlug: string): string | null {
-  const cache = readProbeModelsCache();
-  if (!cache) return null;
-  const entry = cache.providers[claudishSlug];
-  return typeof entry === "string" && entry.length > 0 ? entry : null;
+  const value = readProbeModelsCache()?.providers[claudishSlug];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export function getProbeUnavailability(claudishSlug: string): string | null {
+  return readProbeModelsCache()?.unavailable[claudishSlug] ?? null;
 }
 
 export interface DiscoveryResult {
   model: string | null;
-  /** Why discovery failed (only set when model is null). */
   reason?: string;
 }
 
-/**
- * Discover a probe model by asking the provider's endpoint directly.
- *
- * For self-hosted / user-deployed providers (LiteLLM, Ollama, LM Studio,
- * vLLM, MLX, OllamaCloud) the cloud catalog can't enumerate models — each
- * deployment has its own list. The proxy exposes `/v1/probe-discover` which
- * delegates to the provider's transport.discoverProbeModel() method.
- *
- * Returns `{ model, reason? }`. When discovery fails, `reason` carries the
- * proxy's explanation (e.g. "transport does not support discovery", "no
- * model available") so the TUI can surface why.
- */
 export async function discoverProbeModelFromEndpoint(
   proxyUrl: string,
   providerSlug: string,
@@ -287,8 +224,8 @@ export async function discoverProbeModelFromEndpoint(
       `${proxyUrl}/v1/probe-discover?provider=${encodeURIComponent(providerSlug)}${excludeParam}`,
       { signal: AbortSignal.timeout(8000) }
     );
-  } catch (e: unknown) {
-    return { model: null, reason: e instanceof Error ? e.message : "fetch failed" };
+  } catch (error) {
+    return { model: null, reason: error instanceof Error ? error.message : "fetch failed" };
   }
   let body: unknown;
   try {
@@ -298,20 +235,21 @@ export async function discoverProbeModelFromEndpoint(
   }
   const model = (body as { model?: unknown })?.model;
   const reason = (body as { reason?: unknown })?.reason;
-  if (typeof model === "string" && model.length > 0) {
-    return { model };
-  }
-  return {
-    model: null,
-    reason: typeof reason === "string" ? reason : `proxy ${response.status}`,
-  };
+  if (typeof model === "string" && model.length > 0) return { model };
+  return { model: null, reason: typeof reason === "string" ? reason : `proxy ${response.status}` };
 }
 
 function isValidResponse(raw: unknown): raw is ProbeModelsResponse {
   if (!raw || typeof raw !== "object") return false;
   const data = raw as Record<string, unknown>;
-  if (typeof data.version !== "number") return false;
-  if (typeof data.generatedAt !== "string") return false;
-  if (!data.providers || typeof data.providers !== "object") return false;
-  return true;
+  return (
+    data.version === 3 &&
+    typeof data.generationId === "string" &&
+    data.generationId.length > 0 &&
+    typeof data.generatedAt === "string" &&
+    !!data.providers &&
+    typeof data.providers === "object" &&
+    !!data.unavailable &&
+    typeof data.unavailable === "object"
+  );
 }

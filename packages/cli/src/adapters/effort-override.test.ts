@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DiskCacheV2, writeAllModelsCache } from "../providers/all-models-cache.js";
+import { type DiskCacheV3, writeAllModelsCache } from "../providers/all-models-cache.js";
 import { GLMModelDialect } from "./glm-model-dialect.js";
 import {
   type ReasoningCapability,
@@ -43,11 +43,11 @@ let format: CatalogBackedGLMFormat;
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "claudish-effort-override-"));
   cachePath = join(tempDir, "all-models.json");
-  const entries: DiskCacheV2["entries"] = [
+  const entries: DiskCacheV3["entries"] = [
     {
       modelId: MODEL_ID,
       aliases: [],
-      sources: {},
+
       reasoning: {
         supported: true,
         control: "effort",
@@ -56,7 +56,17 @@ beforeEach(() => {
       },
     },
   ];
-  writeAllModelsCache({ entries }, cachePath);
+  writeAllModelsCache(
+    {
+      version: 3,
+      catalogGenerationId: "test-generation",
+      lastUpdated: new Date().toISOString(),
+      entries,
+      models: [],
+      plans: [],
+    },
+    cachePath
+  );
   format = new CatalogBackedGLMFormat(MODEL_ID, cachePath);
 });
 

@@ -30,7 +30,7 @@ quietly succeeding is worse than a crash. Same pattern as Antigravity: empty env
 other providers' namespaces (`claude-opus-5-medium` matches native-anthropic's `/^claude-/i`,
 `gpt-5-6-luna-medium` matches OpenAI's, `glm-5-2` GLM's, `kimi-k3-high` Kimi's), so the definition
 declares **no `nativeModelPatterns`** and there is **no `DEFAULT_ROUTING_RULES` entry**. Same
-reasoning as Qwen Plan, which also re-serves other vendors' models.
+reasoning as Alibaba Token Plan, which also re-serves other vendors' models.
 
 **The reasoning tier is IN the model id — there is no effort parameter.** `dv@claude-opus-5` at
 effort `high` resolves to the uid `claude-opus-5-high` via `resolveDevinModelUid` against the LIVE

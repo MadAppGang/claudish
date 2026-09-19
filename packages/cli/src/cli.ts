@@ -64,6 +64,7 @@ import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-defin
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import {
   buildRoutingChain,
+  hasCredentialsForProvider,
   loadRoutingRules,
   matchRoutingRule,
 } from "./providers/routing-rules.js";
@@ -1150,7 +1151,7 @@ async function printByProvider(typedSlug: string, jsonOutput: boolean): Promise<
   const providerSlug = resolved.canonical ?? typedSlug;
   let models: ModelDoc[];
   try {
-    models = await getModelsByProvider(providerSlug, 200);
+    models = await getModelsByProvider(providerSlug);
   } catch (error) {
     console.error(
       `❌ Failed to load provider catalog from Firebase: ${
@@ -1557,6 +1558,40 @@ async function probeModelRouting(
     return { parsed, chain, chainDetails };
   }
 
+  const probeCredentialReadiness = new Map<string, boolean>();
+  async function credentialForProbe(provider: string): Promise<boolean> {
+    if (probeCredentialReadiness.has(provider)) return probeCredentialReadiness.get(provider)!;
+    const ready =
+      provider === "native-anthropic"
+        ? !!process.env.ANTHROPIC_API_KEY
+        : await hasCredentialsForProvider(provider);
+    probeCredentialReadiness.set(provider, ready);
+    return ready;
+  }
+
+  async function prepareModelChain(
+    modelInput: string
+  ): Promise<ReturnType<typeof buildModelChain>> {
+    const result = buildModelChain(modelInput);
+    await Promise.all(
+      result.chainDetails.map(async (link) => {
+        link.hasCredentials = await credentialForProbe(link.provider);
+        link.credentialHint = link.hasCredentials
+          ? undefined
+          : link.provider === "native-anthropic"
+            ? "ANTHROPIC_API_KEY (required to probe Claude Code)"
+            : getProviderByName(link.provider)?.isLocal
+              ? "enable local provider in global config"
+              : API_KEY_MAP[link.provider]?.envVar;
+        const keyInfo = API_KEY_MAP[link.provider];
+        if (keyInfo?.envVar)
+          link.provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
+      })
+    );
+    if (result.chain.source === "direct") await credentialForProbe(result.parsed.provider);
+    return result;
+  }
+
   /**
    * Routing-why one-liner shown on the right of each model header in the
    * Details tab. Kept as a SINGLE function so a later routing worktree can swap
@@ -1614,17 +1649,10 @@ async function probeModelRouting(
     // empty and now MEANS empty.
     if (!providerDef && !keyInfo) return [];
 
-    let hasCredentials: boolean;
-    let provenance: KeyProvenance | undefined;
-    if (providerDef?.isLocal) {
-      hasCredentials = isLocalProviderEnabled(parsed.provider);
-    } else if (!keyInfo?.envVar) {
-      hasCredentials = true;
-    } else {
-      provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
-      hasCredentials =
-        provenance.hasValue || (keyInfo.aliases?.some((a) => !!process.env[a]) ?? false);
-    }
+    const hasCredentials = probeCredentialReadiness.get(parsed.provider) ?? false;
+    const provenance = keyInfo?.envVar
+      ? resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases)
+      : undefined;
 
     return [
       {
@@ -1662,22 +1690,18 @@ async function probeModelRouting(
       // Explicit/direct model — one synthetic link from the native provider.
       const directProviderDef = getProviderByName(parsed.provider);
       const directKeyInfo = API_KEY_MAP[parsed.provider];
-      const directHasCreds = directProviderDef?.isLocal
-        ? isLocalProviderEnabled(parsed.provider)
-        : directKeyInfo?.envVar
-          ? !!process.env[directKeyInfo.envVar] ||
-            (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-          : true;
+      const directHasCreds = probeCredentialReadiness.get(parsed.provider) ?? false;
       return [
         {
           provider: parsed.provider,
           displayName: directProviderDef?.displayName ?? parsed.provider,
           modelId: parsed.model,
           hasCredentials: directHasCreds,
-          credentialHint:
-            directProviderDef?.isLocal && !directHasCreds
+          credentialHint: !directHasCreds
+            ? directProviderDef?.isLocal
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar,
+              : directKeyInfo?.envVar
+            : undefined,
           probe: directProbe,
         },
       ];
@@ -1717,7 +1741,8 @@ async function probeModelRouting(
       "minimax-coding",
       "kimi",
       "kimi-coding",
-      "qwen-cloud",
+      "qwen-token-plan",
+      "qwen-coding",
       "qwen-payg",
       "z-ai",
     ];
@@ -1813,19 +1838,14 @@ async function probeModelRouting(
       const results: ChainProbe[] = [];
 
       for (const modelInput of models) {
-        const { parsed, chain, chainDetails } = buildModelChain(modelInput);
+        const { parsed, chain, chainDetails } = await prepareModelChain(modelInput);
 
         // Direct probe
         let directProbeResult: ProbeResult | undefined;
         if (liveProxy && chain.source === "direct") {
           const directKeyInfo = API_KEY_MAP[parsed.provider];
           const directProviderDef = getProviderByName(parsed.provider);
-          const directHasCreds = directProviderDef?.isLocal
-            ? isLocalProviderEnabled(parsed.provider)
-            : directKeyInfo?.envVar
-              ? !!process.env[directKeyInfo.envVar] ||
-                (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-              : true;
+          const directHasCreds = await credentialForProbe(parsed.provider);
           const directCredentialHint =
             directProviderDef?.isLocal && !directHasCreds
               ? "enable local provider in global config"
@@ -1975,7 +1995,7 @@ async function probeModelRouting(
       chainDetails: ReturnType<typeof buildModelChain>["chainDetails"];
     }> = [];
     for (const modelInput of models) {
-      const { parsed, chain, chainDetails } = buildModelChain(modelInput);
+      const { parsed, chain, chainDetails } = await prepareModelChain(modelInput);
       modelChains.push({ modelInput, parsed, chain, chainDetails });
     }
     updateStep("Resolving routing chains", "done");
@@ -2002,12 +2022,7 @@ async function probeModelRouting(
         if (chain.source === "direct") {
           const directKeyInfo = API_KEY_MAP[parsed.provider];
           const directProviderDef = getProviderByName(parsed.provider);
-          const directHasCreds = directProviderDef?.isLocal
-            ? isLocalProviderEnabled(parsed.provider)
-            : directKeyInfo?.envVar
-              ? !!process.env[directKeyInfo.envVar] ||
-                (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-              : true;
+          const directHasCreds = await credentialForProbe(parsed.provider);
           const directCredentialHint =
             directProviderDef?.isLocal && !directHasCreds
               ? "enable local provider in global config"

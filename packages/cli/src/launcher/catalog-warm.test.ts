@@ -10,7 +10,7 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { DiskCacheV2 } from "../providers/all-models-cache.js";
+import type { DiskCacheV3 } from "../providers/all-models-cache.js";
 // Value imports captured BEFORE the mock.module calls below so we can restore
 // the REAL modules in afterAll. Bun's mock.module is PROCESS-GLOBAL and
 // persists across files, so without this restore the stubs here bleed into
@@ -33,7 +33,7 @@ const __realCatalogClientExports = { ...__realCatalogClient };
 // here BEFORE importing catalog-warm. The mocks are mutated in beforeEach to
 // configure each test case.
 
-let mockReadResult: DiskCacheV2 | null = null;
+let mockReadResult: DiskCacheV3 | null = null;
 let mockRefreshOutcome: RefreshOutcome = { kind: "refreshed", modelCount: 0 };
 const refreshSpy = mock(async (_timeoutMs: number): Promise<RefreshOutcome> => {
   return mockRefreshOutcome;
@@ -130,11 +130,13 @@ describe("shouldWarmCatalog", () => {
 describe("classifyCatalogState", () => {
   const NOW = new Date("2026-05-08T12:00:00.000Z");
 
-  function diskCache(overrides: Partial<DiskCacheV2> = {}): DiskCacheV2 {
+  function diskCache(overrides: Partial<DiskCacheV3> = {}): DiskCacheV3 {
     return {
-      version: 2,
+      catalogGenerationId: "test-generation",
+      plans: [],
+      version: 3,
       lastUpdated: NOW.toISOString(),
-      entries: [{ modelId: "alpha", aliases: [], sources: {} }],
+      entries: [{ modelId: "alpha", aliases: [] }],
       models: [{ id: "vendor/alpha" }],
       ...overrides,
     };
@@ -197,20 +199,24 @@ describe("warmCatalogIfNeeded", () => {
     } as ClaudishConfig;
   }
 
-  function freshCache(): DiskCacheV2 {
+  function freshCache(): DiskCacheV3 {
     return {
-      version: 2,
+      catalogGenerationId: "test-generation",
+      plans: [],
+      version: 3,
       lastUpdated: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString(), // 1h old
-      entries: [{ modelId: "alpha", aliases: [], sources: {} }],
+      entries: [{ modelId: "alpha", aliases: [] }],
       models: [{ id: "vendor/alpha" }],
     };
   }
 
-  function staleCache(): DiskCacheV2 {
+  function staleCache(): DiskCacheV3 {
     return {
-      version: 2,
+      catalogGenerationId: "test-generation",
+      plans: [],
+      version: 3,
       lastUpdated: new Date(NOW.getTime() - 30 * 60 * 60 * 1000).toISOString(), // 30h old
-      entries: [{ modelId: "alpha", aliases: [], sources: {} }],
+      entries: [{ modelId: "alpha", aliases: [] }],
       models: [{ id: "vendor/alpha" }],
     };
   }
@@ -331,9 +337,11 @@ describe("warmCatalogIfNeeded", () => {
     // 24h boundary because classifyCatalogState uses strict-less-than.
     const oneDayAgo = new Date(NOW.getTime() - 24 * 3_600_000).toISOString();
     mockReadResult = {
-      version: 2,
+      catalogGenerationId: "test-generation",
+      plans: [],
+      version: 3,
       lastUpdated: oneDayAgo,
-      entries: [{ modelId: "alpha", aliases: [], sources: {} }],
+      entries: [{ modelId: "alpha", aliases: [] }],
       models: [{ id: "vendor/alpha" }],
     };
     mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };

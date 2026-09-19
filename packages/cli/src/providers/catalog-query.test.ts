@@ -12,12 +12,12 @@
  *
  * Mock strategy mirrors `catalog-warm.test.ts` — `mock.module` swaps the
  * `./all-models-cache.js` module so `readAllModelsCache()` returns a synthetic
- * `DiskCacheV2` (or null) configured per-test. No real disk I/O.
+ * `DiskCacheV3` (or null) configured per-test. No real disk I/O.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
-import type { DiskCacheV2, SlimModelEntry } from "./all-models-cache.js";
+import type { DiskCacheV3, SlimModelEntry } from "./all-models-cache.js";
 // Value import captured BEFORE the mock.module below so afterAll can restore
 // the REAL module. mock.module is PROCESS-GLOBAL and bleeds across files, so
 // without this restore the stub here breaks the sibling all-models-cache.test
@@ -42,7 +42,7 @@ const __realAllModelsCacheExports = { ...__realAllModelsCache };
 
 const TEST_CACHE_PATH = "/tmp/test-all-models.json";
 
-let mockReadResult: DiskCacheV2 | null = null;
+let mockReadResult: DiskCacheV3 | null = null;
 
 mock.module("./all-models-cache.js", () => ({
   readAllModelsCache: () => mockReadResult,
@@ -96,9 +96,11 @@ beforeEach(() => {
  * Build a synthetic disk cache from a list of slim entries. Wraps them in the
  * v2 envelope with a fixed `lastUpdated` so tests don't depend on `now`.
  */
-function diskCache(entries: SlimModelEntry[]): DiskCacheV2 {
+function diskCache(entries: SlimModelEntry[]): DiskCacheV3 {
   return {
-    version: 2,
+    catalogGenerationId: "test-generation",
+    plans: [],
+    version: 3,
     lastUpdated: "2026-05-08T12:00:00.000Z",
     entries,
     models: entries.map((e) => ({ id: e.modelId })),
@@ -122,21 +124,21 @@ function standardEntries(): SlimModelEntry[] {
     {
       modelId: "claude-sonnet-4-6",
       aliases: ["sonnet", "claude-sonnet-4"],
-      sources: { "openrouter-api": { externalId: "anthropic/claude-sonnet-4" } },
+
       supportsVision: true,
       contextWindow: 200000,
     },
     {
       modelId: "claude-haiku-4-6",
       aliases: ["haiku"],
-      sources: { "openrouter-api": { externalId: "anthropic/claude-haiku-4" } },
+
       supportsVision: false,
       contextWindow: 200000,
     },
     {
       modelId: "claude-opus-4-7",
       aliases: ["opus"],
-      sources: { "openrouter-api": { externalId: "anthropic/claude-opus-4" } },
+
       supportsVision: true,
       contextWindow: 200000,
     },

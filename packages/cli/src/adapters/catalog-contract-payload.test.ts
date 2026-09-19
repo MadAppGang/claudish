@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type CachedSubscriptionPlan,
-  type DiskCacheV2,
+  type DiskCacheV3,
   type ReasoningCapability,
   type SlimModelEntry,
   writeAllModelsCache,
@@ -45,8 +45,9 @@ afterEach(() => {
 });
 
 function writeCatalog(entries: SlimModelEntry[], plans: CachedSubscriptionPlan[] = []): void {
-  const cache: DiskCacheV2 = {
-    version: 2,
+  const cache: DiskCacheV3 = {
+    catalogGenerationId: "test-generation",
+    version: 3,
     lastUpdated: "2030-01-01T00:00:00.000Z",
     entries,
     models: [],
@@ -64,7 +65,7 @@ function entry(
   return {
     modelId,
     aliases: [],
-    sources: {},
+
     reasoningStatus,
     ...(reasoning ? { reasoning } : {}),
     ...(supportsThinking !== undefined ? { supportsThinking } : {}),
@@ -140,10 +141,16 @@ describe("catalog-driven Anthropic request payloads", () => {
       [entry("qwen3.8-max-preview", "unknown", undefined, true)],
       [
         {
+          routeStatus: "supported",
           id: "future-plan",
-          modelDescriptions: {
-            "qwen3.8-max": { status: "described", modelId: "qwen3.8-max-preview" },
-          },
+          route: { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+          inclusions: [
+            {
+              kind: "provider_model",
+              externalModelId: "qwen3.8-max",
+              resolution: { status: "mapped", modelId: "qwen3.8-max-preview" },
+            },
+          ],
         },
       ]
     );
@@ -169,13 +176,16 @@ describe("catalog-driven Anthropic request payloads", () => {
       ],
       [
         {
+          routeStatus: "supported",
           id: "future-plan",
-          modelDescriptions: {
-            "qwen3.8-flash": {
-              status: "described",
-              modelId: "qwen3.8-flash-canonical",
+          route: { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+          inclusions: [
+            {
+              kind: "provider_model",
+              externalModelId: "qwen3.8-flash",
+              resolution: { status: "mapped", modelId: "qwen3.8-flash-canonical" },
             },
-          },
+          ],
         },
       ]
     );

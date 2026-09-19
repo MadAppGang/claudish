@@ -16,13 +16,15 @@ afterAll(() => {
 writeFileSync(
   catalogCachePath,
   JSON.stringify({
-    version: 2,
+    catalogGenerationId: "test-generation",
+    plans: [],
+    version: 3,
     lastUpdated: new Date().toISOString(),
     entries: [
       {
         modelId: "acme-responses-x1.0",
         aliases: [],
-        sources: {},
+
         endpoints: {
           openai: { api: "responses", toolsWithReasoning: "requires-responses" },
         },
@@ -58,8 +60,8 @@ const expectedCompositions = [
   {
     provider: "opencode-zen-go",
     model: "minimax-m2.5",
-    streamFormat: "openai-sse",
-    endpoint: "https://opencode.ai/zen/go/v1/chat/completions",
+    streamFormat: "anthropic-sse",
+    endpoint: "https://opencode.ai/zen/go/v1/messages",
   },
   {
     provider: "opencode-zen-go",
@@ -91,6 +93,30 @@ const expectedCompositions = [
     streamFormat: "openai-responses-sse",
     endpoint: "https://opencode.ai/zen/v1/responses",
   },
+  {
+    provider: "opencode-zen-go",
+    model: "qwen3.7-plus",
+    streamFormat: "anthropic-sse",
+    endpoint: "https://opencode.ai/zen/go/v1/messages",
+  },
+  {
+    provider: "opencode-zen",
+    model: "qwen3.7-max",
+    streamFormat: "anthropic-sse",
+    endpoint: "https://opencode.ai/zen/v1/messages",
+  },
+  {
+    provider: "opencode-zen",
+    model: "claude-fable-5",
+    streamFormat: "anthropic-sse",
+    endpoint: "https://opencode.ai/zen/v1/messages",
+  },
+  {
+    provider: "opencode-zen",
+    model: "grok-4.5",
+    streamFormat: "openai-responses-sse",
+    endpoint: "https://opencode.ai/zen/v1/responses",
+  },
 ] as const;
 
 describe("OpenCode Zen provider composition", () => {
@@ -104,32 +130,58 @@ describe("OpenCode Zen provider composition", () => {
     });
   }
 
-  for (const provider of ["opencode-zen-go", "opencode-zen"] as const) {
-    test(`${provider} pairs MiniMax's OpenAI format with its chat-completions endpoint`, async () => {
-      const composition = await describeHandler(provider, "minimax-m2.5");
+  test("Go MiniMax and metered Zen MiniMax use their documented distinct APIs", async () => {
+    expect(
+      (await describeHandler("opencode-zen-go", "minimax-m3")).endpoint.endsWith("/v1/messages")
+    ).toBe(true);
+    expect(
+      (await describeHandler("opencode-zen", "minimax-m3")).endpoint.endsWith(
+        "/v1/chat/completions"
+      )
+    ).toBe(true);
+  });
+});
 
-      // An Anthropic format paired with a chat-completions endpoint is the exact
-      // mismatch that produced the 400. This pins the PAIRING, not either field alone.
-      expect(composition.streamFormat).not.toBe("anthropic-sse");
-      expect(composition.endpoint.endsWith("/v1/chat/completions")).toBe(true);
+describe("Poe gateway composition", () => {
+  test("builds a callable OpenAI-compatible handler", async () => {
+    expect(await describeHandler("poe", "GPT-4o")).toEqual({
+      transport: "poe",
+      streamFormat: "openai-sse",
+      endpoint: "https://api.poe.com/v1/chat/completions",
     });
+  });
+});
 
-    test(`${provider} gives MiniMax the same composition as an ordinary chat model`, async () => {
-      expect(await describeHandler(provider, "minimax-m2.5")).toEqual(
-        await describeHandler(provider, "glm-5")
-      );
-    });
-
-    // The deleted special case used a case-insensitive MiniMax substring match,
-    // so both casing changes and future MiniMax model ids must remain ordinary.
-    for (const model of ["MiniMax-M2.5", "minimax-m3"] as const) {
-      test(`${provider} has no resurrected MiniMax special case for ${model}`, async () => {
-        expect(await describeHandler(provider, model)).toEqual(
-          await describeHandler(provider, "minimax-m2.5")
-        );
+describe("Vertex project-aware composition", () => {
+  test("a selected project constructs its regional OAuth endpoint even with an Express key", async () => {
+    const prior = {
+      project: process.env.VERTEX_PROJECT,
+      key: process.env.VERTEX_API_KEY,
+      credentials: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      location: process.env.VERTEX_LOCATION,
+    };
+    try {
+      process.env.VERTEX_PROJECT = "selected-project";
+      process.env.VERTEX_API_KEY = "express-key";
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/vertex-test-credentials";
+      process.env.VERTEX_LOCATION = "us-central1";
+      expect(await describeHandler("vertex", "gemini-3.6-flash")).toEqual({
+        transport: "vertex",
+        streamFormat: "gemini-sse",
+        endpoint:
+          "https://us-central1-aiplatform.googleapis.com/v1/projects/selected-project/locations/us-central1/publishers/google/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
       });
+    } finally {
+      if (prior.project === undefined) delete process.env.VERTEX_PROJECT;
+      else process.env.VERTEX_PROJECT = prior.project;
+      if (prior.key === undefined) delete process.env.VERTEX_API_KEY;
+      else process.env.VERTEX_API_KEY = prior.key;
+      if (prior.credentials === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      else process.env.GOOGLE_APPLICATION_CREDENTIALS = prior.credentials;
+      if (prior.location === undefined) delete process.env.VERTEX_LOCATION;
+      else process.env.VERTEX_LOCATION = prior.location;
     }
-  }
+  });
 });
 
 describe("OpenAI Responses-API gate", () => {

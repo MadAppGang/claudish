@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * Advisor-tool transformer for NativeHandler (monitor mode).
  *
@@ -1589,9 +1590,10 @@ export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"):
  * OpenRouter's own catalog data.
  */
 function openRouterIdOf(entry: SlimModelEntry): string | null {
-  const fromAggregator = entry.aggregators?.find((a) => a.provider === "openrouter")?.externalId;
-  if (fromAggregator) return fromAggregator;
-  return entry.sources["openrouter-api"]?.externalId ?? null;
+  return (
+    entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, "openrouter"))
+      ?.externalModelId ?? null
+  );
 }
 
 /**
@@ -1682,8 +1684,9 @@ function nativeVendorsForProvider(providerUid: string): string[] {
   const vendors = new Set<string>();
   try {
     for (const plan of readAllModelsCache()?.plans ?? []) {
-      if (plan.routing?.providerUid !== providerUid) continue;
-      for (const native of plan.routing.nativeModelProviders ?? []) vendors.add(native);
+      if (plan.routeStatus !== "supported" || !catalogRouteMatchesProvider(plan.route, providerUid))
+        continue;
+      if (plan.route?.routeId) vendors.add(plan.route.routeId);
     }
   } catch {
     // a cache that will not read is the cold case below

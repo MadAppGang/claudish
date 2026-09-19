@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider, providerForCatalogRoute } from "./catalog-route-bindings.js";
 /**
  * CatalogClient — single entry point for all Firebase-backed model catalog
  * questions. Replaces the three independent slug maps and per-provider
@@ -149,7 +150,10 @@ function aggregatorProviderSlugs(
   const slugs = new Set<string>();
   for (const entry of cache.entries) {
     for (const agg of entry.aggregators ?? []) {
-      if (agg.provider) slugs.add(agg.provider.toLowerCase());
+      if (agg.routeStatus === "mapped") {
+        const provider = providerForCatalogRoute(agg.route!);
+        if (provider) slugs.add(provider.toLowerCase());
+      }
     }
   }
   // Union with the seed: a provider claudish knows how to reach should not
@@ -216,7 +220,7 @@ function filterToServedByProvider(
   const kept: CatalogModel[] = [];
   for (const model of models) {
     const slim = byId.get(model.modelId.toLowerCase());
-    const served = slim?.aggregators?.some((agg) => agg.provider.toLowerCase() === slug);
+    const served = slim?.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug));
     if (served) {
       kept.push({ ...model, aggregators: slim?.aggregators ?? model.aggregators });
     }
@@ -316,7 +320,7 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
       if (aggregatorProviderSlugs(_readSlimCache).has(slug)) {
         const { entries } = readSlimCacheWithFreshness(_readSlimCache);
         const matches = entries.filter((entry) =>
-          entry.aggregators?.some((agg) => agg.provider.toLowerCase() === slug)
+          entry.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug))
         );
         return matches.map(slimEntryToCatalogModel);
       }

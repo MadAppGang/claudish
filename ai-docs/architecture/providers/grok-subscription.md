@@ -97,7 +97,7 @@ has no metered path, it is *not* dual-mode and **is** in that set. `GROK_DEPLOYM
 is out of scope for v1 for the same reason: it would reintroduce the ambiguity.
 
 **Bare `grok-*` routes subscription-FIRST** — `["grok-subscription", "x-ai", "openrouter"]`, matching
-every other split family. Unlike Devin and Qwen Plan, which are explicit-access-only because their
+every other split family. Unlike Devin and Alibaba Token Plan, which are explicit-access-only because their
 uids collide with other vendors' namespaces, these ids are xAI's own, so a bare name is safe here.
 The provider declares **no `nativeModelPatterns`** (`x-ai` already owns `/^grok-/i`, and patterns are
 first-wins on array order); bare-name reachability comes from the routing chain instead.

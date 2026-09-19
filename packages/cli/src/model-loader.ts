@@ -1,7 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readAllModelsCache } from "./providers/all-models-cache.js";
+import { PROVIDER_TO_PREFIX } from "./providers/auto-route.js";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
+import { ensureCatalogReady } from "./providers/catalog-client.js";
+import { providerForCatalogRoute } from "./providers/catalog-route-bindings.js";
+import {
+  CATALOG_V3_ACCEPT,
+  type CatalogV3Envelope,
+  parseCatalogV3Envelope,
+} from "./providers/catalog-v3.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import type { OpenRouterModel } from "./types.js";
 
@@ -41,23 +50,15 @@ export interface RecommendedModelEntry {
   recommended?: boolean;
   subscription?: RecommendedSubscriptionRoute;
   /**
-   * Every plan that serves this model, in the order the backend sent them.
-   * `subscription` above MIRRORS element 0 — measured across all 18 subscription
-   * rows of the live payload: mirrors=18, diverges=0 (research.md R1). It is not
-   * a curated primary, so the plural is the complete answer and the singular is
-   * the compatibility fallback, never an addition.
-   *
-   * `prefix` is OPTIONAL and genuinely absent: the four native Claude rows carry
-   * `{plan, command}` with no prefix, because their command is the bare model id
-   * (research.md R2). The singular above still declares it required; that type
-   * is already lying and is left alone here — see risk R-6.
+   * Every executable subscription route for this model, in preference order.
+   * Native Claude routes use a bare model command without a provider prefix.
    */
   subscriptions?: RecommendedSubscriptionRoute[];
 }
 
 export type RecommendedRouteTier = "native" | "general" | "metered" | "aggregator";
 
-/** Backend-declared callable route. New fields stay optional for old disk caches. */
+/** A callable route projected from catalog v3 recommendations. */
 export interface RecommendedSubscriptionRoute {
   prefix?: string;
   plan: string;
@@ -72,6 +73,8 @@ export interface RecommendedSubscriptionRoute {
  * Matches `RecommendedModelsDoc` in firebase/functions/src/schema.ts.
  */
 export interface RecommendedModelsDoc {
+  contractVersion?: 3;
+  generationId?: string;
   version: string;
   lastUpdated: string;
   generatedAt?: string;
@@ -111,9 +114,12 @@ export interface RouteReasoningCapabilities {
  * aggregators (OpenRouter, Fireworks, etc.) serve a given model.
  */
 export interface AggregatorEntry {
-  provider: string;
-  externalId: string;
+  sourceProviderId: string;
+  sourceCollectorId: string;
   confidence: ConfidenceTier;
+  routeStatus: "mapped" | "unmapped";
+  route?: { routeId: string; routeProfileId: string };
+  externalModelId?: string;
   /**
    * True per-aggregator price for this (provider, externalId), as served by the
    * `?catalog=slim` endpoint. Present when the catalog knows this vendor's rate,
@@ -196,12 +202,12 @@ export interface ModelDoc {
    * IDs of subscription plans (e.g. "cognition-devin", "z-ai-glm-coding-plan")
    * that include this model.
    *
-   * NAME MATTERS: the backend sends `subscriptionPlans`. This field was declared
+   * NAME MATTERS: the backend sends `subscriptionPlanIds`. This field was declared
    * as `availableInPlans` and read by nothing, so claudish was blind to it —
    * which is how a subscription-only model with no published per-token rate came
    * out as a bare "N/A" that reads as "unknown / not provisioned".
    */
-  subscriptionPlans?: string[];
+  subscriptionPlanIds?: string[];
   /**
    * Vendor's own prose explaining an ABSENT `pricing` — e.g. "Cognition does not
    * publish standalone token pricing" / "Z.ai says the standalone API is coming
@@ -237,7 +243,7 @@ export interface ModelDoc {
   vendors?: VendorRecord[];
 }
 
-// ─── Legacy ModelMetadata (used by --model flag resolution) ──────────────────
+// ─── Model metadata for --model flag resolution ──────────────────────────────
 
 interface ModelMetadata {
   name: string;
@@ -264,6 +270,122 @@ export const RECOMMENDED_MODELS_CACHE_PATH = join(
 );
 const RECOMMENDED_FETCH_TIMEOUT_MS = 5000;
 const SEARCH_FETCH_TIMEOUT_MS = 10000;
+
+async function fetchCatalogPage<T>(
+  url: string,
+  timeoutMs: number,
+  generationId?: string
+): Promise<CatalogV3Envelope<T>> {
+  const requestUrl = new URL(url);
+  if (generationId) requestUrl.searchParams.set("generationId", generationId);
+  const response = await fetch(requestUrl, {
+    headers: { Accept: CATALOG_V3_ACCEPT },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`Model catalog returned HTTP ${response.status}`);
+  const envelope = parseCatalogV3Envelope<T>(await response.json());
+  if (!envelope) throw new Error("Model catalog returned an invalid v3 response");
+  if (generationId && envelope.generationId !== generationId) {
+    throw new Error("Model catalog generation changed during the read");
+  }
+  return envelope;
+}
+
+async function fetchCatalogData<T>(
+  url: string,
+  timeoutMs: number,
+  generationId?: string
+): Promise<T> {
+  return (await fetchCatalogPage<T>(url, timeoutMs, generationId)).data;
+}
+
+function recommendationProjection(
+  recommendations: {
+    contractVersion: number;
+    generationId: string;
+    entries: Array<{
+      modelId: string;
+      tier: "flagship" | "lightweight" | "subscription";
+      route?: { routeId: string; routeProfileId: string };
+      planId?: string;
+    }>;
+  },
+  richModels: ModelDoc[] = []
+): RecommendedModelsDoc {
+  if (recommendations.contractVersion !== 3 || !Array.isArray(recommendations.entries)) {
+    throw new Error("Model catalog recommendations do not match v3");
+  }
+  const cache = readAllModelsCache();
+  if (!cache || cache.catalogGenerationId !== recommendations.generationId) {
+    throw new Error("Recommendation and model catalog generations differ");
+  }
+  const byId = new Map(cache?.entries.map((entry) => [entry.modelId, entry]) ?? []);
+  const richById = new Map(richModels.map((model) => [model.modelId, model]));
+  return {
+    contractVersion: 3,
+    generationId: recommendations.generationId,
+    version: recommendations.generationId,
+    lastUpdated: new Date().toISOString(),
+    generatedAt: new Date().toISOString(),
+    models: recommendations.entries.map((recommended, index) => {
+      const model = byId.get(recommended.modelId);
+      const rich = richById.get(recommended.modelId);
+      const provider = recommended.route ? providerForCatalogRoute(recommended.route) : undefined;
+      const connection = model?.aggregators?.find(
+        (candidate) =>
+          candidate.route?.routeId === recommended.route?.routeId &&
+          candidate.route?.routeProfileId === recommended.route?.routeProfileId
+      );
+      const plan = cache?.plans.find((candidate) => candidate.id === recommended.planId);
+      const prefix = provider ? (PROVIDER_TO_PREFIX[provider] ?? provider) : undefined;
+      const command =
+        prefix && connection?.externalModelId
+          ? provider === "native-anthropic"
+            ? connection.externalModelId
+            : `${prefix}@${connection.externalModelId}`
+          : undefined;
+      const subscription =
+        recommended.tier === "subscription" && provider && command
+          ? {
+              ...(provider === "native-anthropic" ? {} : { prefix }),
+              plan: plan?.id ?? recommended.planId ?? provider,
+              command,
+              planIds: recommended.planId ? [recommended.planId] : [],
+              routingProvider: provider,
+              tier: provider === "native-anthropic" ? ("native" as const) : ("general" as const),
+            }
+          : undefined;
+      return {
+        id: recommended.modelId,
+        name: rich?.displayName ?? model?.displayName ?? recommended.modelId,
+        description: rich?.description ?? "",
+        provider: rich?.provider ?? model?.provider ?? "",
+        category:
+          recommended.tier === "flagship"
+            ? "programming"
+            : recommended.tier === "lightweight"
+              ? "fast"
+              : "subscription",
+        priority: index + 1,
+        pricing: {
+          input: typeof rich?.pricing?.input === "number" ? `$${rich.pricing.input}/1M` : "N/A",
+          output: typeof rich?.pricing?.output === "number" ? `$${rich.pricing.output}/1M` : "N/A",
+          average:
+            typeof rich?.pricing?.input === "number" && typeof rich?.pricing?.output === "number"
+              ? `$${((rich.pricing.input + rich.pricing.output) / 2).toFixed(2)}/1M`
+              : "N/A",
+        },
+        context: rich?.contextWindow
+          ? String(rich.contextWindow)
+          : model?.contextWindow
+            ? String(model.contextWindow)
+            : "N/A",
+        releaseDate: model?.releaseDate,
+        ...(subscription ? { subscription, subscriptions: [subscription] } : {}),
+      };
+    }),
+  };
+}
 
 // ─── Recommended models grouping + formatting helpers ───────────────────────
 
@@ -452,74 +574,6 @@ function compareRecommendedRoutes(
   return leftRank - rightRank;
 }
 
-/**
- * Convert the live recommended contract into exact routing rules. Each route
- * uses routingProvider (not the commercial plan ID) and the backend-confirmed
- * command wire ID. Tier is the ordering authority; array position is only the
- * stable tiebreak within one tier or for a legacy cached document.
- *
- * NO PRODUCTION CALLER as of v9.0.3. Its output was merged into the routing
- * dictionary in v9.0.1, where its EXACT model-id keys made the default and user
- * GLOB rules unreachable and deleted every provider it did not name — see the
- * long note on `loadRoutingRules` in providers/routing-rules.ts. Kept exported
- * and tested for the catalog-driven redesign; do not wire it back into routing
- * rules.
- *
- * Note also what it reads: `subscriptions[]` on the RECOMMENDED-models document,
- * which is a 34-model editorial list, not the serving graph. Plan-backed routes
- * only — never a vendor's metered API, never OpenRouter.
- */
-export function buildCatalogRoutingRules(doc: RecommendedModelsDoc): Record<string, string[]> {
-  const routesByModel = new Map<
-    string,
-    Array<{ route: RecommendedSubscriptionRoute; sourceIndex: number }>
-  >();
-  let sourceIndex = 0;
-
-  for (const entry of doc.models) {
-    const routes =
-      entry.subscriptions && entry.subscriptions.length > 0
-        ? entry.subscriptions
-        : entry.subscription
-          ? [entry.subscription]
-          : [];
-    for (const route of routes) {
-      routesByModel.set(entry.id, [...(routesByModel.get(entry.id) ?? []), { route, sourceIndex }]);
-      sourceIndex += 1;
-    }
-  }
-
-  const rules: Record<string, string[]> = {};
-  for (const [modelId, candidates] of routesByModel) {
-    const seen = new Set<string>();
-    const entries = candidates
-      .filter(
-        ({ route }) =>
-          typeof route?.routingProvider === "string" &&
-          route.routingProvider.length > 0 &&
-          typeof route.command === "string" &&
-          route.command.length > 0
-      )
-      .sort(
-        (left, right) =>
-          compareRecommendedRoutes(left.route, right.route) || left.sourceIndex - right.sourceIndex
-      )
-      .map(({ route }) => {
-        const at = route.command.indexOf("@");
-        const wireId = at >= 0 ? route.command.slice(at + 1) : route.command;
-        return `${route.routingProvider}@${wireId}`;
-      })
-      .filter((entry) => {
-        if (seen.has(entry)) return false;
-        seen.add(entry);
-        return true;
-      });
-    if (entries.length > 0) rules[modelId] = entries;
-  }
-
-  return rules;
-}
-
 /** Parse "$1.32/1M" → 1.32, "FREE" → 0, "N/A"/"varies"/undefined → Infinity */
 export function parsePriceAvg(s?: string): number {
   if (!s || s === "N/A") return Number.POSITIVE_INFINITY;
@@ -666,10 +720,15 @@ export async function getRecommendedModels(
   opts: { forceRefresh?: boolean } = {}
 ): Promise<RecommendedModelsDoc> {
   const { forceRefresh = false } = opts;
+  const cached = _cachedRecommendedModels;
 
   // Tier 1: in-memory cache
-  if (!forceRefresh && _cachedRecommendedModels) {
-    return _cachedRecommendedModels;
+  if (
+    !forceRefresh &&
+    cached &&
+    cached.generationId === readAllModelsCache()?.catalogGenerationId
+  ) {
+    return cached;
   }
 
   // Tier 2: disk cache (if fresh)
@@ -680,7 +739,13 @@ export async function getRecommendedModels(
       const cacheData = JSON.parse(
         readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
       ) as RecommendedModelsDoc;
-      if (cacheData.models && cacheData.models.length > 0 && isFreshEnough(cacheData)) {
+      if (
+        cacheData.contractVersion === 3 &&
+        cacheData.generationId === readAllModelsCache()?.catalogGenerationId &&
+        cacheData.models &&
+        cacheData.models.length > 0 &&
+        isFreshEnough(cacheData)
+      ) {
         _cachedRecommendedModels = cacheData;
         return cacheData;
       }
@@ -690,32 +755,42 @@ export async function getRecommendedModels(
   }
 
   // Tier 3: Firebase fetch
+  let fetchFailure: unknown;
   try {
-    const response = await fetch(FIREBASE_RECOMMENDED_URL, {
-      signal: AbortSignal.timeout(RECOMMENDED_FETCH_TIMEOUT_MS),
-    });
-    if (response.ok) {
-      const data = (await response.json()) as RecommendedModelsDoc;
-      if (data.models && data.models.length > 0) {
-        _cachedRecommendedModels = data;
-        // Write disk cache (best-effort)
-        try {
-          const cacheDir = join(homedir(), ".claudish");
-          mkdirSync(cacheDir, { recursive: true });
-          writeFileSync(RECOMMENDED_MODELS_CACHE_PATH, JSON.stringify(data), "utf-8");
-        } catch {
-          // Don't fail the call if we can't write the cache
-        }
-        return data;
-      }
+    await ensureCatalogReady(20000);
+    const generationId = readAllModelsCache()?.catalogGenerationId;
+    if (!generationId) throw new Error("No complete v3 model and plan snapshot");
+    const response = await fetchCatalogData<{
+      mode: "recommended";
+      recommendations: Parameters<typeof recommendationProjection>[0];
+    }>(FIREBASE_RECOMMENDED_URL, RECOMMENDED_FETCH_TIMEOUT_MS, generationId);
+    if (response.mode !== "recommended") throw new Error("Unexpected recommendation mode");
+    if (response.recommendations.generationId !== generationId) {
+      throw new Error("Recommendation and model catalog generations differ");
     }
-  } catch {
-    // Silent — fall through to the explicit error below
+    const top100 = await fetchCatalogData<{ mode: "top100"; models: ModelDoc[] }>(
+      `${FIREBASE_BASE_URL}?catalog=top100`,
+      RECOMMENDED_FETCH_TIMEOUT_MS,
+      generationId
+    );
+    const data = recommendationProjection(response.recommendations, top100.models);
+    if (data.models.length > 0) {
+      _cachedRecommendedModels = data;
+      try {
+        const cacheDir = join(homedir(), ".claudish");
+        mkdirSync(cacheDir, { recursive: true });
+        writeFileSync(RECOMMENDED_MODELS_CACHE_PATH, JSON.stringify(data), "utf-8");
+      } catch {
+        // A disk write failure does not invalidate the fetched result.
+      }
+      return data;
+    }
+  } catch (error) {
+    fetchFailure = error;
   }
 
   throw new Error(
-    "Unable to load recommended models: Firebase unreachable and no local cache. " +
-      "Check connectivity."
+    `Unable to load v3 recommended models: ${fetchFailure instanceof Error ? fetchFailure.message : "empty recommendation projection"}`
   );
 }
 
@@ -732,14 +807,22 @@ export async function getRecommendedModels(
  * flag help) handle empty data.
  */
 export function getRecommendedModelsSync(): RecommendedModelsDoc {
-  if (_cachedRecommendedModels) return _cachedRecommendedModels;
+  const generationId = readAllModelsCache()?.catalogGenerationId;
+  const cached = _cachedRecommendedModels;
+  if (cached && cached.generationId === generationId) return cached;
 
   if (existsSync(RECOMMENDED_MODELS_CACHE_PATH)) {
     try {
       const cacheData = JSON.parse(
         readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
       ) as RecommendedModelsDoc;
-      if (cacheData.models && cacheData.models.length > 0 && isFreshEnough(cacheData)) {
+      if (
+        cacheData.contractVersion === 3 &&
+        cacheData.generationId === generationId &&
+        cacheData.models &&
+        cacheData.models.length > 0 &&
+        isFreshEnough(cacheData)
+      ) {
         _cachedRecommendedModels = cacheData;
         return cacheData;
       }
@@ -752,7 +835,7 @@ export function getRecommendedModelsSync(): RecommendedModelsDoc {
 }
 
 /**
- * Thin backward-compatible wrapper — fetches the Firebase catalog and warms caches.
+ * Fetches the current recommendation projection — fetches the Firebase catalog and warms caches.
  * Used by proxy-server.ts to kick off the background warm on startup.
  */
 export async function warmRecommendedModels(): Promise<RecommendedModelsDoc | null> {
@@ -765,7 +848,7 @@ export async function warmRecommendedModels(): Promise<RecommendedModelsDoc | nu
 
 function isFreshEnough(doc: RecommendedModelsDoc): boolean {
   const generatedAt = doc.generatedAt;
-  if (!generatedAt) return true; // No timestamp — treat as usable
+  if (!generatedAt) return false;
   const ageHours = (Date.now() - new Date(generatedAt).getTime()) / (1000 * 60 * 60);
   return ageHours <= FIREBASE_CACHE_TTL_HOURS;
 }
@@ -780,13 +863,10 @@ export async function searchModels(query: string, limit = 50): Promise<ModelDoc[
   const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(
     query
   )}&limit=${limit}&status=active`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase search returned ${response.status} ${response.statusText}`);
-  }
-  const data = (await response.json()) as { models?: ModelDoc[]; total?: number };
+  const data = await fetchCatalogData<{ models?: ModelDoc[]; total?: number }>(
+    url,
+    SEARCH_FETCH_TIMEOUT_MS
+  );
   return data.models ?? [];
 }
 
@@ -802,13 +882,10 @@ export async function searchModelsByProvider(
   const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
     provider
   )}&search=${encodeURIComponent(query)}&limit=${limit}&status=active`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase provider search returned ${response.status} ${response.statusText}`);
-  }
-  const data = (await response.json()) as { models?: ModelDoc[]; total?: number };
+  const data = await fetchCatalogData<{ models?: ModelDoc[]; total?: number }>(
+    url,
+    SEARCH_FETCH_TIMEOUT_MS
+  );
   return data.models ?? [];
 }
 
@@ -817,21 +894,12 @@ export async function searchModelsByProvider(
  * Returns null if not found, throws on network error.
  */
 export async function getModelByIdFromFirebase(modelId: string): Promise<ModelDoc | null> {
-  const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(modelId)}&limit=5`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase lookup returned ${response.status} ${response.statusText}`);
-  }
-  const data = (await response.json()) as { models?: ModelDoc[] };
-  const models = data.models ?? [];
-  // Exact match on modelId or aliases
-  for (const m of models) {
-    if (m.modelId === modelId) return m;
-    if (m.aliases?.includes(modelId)) return m;
-  }
-  return null;
+  const url = `${FIREBASE_BASE_URL}?modelId=${encodeURIComponent(modelId)}`;
+  const data = await fetchCatalogData<{ mode: "exact"; model: ModelDoc | null }>(
+    url,
+    SEARCH_FETCH_TIMEOUT_MS
+  );
+  return data.mode === "exact" ? data.model : null;
 }
 
 /**
@@ -884,13 +952,7 @@ export interface Top100Response {
  */
 export async function getTop100Models(): Promise<Top100Response> {
   const url = `${FIREBASE_BASE_URL}?catalog=top100`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase top100 fetch failed: ${response.status} ${response.statusText}`);
-  }
-  const data = (await response.json()) as Top100Response;
+  const data = await fetchCatalogData<Top100Response>(url, SEARCH_FETCH_TIMEOUT_MS);
   return data;
 }
 
@@ -910,35 +972,55 @@ export interface ProviderListEntry {
  */
 export async function getProviderList(): Promise<ProviderListEntry[]> {
   const url = `${FIREBASE_BASE_URL}?catalog=providers`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase providers fetch failed: ${response.status} ${response.statusText}`);
-  }
-  const data = (await response.json()) as { providers?: ProviderListEntry[] };
+  const data = await fetchCatalogData<{ providers?: ProviderListEntry[] }>(
+    url,
+    SEARCH_FETCH_TIMEOUT_MS
+  );
   return data.providers ?? [];
 }
 
-/**
- * Fetch active models for a given provider.
- */
-export async function getModelsByProvider(provider: string, limit = 200): Promise<ModelDoc[]> {
-  const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
-    provider
-  )}&status=active&limit=${limit}`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase provider query returned ${response.status} ${response.statusText}`);
+/** Fetch every active model for a provider from one pinned generation. */
+export async function getModelsByProvider(provider: string, pageSize = 200): Promise<ModelDoc[]> {
+  const base = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(provider)}&status=active&limit=${pageSize}`;
+  const models: ModelDoc[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  let generationId: string | undefined;
+  let expectedTotal: number | undefined;
+  for (let page = 0; page < 40; page++) {
+    const url = new URL(base);
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const envelope = await fetchCatalogPage<{
+      models: ModelDoc[];
+      total: number;
+      nextCursor?: string;
+    }>(url.toString(), SEARCH_FETCH_TIMEOUT_MS, generationId);
+    if (!Array.isArray(envelope.data.models) || !Number.isSafeInteger(envelope.data.total)) {
+      throw new Error("Incomplete provider catalog response");
+    }
+    generationId = envelope.generationId;
+    expectedTotal ??= envelope.data.total;
+    if (envelope.data.total !== expectedTotal)
+      throw new Error("Provider catalog total changed during pagination");
+    models.push(...envelope.data.models);
+    const nextCursor = envelope.data.nextCursor;
+    if (!nextCursor) {
+      if (
+        models.length !== expectedTotal ||
+        new Set(models.map((model) => model.modelId)).size !== models.length
+      ) {
+        throw new Error("Incomplete provider catalog snapshot");
+      }
+      return models;
+    }
+    if (seenCursors.has(nextCursor)) throw new Error("Provider catalog cursor repeated");
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
   }
-  const data = (await response.json()) as ModelDoc[] | { models?: ModelDoc[] };
-  if (Array.isArray(data)) return data;
-  return data.models ?? [];
+  throw new Error("Provider catalog exceeded the pagination limit");
 }
 
-// ─── Legacy loaders retained for cli.ts --model flag validation ──────────────
+// ─── Model loaders for cli.ts --model flag validation ────────────────────────
 
 /**
  * Load ModelMetadata keyed by model ID for the --model flag help text.

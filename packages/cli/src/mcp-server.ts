@@ -871,7 +871,7 @@ function defineTools(
         s += "| Bare name | Matched alias | Subscription plan |\n";
         s += "|-----------|---------------|-------------------|\n";
         for (const m of catalogMatches) {
-          const plans = m.subscriptionPlans.length > 0 ? m.subscriptionPlans.join(", ") : "-";
+          const plans = m.subscriptionPlanIds.length > 0 ? m.subscriptionPlanIds.join(", ") : "-";
           s += `| ${m.modelId} | ${m.matchedAlias ?? "-"} | ${plans} |\n`;
         }
         s +=

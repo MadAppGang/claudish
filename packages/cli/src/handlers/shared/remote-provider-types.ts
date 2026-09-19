@@ -165,7 +165,8 @@ export const SUBSCRIPTION_PROVIDERS = new Set([
   "minimax-coding",
   "kimi-coding",
   "glm-coding",
-  "qwen-cloud",
+  "qwen-token-plan",
+  "qwen-coding",
   // Devin bills one flat subscription across every vendor's models it serves.
   // Without this the picker prints an invented per-token price and TokenTracker
   // accrues fictional cost.

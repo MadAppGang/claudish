@@ -699,7 +699,7 @@ describe("custom-endpoints-loader", () => {
     test("anthropic-transport + streamFormat=anthropic-sse: propages to transport.overrideStreamFormat()", () => {
       loadCustomEndpoints(
         makeConfig({
-          "qwen-token-plan": {
+          "test-anthropic-sse": {
             kind: "complex",
             displayName: "Qwen Cloud Token Plan",
             transport: "anthropic",
@@ -711,7 +711,7 @@ describe("custom-endpoints-loader", () => {
         })
       );
 
-      const profile = getRuntimeProfiles().get("qwen-token-plan");
+      const profile = getRuntimeProfiles().get("test-anthropic-sse");
       expect(profile).toBeDefined();
       const handler = profile!.createHandler(makeCtx("qwen3.8-max"))!;
       expect(handler).toBeDefined();

@@ -18,7 +18,6 @@
  *   - The `provider@model` rewrite syntax (see kimi-* below) is used when a
  *     subscription endpoint expects a different model name than the direct API.
  *
- * Migration plan §B.1 — Commit 4 of the model-catalog and routing redesign.
  */
 import type { RoutingRules } from "../profile-config.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
@@ -49,17 +48,17 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
 
   // xAI Grok: account-discovered subscription, direct API, then OpenRouter.
   // Subscription BEFORE metered, the same order every other split family uses
-  // (glm-coding before glm, qwen-cloud before qwen-payg). A user holding both a
+  // (glm-coding before glm, qwen-token-plan before qwen-payg). A user holding both a
   // Grok subscription and an XAI_API_KEY must never be silently billed per token
   // for a model their plan already covers. Safe to put in the bare chain — and
-  // unlike Devin or Qwen Plan, which are explicit-access only — because these
+  // unlike Devin or cross-vendor Alibaba plan models, which need explicit routing — because these
   // ids are xAI's own, so there is no other vendor's namespace to collide with.
   "grok-*": ["grok-subscription", "x-ai", "openrouter"],
 
   // Kimi: the subscription endpoint speaks its own wire ids (kimi-for-coding,
   // kimi-for-coding-highspeed, k3, k3-256k) — NOT catalog names like
   // "kimi-k2.7-code". No model is pinned here: buildRoutingChain translates the
-  // catalog name to the plan's wire id via `subscriptionPlans[]` plan IDs,
+  // catalog name to the plan's wire id via `subscriptionPlanIds[]` plan IDs,
   // cached `queryPlans.routing.providerUid`, and `aggregators[].externalId`.
   // It drops the kimi-coding candidate when the
   // plan doesn't include the model (e.g. kimi-k2.5) so it falls through to the
@@ -67,8 +66,7 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // model. `k3*` needs its own rule: it doesn't match `kimi-*`, and the catalog
   // alias would otherwise send bare `k3` to the paid OpenRouter listing.
   // `opencode-zen-go` sits between the vendor's own plan and the metered API on
-  // every family below — see "Zen Go placement" at the bottom of this table for
-  // why that is safe here but is NOT safe for qwen-cloud.
+  // every family below, gated by catalog membership.
   "kimi-*": ["kimi-coding", "opencode-zen-go", "kimi", "openrouter"],
   "k3*": ["kimi-coding", "opencode-zen-go", "kimi", "openrouter"],
 
@@ -79,35 +77,15 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // GLM: coding plan, Zen Go plan, direct, OpenRouter.
   "glm-*": ["glm-coding", "opencode-zen-go", "glm", "openrouter"],
 
-  // Qwen Plan (Alibaba Model Studio subscription), then OpenRouter.
+  // Alibaba Coding Plan, Token Plan, OpenCode Go, PAYG, then the aggregator fallback.
   // `globMatch` is a literal prefix/suffix split, so the "." is matched
   // literally: this claims the DOTTED names (qwen3.7-plus) and not the
   // hyphenated ones (qwen3-coder-next).
   //
-  // Hyphenated is NOT a synonym for "third-party name" — see the measured
-  // rosters in provider-definitions.ts's qwen-cloud note. Alibaba ships both
-  // conventions; the Token Plan this chain leads with just happens to serve
-  // only dotted ids, which is why the split lands correctly here. Extending
-  // this rule to `qwen3-*` is the same 400-dead-end hazard described for glm-*
-  // below, and needs a verified PAYG roster first.
-  //
-  // The plan ALSO serves glm-5.2 and deepseek-v4-*, but their chains are left
-  // untouched on purpose. Routing filters by CREDENTIAL availability, not by
-  // model availability — putting qwen-cloud in front of "glm-*" would send
-  // glm-4.6 to Alibaba on the strength of the plan key alone, earn a
-  // `400 Model not exist`, and stop there, because 400 is deliberately
-  // non-retryable in fallback-handler.ts. Cross-vendor access to the plan
-  // stays explicit: `qc@glm-5.2`.
-  //
-  // `qwen-payg` (Alibaba's metered dashscope-intl host) sits after the plan and
-  // the Go plan, exactly where `kimi` / `glm` / `minimax` sit in their own
-  // chains: subscription → Go plan → metered vendor API → aggregator. Its key
-  // is a DIFFERENT credential from the plan's (each Alibaba silo rejects the
-  // others'), so a user holding both is answered by the plan they already pay
-  // for, while a user holding only a PAYG key now reaches Alibaba at all —
-  // before this entry existed, the sole Qwen chain pointed at a host their key
-  // could never authenticate against.
-  "qwen3.*": ["qwen-cloud", "opencode-zen-go", "qwen-payg", "openrouter"],
+  // Product discovery decides entitlement; names do not imply access to a
+  // sibling Alibaba product.
+  "qwen3.*": ["qwen-coding", "qwen-token-plan", "opencode-zen-go", "qwen-payg", "openrouter"],
+  "qwen3-*": ["qwen-coding", "qwen-token-plan", "opencode-zen-go", "qwen-payg", "openrouter"],
 
   // Z.AI native models.
   "z-ai-*": ["z-ai", "openrouter"],
@@ -164,38 +142,9 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // Pragmatic shim until Firebase aggregators[] coverage closes the gap.
   "*-zen": ["opencode-zen"],
 
-  // ── Zen Go placement ──────────────────────────────────────────────────────
-  //
-  // `opencode-zen-go` appears above on kimi/glm/minimax/deepseek/qwen3/mimo/hy3
-  // because the Go plan serves all of those families, and without it a bare name
-  // skipped a subscription the user already pays for and was billed per-token by
-  // the vendor's metered API (or by OpenRouter, for mimo/hy3 which had no rule).
-  //
-  // Why this is safe where the same move is NOT safe for qwen-cloud (see the
-  // `qwen3.*` note above): the catalog join now drops known-unserved Go models.
-  // On a cold or legacy cache, `resolveSubscriptionRouting` remains `unknown`
-  // and the candidate is kept for every model in the family — including ones
-  // the plan does not serve. What
-  // happens next is the whole argument, and it is provider-specific:
-  //
-  //   Zen Go, unserved model  → 401 {"type":"ModelError","message":"Model X is
-  //                             not supported"}  → RETRYABLE → chain falls
-  //                             through to the metered provider. Verified live
-  //                             2026-08-06 against kimi-k2.7, glm-4.6,
-  //                             minimax-m2, deepseek-v3.2 and a nonsense id.
-  //   Alibaba, unserved model → 400 "Model not exist" → NOT retryable → the
-  //                             chain STOPS and the user gets an error instead
-  //                             of a working provider.
-  //
-  // So the cost of a miss here is one wasted round-trip, not a dead request.
-  // That is also why the broad `gpt-*` and `grok-*` families are deliberately
-  // left alone: the Go plan carries only `gpt-5.6-luna` and `grok-4.5`, so
-  // adding it there would buy a subscription hit on one model in exchange for a
-  // wasted 401 on every other call in the family.
-  //
-  // Current caches get that answer by joining the `opencode-go` commercial plan
-  // ID to provider `opencode-zen-go`; no provider UID is stored in
-  // `subscriptionPlans[]`.
+  // Zen Go is offered before metered routes for its supported families. The
+  // plan's published membership and exact route mapping decide availability;
+  // account discovery handles any additional account-specific access.
 
   // Catch-all: try OpenRouter (it covers most things). Users disable with
   // routing["*"] = [] for strict no-fallback mode, or replace with their own

@@ -190,9 +190,6 @@ describe("OpenRouter advisor wire-model resolution", () => {
       {
         modelId: "kimi-k3",
         aliases: [],
-        sources: {
-          "fireworks-api": { externalId: "accounts/fireworks/models/kimi-k3" },
-        },
       },
     ]);
 
@@ -204,7 +201,16 @@ describe("OpenRouter advisor wire-model resolution", () => {
       {
         modelId: "grok-4.6",
         aliases: [],
-        sources: { "openrouter-api": { externalId: "x-ai/grok-4.6" } },
+        aggregators: [
+          {
+            sourceProviderId: "openrouter",
+            sourceCollectorId: "test",
+            confidence: "aggregator_reported",
+            routeStatus: "mapped",
+            route: { routeId: "openrouter", routeProfileId: "gateway" },
+            externalModelId: "x-ai/grok-4.6",
+          },
+        ],
       },
     ]);
 
@@ -216,7 +222,16 @@ describe("OpenRouter advisor wire-model resolution", () => {
       {
         modelId: "gpt-5.6-sol",
         aliases: [],
-        sources: { "openrouter-api": { externalId: "openai/gpt-5.6-sol" } },
+        aggregators: [
+          {
+            sourceProviderId: "openrouter",
+            sourceCollectorId: "test",
+            confidence: "aggregator_reported",
+            routeStatus: "mapped",
+            route: { routeId: "openrouter", routeProfileId: "gateway" },
+            externalModelId: "openai/gpt-5.6-sol",
+          },
+        ],
       },
     ]);
 

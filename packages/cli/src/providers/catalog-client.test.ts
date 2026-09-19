@@ -10,354 +10,228 @@ import {
   refreshCatalog,
   resolveTargetForCatalog,
 } from "./catalog-client.js";
+import { CATALOG_V3_ACCEPT } from "./catalog-v3.js";
 import { parseModelSpec } from "./model-parser.js";
 
 const realFetch = globalThis.fetch;
-let previousDisableCatalogWarm: string | undefined;
-let previousCatalogUrl: string | undefined;
-let previousPlansUrl: string | undefined;
-const tempDirs: string[] = [];
-
-function tempCachePath(prefix = "claudish-catalog-client-"): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  tempDirs.push(dir);
+const originalEnv = {
+  warm: process.env.CLAUDISH_DISABLE_CATALOG_WARM,
+  catalog: process.env.CLAUDISH_CATALOG_URL,
+  plans: process.env.CLAUDISH_PLANS_URL,
+};
+const dirs: string[] = [];
+function tempCachePath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "claudish-catalog-v3-"));
+  dirs.push(dir);
   return join(dir, "all-models.json");
 }
-
-function restoreEnv(name: string, value: string | undefined): void {
+function restore(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
-
 beforeEach(() => {
-  previousDisableCatalogWarm = process.env.CLAUDISH_DISABLE_CATALOG_WARM;
-  previousCatalogUrl = process.env.CLAUDISH_CATALOG_URL;
-  previousPlansUrl = process.env.CLAUDISH_PLANS_URL;
   _resetCatalogClient();
+  delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+  process.env.CLAUDISH_CATALOG_URL = "https://catalog.test/queryModels?catalog=slim";
+  process.env.CLAUDISH_PLANS_URL = "https://catalog.test/queryPlans";
 });
-
 afterEach(() => {
-  restoreEnv("CLAUDISH_DISABLE_CATALOG_WARM", previousDisableCatalogWarm);
-  restoreEnv("CLAUDISH_CATALOG_URL", previousCatalogUrl);
-  restoreEnv("CLAUDISH_PLANS_URL", previousPlansUrl);
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop();
-    if (dir) rmSync(dir, { recursive: true, force: true });
-  }
   globalThis.fetch = realFetch;
+  restore("CLAUDISH_DISABLE_CATALOG_WARM", originalEnv.warm);
+  restore("CLAUDISH_CATALOG_URL", originalEnv.catalog);
+  restore("CLAUDISH_PLANS_URL", originalEnv.plans);
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   _resetCatalogClient();
 });
 
-describe("refreshCatalog catalog-warm kill switch", () => {
-  // This regression is a race: a sibling test's sticky empty-catalog override
-  // could let the process exit before a live fetch reached the developer's
-  // cache. The fetch assertion proves the kill switch returns before that path.
-  test("returns disabled before network or disk side effects", async () => {
+function envelope(data: unknown, generationId = "generation-a"): Response {
+  return Response.json({
+    contractVersion: 3,
+    generationId,
+    generatedAt: "2026-09-19T01:33:46.169Z",
+    data,
+  });
+}
+function entry(modelId: string, provider: string, externalModelId: string): SlimModelEntry {
+  const routes: Record<string, { routeId: string; routeProfileId: string }> = {
+    "qwen-coding": { routeId: "qwen", routeProfileId: "modelstudio-coding-plan" },
+    "qwen-token-plan": { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+    "qwen-payg": { routeId: "qwen", routeProfileId: "dashscope-direct" },
+  };
+  return {
+    modelId,
+    aliases: [],
+    aggregators: [
+      {
+        sourceProviderId: "qwen",
+        sourceCollectorId: "test",
+        confidence: "api_official",
+        routeStatus: "mapped",
+        route: routes[provider],
+        externalModelId,
+      },
+    ],
+  };
+}
+
+describe("v3 catalog refresh", () => {
+  test("the warm switch prevents network and disk writes", async () => {
     process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
-    const fetchStub = mock(
-      async () =>
-        new Response(
-          JSON.stringify({
-            models: [
-              {
-                modelId: "offline-test-model",
-                aliases: [],
-                sources: { test: { externalId: "test/offline-test-model" } },
-              },
-            ],
-            plans: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        )
-    );
+    const fetchStub = mock(async () => envelope({ mode: "slim", models: [] }));
     globalThis.fetch = fetchStub as unknown as typeof fetch;
-
-    const outcome = await refreshCatalog(100, { cachePath: tempCachePath() });
-
-    expect(outcome).toEqual({ kind: "fetch_failed", reason: "disabled" });
+    expect(await refreshCatalog(100, { cachePath: tempCachePath() })).toEqual({
+      kind: "fetch_failed",
+      reason: "disabled",
+    });
     expect(fetchStub).not.toHaveBeenCalled();
+    expect(catalogWarmDisabledFor("true")).toBe(false);
   });
 
-  test('recognizes only "1" as disabled', () => {
-    expect(catalogWarmDisabledFor("1")).toBe(true);
-  });
-
-  // Pass negative values as arguments: this avoids writing a process-global
-  // another file's detached warmCatalog() may read, and a required parameter is
-  // the only way to express "explicitly unset" because a default fires on undefined.
-  for (const [label, switchValue] of [
-    ['"true"', "true"],
-    ['"0"', "0"],
-    ['""', ""],
-    ["undefined", undefined],
-  ] as const) {
-    test(`does not disable catalog warm for ${label}`, () => {
-      expect(catalogWarmDisabledFor(switchValue)).toBe(false);
-    });
-  }
-});
-
-const catalogEntry = (modelId: string): SlimModelEntry => ({
-  modelId,
-  aliases: [],
-  sources: { "openrouter-api": { externalId: `future-labs/${modelId}` } },
-  reasoningStatus: "unknown",
-});
-
-describe("refreshCatalog revision-pinned pagination", () => {
-  let server: ReturnType<typeof Bun.serve> | undefined;
-  let cachePath = "";
-  let handleRequest: (request: Request) => Response | Promise<Response>;
-
-  beforeEach(() => {
-    cachePath = tempCachePath();
-    handleRequest = () => new Response(null, { status: 500 });
-    server = Bun.serve({
-      port: 0,
-      fetch: (request) => handleRequest(request),
-    });
-    const origin = `http://127.0.0.1:${server.port}`;
-
-    // ORDER IS LOAD-BEARING. The URL redirect goes up BEFORE the warm gate comes
-    // down, and never the other way round.
-    //
-    // `proxy-server.ts` fires an un-awaited `warmCatalog()` on every
-    // `createProxyServer`, so a detached refresh can reach `catalogWarmDisabled()`
-    // at any instant while this suite runs. Clearing the gate first leaves a
-    // window in which such a refresh is enabled AND still pointed at the live
-    // catalog — it then fetches over the network and writes the developer's real
-    // `~/.claudish/all-models.json`.
-    //
-    // That is not hypothetical. It is the leak `catalog-client.ts` documents
-    // having measured on 2026-09-15, and this file reproduced it on 2026-09-17:
-    // `guard-real-config` reported "REAL MODEL CATALOG CACHE MUTATED — changed
-    // lastUpdated" on one `test:safe` run and not the next, because whether the
-    // detached warm lands inside the window depends on file ordering.
-    //
-    // With this order, anything that slips through hits the local server instead,
-    // and the guard's remaining job is a backstop rather than a cleanup.
-    process.env.CLAUDISH_CATALOG_URL = `${origin}/queryModels?status=active&catalog=slim&limit=7`;
-    process.env.CLAUDISH_PLANS_URL = `${origin}/queryPlans`;
-    delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
-  });
-
-  afterEach(() => {
-    server?.stop(true);
-    server = undefined;
-  });
-
-  function json(data: unknown, revision?: string, status = 200): Response {
-    const headers = new Headers({ "Content-Type": "application/json" });
-    if (revision) headers.set("X-Catalog-Revision", revision);
-    return new Response(JSON.stringify(data), { status, headers });
-  }
-
-  async function seedPreviousGeneration(): Promise<{
-    bytes: string;
-    memory: SlimModelEntry[];
-  }> {
-    const previousEntry = catalogEntry("orion-7.3-future");
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      if (url.pathname === "/queryModels") {
-        return json(
-          { models: [previousEntry], total: 1, offset: 0, limit: 1000, hasMore: false },
-          "revision-previous"
-        );
-      }
-      if (url.pathname === "/queryPlans") {
-        return json({ plans: [{ id: "previous-plan" }] }, "revision-previous");
-      }
-      return new Response(null, { status: 404 });
-    };
-
-    expect(await refreshCatalog(1000, { cachePath })).toEqual({
-      kind: "refreshed",
-      modelCount: 1,
-      catalogRevision: "revision-previous",
-      pages: 1,
-    });
-    const memory = getCatalogEntries();
-    expect(memory).toEqual([previousEntry]);
-    return { bytes: readFileSync(cachePath, "utf-8"), memory: memory! };
-  }
-
-  function expectPreviousGenerationPreserved(previous: {
-    bytes: string;
-    memory: SlimModelEntry[];
-  }): void {
-    expect(readFileSync(cachePath, "utf-8")).toBe(previous.bytes);
-    expect(getCatalogEntries()).toBe(previous.memory);
-  }
-
-  test("follows every page, advances by returned rows, and pins pages and plans", async () => {
+  test("pins opaque model and plan cursors and commits exact routes together", async () => {
+    const cachePath = tempCachePath();
     const requests: Array<{
-      path: string;
-      offset: string | null;
-      limit: string | null;
-      revision: string | null;
-      revisionHeader: string | null;
+      pathname: string;
+      cursor: string | null;
+      generation: string | null;
+      accept: string | null;
     }> = [];
-    const first = [catalogEntry("orion-7.4-future"), catalogEntry("qwen4.2-nebula")];
-    const second = [catalogEntry("claude-opus-6-future")];
-
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      requests.push({
-        path: url.pathname,
-        offset: url.searchParams.get("offset"),
-        limit: url.searchParams.get("limit"),
-        revision: url.searchParams.get("revision"),
-        revisionHeader: request.headers.get("revision"),
-      });
-      if (url.pathname === "/queryPlans") {
-        return json({ plans: [{ id: "future-plan" }] }, "revision-a");
-      }
-      if (url.searchParams.get("offset") === "0") {
-        return json(
-          { models: first, total: 3, offset: 0, limit: 1000, hasMore: true },
-          "revision-a"
-        );
-      }
-      return json(
-        { models: second, total: 3, offset: 2, limit: 1000, hasMore: false },
-        "revision-a"
-      );
+    const first = entry("qwen3.7-plus", "qwen-coding", "qwen3.7-plus");
+    const second = entry("qwen3.8-max", "qwen-token-plan", "qwen3.8-max");
+    const plan = {
+      id: "alibaba-ai-coding-plan",
+      routeStatus: "supported" as const,
+      route: { routeId: "qwen", routeProfileId: "modelstudio-coding-plan" },
+      modelDiscovery: "catalog" as const,
     };
-
+    const stub = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new URL(String(url));
+      requests.push({
+        pathname: request.pathname,
+        cursor: request.searchParams.get("cursor"),
+        generation: request.searchParams.get("generationId"),
+        accept: new Headers(init?.headers).get("accept"),
+      });
+      if (request.pathname === "/queryModels")
+        return envelope({
+          mode: "slim",
+          models: request.searchParams.has("cursor") ? [second] : [first],
+          total: 2,
+          ...(request.searchParams.has("cursor") ? {} : { nextCursor: "opaque-model" }),
+        });
+      return envelope({ plans: [plan], total: 1 });
+    });
+    globalThis.fetch = stub as unknown as typeof fetch;
     expect(await refreshCatalog(1000, { cachePath })).toEqual({
       kind: "refreshed",
-      modelCount: 3,
-      catalogRevision: "revision-a",
+      modelCount: 2,
+      catalogGenerationId: "generation-a",
       pages: 2,
     });
-
     expect(requests).toEqual([
+      { pathname: "/queryModels", cursor: null, generation: null, accept: CATALOG_V3_ACCEPT },
       {
-        path: "/queryModels",
-        offset: "0",
-        limit: "1000",
-        revision: null,
-        revisionHeader: null,
+        pathname: "/queryModels",
+        cursor: "opaque-model",
+        generation: "generation-a",
+        accept: CATALOG_V3_ACCEPT,
       },
       {
-        path: "/queryModels",
-        offset: "2",
-        limit: "1000",
-        revision: "revision-a",
-        revisionHeader: null,
-      },
-      {
-        path: "/queryPlans",
-        offset: null,
-        limit: null,
-        revision: "revision-a",
-        revisionHeader: null,
+        pathname: "/queryPlans",
+        cursor: null,
+        generation: "generation-a",
+        accept: CATALOG_V3_ACCEPT,
       },
     ]);
-    const cache = readAllModelsCache(cachePath);
-    expect(cache?.entries).toEqual([...first, ...second]);
-    expect(cache?.plans).toEqual([{ id: "future-plan" }]);
-    expect(cache?.catalogRevision).toBe("revision-a");
+    expect(readAllModelsCache(cachePath)?.entries).toEqual([first, second]);
+    expect(readAllModelsCache(cachePath)?.plans).toEqual([plan]);
+    expect(getCatalogEntries()).toEqual([first, second]);
   });
 
-  test("accepts the currently deployed one-page response when hasMore is omitted", async () => {
-    const onlyPage = [catalogEntry("orion-8.0-future")];
-    let modelRequests = 0;
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      if (url.pathname === "/queryPlans") return json({ plans: [] }, "revision-current");
-      modelRequests++;
-      return json({ models: onlyPage, total: 1, offset: 0, limit: 1000 }, "revision-current");
-    };
-
-    expect(await refreshCatalog(1000, { cachePath })).toEqual({
-      kind: "refreshed",
-      modelCount: 1,
-      catalogRevision: "revision-current",
-      pages: 1,
-    });
-    expect(modelRequests).toBe(1);
-    expect(readAllModelsCache(cachePath)?.entries).toEqual(onlyPage);
-    expect(readAllModelsCache(cachePath)?.catalogRevision).toBe("revision-current");
-  });
-
-  test("rejects a later page from another revision and preserves both caches byte-for-byte", async () => {
-    const previous = await seedPreviousGeneration();
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      if (url.searchParams.get("offset") === "0") {
-        return json({ models: [catalogEntry("new-page-one")], hasMore: true }, "revision-new");
-      }
-      expect(url.searchParams.get("revision")).toBe("revision-new");
-      return json({ models: [catalogEntry("new-page-two")], hasMore: false }, "revision-other");
-    };
-
+  test("a different plan generation does not replace the complete cache", async () => {
+    const cachePath = tempCachePath();
+    let planGeneration = "generation-a";
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      return path === "/queryPlans"
+        ? envelope(
+            {
+              plans: [
+                {
+                  id: "plan",
+                  routeStatus: "supported",
+                  route: { routeId: "qwen", routeProfileId: "modelstudio-coding-plan" },
+                },
+              ],
+              total: 1,
+            },
+            planGeneration
+          )
+        : envelope({
+            mode: "slim",
+            models: [entry("qwen3.7-plus", "qwen-coding", "qwen3.7-plus")],
+            total: 1,
+          });
+    }) as unknown as typeof fetch;
+    expect((await refreshCatalog(1000, { cachePath })).kind).toBe("refreshed");
+    const bytes = readFileSync(cachePath, "utf-8");
+    planGeneration = "generation-b";
     expect(await refreshCatalog(1000, { cachePath })).toEqual({
       kind: "fetch_failed",
-      reason: "revision_mismatch",
+      reason: "generation_mismatch",
     });
-    expectPreviousGenerationPreserved(previous);
+    expect(readFileSync(cachePath, "utf-8")).toBe(bytes);
   });
 
-  test("rejects a later HTTP failure as incomplete and preserves both caches byte-for-byte", async () => {
-    const previous = await seedPreviousGeneration();
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      if (url.searchParams.get("offset") === "0") {
-        return json({ models: [catalogEntry("new-page-one")], hasMore: true }, "revision-new");
-      }
-      expect(url.searchParams.get("revision")).toBe("revision-new");
-      return new Response("later page failed", { status: 500 });
-    };
-
-    expect(await refreshCatalog(1000, { cachePath })).toEqual({
-      kind: "fetch_failed",
-      reason: "incomplete",
-    });
-    expectPreviousGenerationPreserved(previous);
-  });
-
-  test("rejects a later network failure as incomplete and preserves both caches byte-for-byte", async () => {
-    const previous = await seedPreviousGeneration();
-    const stopped = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 204 }) });
-    const stoppedPort = stopped.port;
-    stopped.stop(true);
-
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      if (url.searchParams.get("offset") !== "0") {
-        return new Response("unexpected second request to live server", { status: 500 });
-      }
-      process.env.CLAUDISH_CATALOG_URL = `http://127.0.0.1:${stoppedPort}/queryModels?status=active&catalog=slim`;
-      return json({ models: [catalogEntry("new-page-one")], hasMore: true }, "revision-new");
-    };
-
+  test("rejects a truncated model snapshot without replacing the cache", async () => {
+    const cachePath = tempCachePath();
+    let total = 1;
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      return path === "/queryPlans"
+        ? envelope({
+            plans: [
+              {
+                id: "plan",
+                routeStatus: "supported",
+                route: { routeId: "qwen", routeProfileId: "modelstudio-coding-plan" },
+              },
+            ],
+            total: 1,
+          })
+        : envelope({
+            mode: "slim",
+            models: [entry("qwen3.7-plus", "qwen-coding", "qwen3.7-plus")],
+            total,
+          });
+    }) as unknown as typeof fetch;
+    expect((await refreshCatalog(1000, { cachePath })).kind).toBe("refreshed");
+    const complete = readFileSync(cachePath, "utf-8");
+    total = 2;
     expect(await refreshCatalog(1000, { cachePath })).toEqual({
       kind: "fetch_failed",
       reason: "incomplete",
     });
-    expectPreviousGenerationPreserved(previous);
+    expect(readFileSync(cachePath, "utf-8")).toBe(complete);
   });
 
-  test("rejects hasMore with an empty page instead of looping or committing a prefix", async () => {
-    const previous = await seedPreviousGeneration();
-    let pageRequests = 0;
-    handleRequest = (request) => {
-      const url = new URL(request.url);
-      pageRequests++;
-      if (url.searchParams.get("offset") === "0") {
-        return json({ models: [catalogEntry("new-page-one")], hasMore: true }, "revision-new");
-      }
-      return json({ models: [], hasMore: true }, "revision-new");
-    };
-
-    expect(await refreshCatalog(1000, { cachePath })).toEqual({
-      kind: "fetch_failed",
-      reason: "incomplete",
+  test("classifies a bodyless upgrade response as an incompatible contract", async () => {
+    globalThis.fetch = mock(
+      async () => new Response(null, { status: 426 })
+    ) as unknown as typeof fetch;
+    expect(await refreshCatalog(1000, { cachePath: tempCachePath() })).toEqual({
+      kind: "incompatible",
+      serverContractVersion: null,
     });
-    expect(pageRequests).toBe(2);
-    expectPreviousGenerationPreserved(previous);
+  });
+
+  test("rejects a response outside contract v3", async () => {
+    globalThis.fetch = mock(async () =>
+      Response.json({ contractVersion: 2, models: [] })
+    ) as unknown as typeof fetch;
+    expect(await refreshCatalog(1000, { cachePath: tempCachePath() })).toEqual({
+      kind: "incompatible",
+      serverContractVersion: 2,
+    });
   });
 });
 

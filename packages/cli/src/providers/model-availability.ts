@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 /**
  * "Does provider P actually serve model M?" — answered from BOTH data sources.
  *
@@ -13,7 +14,7 @@
  * Neither is sufficient alone. Measured 2026-08-18: the catalog's `aggregators[]`
  * vocabulary names 18 providers while claudish routes to 23, and the 10 it never
  * mentions are almost entirely the SUBSCRIPTION providers — `glm-coding`,
- * `minimax-coding`, `qwen-cloud`, `sakana-subscription`, `devin`,
+ * `minimax-coding`, `qwen-token-plan`, `sakana-subscription`, `devin`,
  * `opencode-zen-go`. That is not a catalog defect: a plan's contents are an
  * entitlement, so they were never in scope for a field describing marketplaces.
  *
@@ -120,9 +121,13 @@ export async function providerServesModel(
     (e) =>
       e.modelId.toLowerCase() === needle ||
       e.aliases.some((a) => a.toLowerCase() === needle) ||
-      (e.aggregators ?? []).some((a) => a.externalId?.toLowerCase() === needle)
+      (e.aggregators ?? []).some((a) => a.externalModelId?.toLowerCase() === needle)
   );
   if (!row) return "unknown";
 
-  return (row.aggregators ?? []).some((a) => a.provider === provider) ? "serves" : "unknown";
+  return (row.aggregators ?? []).some(
+    (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
+  )
+    ? "serves"
+    : "unknown";
 }

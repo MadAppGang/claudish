@@ -7,11 +7,6 @@ import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
-import {
-  CatalogIncompatibleError,
-  catalogIncompatibilityMessage,
-  readCatalogIncompatibility,
-} from "./catalog-compatibility.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { providerServesModel } from "./model-availability.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
@@ -50,56 +45,12 @@ export interface RoutingRuleSources {
  * Always returns a non-null `RoutingRules` because defaults are baked in.
  * To get strict no-fallback mode, set `routing["*"] = []` in user config.
  *
- * ── The catalog does NOT belong here. Do not add it back. ──────────────────
+ * Catalog routes describe availability and wire IDs. They do not replace
+ * routing preferences: bundled rules, then global and local overrides decide
+ * order. The model and plan snapshot is consulted when building candidates.
  *
- * v9.0.1 merged `buildCatalogRoutingRules(...)` into this dictionary and it
- * deleted providers from every chain it touched. The mechanism, in two facts
- * that are individually harmless:
- *
- *   - catalog keys are EXACT model ids (`grok-4.6`); default and user keys are
- *     GLOBS (`grok-*`);
- *   - `matchRoutingRule` below returns on the first exact hit, before it ever
- *     looks at a glob.
- *
- * So one catalog key makes the matching glob unreachable for that model, and
- * every provider the catalog did not name is gone. `buildCatalogRoutingRules`
- * reads `subscriptions[]`, which enumerates PLAN-backed routes only — never a
- * vendor's metered API, never OpenRouter — so its list is structurally
- * incomplete. Measured on a real cache: `grok-4.6` became
- * `["opencode-zen-go@grok-4.6"]`, leaving a user holding XAI_API_KEY and
- * OPENROUTER_API_KEY with no route at all. A user's own `grok-*` rule was
- * shadowed the same way, silently.
- *
- * Catalog knowledge reaches routing through two other call sites, and they are
- * NOT equally safe. Be precise about which:
- *
- *   - `providerServesModel` in `routeBare` IS safe. It is three-valued and drops
- *     a candidate only on `not-served`; `unknown` keeps it exactly where it was.
- *   - `resolveSubscriptionRouting` in `buildRoutingChain` is NOT, as of v9.0.1.
- *     Its `hasPublishedProviderRoster` check (model-catalog.ts:335) is evaluated
- *     at PROVIDER granularity across the whole cache, so one model publishing a
- *     plan membership makes every OTHER model's silence authoritative. Measured
- *     on the live cache: only `glm-5.3` and `glm-5.3-flash` list
- *     `z-ai-glm-coding-plan`, so `glm-4.7` resolves to
- *     `["glm@glm-4.7", "openrouter@z-ai/glm-4.7"]` — both subscriptions deleted,
- *     and a GLM Coding Plan holder is billed per token. Same shape for
- *     `qwen-cloud` on `qwen3-coder-plus`. At v9.0.0 this could not happen: the
- *     old code tested `subscriptionPlans.includes(providerUid)`, which was false
- *     for every provider, so it returned `unknown` and kept the candidate.
- *
- * That second one is a LIVE defect, not fixed here. This change restores the
- * routing-rule COMPOSITION to v9.0.0; it deliberately retains v9.0.1's
- * subscription-availability join, gap included. Do not read this file's fix as
- * "v9.0.3 == v9.0.0 routing" — see ai-docs/reports/ for the follow-up.
- *
- * `sources` keeps this composition boundary testable without reading machine
- * config or the recommended-models cache. `sources.recommendedModels` is
- * optional and deliberately unused: a regression test hands it a shadowing entry
- * and asserts it never reaches the output. That test alone is not a sufficient
- * guard, because the v9.0.1 bug read the cache AMBIENTLY rather than through
- * this seam — the guard that survives a cold CI checkout is the import-shape
- * test in routing-rules.test.ts, which fails on any VALUE import from
- * model-loader.js. Keep this file's model-loader import `import type`.
+ * `sources` keeps rule composition testable without reading machine config.
+ * The recommended-model projection is not a routing-rule override.
  */
 export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
   const local = sources ? sources.localRules : (loadLocalConfig()?.routing ?? {});
@@ -112,17 +63,7 @@ export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
 }
 
 /**
- * Drop catalog entries naming a provider this client cannot execute.
- *
- * NO PRODUCTION CALLER as of v9.0.3 — `loadRoutingRules` no longer consumes the
- * catalog, for the reasons documented there. Kept because the filter itself is
- * correct and the catalog-driven routing redesign will need it; its test pins
- * the behaviour meanwhile.
- *
- * Note what the premise of the original comment got wrong, since it is the same
- * mistake that shipped the v9.0.1 regression: the backend does not own route
- * PREFERENCE. It owns availability — who serves a model, under what id. Order is
- * the user's, then claudish's defaults.
+ * Keep only catalog routing entries whose provider has an executable transport.
  */
 export function retainKnownCatalogRoutingRules(rules: RoutingRules): RoutingRules {
   const retained: RoutingRules = {};
@@ -251,7 +192,7 @@ export function buildRoutingChain(
     // `together-ai@glm-5` reach `zai-org/GLM-5` without either provider
     // needing bespoke code. No match → the name passes through unchanged.
     if (!wireIdResolved) {
-      modelName = resolveExternalId(modelName, provider) ?? modelName;
+      modelName = resolveExternalId(modelName, provider, cachePath) ?? modelName;
     }
 
     // Build modelSpec. OpenRouter's ids are already vendor-qualified, so they
@@ -339,47 +280,9 @@ export async function hasCredentialsForProvider(provider: string): Promise<boole
 }
 
 /**
- * Emitted at most once per process — see `warnOnceIfCatalogIncompatible`.
- */
-let _warnedCatalogIncompatible = false;
-
-/**
- * Tell the user ONCE that the catalog is unreadable, on a path that still works.
- *
- * The explicit path is not gated (see routeExplicit), but it is degraded: wire-id
- * translation and the "does this provider serve it?" check both read a catalog
- * that now answers null, so a request may reach a provider under the name the
- * user typed rather than the id that provider actually uses. That is worth one
- * line. It is not worth one line PER REQUEST — an agent session routes hundreds,
- * and a warning repeated hundreds of times is one the user learns to scroll
- * past, which is how the important ones get missed too.
- */
-function warnOnceIfCatalogIncompatible(): void {
-  if (_warnedCatalogIncompatible) return;
-  if (!readCatalogIncompatibility()) return;
-  _warnedCatalogIncompatible = true;
-  logStderr(
-    "Model catalog is unavailable — this build cannot read the catalog server's current " +
-      "contract. Explicit provider@model routing still works; bare model names do not. " +
-      "Run `claudish update`."
-  );
-}
-
-/** Test seam: allow the explicit-path warning to fire again. @internal */
-export function _resetCatalogWarningForTest(): void {
-  _warnedCatalogIncompatible = false;
-}
-
-/**
  * Path 1: an explicit "provider@model" spec. Probe ONLY that provider's
  * credentials; never fall back silently.
  *
- * NOT gated on catalog compatibility, unlike the bare path. The user named the
- * vendor, so claudish infers no subscription and substitutes no provider — there
- * is no decision here that an unreadable catalog could get wrong in the user's
- * favour or against it. Blocking this would strand a `gk@grok-code` user who
- * knows exactly what they want, for the sake of a risk their spec already ruled
- * out.
  */
 async function routeExplicit(
   modelSpec: string,
@@ -387,8 +290,6 @@ async function routeExplicit(
   provider: string,
   cachePath?: string
 ): Promise<RoutePlan> {
-  warnOnceIfCatalogIncompatible();
-
   if (!(await hasCredentialsForProvider(provider))) {
     return {
       kind: "no-route",
@@ -442,28 +343,6 @@ async function routeBare(
   defaultProvider?: string,
   cachePath?: string
 ): Promise<RoutePlan> {
-  // THE LOUD GATE. Fail rather than pick a metered fallback.
-  //
-  // This is the one path where claudish, not the user, chooses the vendor, and
-  // it chooses it from catalog facts: which plan covers this model, which
-  // provider serves it, under what id. With the catalog unreadable those facts
-  // are not merely missing — `getCatalogEntries()` returns null, so every
-  // subscription lookup answers "no plan covers this" with total confidence, the
-  // filters below drop nothing, and the chain resolves to whatever metered
-  // provider happens to sit in it. The user gets a working session and a bill.
-  //
-  // Throwing is deliberate where the rest of this function returns `no-route`.
-  // A `no-route` is a routing VERDICT — claudish looked and found nothing — and
-  // callers are entitled to treat it as data. This is the opposite: claudish
-  // cannot look at all, and saying so has to be an exception so that no caller
-  // can mistake it for an answer. `CatalogIncompatibleError` carries it to the
-  // client as a 400 (see the class's own note on why not a 500), which renders
-  // inline instead of behind Claude Code's retry banner.
-  const incompatible = readCatalogIncompatibility();
-  if (incompatible) {
-    throw new CatalogIncompatibleError(catalogIncompatibilityMessage(incompatible));
-  }
-
   const matched = matchRoutingRule(model, rules) ?? [];
   const entries = [...matched];
 

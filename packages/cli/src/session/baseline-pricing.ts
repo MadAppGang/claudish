@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * baseline-pricing — what the same tokens would have cost on Anthropic's own models.
  *
@@ -63,7 +64,7 @@ function resolveBaseline(alias: string, label: string): Baseline | null {
   if (!entry) return null;
 
   const firstParty = entry.aggregators?.find(
-    (a) => a.provider === FIRST_PARTY && typeof a.pricing?.input === "number"
+    (a) => catalogRouteMatchesProvider(a.route, FIRST_PARTY) && typeof a.pricing?.input === "number"
   );
   const input = firstParty?.pricing?.input;
   const output = firstParty?.pricing?.output;

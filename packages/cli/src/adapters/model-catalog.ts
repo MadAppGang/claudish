@@ -20,6 +20,7 @@ import {
   readAllModelsCache,
   reasoningStatusOf,
 } from "../providers/all-models-cache.js";
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
 
 export type {
@@ -181,8 +182,8 @@ export function lookupRouteReasoningMode(
   provider: string,
   cachePath?: string
 ): ReasoningModeCapabilities | undefined {
-  return findCacheEntry(modelId, cachePath)?.aggregators?.find(
-    (aggregator) => aggregator.provider === provider
+  return findCacheEntry(modelId, cachePath)?.aggregators?.find((aggregator) =>
+    catalogRouteMatchesProvider(aggregator.route, provider)
   )?.reasoning?.mode;
 }
 
@@ -308,199 +309,51 @@ export function lookupModelForProvider(
   const entry = findCacheEntry(modelId, cachePath);
   if (!entry) return undefined;
   return (
-    entry.aggregators?.find((a) => a.provider === provider)?.contextWindow ?? entry.contextWindow
+    entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, provider))?.contextWindow ??
+    entry.contextWindow
   );
 }
 
-/**
- * Whether a subscription endpoint can serve a model, and under which wire id.
- *
- * - `serves`     — EVERY plan behind this route includes the model; send
- *                  `externalId` (the wire id the endpoint accepts, e.g. `k3` for
- *                  catalog `kimi-k3`).
- * - `not-served` — the provider IS a subscription plan, but this model isn't in
- *                  it. Routing should DROP the candidate: sending the model
- *                  anyway is a guaranteed rejection, and silently substituting a
- *                  different model gives the user something they didn't ask for.
- * - `unknown`    — not a subscription plan, the model isn't in the catalog, or
- *                  the catalog cannot answer for THIS user: the route's sibling
- *                  plans disagree about the model, or their membership lists are
- *                  not authoritative. Caller keeps its existing behaviour.
- *
- * Only `not-served` acts destructively, so every doubt resolves to `unknown`.
- * A wrong `not-served` drops a subscription provider and bills a flat-rate user
- * per token; a wrong `unknown` costs one upstream rejection.
- */
+/** A subscription route's catalog answer for one model. */
 export type SubscriptionRouting =
   | { kind: "serves"; externalId: string }
   | { kind: "not-served" }
   | { kind: "unknown" };
 
-/**
- * Resolve how a subscription provider should route a model, from catalog data
- * alone (`subscriptionPlans[]` plan IDs joined through cached `queryPlans`,
- * plus `aggregators[].externalId`).
- *
- * Nothing about which models a plan includes is hardcoded — that is exactly the
- * data that goes stale. Kimi Code shipping K3 while the CLI pinned
- * `kimi-for-coding` is the worked example.
- */
 export function resolveSubscriptionRouting(
   modelId: string,
   provider: string,
   cachePath?: string
 ): SubscriptionRouting {
-  const entry = findCacheEntry(modelId, cachePath);
-  if (!entry) return { kind: "unknown" };
-
   const cache = readAllModelsCache(cachePath);
-  const providerPlans =
-    cache?.plans?.filter((plan) => plan.routing?.providerUid === provider) ?? [];
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!cache || !entry) return { kind: "unknown" };
 
-  // Legacy v2 caches predate queryPlans and stored provider UIDs directly in
-  // subscriptionPlans. Preserve their old behavior until the next refresh.
-  if (cache?.plans === undefined) {
-    if (entry.subscriptionPlans?.includes(provider)) {
-      const agg = entry.aggregators?.find((a) => a.provider === provider);
-      return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
-    }
-    return isLegacySubscriptionPlan(provider, cachePath)
-      ? { kind: "not-served" }
+  const plans = cache.plans.filter(
+    (plan) => plan.routeStatus === "supported" && catalogRouteMatchesProvider(plan.route, provider)
+  );
+  if (plans.length === 0) return { kind: "unknown" };
+
+  const memberships = entry.subscriptionPlanIds ?? [];
+  const included = plans.filter((plan) => memberships.includes(plan.id));
+  if (included.length > 0) {
+    if (included.length !== plans.length) return { kind: "unknown" };
+    const connection = entry.aggregators?.find(
+      (candidate) =>
+        candidate.routeStatus === "mapped" && catalogRouteMatchesProvider(candidate.route, provider)
+    );
+    return connection?.externalModelId
+      ? { kind: "serves", externalId: connection.externalModelId }
       : { kind: "unknown" };
   }
 
-  if (providerPlans.length === 0) return { kind: "unknown" };
-
-  const providerPlanIds = new Set(providerPlans.map((plan) => plan.id));
-  const memberships = entry.subscriptionPlans ?? [];
-  const includingPlans = providerPlans.filter((plan) => memberships.includes(plan.id));
-
-  // A ROUTE is not a PLAN. `routing.providerUid` names the endpoint the CLI
-  // talks to, and one endpoint sells several plans; `providerPlans` is therefore
-  // a set, not a row. Testing membership against the UNION of that set — the
-  // `.some()` this used to be — answers "does ANY plan behind this route include
-  // the model?", while the caller reads the answer as "the credential in hand
-  // can call it". Those are different questions whenever the route sells more
-  // than one plan.
-  //
-  // Measured on the live cache: `alibaba-token-plan-individual` and
-  // `alibaba-token-plan-team-edition` both carry
-  // `routing.providerUid: "qwen-cloud"`. A model included only in Team Edition
-  // answered `serves` to a holder of Individual, so routing pinned that plan's
-  // wire id and the request went out against a plan the user does not own.
-  //
-  // Neither the cache nor the credential says WHICH sibling plan the user holds,
-  // and claudish cannot find out, so unanimity is the only membership claim this
-  // data supports:
-  //   in every plan for the route -> serves
-  //   in some but not all         -> unknown (ambiguous plan membership)
-  //   in none                     -> fall through to the absence tests below
-  // With one plan behind the route — z-ai's `z-ai-glm-coding-plan`, Kimi Code —
-  // "every" and "some" are the same set, so single-plan vendors keep exactly
-  // today's verdicts.
-  //
-  // The ambiguous case costs the user nothing: `unknown` keeps the candidate in
-  // the chain and the caller still resolves a wire id through the generic
-  // `aggregators[]` lookup. All it withholds is the plan-pinned id and the drop.
-  if (includingPlans.length > 0) {
-    if (includingPlans.length < providerPlans.length) return { kind: "unknown" };
-    const agg = entry.aggregators?.find((a) => a.provider === provider);
-    // A plan membership without an aggregator entry has no wire id to send;
-    // keep the candidate as unknown rather than inventing one. The normal
-    // catalog resolver may still know the canonical provider wire ID.
-    return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
-  }
-
-  // Everything from here down decides whether SILENCE is a verdict. Three
-  // separate holes can put the model in this branch without the plan actually
-  // excluding it, so each is tested on its own and any one of them withholds
-  // `not-served`.
-  //
-  // Hole 1 — snapshot skew. queryModels and queryPlans are separate requests, so
-  // a client can briefly pair a new plan contract with an older slim snapshot.
-  // Requiring at least one membership row somewhere in the cache stops a
-  // mid-rollout snapshot, which carries zero rows, from reading as a complete
-  // empty roster and dropping every candidate (the OpenAI/Anthropic gap that
-  // motivated the join).
-  //
-  // This is an EXISTENCE test and nothing more, which its old name —
-  // `hasPublishedProviderRoster` — flatly misstated. `.some()` over the whole
-  // cache means ONE membership row anywhere licenses the reading that this
-  // route publishes rosters at all; it never checks that the roster is
-  // COMPLETE. Read as a completeness proof it was the whole permission slip for
-  // `not-served`, and a route that had published a single row could drop every
-  // other model it serves. Completeness is not observable from row counts —
-  // only the plan can state it, which is `modelDiscovery` below. Keep this
-  // check, but keep it in its place: it can only withhold a verdict, never
-  // license one.
-  const hasAnyMembershipRow = cache.entries.some((candidate) =>
-    candidate.subscriptionPlans?.some((planId) => providerPlanIds.has(planId))
+  // Client-selected and hybrid rosters are decided by the user's live session.
+  if (plans.some((plan) => plan.modelDiscovery !== "catalog")) return { kind: "unknown" };
+  const ids = new Set(plans.map((plan) => plan.id));
+  const hasRoster = cache.entries.some((candidate) =>
+    candidate.subscriptionPlanIds?.some((planId) => ids.has(planId))
   );
-  if (!hasAnyMembershipRow) return { kind: "unknown" };
-
-  // Hole 2 — a plan the filter cannot see. Absence of evidence is evidence of
-  // absence only when the view is whole, and this one has a hole in it by
-  // construction: `providerPlans` above keeps only plans carrying a
-  // `routing.providerUid`, so a plan with no routing block is never consulted.
-  // A SIBLING plan for the same vendor can still publish a roster, which makes
-  // `hasAnyMembershipRow` true and turns this provider's silence into a verdict
-  // about a plan nobody looked at.
-  //
-  // Measured on the live cache: `alibaba-ai-coding-plan` covers
-  // `qwen3-coder-plus` and carries NO routing block, while
-  // `alibaba-token-plan-individual` and `-team-edition` share
-  // `routing.providerUid: "qwen-cloud"` and do publish memberships. Without this
-  // guard `qwen3-coder-plus` resolved `not-served`, `qwen-cloud` was dropped,
-  // and a holder of Alibaba's $50/month coding plan was billed per token —
-  // the flat-rate-user invariant CLAUDE.md names.
-  //
-  // Deliberately narrow: it only withholds the verdict when a same-vendor plan
-  // is genuinely invisible. Where every plan for the vendor is routable — z-ai's
-  // sole `z-ai-glm-coding-plan`, for one — the view is complete and
-  // `not-served` still stands, so this does not degrade into never dropping
-  // anything. The right long-term fix is a `routing` block on every plan the
-  // backend publishes; this keeps the client honest until then.
-  const vendorsInView = new Set(
-    providerPlans.map((plan) => plan.provider).filter((v): v is string => v !== undefined)
-  );
-  const hasUnroutableSiblingPlan = (cache.plans ?? []).some(
-    (plan) =>
-      plan.provider !== undefined &&
-      vendorsInView.has(plan.provider) &&
-      plan.routing?.providerUid === undefined
-  );
-  if (hasUnroutableSiblingPlan) return { kind: "unknown" };
-
-  // Hole 3 — a roster the catalog never claimed to hold. This is the only
-  // completeness signal that exists, and it comes from the backend, per plan:
-  // `modelDiscovery: "catalog"` is the plan stating that its membership list is
-  // the whole callable roster. `client` and `hybrid` say the opposite — the
-  // roster is discovered after auth, so the catalog's list is a subset by
-  // design and a missing row means nothing. An absent value is not a quiet
-  // "catalog" either; it is a plan contract this build predates.
-  //
-  // EVERY plan behind the route must say `catalog`, for the same reason
-  // unanimity governs membership above: claudish does not know which sibling
-  // plan the credential belongs to, so one `client` plan on the route is enough
-  // to make the model reachable in a way this data cannot see.
-  const hasCompleteMembershipView = providerPlans.every(isCatalogDiscoveredPlan);
-  if (!hasCompleteMembershipView) return { kind: "unknown" };
-
-  // All three holes closed: every plan on the route publishes an authoritative
-  // roster, the cache proves it holds those rows, no sibling plan is invisible,
-  // and none of the plans lists this model. Only now is silence a verdict.
-  return { kind: "not-served" };
-}
-
-function isCatalogDiscoveredPlan(plan: CachedSubscriptionPlan): boolean {
-  return plan.modelDiscovery === "catalog";
-}
-
-/** Legacy provider-UID membership detection for caches without queryPlans. */
-function isLegacySubscriptionPlan(provider: string, cachePath?: string): boolean {
-  const cache = readAllModelsCache(cachePath);
-  if (!cache) return false;
-  return cache.entries.some((e) => e.subscriptionPlans?.includes(provider));
+  return hasRoster ? { kind: "not-served" } : { kind: "unknown" };
 }
 
 /**
@@ -588,8 +441,8 @@ export function resolvePlanDescribedModelId(
 ): string | undefined {
   if (!plans) return undefined;
   for (const plan of plans) {
-    const described = plan.modelDescriptions?.[wireId];
-    if (described?.status === "described" && described.modelId) return described.modelId;
+    const inclusion = plan.inclusions?.find((item) => item.externalModelId === wireId);
+    if (inclusion?.resolution?.status === "mapped") return inclusion.resolution.modelId;
   }
   return undefined;
 }
@@ -615,7 +468,7 @@ export interface CatalogSearchMatch {
   modelId: string;
   aliases: string[];
   /** Subscription plans that include this model, verbatim from the catalog. */
-  subscriptionPlans: string[];
+  subscriptionPlanIds: string[];
   /** Set when the query matched an alias rather than the model id itself. */
   matchedAlias?: string;
 }
@@ -684,7 +537,7 @@ export function searchCatalogModels(
       match: {
         modelId: entry.modelId,
         aliases: entry.aliases ?? [],
-        subscriptionPlans: entry.subscriptionPlans ?? [],
+        subscriptionPlanIds: entry.subscriptionPlanIds ?? [],
         ...(hit.matchedAlias ? { matchedAlias: hit.matchedAlias } : {}),
       },
     };

@@ -1,3 +1,4 @@
+import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 /**
  * Tests for `providers/model-catalog.ts` — the `CatalogClient` interface.
  *
@@ -11,14 +12,21 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { AggregatorEntry, ModelDoc } from "../model-loader.js";
-import type { DiskCacheV2, SlimModelEntry } from "./all-models-cache.js";
+import type { DiskCacheV3, SlimModelEntry } from "./all-models-cache.js";
 import { FIREBASE_CACHE_TTL_MS } from "./cache-ttl.js";
 import { createCatalogClient } from "./model-catalog.js";
 
 // ─── Fixture helpers ─────────────────────────────────────────────────────────
 
 function aggregator(provider: string, externalId: string): AggregatorEntry {
-  return { provider, externalId, confidence: "gateway_official" };
+  return {
+    sourceProviderId: provider,
+    sourceCollectorId: "test",
+    routeStatus: "mapped",
+    route: catalogRouteForProvider(provider.toLowerCase()),
+    externalModelId: externalId,
+    confidence: "gateway_official",
+  };
 }
 
 function slimEntry(
@@ -29,7 +37,7 @@ function slimEntry(
   return {
     modelId,
     aliases,
-    sources: {},
+
     aggregators,
   };
 }
@@ -43,18 +51,22 @@ function modelDoc(modelId: string, provider: string, extra: Partial<ModelDoc> = 
   };
 }
 
-function freshCache(entries: SlimModelEntry[]): DiskCacheV2 {
+function freshCache(entries: SlimModelEntry[]): DiskCacheV3 {
   return {
-    version: 2,
+    catalogGenerationId: "test-generation",
+    plans: [],
+    version: 3,
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
   };
 }
 
-function staleCache(entries: SlimModelEntry[]): DiskCacheV2 {
+function staleCache(entries: SlimModelEntry[]): DiskCacheV3 {
   return {
-    version: 2,
+    catalogGenerationId: "test-generation",
+    plans: [],
+    version: 3,
     // Twice the TTL — definitely expired.
     lastUpdated: new Date(Date.now() - 2 * FIREBASE_CACHE_TTL_MS).toISOString(),
     entries,
@@ -87,7 +99,11 @@ describe("modelsByVendor", () => {
     expect(result.map((m) => m.modelId).sort()).toEqual(["gpt-5"]);
     // The kept model carries the grafted served-by aggregators (owner query
     // returns aggregators: null).
-    expect(result[0]?.aggregators?.some((a) => a.provider === "openai")).toBe(true);
+    expect(
+      result[0]?.aggregators?.some(
+        (a) => a.route?.routeId === "openai" && a.route?.routeProfileId === "direct-api"
+      )
+    ).toBe(true);
   });
 
   test("owner path keeps a direct-API owner's models once the catalog indexes them", async () => {

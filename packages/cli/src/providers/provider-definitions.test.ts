@@ -59,17 +59,17 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
     expect(kimiCoding!.apiKeyAliases ?? []).not.toContain("MOONSHOT_API_KEY");
   });
 
-  test("qwen-cloud keeps Qwen Plan credentials isolated and uses Anthropic transport", () => {
-    const plan = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-cloud");
+  test("qwen-token-plan keeps Alibaba Token Plan credentials isolated and uses Anthropic transport", () => {
+    const plan = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-token-plan");
     expect(plan).toBeDefined();
-    expect(plan!.apiKeyEnvVar).toBe("QWEN_CLOUD_PLAN_API_KEY");
+    expect(plan!.apiKeyEnvVar).toBe("QWEN_TOKEN_PLAN_API_KEY");
     expect(plan!.apiKeyAliases).toBeUndefined();
     expect(plan!.transport).toBe("anthropic");
     expect(plan!.authScheme).toBe("bearer");
   });
 
-  test("qwen-cloud composes message and discovery URLs on the same origin", () => {
-    const plan = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-cloud")!;
+  test("qwen-token-plan composes message and discovery URLs on the same origin", () => {
+    const plan = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-token-plan")!;
     const messagesUrl = plan.baseUrl + plan.apiPath;
     const modelsUrl = plan.baseUrl + plan.modelDiscovery!.path;
 
@@ -86,8 +86,7 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
     const payg = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-payg");
     expect(payg).toBeDefined();
     expect(payg!.apiKeyEnvVar).toBe("DASHSCOPE_API_KEY");
-    expect(payg!.apiKeyAliases).toEqual(["QWEN_API_KEY"]);
-    expect(payg!.apiKeyAliases).not.toContain("QWEN_CLOUD_PLAN_API_KEY");
+    expect(payg!.apiKeyAliases).toBeUndefined();
     expect(payg!.transport).toBe("anthropic");
     expect(payg!.authScheme).toBe("bearer");
     expect(payg!.nativeModelPatterns).toBeUndefined();
@@ -131,7 +130,7 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
   });
 
   test("Qwen's metered row follows the API naming convention", () => {
-    expect(getProviderByName("qwen-payg")?.displayName).toBe("Qwen API");
+    expect(getProviderByName("qwen-payg")?.displayName).toBe("Alibaba PAYG");
   });
 
   test("grok-subscription does not compete with x-ai for native Grok patterns", () => {
@@ -198,7 +197,6 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
       "native-anthropic",
       "ollama",
       "openrouter",
-      "poe",
       "vllm",
     ]);
   });
@@ -400,21 +398,21 @@ describe("getEffectiveBaseUrl", () => {
     expect(getEffectiveBaseUrl(def)).toBe("https://openrouter.ai");
   });
 
-  test("QWEN_CLOUD_PLAN_BASE_URL overrides the qwen-cloud default host", () => {
-    const envVar = "QWEN_CLOUD_PLAN_BASE_URL";
+  test("QWEN_TOKEN_PLAN_BASE_URL overrides the qwen-token-plan default host", () => {
+    const envVar = "QWEN_TOKEN_PLAN_BASE_URL";
     const previousEnv = process.env[envVar];
     const previousConfigOverride = getConfigFileOverride();
     const missingConfig = join(
       tmpdir(),
-      `claudish-qwen-cloud-provider-definitions-${process.pid}-missing.json`
+      `claudish-qwen-token-plan-provider-definitions-${process.pid}-missing.json`
     );
 
     setConfigFileOverride(missingConfig);
-    process.env[envVar] = "https://qwen-cloud.test.invalid";
+    process.env[envVar] = "https://qwen-token-plan.test.invalid";
     try {
-      const def = getProviderByName("qwen-cloud")!;
+      const def = getProviderByName("qwen-token-plan")!;
       expect(def.baseUrlEnvVars).toEqual([envVar]);
-      expect(getEffectiveBaseUrl(def)).toBe("https://qwen-cloud.test.invalid");
+      expect(getEffectiveBaseUrl(def)).toBe("https://qwen-token-plan.test.invalid");
     } finally {
       setConfigFileOverride(previousConfigOverride);
       if (previousEnv === undefined) {
@@ -576,7 +574,8 @@ describe("billing classification", () => {
       "kimi-coding",
       "minimax-coding",
       "opencode-zen-go",
-      "qwen-cloud",
+      "qwen-coding",
+      "qwen-token-plan",
       "sakana-subscription",
     ]);
   });

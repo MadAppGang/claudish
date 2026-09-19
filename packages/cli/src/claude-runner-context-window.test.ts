@@ -8,6 +8,7 @@ import {
   resolveContextWindowEnv,
 } from "./claude-runner.js";
 import { ENV } from "./config.js";
+import { catalogRouteForProvider } from "./providers/catalog-route-bindings.js";
 import type { ClaudishConfig } from "./types.js";
 
 const REDUCED_WINDOW_SPEC = "cx@gpt-5.6-sol";
@@ -25,24 +26,33 @@ beforeAll(() => {
     {
       modelId: "gpt-5.6-sol",
       aliases: [],
-      sources: {},
+
       contextWindow: 1_050_000,
       aggregators: [
         {
-          provider: "openai",
-          externalId: "gpt-5.6-sol",
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider("openai"),
+          sourceProviderId: "openai",
+          externalModelId: "gpt-5.6-sol",
           confidence: "api_official",
           contextWindow: 1_050_000,
         },
         {
-          provider: "openai-codex",
-          externalId: "gpt-5.6-sol",
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider("openai-codex"),
+          sourceProviderId: "openai-codex",
+          externalModelId: "gpt-5.6-sol",
           confidence: "api_official",
           contextWindow: 372_000,
         },
         {
-          provider: "openrouter",
-          externalId: "openai/gpt-5.6-sol",
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider("openrouter"),
+          sourceProviderId: "openrouter",
+          externalModelId: "openai/gpt-5.6-sol",
           confidence: "gateway_official",
         },
       ],
@@ -50,12 +60,15 @@ beforeAll(() => {
     {
       modelId: "small-context-model",
       aliases: [],
-      sources: {},
+
       contextWindow: 128_000,
       aggregators: [
         {
-          provider: "openai-codex",
-          externalId: "small-context-model",
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider("openai-codex"),
+          sourceProviderId: "openai-codex",
+          externalModelId: "small-context-model",
           confidence: "api_official",
           contextWindow: 128_000,
         },
@@ -66,7 +79,9 @@ beforeAll(() => {
   writeFileSync(
     mockCachePath,
     JSON.stringify({
-      version: 2,
+      catalogGenerationId: "test-generation",
+      plans: [],
+      version: 3,
       lastUpdated: new Date().toISOString(),
       entries,
       models: entries.map((entry) => ({ id: entry.modelId })),

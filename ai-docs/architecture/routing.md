@@ -33,8 +33,9 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `gc@` → GLM Coding Plan
 - `sakana@`, `fugu@` → Sakana Fugu
 - `sc@` → Sakana Fugu Subscription
-- `qc@` → Qwen Plan (Alibaba Model Studio **Token Plan** subscription)
-- `qp@`, `dashscope@` → Qwen API (Alibaba Model Studio **pay-as-you-go**, `DASHSCOPE_API_KEY`)
+- `qcode@` → Alibaba Coding Plan (`QWEN_CODING_PLAN_API_KEY`)
+- `qtoken@` → Alibaba Token Plan (`QWEN_TOKEN_PLAN_API_KEY`)
+- `qpay@` → Alibaba PAYG (`DASHSCOPE_API_KEY`)
 - `dv@`, `devin@` → Devin (Cognition/Codeium subscription — see `ai-docs/architecture/providers/devin.md`)
 - `gk@` → Grok Build subscription (SuperGrok / X Premium+ — see `ai-docs/architecture/providers/grok-subscription.md`). `grok@` stays with the METERED `x-ai` provider
 - `x-ai@`, `xai@`, `grok@` → xAI direct API, metered (`XAI_API_KEY`)
@@ -107,10 +108,12 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 ## Runtime subscription routes come from the backend contract
 
-Claudish refreshes the slim model catalog and `queryPlans` together and stores both in
-`~/.claudish/all-models.json`. A model's `subscriptionPlans[]` contains canonical commercial
-plan IDs such as `kimi-code`; those values are NOT provider names. The client joins each ID to
-`queryPlans[].routing.providerUid` before deciding whether a provider serves the model.
+Claudish refreshes the v3 slim model catalog and `queryPlans` together, pins
+each page to one generation, and stores the complete snapshot in
+`~/.claudish/all-models.json`. A model's `subscriptionPlanIds[]` contains
+commercial plan IDs such as `kimi-code`. The client joins those IDs with a
+plan's exact `route.routeId` and `route.routeProfileId`, then sends the matched
+model connection's `externalModelId` to that transport.
 
 Plan absence has two different meanings:
 
@@ -120,17 +123,11 @@ Plan absence has two different meanings:
   public backend cannot know, so absence remains unknown and the candidate is retained. Devin,
   Antigravity, and the `xai-supergrok` plan use this account-scoped behavior.
 
-The backend recommendation document supplies `routingProvider`, `tier`, and an exact `command`
-for each callable route. Claudish turns those rows into exact-model routing rules, orders them by
-`tier` (`native` before `general`, `metered`, and `aggregator`), and places them ahead of bundled
-defaults. `DEFAULT_ROUTING_RULES` remain the cold-cache and uncovered-model fallback. Global and
-local user routing config still overlay both backend and bundled rules with the existing
-exact-key merge semantics; an exact backend model route is replaced by a user rule for that same
-model ID.
-
-If `queryPlans` cannot refresh, the model refresh still succeeds and the last-known-good plan
-cache is preserved. Old cache files without a plan snapshot retain their legacy behavior until a
-successful refresh.
+The backend recommendation projection supplies canonical model IDs and exact
+route/profile identities. Claudish resolves them against the generation-pinned
+catalog for model wire IDs. Default and user routing rules determine preference;
+catalog availability removes only known-unserved candidates. A failed model or
+plan refresh does not replace a complete cached snapshot.
 
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 

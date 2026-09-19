@@ -1,3 +1,4 @@
+import { catalogRouteForProvider } from "./providers/catalog-route-bindings.js";
 /**
  * Tests for the pure-logic helpers in `model-selector.ts`.
  *
@@ -44,8 +45,8 @@ import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-defin
 // ─── buildExplicitModelSpec ──────────────────────────────────────────────────
 
 describe("warnDiscoveryFailure", () => {
-  const provider = "qwen-cloud";
-  const displayName = "Qwen Plan";
+  const provider = "qwen-token-plan";
+  const displayName = "Alibaba Token Plan";
   const def = getProviderByName(provider)!;
   const realFetch = globalThis.fetch;
   const realGetRequestAuth = credentials.getRequestAuth;
@@ -138,10 +139,8 @@ describe("warnDiscoveryFailure", () => {
 
       const output = captureWarning();
       expect(output.stderr).toContain(displayName);
-      expect(output.stderr).toContain("QWEN_CLOUD_PLAN_API_KEY");
-      expect(output.stderr).toContain(
-        "https://www.alibabacloud.com/help/en/model-studio/claude-code"
-      );
+      expect(output.stderr).toContain("QWEN_TOKEN_PLAN_API_KEY");
+      expect(output.stderr).toContain("https://docs.qwencloud.com/token-plan/overview");
       expect(output.stderr).toContain("Falling back to manual model entry.");
       expect(output.stderrCalls).toBeGreaterThan(0);
       expect(output.stdout).toBe("");
@@ -157,10 +156,8 @@ describe("warnDiscoveryFailure", () => {
       const output = captureWarning();
       expect(output.stderr).toContain(displayName);
       expect(output.stderr).toContain("Falling back to manual model entry.");
-      expect(output.stderr).not.toContain("QWEN_CLOUD_PLAN_API_KEY");
-      expect(output.stderr).not.toContain(
-        "https://www.alibabacloud.com/help/en/model-studio/claude-code"
-      );
+      expect(output.stderr).not.toContain("QWEN_TOKEN_PLAN_API_KEY");
+      expect(output.stderr).not.toContain("https://docs.qwencloud.com/token-plan/overview");
       expect(output.stderrCalls).toBeGreaterThan(0);
       expect(output.stdout).toBe("");
       expect(output.stdoutCalls).toBe(0);
@@ -181,7 +178,7 @@ describe("buildExplicitModelSpec", () => {
     ["minimax-coding", "MiniMax-M2", "mmc@MiniMax-M2"],
     ["kimi", "kimi-k2", "kimi@kimi-k2"],
     ["kimi-coding", "kimi-for-coding", "kc@kimi-for-coding"],
-    ["qwen-payg", "qwen3.7-plus", "qp@qwen3.7-plus"],
+    ["qwen-payg", "qwen3.7-plus", "qpay@qwen3.7-plus"],
     // antigravity renders google-catalog rows in the picker; without a prefix
     // entry, rows would emit a bare id that won't route to Antigravity.
     ["antigravity", "gemini-3-pro", "ag@gemini-3-pro"],
@@ -316,8 +313,11 @@ describe("picker provider roster", () => {
         provider: "Google",
         aggregators: [
           {
-            provider: "antigravity",
-            externalId: "gemini-3.1-pro-high",
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider("antigravity"),
+            sourceProviderId: "antigravity",
+            externalModelId: "gemini-3.1-pro-high",
             confidence: "gateway_official",
           },
         ],
@@ -329,8 +329,11 @@ describe("picker provider roster", () => {
         provider: "Google",
         aggregators: [
           {
-            provider: "antigravity",
-            externalId: "gemini-3.1-pro-high",
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider("antigravity"),
+            sourceProviderId: "antigravity",
+            externalModelId: "gemini-3.1-pro-high",
             confidence: "gateway_official",
           },
         ],
@@ -358,8 +361,11 @@ describe("picker provider roster", () => {
           provider: "Google",
           aggregators: [
             {
-              provider: "antigravity",
-              externalId: "gemini-3.1-flash",
+              sourceCollectorId: "test",
+              routeStatus: "mapped" as const,
+              route: catalogRouteForProvider("antigravity"),
+              sourceProviderId: "antigravity",
+              externalModelId: "gemini-3.1-flash",
               confidence: "gateway_official",
             },
           ],
@@ -379,8 +385,11 @@ describe("picker provider roster", () => {
         provider: "Google",
         aggregators: [
           {
-            provider: "openrouter",
-            externalId: "google/gemini-3.1-pro-preview",
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider("openrouter"),
+            sourceProviderId: "openrouter",
+            externalModelId: "google/gemini-3.1-pro-preview",
             confidence: "gateway_official",
           },
         ],
@@ -404,9 +413,30 @@ describe("resolveProviderExternalId", () => {
     description: "",
     provider: "OpenAI",
     aggregators: [
-      { provider: "openai", externalId: "gpt-5", confidence: "api_official" },
-      { provider: "openrouter", externalId: "openai/gpt-5", confidence: "gateway_official" },
-      { provider: "opencode-zen", externalId: "openai/gpt-5", confidence: "gateway_official" },
+      {
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("openai"),
+        sourceProviderId: "openai",
+        externalModelId: "gpt-5",
+        confidence: "api_official",
+      },
+      {
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("openrouter"),
+        sourceProviderId: "openrouter",
+        externalModelId: "openai/gpt-5",
+        confidence: "gateway_official",
+      },
+      {
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("opencode-zen"),
+        sourceProviderId: "opencode-zen",
+        externalModelId: "openai/gpt-5",
+        confidence: "gateway_official",
+      },
     ],
   };
 
@@ -471,20 +501,29 @@ describe("resolveProviderDisplayPrice", () => {
     pricing: { input: "$1.25", output: "$10.00", average: "$5.63/1M" },
     aggregators: [
       {
-        provider: "openai",
-        externalId: "gpt-5",
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("openai"),
+        sourceProviderId: "openai",
+        externalModelId: "gpt-5",
         confidence: "api_official",
         pricing: { input: 1.25, output: 10 },
       },
       {
-        provider: "openrouter",
-        externalId: "openai/gpt-5",
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("openrouter"),
+        sourceProviderId: "openrouter",
+        externalModelId: "openai/gpt-5",
         confidence: "gateway_official",
         pricing: { input: 1.3, output: 10.5 }, // marked-up gateway rate
       },
       {
-        provider: "opencode-zen",
-        externalId: "openai/gpt-5",
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("opencode-zen"),
+        sourceProviderId: "opencode-zen",
+        externalModelId: "openai/gpt-5",
         confidence: "gateway_official",
         pricing: { input: 1.07, output: 8.5 }, // cheaper gateway rate
       },
@@ -499,20 +538,29 @@ describe("resolveProviderDisplayPrice", () => {
     pricing: { input: "$1.25", output: "$10.00", average: "$5.63/1M" },
     aggregators: [
       {
-        provider: "openai",
-        externalId: "priced-model",
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("openai"),
+        sourceProviderId: "openai",
+        externalModelId: "priced-model",
         confidence: "api_official",
         pricing: { input: 1.25, output: 10 },
       },
       {
-        provider: "antigravity",
-        externalId: "priced-model",
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("antigravity"),
+        sourceProviderId: "antigravity",
+        externalModelId: "priced-model",
         confidence: "gateway_official",
         pricing: { input: 2, output: 12 },
       },
       {
-        provider: "sakana",
-        externalId: "priced-model",
+        sourceCollectorId: "test",
+        routeStatus: "mapped" as const,
+        route: catalogRouteForProvider("sakana"),
+        sourceProviderId: "sakana",
+        externalModelId: "priced-model",
         confidence: "gateway_official",
         pricing: { input: 3, output: 13 },
       },
@@ -530,9 +578,9 @@ describe("resolveProviderDisplayPrice", () => {
     expect(resolveProviderDisplayPrice("openai", pricedAcrossBillingModes)).toBe("$5.63/1M");
   });
 
-  test("keeps qwen-payg metered while qwen-cloud remains subscription-priced", () => {
+  test("keeps qwen-payg metered while qwen-token-plan remains subscription-priced", () => {
     expect(isSubscriptionProvider("qwen-payg")).toBe(false);
-    expect(isSubscriptionProvider("qwen-cloud")).toBe(true);
+    expect(isSubscriptionProvider("qwen-token-plan")).toBe(true);
     expect(resolveProviderDisplayPrice("qwen-payg", pricedAcrossBillingModes)).toBe("$5.63/1M");
     expect(resolveProviderDisplayPrice("qwen-payg", pricedAcrossBillingModes)).not.toBe("SUB");
   });
@@ -578,7 +626,14 @@ describe("resolveProviderDisplayPrice", () => {
       pricing: { input: "$1.00", output: "$2.00", average: "$1.50/1M" },
       aggregators: [
         // openrouter entry exists but carries NO pricing → fall back to model.pricing
-        { provider: "openrouter", externalId: "x/m", confidence: "gateway_official" },
+        {
+          sourceCollectorId: "test",
+          routeStatus: "mapped" as const,
+          route: catalogRouteForProvider("openrouter"),
+          sourceProviderId: "openrouter",
+          externalModelId: "x/m",
+          confidence: "gateway_official",
+        },
       ],
     };
     expect(resolveProviderDisplayPrice("openrouter", noEntryPrice)).toBe("$1.50/1M");
@@ -590,7 +645,16 @@ describe("resolveProviderDisplayPrice", () => {
       name: "m",
       description: "",
       provider: "OpenAI",
-      aggregators: [{ provider: "openrouter", externalId: "x/m", confidence: "gateway_official" }],
+      aggregators: [
+        {
+          sourceCollectorId: "test",
+          routeStatus: "mapped" as const,
+          route: catalogRouteForProvider("openrouter"),
+          sourceProviderId: "openrouter",
+          externalModelId: "x/m",
+          confidence: "gateway_official",
+        },
+      ],
     };
     expect(resolveProviderDisplayPrice("openrouter", noPrice)).toBe("N/A");
   });
@@ -606,22 +670,30 @@ describe("CatalogClient integration for the original Zen bug", () => {
     // aggregators[].provider. This test verifies the data plumbing is intact
     // independent of the inquirer widgets.
     const fakeReadSlimCache = mock(() => ({
-      version: 2 as const,
+      version: 3 as const,
+      catalogGenerationId: "test-generation",
+      plans: [],
       lastUpdated: new Date().toISOString(),
       entries: [
         {
           modelId: "claude-opus-4-7",
           aliases: [],
-          sources: {},
+
           aggregators: [
             {
-              provider: "anthropic",
-              externalId: "claude-opus-4-7",
+              sourceCollectorId: "test",
+              routeStatus: "mapped" as const,
+              route: catalogRouteForProvider("anthropic"),
+              sourceProviderId: "anthropic",
+              externalModelId: "claude-opus-4-7",
               confidence: "api_official" as const,
             },
             {
-              provider: "opencode-zen",
-              externalId: "anthropic/claude-opus-4-7",
+              sourceCollectorId: "test",
+              routeStatus: "mapped" as const,
+              route: catalogRouteForProvider("opencode-zen"),
+              sourceProviderId: "opencode-zen",
+              externalModelId: "anthropic/claude-opus-4-7",
               confidence: "gateway_official" as const,
             },
           ],
@@ -629,12 +701,22 @@ describe("CatalogClient integration for the original Zen bug", () => {
         {
           modelId: "gpt-5",
           aliases: [],
-          sources: {},
+
           aggregators: [
-            { provider: "openai", externalId: "gpt-5", confidence: "api_official" as const },
             {
-              provider: "opencode-zen",
-              externalId: "openai/gpt-5",
+              sourceCollectorId: "test",
+              routeStatus: "mapped" as const,
+              route: catalogRouteForProvider("openai"),
+              sourceProviderId: "openai",
+              externalModelId: "gpt-5",
+              confidence: "api_official" as const,
+            },
+            {
+              sourceCollectorId: "test",
+              routeStatus: "mapped" as const,
+              route: catalogRouteForProvider("opencode-zen"),
+              sourceProviderId: "opencode-zen",
+              externalModelId: "openai/gpt-5",
               confidence: "gateway_official" as const,
             },
           ],
@@ -642,9 +724,16 @@ describe("CatalogClient integration for the original Zen bug", () => {
         {
           modelId: "grok-4",
           aliases: [],
-          sources: {},
+
           aggregators: [
-            { provider: "x-ai", externalId: "grok-4", confidence: "api_official" as const },
+            {
+              sourceCollectorId: "test",
+              routeStatus: "mapped" as const,
+              route: catalogRouteForProvider("x-ai"),
+              sourceProviderId: "x-ai",
+              externalModelId: "grok-4",
+              confidence: "api_official" as const,
+            },
           ],
         },
       ],

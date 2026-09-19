@@ -26,6 +26,7 @@
  */
 
 import { VERSION } from "../../version.js";
+import { AnthropicProviderTransport } from "./anthropic-compat.js";
 import { conversationKey } from "./conversation-key.js";
 import { OpenAIProviderTransport } from "./openai.js";
 
@@ -49,6 +50,17 @@ export class OpenCodeZenTransport extends OpenAIProviderTransport {
    * on the instance: one transport is shared by every request for a model, so
    * an instance field would leak one conversation's id into the next.
    */
+  override async getHeaders(claudeRequest?: unknown): Promise<Record<string, string>> {
+    return {
+      "User-Agent": `claudish/${VERSION}`,
+      "x-opencode-session": conversationKey(claudeRequest),
+      ...(await super.getHeaders()),
+    };
+  }
+}
+
+/** OpenCode's Messages endpoint uses Bearer authentication and a session header. */
+export class OpenCodeZenMessagesTransport extends AnthropicProviderTransport {
   override async getHeaders(claudeRequest?: unknown): Promise<Record<string, string>> {
     return {
       "User-Agent": `claudish/${VERSION}`,

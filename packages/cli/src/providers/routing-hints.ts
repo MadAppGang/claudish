@@ -44,7 +44,7 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   mistralai: { apiKeyEnvVar: "MISTRAL_API_KEY" },
   sakana: { apiKeyEnvVar: "SAKANA_API_KEY" },
   "sakana-subscription": { apiKeyEnvVar: "SAKANA_SUBSCRIPTION_API_KEY" },
-  "qwen-cloud": { apiKeyEnvVar: "QWEN_CLOUD_PLAN_API_KEY" },
+  "qwen-token-plan": { apiKeyEnvVar: "QWEN_TOKEN_PLAN_API_KEY" },
   "qwen-payg": { apiKeyEnvVar: "DASHSCOPE_API_KEY" },
   ollamacloud: { apiKeyEnvVar: "OLLAMA_API_KEY" },
   "native-anthropic": { apiKeyEnvVar: "ANTHROPIC_API_KEY" },

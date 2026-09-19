@@ -1,5 +1,5 @@
 /**
- * VertexOAuthProvider — Vertex AI transport with OAuth authentication.
+ * VertexProviderTransport — Vertex AI transport with OAuth authentication.
  *
  * Supports multiple publishers via dynamic stream format:
  * - Google (Gemini): gemini-sse stream format
@@ -128,7 +128,3 @@ export class VertexProviderTransport implements ProviderTransport {
     return this.parsed;
   }
 }
-
-// Backward-compatible alias
-/** @deprecated Use VertexProviderTransport */
-export { VertexProviderTransport as VertexOAuthProvider };

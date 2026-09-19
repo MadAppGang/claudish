@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 
 import { credentials } from "../auth/credentials/authority.js";
 import type { SlimModelEntry } from "./all-models-cache.js";
@@ -8,8 +9,8 @@ import { invalidateModelDiscovery } from "./model-discovery.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
 
-const CATALOG_PROVIDER = "catalog-primary";
-const OTHER_CATALOG_PROVIDER = "catalog-secondary";
+const CATALOG_PROVIDER = "openrouter";
+const OTHER_CATALOG_PROVIDER = "fireworks";
 const DISCOVERY_PROVIDER = "availability-discovery-test";
 
 const realFetch = globalThis.fetch;
@@ -23,10 +24,13 @@ function catalogEntry(
   return {
     modelId,
     aliases,
-    sources: { test: { externalId: modelId } },
+
     aggregators: providers.map(({ provider, externalId }) => ({
-      provider,
-      externalId: externalId ?? modelId,
+      sourceProviderId: provider,
+      sourceCollectorId: "test",
+      routeStatus: "mapped",
+      route: catalogRouteForProvider(provider),
+      externalModelId: externalId ?? modelId,
       confidence: "api_official",
     })),
   };

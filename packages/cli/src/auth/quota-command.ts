@@ -172,7 +172,7 @@ const FRIENDLY_NAMES: Record<string, string> = {
   sakana: "sakana-subscription",
   fugu: "sakana-subscription",
   zen: "opencode-zen-go",
-  qwen: "qwen-cloud",
+  qwen: "qwen-token-plan",
   // Same divergence as `gemini` above, in the other direction: as a ROUTING
   // prefix `grok` means the metered `x-ai` API, but someone typing
   // `claudish quota grok` is asking about the subscription — the only one of

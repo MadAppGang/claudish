@@ -100,7 +100,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * model list.
    *
    * Why this transport needs it at all: several Anthropic-compat providers are
-   * SUBSCRIPTIONS (Qwen Plan, Kimi Coding). The cloud /probeModels
+   * SUBSCRIPTIONS (Alibaba Token Plan, Kimi Coding). The cloud /probeModels
    * catalog fundamentally cannot know which models a given key is entitled to
    * — that is a property of the caller's plan, not of the provider — so the
    * TUI falls back to GET /v1/probe-discover, which requires this method.
@@ -108,7 +108,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * support discovery" for every subscription provider.
    *
    * Source of truth is the provider's own `modelDiscovery` descriptor (already
-   * declared by qwen-cloud and kimi-coding), reached through the shared
+   * declared by qwen-token-plan and kimi-coding), reached through the shared
    * `discoverProviderModels()` — the same authenticated call the picker and
    * the context-window resolver use, so it shares their cache and their
    * credential-authority auth path. No new HTTP path is introduced here.
@@ -118,7 +118,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * probe exercises the model the user would actually get.
    *
    * Non-chat rows are dropped with the shared `isChatCapable()` filter rather
-   * than a per-provider skip list: qwen-cloud's roster mixes image/TTS models
+   * than a per-provider skip list: qwen-token-plan's roster mixes image/TTS models
    * (`wan2.7-image`, `qwen-audio-3.0-tts-plus`) in with the text models, and
    * hardcoding model ids here would rot the moment Alibaba ships the next one.
    */
@@ -181,7 +181,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
       "minimax-coding": "MiniMax Coding",
       kimi: "Kimi",
       "kimi-coding": "Kimi Coding",
-      "qwen-cloud": "Qwen Plan",
+      "qwen-token-plan": "Alibaba Token Plan",
       "qwen-payg": "Qwen API",
       moonshot: "Kimi",
       "z-ai": "Z.AI",

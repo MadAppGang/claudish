@@ -51,7 +51,7 @@ const DIALECT_FACTORIES: ReadonlyArray<(modelId: string, wire?: StreamFormat) =>
  *   cannot, because selection is by model NAME). BaseAPIFormat — not the
  *   dialect — consumes it, substituting the Anthropic Messages reasoning knob
  *   and enabling unsigned-thinking filtering on `anthropic-sse`. That is why
- *   a multi-vendor Anthropic endpoint (Alibaba's Qwen Plan serves qwen3.x,
+ *   a multi-vendor Anthropic endpoint (Alibaba's Alibaba Token Plan serves qwen3.x,
  *   glm-5.2 and deepseek-v4-* over one URL, i.e. three different dialects)
  *   works without each dialect opting in. Omit for "unknown" → the OpenAI
  *   default, which keeps every pre-existing call site byte-identical.

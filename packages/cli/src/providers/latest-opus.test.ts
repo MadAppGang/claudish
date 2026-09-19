@@ -12,7 +12,7 @@ function catalogEntry(modelId: string, releaseDate?: string): SlimModelEntry {
   return {
     modelId,
     aliases: [],
-    sources: { test: { externalId: modelId } },
+
     ...(releaseDate === undefined ? {} : { releaseDate }),
   };
 }

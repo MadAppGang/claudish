@@ -14,7 +14,7 @@ export const ENV = {
   // CLAUDISH_TOKEN_FILE is running against a proxied, non-Anthropic account and
   // must not render Anthropic plan/rate-limit data.
   CLAUDISH_TOKEN_FILE: "CLAUDISH_TOKEN_FILE", // Absolute path to ~/.claudish/tokens-<port>.json for this session
-  CLAUDISH_PROVIDER_NAME: "CLAUDISH_PROVIDER_NAME", // Provider display name (e.g. "Qwen Plan"); UNSET when not known at spawn time
+  CLAUDISH_PROVIDER_NAME: "CLAUDISH_PROVIDER_NAME", // Provider display name (e.g. "Alibaba Token Plan"); UNSET when not known at spawn time
   ANTHROPIC_MODEL: "ANTHROPIC_MODEL", // Claude Code standard env var for model selection
   ANTHROPIC_SMALL_FAST_MODEL: "ANTHROPIC_SMALL_FAST_MODEL", // Claude Code standard env var for fast model
   // Claudish model mapping overrides (highest priority)

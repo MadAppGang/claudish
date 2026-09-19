@@ -169,8 +169,8 @@ const NO_SURFACE: Array<{ id: string; label: string; evidence: ProbeRecord }> = 
     },
   },
   {
-    id: "qwen-cloud",
-    label: "Qwen Plan",
+    id: "qwen-token-plan",
+    label: "Alibaba Token Plan",
     evidence: {
       researched_at: "2026-08-03",
       probed: [

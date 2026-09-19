@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * Dynamic pricing cache service
  *
@@ -88,10 +89,10 @@ export function getDynamicPricingSync(
   const entry = findEntryByAlias(modelName) ?? findEntryByModelId(modelName);
   if (!entry) return undefined;
 
-  const orAgg = entry.aggregators?.find((a) => a.provider === "openrouter");
+  const orAgg = entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, "openrouter"));
   if (!orAgg) return undefined;
 
-  return pricingMap.get(orAgg.externalId);
+  return orAgg.externalModelId ? pricingMap.get(orAgg.externalModelId) : undefined;
 }
 
 /**

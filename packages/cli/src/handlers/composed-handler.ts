@@ -206,7 +206,7 @@ export class ComposedHandler implements ModelHandler {
     // The second argument is the REQUEST wire format, which only this class
     // knows: dialects self-select by model name, and the same model can be
     // served over different wires by different providers (Qwen: DashScope
-    // OpenAI-compatible vs. Qwen Plan's Anthropic Messages endpoint),
+    // OpenAI-compatible vs. Alibaba Token Plan's Anthropic Messages endpoint),
     // each with a differently-named reasoning knob. The Layer 1 FormatConverter
     // decides the request shape, so its getStreamFormat() is the signal — NOT
     // provider.overrideStreamFormat(), which only re-labels the RESPONSE for
@@ -1575,7 +1575,7 @@ export class ComposedHandler implements ModelHandler {
           // default `false` — which silently made the one dialect override of
           // it (MiniMaxModelDialect's `true`) unreachable dead code, and would
           // do the same to the base's wire-keyed `true` for every other model
-          // on this wire (qc@'s qwen / glm / deepseek rosters).
+          // on this wire (qtoken@'s qwen / glm / deepseek rosters).
           adapter: (this.modelAdapter ?? adapter) as BaseAPIFormat,
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           repairToolArgs: (name, argsJson) =>

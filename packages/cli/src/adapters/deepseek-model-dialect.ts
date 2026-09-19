@@ -25,7 +25,7 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
    * V4 controls, or strip on legacy models (which reason by model name only).
    *
    * Not called on the Anthropic wire. Measured 2026-08-02 against Alibaba's
-   * Qwen Plan endpoint (which serves deepseek-v4-*): a top-level
+   * Alibaba Token Plan endpoint (which serves deepseek-v4-*): a top-level
    * `reasoning_effort` is accepted with ANY value, including `"banana"` → 200,
    * i.e. it is not read at all there. BaseAPIFormat.applyAnthropicWireReasoning()
    * emits `output_config.effort` instead, clamped to the catalog's advertised

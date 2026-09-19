@@ -518,7 +518,7 @@ const MAX_TOKEN_FILES_SCANNED = 4000;
  * `~/.claudish/tokens-<port>.json` is keyed by PORT, not by session, and nothing
  * used to initialise it. Ports get reused, so a new session that happened to
  * bind a port some long-dead run had used inherited that run's numbers: a fresh
- * LM Studio-free session displayed `cli • LMStudio qc@qwen3.7-plus • $0.000 •
+ * LM Studio-free session displayed `cli • LMStudio qtoken@qwen3.7-plus • $0.000 •
  * 0% (36k/32k)`, where every figure came from a five-week-old leftover file.
  *
  * The zeroed record is deliberately NEUTRAL rather than pre-populated: no
@@ -888,7 +888,7 @@ export function createTempSettingsFile(
     //         silently dropped provider_name and model_name too. (macOS BSD grep
     //         exits 0, which is why it was invisible locally.)
     //      2. Only newlines are stripped, never spaces. `tr -d ' '` mangled every
-    //         value containing one — "Qwen Plan" rendered as "QwenPlan". The patterns
+    //         value containing one — "Alibaba Token Plan" rendered as "QwenPlan". The patterns
     //         instead tolerate optional whitespace after each colon, so a
     //         pretty-printed token file still parses.
     //      3. The "unknown" sentinel keeps working: an unmatched numeric field leaves
@@ -912,8 +912,8 @@ export function createTempSettingsFile(
     // The CHAINED segment deliberately drops the model name that
     // segmentWithDir shows. It is appended to the user's OWN status line, which
     // already renders the model — printing it again produced
-    // "… qc@qwen3.8-max … • qc@qwen3.8-max • $0.000 • N/A". The provider
-    // ("Qwen Plan") is the part the user's line cannot know, so it takes the
+    // "… qtoken@qwen3.8-max … • qtoken@qwen3.8-max • $0.000 • N/A". The provider
+    // ("Alibaba Token Plan") is the part the user's line cannot know, so it takes the
     // slot instead. When the token file hasn't reported one yet (a fresh
     // session, before the first response), the field is omitted ENTIRELY rather
     // than falling back to the model name or emitting an empty segment with a
@@ -1677,7 +1677,7 @@ export async function runClaudeWithProxy(
   // summary nothing will ever resume. Both are billed on the ROUTED model, so a
   // three-slot `team` run pays for three of them.
   //
-  // Measured 2026-09-17, same prompt and model (`qc@qwen3.8-max`), counting
+  // Measured 2026-09-17, same prompt and model (`qtoken@qwen3.8-max`), counting
   // upstream responses in the session log:
   //
   //   suppressed : 1 upstream request

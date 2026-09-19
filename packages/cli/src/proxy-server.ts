@@ -34,7 +34,6 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
-import { CatalogIncompatibleError } from "./providers/catalog-compatibility.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -72,17 +71,8 @@ class RoutingError extends Error {
   }
 }
 
-/**
- * Terminal for the same reason a RoutingError is: no provider can be chosen.
- *
- * `routeBare` throws `CatalogIncompatibleError` rather than returning a
- * `no-route`, so it arrives here as an exception and would otherwise fall into
- * the 500 branch below — where Claude Code's own retry loop would replay the
- * request ten times and show "API error · Retrying" instead of the one sentence
- * that names the fix. Grouped with RoutingError so it renders inline as a 400.
- */
 function isTerminalRoutingFailure(e: unknown): e is Error {
-  return e instanceof RoutingError || e instanceof CatalogIncompatibleError;
+  return e instanceof RoutingError;
 }
 
 /**

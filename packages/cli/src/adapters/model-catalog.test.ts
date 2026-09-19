@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type CachedSubscriptionPlan,
-  type DiskCacheV2,
+  type DiskCacheV3,
   type SlimModelEntry,
   writeAllModelsCache,
 } from "../providers/all-models-cache.js";
+import { catalogRouteForProvider } from "../providers/catalog-route-bindings.js";
 import {
   lookupModel,
   lookupModelReasoning,
@@ -35,21 +36,24 @@ afterEach(() => {
 
 function modelEntry(
   modelId: string,
-  subscriptionPlans: string[] = [],
+  subscriptionPlanIds: string[] = [],
   provider?: string,
   externalId: string = modelId
 ): SlimModelEntry {
   return {
     modelId,
     aliases: [],
-    sources: {},
-    subscriptionPlans,
+
+    subscriptionPlanIds,
     ...(provider
       ? {
           aggregators: [
             {
-              provider,
-              externalId,
+              sourceCollectorId: "test",
+              routeStatus: "mapped",
+              route: catalogRouteForProvider(provider),
+              sourceProviderId: provider,
+              externalModelId: externalId,
               confidence: "api_official" as const,
             },
           ],
@@ -63,13 +67,15 @@ function routedPlan(id: string, provider: string, providerUid: string): VendorPl
     id,
     provider,
     modelDiscovery: "catalog",
-    routing: { providerUid, nativeModelProviders: [] },
+    routeStatus: "supported",
+    route: catalogRouteForProvider(providerUid),
   };
 }
 
 function writeCatalog(entries: SlimModelEntry[], plans: CachedSubscriptionPlan[]): void {
-  const cache: DiskCacheV2 = {
-    version: 2,
+  const cache: DiskCacheV3 = {
+    catalogGenerationId: "test-generation",
+    version: 3,
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
@@ -85,17 +91,17 @@ describe("resolveSubscriptionRouting", () => {
         modelEntry(
           "qwen3-coder-plus",
           ["alibaba-token-plan-individual", "alibaba-token-plan-team-edition"],
-          "qwen-cloud",
+          "qwen-token-plan",
           "qwen3-coder-plus-wire"
         ),
       ],
       [
-        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
-        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-token-plan"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-token-plan"),
       ]
     );
 
-    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-token-plan", cachePath)).toEqual({
       kind: "serves",
       externalId: "qwen3-coder-plus-wire",
     });
@@ -107,17 +113,17 @@ describe("resolveSubscriptionRouting", () => {
         modelEntry(
           "qwen3-coder-plus",
           ["alibaba-token-plan-team-edition"],
-          "qwen-cloud",
+          "qwen-token-plan",
           "qwen3-coder-plus-wire"
         ),
       ],
       [
-        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
-        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-token-plan"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-token-plan"),
       ]
     );
 
-    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-token-plan", cachePath)).toEqual({
       kind: "unknown",
     });
   });
@@ -125,44 +131,46 @@ describe("resolveSubscriptionRouting", () => {
   test("preserves not-served when no Qwen plan includes the model and both rosters are catalog-authoritative", () => {
     writeCatalog(
       [
-        modelEntry("qwen3-coder-plus", [], "qwen-cloud"),
+        modelEntry("qwen3-coder-plus", [], "qwen-token-plan"),
         modelEntry("qwen-roster-proof", [
           "alibaba-token-plan-individual",
           "alibaba-token-plan-team-edition",
         ]),
       ],
       [
-        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
-        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-token-plan"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-token-plan"),
       ]
     );
 
     // This is not a new destructive verdict: the pre-bc7fd79 implementation
     // already returned not-served for a complete, catalog-authoritative view.
-    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-token-plan", cachePath)).toEqual({
       kind: "not-served",
     });
   });
 
-  test("keeps the v9.0.4 guard: a same-vendor plan without routing forces unknown", () => {
+  test("keeps Coding Plan separate from Token Plan membership", () => {
     writeCatalog(
       [
-        modelEntry("qwen3-coder-plus", [], "qwen-cloud"),
+        modelEntry("qwen3-coder-plus", [], "qwen-token-plan"),
         modelEntry("qwen3.8-max", ["alibaba-token-plan-individual"]),
       ],
       [
         {
           id: "alibaba-ai-coding-plan",
+          routeStatus: "supported",
+          route: catalogRouteForProvider("qwen-coding"),
           provider: "alibaba",
           modelDiscovery: "catalog",
         },
-        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud"),
-        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-cloud"),
+        routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-token-plan"),
+        routedPlan("alibaba-token-plan-team-edition", "alibaba", "qwen-token-plan"),
       ]
     );
 
-    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
-      kind: "unknown",
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-token-plan", cachePath)).toEqual({
+      kind: "not-served",
     });
   });
 
@@ -183,14 +191,14 @@ describe("resolveSubscriptionRouting", () => {
         modelEntry(
           "qwen3-coder-plus",
           ["alibaba-token-plan-individual"],
-          "qwen-cloud",
+          "qwen-token-plan",
           "qwen3-coder-plus-wire"
         ),
       ],
-      [routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud")]
+      [routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-token-plan")]
     );
 
-    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-token-plan", cachePath)).toEqual({
       kind: "serves",
       externalId: "qwen3-coder-plus-wire",
     });
@@ -198,11 +206,11 @@ describe("resolveSubscriptionRouting", () => {
 
   test("returns unknown when the provider publishes no membership rows", () => {
     writeCatalog(
-      [modelEntry("qwen3-coder-plus", [], "qwen-cloud"), modelEntry("unrelated-model")],
-      [routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-cloud")]
+      [modelEntry("qwen3-coder-plus", [], "qwen-token-plan"), modelEntry("unrelated-model")],
+      [routedPlan("alibaba-token-plan-individual", "alibaba", "qwen-token-plan")]
     );
 
-    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-cloud", cachePath)).toEqual({
+    expect(resolveSubscriptionRouting("qwen3-coder-plus", "qwen-token-plan", cachePath)).toEqual({
       kind: "unknown",
     });
   });
@@ -213,7 +221,7 @@ describe("plan modelDescriptions metadata lookup", () => {
     {
       modelId: "qwen3.8-max-preview",
       aliases: [],
-      sources: {},
+
       contextWindow: 262_144,
       reasoningStatus: "known",
       reasoning: { supported: true, control: "budget", supportsBudgetTokens: true },
@@ -221,7 +229,7 @@ describe("plan modelDescriptions metadata lookup", () => {
     {
       modelId: "qwen3.8-flash-canonical",
       aliases: [],
-      sources: {},
+
       contextWindow: 131_072,
       reasoningStatus: "known",
       reasoning: { supported: true, control: "effort", efforts: ["low", "high"] },
@@ -229,7 +237,7 @@ describe("plan modelDescriptions metadata lookup", () => {
     {
       modelId: "claude-opus-4-5",
       aliases: [],
-      sources: {},
+
       contextWindow: 200_000,
       reasoningStatus: "known",
       reasoning: { supported: true, control: "effort", efforts: ["high", "max"] },
@@ -239,12 +247,26 @@ describe("plan modelDescriptions metadata lookup", () => {
   function writeDescribedCatalog(): void {
     writeCatalog(describedEntries, [
       {
+        routeStatus: "supported",
         id: "future-subscription-plan",
-        modelDescriptions: {
-          "qwen3.8-max": { status: "described", modelId: "qwen3.8-max-preview" },
-          "qwen3.8-flash": { status: "described", modelId: "qwen3.8-flash-canonical" },
-          "claude-opus-4-5-20251101": { status: "described", modelId: "claude-opus-4-5" },
-        },
+        route: { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+        inclusions: [
+          {
+            kind: "provider_model",
+            externalModelId: "qwen3.8-max",
+            resolution: { status: "mapped", modelId: "qwen3.8-max-preview" },
+          },
+          {
+            kind: "provider_model",
+            externalModelId: "qwen3.8-flash",
+            resolution: { status: "mapped", modelId: "qwen3.8-flash-canonical" },
+          },
+          {
+            kind: "provider_model",
+            externalModelId: "claude-opus-4-5-20251101",
+            resolution: { status: "mapped", modelId: "claude-opus-4-5" },
+          },
+        ],
       },
     ]);
   }
@@ -274,7 +296,7 @@ describe("plan modelDescriptions metadata lookup", () => {
         {
           modelId: "qwen3.9-max-preview",
           aliases: [],
-          sources: {},
+
           contextWindow: 262_144,
           reasoningStatus: "known",
           reasoning: { supported: true, control: "budget" },
@@ -282,7 +304,7 @@ describe("plan modelDescriptions metadata lookup", () => {
         {
           modelId: "qwen3.9-flash-preview",
           aliases: [],
-          sources: {},
+
           contextWindow: 131_072,
           reasoningStatus: "known",
           reasoning: { supported: true, control: "effort", efforts: ["high"] },
@@ -290,11 +312,21 @@ describe("plan modelDescriptions metadata lookup", () => {
       ],
       [
         {
+          routeStatus: "supported",
           id: "future-subscription-plan",
-          modelDescriptions: {
-            "qwen3.9-max": { status: "missing" },
-            "qwen3.9-flash": { status: "ambiguous" },
-          },
+          route: { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+          inclusions: [
+            {
+              kind: "provider_model",
+              externalModelId: "qwen3.9-max",
+              resolution: { status: "missing" },
+            },
+            {
+              kind: "provider_model",
+              externalModelId: "qwen3.9-flash",
+              resolution: { status: "ambiguous" },
+            },
+          ],
         },
       ]
     );
@@ -306,18 +338,18 @@ describe("plan modelDescriptions metadata lookup", () => {
     }
   });
 
-  test("keeps old caches without modelDescriptions working through ids and aliases", () => {
+  test("looks up models through ids and aliases when plans have no inclusions", () => {
     writeCatalog(
       [
         {
           modelId: "legacy-canonical-model",
           aliases: ["legacy-wire-model"],
-          sources: {},
+
           contextWindow: 98_304,
           reasoning: { supported: true, control: "toggle" },
         },
       ],
-      [{ id: "legacy-plan" }]
+      [{ id: "test-plan", routeStatus: "unknown" }]
     );
 
     expect(lookupModel("legacy-canonical-model", cachePath)?.contextWindow).toBe(98_304);
@@ -327,43 +359,53 @@ describe("plan modelDescriptions metadata lookup", () => {
 });
 
 describe("lookupModelReasoningStatus", () => {
-  test("preserves explicit and legacy knowledge without manufacturing a control", () => {
+  test("preserves explicit and described reasoning without manufacturing a control", () => {
     writeCatalog(
       [
         {
           modelId: "explicit-unknown",
           aliases: [],
-          sources: {},
+
           reasoningStatus: "unknown",
           supportsThinking: true,
         },
         {
           modelId: "explicit-known",
           aliases: [],
-          sources: {},
+
           reasoningStatus: "known",
           reasoning: { supported: false, control: "none" },
         },
         {
-          modelId: "legacy-described",
+          modelId: "reasoning-described",
           aliases: [],
-          sources: {},
+
           reasoning: { supported: true, control: "toggle" },
         },
         {
-          modelId: "legacy-undescribed",
+          modelId: "reasoning-undescribed",
           aliases: [],
-          sources: {},
+
           supportsThinking: false,
         },
       ],
       [
         {
+          routeStatus: "supported",
           id: "negative-plan",
-          modelDescriptions: {
-            "missing-wire": { status: "missing" },
-            "ambiguous-wire": { status: "ambiguous" },
-          },
+          route: { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+          inclusions: [
+            {
+              kind: "provider_model",
+              externalModelId: "missing-wire",
+              resolution: { status: "missing" },
+            },
+            {
+              kind: "provider_model",
+              externalModelId: "ambiguous-wire",
+              resolution: { status: "ambiguous" },
+            },
+          ],
         },
       ]
     );
@@ -371,9 +413,9 @@ describe("lookupModelReasoningStatus", () => {
     expect(lookupModelReasoningStatus("explicit-unknown", cachePath)).toBe("unknown");
     expect(lookupModelReasoning("explicit-unknown", cachePath)).toBeUndefined();
     expect(lookupModelReasoningStatus("explicit-known", cachePath)).toBe("known");
-    expect(lookupModelReasoningStatus("legacy-described", cachePath)).toBe("known");
-    expect(lookupModelReasoningStatus("legacy-undescribed", cachePath)).toBe("unknown");
-    expect(lookupModelReasoning("legacy-undescribed", cachePath)).toBeUndefined();
+    expect(lookupModelReasoningStatus("reasoning-described", cachePath)).toBe("known");
+    expect(lookupModelReasoningStatus("reasoning-undescribed", cachePath)).toBe("unknown");
+    expect(lookupModelReasoning("reasoning-undescribed", cachePath)).toBeUndefined();
 
     for (const modelId of ["not-in-the-catalog", "missing-wire", "ambiguous-wire"]) {
       expect(lookupModelReasoningStatus(modelId, cachePath)).toBeUndefined();

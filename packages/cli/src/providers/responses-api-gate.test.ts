@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DiskCacheV2 } from "./all-models-cache.js";
+import type { DiskCacheV3 } from "./all-models-cache.js";
 import { requiresResponsesApi } from "./provider-profiles.js";
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "responses-api-gate-"));
@@ -13,14 +13,16 @@ afterAll(() => {
   rmSync(fixtureDir, { recursive: true, force: true });
 });
 
-const fixture: DiskCacheV2 = {
-  version: 2,
+const fixture: DiskCacheV3 = {
+  catalogGenerationId: "test-generation",
+  plans: [],
+  version: 3,
   lastUpdated: new Date().toISOString(),
   entries: [
     {
       modelId: "acme-x1.0",
       aliases: ["openai/acme-x1.0"],
-      sources: {},
+
       contextWindow: 1050000,
       endpoints: { openai: { api: "responses" } },
       tokenParam: "max_output_tokens",
@@ -28,7 +30,7 @@ const fixture: DiskCacheV2 = {
     {
       modelId: "acme-x2.0",
       aliases: ["openai/acme-x2.0"],
-      sources: {},
+
       contextWindow: 1050000,
       endpoints: { openai: { toolsWithReasoning: "requires-responses" } },
       tokenParam: "max_output_tokens",
@@ -36,14 +38,14 @@ const fixture: DiskCacheV2 = {
     {
       modelId: "acme-x3.0",
       aliases: ["openai/acme-x3.0"],
-      sources: {},
+
       contextWindow: 1050000,
       tokenParam: "max_output_tokens",
     },
     {
       modelId: "acme-codex-x4.0",
       aliases: ["openai/acme-codex-x4.0"],
-      sources: {},
+
       contextWindow: 1050000,
       endpoints: { openai: { api: "chat-completions" } },
       tokenParam: "max_output_tokens",

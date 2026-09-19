@@ -186,7 +186,7 @@ const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>
  * behind a `--debug`-only log line. Callers could not tell "your API key was
  * rejected" from "this provider genuinely publishes no roster", so the picker
  * rendered a rejected credential as a free-text prompt, which reads as a
- * feature rather than an error. (Measured on qwen-cloud: a 401 from Alibaba's
+ * feature rather than an error. (Measured on qwen-token-plan: a 401 from Alibaba's
  * plan host was indistinguishable in the UI from a provider with no list.)
  *
  * The kinds are ordered by what the user should do about them, not by HTTP

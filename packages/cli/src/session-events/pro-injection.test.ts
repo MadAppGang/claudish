@@ -6,6 +6,7 @@ import type { Context } from "hono";
 import { ComposedHandler } from "../handlers/composed-handler.js";
 import type { ReasoningModeCapabilities } from "../model-loader.js";
 import { type SlimModelEntry, writeAllModelsCache } from "../providers/all-models-cache.js";
+import { catalogRouteForProvider } from "../providers/catalog-route-bindings.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { SessionEventRegistry } from "./index.js";
 import {
@@ -52,7 +53,7 @@ function variantEntry(
   return {
     modelId: VARIANT_MODEL_ID,
     aliases: [],
-    sources: {},
+
     routeVariant: {
       kind: "provider-preset",
       baseModelId,
@@ -66,11 +67,14 @@ function routeCapabilityEntry(provider: string, mode: ReasoningModeCapabilities)
   return {
     modelId: BASE_MODEL_ID,
     aliases: [`openai/${BASE_MODEL_ID}`],
-    sources: {},
+
     aggregators: [
       {
-        provider,
-        externalId: BASE_MODEL_ID,
+        sourceCollectorId: "test",
+        routeStatus: "mapped",
+        route: catalogRouteForProvider(provider),
+        sourceProviderId: provider,
+        externalModelId: BASE_MODEL_ID,
         confidence: provider === "openai" ? "api_official" : "gateway_official",
         reasoning: { mode },
       },
@@ -79,7 +83,17 @@ function routeCapabilityEntry(provider: string, mode: ReasoningModeCapabilities)
 }
 
 function writeCatalog(entries: SlimModelEntry[] = [variantEntry()]): void {
-  writeAllModelsCache({ entries }, cachePath);
+  writeAllModelsCache(
+    {
+      version: 3,
+      catalogGenerationId: "test-generation",
+      lastUpdated: new Date().toISOString(),
+      entries,
+      models: [],
+      plans: [],
+    },
+    cachePath
+  );
 }
 
 function makeProOptions(overrides: Partial<ProInjectionOptions> = {}): ProInjectionOptions {
@@ -165,7 +179,7 @@ describe("resolveVariantPreset", () => {
 
   test("returns undefined when the catalog model has no variant", () => {
     makeHome();
-    writeCatalog([{ modelId: BASE_MODEL_ID, aliases: [], sources: {} }]);
+    writeCatalog([{ modelId: BASE_MODEL_ID, aliases: [] }]);
 
     expect(resolveVariantPreset(BASE_MODEL_ID, PROVIDER, cachePath)).toBeUndefined();
   });

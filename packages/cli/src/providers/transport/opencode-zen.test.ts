@@ -4,7 +4,7 @@ import { getProviderByName, toRemoteProvider } from "../provider-definitions.js"
 import { openCodeZenProfile } from "../provider-profiles.js";
 import { conversationKey } from "./conversation-key.js";
 import { OpenAICodexTransport } from "./openai-codex.js";
-import { OpenCodeZenTransport } from "./opencode-zen.js";
+import { OpenCodeZenMessagesTransport, OpenCodeZenTransport } from "./opencode-zen.js";
 
 const DEVICE_ID = "073c1234567890abcdef1234567890ab";
 const SESSION_ID_A = "ce7d2f89-90c2-4a15-93ed-f2c41b531111";
@@ -117,10 +117,32 @@ describe("OpenCodeZenTransport", () => {
   });
 });
 
+describe("OpenCodeZenMessagesTransport", () => {
+  test("signs Messages with the product key and scopes the session header", async () => {
+    const provider = {
+      ...remoteProvider("opencode-zen-go"),
+      apiPath: "/v1/messages",
+      authScheme: "x-api-key" as const,
+    };
+    const transport = new OpenCodeZenMessagesTransport(provider, "go-key");
+    const request = requestFor(SESSION_ID_A);
+    const headers = await transport.getHeaders(request);
+    expect(transport.getEndpoint()).toBe("https://opencode.ai/zen/go/v1/messages");
+    expect(headers.Authorization).toBeUndefined();
+    expect(headers["x-api-key"]).toBe("go-key");
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    expect(headers["User-Agent"]).toMatch(/^claudish\/\d+\.\d+\.\d+$/);
+    expect(headers["x-opencode-session"]).toBe(conversationKey(request));
+    expect((await transport.getHeaders(requestFor(SESSION_ID_B)))["x-opencode-session"]).not.toBe(
+      headers["x-opencode-session"]
+    );
+  });
+});
+
 describe("openCodeZenProfile", () => {
   for (const providerName of ["opencode-zen-go", "opencode-zen"] as const) {
-    for (const modelName of ["minimax-m3", "gpt-5.4"] as const) {
-      test(`${providerName} ${modelName} uses OpenCodeZenTransport`, () => {
+    for (const modelName of ["minimax-m3", "gpt-5.4", "qwen3.7-plus"] as const) {
+      test(`${providerName} ${modelName} uses the matching transport`, () => {
         const provider = remoteProvider(providerName);
         const handler = openCodeZenProfile.createHandler({
           provider,
@@ -131,7 +153,12 @@ describe("openCodeZenProfile", () => {
           sharedOpts: {},
         } as any);
 
-        expect((handler as any).provider).toBeInstanceOf(OpenCodeZenTransport);
+        const messages =
+          modelName.startsWith("qwen") ||
+          (providerName === "opencode-zen-go" && modelName.startsWith("minimax"));
+        expect((handler as any).provider).toBeInstanceOf(
+          messages ? OpenCodeZenMessagesTransport : OpenCodeZenTransport
+        );
       });
     }
   }

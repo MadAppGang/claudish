@@ -4,9 +4,9 @@ import { PassThrough } from "node:stream";
 import { isSuppressibleChildStderrLine, relayChildStderr } from "./claude-runner.js";
 
 const SDK_NOISE =
-  '[claude-code:unrecognized_model] {"model":"qc@qwen3.8-max","query_source":"sdk"}';
+  '[claude-code:unrecognized_model] {"model":"qtoken@qwen3.8-max","query_source":"sdk"}';
 const TITLE_NOISE =
-  '[claude-code:unrecognized_model] {"model":"qc@qwen3.8-max","query_source":"generate_session_title"}';
+  '[claude-code:unrecognized_model] {"model":"qtoken@qwen3.8-max","query_source":"generate_session_title"}';
 
 describe("isSuppressibleChildStderrLine", () => {
   test("suppresses the unrecognized-model line from both observed query sources", () => {
@@ -73,7 +73,7 @@ describe("relayChildStderr", () => {
     const ended = once(stream, "end");
 
     stream.write("[claude-code:unrecog");
-    stream.end('nized_model] {"model":"qc@qwen3.8-max","query_source":"sdk"}\n');
+    stream.end('nized_model] {"model":"qtoken@qwen3.8-max","query_source":"sdk"}\n');
     await ended;
 
     expect(stderrWrites).toEqual([]);

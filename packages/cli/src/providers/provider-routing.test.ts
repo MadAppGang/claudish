@@ -36,14 +36,21 @@ describe("parseModelSpec — shortcut resolution", () => {
     expect(parsed2.provider).toBe("openrouter");
   });
 
-  test("qc@qwen3.7-plus resolves to qwen-cloud", () => {
-    const parsed = parseModelSpec("qc@qwen3.7-plus");
-    expect(parsed.provider).toBe("qwen-cloud");
+  test("qtoken@qwen3.7-plus resolves to qwen-token-plan", () => {
+    const parsed = parseModelSpec("qtoken@qwen3.7-plus");
+    expect(parsed.provider).toBe("qwen-token-plan");
     expect(parsed.model).toBe("qwen3.7-plus");
     expect(parsed.isExplicitProvider).toBe(true);
   });
 
-  test.each(["qp", "dashscope"])("%s@qwen3.7-plus resolves explicitly to qwen-payg", (shortcut) => {
+  test("qcode@qwen3.7-plus resolves to qwen-coding", () => {
+    const parsed = parseModelSpec("qcode@qwen3.7-plus");
+    expect(parsed.provider).toBe("qwen-coding");
+    expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isExplicitProvider).toBe(true);
+  });
+
+  test.each(["qpay"])("%s@qwen3.7-plus resolves explicitly to qwen-payg", (shortcut) => {
     const parsed = parseModelSpec(`${shortcut}@qwen3.7-plus`);
     expect(parsed.provider).toBe("qwen-payg");
     expect(parsed.model).toBe("qwen3.7-plus");
@@ -81,21 +88,6 @@ describe("parseModelSpec — legacy prefix patterns", () => {
     const parsed = parseModelSpec("ollama:llama3.2");
     expect(parsed.provider).toBe("ollama");
     expect(parsed.model).toBe("llama3.2");
-  });
-
-  test("qc/qwen3.7-plus resolves to qwen-cloud", () => {
-    const parsed = parseModelSpec("qc/qwen3.7-plus");
-    expect(parsed.provider).toBe("qwen-cloud");
-    expect(parsed.model).toBe("qwen3.7-plus");
-    expect(parsed.isLegacySyntax).toBe(true);
-  });
-
-  test("qp/qwen3.7-plus resolves explicitly to qwen-payg", () => {
-    const parsed = parseModelSpec("qp/qwen3.7-plus");
-    expect(parsed.provider).toBe("qwen-payg");
-    expect(parsed.model).toBe("qwen3.7-plus");
-    expect(parsed.isExplicitProvider).toBe(true);
-    expect(parsed.isLegacySyntax).toBe(true);
   });
 });
 
@@ -156,17 +148,17 @@ describe("parseModelSpec — native model auto-detection", () => {
     expect(parsed.provider).toBe("qwen");
   });
 
-  test("qwen3.7-plus auto-detects as qwen-cloud before the general qwen provider", () => {
+  test("qwen3.7-plus auto-detects as qwen-token-plan before the general qwen provider", () => {
     const parsed = parseModelSpec("qwen3.7-plus");
-    expect(parsed.provider).toBe("qwen-cloud");
+    expect(parsed.provider).toBe("qwen-token-plan");
     expect(parsed.model).toBe("qwen3.7-plus");
     expect(parsed.isExplicitProvider).toBe(false);
   });
 
-  test("hyphenated qwen3-coder-next remains owned by qwen, not qwen-cloud", () => {
+  test("hyphenated qwen3-coder-next remains owned by qwen, not qwen-token-plan", () => {
     const parsed = parseModelSpec("qwen3-coder-next");
     expect(parsed.provider).toBe("qwen");
-    expect(parsed.provider).not.toBe("qwen-cloud");
+    expect(parsed.provider).not.toBe("qwen-token-plan");
   });
 
   test("llama3 auto-detects as ollamacloud", () => {
@@ -204,8 +196,8 @@ describe("parseModelSpec — native model auto-detection", () => {
 // ---------------------------------------------------------------------------
 
 describe("Provider handlers", () => {
-  test("qwen-cloud shares the Anthropic-compatible handler builder", () => {
-    const createHandler = getProviderByName("qwen-cloud")?.createHandler;
+  test("qwen-token-plan shares the Anthropic-compatible handler builder", () => {
+    const createHandler = getProviderByName("qwen-token-plan")?.createHandler;
     expect(typeof createHandler).toBe("function");
 
     // These four providers are all natively Anthropic-compatible and must not
@@ -219,7 +211,6 @@ describe("Provider handlers", () => {
   test("every handler omission is explicit and qwen-payg uses the Anthropic-compatible builder", () => {
     const expectedHandlerlessProviders = [
       "openrouter",
-      "poe",
       "ollama",
       "lmstudio",
       "vllm",
@@ -233,7 +224,7 @@ describe("Provider handlers", () => {
 
     expect(handlerlessProviders).toEqual(expectedHandlerlessProviders);
     expect(typeof qwenPaygHandler).toBe("function");
-    expect(qwenPaygHandler).toBe(getProviderByName("qwen-cloud")?.createHandler);
+    expect(qwenPaygHandler).toBe(getProviderByName("qwen-token-plan")?.createHandler);
   });
 });
 

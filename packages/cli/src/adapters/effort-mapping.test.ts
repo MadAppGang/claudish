@@ -16,7 +16,7 @@ import { existsSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node
 import { dirname } from "node:path";
 import {
   ALL_MODELS_CACHE_PATH,
-  type DiskCacheV2,
+  type DiskCacheV3,
   writeAllModelsCache,
 } from "../providers/all-models-cache.js";
 import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
@@ -31,7 +31,7 @@ import { QwenModelDialect } from "./qwen-model-dialect.js";
 
 const SYNTHETIC_FUGU_MODEL_ID = "fugu-acme-ultra";
 
-function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
+function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   const cacheDir = dirname(ALL_MODELS_CACHE_PATH);
   const cacheDirExisted = existsSync(cacheDir);
   const previousContents = existsSync(ALL_MODELS_CACHE_PATH)
@@ -40,7 +40,9 @@ function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
 
   writeAllModelsCache(
     {
-      version: 2,
+      catalogGenerationId: "test-generation",
+      plans: [],
+      version: 3,
       lastUpdated: new Date().toISOString(),
       entries,
       models: [],
@@ -177,7 +179,7 @@ describe("Sakana Fugu (OpenAI-compatible path) clamps UP to high", () => {
       {
         modelId: SYNTHETIC_FUGU_MODEL_ID,
         aliases: [],
-        sources: {},
+
         reasoning: {
           supported: true,
           control: "effort",
@@ -700,7 +702,6 @@ describe("DeepSeek V4 reasoning_effort + thinking", () => {
       {
         modelId: SYNTHETIC_FUGU_MODEL_ID,
         aliases: [],
-        sources: {},
       },
     ]);
   });
@@ -764,7 +765,7 @@ describe("DeepSeek V4 reasoning_effort + thinking", () => {
       {
         modelId: "deepseek-chat",
         aliases: [],
-        sources: {},
+
         reasoning: { supported: false, control: "none" },
       },
     ]);

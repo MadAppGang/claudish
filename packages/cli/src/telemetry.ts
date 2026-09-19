@@ -60,7 +60,8 @@ const PUBLIC_PROVIDERS = new Set([
   "minimax-coding",
   "kimi-coding",
   "glm-coding",
-  "qwen-cloud",
+  "qwen-token-plan",
+  "qwen-coding",
   "qwen-payg",
 ]);
 
