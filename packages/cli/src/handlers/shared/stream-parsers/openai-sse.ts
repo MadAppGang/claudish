@@ -28,6 +28,85 @@ import {
   POLICY_RETRY_BACKOFF_MS,
   type PolicyRetryOpts,
 } from "./policy-refusal.js";
+import { messageStartUsage } from "./message-start-usage.js";
+
+/**
+ * Hard ceiling, in characters, on ONE logged raw SSE payload.
+ *
+ * The debug log is the source of record for test fixtures — `extract-sse-from-log.ts`
+ * reads these very lines back and writes them out as `.sse` replay files — so the
+ * payload has to reach the log VERBATIM. A payload cut mid-JSON yields a fixture that
+ * `JSON.parse` rejects, and the parser's `catch` swallows that, so the corruption only
+ * ever surfaces as a wrong `stop_reason` several layers away. That is exactly what the
+ * previous 300-character cap did.
+ *
+ * 1M characters is a backstop against a pathological provider, not a content limit: a
+ * normal chunk is a few hundred bytes, and even a whole tool call with inlined arguments
+ * is orders of magnitude under it. Nothing that fits in a real turn can be cut by it.
+ * (S4-b 333026b)
+ */
+export const SSE_LOG_MAX_CHARS = 1_000_000;
+
+/**
+ * Appended when — and only when — a payload exceeded {@link SSE_LOG_MAX_CHARS}.
+ *
+ * A cut payload is never left looking whole. This marker is not valid JSON and not
+ * plausible content, so both a human reading the log and `extract-sse-from-log.ts`
+ * can tell an incomplete line from a complete one.
+ */
+export const SSE_LOG_TRUNCATION_MARKER = "<<<CLAUDISH_SSE_TRUNCATED>>>";
+
+/**
+ * Render a raw SSE `data:` payload for the debug log: verbatim, unless it is
+ * absurdly large, in which case it is cut and unmistakably flagged as cut.
+ */
+export function formatRawSseLogPayload(dataStr: string): string {
+  if (dataStr.length <= SSE_LOG_MAX_CHARS) return dataStr;
+  return `${dataStr.substring(0, SSE_LOG_MAX_CHARS)} ${SSE_LOG_TRUNCATION_MARKER} original_chars=${dataStr.length}`;
+}
+
+/**
+ * Render an error carried INSIDE a 200 stream into one readable line.
+ *
+ * OpenRouter answers HTTP 200 and then reports the upstream's refusal as a
+ * frame in the body (empty `choices` + `error` object), so every field the
+ * parser reads is undefined and the frame matched nothing at all: dropped
+ * without a log line, the turn looked like a model with nothing to say.
+ *
+ * Returns undefined when the frame carries no error, so the caller can test
+ * the result directly. The refusal CLASS keeps its #65 treatment; this
+ * handles everything else. (S4-b 321c2f0)
+ */
+export function describeInStreamError(chunk: unknown): string | undefined {
+  if (!chunk || typeof chunk !== "object") return undefined;
+  const error = (chunk as { error?: unknown }).error;
+  if (!error) return undefined;
+
+  // Some gateways send a bare string; most send an object.
+  if (typeof error === "string") return error;
+  if (typeof error !== "object") return String(error);
+
+  const e = error as Record<string, unknown>;
+  const metadata = (e.metadata ?? {}) as Record<string, unknown>;
+
+  const parts: string[] = [];
+  // The vendor that actually refused, when the aggregator names it. Without
+  // this the message reads as though the aggregator itself rejected the call.
+  const provider = (chunk as { provider?: unknown }).provider;
+  if (typeof provider === "string" && provider) parts.push(`[${provider}]`);
+
+  const code = e.code ?? metadata.provider_code;
+  const type = e.type ?? metadata.error_type;
+  const label = [code, type].filter((v) => v !== undefined && v !== null && v !== "").join(" ");
+  if (label) parts.push(label);
+
+  const message = e.message ?? metadata.raw;
+  parts.push(
+    typeof message === "string" && message.trim() ? message : JSON.stringify(error).slice(0, 500)
+  );
+
+  return parts.join(" ");
+}
 
 export interface StreamingState {
   usage: any;
@@ -42,6 +121,27 @@ export interface StreamingState {
   lastActivity: number;
   accumulatedText: string; // Accumulated text for potential tool call extraction
   lastFinishReason: string | null; // Last finish_reason seen (stop/length/content_filter) — diagnoses empty responses
+  /**
+   * Argument fragments that arrived for a `tool_calls` index BEFORE its
+   * `function.name` did, keyed by that index (S4-b baf19ef).
+   *
+   * OpenAI's own streams put the name in the first fragment for an index, so
+   * this map is empty on every capture in the tree. Providers that do not —
+   * and they exist — had the head of their JSON object silently dropped by an
+   * `&& t` guard, leaving arguments that begin mid-object and cannot parse —
+   * indistinguishable downstream from a model that emitted bad JSON.
+   * Drained into `ToolState.arguments` the moment the tool is created.
+   */
+  pendingToolArgs: Map<number, string>;
+  /**
+   * `function.name` fragments per `tool_calls` index, accumulated (S4-b baf19ef).
+   *
+   * The name is decoded from here rather than from a single chunk's fragment,
+   * so there is ONE place where a complete name exists — decoding a fragment
+   * yields a miss on the truncated-name map, and the call is then dropped in
+   * silence.
+   */
+  pendingToolName: Map<number, string>;
 }
 
 export interface ToolState {
@@ -122,6 +222,8 @@ export function createStreamingState(): StreamingState {
     lastActivity: Date.now(),
     accumulatedText: "",
     lastFinishReason: null,
+    pendingToolArgs: new Map(),
+    pendingToolName: new Map(),
   };
 }
 
@@ -176,7 +278,8 @@ export function createStreamingResponseHandler(
   toolSchemas?: any[], // Tool schemas for validation
   toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
   headerLatencyMs?: number, // dispatch → upstream headers, from ComposedHandler
-  retryOpts?: PolicyRetryOpts // invalid_prompt transparent retry (#65) — absent = inert
+  retryOpts?: PolicyRetryOpts, // invalid_prompt transparent retry (#65) — absent = inert
+  priorInputTokens?: number // Last request's context size — seeds message_start.usage (S4-b ae8c07f)
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -269,7 +372,7 @@ export function createStreamingResponseHandler(
             model: target,
             stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: 0, output_tokens: 0 },
+            usage: messageStartUsage(priorInputTokens),
           },
         });
         send("ping", { type: "ping" });
@@ -297,6 +400,20 @@ export function createStreamingResponseHandler(
           toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
           log(`[Stream] reason=${reason} model=${target} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
           logStderr(`[Stream] ${target} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
+
+          // Argument fragments whose `function.name` never arrived (S4-b
+          // baf19ef). A call with no name is not a call — nothing to dispatch
+          // and no schema to validate against — so they are discarded. Named
+          // in the log because silently dropping them is precisely the defect
+          // the pending buffer fixes, and a buffer that survives to here means
+          // the provider is doing something the accumulator did not
+          // anticipate. "error" carries this to the always-on structural log.
+          for (const [idx, pending] of state.pendingToolArgs) {
+            log(
+              `[Streaming] Tool argument error: discarding ${pending.length} buffered chars for tool_calls index ${idx} — function.name never arrived`
+            );
+          }
+          state.pendingToolArgs.clear();
 
           // Debug: Log accumulated text for analysis
           if (state.accumulatedText.length > 0) {
@@ -615,8 +732,29 @@ export function createStreamingResponseHandler(
             }
 
             // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
-            const stopReason =
-              textToolCalls.length > 0 || hasStructuredTools ? "tool_use" : "end_turn";
+            //
+            // A turn the PROVIDER cut off must not be reported as a turn the
+            // model chose to end (S4-b 92b72cb). Anthropic's contract for a
+            // cut-off turn is "max_tokens"; reporting "end_turn" presents a
+            // truncated (or, when reasoning consumed the whole budget, an
+            // EMPTY) answer as the model's complete final word.
+            // `content_filter` is the same class: the provider refused, which
+            // is Anthropic's "refusal". Both OUTRANK tool_use — a truncated
+            // tool call must not be dispatched as a complete one.
+            const truncated = state.lastFinishReason === "length";
+            const refused = state.lastFinishReason === "content_filter";
+            const stopReason = refused
+              ? "refusal"
+              : truncated
+                ? "max_tokens"
+                : textToolCalls.length > 0 || hasStructuredTools
+                  ? "tool_use"
+                  : "end_turn";
+            if (truncated || refused) {
+              log(
+                `[Streaming] Upstream finish_reason=${state.lastFinishReason} → stop_reason=${stopReason} (${state.accumulatedText.length} chars produced)`
+              );
+            }
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
@@ -640,7 +778,11 @@ export function createStreamingResponseHandler(
               log(
                 `[Streaming] No usage data from provider, estimating: ~${estimatedOutputTokens} output tokens`
               );
-              onTokenUpdate(0, estimatedOutputTokens);
+              // Carry the previous context size forward rather than a literal
+              // 0 (S4-b ae8c07f) — the status line reads this value, and 0
+              // would make the bar collapse to "empty" on any turn the
+              // provider skips usage.
+              onTokenUpdate(priorInputTokens || 100, estimatedOutputTokens);
             }
           }
 
@@ -712,7 +854,8 @@ export function createStreamingResponseHandler(
                   `  [ttft] openai model=${target} reqN=${reqN} headers=${hdr}ms firstEvent=${firstEventMs}ms total=${hdr >= 0 ? hdr + firstEventMs : -1}ms\n`
                 );
               }
-              log(`[SSE:openai] ${dataStr.substring(0, 300)}`);
+              // Verbatim: this line IS the fixture source (see SSE_LOG_MAX_CHARS, S4-b 333026b).
+              log(`[SSE:openai] ${formatRawSseLogPayload(dataStr)}`);
               if (dataStr === "[DONE]") {
                 await finalize("done");
                 return;
@@ -840,8 +983,24 @@ export function createStreamingResponseHandler(
                     }
                     return;
                   }
-                  // Non-policy in-stream error: out of #65 scope — keep the
-                  // pre-existing behavior (chunk ignored, stream end governs).
+                  // Non-policy in-stream error (S4-b 321c2f0): surface it.
+                  // OpenRouter-shaped frames carry an empty `choices` array,
+                  // so every field the parser reads is undefined and the frame
+                  // matched nothing — dropped without a log line, the turn
+                  // read as a model with nothing to say while the tokens it
+                  // spent were already billed. Checked AFTER `usage` (a frame
+                  // can carry both) so the tokens the turn already spent are
+                  // still reported. finalize("error", …) injects our labeled
+                  // text-block lane — never a bare, never a hang.
+                  if (chunk.usage) {
+                    state.usage = chunk.usage;
+                  }
+                  const inStreamError = describeInStreamError(chunk);
+                  if (inStreamError) {
+                    log(`[Streaming] Upstream error inside a 200 stream: ${inStreamError}`);
+                    await finalize("error", inStreamError);
+                    return;
+                  }
                 }
 
                 if (chunk.usage) {
@@ -986,6 +1145,15 @@ export function createStreamingResponseHandler(
                       const idx = tc.index;
                       let t = state.tools.get(idx);
                       if (tc.function?.name) {
+                        // Accumulate the name BEFORE anything reads it (S4-b
+                        // baf19ef): a provider may split `function.name`
+                        // across chunks, and this is the one place a complete
+                        // name exists. Decoding a fragment misses the
+                        // truncated-name map, and the call is then dropped in
+                        // silence.
+                        const accumulatedName =
+                          (state.pendingToolName.get(idx) ?? "") + tc.function.name;
+                        state.pendingToolName.set(idx, accumulatedName);
                         if (!t) {
                           // Close thinking and text blocks before starting tool
                           if (state.reasoningStarted) {
@@ -1002,8 +1170,10 @@ export function createStreamingResponseHandler(
                             });
                             state.textStarted = false;
                           }
-                          // Restore truncated tool name to original if mapping exists
-                          const rawName = tc.function.name;
+                          // Restore truncated tool name to original if mapping exists.
+                          // THIS IS THE DECODE POINT: it reads the accumulated
+                          // name, never a single chunk's fragment (S4-b baf19ef).
+                          const rawName = accumulatedName;
                           const restoredName = toolNameMap?.get(rawName) || rawName;
                           const isWebSearch = isWebSearchToolCall(restoredName);
                           const remapToWebSearch = isWebSearch && clientDeclaresWebSearch(toolSchemas);
@@ -1021,6 +1191,16 @@ export function createStreamingResponseHandler(
                             arguments: "", // Initialize arguments accumulator
                             buffered: !!toolSchemas && toolSchemas.length > 0 && !isWebSearch,
                           };
+                          // Seeded, not empty (S4-b baf19ef): fragments that
+                          // arrived for this index before the name did are
+                          // drained in here.
+                          t.arguments = state.pendingToolArgs.get(idx) ?? "";
+                          if (t.arguments) {
+                            log(
+                              `[Streaming] tool ${t.name} (index ${idx}): seeded ${t.arguments.length} argument chars that arrived before function.name`
+                            );
+                          }
+                          state.pendingToolArgs.delete(idx);
                           state.tools.set(idx, t);
                         }
                         // Only send content_block_start immediately if NOT buffering.
@@ -1032,7 +1212,30 @@ export function createStreamingResponseHandler(
                             content_block: { type: "tool_use", id: t.id, name: t.name },
                           });
                           t.started = true;
+                          // Flush the seed as ONE delta, right after the start
+                          // (S4-b baf19ef). Skipped when the seed is empty —
+                          // every capture in the tree — so the common case is
+                          // byte-identical.
+                          if (t.arguments) {
+                            send("content_block_delta", {
+                              type: "content_block_delta",
+                              index: t.blockIndex,
+                              delta: { type: "input_json_delta", partial_json: t.arguments },
+                            });
+                          }
                         }
+                      }
+                      if (tc.function?.arguments && !t) {
+                        // Arguments before the name (S4-b baf19ef). This used
+                        // to be dropped by the `&& t` guard below, so the head
+                        // of the JSON object vanished and what survived began
+                        // mid-object and could not parse — indistinguishable
+                        // downstream from a model emitting bad JSON. Hold it
+                        // until the name creates the tool.
+                        state.pendingToolArgs.set(
+                          idx,
+                          (state.pendingToolArgs.get(idx) ?? "") + tc.function.arguments
+                        );
                       }
                       if (tc.function?.arguments && t) {
                         // Always accumulate arguments — suppressed/remapped tools
@@ -1259,7 +1462,23 @@ export function createStreamingResponseHandler(
                     }
                   }
                 }
-              } catch (e) {}
+              } catch (e) {
+                // NEVER swallow silently (S4-b ea5258c). Everything a chunk
+                // would have emitted — a content block, a tool call, the
+                // finish_reason — is lost here, and the turn still ends HTTP
+                // 200, so the only symptom is a missing block several layers
+                // away. The bare `catch {}` this replaces made every such
+                // fault undiagnosable from the log. forceConsole, like
+                // [PolicyRefusal]: this is an error-class, countable marker,
+                // and "error" in the text carries it to the always-on
+                // structural log. The payload itself was already logged
+                // verbatim above as `[SSE:openai]`, so only a short locator is
+                // repeated here.
+                log(
+                  `[Streaming] Chunk processing error (chunk dropped): ${e} — payload starts: ${dataStr.slice(0, 120)}`,
+                  true
+                );
+              }
             }
           }
           await finalize("unexpected");

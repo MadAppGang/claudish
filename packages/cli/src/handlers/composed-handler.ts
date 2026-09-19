@@ -1141,6 +1141,15 @@ export class ComposedHandler implements ModelHandler {
 
     // See resolveStreamFormat() for the priority rules and the #102 history.
     const streamFormat = this.resolveStreamFormat();
+    // The last-known full context size on this handler's token tracker, read
+    // BEFORE this stream updates it (S4-b ae8c07f). Seeds message_start.usage
+    // on the openai-sse lane: Claude Code only lets a delta override the seed
+    // when its value is > 0, so on turns without usage — or fully-cached turns
+    // whose netted input is 0 — the seed is what the client records as the
+    // conversation size. The tracker reports the full context per request, not
+    // a delta, so this is the right order of magnitude from a real prior
+    // request on the same lane.
+    const priorInputTokens = this.tokenTracker.getInputTokens();
     // First-useful-event watchdog (#108): a stream admitted with 200 that
     // produces only keep-alive comments held hub slots for ~900s during the
     // 14/09 deepseek-flash scheduler incident. Wrapped for every SSE format;
@@ -1179,7 +1188,8 @@ export class ComposedHandler implements ModelHandler {
           headerLatencyMs,
           // invalid_prompt transparent retry (#65) — same doFetch re-issue the
           // responses lane uses; the marker carries the provider for counting.
-          { retryUpstream: retryUpstreamBounded, providerName: this.provider.name }
+          { retryUpstream: retryUpstreamBounded, providerName: this.provider.name },
+          priorInputTokens
         );
 
       case "openai-responses-sse":
