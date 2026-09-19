@@ -1,0 +1,134 @@
+# claudish response capture (reconstructed upstream stream)
+# source: production capture reqN=10416, MiniMax-M3 anthropic passthrough (2026-07)
+# The on-disk capture taped the OUTGOING stream (post-clamp): the old clamp
+# remapped content_block_start to sequential indices but let deltas/stops leak
+# at their upstream index. This fixture undoes the start remap (index+1 per start)
+# to restore the upstream stream the parser must absorb: implicit signature block
+# at 0 (signature_delta+stop, no start), text at 1, tool_use at 2.
+# verification: replaying the old clamp on this fixture reproduces the capture
+# event-for-event. Capture sha256=87E1926B52BB7374...
+# ==========================================================
+
+event: ping
+data: {"type":"ping"}
+
+event: message_start
+data: {"type":"message_start","message":{"id":"06c3b9b250191b480da3570519225a87","type":"message","role":"assistant","content":[],"model":"MiniMax-M3","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0,"service_tier":"standard"},"service_tier":"standard"}}
+
+event: ping
+data: {"type":"ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 8 open PRs touching QuantConnect. #6891 is the"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" **scope-defining issue** for 7 quantbooks"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" honesty. **No active PR on those 7 quantbook"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" paths** (the open PRs are timing drains"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" with .ipynb extension, not the project quant"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"books). Let me also check QC-Py-"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"40/41 PaperTrading status and verify which projects have"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" config.json:"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "call_991f0dd36bb64cab89b91c94", "name": "Bash", "input": {}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"cd \\\"d:/Dev/Cours"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"IA-2\\\" && ls -la MyIA.A"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"I.Notebooks/QuantConnect/projects/ 2>&1 |"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" head -3 && echo \\\"--- projects list ---"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\\\" && ls -1 MyIA.AI.Not"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ebooks/QuantConnect/projects/ 2>&1 | grep -"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"E \\\"AllWeather|DualMomentum|EMA"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"-Cross-Alpha|FuturesTrend|MomentumStrategy|R"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"iskParity|SectorMomentum|TurnOfMonth\\\" |"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" head -10 && echo \\\"--- config.json check"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" ---\\\" && for p in AllWeather DualMomentum EMA"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"-Cross-Alpha FuturesTrend MomentumStrategy RiskParity Sector"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"Momentum TurnOfMonth; do\\n  if"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" [ -f \\\"MyIA.AI.Notebooks/"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"QuantConnect/projects/${p}/config.json\\\" ]; then"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\\n    echo \\\"${p}/config.json EXISTS\\\"\\n   "}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" cat \\\"MyIA.AI.Notebooks/QuantConnect"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"/projects/${p}/config.json\\\" 2>&1"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" | head -5\\n    echo \\\"\\\"\\n  fi"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\\ndone\", \"description\": \"Check"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" which 7 quantbooks have config.json (QC"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" Cloud presence)\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":150556,"output_tokens":339,"cache_read_input_tokens":2176,"service_tier":"standard"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

@@ -92,6 +92,37 @@ export function createAnthropicPassthroughStream(
           }
         };
 
+        // ── Event-line withholding (S4-a, upstream c9e97c9 + b48042c) ──────
+        // An SSE frame is `event: X\ndata: {...}\n\n` and the event line
+        // arrives FIRST. Any filter that drops a data line must therefore drop
+        // the event line that introduced it, or the client receives an event
+        // with no data — Claude Code dies on that shape with `Could not parse
+        // message into JSON`. The verdict isn't known until the data line is
+        // read, so the event line is buffered for exactly one line. Held on
+        // BOTH paths: every drop site below (thinking suppression, server
+        // tool suppression, orphan frames) lives on one path or the other.
+        let pendingEventLine: string | null = null;
+        /** A frame was just dropped — swallow its trailing blank separator too. */
+        let suppressedFrame = false;
+        const flushPendingEvent = () => {
+          if (pendingEventLine !== null && !isClosed) {
+            controller.enqueue(encoder.encode(pendingEventLine + "\n"));
+          }
+          pendingEventLine = null;
+        };
+        /** Emit a data line (flushing its held `event:` line first, in order). */
+        const emitDataLine = (text: string) => {
+          flushPendingEvent();
+          if (!isClosed) {
+            controller.enqueue(encoder.encode(text + "\n"));
+          }
+        };
+        /** Mark the current frame as dropped: header and blank separator go too. */
+        const dropFrame = () => {
+          pendingEventLine = null;
+          suppressedFrame = true;
+        };
+
         sendPing();
 
         pingInterval = setInterval(() => {
@@ -250,27 +281,57 @@ export function createAnthropicPassthroughStream(
                     ? "[The model provider is rate limited right now. The proxy retried and exhausted fallback capacity — please try again in a moment.]"
                     : `[Upstream provider error: ${errMsg}]`);
                 const synthId = `msg_${Date.now()}`;
+                // Frames built with JSON.stringify, never string interpolation
+                // (S4-a, upstream 5934fec): custom endpoints allow arbitrary
+                // model names, and one quote or backslash in a hand-built
+                // literal produces JSON the client cannot parse — turning a
+                // recoverable truncation into a hard failure.
                 controller.enqueue(
                   encoder.encode(
-                    "event: message_start\n" +
-                      `data: {"type":"message_start","message":{"id":"${synthId}","type":"message","role":"assistant","model":"${opts.modelName}","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}\n\n`
+                    "event: message_start\ndata: " +
+                      JSON.stringify({
+                        type: "message_start",
+                        message: {
+                          id: synthId,
+                          type: "message",
+                          role: "assistant",
+                          model: opts.modelName,
+                          content: [],
+                          stop_reason: null,
+                          stop_sequence: null,
+                          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+                        },
+                      }) +
+                      "\n\n"
                   )
                 );
                 controller.enqueue(
                   encoder.encode(
-                    "event: content_block_start\n" +
-                      `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+                    "event: content_block_start\ndata: " +
+                      JSON.stringify({
+                        type: "content_block_start",
+                        index: 0,
+                        content_block: { type: "text", text: "" },
+                      }) +
+                      "\n\n"
                   )
                 );
                 controller.enqueue(
                   encoder.encode(
-                    "event: content_block_delta\n" +
-                      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: notice } })}\n\n`
+                    "event: content_block_delta\ndata: " +
+                      JSON.stringify({
+                        type: "content_block_delta",
+                        index: 0,
+                        delta: { type: "text_delta", text: notice },
+                      }) +
+                      "\n\n"
                   )
                 );
                 controller.enqueue(
                   encoder.encode(
-                    "event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}\n\n`
+                    "event: content_block_stop\ndata: " +
+                      JSON.stringify({ type: "content_block_stop", index: 0 }) +
+                      "\n\n"
                   )
                 );
               } else {
@@ -282,8 +343,9 @@ export function createAnthropicPassthroughStream(
                 if (highestSeenIndex >= 0 && lastBlockOpen) {
                   controller.enqueue(
                     encoder.encode(
-                      "event: content_block_stop\n" +
-                        `data: {"type":"content_block_stop","index":${highestSeenIndex}}\n\n`
+                      "event: content_block_stop\ndata: " +
+                        JSON.stringify({ type: "content_block_stop", index: highestSeenIndex }) +
+                        "\n\n"
                     )
                   );
                 }
@@ -294,34 +356,67 @@ export function createAnthropicPassthroughStream(
                   const noticeIdx = highestSeenIndex + 1;
                   controller.enqueue(
                     encoder.encode(
-                      "event: content_block_start\n" +
-                        `data: ${JSON.stringify({ type: "content_block_start", index: noticeIdx, content_block: { type: "text", text: "" } })}\n\n`
+                      "event: content_block_start\ndata: " +
+                        JSON.stringify({
+                          type: "content_block_start",
+                          index: noticeIdx,
+                          content_block: { type: "text", text: "" },
+                        }) +
+                        "\n\n"
                     )
                   );
                   controller.enqueue(
                     encoder.encode(
-                      "event: content_block_delta\n" +
-                        `data: ${JSON.stringify({ type: "content_block_delta", index: noticeIdx, delta: { type: "text_delta", text: noticeOverride } })}\n\n`
+                      "event: content_block_delta\ndata: " +
+                        JSON.stringify({
+                          type: "content_block_delta",
+                          index: noticeIdx,
+                          delta: { type: "text_delta", text: noticeOverride },
+                        }) +
+                        "\n\n"
                     )
                   );
                   controller.enqueue(
                     encoder.encode(
-                      "event: content_block_stop\n" +
-                        `data: ${JSON.stringify({ type: "content_block_stop", index: noticeIdx })}\n\n`
+                      "event: content_block_stop\ndata: " +
+                        JSON.stringify({ type: "content_block_stop", index: noticeIdx }) +
+                        "\n\n"
                     )
                   );
                   highestSeenIndex = noticeIdx;
                 }
               }
-              controller.enqueue(
-                encoder.encode(
-                  "event: message_delta\n" +
-                    `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}\n\n`
-                )
-              );
-              controller.enqueue(
-                encoder.encode("event: message_stop\n" + `data: {"type":"message_stop"}\n\n`)
-              );
+              // Upstream already closed the message — never emit a second
+              // terminal pair (S4-a, upstream 5934fec): a socket that dies
+              // AFTER message_stop (trailing-byte read error) must not append
+              // a duplicate message_delta + message_stop on top of a complete
+              // turn.
+              if (!sawMessageStop) {
+                // stop_reason is the value upstream actually reported, falling
+                // back to end_turn — a turn that lost only its terminal frames
+                // may still have delivered a complete tool_use block, and a
+                // hardcoded end_turn there makes the client discard the tool
+                // call.
+                const tailStop = stopReason ?? "end_turn";
+                controller.enqueue(
+                  encoder.encode(
+                    "event: message_delta\ndata: " +
+                      JSON.stringify({
+                        type: "message_delta",
+                        delta: { stop_reason: tailStop, stop_sequence: null },
+                        usage: { output_tokens: outputTokens },
+                      }) +
+                      "\n\n"
+                  )
+                );
+                controller.enqueue(
+                  encoder.encode(
+                    "event: message_stop\ndata: " +
+                      JSON.stringify({ type: "message_stop" }) +
+                      "\n\n"
+                  )
+                );
+              }
             }
             isClosed = true;
             if (pingInterval) {
@@ -464,6 +559,7 @@ export function createAnthropicPassthroughStream(
                   // HTTP 200 with {"error":{...}} embedded in the SSE payload.
                   // Detect and surface as a proper error event.
                   if (data.error) {
+                    dropFrame();
                     if (
                       (await handleInStreamError(data.error, "in-stream-error-filtered")) ===
                       "retried"
@@ -482,69 +578,85 @@ export function createAnthropicPassthroughStream(
                     thinkingBlocksSuppressed++;
                     // Thinking blocks are suppressed — don't count them as open.
                     log(`[AnthropicSSE] Filtering thinking block at index ${data.index}`);
+                    dropFrame();
                     continue; // suppress this line
                   }
 
                   // Track: exiting a thinking block
                   if (insideThinkingBlock && data.type === "content_block_stop") {
                     insideThinkingBlock = false;
+                    dropFrame();
                     continue; // suppress this line
                   }
 
                   // Suppress all deltas while inside a thinking block
                   // (thinking_delta, signature_delta)
                   if (insideThinkingBlock) {
+                    dropFrame();
                     continue;
                   }
 
-                  // Re-index non-thinking content blocks
-                  // After suppressing N thinking blocks + M server_tool_use blocks,
-                  // subtract N+M from the index to keep it sequential.
-                  const totalSuppressed = thinkingBlocksSuppressed + serverToolsSuppressed;
-                  if (typeof data.index === "number" && totalSuppressed > 0) {
-                    const reindexed = data.index - totalSuppressed;
-                    const clamped = clampIndex(reindexed, `${data.type} (filtered, orig=${data.index})`);
-                    trackIndex(clamped);
-                    // Track block open/close state for finalizeWithError
-                    if (data.type === "content_block_start") lastBlockOpen = true;
-                    if (data.type === "content_block_stop") lastBlockOpen = false;
-                    const modifiedLine =
-                      "data: " + JSON.stringify({ ...data, index: clamped });
-
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(modifiedLine + "\n"));
-                    }
-
-                    // Still do usage tracking below with the ORIGINAL data
-                  } else {
-                    // No filtering needed — track and pass through
-                    if (typeof data.index === "number") {
-                      if (data.type === "content_block_start") {
-                        trackIndex(data.index);
-                        lastBlockOpen = true;
+                  // Re-index content blocks through the same pair-remap layer
+                  // the passthrough branch uses (S4-a, upstream b48042c — which
+                  // generalizes our own #127 repair). Suppressed blocks never
+                  // call trackIndex, so the next real start lands on the slot
+                  // the suppressed block would have taken: the renumbering
+                  // falls out of highestSeenIndex instead of a subtraction
+                  // counter. Jumped starts (z.ai 0 → 2) are remapped to the
+                  // next sequential slot with the pair remembered so the
+                  // block's own deltas and stop follow it. An orphan frame —
+                  // no remap entry and no block the client opened at that
+                  // index, e.g. MiniMax-M3's implicit signature block
+                  // (signature_delta + stop at 0 with NO content_block_start;
+                  // 7 production captures 2026-07-19 → 08-06) — is dropped
+                  // whole: re-attaching it to another block would corrupt that
+                  // block's content, and forwarding it kills the client turn
+                  // with "Content block not found".
+                  if (typeof data.index === "number") {
+                    if (data.type === "content_block_start") {
+                      lastBlockOpen = true;
+                      const expected = highestSeenIndex + 1;
+                      openBlockUpstreamIndex = data.index;
+                      openBlockEmittedIndex = expected;
+                      trackIndex(expected);
+                      if (data.index !== expected) {
+                        log(
+                          `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (filtered, model=${opts.modelName})`
+                        );
+                        emitDataLine("data: " + JSON.stringify({ ...data, index: expected }));
                       } else {
-                        const clamped = clampIndex(data.index, `${data.type} (unfiltered)`);
-                        if (data.type === "content_block_stop") lastBlockOpen = false;
-                        if (clamped !== data.index) {
-                          const modifiedLine =
-                            "data: " + JSON.stringify({ ...data, index: clamped });
-                          if (!isClosed) {
-                            controller.enqueue(encoder.encode(modifiedLine + "\n"));
-                          }
-                          // Skip original enqueue below
-                          continue;
-                        }
+                        emitDataLine(line);
                       }
+                    } else {
+                      if (data.type === "content_block_stop") lastBlockOpen = false;
+                      const followed =
+                        openBlockUpstreamIndex !== null && data.index === openBlockUpstreamIndex
+                          ? openBlockEmittedIndex!
+                          : data.index;
+                      if (data.type === "content_block_stop") {
+                        openBlockUpstreamIndex = null;
+                        openBlockEmittedIndex = null;
+                      }
+                      if (followed === data.index && followed > highestSeenIndex) {
+                        log(
+                          `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} on the filtered path (no open block, model=${opts.modelName})`
+                        );
+                        dropFrame();
+                        continue;
+                      }
+                      const finalIdx = clampIndex(followed, `${data.type} (filtered)`);
+                      const payload =
+                        finalIdx === data.index
+                          ? line
+                          : "data: " + JSON.stringify({ ...data, index: finalIdx });
+                      emitDataLine(payload);
                     }
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(line + "\n"));
-                    }
+                  } else {
+                    emitDataLine(line);
                   }
                 } catch {
                   // Unparseable — pass through
-                  if (!isClosed) {
-                    controller.enqueue(encoder.encode(line + "\n"));
-                  }
+                  emitDataLine(line);
                 }
               } else {
                 // Non-data lines (event: lines, blank lines) or no filtering
@@ -555,6 +667,7 @@ export function createAnthropicPassthroughStream(
 
                     // ── In-stream error detection (GitHub #106) ──
                     if (data.error) {
+                      dropFrame();
                       if (
                         (await handleInStreamError(data.error, "in-stream-error")) === "retried"
                       ) {
@@ -593,6 +706,7 @@ export function createAnthropicPassthroughStream(
                           ? JSON.stringify(data.content_block.input)
                           : "";
                       serverToolsSuppressed++;
+                      dropFrame();
                       log(`[AnthropicSSE] Suppressing server_tool_use block at index ${data.index}: ${serverToolName}`);
                       continue; // drop this start event
                     }
@@ -610,6 +724,7 @@ export function createAnthropicPassthroughStream(
                         serverToolName = "";
                         serverToolInput = "";
                       }
+                      dropFrame();
                       continue; // drop all events inside the suppressed block
                     }
 
@@ -630,11 +745,13 @@ export function createAnthropicPassthroughStream(
                     ) {
                       insideToolResultBlock = true;
                       toolResultsSuppressed++;
+                      dropFrame();
                       log(`[AnthropicSSE] Suppressing tool_result block at index ${data.index} (tool_use_id=${data.content_block.tool_use_id ?? "?"})`);
                       continue; // drop this start event
                     }
                     if (insideToolResultBlock) {
                       if (data.type === "content_block_stop") insideToolResultBlock = false;
+                      dropFrame();
                       continue; // drop all events inside the suppressed block
                     }
 
@@ -655,13 +772,9 @@ export function createAnthropicPassthroughStream(
                             `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
                           );
                           const remapped = { ...data, index: expected };
-                          if (!isClosed) {
-                            controller.enqueue(encoder.encode("data: " + JSON.stringify(remapped) + "\n"));
-                          }
+                          emitDataLine("data: " + JSON.stringify(remapped));
                         } else {
-                          if (!isClosed) {
-                            controller.enqueue(encoder.encode(line + "\n"));
-                          }
+                          emitDataLine(line);
                         }
                         trackIndex(expected);
                       } else {
@@ -680,22 +793,30 @@ export function createAnthropicPassthroughStream(
                           openBlockUpstreamIndex = null;
                           openBlockEmittedIndex = null;
                         }
-                        const finalIdx = clampIndex(followed, `${data.type} (passthrough)`);
-                        if (!isClosed) {
-                          // Re-serialize only when the index actually moved; an
-                          // untouched line is forwarded byte-for-byte as before.
-                          const payload =
-                            finalIdx === data.index
-                              ? line
-                              : "data: " + JSON.stringify({ ...data, index: finalIdx });
-                          controller.enqueue(encoder.encode(payload + "\n"));
+                        // Orphan frame (S4-a, upstream b48042c): no remap entry
+                        // and no block the client opened at this index. Dropped
+                        // whole — clamping it onto another block would corrupt
+                        // that block's content, and forwarding it produces the
+                        // very "Content block not found" this layer prevents.
+                        if (followed === data.index && followed > highestSeenIndex) {
+                          log(
+                            `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block, model=${opts.modelName})`
+                          );
+                          dropFrame();
+                          continue;
                         }
+                        const finalIdx = clampIndex(followed, `${data.type} (passthrough)`);
+                        // Re-serialize only when the index actually moved; an
+                        // untouched line is forwarded byte-for-byte as before.
+                        const payload =
+                          finalIdx === data.index
+                            ? line
+                            : "data: " + JSON.stringify({ ...data, index: finalIdx });
+                        emitDataLine(payload);
                       }
                     } else {
                       // No index field — pass through as-is
-                      if (!isClosed) {
-                        controller.enqueue(encoder.encode(line + "\n"));
-                      }
+                      emitDataLine(line);
                     }
 
                     // Usage/debug tracking
@@ -732,18 +853,32 @@ export function createAnthropicPassthroughStream(
                     }
                   } catch {
                     // Unparseable data line — pass through
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(line + "\n"));
-                    }
+                    emitDataLine(line);
                   }
                 } else {
                   // Non-data lines (event: lines, blank lines).
-                  // Suppress a bare `event: error` line: the matching `data:` line
-                  // that follows carries the payload and triggers finalizeWithError().
-                  // Forwarding `event: error` verbatim is itself what makes Claude Code
-                  // report "empty or malformed response (HTTP 200)" and crash, and it
-                  // produced the double `event: error` seen in production captures.
+                  // An `event:` line is HELD until its `data:` line is
+                  // adjudicated (see the withholding block at the top of
+                  // start()): if the data line is dropped, the header goes with
+                  // it instead of reaching the client as an event with no body,
+                  // which Claude Code rejects outright. The blank separator of
+                  // a dropped frame is swallowed for the same reason.
                   if (line.trimStart().startsWith("event: error")) {
+                    // A bare `event: error` header never forwards: the matching
+                    // `data:` payload that follows triggers finalizeWithError().
+                    // Forwarding it verbatim is itself what makes Claude Code
+                    // report "empty or malformed response (HTTP 200)", and it
+                    // produced the double `event: error` seen in production
+                    // captures.
+                    pendingEventLine = null;
+                    continue;
+                  }
+                  if (line.startsWith("event:")) {
+                    pendingEventLine = line;
+                    continue;
+                  }
+                  if (line.trim() === "" && suppressedFrame) {
+                    suppressedFrame = false;
                     continue;
                   }
                   if (!isClosed) {
@@ -798,6 +933,12 @@ export function createAnthropicPassthroughStream(
               `[AnthropicSSE] Upstream read error for ${opts.modelName}: ${String(readErr).slice(0, 200)} — finalizing gracefully`,
               true
             );
+            // The turn's tokens must reach the token file even on an abandoned
+            // stream (S4-a, upstream 5934fec): returning early past
+            // onTokenUpdate would trade the hang for a quieter leak.
+            if (opts.onTokenUpdate) {
+              opts.onTokenUpdate(inputTokens, outputTokens);
+            }
             finalizeWithError(`upstream read error: ${String(readErr)}`, "reader-exception");
             return; // skip normal finalization — already terminated
           }
@@ -820,32 +961,67 @@ export function createAnthropicPassthroughStream(
             log(`[AnthropicSSE] Stream ended without message_stop (stopReason=${stopReason}) — emitting synthetic finalization`);
             if (!sawMessageStart) {
               const synthId = `msg_${Date.now()}`;
+              // JSON.stringify, same rule as finalizeWithError (S4-a): a quote
+              // in a custom-endpoint model name must not break the client.
               controller.enqueue(encoder.encode(
-                "event: message_start\n" +
-                `data: {"type":"message_start","message":{"id":"${synthId}","type":"message","role":"assistant","model":"${opts.modelName}","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`
+                "event: message_start\ndata: " +
+                  JSON.stringify({
+                    type: "message_start",
+                    message: {
+                      id: synthId,
+                      type: "message",
+                      role: "assistant",
+                      model: opts.modelName,
+                      content: [],
+                      stop_reason: null,
+                      stop_sequence: null,
+                      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+                    },
+                  }) +
+                  "\n\n"
               ));
               controller.enqueue(encoder.encode(
-                "event: content_block_start\n" +
-                `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`
+                "event: content_block_start\ndata: " +
+                  JSON.stringify({
+                    type: "content_block_start",
+                    index: 0,
+                    content_block: { type: "text", text: "" },
+                  }) +
+                  "\n\n"
               ));
               controller.enqueue(encoder.encode(
-                "event: content_block_delta\n" +
-                `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[Error: The model returned an empty response. This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly on a very large conversation, then try /compact.]"}}\n\n`
+                "event: content_block_delta\ndata: " +
+                  JSON.stringify({
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: {
+                      type: "text_delta",
+                      text: "[Error: The model returned an empty response. This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly on a very large conversation, then try /compact.]",
+                    },
+                  }) +
+                  "\n\n"
               ));
               controller.enqueue(encoder.encode(
-                "event: content_block_stop\n" +
-                `data: {"type":"content_block_stop","index":0}\n\n`
+                "event: content_block_stop\ndata: " +
+                  JSON.stringify({ type: "content_block_stop", index: 0 }) +
+                  "\n\n"
               ));
             }
             if (!stopReason) {
               controller.enqueue(encoder.encode(
-                "event: message_delta\n" +
-                `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`
+                "event: message_delta\ndata: " +
+                  JSON.stringify({
+                    type: "message_delta",
+                    delta: { stop_reason: "end_turn", stop_sequence: null },
+                    usage: { output_tokens: outputTokens },
+                  }) +
+                  "\n\n"
               ));
             }
             controller.enqueue(encoder.encode(
-              "event: message_stop\n" +
-              `data: {"type":"message_stop"}\n\n`
+              "event: message_stop\ndata: " +
+                JSON.stringify({ type: "message_stop" }) +
+                "\n\n"
             ));
           }
 
