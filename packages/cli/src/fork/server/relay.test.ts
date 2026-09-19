@@ -615,4 +615,26 @@ describe("relayHealthFields", () => {
     expect(fields.role).toBe("relay-nominal");
     expect(JSON.stringify(fields)).not.toContain("user:secret");
   });
+
+  // Review of #159 (ai-01, 2026-09-20): the two conditions had to MEET for the
+  // strip to leak — an unparseable upstream AND an unencoded `@` in the
+  // password. `new URL` resolves that form on the last `@`, so the parsable
+  // branch was always safe and only the fallback republished a tail
+  // (`https://ss@not a url`). Positive control: the same password on a
+  // PARSABLE upstream must also come back clean, or this test would pass on a
+  // regex that never runs.
+  it("strips a password containing an unencoded @, on BOTH branches", () => {
+    const parsable = createRelayState({ upstream: "https://user:p@ss@hub.example:3000" });
+    expect(relayHealthFields(parsable).upstream).toBe("https://hub.example:3000");
+
+    const unparseable = createRelayState({ upstream: "https://user:p@ss@not a url" });
+    const out = relayHealthFields(unparseable).upstream!;
+    expect(out).toBe("https://not a url");
+    expect(out).not.toContain("@");
+  });
+
+  it("leaves an upstream with no userinfo untouched", () => {
+    const s = createRelayState({ upstream: "http://192.168.0.50:3000" });
+    expect(relayHealthFields(s).upstream).toBe("http://192.168.0.50:3000");
+  });
 });

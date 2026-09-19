@@ -143,7 +143,13 @@ export function relayHealthFields(
     upstream = new URL(relay.upstream).origin;
   } catch {
     // Unparseable config: still never publish credentials — strip any userinfo.
-    upstream = relay.upstream.replace(/\/\/[^/@]+@/, "//");
+    // `[^/]*` (not `[^/@]+`) so the cut lands on the LAST `@` before the path:
+    // an unencoded `@` inside the password made the narrow class stop at the
+    // first one and republish the tail. Measured 2026-09-20 in review of #159:
+    // `https://user:p@ss@not a url` → `https://ss@not a url`. `new URL` reads
+    // that form correctly, so the hole existed only on the unparseable branch —
+    // which is precisely the branch whose whole job is to leak nothing.
+    upstream = relay.upstream.replace(/\/\/[^/]*@/, "//");
   }
   return { role: relay.alive ? "relay-nominal" : "relay-autonomous", upstream };
 }
