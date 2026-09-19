@@ -8,10 +8,11 @@ propres captures. Une mesure qu'on ne peut pas reproduire est un rapport, pas
 un instrument.
 
     python harness-injection-measure.py <capture_dir> [--since=2026-08-20]
-                                        [--workspace=CoursIA] [--all-parsers]
+                                        [--workspace=CoursIA] [--machine=myia-po-2023]
+                                        [--all-parsers]
 
 --------------------------------------------------------------------------
-SEPT PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
+HUIT PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
 --------------------------------------------------------------------------
 
 1) APPARIEMENT. Le nom du fichier reponse porte `r0001`, son en-tete porte
@@ -69,6 +70,20 @@ SEPT PIEGES. Chacun donne un resultat FAUX ET PLAUSIBLE.
    donc tous les messages et tous les blocs texte, et rend le NOMBRE de
    blocs trouves avec leur position : un total sans cette ventilation
    recompterait un bloc historique deplace comme s'il etait toujours en 0.
+
+8) OCCURRENCES vs REQUETES. Un meme fichier peut etre injecte PLUSIEURS fois
+   dans une conversation (bloc historique re-injecte apres condensation, ou
+   deux blocs citant le meme fichier) : le compteur d'occurrences lu comme
+   un compteur de requetes sur-declare la population. Corpus hub 15-18/09
+   (#23 L2 po-203) : MEMORY.md compte 4 341 occurrences pour 2 459 requetes
+   porteuses, soit 1,77 injection par requete. La table per_file rend donc
+   les deux compteurs cote a cote -- occ (occurrences, re-injections
+   comprises) et req (requetes DISTINCTES ayant porte le fichier au moins
+   une fois). Corollaire : la portee d'une mesure se declenche par
+   `--machine=<nom>` ; ce champ vit sur l'enveloppe REQUETE, pas sur la
+   reponse -- le filtre ne peut donc s'appliquer qu'APRES appariement, et
+   une reponse non appariee n'est attribuable a aucune machine. Une machine
+   absente du corpus rend 0 paire (controle negatif), jamais "tout".
 --------------------------------------------------------------------------
 """
 import json
@@ -244,6 +259,7 @@ def main():
     cdir = sys.argv[1]
     since = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--since=")), None)
     workspace = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--workspace=")), None)
+    machine = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--machine=")), None)
     all_parsers = "--all-parsers" in sys.argv
 
     reqs = load_requests(cdir, since)
@@ -251,6 +267,7 @@ def main():
     stamps = []          # PIEGE 5 : la fenetre reellement couverte
     cached = 0
     per_file = defaultdict(list)
+    per_file_req = defaultdict(set)  # PIEGE 8 : requetes DISTINCTES par fichier
     block_pats = defaultdict(int)  # PIEGE 7 : (nb_blocs, positions) -> requetes
     block_elsewhere = 0            # PIEGE 7 : 1er bloc hors messages[0]
     skipped_unpaired = 0
@@ -273,6 +290,11 @@ def main():
         req = pick_request(reqs.get((pid, reqn)) or [], resp_ts)
         if req is None:
             skipped_unpaired += 1
+            continue
+        # PIEGE 8 : la machine vit sur l'enveloppe REQUETE -- le filtre ne peut
+        # s'appliquer qu'ici, apres appariement. Ces exclusions ne comptent pas
+        # dans `non appariees`, qui mesure l'echec d'appariement, pas la portee.
+        if machine is not None and req.get("machine") != machine:
             continue
         if not all_parsers and not model.lower().startswith("claude"):
             continue  # natives seulement : leur usage est compte par le tokenizer d'Anthropic
@@ -302,6 +324,7 @@ def main():
             pairs.append((chars / total_tok, fresh, cache_read))
         if cache_read > 0:
             cached += 1
+        req_key = (req.get("ts"), pid, reqn)  # PIEGE 8 : identite de requete
         if hbs:
             # PIEGE 2 : unite injectee. Le total PAR REQUETE somme tous les
             # blocs : un bloc re-injecte apres condensation est paye comme le
@@ -315,11 +338,13 @@ def main():
                 for i, (start, path) in enumerate(pos):
                     end = pos[i + 1][0] if i + 1 < len(pos) else len(t)
                     per_file[path.strip()].append(end - start)
+                    per_file_req[path.strip()].add(req_key)
 
     if not pairs:
         print("Aucune paire (pid, reqN) exploitable.")
         print(f"  reponses sans requete appariee : {skipped_unpaired}")
-        print("  verifier --since= / --workspace=, ou --all-parsers si aucun modele")
+        print("  verifier --since= / --workspace= / --machine= (une machine absente")
+        print("  du corpus rend 0 paire, pas tout), ou --all-parsers si aucun modele")
         print("  natif n'est capture (un sidecar en mode NOMINAL n'ecrit rien).")
         sys.exit(1)
 
@@ -327,6 +352,8 @@ def main():
     med_ratio = statistics.median(ratios)
     print()
     print(f"Paires appariees par (pid, reqN) : {len(pairs)}   (non appariees : {skipped_unpaired})")
+    if machine is not None:
+        print(f"Portee machine (--machine)       : {machine}")
     print(f"Ratio caracteres injectes / token : mediane {med_ratio:.2f}"
           f"   p10 {ratios[len(ratios) // 10]:.2f}   p90 {ratios[9 * len(ratios) // 10]:.2f}")
     print(f"Reponses servies depuis le cache  : {cached}/{len(pairs)}")
@@ -356,7 +383,7 @@ def main():
     # decrit un etat revolu. On le dit, on ne laisse pas le lecteur le deduire.
     window_end = capture_ts(max(stamps)) if stamps else None
     stale = 0
-    print(f"  {'fichier injecte':56s} {'ch med':>8s} {'%':>6s} {'vu':>5s}")
+    print(f"  {'fichier injecte':56s} {'ch med':>8s} {'%':>6s} {'occ':>5s} {'req':>5s}")
     for path, sizes in sorted(per_file.items(), key=lambda kv: -statistics.median(kv[1])):
         sz = statistics.median(sizes)
         mark = " "
@@ -367,7 +394,12 @@ def main():
                     mark, stale = "*", stale + 1
             except OSError:
                 pass
-        print(f"{mark} {path[-56:]:56s} {sz:8.0f} {100 * sz / med:5.1f}% {len(sizes):5d}")
+        print(f"{mark} {path[-56:]:56s} {sz:8.0f} {100 * sz / med:5.1f}%"
+              f" {len(sizes):5d} {len(per_file_req[path]):5d}")
+    print()
+    print("  occ = occurrences, re-injections comprises (un fichier porte par deux")
+    print("  blocs d'une meme conversation compte 2 fois) ; req = requetes")
+    print("  DISTINCTES ayant porte le fichier au moins une fois (PIEGE 8).")
     print()
     if stale:
         print(f"  * {stale} fichier(s) modifie(s) APRES la derniere capture "
