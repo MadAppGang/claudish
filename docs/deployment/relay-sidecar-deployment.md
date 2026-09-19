@@ -103,7 +103,7 @@ cd D:\Dev\claudish   # if already cloned here; else the script clones to C:\Dev\
     -Upstream https://models.myia.io -ProxyKey '<CLUSTER_KEY>' -Compress -NoAnthropic
 ```
 
-The installer is **idempotent**: it pulls latest `main`, (re)writes the `.env`, and recreates the container. It will not clobber an existing `config.json`.
+The installer is **idempotent**: it pulls latest `main`, (re)writes the `.env`, and recreates the container. It will not clobber an existing `config.json` — and since #141 it will not clobber runtime-policy lines either: any `CLAUDISH_FAILOVER_*`, `CLAUDISH_QWEN_THINKING`, `CLAUDISH_GLM_THINKING`, `SEARXNG_URL` or set-but-empty `CLAUDISH_CAPTURE_DIR` lines already present in the `.env` are carried over verbatim on rewrite (before #141 the wholesale rewrite silently dropped them, so an armed cascade lived only in the container's Docker env record — and the installer's own `compose up` wiped it).
 
 What it sets (in `<RepoDir>/.env`, consumed by `docker-compose.yml`):
 - `CLAUDISH_PROXY_KEY` — the cluster gate key (same everywhere).
@@ -114,6 +114,13 @@ What it sets (in `<RepoDir>/.env`, consumed by `docker-compose.yml`):
 - `CLAUDISH_HOST_PORT` (`-HostPort`, default 3000) — the published host port. **Required on any machine where 3000 is already taken** (ai-01, where a third-party service holds it). The container side always stays 3000.
 - `CLAUDISH_CONTAINER_NAME` (`-ContainerName`, default `claudish-proxy`) — give a sidecar its own name so logs and scripts never confuse it with the hub container.
 - `CLAUDISH_CAPTURE_DIR=` (empty, only with `-NoCapture`) — disables capture writing. Escape hatch for disk-starved hosts only; it destroys the outage-capture trail that `reconcile-outage-captures.ps1` depends on.
+
+### Recovering an armed cascade that exists only in the container (#141)
+
+If the cascades were armed by hand (container env, never written to the `.env` — the pre-#141 default), **any recreate wipes them**. Two protections:
+
+- **Refusals.** The installer **exits non-zero** before writing anything when the `.env` it is about to produce carries no armed `CLAUDISH_FAILOVER_*` while the live container has one; `claudish-drain.ps1 -Recreate` refuses the same condition against its `-EnvFile` (an env file can *exist* and still gut the cascades — it merely lacks them).
+- **Recovery.** `install-sidecar.ps1 -RebuildEnvFromContainer` rebuilds the `.env` from the live container's env record (`docker inspect`), reports which armed vars were missing (names only), and verifies the write by reading it back — no pull, no compose, container untouched. The output file contains `CLAUDISH_PROXY_KEY`: local file only, never committed, never displayed. `-WriteEnvOnly` refreshes the `.env` (with the preserve rules above) without touching the container.
 
 ## Repoint the client
 

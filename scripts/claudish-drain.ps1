@@ -197,7 +197,31 @@ function Invoke-ClaudishDrainedRestart {
             Write-DrainLog "RECREATE REFUSED ($Reason): -EnvFile '$EnvFile' does not exist — nothing done (a recreate against a wrong or missing env file empties every CLAUDISH_FAILOVER_* variable)"
             return $false
         }
-        Write-DrainLog "RECREATE ($Reason): interpolating from -EnvFile '$EnvFile'"
+        # #141 point 3, second surface: an env file can EXIST and still gut the
+        # cascades — it merely lacks them (po-203 measured 16 in file vs 23 in
+        # container: the 16 present mask the 7 that would be lost). If the file
+        # carries no armed CLAUDISH_FAILOVER_* while the live container does, the
+        # recreate would wipe an armed state that exists nowhere else. Refuse
+        # before spending the drain. Fail OPEN when docker cannot answer (no
+        # container = no armed state to lose; the existence checks above still
+        # hold).
+        $envArmed = 0
+        $contArmed = 0
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $envArmed = @([System.IO.File]::ReadAllLines($EnvFile) |
+                Where-Object { $_ -match '^CLAUDISH_FAILOVER_[A-Z0-9_]+=.+' }).Count
+            $contEnv = docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $Container 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $contArmed = @($contEnv | Where-Object { $_ -match '^CLAUDISH_FAILOVER_[A-Z0-9_]+=.+' }).Count
+            }
+        } finally { $ErrorActionPreference = $prevEap }
+        if ($contArmed -gt 0 -and $envArmed -eq 0) {
+            Write-DrainLog "RECREATE REFUSED ($Reason): -EnvFile '$EnvFile' carries no armed CLAUDISH_FAILOVER_* while container '$Container' has $contArmed — the recreate would wipe an armed state that exists nowhere on disk. Recover it with install-sidecar.ps1 -RebuildEnvFromContainer, then retry (#141)."
+            return $false
+        }
+        Write-DrainLog "RECREATE ($Reason): interpolating from -EnvFile '$EnvFile' (armed cascades: file=$envArmed container=$contArmed)"
     }
 
     # Resolve the probe URL per call, from the container actually being
