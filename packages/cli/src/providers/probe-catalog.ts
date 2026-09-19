@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { probeModelsUrl } from "./catalog-endpoints.js";
 import { catalogReadProvidersForRoute } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, parseCatalogV3Envelope } from "./catalog-v3.js";
 
-const PROBE_MODELS_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -92,7 +92,7 @@ export function isCacheFresh(
 }
 
 export async function fetchProbeModels(
-  url: string = PROBE_MODELS_URL,
+  url: string = probeModelsUrl(),
   timeoutMs: number = FETCH_TIMEOUT_MS
 ): Promise<FetchOutcome> {
   let response: Response;
