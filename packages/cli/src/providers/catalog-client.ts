@@ -49,49 +49,7 @@ import {
   parseContractEnvelope,
   readCatalogIncompatibility,
 } from "./catalog-compatibility.js";
-
-/**
- * Firebase slim catalog endpoint. Override via:
- *   - `CLAUDISH_CATALOG_URL` (preferred, documented spelling)
- *   - `FIREBASE_CATALOG_URL` (backwards-compat alias)
- *
- * Chiefly useful for integration tests that point at a local server to force
- * fetch failures.
- */
-const DEFAULT_CATALOG_URL =
-  "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=active&catalog=slim&limit=1000";
-
-/**
- * Resolved PER CALL rather than once at import.
- *
- * A module-level constant freezes whatever the environment held at the instant
- * this file was first imported, which makes the documented override untestable:
- * a test that points `CLAUDISH_CATALOG_URL` at a local server only takes effect
- * if it happens to run before any other file imports this module. Reading the
- * variable at call time makes the override mean what it says, and costs one
- * property read per refresh.
- */
-function catalogUrl(): string {
-  return (
-    process.env.CLAUDISH_CATALOG_URL ?? process.env.FIREBASE_CATALOG_URL ?? DEFAULT_CATALOG_URL
-  );
-}
-
-/** The plans endpoint, derived from the catalog URL unless overridden. */
-function plansUrl(): string {
-  return process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(catalogUrl());
-}
-
-function derivePlansUrl(catalogUrl: string): string {
-  try {
-    const url = new URL(catalogUrl);
-    url.pathname = url.pathname.replace(/\/queryModels$/, "/queryPlans");
-    url.search = "";
-    return url.toString();
-  } catch {
-    return "https://us-central1-claudish-6da10.cloudfunctions.net/queryPlans";
-  }
-}
+import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
 
 // Re-export so existing imports of the DiskCache type keep working.
 export type DiskCache = DiskCacheV2;
@@ -678,8 +636,15 @@ export async function refreshCatalog(
   let pages = 0;
   let offset = 0;
 
+  // Resolved once for the whole refresh, for the same reason `revision` is
+  // pinned across pages: every page has to describe one catalog. Reading the
+  // setting again per page lets a change mid-refresh assemble a single cache
+  // out of two services, and the result is indistinguishable from one service
+  // that served all of it.
+  const base = catalogUrl();
+
   for (;;) {
-    const url = buildCatalogPageUrl(catalogUrl(), offset, CATALOG_PAGE_LIMIT, revision);
+    const url = buildCatalogPageUrl(base, offset, CATALOG_PAGE_LIMIT, revision);
     const result = await fetchCatalogPage(url, timeoutMs);
     if (!result.ok) {
       // Contract mismatch outranks the page index, and this check MUST precede

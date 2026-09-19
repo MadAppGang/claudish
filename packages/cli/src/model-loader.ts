@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
+import { modelsBaseUrl } from "./providers/catalog-endpoints.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import type { OpenRouterModel } from "./types.js";
 
@@ -254,8 +255,16 @@ let _cachedRecommendedModels: RecommendedModelsDoc | null = null;
 
 // ─── Firebase config ─────────────────────────────────────────────────────────
 
-const FIREBASE_BASE_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels";
-const FIREBASE_RECOMMENDED_URL = `${FIREBASE_BASE_URL}?catalog=recommended`;
+/**
+ * The views this module asks the catalog service for.
+ *
+ * Each is built from `modelsBaseUrl()` at the top of the request that uses it,
+ * so one fetch names one service even if the setting moves underneath a later
+ * one. The endpoint itself lives in `providers/catalog-endpoints.ts`, which is
+ * what makes `CLAUDISH_CATALOG_URL` reach these requests as well as the slim
+ * catalog's.
+ */
+const RECOMMENDED_VIEW = "?catalog=recommended";
 
 export const RECOMMENDED_MODELS_CACHE_PATH = join(
   homedir(),
@@ -691,7 +700,7 @@ export async function getRecommendedModels(
 
   // Tier 3: Firebase fetch
   try {
-    const response = await fetch(FIREBASE_RECOMMENDED_URL, {
+    const response = await fetch(`${modelsBaseUrl()}${RECOMMENDED_VIEW}`, {
       signal: AbortSignal.timeout(RECOMMENDED_FETCH_TIMEOUT_MS),
     });
     if (response.ok) {
@@ -777,7 +786,7 @@ function isFreshEnough(doc: RecommendedModelsDoc): boolean {
  * Network-only — no local caching. Callers handle error UX.
  */
 export async function searchModels(query: string, limit = 50): Promise<ModelDoc[]> {
-  const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(
+  const url = `${modelsBaseUrl()}?search=${encodeURIComponent(
     query
   )}&limit=${limit}&status=active`;
   const response = await fetch(url, {
@@ -799,7 +808,7 @@ export async function searchModelsByProvider(
   query: string,
   limit = 50
 ): Promise<ModelDoc[]> {
-  const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
+  const url = `${modelsBaseUrl()}?provider=${encodeURIComponent(
     provider
   )}&search=${encodeURIComponent(query)}&limit=${limit}&status=active`;
   const response = await fetch(url, {
@@ -817,7 +826,7 @@ export async function searchModelsByProvider(
  * Returns null if not found, throws on network error.
  */
 export async function getModelByIdFromFirebase(modelId: string): Promise<ModelDoc | null> {
-  const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(modelId)}&limit=5`;
+  const url = `${modelsBaseUrl()}?search=${encodeURIComponent(modelId)}&limit=5`;
   const response = await fetch(url, {
     signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
   });
@@ -883,7 +892,7 @@ export interface Top100Response {
  * cache is maintained.
  */
 export async function getTop100Models(): Promise<Top100Response> {
-  const url = `${FIREBASE_BASE_URL}?catalog=top100`;
+  const url = `${modelsBaseUrl()}?catalog=top100`;
   const response = await fetch(url, {
     signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
   });
@@ -909,7 +918,7 @@ export interface ProviderListEntry {
  * Powers the CLI `--providers` command.
  */
 export async function getProviderList(): Promise<ProviderListEntry[]> {
-  const url = `${FIREBASE_BASE_URL}?catalog=providers`;
+  const url = `${modelsBaseUrl()}?catalog=providers`;
   const response = await fetch(url, {
     signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
   });
@@ -924,7 +933,7 @@ export async function getProviderList(): Promise<ProviderListEntry[]> {
  * Fetch active models for a given provider.
  */
 export async function getModelsByProvider(provider: string, limit = 200): Promise<ModelDoc[]> {
-  const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
+  const url = `${modelsBaseUrl()}?provider=${encodeURIComponent(
     provider
   )}&status=active&limit=${limit}`;
   const response = await fetch(url, {

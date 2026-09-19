@@ -28,8 +28,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { isIncompatibleContractVersion, parseContractEnvelope } from "./catalog-compatibility.js";
+import { probeModelsUrl } from "./catalog-endpoints.js";
 
-const PROBE_MODELS_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
 // 1h TTL (matches the server's own instance cache). A 24h TTL meant a
 // server-side catalog correction (e.g. fixing a probe model that 404s) took up
 // to a day to reach users. 1h propagates fixes promptly without re-fetching on
@@ -126,7 +126,7 @@ export function isCacheFresh(
 }
 
 export async function fetchProbeModels(
-  url: string = PROBE_MODELS_URL,
+  url: string = probeModelsUrl(),
   timeoutMs: number = FETCH_TIMEOUT_MS
 ): Promise<FetchOutcome> {
   let response: Response;
