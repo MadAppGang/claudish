@@ -215,6 +215,9 @@ if ($RebuildEnvFromContainer) {
     Write-Ok ".env rebuilt: $($armedNames.Count) armed CLAUDISH_FAILOVER_* var(s) recovered from the container, $($wasMissing.Count) were missing from the previous file"
     if ($wasMissing.Count -gt 0) { Write-Host "     recovered: $($wasMissing -join ', ')" -ForegroundColor DarkGray }
     if (-not $backMap.ContainsKey('CLAUDISH_PROXY_KEY')) { Write-Warn "CLAUDISH_PROXY_KEY absent from rebuilt file" }
+    if ($backMap.ContainsKey('CLAUDISH_CAPTURE_DIR') -and $backMap['CLAUDISH_CAPTURE_DIR'] -eq '') {
+        Write-Warn "capture DISABLED (carried from container) — the outage-capture trail stays off; remove the CLAUDISH_CAPTURE_DIR= line from $envPath to re-enable"
+    }
     if ($stillMissing.Count -gt 0) { Die "read-back failed — still missing after write: $($stillMissing -join ', ')" }
     Write-Ok "read-back verified — the file reproduces the container's armed cascades"
     Write-Host ""
@@ -331,6 +334,14 @@ if ($NoCapture)   { $tag += "NO_CAPTURE" }
 if ($preserved.Count -gt 0) {
     $failoverKept = @($preserved | Where-Object { $_ -match '^CLAUDISH_FAILOVER_' }).Count
     $tag += "preserved=$($preserved.Count) line(s) ($failoverKept CLAUDISH_FAILOVER_*)"
+}
+# The ONLY preserved state that destroys something (#144 review follow-up):
+# a set-but-empty CLAUDISH_CAPTURE_DIR keeps capture DISABLED across a rerun
+# that did NOT ask for it — name it loudly instead of leaving it deducible
+# from the preserved-line count. (Under -NoCapture the installer generates its
+# own line, so $preserved no longer holds it and this stays silent.)
+if ($preserved -contains 'CLAUDISH_CAPTURE_DIR=') {
+    Write-Warn "capture DISABLED (preserved from previous .env) — the outage-capture trail stays off though this run did not pass -NoCapture; remove the CLAUDISH_CAPTURE_DIR= line from $envPath to re-enable"
 }
 Write-Ok ".env written: $($tag -join ' | ')"
 
