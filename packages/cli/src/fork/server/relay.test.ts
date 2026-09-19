@@ -5,6 +5,7 @@ import {
   readRequestBody,
   forwardToUpstream,
   deepProbe,
+  relayHealthFields,
   FORWARD_HEADERS_TIMEOUT_MS,
   type RelayState,
 } from "./relay.js";
@@ -571,5 +572,69 @@ describe("deep probe: quota wall vs hub death", () => {
     expect(lastFetch!.url).toBe("http://hub:3000/v1/messages");
     expect(lastFetch!.init.headers["x-proxy-key"]).toBe("k");
     expect(lastFetch!.init.headers["x-api-key"]).toBeUndefined();
+  });
+});
+
+// ── relayHealthFields (#157): /health must say the ROLE, origin-only ──
+//
+// 2026-09-19: a hub recreated as a relay forwarding to itself (ARR loops back)
+// answered `200 {"status":"ok"}` for 4h40 while flapping 193 AUTONOMOUS
+// transitions — the flap WAS the service, so every prober, hysteresis and
+// consumer was structurally blind. The role makes the wrong-role node visible
+// in one call. `/health` is unauthenticated, so the upstream publishes its
+// ORIGIN only — userinfo there (documented SearXNG form) would be a leak.
+describe("relayHealthFields", () => {
+  it("reports hub + null upstream with no relay configured", () => {
+    expect(relayHealthFields(undefined)).toEqual({ role: "hub", upstream: null });
+    expect(relayHealthFields({ ...createRelayState({ upstream: "http://h:1" }), upstream: "" })).toEqual(
+      { role: "hub", upstream: null }
+    );
+  });
+
+  it("reports relay-nominal while the prober holds the upstream alive", () => {
+    const s = createRelayState({ upstream: "https://models.myia.io" });
+    expect(relayHealthFields(s)).toEqual({ role: "relay-nominal", upstream: "https://models.myia.io" });
+  });
+
+  it("reports relay-autonomous once hysteresis has flipped", () => {
+    const s = createRelayState({ upstream: "http://192.168.0.50:3000" });
+    s.alive = false;
+    expect(relayHealthFields(s)).toEqual({ role: "relay-autonomous", upstream: "http://192.168.0.50:3000" });
+  });
+
+  it("publishes only the ORIGIN of an upstream carrying userinfo — /health is unauthenticated", () => {
+    const s = createRelayState({ upstream: "https://user:secret@hub.example:3000" });
+    const fields = JSON.stringify(relayHealthFields(s));
+    expect(fields).not.toContain("user:secret");
+    expect(relayHealthFields(s).upstream).toBe("https://hub.example:3000");
+  });
+
+  it("never throws on an unparseable upstream, and still strips userinfo", () => {
+    const s = createRelayState({ upstream: "https://user:secret@not a url" });
+    const fields = relayHealthFields(s);
+    expect(fields.role).toBe("relay-nominal");
+    expect(JSON.stringify(fields)).not.toContain("user:secret");
+  });
+
+  // Review of #159 (ai-01, 2026-09-20): the two conditions had to MEET for the
+  // strip to leak — an unparseable upstream AND an unencoded `@` in the
+  // password. `new URL` resolves that form on the last `@`, so the parsable
+  // branch was always safe and only the fallback republished a tail
+  // (`https://ss@not a url`). Positive control: the same password on a
+  // PARSABLE upstream must also come back clean, or this test would pass on a
+  // regex that never runs.
+  it("strips a password containing an unencoded @, on BOTH branches", () => {
+    const parsable = createRelayState({ upstream: "https://user:p@ss@hub.example:3000" });
+    expect(relayHealthFields(parsable).upstream).toBe("https://hub.example:3000");
+
+    const unparseable = createRelayState({ upstream: "https://user:p@ss@not a url" });
+    const out = relayHealthFields(unparseable).upstream!;
+    expect(out).toBe("https://not a url");
+    expect(out).not.toContain("@");
+  });
+
+  it("leaves an upstream with no userinfo untouched", () => {
+    const s = createRelayState({ upstream: "http://192.168.0.50:3000" });
+    expect(relayHealthFields(s).upstream).toBe("http://192.168.0.50:3000");
   });
 });
