@@ -52,6 +52,20 @@
   Allow the hard-reset of an existing clone that has uncommitted changes or unpushed
   commits. Without it the script refuses and tells you what it would have destroyed.
 
+.PARAMETER RebuildEnvFromContainer
+  #141: rebuild <RepoDir>/.env from the LIVE container's env record (docker
+  inspect), then exit — no pull, no compose, container untouched. Use this on a
+  machine whose armed CLAUDISH_FAILOVER_* exist only in the container (they were
+  added by hand after install; the installer never wrote them, so any recreate
+  would wipe them). Merge semantics: container values win for overlapping vars,
+  file-only lines are kept. The output contains CLAUDISH_PROXY_KEY: local file
+  only, never committed, never displayed.
+
+.PARAMETER WriteEnvOnly
+  Write/refresh the .env (preserving any runtime-policy block, see #141) and
+  exit — no compose up, container untouched. Deploy seam: lets an operator (or a
+  test) exercise the preserve/guard path without recreating anything.
+
 .PARAMETER RepoDir
   Where the fork lives / will be cloned. Default C:\Dev\claudish. Pass explicitly if
   the machine already has a clone elsewhere, otherwise a second one is created.
@@ -82,6 +96,8 @@ param(
     [switch]$NoAnthropic,
     [switch]$NoCapture,
     [switch]$Force,
+    [switch]$RebuildEnvFromContainer,
+    [switch]$WriteEnvOnly,
     [int]$HostPort     = 3000,
     [string]$ContainerName = "claudish-proxy",
     [string]$RepoUrl   = "https://github.com/jsboige/claudish.git",
@@ -98,6 +114,113 @@ function Write-Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "   OK  $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "   !!  $msg" -ForegroundColor Yellow }
 function Die($msg)        { Write-Host "   XX  $msg" -ForegroundColor Red; exit 1 }
+
+# ── .env runtime-policy preservation (#141) ─────────────────────────
+# docker-compose.yml interpolates runtime-policy vars this script never writes:
+# CLAUDISH_FAILOVER_*, CLAUDISH_QWEN_THINKING, CLAUDISH_GLM_THINKING, SEARXNG_URL,
+# and set-but-empty CLAUDISH_CAPTURE_DIR (= capture disabled). Before #141 a rerun
+# rewrote .env wholesale and silently dropped them, so an armed cascade lived only
+# in the container's Docker env record — and the very `compose up` this script
+# runs wiped it (measured on ai-01 18/09: 6 vars in the file, 23 armed
+# CLAUDISH_FAILOVER_* in the live container; the 07/09 hub incident requalified
+# as default tool behavior, not operator error).
+$PreservedEnvPattern = '^(CLAUDISH_FAILOVER_[A-Z0-9_]+|CLAUDISH_QWEN_THINKING|CLAUDISH_GLM_THINKING|SEARXNG_URL)='
+
+function Get-ClaudishContainerEnv {
+    # CLAUDISH_*/SEARXNG_URL lines from the live container's env record, or $null
+    # when docker cannot answer (no such container, docker down). Callers fail
+    # OPEN on $null: the guard protects an existing armed state, it must never
+    # block a fresh install. NB: stderr is redirected while $ErrorActionPreference
+    # is Stop, which arms PS 5.1's NativeCommandError trap — lowered around the call.
+    param([string]$Container)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $Container 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+    } finally { $ErrorActionPreference = $prev }
+    return @($raw | Where-Object { $_ -match '^(CLAUDISH_[A-Z0-9_]+|SEARXNG_URL)=' })
+}
+
+function Get-ArmedCascadeCount {
+    # Non-empty CLAUDISH_FAILOVER_* assignments — the armed state that must
+    # survive a recreate. (Empty assignments are inert: compose's `:-` default.)
+    param([string[]]$EnvLines)
+    if (-not $EnvLines) { return 0 }
+    return @($EnvLines | Where-Object { $_ -match '^CLAUDISH_FAILOVER_[A-Z0-9_]+=.+' }).Count
+}
+
+function Test-RecreateWouldGutCascades {
+    # #141 point 3: true when the env content about to be written carries no
+    # armed cascade while the live container has one. Refusing loudly here is
+    # the only point that protects an operator who never reads the issue.
+    param([string[]]$NewEnvLines, [string]$Container)
+    if ((Get-ArmedCascadeCount $NewEnvLines) -gt 0) { return $false }
+    $containerEnv = Get-ClaudishContainerEnv $Container
+    if ($null -eq $containerEnv) { return $false }
+    return (Get-ArmedCascadeCount $containerEnv) -gt 0
+}
+
+# ── 0. -RebuildEnvFromContainer: recover armed state, exit (#141 point 2) ──
+if ($RebuildEnvFromContainer) {
+    Write-Step "Rebuilding .env from live container '$ContainerName' (no pull, no compose, container untouched)"
+    $envPath = Join-Path $RepoDir ".env"
+    $existingLines = @()
+    if (Test-Path -LiteralPath $envPath) { $existingLines = [System.IO.File]::ReadAllLines($envPath) }
+
+    $containerEnv = Get-ClaudishContainerEnv $ContainerName
+    if ($null -eq $containerEnv) {
+        Die "cannot docker inspect '$ContainerName' (not running? docker down?) — nothing written, nothing lost"
+    }
+
+    $fileMap = [ordered]@{}
+    foreach ($l in $existingLines) { if ($l -match '^([A-Z0-9_]+)=(.*)$') { $fileMap[$Matches[1]] = $Matches[2] } }
+    $contMap = [ordered]@{}
+    foreach ($l in $containerEnv) { if ($l -match '^([A-Z0-9_]+)=(.*)$') { $contMap[$Matches[1]] = $Matches[2] } }
+
+    # Merge: container wins for non-empty values. CLAUDISH_CAPTURE_DIR carries
+    # meaning even empty (set-but-empty = capture disabled — compose's single-dash
+    # `${VAR-/captures}` default skips only UNSET, so the empty assignment must
+    # survive or a rebuild would silently re-enable capture).
+    $merged = [ordered]@{}
+    foreach ($k in $fileMap.Keys) { $merged[$k] = $fileMap[$k] }
+    foreach ($k in $contMap.Keys) {
+        if ($contMap[$k] -ne '' -or $k -eq 'CLAUDISH_CAPTURE_DIR') { $merged[$k] = $contMap[$k] }
+    }
+
+    # Stable order: installer base vars first, then everything else sorted.
+    $baseOrder = @('CLAUDISH_PROXY_KEY','CLAUDISH_RELAY_UPSTREAM','CLAUDISH_RELAY_COMPRESS','CLAUDISH_NO_ANTHROPIC',
+                   'CLAUDISH_CONFIG_DIR','CLAUDISH_CAPTURE_HOST_DIR','CLAUDISH_HOST_PORT','CLAUDISH_CONTAINER_NAME','CLAUDISH_CAPTURE_DIR')
+    $out = [System.Collections.Generic.List[string]]::new()
+    $out.Add("# Rebuilt from live container '$ContainerName' by install-sidecar.ps1 -RebuildEnvFromContainer for $Machine")
+    $out.Add("# Container values won over file values for overlapping vars; file-only lines kept (#141).")
+    $seen = @{}
+    foreach ($k in $baseOrder) { if ($merged.Contains($k)) { $out.Add("$k=$($merged[$k])"); $seen[$k] = $true } }
+    foreach ($k in @($merged.Keys | Sort-Object)) { if (-not $seen.ContainsKey($k)) { $out.Add("$k=$($merged[$k])") } }
+
+    # Diff report — NAMES only, never values (a partially-filled env file masks
+    # the defect: 16 lines look recreatable, only the 7 missing ones refute it).
+    $armedNames = @($contMap.Keys | Where-Object { $_ -match '^CLAUDISH_FAILOVER_' -and $contMap[$_] -ne '' })
+    $wasMissing = @($armedNames | Where-Object { -not $fileMap.Contains($_) -or $fileMap[$_] -eq '' })
+
+    $dir = Split-Path $envPath -Parent
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    [void][System.IO.File]::WriteAllText($envPath, ($out -join "`r`n") + "`r`n", (New-Object System.Text.UTF8Encoding $false))
+
+    # Read-back verification: the written file must reproduce every armed cascade.
+    $backMap = @{}
+    foreach ($l in [System.IO.File]::ReadAllLines($envPath)) { if ($l -match '^([A-Z0-9_]+)=(.*)$') { $backMap[$Matches[1]] = $Matches[2] } }
+    $stillMissing = @($armedNames | Where-Object { -not $backMap.ContainsKey($_) -or $backMap[$_] -eq '' })
+
+    Write-Ok ".env rebuilt: $($armedNames.Count) armed CLAUDISH_FAILOVER_* var(s) recovered from the container, $($wasMissing.Count) were missing from the previous file"
+    if ($wasMissing.Count -gt 0) { Write-Host "     recovered: $($wasMissing -join ', ')" -ForegroundColor DarkGray }
+    if (-not $backMap.ContainsKey('CLAUDISH_PROXY_KEY')) { Write-Warn "CLAUDISH_PROXY_KEY absent from rebuilt file" }
+    if ($stillMissing.Count -gt 0) { Die "read-back failed — still missing after write: $($stillMissing -join ', ')" }
+    Write-Ok "read-back verified — the file reproduces the container's armed cascades"
+    Write-Host ""
+    Write-Host "ENV REBUILT for $Machine — container untouched; the next compose up/recreate interpolates from this file" -ForegroundColor Green
+    exit 0
+}
 
 # ── 1. Repo: clone or pull ──────────────────────────────────────────
 Write-Step "Repo → $RepoDir"
@@ -149,6 +272,15 @@ if (-not (Test-Path $CapturesDir)) {
 
 # ── 3. Per-machine .env ─────────────────────────────────────────────
 Write-Step "Writing .env (machine=$Machine  upstream=$Upstream)"
+$envPath = Join-Path $RepoDir ".env"
+# #141 point 1: carry over runtime-policy lines from the existing file — the
+# rewrite below must never clobber an armed cascade, a thinking-policy override,
+# a custom SEARXNG_URL, or a set-but-empty CLAUDISH_CAPTURE_DIR (capture disabled).
+$preserved = @()
+if (Test-Path -LiteralPath $envPath) {
+    $preserved = @([System.IO.File]::ReadAllLines($envPath) |
+        Where-Object { $_ -match $PreservedEnvPattern -or $_ -eq 'CLAUDISH_CAPTURE_DIR=' })
+}
 $lines = @(
     "# Generated by install-sidecar.ps1 for $Machine",
     "CLAUDISH_PROXY_KEY=$ClusterKey",
@@ -163,14 +295,50 @@ $lines += "CLAUDISH_CONTAINER_NAME=$ContainerName"
 # Set-but-empty disables capture writing (compose uses ${CLAUDISH_CAPTURE_DIR-/captures},
 # single-dash = "unset" only, so an empty value here really means "write nothing").
 if ($NoCapture)   { $lines += "CLAUDISH_CAPTURE_DIR=" }
+
+# Dedupe: a base line generated above wins over the same var in $preserved
+# (only CLAUDISH_CAPTURE_DIR can collide — the installer never emits the others).
+$baseNames = @{}
+foreach ($l in $lines) { if ($l -match '^([A-Z0-9_]+)=') { $baseNames[$Matches[1]] = $true } }
+$preserved = @($preserved | Where-Object { $_ -match '^([A-Z0-9_]+)=' -and -not $baseNames.ContainsKey($Matches[1]) })
+if ($preserved.Count -gt 0) {
+    $lines += "# --- runtime-policy lines preserved from previous .env (#141: never clobber an armed state) ---"
+    $lines += $preserved
+}
+
+# #141 point 3 — the guard, BEFORE writing anything: step 4 below recreates the
+# container, and if what we are about to write carries no armed cascade while the
+# live container has one, that recreate would wipe an armed state that exists
+# nowhere else on disk. Die here so the old file stays intact.
+if (Test-RecreateWouldGutCascades -NewEnvLines $lines -Container $ContainerName) {
+    Die @"
+REFUSED (#141): this recreate would wipe the armed cascades. The .env about to be
+written carries no CLAUDISH_FAILOVER_* while container '$ContainerName' has an armed
+cascade that exists only in its Docker env record (the install tool never wrote it).
+Recover it into the file first, then re-run:
+  .\install-sidecar.ps1 -RebuildEnvFromContainer -Machine $Machine -Upstream $Upstream -ProxyKey <key> -ContainerName $ContainerName -RepoDir $RepoDir
+Nothing was written; the container was not touched.
+"@
+}
+
 $envContent = ($lines -join "`r`n") + "`r`n"
 # UTF-8 no BOM (PS 5.1 Set-Content adds BOM → breaks parsers).
-[void][System.IO.File]::WriteAllText((Join-Path $RepoDir ".env"), $envContent, (New-Object System.Text.UTF8Encoding $false))
+[void][System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding $false))
 $tag = @($Machine, $Upstream, "port=$HostPort", "container=$ContainerName")
 if ($Compress)    { $tag += "COMPRESS" }
 if ($NoAnthropic) { $tag += "NO_ANTHROPIC" }
 if ($NoCapture)   { $tag += "NO_CAPTURE" }
+if ($preserved.Count -gt 0) {
+    $failoverKept = @($preserved | Where-Object { $_ -match '^CLAUDISH_FAILOVER_' }).Count
+    $tag += "preserved=$($preserved.Count) line(s) ($failoverKept CLAUDISH_FAILOVER_*)"
+}
 Write-Ok ".env written: $($tag -join ' | ')"
+
+if ($WriteEnvOnly) {
+    Write-Host ""
+    Write-Host "ENV WRITTEN for $Machine (-WriteEnvOnly: no compose, container untouched)" -ForegroundColor Green
+    exit 0
+}
 
 # ── 4. Build + start ────────────────────────────────────────────────
 Write-Step "docker compose up -d --build"
