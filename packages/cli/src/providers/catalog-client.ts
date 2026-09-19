@@ -7,33 +7,13 @@ import {
   readAllModelsCache,
   writeAllModelsCache,
 } from "./all-models-cache.js";
+import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
-const DEFAULT_CATALOG_URL =
-  "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=all&catalog=slim&includeRouteVariants=true&limit=1000";
 const MAX_CATALOG_PAGES = 40;
 const CATALOG_PAGE_LIMIT = 1000;
-
-function catalogUrl(): string {
-  return process.env.CLAUDISH_CATALOG_URL ?? DEFAULT_CATALOG_URL;
-}
-
-function derivePlansUrl(modelsUrl: string): string {
-  try {
-    const url = new URL(modelsUrl);
-    url.pathname = url.pathname.replace(/\/queryModels$/, "/queryPlans");
-    url.search = "";
-    return url.toString();
-  } catch {
-    return "https://us-central1-claudish-6da10.cloudfunctions.net/queryPlans";
-  }
-}
-
-function plansUrl(): string {
-  return process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(catalogUrl());
-}
 
 export type DiskCache = DiskCacheV3;
 
@@ -344,9 +324,16 @@ export async function refreshCatalog(
   const seenCursors = new Set<string>();
   let expectedTotal: number | undefined;
 
+  // Resolved once for the whole refresh, for the same reason `generationId` is
+  // pinned across pages: every page has to describe one catalog. Reading the
+  // setting again per page lets a change mid-refresh assemble a single cache
+  // out of two services, and the result is indistinguishable from one service
+  // that served all of it.
+  const base = catalogUrl();
+
   for (;;) {
     const result = await fetchEnvelope<ModelsPageData>(
-      buildCatalogPageUrl(catalogUrl(), cursor, CATALOG_PAGE_LIMIT, generationId),
+      buildCatalogPageUrl(base, cursor, CATALOG_PAGE_LIMIT, generationId),
       timeoutMs
     );
     if (!result.ok) {
