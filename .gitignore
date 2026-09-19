@@ -99,3 +99,10 @@ trace-*.json
 kv-cache-traces.md
 monitor-traffic.sh
 deploy-notes-*.md
+
+# Python bytecode from the scripts/ analysis organs (traffic-*, *-trend.py, lane-matrix.py).
+# Untracked __pycache__ made every cycle report a dirty tree, which trains an operator
+# to ignore dirt -- and install-sidecar.ps1 -Force decides what it may hard-reset from
+# exactly this signal.
+__pycache__/
+*.pyc
