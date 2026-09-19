@@ -136,7 +136,7 @@ Trois leçons, dans l'ordre où elles mordent :
 `CronList`. Si le job `/claudish-coordinate` est absent → le ré-armer **immédiatement** :
 
 ```
-CronCreate(cron: "37 */3 * * *",
+CronCreate(cron: "37 */5 * * *",
            prompt: "Cycle de coordination du workspace claudish (myia-ai-01, rôle coordinateur). Lis d:\claudish\.claude\skills\claudish-coordinate\SKILL.md et exécute intégralement le cycle qu'il décrit, phases 0 à 7.",
            recurring: true)
 ```
