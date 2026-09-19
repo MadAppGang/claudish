@@ -121,6 +121,33 @@ export function createRelayState(opts: {
   };
 }
 
+/**
+ * #157: the role this node believes it is playing, for `/health`. On
+ * 2026-09-19 a hub recreated as a relay forwarding to ITSELF (ARR loops back)
+ * served 4h40 of `200 {"status":"ok"}` while flapping 193 times — healthy and
+ * false at the same time, invisible to every prober, because `/health` said
+ * nothing about the role. Same family as the 02/09 outage this handler's
+ * comment documents: a 200 that doesn't say what the process is.
+ *
+ * Reads two in-memory fields — constant-time, no I/O, never throws. The
+ * upstream is published as ORIGIN ONLY: `/health` is unauthenticated, and an
+ * upstream configured with userinfo (`https://user:pass@host`, the documented
+ * SearXNG form) would leak a credential on it.
+ */
+export function relayHealthFields(
+  relay?: RelayState
+): { role: "hub" | "relay-nominal" | "relay-autonomous"; upstream: string | null } {
+  if (!relay?.upstream) return { role: "hub", upstream: null };
+  let upstream: string;
+  try {
+    upstream = new URL(relay.upstream).origin;
+  } catch {
+    // Unparseable config: still never publish credentials — strip any userinfo.
+    upstream = relay.upstream.replace(/\/\/[^/@]+@/, "//");
+  }
+  return { role: relay.alive ? "relay-nominal" : "relay-autonomous", upstream };
+}
+
 function markFail(state: RelayState, reason: string): void {
   state.consecutiveOk = 0;
   state.consecutiveFail++;

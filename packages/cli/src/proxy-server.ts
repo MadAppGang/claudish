@@ -43,7 +43,7 @@ import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 import { createStreamTracker, stallThresholdMs } from "./fork/server/stream-registry";
 import { registerForkExtensions, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
-import { forwardToUpstream, readRequestBody, type RelayState } from "./fork/server/relay.js";
+import { forwardToUpstream, readRequestBody, relayHealthFields, type RelayState } from "./fork/server/relay.js";
 import {
   initFailover,
   isFailoverActive,
@@ -1097,9 +1097,16 @@ export async function createProxyServer(
   // probers already act on (2 failures, 10s apart → AUTONOMOUS). `status` stays
   // first and the body keeps `activeStreams`, so the drain script and the
   // watchdog are unaffected; the two new fields explain a demotion after the fact.
+  //
+  // #157, the adjacent family member (2026-09-19): a 200 from a process in the
+  // WRONG ROLE — a hub recreated as a relay forwarding to itself answered
+  // "ok" for 4h40 while flapping 193 times. `role` + `upstream` (origin only)
+  // make that visible in one call. Same parse-safety rule: appended after the
+  // existing fields, nothing renamed.
   app.get("/health", (c) => {
     const thresholdMs = stallThresholdMs();
     const stalled = streamTracker.isStalled(thresholdMs);
+    const { role, upstream } = relayHealthFields(options.relay);
     return c.json(
       {
         status: stalled ? "stalled" : "ok",
@@ -1108,6 +1115,8 @@ export async function createProxyServer(
         msSinceProgress: streamTracker.getMsSinceProgress(),
         stallThresholdMs: thresholdMs,
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+        role,
+        upstream,
       },
       stalled ? 503 : 200
     );
