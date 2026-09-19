@@ -535,8 +535,17 @@ describe("reset-time awareness", () => {
 // ── isQuotaExhaustion ──────────────────────────────────────────────────────────
 
 describe("isQuotaExhaustion — narrow on purpose", () => {
-  it("treats a plain per-minute rate limit as NOT exhaustion", () => {
-    expect(isQuotaExhaustion(429, '{"error":{"message":"Rate limit exceeded, retry in 3s"}}')).toBe(false);
+  // #140: this body CONTAINS a wall keyword ("quota") — the old case matched no
+  // keyword at all and passed trivially, giving apparent coverage on exactly
+  // the property that was broken. The window, not the vocabulary, is what
+  // disqualifies it.
+  it("treats a per-minute burst that names 'quota' as NOT exhaustion", () => {
+    expect(
+      isQuotaExhaustion(
+        429,
+        "Quota exceeded for quota metric 'Generate requests per minute' and limit 'GenerateRequests per minute per project'"
+      )
+    ).toBe(false);
   });
 
   it("recognizes plan/quota exhaustion behind a 429", () => {
@@ -793,6 +802,66 @@ describe("isQuotaExhaustion — captured production bodies (7d, 6 providers)", (
     expect(isQuotaExhaustion(403, GENUINE_AUTH_403)).toBe(false);
     expect(isWiringError(403, GENUINE_AUTH_403)).toBe(true);
     expect(isQuotaExhaustion(403, "forbidden")).toBe(false);
+  });
+});
+
+// ── #140: a per-minute burst that speaks quota vocabulary ──────────────────────
+//
+// Google's per-minute 429 bodies contain the word "quota", so the bare-keyword
+// branch armed the weekly budget switch on a transient burst. Measured with a
+// disposable probe by ai-01 (2026-09-18), control positives included: the four
+// real walls still arm — the keywords carry their weight, the fix is a guard,
+// not an amputation.
+
+/** Google — per-minute request burst, verbatim probe body. Names "quota" AND a
+ *  window; the window wins. MUST NOT arm. */
+const GOOGLE_RPM_QUOTA_BURST =
+  "Quota exceeded for quota metric 'Generate requests per minute' and limit 'GenerateRequests per minute per project'";
+
+/**
+ * Google — the #140 residue, pinned ON PURPOSE as arming. The same wording
+ * serves per-minute AND per-day limits, so the body names NO window and is
+ * structurally ambiguous: disambiguating it inside the classifier would
+ * reproduce the original defect in the other direction (matching wide to catch
+ * right is how the bare "quota" bug happened). The live protection sits one
+ * layer up — Google sends `Retry-After` in seconds on its per-minute 429s, and
+ * burstRetryAfterMs never lets a sub-ceiling retry-after arm (asserted below).
+ */
+const GOOGLE_RESOURCE_EXHAUSTED = "Resource has been exhausted (e.g. check quota).";
+
+describe("isQuotaExhaustion — #140: per-minute bursts speaking quota vocabulary", () => {
+  it("does NOT arm on Google's per-minute body — it names a window, the window wins", () => {
+    expect(GOOGLE_RPM_QUOTA_BURST.toLowerCase()).toContain("quota");
+    expect(GOOGLE_RPM_QUOTA_BURST.toLowerCase()).toContain("per minute");
+    expect(isQuotaExhaustion(429, GOOGLE_RPM_QUOTA_BURST)).toBe(false);
+  });
+
+  it("the window guard covers every keyword of the branch, not just 'quota'", () => {
+    expect(isQuotaExhaustion(429, "weekly usage limit reached on requests per minute")).toBe(false);
+    expect(isQuotaExhaustion(429, "Your token-plan quota has been exhausted; requests per second limit hit")).toBe(false);
+    expect(isQuotaExhaustion(429, "credit balance too low while calls per minute exceeded")).toBe(false);
+    expect(isQuotaExhaustion(429, "plan limit reached — requests per hour")).toBe(false);
+  });
+
+  it("still arms on the four real walls: none of them names a window", () => {
+    expect(isQuotaExhaustion(429, GLM_1308_WINDOW_WALL)).toBe(true);
+    expect(isQuotaExhaustion(429, MINIMAX_PLAN_WALL)).toBe(true);
+    expect(isQuotaExhaustion(429, QWEN_WEEKLY_WALL)).toBe(true);
+    expect(isQuotaExhaustion(429, ANTHROPIC_WEEKLY_CAP)).toBe(true);
+  });
+
+  it("RESIDUE (pinned deliberately): the windowless Google body still arms in the classifier", () => {
+    expect(GOOGLE_RESOURCE_EXHAUSTED.toLowerCase()).not.toMatch(/per (minute|second|hour)/);
+    expect(isQuotaExhaustion(429, GOOGLE_RESOURCE_EXHAUSTED)).toBe(true);
+  });
+
+  it("RESIDUE covered one layer up: a sub-ceiling Retry-After keeps the ambiguous body from arming (#91 gate)", () => {
+    initFailover({ ...OPUS_TO_QWEN, CLAUDISH_FAILOVER_AUTO: "1", CLAUDISH_FAILOVER_ARM_AFTER: "1" });
+    for (let i = 0; i < 3; i++) {
+      const v = onNominalRefusal("opus", "HTTP 429", "30", GOOGLE_RESOURCE_EXHAUSTED);
+      expect(v.outcome).toBe("burst");
+    }
+    expect(isFailoverActive("opus")).toBe(false);
   });
 });
 
