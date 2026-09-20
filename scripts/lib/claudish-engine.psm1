@@ -561,7 +561,54 @@ function Invoke-GitBounded {
 
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
+    $safeCfg = $null
+    $prevGlobal = $env:GIT_CONFIG_GLOBAL
     try {
+        # git refuses any repository whose owner differs from the invoking
+        # principal (exit 128, "dubious ownership") BEFORE answering anything —
+        # exactly the case of a SYSTEM scheduled task running scripts from an
+        # operator-owned tree. Measured on po-2025, 2026-09-20: every PROVENANCE
+        # line read "unversioned (exit 128)" while the tree was clean on main,
+        # so the one observability line this module has said nothing, on the
+        # one machine that motivated it.
+        #
+        # The toplevel cannot be asked from git (it refuses first), so every
+        # ANCESTOR of the work dir is declared safe: safe.directory matches
+        # exact paths only, so this trusts a repo rooted at one of those
+        # specific directories and nothing else. safe.directory is deliberately
+        # ignored in repository config and via -c, which is why the config file
+        # rides GIT_CONFIG_GLOBAL scoped to this child process — the only route
+        # that needs no elevation and no write to SYSTEM's profile.
+        #
+        # The config REPLACES the user's global config for these calls only;
+        # the commands here are read-only provenance queries, and under SYSTEM
+        # the global config was empty anyway.
+        try {
+            $safe = New-Object System.Collections.Generic.List[string]
+            $dir = [System.IO.Path]::GetFullPath($WorkDir)
+            # The separator is built from [char]92 rather than written as a
+            # literal: a lone backslash inside a string literal has already
+            # been eaten once by an escaping layer (python read ' as an
+            # escaped quote and left Replace('', '/'), which throws on an
+            # empty oldValue and silently disarmed this whole workaround).
+            $bsep = [string][char]92
+            while ($true) {
+                $safe.Add($dir.Replace($bsep, '/'))
+                $parent = Split-Path -Parent $dir
+                if ([string]::IsNullOrEmpty($parent) -or $parent -eq $dir) { break }
+                $dir = $parent
+            }
+            $safeCfg = [System.IO.Path]::GetTempFileName()
+            $lines = @('[safe]') + @($safe | ForEach-Object { "`tdirectory = $_" })
+            [System.IO.File]::WriteAllText($safeCfg, ($lines -join "`n") + "`n")
+            $env:GIT_CONFIG_GLOBAL = $safeCfg
+        } catch {
+            # Without the workaround the call behaves exactly as before this
+            # change: run, and let dubious ownership surface as exit 128.
+            $safeCfg = $null
+            if ($null -ne $prevGlobal) { $env:GIT_CONFIG_GLOBAL = $prevGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
+        }
+
         $all = @('-C', $WorkDir) + $GitArgs
         $p = Start-Process -FilePath 'git' -ArgumentList $all -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
@@ -581,6 +628,8 @@ function Invoke-GitBounded {
         return @{ Ok = $false; Out = ''; Reason = 'git not launchable' }
     }
     finally {
+        if ($null -ne $prevGlobal) { $env:GIT_CONFIG_GLOBAL = $prevGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
+        if ($safeCfg) { Remove-Item $safeCfg -Force -ErrorAction SilentlyContinue }
         Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
 }

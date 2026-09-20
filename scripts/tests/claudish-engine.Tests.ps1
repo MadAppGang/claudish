@@ -742,3 +742,55 @@ Describe 'Get-ScriptProvenance — name the artifact that is actually executing'
         ([regex]::Matches($wd, 'Get-ScriptProvenance')).Count | Should -Be 1
     }
 }
+
+Describe 'Invoke-GitBounded — dubious ownership (SYSTEM vs operator tree)' {
+    # Measured on po-2025, 2026-09-20: the watchdog task runs under SYSTEM, git
+    # refuses the operator-owned tree (exit 128), and every PROVENANCE line
+    # reads "unversioned" on the exact machine that motivated #177. These
+    # tests use the REAL Invoke-GitBounded against a REAL scratch repository —
+    # no injected git seam — under GIT_TEST_ASSUME_DIFFERENT_OWNER=1, which is
+    # git's own switch for "behave as if the repo were owned by someone else".
+    BeforeEach {
+        $script:Repo = Join-Path $TestDrive 'repo'
+        New-Item -ItemType Directory -Path $script:Repo -Force | Out-Null
+        git -C $script:Repo init 2>&1 | Out-Null
+        git -C $script:Repo -c user.name=t -c user.email=t@t commit --allow-empty -m x 2>&1 | Out-Null
+        $script:PrevOwner = $env:GIT_TEST_ASSUME_DIFFERENT_OWNER
+        $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+    }
+    AfterEach {
+        if ($null -ne $script:PrevOwner) { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $script:PrevOwner }
+        else { Remove-Item Env:GIT_TEST_ASSUME_DIFFERENT_OWNER -ErrorAction SilentlyContinue }
+    }
+
+    It 'POSITIVE CONTROL: without the workaround, foreign ownership IS refused (exit 128)' {
+        # If this ever passes, GIT_TEST_ASSUME_DIFFERENT_OWNER stopped being
+        # honored and the regression below is vacuous — a dead instrument
+        # pretending to guard. This control is what keeps it honest.
+        $p = Start-Process -FilePath 'git' -ArgumentList @('-C', $script:Repo, 'rev-parse', 'HEAD') `
+            -NoNewWindow -PassThru -Wait
+        $p.ExitCode | Should -Be 128
+    }
+
+    It 'REGRESSION (exit 128): Invoke-GitBounded succeeds on a tree it does not own' {
+        $r = Invoke-GitBounded -WorkDir $script:Repo -GitArgs @('rev-parse', 'HEAD')
+        $r.Ok | Should -BeTrue
+        $r.Out | Should -Not -BeNullOrEmpty
+    }
+
+    It 'REGRESSION: Get-ScriptProvenance resolves Versioned on a foreign-owned tree' {
+        $prov = Get-ScriptProvenance -ScriptRoot $script:Repo
+        $prov.Versioned | Should -BeTrue
+        $prov.Summary | Should -Not -Match 'exit 128'
+    }
+
+    It 'leaves GIT_CONFIG_GLOBAL exactly as it found it' {
+        $null = Invoke-GitBounded -WorkDir $script:Repo -GitArgs @('rev-parse', 'HEAD')
+        $env:GIT_CONFIG_GLOBAL | Should -BeNullOrEmpty
+
+        $env:GIT_CONFIG_GLOBAL = 'some-pre-existing-value'
+        $null = Invoke-GitBounded -WorkDir $script:Repo -GitArgs @('rev-parse', 'HEAD')
+        $env:GIT_CONFIG_GLOBAL | Should -Be 'some-pre-existing-value'
+        Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue
+    }
+}
