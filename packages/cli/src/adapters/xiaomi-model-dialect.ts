@@ -19,8 +19,10 @@ export class XiaomiModelDialect extends BaseAPIFormat {
     };
   }
 
-  override getToolNameLimit(): number {
-    return 64;
+  // Xiaomi's wire is OpenAI-shaped, so the base wire rule already returns 64;
+  // the override survives only as documentation that Xiaomi enforces it strictly.
+  override getToolNameLimit(): number | null {
+    return super.getToolNameLimit() ?? 64;
   }
 
   override prepareRequest(request: any, originalRequest: any): any {
@@ -30,11 +32,8 @@ export class XiaomiModelDialect extends BaseAPIFormat {
       delete request.thinking;
     }
 
-    // Truncate tool names to 64 chars
-    this.truncateToolNames(request);
-    if (request.messages) {
-      this.truncateToolNamesInMessages(request.messages);
-    }
+    // Tool-name encoding lives in the template post-pass. (S4-b 2e18042)
+    super.prepareRequest(request, originalRequest);
 
     return request;
   }

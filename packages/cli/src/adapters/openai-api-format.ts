@@ -49,11 +49,9 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
       log(`[OpenAIAPIFormat] Mapped budget ${budget_tokens} -> reasoning_effort: ${effort}`);
     }
 
-    // Truncate tool names if model has a limit
-    this.truncateToolNames(request);
-    if (request.messages) {
-      this.truncateToolNamesInMessages(request.messages);
-    }
+    // Tool-name encoding now lives in the template (BaseAPIFormat.prepareRequest),
+    // which runs the post-pass once over the built payload. (S4-b 2e18042)
+    super.prepareRequest(request, originalRequest);
 
     return request;
   }
