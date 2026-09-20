@@ -364,12 +364,27 @@ function Test-EngineRelaunchReady {
         # only the first of Get-InteractiveUserId's three probes, so a test that
         # stubbed "no user" still fell through to the live machine and resolved
         # a real one — a stub that does not stub is worse than none.
-        [scriptblock]$UserResolver = $null
+        [scriptblock]$UserResolver = $null,
+        # Execute probe (#176). Registration-plus-readback proves the task can
+        # be CREATED, not that running it starts Docker Desktop — which was the
+        # exact shape of the -LogonType defect: a call that reported fine and
+        # an action that never ran. When the Desktop GUI is already running,
+        # the preflight also INVOKES the task it just registered and reads back
+        # LastTaskResult/LastRunTime, so the verdict means "the task runs and
+        # its action executes". All three seams are injectable so the suite
+        # proves the logic without touching the scheduler.
+        [scriptblock]$DesktopProbe = $null,
+        [scriptblock]$TaskInvoker = $null,
+        [scriptblock]$TaskInfoReader = $null,
+        [int]$ExecuteProbeTimeoutMs = 5000
     )
 
     if (-not $PathTest)  { $PathTest  = { param($p) Test-Path -LiteralPath $p } }
     if (-not $Registrar) { $Registrar = { param($n, $exe, $u) New-EngineRelaunchRegistration -TaskName $n -ExecutablePath $exe -UserId $u } }
     if (-not $Verifier)  { $Verifier  = { param($n) [bool](Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) } }
+    if (-not $DesktopProbe)   { $DesktopProbe   = { [bool](Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue) } }
+    if (-not $TaskInvoker)    { $TaskInvoker    = { param($n) Start-ScheduledTask -TaskName $n } }
+    if (-not $TaskInfoReader) { $TaskInfoReader = { param($n) Get-ScheduledTaskInfo -TaskName $n -ErrorAction SilentlyContinue } }
 
     $checks = New-Object System.Collections.Generic.List[string]
 
@@ -432,7 +447,62 @@ function Test-EngineRelaunchReady {
     }
     $checks.Add('verify:OK')
 
-    return [PSCustomObject]@{ Ready = $true; Reason = 'relaunch path proven'; Checks = $checks.ToArray() }
+    # 5. EXECUTE (#176). When the Desktop GUI is already running, invoking the
+    #    relaunch task is a no-op for the engine (a second instance exits
+    #    immediately), so the probe is free: run the task and read back its own
+    #    LastTaskResult/LastRunTime. When the GUI is NOT running the probe is
+    #    SKIPPED — invoking the task would START the engine, and a readiness
+    #    check must never perform the action it is only asking about (AC2).
+    #    A probe that throws is read as not-running for the same reason.
+    try { $desktopRunning = [bool](& $DesktopProbe) } catch { $desktopRunning = $false }
+    if (-not $desktopRunning) {
+        $checks.Add('execute:SKIPPED(desktop-not-running)')
+        return [PSCustomObject]@{
+            Ready  = $true
+            Reason = 'relaunch path proven (registration-only — Docker Desktop not running, execute probe skipped)'
+            Checks = $checks.ToArray()
+        }
+    }
+
+    # Note for operators: this preflight leaves a registered, trigger-less task
+    # behind (fixed name, -Force, so it does not accumulate). That is by
+    # design; it is not a rogue Docker Desktop autostart.
+    try {
+        $invokedAt = [DateTime]::Now
+        $null = & $TaskInvoker $TaskName
+
+        # Poll, bounded. 267009 = "task currently running": for a GUI exe that
+        # is proof the action launched and is alive, so both it and 0 count as
+        # executed. Anything else — 1 from a broken action, a file-not-found
+        # code — is a task that ran and its action failed.
+        $deadline = [DateTime]::Now.AddMilliseconds($ExecuteProbeTimeoutMs)
+        $info = $null
+        do {
+            Start-Sleep -Milliseconds 250
+            $info = & $TaskInfoReader $TaskName
+            if ($null -ne $info -and $info.LastRunTime -ge $invokedAt.AddSeconds(-2) -and [int]$info.LastTaskResult -ne 267009) { break }
+        } while ([DateTime]::Now -lt $deadline)
+
+        if ($null -eq $info) {
+            $checks.Add('execute:NO-INFO')
+            return [PSCustomObject]@{ Ready = $false; Reason = "execute: could not read task '$TaskName' back after invoking it"; Checks = $checks.ToArray() }
+        }
+        if ($info.LastRunTime -lt $invokedAt.AddSeconds(-2)) {
+            $checks.Add('execute:STALE')
+            return [PSCustomObject]@{ Ready = $false; Reason = "execute: task '$TaskName' was invoked but LastRunTime never advanced (still $($info.LastRunTime))"; Checks = $checks.ToArray() }
+        }
+        $result = [int]$info.LastTaskResult
+        if ($result -ne 0 -and $result -ne 267009) {
+            $checks.Add("execute:FAILED(result=$result)")
+            return [PSCustomObject]@{ Ready = $false; Reason = "execute: task '$TaskName' ran and its action failed (LastTaskResult=$result)"; Checks = $checks.ToArray() }
+        }
+        $checks.Add("execute:OK(result=$result)")
+    } catch {
+        $checks.Add('execute:ERROR')
+        return [PSCustomObject]@{ Ready = $false; Reason = "execute: $($_.Exception.Message)"; Checks = $checks.ToArray() }
+    }
+
+    return [PSCustomObject]@{ Ready = $true; Reason = 'relaunch path proven (registered, read back and executed)'; Checks = $checks.ToArray() }
 }
 
 function Get-WedgeDecision {

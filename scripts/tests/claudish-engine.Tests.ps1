@@ -226,10 +226,15 @@ Describe 'Test-EngineRelaunchReady (the no-teardown-without-a-proven-rebuild gat
         $script:okUser  = { 'MACHINE\operator' }   # a full resolver, not one probe
         $script:okReg   = { param($n, $exe, $u) }
         $script:okVerif = { param($n) $true }
+        # #176: stage 5 must not leak to the live machine. Without this stub
+        # the default probe runs a real Get-Process, and on a machine where
+        # Docker Desktop IS running the preflight proceeds to invoke the REAL
+        # Start-ScheduledTask — a unit test reaching for the scheduler.
+        $script:okDesktop = { $false }
     }
 
     It 'is Ready when every stage succeeds' {
-        $r = Test-EngineRelaunchReady -TaskName 'T' -PathTest $okPath -UserResolver $okUser -Registrar $okReg -Verifier $okVerif
+        $r = Test-EngineRelaunchReady -TaskName 'T' -PathTest $okPath -UserResolver $okUser -Registrar $okReg -Verifier $okVerif -DesktopProbe $okDesktop
         $r.Ready | Should -BeTrue
         $r.Checks | Should -Contain 'register:OK'
         $r.Checks | Should -Contain 'verify:OK'
@@ -295,6 +300,118 @@ Describe 'New-EngineRelaunchRegistration (cmdlet surface)' {
     It 'builds an Interactive principal without admin rights (the corrected shape)' {
         $p = New-ScheduledTaskPrincipal -UserId 'MACHINE\operator' -LogonType Interactive -RunLevel Highest
         $p.LogonType | Should -Be 'Interactive'
+    }
+}
+
+Describe 'Test-EngineRelaunchReady execute probe (#176)' {
+    BeforeAll {
+        # A preflight whose first four stages are green by injection, with the
+        # execute-probe seams as the only moving parts. Nothing here touches
+        # the scheduler (dispatch bound: the logic is proven by injection this
+        # cycle; the live exercise is a separate, announced step).
+        # $script:InvokeCount witnesses WHETHER the task was invoked at all —
+        # AC2's "never" is about the invocation, not just the verdict.
+        function Invoke-ReadyPreflight {
+            param(
+                [bool]$DesktopRunning = $true,
+                [int]$TaskResult = 0,
+                [switch]$StaleRunTime,
+                [switch]$NoInfo,
+                [switch]$InvokerThrows,
+                [switch]$ReaderThrows,
+                [switch]$ProbeThrows,
+                [int]$TimeoutMs = 400
+            )
+            $script:InvokeCount = 0
+            $runTime = if ($StaleRunTime) { [DateTime]::Now.AddDays(-1) } else { [DateTime]::Now }
+            Test-EngineRelaunchReady -PathTest { param($p) $true } `
+                -UserId 'PO-2025\jsboige' `
+                -Registrar { param($n, $e, $u) 'registered' } `
+                -Verifier { param($n) $true } `
+                -DesktopProbe {
+                    if ($ProbeThrows) { throw 'desktop probe dead' }
+                    $DesktopRunning
+                } `
+                -TaskInvoker {
+                    param($n)
+                    if ($InvokerThrows) { throw 'scheduler refused' }
+                    $script:InvokeCount++
+                } `
+                -TaskInfoReader {
+                    param($n)
+                    if ($ReaderThrows) { throw 'reader blew up' }
+                    if ($NoInfo) { return $null }
+                    [PSCustomObject]@{ LastTaskResult = $TaskResult; LastRunTime = $runTime }
+                } `
+                -ExecuteProbeTimeoutMs $TimeoutMs
+        }
+    }
+
+    It 'AC1: invokes the registered task and reports execute:OK on a clean completion' {
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 0
+        $r.Ready | Should -BeTrue
+        $r.Checks | Should -Contain 'execute:OK(result=0)'
+        $r.Reason | Should -Match 'executed'
+        $script:InvokeCount | Should -Be 1
+    }
+
+    It 'AC1: LastTaskResult 267009 (action launched, still running) also counts as executed' {
+        # A GUI exe that keeps running leaves 267009 behind: the action
+        # demonstrably launched and is alive. That is execution, not failure.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 267009
+        $r.Ready | Should -BeTrue
+        $r.Checks | Should -Contain 'execute:OK(result=267009)'
+    }
+
+    It 'AC2: skips the probe and NEVER invokes the task when Docker Desktop is not running' {
+        $r = Invoke-ReadyPreflight -DesktopRunning $false
+        $r.Ready | Should -BeTrue
+        $r.Checks | Should -Contain 'execute:SKIPPED(desktop-not-running)'
+        $r.Reason | Should -Match 'registration-only'
+        $script:InvokeCount | Should -Be 0
+    }
+
+    It 'AC2: a DesktopProbe that THROWS skips too (fail-safe on the side of not invoking)' {
+        $r = Invoke-ReadyPreflight -ProbeThrows
+        $r.Ready | Should -BeTrue
+        $r.Checks | Should -Contain 'execute:SKIPPED(desktop-not-running)'
+        $script:InvokeCount | Should -Be 0
+    }
+
+    It 'AC3 POSITIVE CONTROL: a deliberately broken action (LastTaskResult=1) is REFUSED' {
+        # exit 1 is exactly what a wrong executable path or a policy-blocked
+        # action leaves in LastTaskResult. The whole point of #176: a task that
+        # registers cleanly and fails on execution must not read as ready.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 1
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:FAILED(result=1)'
+        $r.Reason | Should -Match 'execute:'
+    }
+
+    It 'AC3: a task that never ran (stale LastRunTime) is refused, not assumed' {
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -StaleRunTime
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:STALE'
+        $r.Reason | Should -Match 'STALE|never advanced'
+    }
+
+    It 'AC3: a reader that returns nothing is not-ready (NO-INFO), never a guess' {
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -NoInfo
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:NO-INFO'
+    }
+
+    It 'AC4 + fail-safe: an invoker that THROWS yields execute:ERROR, and the preflight never throws' {
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -InvokerThrows
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:ERROR'
+        $r.Reason | Should -Match 'execute:'
+    }
+
+    It 'AC4 + fail-safe: a reader that THROWS is execute:ERROR, not a crash' {
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -ReaderThrows
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:ERROR'
     }
 }
 
