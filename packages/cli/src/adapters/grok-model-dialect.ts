@@ -147,6 +147,9 @@ export class GrokModelDialect extends BaseAPIFormat {
    * Reset internal state (useful between requests)
    */
   reset(): void {
+    // super.reset() replaces the per-request tool-name bindings — without this
+    // call a second request would mutate the first's map mid-decode. (S4-b 2e18042)
+    super.reset();
     this.xmlBuffer = "";
   }
 }
