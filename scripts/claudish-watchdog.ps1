@@ -41,8 +41,22 @@ if (-not (Test-Path $ClaudishHome)) {
     throw "ClaudishHome '$ClaudishHome' does not exist. Pass -ClaudishHome <path> in the scheduled-task command line."
 }
 
+Import-Module (Join-Path $PSScriptRoot 'lib\claudish-engine.psm1') -Force
+
 $LogPath = "$ClaudishHome\watchdog.log"
-$ProxyUrl = "http://localhost:3000"
+$ProxyPort = 3000
+# The probe URL is the SERVING path, which is not always the loopback path.
+#
+# On 2026-09-20 the Docker Desktop loopback forwarder (`wslrelay`, which owns
+# [::1]:3000 alone) wedged while com.docker.backend's [::]:3000 wildcard kept
+# serving 127.0.0.1, the LAN and the ARR throughout. A watchdog probing the dead
+# door concluded the proxy was down and restarted the container 13 times over
+# 6h47 — every one of them useless, because the process boots fine and the pipe
+# does not. Probing the surviving path makes the watchdog agree with reality.
+#
+# Resolution is per-machine and opt-in through <ClaudishHome>\base-url.txt. No
+# file = localhost = byte-identical behaviour to before, on every other machine.
+$ProxyUrl = Resolve-ClaudishProbeUrl -ClaudishHome $ClaudishHome -Port $ProxyPort
 $ContainerName = "claudish-proxy"
 $StreamTimeoutSec = 90
 # Every docker CLI call is bounded by this. Unbounded was the real failure on
@@ -229,13 +243,27 @@ function Test-ProxyWithTools {
 # The drain logic is shared with any other scheduled restart (ClaudishDailyRestart
 # calls the same file standalone), so it lives in one place rather than being
 # copied here.
+#
+# EVERY parameter drain.ps1 declares lands in this scope with ITS default. Keep
+# the originals and restore them below — and when adding a parameter to
+# drain.ps1, check this list.
+$__watchdogHome = $ClaudishHome
 . "$PSScriptRoot\claudish-drain.ps1"
 
 # Dot-sourcing executes drain.ps1's param() DEFAULTS in this scope, which
 # reassigns $LogPath to ...\.claudish\drain.log — silently misdirecting this
 # script's log when run as the user, and fatally (missing dir + Stop) when run
 # by the SYSTEM scheduled task (2026-08-30: exit 1, no log). Re-pin it.
+#
+# $ClaudishHome is clobbered the same way, and more quietly: drain.ps1 defaults
+# it to $env:USERPROFILE\.claudish, so -ClaudishHome was honoured for the state
+# file (computed before this line) and IGNORED for the log (computed after).
+# Measured 2026-09-20 with a sandbox home: state went to the sandbox, two log
+# lines went to the production log — a "sandboxed" run that was not sandboxed.
+# Restore the home FIRST, since $LogPath is derived from it.
+$ClaudishHome = $__watchdogHome
 $LogPath = "$ClaudishHome\watchdog.log"
+$StateFile = "$ClaudishHome\watchdog-state.json"
 
 function Get-State {
     if (Test-Path $StateFile) {
@@ -245,10 +273,40 @@ function Get-State {
 }
 
 function Set-State {
-    param([int]$ConsecutiveHangs)
+    # Merges into the existing state instead of replacing it.
+    #
+    # The previous shape wrote a fresh object with exactly one field, so any
+    # caller that set the hang counter silently erased everything else. That is
+    # fine while there is one counter and fatal the moment there are two: the
+    # wedge counter would reset on every healthy cycle that touched hangs, and a
+    # confirmation counter that cannot survive a cycle never confirms anything.
+    param(
+        [Nullable[int]]$ConsecutiveHangs = $null,
+        [Nullable[int]]$ConsecutiveWedge = $null
+    )
+    $cur = Get-State
+    $obj = @{
+        consecutiveHangs     = [int](Get-StateField $cur 'consecutiveHangs' 0)
+        consecutiveWedge     = [int](Get-StateField $cur 'consecutiveWedge' 0)
+    }
+    if ($null -ne $ConsecutiveHangs) { $obj.consecutiveHangs = [int]$ConsecutiveHangs }
+    if ($null -ne $ConsecutiveWedge) { $obj.consecutiveWedge = [int]$ConsecutiveWedge }
+
     $dir = Split-Path $StateFile -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    @{ consecutiveHangs = $ConsecutiveHangs } | ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
+    $obj | ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
+}
+
+function Get-StateField {
+    # Reads a field from a state object that may predate it. Every state file
+    # already on a fleet machine carries only consecutiveHangs, so a direct
+    # property read returns $null and an [int] cast of $null is 0 — correct by
+    # luck for ints, wrong for the timestamp. Name the default instead.
+    param($StateObj, [string]$Name, $Default)
+    if ($null -eq $StateObj) { return $Default }
+    $p = $StateObj.PSObject.Properties[$Name]
+    if ($null -eq $p -or $null -eq $p.Value) { return $Default }
+    return $p.Value
 }
 
 function Invoke-DockerBounded {
@@ -389,7 +447,119 @@ function Write-DiagLine {
     Write-Log "DIAG[$Tag]: $portTxt, $commitTxt $verdict"
 }
 
+function Test-HealthAnswers {
+    # Does this exact address answer /health with a 200?
+    param([string]$Url, [int]$TimeoutSec = 5)
+    try {
+        return ((Invoke-WebRequest -Uri "$Url/health" -TimeoutSec $TimeoutSec -UseBasicParsing).StatusCode -eq 200)
+    } catch { return $false }
+}
+
+function Invoke-LoopbackWedgeWatch {
+    <#
+        Tells the Docker Desktop loopback-forwarder wedge apart from a hub hang,
+        and says so. DETECTION ONLY — there is no actuator here, by mandate
+        (jsboige/claudish#172 AC4) and because none would help.
+
+        The wedge signature, confirmed three times on 2026-09-20: something is
+        LISTENING on [::1]:<port> but never answers HTTP, while 127.0.0.1 and
+        the LAN keep serving real tool-call streams. From an operator's seat
+        that is indistinguishable from a hub hang, which is exactly why the
+        container was restarted 13 times in 6h47 — every restart useless (the
+        process boots fine; the pipe does not), and every restart cutting live
+        SSE on every relaying machine. The fleet-wide turn loss that day came
+        from the remediation, not from the wedge.
+
+        So the defect is a DETECTION defect, and the fix is three probes that
+        disagree in a diagnostic way:
+
+            [::1] dead + (127.0.0.1 or LAN) alive -> forwarder wedge
+            all three dead                        -> the hub; the hang path owns it
+            [::1] alive                           -> healthy
+
+        The terminal verdict is ESCALATE: log a greppable label and let a human
+        decide. Only a host reboot rebuilds the forwarder, and an engine
+        teardown is what turned a wedge into a host with no engine at 13:18.
+
+        This function must never throw. It runs after a successful health check,
+        and a watchdog that turns a healthy cycle into a crash is worse than one
+        that misses a wedge.
+    #>
+    # The probes are injectable so every branch can be exercised from
+    # scripts/tests without a real wedge and without touching the host. Defaults
+    # are the live implementations, so production behaviour is unchanged by the
+    # seam. There is deliberately no action parameter: nothing to inject, because
+    # nothing is actuated.
+    param(
+        [bool]$ServingHealthy,
+        [scriptblock]$HealthProbe = $null,
+        [scriptblock]$ListenerProbe = $null
+    )
+
+    # Test-HttpAlive, NOT Test-HealthAnswers: a wedge is "no HTTP answer at
+    # all", and requiring a 200 made this fire on a healthy machine under the
+    # production interpreter (5.1 gets HTTP 400 from [::1] where pwsh 7 gets
+    # 200 — a formatting difference, not a health signal).
+    if (-not $HealthProbe)   { $HealthProbe   = { param($u) Test-HttpAlive -Url $u } }
+    if (-not $ListenerProbe) { $ListenerProbe = { param($p) Test-LoopbackListener -Port $p } }
+
+    try {
+        # AC5: gated, off by default. Checked before any probe runs, so a machine
+        # that never opted in is not even measured.
+        $optIn = Test-WedgeWatchOptIn -ClaudishHome $ClaudishHome
+        if (-not $optIn) { return }
+
+        $st = Get-State
+        $loopbackV6 = Get-LoopbackProbeUrl -Port $ProxyPort
+        $loopbackV4 = "http://127.0.0.1:$ProxyPort"
+
+        # AC1: every probe names its address family explicitly. `localhost` may
+        # never appear here — .NET 5+ falls back IPv6->IPv4 fast enough to report
+        # healthy straight through the very outage this exists to catch.
+        $decision = Get-WedgeDecision `
+            -LoopbackV6Healthy ([bool](& $HealthProbe $loopbackV6)) `
+            -LoopbackV4Healthy ([bool](& $HealthProbe $loopbackV4)) `
+            -ServingHealthy    $ServingHealthy `
+            -LoopbackListening ([bool](& $ListenerProbe $ProxyPort)) `
+            -ConsecutiveWedge  ([int](Get-StateField $st 'consecutiveWedge' 0)) `
+            -OptIn             $optIn
+
+        $where = "[v6=$loopbackV6 v4=$loopbackV4 serving=$ProxyUrl]"
+
+        switch ($decision.Action) {
+            'none' {
+                if ([int](Get-StateField $st 'consecutiveWedge' 0) -gt 0) {
+                    Write-Log "LOOPBACK-WATCH: cleared ($($decision.Reason))"
+                }
+                Set-State -ConsecutiveWedge 0
+            }
+            'arm' {
+                # AC2: one greppable label for the signature, countable over time.
+                Write-Log "FORWARDER-WEDGE $($decision.Reason) $where"
+                Set-State -ConsecutiveWedge $decision.Wedge
+            }
+            'escalate' {
+                Write-Log "FORWARDER-WEDGE $($decision.Reason) $where"
+                Write-Log "FORWARDER-WEDGE ESCALATE: operator action required — do NOT restart the container; only a host reboot rebuilds the forwarder"
+                Write-DiagLine "forwarder-wedge"
+                Set-State -ConsecutiveWedge $decision.Wedge
+            }
+        }
+    } catch {
+        # Swallow deliberately: see the header. Log, never propagate.
+        Write-Log "LOOPBACK-WATCH: internal error, ignored ($($_.Exception.Message))"
+    }
+}
+
 # --- Main ---
+
+# Dot-sourcing this file loads its functions without running a cycle, the same
+# idiom claudish-drain.ps1 already uses (its standalone block is guarded by the
+# same test). That is what lets scripts/tests exercise the wedge glue —
+# Invoke-LoopbackWedgeWatch's branches — against injected probes instead of
+# against a real wedge on the production hub. The previous attempt at this
+# feature had no such seam: the only way to run its logic was to ship it.
+if ($MyInvocation.InvocationName -eq '.') { return }
 
 Write-Log "=== Watchdog check ==="
 
@@ -410,15 +580,34 @@ function Start-DockerEngine {
     Write-DiagLine "engine-down"
     try { Start-Service com.docker.service -ErrorAction SilentlyContinue } catch {}
     if (-not (Get-Process "Docker Desktop" -ErrorAction SilentlyContinue)) {
-        try {
-            $helper = "ClaudishDockerDesktopStart"
-            $action = New-ScheduledTaskAction -Execute "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-            Register-ScheduledTask -TaskName $helper -Action $action `
-                -User "$env:COMPUTERNAME\jsboige" -LogonType Interactive -RunLevel Highest -Force | Out-Null
-            Start-ScheduledTask -TaskName $helper
-            Write-Log "ENGINE: Docker Desktop launch requested in user session"
-        } catch {
-            Write-Log "ENGINE: could not launch Docker Desktop ($($_.Exception.Message))"
+        # This relaunch had NEVER worked on any machine until 2026-09-20.
+        #
+        # The call here used to be
+        #     Register-ScheduledTask -TaskName $h -Action $a `
+        #         -User "$env:COMPUTERNAME\jsboige" -LogonType Interactive ...
+        # and Register-ScheduledTask has no -LogonType parameter — it belongs to
+        # New-ScheduledTaskPrincipal. So it threw ParameterBindingException on
+        # every single invocation, its own catch swallowed the error, and the
+        # only trace was "could not launch Docker Desktop". That is almost
+        # certainly why the hub came back from its 2026-08-29 reboot with no
+        # container and a human had to reboot a second time; and it is exactly
+        # what turned a loopback wedge into a host with no engine at 13:18 on
+        # 2026-09-20, because a teardown ran ahead of a rebuild nobody had tried.
+        #
+        # Test-EngineRelaunchReady performs the registration AND reads the task
+        # back, so "can we relaunch?" is answered by doing it, not by assuming.
+        # Pinned by scripts/tests/claudish-engine.Tests.ps1 (AST check: no script
+        # may pass -LogonType to Register-ScheduledTask).
+        $ready = Test-EngineRelaunchReady
+        if ($ready.Ready) {
+            try {
+                Start-ScheduledTask -TaskName "ClaudishDockerDesktopStart"
+                Write-Log "ENGINE: Docker Desktop launch requested in user session (relaunch path proven: $($ready.Checks -join ','))"
+            } catch {
+                Write-Log "ENGINE: relaunch task proven but would not start ($($_.Exception.Message))"
+            }
+        } else {
+            Write-Log "ENGINE: cannot launch Docker Desktop — relaunch path NOT proven ($($ready.Reason)); checks=$($ready.Checks -join ',')"
         }
     }
     for ($i = 1; $i -le 12; $i++) {
@@ -532,6 +721,7 @@ $consecutive = [int]$state.consecutiveHangs
 if ($result.Ok) {
     Write-Log "OK (uptime=${uptimeHours}h). $($result.Detail)"
     Set-State -ConsecutiveHangs 0
+    Invoke-LoopbackWedgeWatch -ServingHealthy $true
     exit 0
 }
 

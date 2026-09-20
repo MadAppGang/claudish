@@ -76,6 +76,9 @@ param(
     [int]$MaxWaitSec = 600,
     [string]$Reason = "manual",
     [string]$LogPath = "$env:USERPROFILE\.claudish\drain.log",
+    # Where base-url.txt is looked up. Same default as $LogPath's directory, so
+    # an existing dot-source or scheduled invocation needs no change.
+    [string]$ClaudishHome = "$env:USERPROFILE\.claudish",
     # Interpolation env file for `docker compose` under -Recreate. See the
     # header: refusing beats silently recreating with empty ${VAR:-} values.
     [string]$EnvFile = "",
@@ -84,6 +87,8 @@ param(
     # instead of silently draining into a plain `docker restart`.
     [switch]$Recreate
 )
+
+Import-Module (Join-Path $PSScriptRoot 'lib\claudish-engine.psm1') -Force
 
 function Write-DrainLog {
     param([string]$Message)
@@ -106,12 +111,23 @@ function Get-ClaudishProbeUrl {
         port, the health call answered nothing, Get-ClaudishActiveStreams
         returned $null ("no signal"), and the restart silently degraded to
         undrained. Measured on ai-01, 2026-09-14 and 2026-09-15.
+
+        The HOST authority is resolved separately, from <ClaudishHome>\base-url.txt
+        when that file exists (#wedge, 2026-09-20): on a machine whose Docker
+        Desktop loopback forwarder has wedged, localhost is dead while the LAN
+        binding still serves, and a drain that reads activeStreams through the
+        dead door gets $null — "no signal" — and silently degrades to an
+        undrained restart, killing every in-flight stream. The port still comes
+        from `docker port`, never from the override, so a per-machine base URL
+        can never point a sidecar at the hub's container (#110).
+
+        No base-url.txt = localhost = byte-identical behaviour.
     #>
     param([string]$Container)
     try {
         $published = (docker port $Container 3000/tcp 2>$null | Select-Object -First 1)
         if ($published -and $published -match ':(\d+)\s*$') {
-            return "http://localhost:$($Matches[1])"
+            return (Resolve-ClaudishProbeUrl -ClaudishHome $ClaudishHome -Port ([int]$Matches[1]))
         }
     } catch { }
     return $null

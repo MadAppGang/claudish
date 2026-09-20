@@ -1,0 +1,555 @@
+<#
+    claudish-engine — shared, testable primitives for the watchdog and the drain.
+
+    This module exists because of 2026-09-20. The Docker Desktop localhost
+    forwarder (`wslrelay`) wedged three times that day on the hub machine, and
+    the first attempt to automate a recovery caused a WORSE outage than the
+    wedge it targeted: it tore down the Docker backend and the WSL VM, then
+    could not relaunch Docker Desktop, leaving the host with no engine at all.
+
+    The root cause of that failure is still present on `main` and is fixed here:
+    `Register-ScheduledTask` has NO `-LogonType` parameter (it belongs to
+    `New-ScheduledTaskPrincipal`), so `Start-DockerEngine`'s relaunch has never
+    worked on any machine — it has always thrown, been swallowed by its own
+    catch, and logged "could not launch Docker Desktop". That is also the most
+    likely explanation for 2026-08-29, when the hub came back from a reboot with
+    no container and a human had to reboot a second time.
+
+    Three rules are encoded here rather than written down, because a rule that
+    lives only in a doc gets re-broken:
+
+      1. NO TEARDOWN WITHOUT A PROVEN REBUILD — and here, no teardown at all.
+         The wedge path has NO actuator: its terminal verdict is 'escalate'
+         (jsboige/claudish#172 AC4, and a static test in scripts/tests pins it —
+         a reviewer can grep the wedge path and find no Restart-*, no Stop-*, no
+         -Verb RunAs). A container restart cannot fix a forwarder wedge; 13 were
+         tried on 2026-09-20 and only a host reboot rebuilt it. Where an engine
+         action does already exist — Start-DockerEngine, which predates all of
+         this — Test-EngineRelaunchReady now guards it by registering the
+         relaunch task and reading it back, so the 13:18 failure is unreachable
+         by construction: the registration that blew up is the thing that must
+         succeed first.
+      2. A GUARD IS AN EXPLICIT FLAG, NEVER AN ACCIDENTAL EQUALITY. The previous
+         attempt disarmed itself with `if ($loopbackUrl -ne $ProxyUrl)`, which
+         held only because the two strings happened to be equal on a machine
+         that had not opted in. Changing the probe from `localhost` to `[::1]`
+         made equality impossible, and the watch armed on every machine at once.
+         Opt-in is now a file with required content.
+      3. EVERY UNKNOWN FAILS SAFE. Each instrument that lied that day now
+         degrades to "do nothing" rather than to a verdict.
+#>
+
+Set-StrictMode -Version Latest
+
+$script:DefaultRelaunchTaskName = 'ClaudishDockerDesktopStart'
+$script:OptInFileName           = 'wedge-watch.enabled'
+$script:OptInToken              = 'enabled'
+
+function Get-ClaudishOptInFileName { return $script:OptInFileName }
+function Get-ClaudishOptInToken    { return $script:OptInToken }
+
+function Get-ClaudishServingBase {
+    <#
+        Reads the per-machine serving base URL from <ClaudishHome>\base-url.txt,
+        or $null when the file is absent, empty or not an http(s) URL.
+
+        Why a file and not a constant: on po-2025 the wedge kills ONLY the
+        loopback path — com.docker.backend's [::]:3000 wildcard keeps serving
+        127.0.0.1, the LAN and the ARR throughout. A watchdog that probes the
+        dead path concludes the proxy is down and restarts the container, which
+        fixes nothing (measured: 13 consecutive useless restarts over 6h47).
+        Probing the SURVIVING path instead makes the watchdog agree with reality.
+
+        No file = localhost = zero change. That is the default on every machine
+        that has not opted in, and it is why this is safe to ship fleet-wide.
+    #>
+    param([Parameter(Mandatory)][string]$ClaudishHome)
+
+    $path = Join-Path $ClaudishHome 'base-url.txt'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $raw = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
+    } catch { return $null }
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+
+    $candidate = $raw.Trim() -split "`n" | Select-Object -First 1
+    $candidate = $candidate.Trim().TrimEnd('/')
+    if ($candidate -notmatch '^https?://[^\s/]+$') { return $null }
+    return $candidate
+}
+
+function Resolve-ClaudishProbeUrl {
+    <#
+        Composes the probe URL for a container: the host authority comes from
+        base-url.txt when present, the PORT always comes from the caller.
+
+        The port must not be inherited from the override: ports are per
+        container (#110 — ai-01's sidecar publishes :3002), so a machine-wide
+        base URL carrying a port would silently probe the wrong container.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ClaudishHome,
+        [Parameter(Mandatory)][int]$Port,
+        [string]$FallbackUrl = 'http://localhost'
+    )
+
+    $base = Get-ClaudishServingBase -ClaudishHome $ClaudishHome
+    if (-not $base) { return ('{0}:{1}' -f $FallbackUrl.TrimEnd('/'), $Port) }
+
+    $u = [uri]$base
+    return ('{0}://{1}:{2}' -f $u.Scheme, $u.Host, $Port)
+}
+
+function Get-LoopbackProbeUrl {
+    <#
+        The loopback probe MUST name [::1] explicitly. It can never be
+        `localhost`.
+
+        wslrelay owns [::1]:<port> alone; com.docker.backend owns the [::]
+        wildcard and keeps serving 127.0.0.1. .NET 5+ (pwsh 7) connects to
+        `localhost` in dual-mode with a fast IPv6 -> IPv4 fallback, so a
+        `localhost` probe answers 200 over 127.0.0.1 straight through the
+        outage — blind to the exact wedge it exists to catch. A Node client,
+        which resolves ::1 first, takes an immediate ConnectionRefused.
+    #>
+    param([Parameter(Mandatory)][int]$Port)
+    return ('http://[::1]:{0}' -f $Port)
+}
+
+function Test-LoopbackListener {
+    <#
+        Is anything LISTENING on [::1]:<port>?
+
+        This is the discriminant that keeps the wedge watch from crying wolf on
+        machines that do not route localhost through a WSL relay: no [::1]
+        listener means there is nothing to wedge, and the watch stays silent
+        instead of logging a false banner every 15 minutes.
+
+        It also fails safe through a known instrument trap. Under
+        networkingMode=mirrored, listening sockets live in the mirrored WSL
+        netns and the Windows TCP table never enumerates them, so this returns
+        $false — "not visible", which is NOT "not serving". Returning $false
+        routes the decision to 'none', i.e. do nothing, which is the correct
+        behaviour under an instrument that cannot see. (Reading an empty table
+        as a verdict is what produced a published-then-retracted conclusion on
+        2026-09-20 — the same class of error as counting armed failover cascades
+        by NAME instead of by VALUE.)
+    #>
+    param(
+        [Parameter(Mandatory)][int]$Port,
+        [scriptblock]$Enumerator = $null
+    )
+
+    if (-not $Enumerator) {
+        $Enumerator = {
+            param($p)
+            try {
+                @(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction Stop |
+                    Where-Object { $_.LocalAddress -eq '::1' })
+            } catch { @() }
+        }
+    }
+    try { return (@(& $Enumerator $Port).Count -gt 0) } catch { return $false }
+}
+
+function Test-HttpAlive {
+    <#
+        Did this address carry an HTTP request and return ANY status?
+
+        The wedge signature is "TCP accepts, HTTP never answers". So the correct
+        discriminant is the presence of a response, NOT a 200. Checking for 200
+        produced a false wedge on the hub the first time this ran under the
+        production interpreter: Windows PowerShell 5.1 (.NET Framework) sends a
+        request to http://[::1]:3000/health that comes back **HTTP 400**, while
+        pwsh 7 (.NET 7) gets 200 from the same address at the same moment. A 400
+        proves the forwarder is working perfectly — it carried the request and
+        brought back an answer — yet a 200-only check reads it as a dead
+        loopback and would have logged a phantom wedge every 15 minutes, then
+        escalated one that never existed.
+
+        Interpreter-dependent formatting of a Host header is not a health
+        signal. Only a transport failure — no response object at all — is.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [int]$TimeoutSec = 5,
+        [scriptblock]$Requester = $null
+    )
+
+    if (-not $Requester) {
+        $Requester = { param($u, $t) $null = Invoke-WebRequest -Uri $u -TimeoutSec $t -UseBasicParsing }
+    }
+    try {
+        & $Requester $Url $TimeoutSec
+        return $true
+    } catch {
+        # Both interpreters expose the server's answer on the exception when one
+        # arrived: HttpWebResponse on 5.1, HttpResponseMessage on 7+. Either way,
+        # non-null means the pipe worked.
+        $resp = $null
+        try { $resp = $_.Exception.Response } catch { }
+        return ($null -ne $resp)
+    }
+}
+
+function Test-WedgeWatchOptIn {
+    <#
+        Engine recovery is opt-in, per machine, through a file that must exist
+        AND carry the literal token 'enabled'.
+
+        Requiring content is deliberate: an empty file created by an accidental
+        New-Item or a stray redirect does NOT arm a teardown of the host's
+        container engine. The previous attempt's guard was a comparison between
+        two strings that merely coincided; when they stopped coinciding, the
+        teardown armed on every machine in the fleet.
+    #>
+    param([Parameter(Mandatory)][string]$ClaudishHome)
+
+    $path = Join-Path $ClaudishHome $script:OptInFileName
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $raw = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
+    } catch { return $false }
+    if ($null -eq $raw) { return $false }
+    return ($raw.Trim() -eq $script:OptInToken)
+}
+
+function New-EngineRelaunchRegistration {
+    <#
+        Registers (without starting) the task that relaunches Docker Desktop in
+        the interactive user session. SYSTEM cannot own a GUI app, hence the
+        indirection through a task with an Interactive principal.
+
+        THE BUG THIS FIXES: Register-ScheduledTask has no -LogonType parameter.
+        The call on `main`
+
+            Register-ScheduledTask -TaskName $h -Action $a `
+                -User "$env:COMPUTERNAME\jsboige" -LogonType Interactive ...
+
+        throws ParameterBindingException on EVERY machine and has never once
+        relaunched anything — its own catch swallows the error and logs "could
+        not launch Docker Desktop". -LogonType belongs to
+        New-ScheduledTaskPrincipal, which builds the principal passed below.
+
+        Pinned by the static test "no script passes -LogonType to
+        Register-ScheduledTask", so the shape cannot come back anywhere.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$TaskName,
+        [Parameter(Mandatory)][string]$ExecutablePath,
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    # -ErrorAction Stop on all three is load-bearing, not decoration.
+    # Register-ScheduledTask reports "Access denied" as a NON-TERMINATING error:
+    # without this, it prints the failure, the enclosing try/catch never fires,
+    # and a registration that did nothing is recorded as a success. Measured on
+    # the hub 2026-09-20 in an unelevated shell — the preflight returned
+    # 'register:OK' for a task that was never created, and only the read-back
+    # caught it. A gate that depends on its own backstop is one refactor away
+    # from being the 13:18 failure again.
+    $action    = New-ScheduledTaskAction -Execute $ExecutablePath -ErrorAction Stop
+    $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest -ErrorAction Stop
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Force -ErrorAction Stop | Out-Null
+}
+
+function ConvertFrom-QuserOutput {
+    <#
+        Extracts the logged-on user name from `quser` output.
+
+        Pure and injectable because `quser` is LOCALIZED: on this fleet it
+        prints "UTILISATEUR / SESSION / ID / ÉTAT / TEMPS INACT", so any parser
+        keying on the word "Active" silently finds nobody. The session-name
+        column is not localized, though — "console" and "rdp-tcp#N" are literals
+        — so that is what this keys on. The ">" prefix marks the caller's own
+        session and is meaningless under SYSTEM, hence stripped, never required.
+
+        Returns the bare user name (no domain) or $null.
+    #>
+    param([string]$QuserText)
+
+    if ([string]::IsNullOrWhiteSpace($QuserText)) { return $null }
+    foreach ($line in ($QuserText -split "`r?`n")) {
+        if ($line -notmatch '(?i)(console|rdp-tcp#\d+)') { continue }
+        $candidate = ($line.TrimStart('>', ' ') -split '\s+') | Where-Object { $_ } | Select-Object -First 1
+        if ($candidate -and $candidate -notmatch '(?i)^(console|rdp-tcp)') { return $candidate }
+    }
+    return $null
+}
+
+function Get-InteractiveUserId {
+    <#
+        The account to relaunch Docker Desktop as.
+
+        Not hardcoded: "$env:COMPUTERNAME\jsboige" on `main` is the same
+        operator-hardcoding trap as the watchdog's log path, and it makes the
+        relaunch wrong-by-construction on any machine whose operator is someone
+        else. $env:USERNAME is useless here (under SYSTEM it is the machine
+        account), so ask the OS who is actually logged on.
+
+        Three probes, because the obvious one is not enough. Measured on the hub
+        2026-09-20: Win32_ComputerSystem.UserName came back EMPTY, because it
+        reports the CONSOLE session only and the operator was connected over
+        RDP (rdp-tcp#1). Taking that empty answer at face value would have made
+        the preflight fail forever and the whole recovery path dead code on the
+        one machine it was written for — fail-safe, but useless. `quser` sees
+        RDP sessions; the process-owner probe is the last resort and needs
+        elevation, which the scheduled task (SYSTEM) has and a dev shell
+        does not.
+    #>
+    param(
+        [scriptblock]$Probe = $null,
+        [scriptblock]$QuserProbe = $null,
+        [scriptblock]$ProcessOwnerProbe = $null
+    )
+
+    if (-not $Probe) {
+        $Probe = { (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName }
+    }
+    try {
+        $u = & $Probe
+        if ($null -ne $u -and -not [string]::IsNullOrWhiteSpace([string]$u)) { return ([string]$u).Trim() }
+    } catch { }
+
+    if (-not $QuserProbe) { $QuserProbe = { (& quser.exe 2>&1 | Out-String) } }
+    try {
+        $name = ConvertFrom-QuserOutput -QuserText ([string](& $QuserProbe))
+        if ($name) { return ('{0}\{1}' -f $env:COMPUTERNAME, $name) }
+    } catch { }
+
+    if (-not $ProcessOwnerProbe) {
+        $ProcessOwnerProbe = {
+            $p = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction Stop | Select-Object -First 1
+            if (-not $p) { return $null }
+            $o = Invoke-CimMethod -InputObject $p -MethodName GetOwner -ErrorAction Stop
+            if ($o.ReturnValue -ne 0) { return $null }
+            return ('{0}\{1}' -f $o.Domain, $o.User)
+        }
+    }
+    try {
+        $owner = & $ProcessOwnerProbe
+        if ($owner -and -not [string]::IsNullOrWhiteSpace([string]$owner)) { return ([string]$owner).Trim() }
+    } catch { }
+
+    return $null
+}
+
+function Test-EngineRelaunchReady {
+    <#
+        PREFLIGHT — the single most important function in this module.
+
+        It answers one question: "if I tear the engine down right now, can I
+        actually bring it back?" And it answers it by DOING the rebuild-path
+        registration and reading the task back, not by reasoning about it.
+
+        On 2026-09-20 the teardown half was tested and the rebuild half never
+        was. Everything that was verified — the probe does not fire when
+        healthy, four addresses at 200, one real cycle exiting 0 — was true, and
+        none of it could have caught a rebuild that throws on its first
+        statement. Proof of teardown is not proof of recovery.
+
+        Returns @{ Ready = <bool>; Reason = <string>; Checks = @(...) }. Any
+        check that fails, for any reason INCLUDING an unexpected exception,
+        yields Ready = $false — an unprovable rebuild is treated exactly like a
+        failed one.
+    #>
+    param(
+        [string]$TaskName = $script:DefaultRelaunchTaskName,
+        [string]$ExecutablePath = 'C:\Program Files\Docker\Docker\Docker Desktop.exe',
+        [string]$UserId = $null,
+        [scriptblock]$PathTest = $null,
+        [scriptblock]$Registrar = $null,
+        [scriptblock]$Verifier = $null,
+        # The WHOLE user resolution, injected as one unit. An earlier shape took
+        # only the first of Get-InteractiveUserId's three probes, so a test that
+        # stubbed "no user" still fell through to the live machine and resolved
+        # a real one — a stub that does not stub is worse than none.
+        [scriptblock]$UserResolver = $null
+    )
+
+    if (-not $PathTest)  { $PathTest  = { param($p) Test-Path -LiteralPath $p } }
+    if (-not $Registrar) { $Registrar = { param($n, $exe, $u) New-EngineRelaunchRegistration -TaskName $n -ExecutablePath $exe -UserId $u } }
+    if (-not $Verifier)  { $Verifier  = { param($n) [bool](Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) } }
+
+    $checks = New-Object System.Collections.Generic.List[string]
+
+    # 1. The thing we would relaunch must exist.
+    try {
+        if (-not (& $PathTest $ExecutablePath)) {
+            $checks.Add('executable:MISSING')
+            return [PSCustomObject]@{ Ready = $false; Reason = "executable: not found at '$ExecutablePath'"; Checks = $checks.ToArray() }
+        }
+    } catch {
+        $checks.Add('executable:ERROR')
+        return [PSCustomObject]@{ Ready = $false; Reason = "executable: $($_.Exception.Message)"; Checks = $checks.ToArray() }
+    }
+    $checks.Add('executable:OK')
+
+    # 2. An interactive account must be resolvable, or the principal is a guess.
+    if ([string]::IsNullOrWhiteSpace($UserId)) {
+        if (-not $UserResolver) { $UserResolver = { Get-InteractiveUserId } }
+        try { $UserId = [string](& $UserResolver) } catch { $UserId = $null }
+    }
+    if ([string]::IsNullOrWhiteSpace($UserId)) {
+        $checks.Add('user:UNRESOLVED')
+        return [PSCustomObject]@{ Ready = $false; Reason = 'user: no interactive user could be resolved'; Checks = $checks.ToArray() }
+    }
+    $checks.Add('user:OK')
+
+    # 3. The registration itself must SUCCEED. This is the step that would have
+    #    caught -LogonType, and the step whose absence cost a host its engine.
+    try {
+        # Merge the error stream into the output and inspect it, rather than
+        # relying on $ErrorActionPreference.
+        #
+        # Setting $ErrorActionPreference = 'Stop' here does NOT work and looked
+        # like it did: a scriptblock invoked with & runs in a child of ITS OWN
+        # definition scope, not the caller's, so the preference never reaches an
+        # injected registrar. The live (unelevated) run passed anyway, because
+        # the real registrar carries its own -ErrorAction Stop — and the unit
+        # test with an injected Write-Error failed. Two instruments disagreeing
+        # is what surfaced it; believing the passing one would have shipped a
+        # gate that is blind to exactly the error it exists to catch.
+        $captured = & $Registrar $TaskName $ExecutablePath $UserId 2>&1
+        $errRecords = @($captured | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+        if ($errRecords.Count -gt 0) { throw $errRecords[0].Exception.Message }
+    } catch {
+        $checks.Add('register:FAILED')
+        return [PSCustomObject]@{ Ready = $false; Reason = "register: $($_.Exception.Message)"; Checks = $checks.ToArray() }
+    }
+    $checks.Add('register:OK')
+
+    # 4. And it must be READABLE BACK. A registration that reports success but
+    #    leaves nothing queryable is not a rebuild path.
+    try {
+        if (-not (& $Verifier $TaskName)) {
+            $checks.Add('verify:ABSENT')
+            return [PSCustomObject]@{ Ready = $false; Reason = "verify: task '$TaskName' not found after registration"; Checks = $checks.ToArray() }
+        }
+    } catch {
+        $checks.Add('verify:ERROR')
+        return [PSCustomObject]@{ Ready = $false; Reason = "verify: $($_.Exception.Message)"; Checks = $checks.ToArray() }
+    }
+    $checks.Add('verify:OK')
+
+    return [PSCustomObject]@{ Ready = $true; Reason = 'relaunch path proven'; Checks = $checks.ToArray() }
+}
+
+function Get-WedgeDecision {
+    <#
+        PURE decision function: no I/O, no clock, no network. Every input is
+        injected, so every branch below is reachable from a unit test — which is
+        the point. The previous attempt's logic could only be exercised by
+        shipping it to the production hub and waiting for a real wedge.
+
+        DETECTION ONLY — there is no actuator, by construction and by mandate
+        (#172 AC4). The terminal verdict is 'escalate'. A container restart
+        cannot fix a forwarder wedge (13 were tried on 2026-09-20, all useless)
+        and an engine teardown is what turned a wedge into a host with no engine
+        at all. The only thing that rebuilds the forwarder is a host reboot,
+        which is a human's decision, so the correct output is a loud line.
+
+        Returns @{ Action = 'none'|'arm'|'escalate'; Wedge = <int>;
+                   Signature = 'disabled'|'healthy'|'hub-down'|'inconclusive'|'wedge';
+                   Reason = <string> }
+
+          none      nothing to act on; reset the counter. `Signature` says why,
+                    because "nothing" has five different causes here and an
+                    operator needs to know which one.
+          arm       first sighting; count it, log it, touch nothing (1 of 2)
+          escalate  confirmed wedge. Log with a greppable label and escalate to
+                    a human. THIS IS THE TERMINAL STATE.
+
+        Every verdict names the condition that decided it. A verdict that does
+        not say which of its conditions failed is how "one probe of two is dead"
+        became "everything is dead" on 2026-09-20.
+    #>
+    param(
+        [Parameter(Mandatory)][bool]$LoopbackV6Healthy,
+        [Parameter(Mandatory)][bool]$LoopbackV4Healthy,
+        [Parameter(Mandatory)][bool]$ServingHealthy,
+        [Parameter(Mandatory)][bool]$LoopbackListening,
+        [int]$ConsecutiveWedge = 0,
+        [bool]$OptIn = $false,
+        [int]$ConfirmCycles = 2
+    )
+
+    $none = {
+        param($Reason, $Signature)
+        [PSCustomObject]@{ Action = 'none'; Wedge = 0; Signature = $Signature; Reason = $Reason }
+    }
+
+    # AC5: the watch is gated on an explicit flag and is OFF by default, so a
+    # machine that never asked for it is untouched — including by the probes.
+    # This gate is FIRST on purpose: the 2026-09-20 arming happened because a
+    # probe change could reach machines that had not opted in.
+    if (-not $OptIn) {
+        return & $none "wedge watch not enabled on this machine (create <ClaudishHome>\$($script:OptInFileName) containing '$($script:OptInToken)')" 'disabled'
+    }
+
+    # Healthy: the door everything local goes through answers. Nothing else
+    # matters, so nothing else is consulted.
+    if ($LoopbackV6Healthy) {
+        return & $none 'loopback [::1] healthy' 'healthy'
+    }
+
+    # THE DISCRIMINANT (#172). v6 is dead. What the OTHER families say is what
+    # separates the two outages that look identical from an operator's seat:
+    #
+    #   v6 dead + v4/LAN alive  -> forwarder wedge. No container action helps;
+    #                              13 restarts proved it on 2026-09-20.
+    #   v6 dead + v4/LAN dead   -> the hub itself. The hang/restart path owns
+    #                              it, and claiming a wedge here would send an
+    #                              operator chasing the forwarder during an
+    #                              ordinary outage — the mirror image of the
+    #                              mistake this detector exists to prevent.
+    if (-not ($LoopbackV4Healthy -or $ServingHealthy)) {
+        return & $none 'all families dead ([::1], 127.0.0.1, serving) — the hub itself, not a forwarder wedge; the hang path owns this' 'hub-down'
+    }
+
+    # Fail-safe. No visible [::1] listener means either this machine does not
+    # route localhost through a WSL relay, or the TCP table cannot enumerate it
+    # (networkingMode=mirrored, where empty means "not visible", NEVER "not
+    # serving"). An instrument that cannot see does not get to conclude.
+    if (-not $LoopbackListening) {
+        return & $none 'no [::1] listener visible — nothing to wedge, or the TCP table cannot enumerate it (mirrored)' 'inconclusive'
+    }
+
+    $wedge = $ConsecutiveWedge + 1
+    $alive = @()
+    if ($LoopbackV4Healthy) { $alive += '127.0.0.1' }
+    if ($ServingHealthy)    { $alive += 'serving' }
+    $detail = "[::1] listening but not answering while $($alive -join '+') answer"
+
+    if ($wedge -lt $ConfirmCycles) {
+        return [PSCustomObject]@{
+            Action = 'arm'; Wedge = $wedge; Signature = 'wedge'
+            Reason = "$detail ($wedge/$ConfirmCycles) — counting, no action"
+        }
+    }
+
+    # The terminal verdict. There is deliberately nothing past this point:
+    # escalation IS the outcome, per #172 AC4. A container restart cannot fix a
+    # wedge and an engine teardown is what turned a wedge into a dead host at
+    # 13:18 on 2026-09-20, so the correct actuator is a human reading this line.
+    return [PSCustomObject]@{
+        Action = 'escalate'; Wedge = $wedge; Signature = 'wedge'
+        Reason = "confirmed ${wedge}/${ConfirmCycles}: $detail — container restarts CANNOT fix this (13 tried 2026-09-20); only a host reboot rebuilds the forwarder. Escalating, no action taken."
+    }
+}
+
+Export-ModuleMember -Function @(
+    'Get-ClaudishServingBase'
+    'Resolve-ClaudishProbeUrl'
+    'Get-LoopbackProbeUrl'
+    'Test-LoopbackListener'
+    'Test-HttpAlive'
+    'Test-WedgeWatchOptIn'
+    'New-EngineRelaunchRegistration'
+    'Get-InteractiveUserId'
+    'ConvertFrom-QuserOutput'
+    'Test-EngineRelaunchReady'
+    'Get-WedgeDecision'
+    'Get-ClaudishOptInFileName'
+    'Get-ClaudishOptInToken'
+)
