@@ -35,6 +35,12 @@ import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthro
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { withFirstUsefulEventWatchdog, boundRetryUpstream } from "./shared/first-event-watchdog.js";
+import {
+  preStreamPolicyRefusal,
+  preStreamPolicyRetry,
+  policyRefusalNotice,
+  logPolicyRefusal,
+} from "./shared/stream-parsers/policy-refusal.js";
 import { collectAnthropicSseToMessage } from "./shared/collect-sse-message.js";
 import { appendUpstreamError } from "./shared/response-capture.js";
 import {
@@ -629,6 +635,49 @@ export class ComposedHandler implements ModelHandler {
         const recovered = await this.patientOverloadBackoff(doFetch);
         if (recovered) response = recovered;
         // null = exhausted → response stays the overload → !response.ok below → 529
+      } else {
+        // Pre-stream policy refusal (#155 — pre-stream extension of #65): the
+        // same invalid_prompt class arrives as a plain HTTP 4xx body before any
+        // stream byte exists; the lane parsers never run on this path, so it
+        // surfaced as a bare API error and killed the turn (fleet session,
+        // 2026-09-19 14:41Z). Bounded retry of the identical body, then the
+        // labeled terminal turn. Quota walls, transport errors and 5xx never
+        // enter here — isQuotaExhaustion keeps owning them (negative control
+        // pinned by test).
+        const refusal = preStreamPolicyRefusal(response.status, probeText);
+        if (refusal) {
+          const format = this.resolveStreamFormat();
+          const lane: "openai" | "anthropic" | "responses" = format.includes("anthropic")
+            ? "anthropic"
+            : format.includes("responses")
+              ? "responses"
+              : "openai";
+          const retried = await preStreamPolicyRetry(doFetch, {
+            lane,
+            model: this.bareModelName,
+            provider: this.provider.name,
+          });
+          if (retried.response) {
+            // ok → normal stream path below (own watchdog wrap); foreign
+            // non-ok → the generic error path owns it
+            response = retried.response;
+          } else {
+            logPolicyRefusal({
+              lane,
+              model: this.bareModelName,
+              provider: this.provider.name,
+              attempt: retried.attempts + 1,
+              action: "surface",
+            });
+            appendUpstreamError({
+              model: this.targetModel,
+              provider: this.provider.displayName,
+              status: response.status,
+              body: probeText,
+            });
+            return this.buildPolicyRefusalResponse(c, payload, refusal.message);
+          }
+        }
       }
     }
 
@@ -1095,6 +1144,28 @@ export class ComposedHandler implements ModelHandler {
       return buildOverflowRecoveryStream(text, inputTokens, this.bareModelName);
     }
     return c.json(buildOverflowRecoveryMessage(text, inputTokens, this.bareModelName), {
+      headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
+    });
+  }
+
+  /**
+   * Terminal labeled turn for a persistent pre-stream policy refusal (#155).
+   * Same synthetic-turn shape as the overflow recovery: a refusal surfaced as
+   * a bare 4xx kills the agent turn; as a 200 turn with end_turn the agent
+   * reads it, adapts, and the turn completes cleanly. ok-by-design also stops
+   * handleWithCascade — a policy flag is not a quota wall and must not burn a
+   * failover step (asserted by test).
+   */
+  private buildPolicyRefusalResponse(
+    c: Context,
+    payload: any,
+    message: string
+  ): Response {
+    const text = policyRefusalNotice(message);
+    if (payload?.stream === true) {
+      return buildOverflowRecoveryStream(text, 0, this.bareModelName);
+    }
+    return c.json(buildOverflowRecoveryMessage(text, 0, this.bareModelName), {
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
     });
   }
