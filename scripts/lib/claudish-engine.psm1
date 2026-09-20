@@ -704,6 +704,521 @@ function Invoke-GitBounded {
     }
 }
 
+function ConvertFrom-DockerEventLine {
+    <#
+    .SYNOPSIS
+        Parse one `docker events --format "{{json .}}"` line into the fields
+        attribution actually needs.
+    .DESCRIPTION
+        The line is EVIDENCE, so the parser is deliberately forgiving: a line
+        that cannot be read returns $null rather than throwing, because this runs
+        on every tick of a scheduled task where an exception costs the whole
+        window. What it must never do is read a line as an event when it is not
+        one, so `Action` is required — everything else defaults.
+
+        `ExitCode` comes from Actor.Attributes and is the field the 2026-09-20
+        incident could not recover at all (the die events were already evicted).
+        It is a STRING, not a number: docker reports it as a string and a
+        missing key must stay distinguishable from a 0 — an exit code of 0 and no
+        exit code are different facts about a restart.
+
+        Property access is guarded rather than dotted: the module runs under
+        Set-StrictMode -Version Latest, where a missing property on a
+        PSCustomObject is a terminating error, and a provider-shaped line from a
+        different docker version must degrade to a $null event, never to a dead
+        collector.
+    #>
+    param([string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+
+    $obj = $null
+    try { $obj = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    if ($null -eq $obj) { return $null }
+
+    $props = @{}
+    try { foreach ($p in $obj.PSObject.Properties) { $props[$p.Name] = $p.Value } } catch { }
+    $action = ''
+    if ($props.ContainsKey('Action')) { $action = [string]$props['Action'] }
+    if ([string]::IsNullOrWhiteSpace($action)) { return $null }
+
+    $type = ''
+    if ($props.ContainsKey('Type')) { $type = [string]$props['Type'] }
+    $tn = 0
+    if ($props.ContainsKey('timeNano')) { try { $tn = [int64]$props['timeNano'] } catch { $tn = 0 } }
+
+    $id = ''; $name = ''; $image = ''; $exitCode = ''
+    if ($props.ContainsKey('Actor') -and $null -ne $props['Actor']) {
+        $actor = $props['Actor']
+        $actorProps = @{}
+        try { foreach ($p in $actor.PSObject.Properties) { $actorProps[$p.Name] = $p.Value } } catch { }
+        if ($actorProps.ContainsKey('ID')) { $id = [string]$actorProps['ID'] }
+        if ($actorProps.ContainsKey('Attributes') -and $null -ne $actorProps['Attributes']) {
+            $attrs = $actorProps['Attributes']
+            $attrProps = @{}
+            try { foreach ($p in $attrs.PSObject.Properties) { $attrProps[$p.Name] = $p.Value } } catch { }
+            if ($attrProps.ContainsKey('name'))     { $name = [string]$attrProps['name'] }
+            if ($attrProps.ContainsKey('image'))    { $image = [string]$attrProps['image'] }
+            if ($attrProps.ContainsKey('exitCode')) { $exitCode = [string]$attrProps['exitCode'] }
+        }
+    }
+
+    return [PSCustomObject]@{
+        TimeNano    = $tn
+        Action      = $action
+        Type        = $type
+        ContainerId = $id
+        Name        = $name
+        Image       = $image
+        ExitCode    = $exitCode
+    }
+}
+
+function Get-DockerEventFingerprint {
+    <#
+        The identity of one event, for cross-window dedupe.
+
+        A fingerprint rather than a bare id because a container produces MANY
+        events: start, die, destroy and create all share an actor, so keying on
+        the id alone would silently drop every event after the first for that
+        container. timeNano gives nanosecond resolution, which is what makes two
+        events of the same action on the same container distinguishable.
+    #>
+    param($Event)
+
+    if ($null -eq $Event) { return '' }
+    return ('{0}|{1}|{2}' -f $Event.TimeNano, $Event.Action, $Event.ContainerId)
+}
+
+function Select-NewDockerEvents {
+    <#
+    .SYNOPSIS
+        Drop events already emitted in a previous window, and carry a bounded
+        ring of fingerprints forward.
+    .DESCRIPTION
+        The window boundary is why this exists. The watermark advances to the
+        newest event SEEN (see Get-DockerEventsNextSince), so an event the daemon
+        had not yet flushed when the previous process was killed is re-requested
+        in the next window — arriving twice. Without this, one restart reads as
+        two, and the count is the thing an investigator trusts.
+
+        Skipped is returned separately from kept, so a reader can tell
+        "deduplicated" from "nothing arrived" — the same distinction the whole
+        issue is about.
+    #>
+    param(
+        $Events,
+        [string[]]$Seen = @(),
+        [int]$SeenCap = 200
+    )
+
+    # Plain arrays, NOT List[object]: `@($someListOfObject)` throws
+    # "Argument types do not match" on BOTH interpreters (pwsh 7.5 and Windows
+    # PowerShell 5.1.26100 — measured 2026-09-20), while `@($listOfString)` is
+    # fine. The type ARGUMENT is what matters, not the version. A collector whose
+    # output object cannot be constructed would have shipped as "the collector
+    # ran and produced nothing" — the exact silent-failure class #169 exists to
+    # end. Found by running it, not by reading it.
+    $kept = @()
+    $skipped = @()
+    $ring = New-Object System.Collections.Generic.List[string]
+    foreach ($s in @($Seen)) { if ($s) { $ring.Add($s) } }
+
+    $known = @{}
+    foreach ($s in $ring) { $known[$s] = $true }
+
+    foreach ($e in @($Events)) {
+        if ($null -eq $e) { continue }
+        $fp = Get-DockerEventFingerprint -Event $e
+        if ([string]::IsNullOrWhiteSpace($fp) -or $fp -eq '0||') { continue }
+        if ($known.ContainsKey($fp)) { $skipped += $e; continue }
+        $known[$fp] = $true
+        $ring.Add($fp)
+        $kept += $e
+    }
+
+    if ($SeenCap -gt 0) {
+        while ($ring.Count -gt $SeenCap) { $ring.RemoveAt(0) }
+    }
+
+    return [PSCustomObject]@{
+        Kept    = @($kept)
+        Skipped = @($skipped)
+        Seen    = @($ring)
+    }
+}
+
+function Get-DockerEventsNextSince {
+    <#
+    .SYNOPSIS
+        The watermark for the next window: newest event seen, else the instant
+        the window closed — and NEVER backwards.
+    .DESCRIPTION
+        Three rules, each against a way the collector silently loses data:
+
+          - Newest event SEEN, not 'now'. The process is killed rather than
+            allowed to exit (measured: `docker events` never self-terminates on
+            Docker Desktop 29.x), so the last instant of the window is unknowable
+            from the process itself. Adjacent windows therefore overlap slightly
+            when the daemon was behind, and Select-NewDockerEvents removes the
+            duplicate. Jumping to 'now' would instead DROP whatever had not been
+            flushed yet — silently, which is the defect class this collector
+            exists to end.
+          - No events -> the window close. Nothing existed in the interval, so
+            the next window starts where this one ended.
+          - Monotone. A watermark that moves backwards re-reads the same range
+            forever, and one that moves backwards past already-emitted events
+            also fights the dedupe ring until it overflows. Newer wins; an older
+            candidate is discarded and the Reason says so.
+    #>
+    param(
+        $Events,
+        [string]$KillInstantUtc,
+        [string]$PreviousSinceUtc,
+        [bool]$InvocationOk = $true
+    )
+
+    # A FAILED invocation must not move the watermark. The window never rendered,
+    # so everything inside it is unread; advancing to the window close would drop
+    # that range permanently and silently — the exact data-loss class this
+    # collector exists to end, reintroduced by its own error path. Measured
+    # 2026-09-20: a tick that failed on a malformed `--since` still reported
+    # `next=...17:35:18.176Z`, i.e. it wrote off the interval it had just failed
+    # to read.
+    if (-not $InvocationOk) {
+        $heldTxt = ''
+        try { $heldTxt = ([datetime]::Parse($PreviousSinceUtc)).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture) } catch { $heldTxt = [string]$PreviousSinceUtc }
+        return [PSCustomObject]@{ SinceUtc = $heldTxt; Reason = 'invocation failed — watermark held so the next tick re-reads this range' }
+    }
+
+    $prev = $null
+    try { $prev = [datetime]::Parse($PreviousSinceUtc).ToUniversalTime() } catch { $prev = $null }
+    $kill = $null
+    try { $kill = [datetime]::Parse($KillInstantUtc).ToUniversalTime() } catch { $kill = $null }
+
+    $fmt = 'yyyy-MM-ddTHH:mm:ss.fffZ'
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+
+    $prevTxt = ''
+    if ($null -ne $prev) { $prevTxt = $prev.ToString($fmt, $inv) }
+
+    $newest = $null
+    foreach ($e in @($Events)) {
+        if ($null -eq $e) { continue }
+        $tn = 0
+        try { $tn = [int64]$e.TimeNano } catch { $tn = 0 }
+        if ($tn -le 0) { continue }
+        try {
+            $candidate = [System.DateTimeOffset]::FromUnixTimeMilliseconds([int64][math]::Floor($tn / 1000000)).UtcDateTime
+        } catch { continue }
+        if ($null -eq $newest -or $candidate -gt $newest) { $newest = $candidate }
+    }
+
+    if ($null -eq $newest) {
+        if ($null -ne $kill) {
+            return [PSCustomObject]@{ SinceUtc = $kill.ToString($fmt, $inv); Reason = 'no events in window — advancing to the window close' }
+        }
+        if ($null -ne $prev) {
+            return [PSCustomObject]@{ SinceUtc = $prevTxt; Reason = 'no events and no readable window close — watermark held' }
+        }
+        return [PSCustomObject]@{ SinceUtc = $fmt; Reason = 'no watermark and no clock — next run will use its lookback' }
+    }
+
+    $newestTxt = $newest.ToString($fmt, $inv)
+    if ($null -ne $prev -and $newest -lt $prev) {
+        return [PSCustomObject]@{ SinceUtc = $prevTxt; Reason = 'monotone guard: newest event predates the previous watermark — watermark held' }
+    }
+    return [PSCustomObject]@{ SinceUtc = $newestTxt; Reason = 'advanced to the newest event seen' }
+}
+
+function ConvertTo-DockerSinceInstant {
+    <#
+    .SYNOPSIS
+        Render any stored watermark value as an INVARIANT RFC3339 UTC instant,
+        or $null when it is not readable. PURE.
+    .DESCRIPTION
+        This exists because the state file round-trip broke the collector in
+        production the first time it ran (measured po-2024, 2026-09-20):
+
+            docker refused or could not run: failed to parse value as time or
+            duration: "09/20/2026 17:34:59"
+
+        `ConvertFrom-Json` turns an ISO-8601-looking string back into a
+        [datetime], and `[string]` on that DateTime renders it in the AMBIENT
+        culture — so the watermark we wrote as `2026-09-20T17:34:59.356Z` came
+        back as a US short date docker cannot parse, and every tick after the
+        first was broken. A collector is exactly where this hides: tick 1 looked
+        perfect, wrote plausible state, and the damage only appears on tick 2,
+        fifteen minutes later.
+
+        So the value is never stringified through the ambient culture. Both
+        storage shapes are accepted (DateTime from a JSON round-trip, string from
+        a hand-written file) and anything unreadable returns $null — the caller
+        falls back to its lookback, i.e. fails toward RE-READING. Never toward
+        dropping.
+    #>
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+
+    $dt = $null
+    if ($Value -is [datetime]) { $dt = $Value }
+    elseif ($Value -is [System.DateTimeOffset]) { $dt = $Value.UtcDateTime }
+    else {
+        $s = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+        $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal
+        try { $dt = [datetime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, $styles) } catch { return $null }
+    }
+
+    return $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Get-DockerEventsInvocationVerdict {
+    <#
+    .SYNOPSIS
+        Classify one bounded `docker events` invocation. PURE.
+    .DESCRIPTION
+        THE SEMANTICS ARE INVERTED against Invoke-DockerBounded, deliberately and
+        with a measurement behind it. There, TimedOut means failure — a `docker
+        inspect` that does not answer is a defect. Here, being killed IS how a
+        healthy window closes: measured on Docker Desktop 29.8.0 (po-2024,
+        2026-09-20), `docker events` did not self-terminate in ANY of four
+        argument forms, including an explicit past `--until`, so a collector that
+        called the kill a failure would report every successful tick as broken.
+
+        A silent window is a MEASUREMENT, not a failure: it means no events
+        existed. Only a docker that could not run, or that refused the arguments,
+        is a failure — and both of those carry error text.
+    #>
+    param(
+        [bool]$Exited,
+        [int]$ExitCode,
+        [int]$LineCount,
+        [string]$ErrorText
+    )
+
+    if ($LineCount -gt 0) {
+        if ($Exited) { return [PSCustomObject]@{ Ok = $true;  Reason = 'closed-by-until' } }
+        return [PSCustomObject]@{ Ok = $true; Reason = 'closed-by-kill' }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ErrorText)) {
+        return [PSCustomObject]@{ Ok = $false; Reason = ('docker refused or could not run: ' + $ErrorText.Trim()) }
+    }
+
+    if ($Exited -and $ExitCode -ne 0) {
+        return [PSCustomObject]@{ Ok = $false; Reason = ("docker exited $ExitCode with no output") }
+    }
+
+    if ($Exited) { return [PSCustomObject]@{ Ok = $true; Reason = 'closed-by-until-silent' } }
+    return [PSCustomObject]@{ Ok = $true; Reason = 'closed-by-kill-silent' }
+}
+
+function Get-DockerEventGroupVerdict {
+    <#
+    .SYNOPSIS
+        Read a window's events as a GROUP, and refuse to name an actor. PURE.
+    .DESCRIPTION
+        This is the 2026-08-30 error made un-repeatable. A window holding 38
+        containers whose StartedAt all fit inside 0.4 s was read as a targeted
+        action, and attributed to a lane that had done nothing — when
+        simultaneity ACROSS containers is the signature of a host or daemon
+        event, not of a person.
+
+        So the classifier answers one question — did many distinct containers
+        move together? — and never a second one. The verdict object carries no
+        actor field at all: the file records what happened, a human attributes
+        it. Naming an actor from a grouped event is exactly the mistake this
+        function exists to prevent, and the test asserts the object has no such
+        property so it cannot creep back.
+
+        `none` is distinct from `targeted` on purpose: an empty window says
+        nothing about intent, and "no events" must never read as "no cause".
+    #>
+    param(
+        $Events,
+        [int]$GroupSpanMs = 1000,
+        [int]$MinContainers = 5
+    )
+
+    $list = @(@($Events) | Where-Object { $null -ne $_ })
+    if ($list.Count -eq 0) {
+        return [PSCustomObject]@{
+            Verdict            = 'none'
+            DistinctContainers = 0
+            EventCount         = 0
+            SpanMs             = 0
+            Reason             = 'no events in window — silence is not evidence of intent'
+        }
+    }
+
+    $ids = @($list | ForEach-Object { $_.ContainerId } | Where-Object { $_ } | Select-Object -Unique)
+    $times = @($list | ForEach-Object { $_.TimeNano } | Where-Object { $_ -gt 0 } | Sort-Object)
+    $spanMs = 0
+    if ($times.Count -ge 2) { $spanMs = [math]::Round(($times[$times.Count - 1] - $times[0]) / 1000000.0, 1) }
+
+    if ($ids.Count -ge $MinContainers -and $spanMs -le $GroupSpanMs) {
+        return [PSCustomObject]@{
+            Verdict            = 'shared-cause'
+            DistinctContainers = $ids.Count
+            EventCount         = $list.Count
+            SpanMs             = $spanMs
+            Reason             = ("{0} distinct containers within {1}ms — simultaneity across containers is a host/daemon signature; do NOT attribute this to a targeted action" -f $ids.Count, $spanMs)
+        }
+    }
+
+    return [PSCustomObject]@{
+        Verdict            = 'targeted'
+        DistinctContainers = $ids.Count
+        EventCount         = $list.Count
+        SpanMs             = $spanMs
+        Reason             = ("{0} distinct container(s) over {1}ms — not a grouped burst" -f $ids.Count, $spanMs)
+    }
+}
+
+function Get-DockerEventsRotationPlan {
+    <#
+        Append-only means unbounded unless something bounds it, and an unbounded
+        log on a machine that restarts is how a disk fills silently. Size-based,
+        never time-based: the log's growth rate is a property of the machine, and
+        a byte cap is the only bound that does not depend on predicting it.
+    #>
+    param(
+        [long]$CurrentBytes,
+        [long]$MaxBytes,
+        [int]$ExistingRotatedCount = 0,
+        [int]$KeepRotated = 5
+    )
+
+    if ($MaxBytes -le 0) {
+        return [PSCustomObject]@{ Rotate = $false; Keep = 0; Reason = 'no cap configured — rotation disabled' }
+    }
+    if ($CurrentBytes -le $MaxBytes) {
+        return [PSCustomObject]@{ Rotate = $false; Keep = $KeepRotated; Reason = ("{0} bytes is within the {1} cap" -f $CurrentBytes, $MaxBytes) }
+    }
+    return [PSCustomObject]@{
+        Rotate = $true
+        Keep   = $KeepRotated
+        Reason = ("{0} bytes exceeds the {1} cap — rotate and keep the newest {2} (currently {3})" -f $CurrentBytes, $MaxBytes, $KeepRotated, $ExistingRotatedCount)
+    }
+}
+
+function Add-DockerEventsTickRecord {
+    <#
+    .SYNOPSIS
+        Build the state object for one tick, with a BOUNDED history. PURE.
+    .DESCRIPTION
+        The history is the answer to the question the issue actually asks: "was
+        the collector even running at 03:49Z?" A log with no events in it looks
+        identical whether the daemon was quiet or the task has been dead for
+        three days — the same trap as a `grep -L` on a zero-byte capture, which
+        reads as a violation when it is an absence of data. One record per tick,
+        bounded, makes the two separable from a file.
+    #>
+    param(
+        $State,
+        $Record,
+        [int]$HistoryCap = 48
+    )
+
+    # Plain arrays for the same measured reason as Select-NewDockerEvents:
+    # `@()` on a List[object] is a terminating error on both interpreters.
+    $history = @()
+    if ($null -ne $Record) { $history += $Record }
+    if ($null -ne $State) {
+        $prev = @()
+        try { $prev = @($State.History) } catch { $prev = @() }
+        foreach ($h in $prev) { if ($null -ne $h) { $history += $h } }
+    }
+    if ($HistoryCap -gt 0 -and $history.Count -gt $HistoryCap) {
+        $history = @($history | Select-Object -First $HistoryCap)
+    }
+
+    return [PSCustomObject]@{
+        Last    = $Record
+        History = @($history)
+    }
+}
+
+function Invoke-DockerEventsBounded {
+    <#
+    .SYNOPSIS
+        Run a bounded `docker events` window and return its rendered lines.
+    .DESCRIPTION
+        Same process discipline as Invoke-GitBounded — output to FILES, never
+        pipes (a full pipe blocks the child before it exits, reintroducing the
+        hang through the back door), and .Handle touched before WaitForExit so
+        ExitCode is not $null — with ONE measured addition:
+
+        ARGUMENTS CONTAINING A SPACE MUST BE QUOTED. Start-Process -ArgumentList
+        joins the array into a command line, so '{{json .}}' arrives as two bare
+        arguments and docker answers "'docker events' accepts no arguments",
+        in 0.2s, with zero output — a collector that reads as "quiet daemon"
+        while it has never once run. The existing Invoke-DockerBounded calls
+        never met this because their formats ({{.State.Status}}) contain no space.
+        Measured po-2024, Docker Desktop 29.8.0, 2026-09-20.
+
+        A timeout is NOT an error here: it is the normal way a window closes
+        (Get-DockerEventsInvocationVerdict carries the reasoning).
+    #>
+    param(
+        [string[]]$DockerArgs,
+        [int]$TimeoutSec = 20
+    )
+
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $quoted = @()
+        foreach ($a in @($DockerArgs)) {
+            if ($null -ne $a -and $a -match '\s') { $quoted += ('"{0}"' -f $a) }
+            else { $quoted += $a }
+        }
+        $p = Start-Process -FilePath 'docker' -ArgumentList $quoted -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $null = $p.Handle
+        $exited = $p.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) { try { $p.Kill() } catch {} }
+
+        $lines = @()
+        try { $lines = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue) } catch { $lines = @() }
+        $errText = ''
+        try {
+            $raw = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+            if ($null -ne $raw) { $errText = [string]$raw }
+        } catch { $errText = '' }
+
+        $code = -1
+        try { if ($exited) { $code = $p.ExitCode } } catch { $code = -1 }
+
+        $verdict = Get-DockerEventsInvocationVerdict -Exited $exited -ExitCode $code -LineCount $lines.Count -ErrorText $errText
+
+        return @{
+            Ok         = $verdict.Ok
+            Reason     = $verdict.Reason
+            Exited     = $exited
+            Code       = $code
+            Lines      = $lines
+            ErrorText  = $errText
+        }
+    }
+    catch {
+        # docker.exe never launched: absent from PATH, or the CLI cannot start
+        # (the 02/09 commit-exhaustion signature). Same shape as the git twin.
+        return @{ Ok = $false; Reason = ('docker not launchable: ' + $_.Exception.Message); Exited = $false; Code = -1; Lines = @(); ErrorText = $_.Exception.Message }
+    }
+    finally {
+        # [System.IO.File]::Delete, not Remove-Item: measured 2026-09-20, a
+        # restricted host refuses Remove-Item on the system temp path ("system
+        # path '*' is blocked"), and the refusal surfaces as if the collector had
+        # died — while the real defect is only a temp file left behind.
+        foreach ($f in @($outFile, $errFile)) {
+            try { [System.IO.File]::Delete($f) } catch { }
+        }
+    }
+}
+
 function Get-ScriptProvenance {
     <#
     .SYNOPSIS
@@ -834,6 +1349,16 @@ function Get-ScriptProvenance {
 Export-ModuleMember -Function @(
     'Get-ScriptProvenance'
     'Invoke-GitBounded'
+    'ConvertFrom-DockerEventLine'
+    'Get-DockerEventFingerprint'
+    'Select-NewDockerEvents'
+    'ConvertTo-DockerSinceInstant'
+    'Get-DockerEventsNextSince'
+    'Get-DockerEventsInvocationVerdict'
+    'Get-DockerEventGroupVerdict'
+    'Get-DockerEventsRotationPlan'
+    'Add-DockerEventsTickRecord'
+    'Invoke-DockerEventsBounded'
     'Get-ClaudishServingBase'
     'Resolve-ClaudishProbeUrl'
     'Get-LoopbackProbeUrl'

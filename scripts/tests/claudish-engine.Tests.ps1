@@ -35,6 +35,7 @@ BeforeAll {
     $script:ScheduledTaskScripts = @(
         'claudish-watchdog.ps1',
         'claudish-drain.ps1',
+        'docker-events-collect.ps1',
         'lib\claudish-engine.psm1'
     )
 
