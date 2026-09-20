@@ -8,6 +8,7 @@
  * 3. Retry prompt generation with error feedback
  */
 
+import { TOOL_NAME_SHAPE, TOOL_NAME_SOURCE } from "../../adapters/tool-name-utils.js";
 import { log } from "../../logger.js";
 
 export interface ExtractedToolCall {
@@ -27,15 +28,103 @@ export interface ToolSchema {
 }
 
 /**
+ * A tool name is an identifier, so the extractors must never accept anything else.
+ *
+ * Pattern 0 below used to capture `[^>]+`, which accepts every character except
+ * `>`. A model that opened `<function=` in prose and closed it 80 characters
+ * later had all 80 characters taken as the tool name — parameter names, type
+ * fragments and ARGUMENT VALUES included. One such name reached a client:
+ * `web_search_query_listOpposed["macos security add-generic-password …"]`.
+ * (S4-b e82c315)
+ */
+const FUNCTION_TAG_SOURCE = `<function=(${TOOL_NAME_SOURCE})>([\\s\\S]*?)(?=<function=|$)`;
+
+/** Unanchored, no `g` flag, so it holds no `lastIndex` and is safe to share. */
+const FUNCTION_TAG_PRESENT = new RegExp(`<function=${TOOL_NAME_SOURCE}>`);
+
+/**
+ * Does this text hold a `<function=NAME>` tag Pattern 0 can actually extract?
+ *
+ * Exported so the openai-sse hold-back test uses the SAME shape the extractor
+ * uses. When the two drifted, text matching the loose hold-back test but not
+ * the extractor was withheld from the client and then never emitted at all: a
+ * silent text loss with no tool call to show for it. Called once per streamed
+ * chunk, so the pattern is built once at module load rather than per call.
+ */
+export function hasExtractableFunctionTag(text: string): boolean {
+  return FUNCTION_TAG_PRESENT.test(text);
+}
+
+/**
+ * Drop extracted calls that are not real tools.
+ *
+ * Three steps, and the ORDER is the design:
+ *
+ *  1. **Shape.** Reject a name that is not an identifier — this is how a
+ *     swallowed argument value is caught. It runs on the name as it came off
+ *     the WIRE.
+ *  2. **Decode.** On a wire that renames tools, the model wrote the encoded
+ *     name; the client's own name may legitimately differ. Decoding before
+ *     step 1 would fail a name the shape rule was never about.
+ *  3. **Allowlist.** Reject a well-shaped name the client never advertised —
+ *     this is how a hallucinated tool is caught. The allowlist is the
+ *     request's own tool list, so it is exact rather than a hardcoded roster.
+ */
+function keepOnlyRealTools(
+  extracted: ExtractedToolCall[],
+  knownToolNames?: string[],
+  decodeToolName?: (name: string) => string
+): ExtractedToolCall[] {
+  const kept: ExtractedToolCall[] = [];
+  for (const call of extracted) {
+    if (!TOOL_NAME_SHAPE.test(call.name)) {
+      log(
+        `[ToolRecovery] Dropped extracted call: name is not an identifier: ${JSON.stringify(
+          call.name.slice(0, 120)
+        )}`
+      );
+      continue;
+    }
+    const decoded = decodeToolName ? decodeToolName(call.name) : call.name;
+    const named = decoded === call.name ? call : { ...call, name: decoded };
+    if (!knownToolNames || knownToolNames.length === 0) {
+      kept.push(named);
+      continue;
+    }
+    const canonical = knownToolNames.find((t) => t.toLowerCase() === named.name.toLowerCase());
+    if (!canonical) {
+      log(`[ToolRecovery] Dropped extracted call for unadvertised tool: ${named.name}`);
+      continue;
+    }
+    kept.push(canonical === named.name ? named : { ...named, name: canonical });
+  }
+  return kept;
+}
+
+/**
  * Extract tool calls from text content
  * Many local models output tool calls as JSON in their text rather than using structured tool_calls
+ *
+ * `knownToolNames` is the tool list the client advertised on THIS request. Pass
+ * it whenever it is in hand: every pattern below is then held to it, not just
+ * the natural-language one.
+ *
+ * `decodeToolName`, when supplied, turns the name the MODEL wrote back into the
+ * client's own. The model was given the renamed roster, so on a renaming wire
+ * every recovered call carries a wire name that `knownToolNames` — built from
+ * the client's originals — would otherwise reject in silence.
  */
-export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
+export function extractToolCallsFromText(
+  text: string,
+  knownToolNames?: string[],
+  decodeToolName?: (name: string) => string
+): ExtractedToolCall[] {
   const extracted: ExtractedToolCall[] = [];
 
   // Pattern 0: Qwen-style function calls <function=NAME><parameter=PARAM>VALUE
   // Example: <function=SlashCommand><parameter=command>/ls -la
-  const qwenPattern = /<function=([^>]+)>([\s\S]*?)(?=<function=|$)/gi;
+  // Fresh instance per call: a `g` regex carries `lastIndex` across calls.
+  const qwenPattern = new RegExp(FUNCTION_TAG_SOURCE, "gi");
   let match;
   while ((match = qwenPattern.exec(text)) !== null) {
     const funcName = match[1];
@@ -169,18 +258,24 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Matches: "I'll use the Task tool with subagent_type=Explore"
   // Matches: "I will use the Read tool to read /path/to/file"
   // Matches: "Let me use the Bash tool to run ls -la"
-  const knownTools = [
-    "Task",
-    "Read",
-    "Write",
-    "Edit",
-    "Bash",
-    "Grep",
-    "Glob",
-    "WebFetch",
-    "WebSearch",
-    "ToolSearch",
-  ];
+  // The caller's own tool list is exact; this roster is the fallback for callers
+  // that have none in hand. Natural-language extraction is the loosest pattern
+  // here, so it keeps its own guard even though `keepOnlyRealTools` runs after.
+  const knownTools =
+    knownToolNames && knownToolNames.length > 0
+      ? knownToolNames
+      : [
+          "Task",
+          "Read",
+          "Write",
+          "Edit",
+          "Bash",
+          "Grep",
+          "Glob",
+          "WebFetch",
+          "WebSearch",
+          "ToolSearch",
+        ];
   const nlPatterns = [
     // "I'll use the X tool with param=value" - ends with period, colon, newline, or end
     /(?:I(?:'ll| will| am going to)|Let me|Going to)\s+use\s+(?:the\s+)?(\w+)\s+tool\s+(?:with\s+)?(.+?)(?:[.:\n]|$)/gi,
@@ -304,7 +399,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
     }
   }
 
-  return extracted;
+  return keepOnlyRealTools(extracted, knownToolNames, decodeToolName);
 }
 
 /**

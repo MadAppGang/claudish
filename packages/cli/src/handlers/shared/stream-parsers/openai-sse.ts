@@ -15,6 +15,7 @@ import {
   validateAndRepairToolCall,
   inferMissingParameters,
   extractToolCallsFromText,
+  hasExtractableFunctionTag,
   type ToolSchema,
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall } from "../web-search-detector.js";
@@ -476,7 +477,27 @@ export function createStreamingResponseHandler(
 
           // Check for text-based tool calls before finalizing
           // Some models (like Qwen) output tool calls as text instead of structured tool_calls
-          const textToolCalls = extractToolCallsFromText(state.accumulatedText);
+          // Only when the model produced NO structured call (S4-b e82c315).
+          // Recovery exists for models that cannot emit `tool_calls` at all;
+          // against a model that just did, it can only ADD calls, never repair
+          // one. Ungated, a turn holding one real call plus prose mentioning a
+          // function tag dispatched two tool_use blocks, and both were
+          // recorded. The advertised-name list holds every pattern to the
+          // request's own tools; the decode fn maps wire names back to the
+          // client's originals (2e18042 parser half).
+          const textToolCalls =
+            state.tools.size > 0
+              ? []
+              : extractToolCallsFromText(
+                  state.accumulatedText,
+                  toolSchemas?.map((t: any) => t?.name).filter((n: any): n is string => !!n),
+                  toolNameMap ? (name: string) => toolNameMap.get(name) ?? name : undefined
+                );
+          if (state.tools.size > 0 && state.accumulatedText.length > 0) {
+            log(
+              `[Streaming] Skipping text-based tool extraction: ${state.tools.size} structured tool call(s) already present`
+            );
+          }
           log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
           if (textToolCalls.length > 0) {
             log(
@@ -1096,8 +1117,12 @@ export function createStreamingResponseHandler(
                       // Only hold back for patterns we can actually parse (XML, JSON), not natural language
                       // Natural language patterns are extracted at finalization, not held back
                       const hasStructuredToolPattern =
-                        // Qwen XML-style: <function=ToolName>
-                        /<function=[^>]+>/.test(state.accumulatedText) ||
+                        // Qwen XML-style: <function=ToolName>. Same shape the
+                        // extractor accepts (S4-b 2e18042 parser half), so text
+                        // held back here is always text the extractor can act
+                        // on. A looser test here withheld text that nothing
+                        // later emitted.
+                        hasExtractableFunctionTag(state.accumulatedText) ||
                         // JSON tool call in text: {"name": "Task", "arguments":
                         /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
                           state.accumulatedText
@@ -1154,6 +1179,10 @@ export function createStreamingResponseHandler(
                         const accumulatedName =
                           (state.pendingToolName.get(idx) ?? "") + tc.function.name;
                         state.pendingToolName.set(idx, accumulatedName);
+                        // THIS IS THE DECODE POINT: it reads the accumulated
+                        // name, never a single chunk's fragment (S4-b baf19ef).
+                        const rawName = accumulatedName;
+                        const restoredName = toolNameMap?.get(rawName) || rawName;
                         if (!t) {
                           // Close thinking and text blocks before starting tool
                           if (state.reasoningStarted) {
@@ -1171,10 +1200,6 @@ export function createStreamingResponseHandler(
                             state.textStarted = false;
                           }
                           // Restore truncated tool name to original if mapping exists.
-                          // THIS IS THE DECODE POINT: it reads the accumulated
-                          // name, never a single chunk's fragment (S4-b baf19ef).
-                          const rawName = accumulatedName;
-                          const restoredName = toolNameMap?.get(rawName) || rawName;
                           const isWebSearch = isWebSearchToolCall(restoredName);
                           const remapToWebSearch = isWebSearch && clientDeclaresWebSearch(toolSchemas);
                           if (isWebSearch) {
@@ -1202,6 +1227,28 @@ export function createStreamingResponseHandler(
                           }
                           state.pendingToolArgs.delete(idx);
                           state.tools.set(idx, t);
+                        } else if (t.name !== restoredName) {
+                          // A LATER fragment completed the name (S4-b 2e18042
+                          // parser half). The tool was created from the first
+                          // fragment, so its name is a prefix — and a prefix of
+                          // a wire-encoded name decodes to nothing, which is
+                          // how a call gets dropped without a word anywhere.
+                          if (t.started) {
+                            // The block is already on the wire under the short
+                            // name; it cannot be recalled. "error" is deliberate
+                            // — it is what carries this to the structural log.
+                            log(
+                              `[Streaming] error: tool block ${t.blockIndex} was started as "${t.name}" but the full name is "${restoredName}" — the client sees the wrong name`
+                            );
+                          } else {
+                            t.name = restoredName;
+                            t.buffered = !!toolSchemas && toolSchemas.length > 0 && !t.remapped;
+                            if (isWebSearchToolCall(restoredName)) {
+                              log(
+                                `[Stream] Web search tool call detected: "${restoredName}" — name completed by a later fragment, re-evaluated at the decode point`
+                              );
+                            }
+                          }
                         }
                         // Only send content_block_start immediately if NOT buffering.
                         // Suppressed and remapped tools never stream their blocks live.
