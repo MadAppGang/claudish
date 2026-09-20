@@ -28,6 +28,7 @@ import type { Context } from "hono";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { log } from "../../logger.js";
 import { createAnthropicPassthroughStream } from "../../handlers/shared/stream-parsers/anthropic-sse.js";
+import { boundRetryUpstream } from "../../handlers/shared/first-event-watchdog.js";
 import { isQuotaExhaustion } from "../failover.js";
 
 /** Headers we must not blindly forward to the upstream. */
@@ -365,9 +366,37 @@ export async function forwardToUpstream(
   // finalizeWithError). capture:false → the hub captures centrally; the sidecar
   // must not double-capture (nor write an orphan resp-*.sse) in nominal mode.
   const model = (body as { model?: string } | undefined)?.model ?? "(relay)";
+  // #170 — re-issue the forward when the hub dies before any client-visible event.
+  // A hub restart cuts every in-flight SSE on every relaying machine; the streams
+  // that had not yet emitted are recoverable, and this closure is what makes them
+  // so. Header-bounded like the original forward (an unbounded re-forward against a
+  // wedged hub would hang the very turn this exists to save), and it deliberately
+  // does NOT markFail: a recovery attempt is not a liveness measurement — the same
+  // separation #80 part 2 established for the absorbed connect retry. The heartbeat
+  // prober owns the hysteresis. boundRetryUpstream gives the REPLACEMENT stream its
+  // own first-event watchdog, which matters more here than on any other lane: the
+  // relay bypasses ComposedHandler, so there is no outer wrap to inherit and a
+  // mute-but-200 replacement would hang the client (#108's exact failure mode).
+  const reforward = boundRetryUpstream(async () => {
+    const reforwardController = new AbortController();
+    const reforwardTimer = setTimeout(() => reforwardController.abort(), headerTimeoutMs);
+    try {
+      return await fetch(`${state.upstream}${reqPath}`, {
+        method: "POST",
+        headers,
+        body: payload,
+        signal: reforwardController.signal,
+      });
+    } catch {
+      return null; // refused / reset / deadline → the parser surfaces the original death
+    } finally {
+      clearTimeout(reforwardTimer);
+    }
+  }, String(model));
   return createAnthropicPassthroughStream(c, res, {
     modelName: String(model),
     capture: false,
+    retryUpstream: reforward,
     // Relay-side TTFT: fetch dispatch → hub headers. The [ttft] marker this
     // feeds is the measurement that splits "upstream slow to first byte"
     // from "long generation" — the exact question the header deadline raises.

@@ -23,6 +23,33 @@ import {
   type PolicyRetryOpts,
 } from "./policy-refusal.js";
 
+/**
+ * Backoff ladder for the pre-visible transparent re-forward (#170).
+ *
+ * Short on purpose. This fires when the upstream died before emitting anything,
+ * which on the relay lane means the hub was restarting: a few hundred ms is the
+ * difference between "the container is back" and "it is not coming back soon",
+ * and a request that has already paid its header latency should not pay seconds
+ * more before degrading to the notice it would have got anyway.
+ */
+const PRE_VISIBLE_REFORWARD_BACKOFF_MS: readonly number[] = [400, 1_200];
+
+/**
+ * Bound AND kill switch for the pre-visible re-forward, re-read per stream.
+ *
+ * `0` disables the behavior entirely, which is the positive control that the
+ * gate is real in both directions — a hot-path recovery added to every
+ * anthropic-wire lane needs a way to be taken back out without a deploy.
+ * Values above the ladder length clamp to it (the ladder is the real bound).
+ */
+function preVisibleReforwardMax(): number {
+  const raw = process.env.CLAUDISH_PREVISIBLE_REFORWARD_MAX;
+  if (raw === undefined || raw.trim() === "") return PRE_VISIBLE_REFORWARD_BACKOFF_MS.length;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return PRE_VISIBLE_REFORWARD_BACKOFF_MS.length;
+  return Math.min(Math.floor(n), PRE_VISIBLE_REFORWARD_BACKOFF_MS.length);
+}
+
 interface AnthropicPassthroughOpts {
   modelName: string;
   onTokenUpdate?: (input: number, output: number) => void;
@@ -502,6 +529,69 @@ export function createAnthropicPassthroughStream(
             return "surfaced";
           };
 
+          // ── Pre-visible upstream death → bounded re-forward (#170) ──────
+          // An upstream that dies AFTER the response headers but BEFORE a single
+          // client-visible event costs the agent a whole turn. finalizeWithError
+          // below ends that turn cleanly — the never-hang invariant holds — but it
+          // ends it with a notice instead of an answer, and nothing was forwarded
+          // that would prevent re-issuing the request. The gate for recovering it
+          // already exists above, for policy refusals (#65): while nothing is
+          // client-visible the upstream is re-issuable without duplicating a
+          // message_start the client has already seen. The read path never used it.
+          //
+          // Measured cause, 2026-09-20 (po-2025, the hub's host): 13 container
+          // restarts in one morning, an attempted remediation for a Docker Desktop
+          // localhost-forwarder wedge that container restarts cannot fix (#168).
+          // Each one cut every in-flight SSE on every relaying machine, at 9-13
+          // activeStreams. The restart is the fleet's dominant turn-killer, and the
+          // subset of cut streams that had not yet emitted is recoverable for the
+          // cost of one re-forward.
+          //
+          // Deliberately narrower than "retry on error": only while nothing is
+          // client-visible, only with a caller-supplied closure, and bounded by its
+          // OWN counter — independent of policyRetryAttempts, so the two can compose
+          // without either becoming unbounded. When the upstream is genuinely down
+          // the re-forward fails in milliseconds and the stream finalizes exactly as
+          // it did before. The closure is expected to arrive already wrapped in
+          // boundRetryUpstream(): the replacement stream needs its own first-event
+          // watchdog, and on the relay lane there is no outer wrap to inherit.
+          let preVisibleReforwards = 0;
+          const preVisibleReforwardBound = preVisibleReforwardMax();
+          const tryPreVisibleReforward = async (reason: string): Promise<boolean> => {
+            if (!opts.retryUpstream) return false;
+            if (preVisibleReforwards >= preVisibleReforwardBound) return false;
+            // Same predicate as the policy-refusal gate: past any of these three a
+            // replacement stream would duplicate what the client already holds.
+            if (sawMessageStart || highestSeenIndex !== -1 || lastBlockOpen) return false;
+            const backoffMs = PRE_VISIBLE_REFORWARD_BACKOFF_MS[preVisibleReforwards];
+            preVisibleReforwards++;
+            log(
+              `[AnthropicSSE] upstream died before any client-visible event (${reason}) — ` +
+                `transparent re-forward ${preVisibleReforwards}/${preVisibleReforwardBound} ` +
+                `in ${backoffMs}ms (model=${opts.modelName} reqN=${reqN})`,
+              true
+            );
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            let resp: Response | null = null;
+            try {
+              resp = await opts.retryUpstream();
+            } catch {
+              return false; // re-forward itself failed → surface the original death
+            }
+            if (!resp?.ok || !resp.body) return false;
+            try {
+              await reader.cancel();
+            } catch {
+              // old upstream body — best-effort release
+            }
+            reader = resp.body.getReader();
+            buffer = "";
+            // A TextDecoder keeps partial multi-byte state across decode(stream:true);
+            // bytes from the dead stream must not leak into the replacement's first chunk.
+            decoder = new TextDecoder();
+            return true;
+          };
+
           // Wrap the read loop so a mid-stream upstream socket close (Z.AI / GLM
           // Coding connection reset) is caught HERE — where finalizeWithError is
           // in scope — instead of escaping to the outer catch which can only do a
@@ -512,8 +602,28 @@ export function createAnthropicPassthroughStream(
           // A transparent policy-refusal retry swaps the upstream reader and
           // restarts the read here.
           readLoop: while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+            let chunk: Awaited<ReturnType<typeof reader.read>>;
+            try {
+              chunk = await reader.read();
+            } catch (readFail) {
+              // A socket reset with nothing forwarded yet is recoverable (#170).
+              // Otherwise rethrow so the graceful finalization below runs unchanged.
+              if (await tryPreVisibleReforward(`read error: ${String(readFail).slice(0, 80)}`)) {
+                continue readLoop;
+              }
+              throw readFail;
+            }
+            if (chunk.done) {
+              // A graceful close having emitted nothing is the SAME lost turn as a
+              // reset — `docker stop` on the upstream produces exactly this shape —
+              // so it gets the same recovery. A stream that emitted anything fails
+              // the gate and falls straight through to normal end-of-stream handling.
+              if (await tryPreVisibleReforward("upstream closed with no event")) {
+                continue readLoop;
+              }
+              break;
+            }
+            const value = chunk.value;
             buffer += decoder.decode(value, { stream: true });
             lastActivity = Date.now();
             const lines = buffer.split("\n");

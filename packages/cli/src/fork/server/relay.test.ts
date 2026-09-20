@@ -638,3 +638,157 @@ describe("relayHealthFields", () => {
     expect(relayHealthFields(s).upstream).toBe("http://192.168.0.50:3000");
   });
 });
+
+// ── #170: pre-visible upstream death → transparent re-forward ──────────────
+//
+// A hub restart cuts every in-flight SSE on every relaying machine at once.
+// The streams that had not yet emitted anything are recoverable: nothing was
+// forwarded, so the request can be re-issued without the client ever knowing.
+// Before #170 the relay passed no `retryUpstream` at all — the opts comment
+// read, literally, "absent = inert (relay, tests)".
+
+/** Headers arrive, then the body dies having delivered nothing. */
+function sseDyingResponse(): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("ECONNRESET (hub restart)"));
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } }
+  );
+}
+
+/** Headers arrive and then nothing, ever — the mute-but-200 shape of #108. */
+function sseMuteResponse(): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({ start() {} }),
+    { status: 200, headers: { "content-type": "text/event-stream" } }
+  );
+}
+
+const RECOVERED_SSE =
+  'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_r","model":"m","usage":{"input_tokens":1,"output_tokens":0}}}\n\n' +
+  'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+  'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"served after the restart"}}\n\n' +
+  'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+  'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n' +
+  'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+async function drainResponse(r: Response | null): Promise<string> {
+  if (!r?.body) return "";
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out += decoder.decode(value, { stream: true });
+  }
+  return out;
+}
+
+describe("forwardToUpstream — pre-visible re-forward (#170)", () => {
+  it("recovers a hub death that landed before any client-visible event", async () => {
+    let calls = 0;
+    fetchImpl = async () => {
+      calls++;
+      return calls === 1 ? sseDyingResponse() : sseResponse(RECOVERED_SSE);
+    };
+    const state = createRelayState({ upstream: "http://hub:3000" });
+    const out = await drainResponse(
+      await forwardToUpstream(mockForwardContext({}), { model: "m" }, state)
+    );
+    expect(calls).toBe(2); // original + exactly one re-forward
+    expect(out).toContain("served after the restart");
+    expect(out).toContain("message_stop");
+    // A recovery attempt is NOT a liveness measurement — same separation #80
+    // part 2 established for the absorbed connect retry. Feeding the hysteresis
+    // here would flip relays to AUTONOMOUS on the very blips this absorbs.
+    expect(state.consecutiveFail).toBe(0);
+  });
+
+  it("re-forwards to the SAME path the client hit, not a hardcoded /v1/messages", async () => {
+    const urls: string[] = [];
+    let calls = 0;
+    fetchImpl = async (url: any) => {
+      urls.push(String(url));
+      calls++;
+      return calls === 1 ? sseDyingResponse() : sseResponse(RECOVERED_SSE);
+    };
+    const c = mockForwardContext({});
+    c.req.path = "/v1/chat/completions";
+    const state = createRelayState({ upstream: "http://hub:3000" });
+    await drainResponse(await forwardToUpstream(c, { model: "m" }, state));
+    expect(urls).toEqual([
+      "http://hub:3000/v1/chat/completions",
+      "http://hub:3000/v1/chat/completions",
+    ]);
+  });
+
+  it("the re-forward is header-bounded — a hub that never answers cannot hang the turn", async () => {
+    let calls = 0;
+    fetchImpl = async (_url: any, init: any) => {
+      calls++;
+      if (calls === 1) return sseDyingResponse();
+      // Second call: never resolves on its own. Only the AbortSignal ends it.
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    };
+    const state = createRelayState({ upstream: "http://hub:3000" });
+    const started = Date.now();
+    const out = await drainResponse(
+      await forwardToUpstream(mockForwardContext({}), { model: "m" }, state, 50)
+    );
+    expect(calls).toBe(2);
+    // Finalized, not hung: the turn ends with a terminal event either way.
+    expect(out).toContain("message_stop");
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 20_000);
+
+  it("the REPLACEMENT stream carries its own first-event watchdog (boundRetryUpstream)", async () => {
+    // Without the wrap, a mute-but-200 replacement is unbounded and hangs the
+    // client — the exact failure #108 confines, reintroduced by the recovery
+    // path itself. Measured in review of #137: wrapper removed, the stream was
+    // still open after 6s against a 1s window.
+    const prev = process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS;
+    process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS = "150";
+    try {
+      let calls = 0;
+      fetchImpl = async () => {
+        calls++;
+        return calls === 1 ? sseDyingResponse() : sseMuteResponse();
+      };
+      const state = createRelayState({ upstream: "http://hub:3000" });
+      const out = await drainResponse(
+        await forwardToUpstream(mockForwardContext({}), { model: "m" }, state)
+      );
+      expect(calls).toBeGreaterThanOrEqual(2);
+      expect(out).toContain("message_stop");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS;
+      else process.env.CLAUDISH_FIRST_EVENT_TIMEOUT_MS = prev;
+    }
+  }, 20_000);
+
+  it("POSITIVE CONTROL — kill switch at 0 restores the pre-#170 relay behavior", async () => {
+    process.env.CLAUDISH_PREVISIBLE_REFORWARD_MAX = "0";
+    try {
+      let calls = 0;
+      fetchImpl = async () => {
+        calls++;
+        return calls === 1 ? sseDyingResponse() : sseResponse(RECOVERED_SSE);
+      };
+      const state = createRelayState({ upstream: "http://hub:3000" });
+      const out = await drainResponse(
+        await forwardToUpstream(mockForwardContext({}), { model: "m" }, state)
+      );
+      expect(calls).toBe(1); // no re-forward at all
+      expect(out).not.toContain("served after the restart");
+      expect(out).toContain("message_stop");
+    } finally {
+      delete process.env.CLAUDISH_PREVISIBLE_REFORWARD_MAX;
+    }
+  });
+});
