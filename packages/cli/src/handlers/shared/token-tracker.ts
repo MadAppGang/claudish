@@ -24,6 +24,62 @@ export interface TokenTrackerConfig {
   providerDisplayName?: string;
 }
 
+/**
+ * The cached breakdown of a turn's input tokens, for COST ONLY. (S4-c)
+ *
+ * Every `update*` method below still takes the FULL context size as its
+ * `inputTokens` argument — that number answers "how full is the conversation"
+ * and drives the status line's occupancy bar. This object rides alongside and
+ * answers a different question: how much of that context the provider served
+ * from its prompt cache, and therefore may bill at a lower rate.
+ *
+ * Both counts are SUBSETS of `inputTokens`, not additions to it.
+ */
+export interface UsageCacheDetail {
+  /** Tokens served from the provider's prompt cache this turn. */
+  cacheReadTokens: number;
+  /** Tokens written into the provider's prompt cache this turn. */
+  cacheCreationTokens: number;
+}
+
+/**
+ * The amount to SUBTRACT from a turn's computed cost because part of its input
+ * was served from the provider's prompt cache. (S4-c)
+ *
+ * Written as a subtraction rather than folded into the input term on purpose:
+ * with no `cacheReadCostPer1M` anywhere in the tree the rate defaults to
+ * `inputCostPer1M`, the difference is exactly 0, and every existing session's
+ * cost is bit-identical to what it was before the cache split landed.
+ *
+ * `billedInputTokens` is what the CALLING STRATEGY actually charged for, and
+ * the `Math.min` against it is load-bearing — not defensive tidiness. The
+ * delta-aware strategy charges only the GROWTH in context, so on a turn that
+ * is ~99.9% cache (prompt 20379, cached 20352 — upstream's measured capture)
+ * an unclamped discount would subtract 20352 tokens' worth from a 27-token
+ * charge and drive `sessionTotalCost` negative. Clamped, the discount can
+ * never exceed the charge it is discounting, so per-turn cost stays >= 0 and
+ * the session total stays non-negative.
+ *
+ * Exported because it is the whole of the money change and the only part with
+ * arithmetic worth pinning: the field it reads has no producer yet, so a test
+ * has to hand it a pricing object to reach any non-zero branch at all.
+ */
+export function computeCacheReadDiscount(
+  pricing: ModelPricing,
+  billedInputTokens: number,
+  detail?: UsageCacheDetail
+): number {
+  const cacheReadTokens = detail?.cacheReadTokens ?? 0;
+  if (cacheReadTokens <= 0 || billedInputTokens <= 0) return 0;
+  // Absent rate => cache reads are priced as ordinary input => no discount.
+  // See ModelPricing.cacheReadCostPer1M for why this is a rule, not a ratio.
+  const rate = pricing.cacheReadCostPer1M ?? pricing.inputCostPer1M;
+  const perMillionSaved = pricing.inputCostPer1M - rate;
+  if (!(perMillionSaved > 0)) return 0;
+  const discountedTokens = Math.min(cacheReadTokens, billedInputTokens);
+  return (discountedTokens / 1_000_000) * perMillionSaved;
+}
+
 export class TokenTracker {
   private port: number;
   private config: TokenTrackerConfig;
@@ -34,6 +90,17 @@ export class TokenTracker {
   private modelNameOverride: string | undefined;
   /** Quota remaining fraction (0-1) for the current model */
   private quotaRemaining: number | undefined;
+  /**
+   * Cache-read tokens summed across the session, for the accumulate-both
+   * strategy ALONE. (S4-c)
+   *
+   * That strategy ASSIGNS `sessionTotalCost` from cumulative totals rather
+   * than accumulating per-turn costs, so a per-turn discount subtracted there
+   * is simply overwritten by the next turn's assignment. The discount has to
+   * be recomputed from a cumulative cache-read total to survive. Every other
+   * strategy accumulates and needs no such counter.
+   */
+  private sessionCacheReadTokens = 0;
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
@@ -64,14 +131,18 @@ export class TokenTracker {
    * Standard update: assign input (latest context), accumulate output.
    * Used by most remote providers (Gemini, AnthropicCompat, Vertex, RemoteProvider, etc.)
    */
-  update(inputTokens: number, outputTokens: number): void {
+  update(inputTokens: number, outputTokens: number, detail?: UsageCacheDetail): void {
     this.sessionInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
     const pricing = this.getPricing();
+    // This strategy charges the whole context every turn, so the whole context
+    // is what the cache discount is clamped against.
     const cost =
       (inputTokens / 1_000_000) * pricing.inputCostPer1M +
-      (outputTokens / 1_000_000) * pricing.outputCostPer1M;
+      (outputTokens / 1_000_000) * pricing.outputCostPer1M -
+      computeCacheReadDiscount(pricing, inputTokens, detail);
     this.sessionTotalCost += cost;
 
     this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate);
@@ -81,14 +152,23 @@ export class TokenTracker {
    * Accumulate both input and output tokens.
    * Used by OllamaCloud where cost is calculated on cumulative totals.
    */
-  accumulateBoth(inputTokens: number, outputTokens: number): void {
+  accumulateBoth(inputTokens: number, outputTokens: number, detail?: UsageCacheDetail): void {
     this.sessionInputTokens += inputTokens;
     this.sessionOutputTokens += outputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
     const pricing = this.getPricing();
+    // ASSIGNED from cumulative totals, so the discount must be cumulative too:
+    // a per-turn subtraction here would be thrown away by the next turn's
+    // assignment. `sessionCacheReadTokens` is the running total, clamped
+    // against the running input total this line is already pricing.
     const cost =
       (this.sessionInputTokens / 1_000_000) * pricing.inputCostPer1M +
-      (this.sessionOutputTokens / 1_000_000) * pricing.outputCostPer1M;
+      (this.sessionOutputTokens / 1_000_000) * pricing.outputCostPer1M -
+      computeCacheReadDiscount(pricing, this.sessionInputTokens, {
+        cacheReadTokens: this.sessionCacheReadTokens,
+        cacheCreationTokens: 0,
+      });
     // OllamaCloud recalculates total cost each time (not incremental)
     this.sessionTotalCost = cost;
 
@@ -102,7 +182,7 @@ export class TokenTracker {
    * inputTokens = full context size from the API (not incremental)
    * Only charges for the delta (new tokens added since last request).
    */
-  updateWithDelta(inputTokens: number, outputTokens: number): void {
+  updateWithDelta(inputTokens: number, outputTokens: number, detail?: UsageCacheDetail): void {
     let incrementalInputTokens: number;
 
     if (inputTokens >= this.sessionInputTokens) {
@@ -125,11 +205,17 @@ export class TokenTracker {
     }
 
     this.sessionOutputTokens += outputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
     const pricing = this.getPricing();
+    // The clamp matters MOST here: this strategy charges only the growth, which
+    // on a cached continuation is a handful of tokens against a cache read of
+    // tens of thousands. Discounting the raw cache-read count would make the
+    // turn cost negative — see computeCacheReadDiscount's measured capture.
     const cost =
       (incrementalInputTokens / 1_000_000) * pricing.inputCostPer1M +
-      (outputTokens / 1_000_000) * pricing.outputCostPer1M;
+      (outputTokens / 1_000_000) * pricing.outputCostPer1M -
+      computeCacheReadDiscount(pricing, incrementalInputTokens, detail);
     this.sessionTotalCost += cost;
 
     this.writeFile(
@@ -146,19 +232,27 @@ export class TokenTracker {
   updateWithActualCost(
     inputTokens: number,
     outputTokens: number,
-    actualCost: number | undefined
+    actualCost: number | undefined,
+    detail?: UsageCacheDetail
   ): void {
     this.sessionInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
     if (typeof actualCost === "number" && actualCost > 0) {
+      // NO DISCOUNT on this branch: the provider's own figure is already net of
+      // whatever caching it applied; subtracting a cache discount from it would
+      // double-count the saving and under-report real spend.
       this.sessionTotalCost += actualCost;
       log(`[TokenTracker] Actual cost from API: $${actualCost.toFixed(6)}`);
     } else {
+      // The computed fallback is the `update` arithmetic, so it takes the
+      // `update` treatment: full context charged, discount clamped against it.
       const pricing = this.getPricing();
       const inputCost = (inputTokens / 1_000_000) * pricing.inputCostPer1M;
       const outputCost = (outputTokens / 1_000_000) * pricing.outputCostPer1M;
-      this.sessionTotalCost += inputCost + outputCost;
+      this.sessionTotalCost +=
+        inputCost + outputCost - computeCacheReadDiscount(pricing, inputTokens, detail);
     }
 
     this.writeFile(inputTokens, this.sessionOutputTokens);
@@ -168,7 +262,10 @@ export class TokenTracker {
    * For local models: assign input (API reports full context), accumulate output.
    * Cost is always 0 for local models.
    */
-  updateLocal(inputTokens: number, outputTokens: number): void {
+  updateLocal(inputTokens: number, outputTokens: number, _detail?: UsageCacheDetail): void {
+    // No discount: local models have no pricing at all. The parameter exists
+    // only so every strategy shares one shape and the caller does not have to
+    // know which ones care.
     if (inputTokens > 0) {
       this.sessionInputTokens = inputTokens;
     }

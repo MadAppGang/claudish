@@ -32,6 +32,7 @@ import {
 import { messageStartUsage } from "./message-start-usage.js";
 import { type BlockRef, createBlockWriter } from "./block-writer.js";
 import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
+import { splitPromptTokens } from "./usage-cache-split.js";
 
 /**
  * Hard ceiling, in characters, on ONE logged raw SSE payload.
@@ -255,19 +256,37 @@ function toAnthropicUsage(u: any): {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
 } {
-  const prompt = Number(u?.prompt_tokens) || 0;
-  // `prompt_tokens_details.cached_tokens` — OpenAI, z.ai/GLM Coding, xAI, Kimi;
-  // `prompt_cache_hit_tokens` — DeepSeek. Clamped to the prompt because a
-  // provider reporting more cached than total would otherwise emit a negative
-  // `input_tokens`, which no consumer tolerates.
-  const raw =
-    Number(u?.prompt_tokens_details?.cached_tokens ?? u?.prompt_cache_hit_tokens) || 0;
-  const cached = Math.min(Math.max(raw, 0), prompt);
+  // (S4-c) The two-way #99 netting became a three-way split derived in ONE
+  // place — see usage-cache-split.ts for the field spellings and the sum
+  // invariant every consumer depends on.
+  const split = splitPromptTokens(u);
+  // One degenerate turn is sent UNSPLIT, and this is not a special case so much
+  // as the client's merge rule read honestly.
+  //
+  // Claude Code only lets a delta value override its running total when that
+  // value is GREATER THAN ZERO (2.1.273: `n.input_tokens !== null &&
+  // n.input_tokens > 0 ? n.input_tokens : e.input_tokens`). So on a turn whose
+  // input is entirely cache — possible only when the request repeats one
+  // already cached, i.e. a retry — an `input_tokens: 0` is DISCARDED and the
+  // message_start seed (the PREVIOUS turn's full context) survives beside a
+  // full-size `cache_read_input_tokens`. The client would then sum the two and
+  // believe the conversation is roughly twice its real size. Reporting that
+  // turn as ordinary input keeps the client's sum exactly equal to
+  // `prompt_tokens`, which is the invariant that matters.
+  const fullyCached = split.promptTokens > 0 && split.inputTokens === 0;
   return {
-    input_tokens: prompt - cached,
+    input_tokens: fullyCached ? split.promptTokens : split.inputTokens,
     output_tokens: Number(u?.completion_tokens) || 0,
-    cache_read_input_tokens: cached,
+    cache_read_input_tokens: fullyCached ? 0 : split.cacheReadTokens,
+    // All three input keys ship TOGETHER, unconditionally, and that is not
+    // stylistic: the client reconstructs the conversation size by SUMMING them
+    // (2.1.273 binary), so a reduced `input_tokens` without its two siblings
+    // understates the context by exactly the cached portion — the one shape
+    // that reproduces the failure #99 fixed. `splitPromptTokens` guarantees
+    // the three sum back to `prompt_tokens`.
+    cache_creation_input_tokens: fullyCached ? 0 : split.cacheCreationTokens,
   };
 }
 
@@ -280,7 +299,17 @@ export function createStreamingResponseHandler(
   adapter: any,
   target: string,
   middlewareManager: any,
-  onTokenUpdate?: (input: number, output: number) => void,
+  // `input` is ALWAYS `prompt_tokens` — the full context size, which the status
+  // line renders and the delta strategy bills against. The cached breakdown
+  // rides in the third argument and is for COST ONLY; handing the tracker the
+  // reduced wire figure would report a nearly-full conversation as almost
+  // empty and disarm auto-compaction. (S4-c, upstream f9baf2e rule 1 — this
+  // fork already passed the full value before; the rule is now pinned by test.)
+  onTokenUpdate?: (
+    input: number,
+    output: number,
+    detail?: { cacheReadTokens: number; cacheCreationTokens: number }
+  ) => void,
   toolSchemas?: any[], // Tool schemas for validation
   toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
   headerLatencyMs?: number, // dispatch → upstream headers, from ComposedHandler
@@ -860,7 +889,11 @@ export function createStreamingResponseHandler(
               log(
                 `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
               );
-              onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0);
+              const costSplit = splitPromptTokens(state.usage);
+              onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0, {
+                cacheReadTokens: costSplit.cacheReadTokens,
+                cacheCreationTokens: costSplit.cacheCreationTokens,
+              });
             } else {
               // Estimate tokens for local models that don't return usage data
               // Rough estimate: ~4 characters per token
@@ -1027,7 +1060,14 @@ export function createStreamingResponseHandler(
                     isClosed = true;
                     if (ping) clearInterval(ping);
                     if (onTokenUpdate) {
-                      onTokenUpdate(state.usage?.prompt_tokens || 0, state.usage?.completion_tokens || 0);
+                      onTokenUpdate(
+                        state.usage?.prompt_tokens || 0,
+                        state.usage?.completion_tokens || 0,
+                        {
+                          cacheReadTokens: splitPromptTokens(state.usage).cacheReadTokens,
+                          cacheCreationTokens: splitPromptTokens(state.usage).cacheCreationTokens,
+                        }
+                      );
                     }
                     try {
                       cap.note("policy-refusal->surface");

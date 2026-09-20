@@ -24,7 +24,7 @@ import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 type BaseModelAdapter = BaseAPIFormat;
 import { DialectManager } from "../adapters/dialect-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
-import { TokenTracker } from "./shared/token-tracker.js";
+import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { stripReasoningContent } from "./shared/format/openai-messages.js";
@@ -1180,22 +1180,27 @@ export class ComposedHandler implements ModelHandler {
     headerLatencyMs?: number, // dispatch → upstream headers (for the [ttft] marker)
     retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (#65: responses + openai-sse + anthropic-sse lanes)
   ): Response {
-    const onTokenUpdate = (input: number, output: number) => {
+    // `input` is the FULL context size, always — never the cache-reduced figure
+    // that rides on the wire. `detail` is the optional cached breakdown of that
+    // same number and is used for COST ONLY; handing the tracker a reduced
+    // count would report a nearly-full conversation as almost empty and disarm
+    // auto-compaction. (S4-c)
+    const onTokenUpdate = (input: number, output: number, detail?: UsageCacheDetail) => {
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
         case "accumulate-both":
-          this.tokenTracker.accumulateBoth(input, output);
+          this.tokenTracker.accumulateBoth(input, output, detail);
           break;
         case "delta-aware":
-          this.tokenTracker.updateWithDelta(input, output);
+          this.tokenTracker.updateWithDelta(input, output, detail);
           break;
         case "local":
-          this.tokenTracker.updateLocal(input, output);
+          this.tokenTracker.updateLocal(input, output, detail);
           break;
         // "actual-cost" is handled separately via updateWithActualCost
         case "standard":
         default:
-          this.tokenTracker.update(input, output);
+          this.tokenTracker.update(input, output, detail);
           break;
       }
       // Fire onComplete after token update so recordStats() sees the final token counts.

@@ -29,6 +29,19 @@ export interface ModelPricing {
   inputCostPer1M: number;
   /** Cost per 1M output tokens in USD */
   outputCostPer1M: number;
+  /**
+   * Cost per 1M tokens READ from the provider's prompt cache, in USD. (S4-c)
+   *
+   * OPTIONAL, and its absence is a RULE, not a missing number: absent means
+   * "this provider bills a cache read as ordinary input", the only reading
+   * that cannot understate spend. Deliberately NOT defaulted to the
+   * industry-typical 0.1x of `inputCostPer1M` — that would be a hardcoded
+   * price. NOTHING SUPPLIES THIS TODAY, so every cache discount computed from
+   * it is exactly zero and no existing session's cost changes by a cent; the
+   * field exists so `token-tracker.ts`'s arithmetic is already correct the day
+   * a pricing source starts publishing the rate.
+   */
+  cacheReadCostPer1M?: number;
   /** Whether this pricing is an estimate (not from official sources) */
   isEstimate?: boolean;
   /** Whether this model is free (e.g., OAuth-based Code Assist sessions) */

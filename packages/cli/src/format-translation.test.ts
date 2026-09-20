@@ -2488,13 +2488,25 @@ describe("Regression: OpenAI-lane cache visibility (G2, #99)", () => {
   });
 
   test("a provider reporting more cached than total cannot emit negative input", async () => {
+    // (S4-c convergence ruling) The clamp still holds input non-negative, but
+    // the wire shape changed deliberately: cached > total clamps down to
+    // input_tokens 0, which is the degenerate fully-cached turn — and Claude
+    // Code's usage merge DISCARDS a delta input_tokens of 0, keeping the
+    // message_start seed beside a full-size cache_read and roughly doubling
+    // the reported context. f9baf2e's unsplit rule therefore wins this edge:
+    // the turn ships as ordinary input, the client's three-way sum equals
+    // prompt_tokens exactly. The ORIGINAL #99 pin (0 / 1000) was this hazard
+    // in disguise; this fork measured 0 real occurrences of the shape.
     const usage = await usageOf({
       prompt_tokens: 1000,
       completion_tokens: 5,
       prompt_tokens_details: { cached_tokens: 1200 },
     });
-    expect(usage.input_tokens).toBe(0);
-    expect(usage.cache_read_input_tokens).toBe(1000);
+    expect(usage.input_tokens).toBe(1000); // unsplit — never 0, never negative
+    expect(usage.cache_read_input_tokens).toBe(0);
+    expect(
+      usage.input_tokens + usage.cache_read_input_tokens + (usage.cache_creation_input_tokens ?? 0)
+    ).toBe(1000);
   });
 });
 
