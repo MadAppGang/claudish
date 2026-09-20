@@ -17,9 +17,14 @@
  *      because request B started on the same cached handler, turns A's calls
  *      into names nothing recognises.
  *
- * The composed-handler capture-before-await half of (d) is deliberately NOT in
- * this lot — composed-handler.ts is po-2023's file this cycle (#155), and
- * PR #162 already touches it via ae8c07f pending ai-01's arbitration.
+ * The composed-handler capture-before-await half of (d) IS in this lot, added by
+ * ai-01 in review. The deferral's reason — composed-handler.ts being po-2023's
+ * file for #155 — ended when #155 merged, and (c) is what armed the defect: the
+ * `openai-responses-sse` lane re-read `adapter.getToolNameMap()` after the
+ * upstream await, ignoring the captured parameter the `openai-sse` lane beside
+ * it already used. Inert before this lot (the Codex wire had no limit, so both
+ * reads returned an empty map), silent tool-call loss after it. The lane-level
+ * regression that would pin it, rather than a comment, is issue #164.
  *
  * Non-vacuity: written before the implementation.
  */

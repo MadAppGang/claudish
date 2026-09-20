@@ -1196,7 +1196,17 @@ export class ComposedHandler implements ModelHandler {
         return createResponsesStreamHandler(c, response, {
           modelName: this.bareModelName,
           onTokenUpdate,
-          toolNameMap: adapter.getToolNameMap(),
+          // The map CAPTURED before the upstream await (the `toolNameMap`
+          // parameter), never a fresh `adapter.getToolNameMap()`. Handlers are
+          // cached per model while `claudish serve` hosts several conversations,
+          // so `reset()` on request B replaces the bindings request A's parser
+          // still needs; re-reading here hands A the NEXT request's map and
+          // `keepOnlyRealTools` then drops A's tool calls with no error anywhere.
+          // This lane read fresh while openai-sse (above) already used the
+          // captured parameter. It was inert until S4-b 2e18042 made
+          // `getToolNameLimit()` cover `openai-responses-sse`: before that the
+          // Codex wire never encoded, so both reads returned an empty map.
+          toolNameMap,
           headerLatencyMs,
           retryUpstream: retryUpstreamBounded,
           providerName: this.provider.name,
