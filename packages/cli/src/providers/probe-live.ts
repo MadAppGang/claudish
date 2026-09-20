@@ -330,9 +330,16 @@ function interpretSseEvent(rawEvent: string): SseVerdict {
 }
 
 function isContentEvent(parsed: any, eventType: string): boolean {
-  if (eventType === "content_block_start" || eventType === "content_block_delta") return true;
+  // A `content_block_start` alone is not evidence of content (S4-b edd4ce9):
+  // the contentless guard can legitimately emit an EMPTY text block on a
+  // successful-but-empty turn, so counting any start as live would pass a
+  // probe on a stream that produced nothing. Only a tool_use start is a start
+  // that IS the call. Deltas still count — they carry actual payload, and a
+  // normal text answer reaches a text_delta right after its start.
+  if (eventType === "content_block_start") return parsed?.content_block?.type === "tool_use";
+  if (eventType === "content_block_delta") return true;
   if (eventType === "message_start") return true;
-  if (parsed?.type === "content_block_start") return true;
+  if (parsed?.type === "content_block_start") return parsed?.content_block?.type === "tool_use";
   if (parsed?.type === "content_block_delta") return true;
   if (parsed?.type === "message_start") return true;
   if (parsed?.type === "message_delta") return true;

@@ -30,6 +30,8 @@ import {
   type PolicyRetryOpts,
 } from "./policy-refusal.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import { type BlockRef, createBlockWriter } from "./block-writer.js";
+import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
 
 /**
  * Hard ceiling, in characters, on ONE logged raw SSE payload.
@@ -112,11 +114,13 @@ export function describeInStreamError(chunk: unknown): string | undefined {
 export interface StreamingState {
   usage: any;
   finalized: boolean;
-  textStarted: boolean;
-  textIdx: number;
-  reasoningStarted: boolean;
-  reasoningIdx: number;
-  curIdx: number;
+  /**
+   * Which content block is open, and every block index allocated this turn, are
+   * owned by the BlockWriter — not by this state object. The five fields that
+   * used to live here (`textStarted`, `textIdx`, `reasoningStarted`,
+   * `reasoningIdx`, `curIdx`) were a second source of truth for the same thing
+   * and were maintained by hand at every emit site. (S4-b ccca029)
+   */
   tools: Map<number, ToolState>;
   toolIds: Set<string>;
   lastActivity: number;
@@ -155,6 +159,12 @@ export interface ToolState {
   remapped: boolean; // Web search tools re-emitted as the client's WebSearch tool_use
   arguments: string; // Accumulated JSON arguments string
   buffered: boolean; // Whether we're buffering args until tool call completes
+  /**
+   * The block this tool is currently streaming into, or null when it has none
+   * (buffered and not yet flushed, or its block was superseded — see the
+   * interleave degradation in the `tool_calls` delta handler). (S4-b ccca029)
+   */
+  ref: BlockRef | null;
 }
 
 /**
@@ -213,11 +223,6 @@ export function createStreamingState(): StreamingState {
   return {
     usage: null,
     finalized: false,
-    textStarted: false,
-    textIdx: -1,
-    reasoningStarted: false,
-    reasoningIdx: -1,
-    curIdx: 0,
     tools: new Map(),
     toolIds: new Set(),
     lastActivity: Date.now(),
@@ -323,26 +328,72 @@ export function createStreamingResponseHandler(
 
         const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         const state = createStreamingState();
+        // Every content block for this turn is opened, appended to and closed
+        // through here. It owns the block-index counter, so nothing else
+        // allocates an index. (S4-b ccca029)
+        const writer = createBlockWriter(send);
+        const thinkSplitter = createThinkTagSplitter();
+
+        /**
+         * Route one splitter result to its blocks.
+         *
+         * Shared by the streaming path and by `finalize()`'s flush, so a fragment
+         * released at the end of the turn takes exactly the same hold-back
+         * decision as one released mid-stream — rather than bypassing it and
+         * emitting a lone fragment of text that the hold-back is withholding the
+         * rest of. (S4-b d4cba87)
+         */
+        const emitSplitContent = ({ thinking, text }: ThinkSplit): void => {
+          if (thinking) {
+            writer.append(writer.openThinking(), thinking);
+          }
+          if (!text) return;
+
+          // Accumulate text for potential tool call extraction
+          state.accumulatedText += text;
+
+          // Check if text contains STRUCTURED tool call patterns that we should hold back
+          // Only hold back for patterns we can actually parse (XML, JSON), not natural language
+          // Natural language patterns are extracted at finalization, not held back
+          const hasStructuredToolPattern =
+            // Qwen XML-style: <function=ToolName>. Same shape the
+            // extractor accepts, so text held back here is always text
+            // the extractor can act on. A looser test here withheld
+            // text that nothing later emitted.
+            hasExtractableFunctionTag(state.accumulatedText) ||
+            // JSON tool call in text: {"name": "Task", "arguments":
+            /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
+              state.accumulatedText
+            ) ||
+            // XML tool_call tags: <tool_call>
+            /<tool_call>/.test(state.accumulatedText);
+
+          // Only hold back if we have a structured pattern AND haven't accumulated too much
+          // (if we've accumulated > 1000 chars without a complete pattern, release the text)
+          const shouldHoldBack = hasStructuredToolPattern && state.accumulatedText.length < 1000;
+
+          if (shouldHoldBack) {
+            log(
+              `[Streaming] Text held back (structured tool pattern): ${state.accumulatedText.length} chars accumulated`
+            );
+            return;
+          }
+
+          writer.append(writer.openText(), text);
+        };
 
         // Emit a synthetic WebSearch tool_use block. Used to remap provider
         // web search calls (web_search tool calls, GLM <searchWeb> tags) to
         // the client's own WebSearch tool so the agentic loop continues
         // (stop_reason "tool_use") instead of ending the turn on raw results.
         const emitWebSearchToolUse = (query: string, t?: ToolState) => {
-          const blockIndex = t?.blockIndex ?? state.curIdx++;
+          const blockIndex = t?.blockIndex ?? writer.reserve();
           const id = t?.id ?? `tool_websearch_${Date.now()}_${blockIndex}`;
-          send("content_block_start", {
-            type: "content_block_start",
-            index: blockIndex,
-            content_block: { type: "tool_use", id, name: "WebSearch" },
-          });
-          send("content_block_delta", {
-            type: "content_block_delta",
-            index: blockIndex,
-            delta: { type: "input_json_delta", partial_json: JSON.stringify({ query }) },
-          });
-          send("content_block_stop", { type: "content_block_stop", index: blockIndex });
+          const ref = writer.openTool({ id, name: "WebSearch", index: blockIndex });
+          writer.append(ref, JSON.stringify({ query }));
+          writer.close(ref);
           if (t) {
+            t.ref = ref;
             t.started = true;
             t.closed = true;
           } else {
@@ -358,6 +409,7 @@ export function createStreamingResponseHandler(
               remapped: true,
               arguments: JSON.stringify({ query }),
               buffered: false,
+              ref,
             });
           }
           log(`[Stream] Remapped provider web search → WebSearch tool_use (query="${query}")`);
@@ -399,8 +451,16 @@ export function createStreamingResponseHandler(
           let toolCount = 0;
           try {
           toolCount = Array.from(state.tools.values()).filter(t => t.started && !t.suppressed).length;
-          log(`[Stream] reason=${reason} model=${target} text=${state.textStarted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
+          log(`[Stream] reason=${reason} model=${target} blocks=${writer.anyBlockEmitted} tools=${toolCount} text_len=${state.accumulatedText.length} err=${err ?? "none"}`);
           logStderr(`[Stream] ${target} ${reason} text_len=${state.accumulatedText.length} tools=${toolCount}`);
+
+          // FIRST, before anything reads `accumulatedText`: release whatever
+          // the think-splitter still holds (an undecided head, a partial close
+          // tag, an unterminated `<think>`). It routes through
+          // `emitSplitContent`, so a released fragment takes the same
+          // hold-back decision as one released mid-stream, and text recovery
+          // below scans the complete text. (S4-b d4cba87)
+          emitSplitContent(thinkSplitter.flush());
 
           // Argument fragments whose `function.name` never arrived (S4-b
           // baf19ef). A call with no name is not a call — nothing to dispatch
@@ -453,28 +513,6 @@ export function createStreamingResponseHandler(
             state.accumulatedText = cleanedText;
           }
 
-          // Close any open reasoning/text blocks BEFORE emitting new blocks below.
-          // If we don't, new tool_use blocks (higher indices) get fully opened/closed
-          // before the reasoning block (lower index) is stopped — the Anthropic client
-          // rejects this out-of-order lifecycle as "Content block not found".
-          //
-          // Snapshot BEFORE clearing the flags: hasContent (below) must know whether
-          // text/reasoning was EVER produced, not whether a block is still open.
-          // Reading state.textStarted after this close block made hasContent always
-          // false for pure-text responses — a spurious "[Error: empty response …
-          // try /compact]" was appended after every valid text answer (cluster-wide
-          // false-compact incident, 2026-06-12).
-          const producedText = state.textStarted;
-          const producedReasoning = state.reasoningStarted;
-          if (state.reasoningStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
-            state.reasoningStarted = false;
-          }
-          if (state.textStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
-            state.textStarted = false;
-          }
-
           // Check for text-based tool calls before finalizing
           // Some models (like Qwen) output tool calls as text instead of structured tool_calls
           // Only when the model produced NO structured call (S4-b e82c315).
@@ -499,52 +537,72 @@ export function createStreamingResponseHandler(
             );
           }
           log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
-          if (textToolCalls.length > 0) {
+
+          // ── Ending classification (S4-b c1b907f) ──────────────────────────
+          // `finish_reason` is the ONLY completion signal — neither `[DONE]`
+          // nor a final usage frame counts; both are transport punctuation. A
+          // turn that ends with NO finish_reason while tool content is in
+          // flight (structured fragments or a text-recovered call — recovery
+          // runs above and counts as content AND as a tool) was CUT mid-call:
+          // dispatching the call would ship an action the model never finished
+          // specifying. That is a FAILURE ending. Plain text on a
+          // finish_reason-less turn degrades to max_tokens below (silent
+          // truncation — visible, labeled by its stop_reason, never an error).
+          const toolsInFlight = state.tools.size > 0 || textToolCalls.length > 0;
+          const failedEnding =
+            reason === "error" ||
+            (state.lastFinishReason == null && toolsInFlight);
+          if (failedEnding && state.lastFinishReason == null) {
+            log(
+              `[Stream] Unexplained ending: finish_reason never arrived with ${state.tools.size} structured tool(s) and ${textToolCalls.length} recovered call(s) in flight — suppressing dispatch, labeling the turn`
+            );
+            logStderr(
+              `[Stream] UNEXPLAINED ENDING from ${target} — no finish_reason with tool content in flight; failure lane`
+            );
+          }
+          if (failedEnding && textToolCalls.length > 0) {
+            log(
+              `[Streaming] Suppressing ${textToolCalls.length} text-recovered tool call(s): the turn failed before completion`
+            );
+          }
+
+          if (textToolCalls.length > 0 && !failedEnding) {
             log(
               `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
             );
 
-            // Send each extracted tool call as a proper tool_use block
+            // Send each extracted tool call as a proper tool_use block.
+            // `openTool` closes whatever is open first, which is where the
+            // hand-written "close any open text block" used to live. (S4-b ccca029)
             for (const tc of textToolCalls) {
-              const toolIdx = state.curIdx++;
+              const toolIdx = writer.reserve();
               const toolId = `tool_${Date.now()}_${toolIdx}`;
-
-              send("content_block_start", {
-                type: "content_block_start",
-                index: toolIdx,
-                content_block: { type: "tool_use", id: toolId, name: tc.name },
-              });
-              send("content_block_delta", {
-                type: "content_block_delta",
-                index: toolIdx,
-                delta: { type: "input_json_delta", partial_json: JSON.stringify(tc.arguments) },
-              });
-              send("content_block_stop", { type: "content_block_stop", index: toolIdx });
+              const ref = writer.openTool({ id: toolId, name: tc.name, index: toolIdx });
+              writer.append(ref, JSON.stringify(tc.arguments));
+              writer.close(ref);
             }
           }
 
           // GLM <searchWeb> remapped to the client's WebSearch tool —
           // emitted as a tool_use block so stop_reason becomes "tool_use".
-          if (pendingSearchRemap) {
+          // Suppressed on a failure ending: no NEW tool block leaves a failed
+          // turn (S4-b c1b907f).
+          if (pendingSearchRemap && !failedEnding) {
             emitWebSearchToolUse(pendingSearchRemap);
           }
 
           // Inject SearXNG results if we intercepted GLM <searchWeb> tags.
           // Sent as a separate text block after the (now-cleaned) model output.
           if (searchWebResults) {
-            const srchIdx = state.curIdx++;
-            send("content_block_start", {
-              type: "content_block_start",
-              index: srchIdx,
-              content_block: { type: "text", text: "" },
-            });
-            send("content_block_delta", {
-              type: "content_block_delta",
-              index: srchIdx,
-              delta: { type: "text_delta", text: searchWebResults },
-            });
-            send("content_block_stop", { type: "content_block_stop", index: srchIdx });
+            const ref = writer.openText();
+            writer.append(ref, searchWebResults);
+            writer.close(ref);
           }
+
+          // Whatever is still open — thinking, text, or a tool — closes here.
+          // This replaces the hand-written reasoning-then-text pair, which could
+          // only ever close the two kinds it named. (S4-b ccca029)
+          writer.closeCurrent();
 
           // Remapped web search tools that never saw finish_reason="tool_calls"
           // (e.g. the provider ended with "stop") — emit them now so the
@@ -564,8 +622,21 @@ export function createStreamingResponseHandler(
           // Some models (e.g., Gemini via LiteLLM) send tool calls with finish_reason="stop"
           // instead of "tool_calls", so the normal validation path (line ~695) is never reached.
           // We must send these buffered tools here so Claude Code can execute them.
+          // Suppressed on a failure ending: no completed tool call ships with a
+          // failed turn (S4-b c1b907f).
+          if (failedEnding) {
+            const unsent = Array.from(state.tools.values()).filter(
+              (t) => !t.closed && t.buffered && !t.started
+            );
+            if (unsent.length > 0) {
+              log(
+                `[Streaming] Suppressing buffered flush of ${unsent.length} tool call(s): the turn failed before completion`
+              );
+              for (const t of unsent) t.closed = true;
+            }
+          }
           for (const t of Array.from(state.tools.values())) {
-            if (!t.closed && t.buffered && !t.started) {
+            if (!t.closed && t.buffered && !t.started && !failedEnding) {
               if (toolSchemas && toolSchemas.length > 0) {
                 const validation = validateToolArguments(
                   t.name,
@@ -581,20 +652,9 @@ export function createStreamingResponseHandler(
                   log(
                     `[Streaming] Sending buffered tool call (finish_reason!=tool_calls): ${t.name} with args: ${argsJson}`
                   );
-                  send("content_block_start", {
-                    type: "content_block_start",
-                    index: t.blockIndex,
-                    content_block: { type: "tool_use", id: t.id, name: t.name },
-                  });
-                  send("content_block_delta", {
-                    type: "content_block_delta",
-                    index: t.blockIndex,
-                    delta: { type: "input_json_delta", partial_json: argsJson },
-                  });
-                  send("content_block_stop", {
-                    type: "content_block_stop",
-                    index: t.blockIndex,
-                  });
+                  t.ref = writer.openTool({ id: t.id, name: t.name, index: t.blockIndex });
+                  writer.append(t.ref, argsJson);
+                  writer.close(t.ref);
                   t.started = true;
                   t.closed = true;
                 } else {
@@ -609,30 +669,22 @@ export function createStreamingResponseHandler(
                 log(
                   `[Streaming] Sending buffered tool call (no validation): ${t.name} with args: ${argsJson}`
                 );
-                send("content_block_start", {
-                  type: "content_block_start",
-                  index: t.blockIndex,
-                  content_block: { type: "tool_use", id: t.id, name: t.name },
-                });
-                send("content_block_delta", {
-                  type: "content_block_delta",
-                  index: t.blockIndex,
-                  delta: { type: "input_json_delta", partial_json: argsJson },
-                });
-                send("content_block_stop", {
-                  type: "content_block_stop",
-                  index: t.blockIndex,
-                });
+                t.ref = writer.openTool({ id: t.id, name: t.name, index: t.blockIndex });
+                writer.append(t.ref, argsJson);
+                writer.close(t.ref);
                 t.started = true;
                 t.closed = true;
               }
             }
           }
 
-          // Close any remaining started-but-unclosed tool calls
+          // Close any remaining started-but-unclosed tool calls. Under the
+          // one-open-block invariant at most one of these is still open; the
+          // rest were closed when the block that superseded them opened, and
+          // `writer.close` is a no-op for those. (S4-b ccca029)
           for (const t of Array.from(state.tools.values())) {
             if (t.started && !t.closed) {
-              send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+              if (t.ref) writer.close(t.ref);
               t.closed = true;
             }
           }
@@ -642,6 +694,9 @@ export function createStreamingResponseHandler(
           }
 
           // Determine whether the stream produced any usable content.
+          // `writer.anyBlockEmitted` is monotonic for the whole turn, so it
+          // replaces the pre-close snapshot of textStarted/reasoningStarted
+          // this used to take (S4-b ccca029).
           const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started && !t.suppressed);
           // A suppressed web-search tool that reached `closed` emitted its SearXNG
           // result as a real text block (see the suppression path) — that IS content,
@@ -650,51 +705,43 @@ export function createStreamingResponseHandler(
           // "[Error: empty response]" being appended after valid search results.
           const hasSuppressedWebText = Array.from(state.tools.values()).some((t) => t.suppressed && t.closed);
           const hasContent =
-            producedText ||
-            producedReasoning ||
+            writer.anyBlockEmitted ||
             state.accumulatedText.length > 0 ||
             hasStructuredTools ||
             textToolCalls.length > 0 ||
             hasSuppressedWebText ||
             searchWebResults !== null;
 
-          if (reason === "error") {
-            // Socket close, network error, or other fetch failure mid-stream.
+          if (reason === "error" || failedEnding) {
+            // Socket close, network error, other fetch failure mid-stream — or
+            // an unexplained ending: finish_reason never arrived while tool
+            // content was in flight (S4-b c1b907f).
             // Previously we sent event: error, but Claude Code surfaces raw SSE error
             // events as "API Error: <message>" without closing the turn cleanly.
             // Instead, close any open blocks and inject the error as a text block
             // so the turn ends gracefully with end_turn.
+            // INTENDED DIVERGENCE FROM UPSTREAM (ai-01 arbitration, corpus-settled):
+            // upstream's failure ending emits a bare SSE `error` event. This fork
+            // delivers the failure through this labeled text-block lane instead —
+            // 1017 resp-*.sse captures on our wire carry ZERO `event: error`
+            // frames, and the never-hang invariant is "every terminating path
+            // ends with message_stop after a well-formed turn".
             log(`[Stream] Stream error from ${target}: ${err}`);
             logStderr(`[Stream] Stream error from ${target}: ${err?.substring(0, 120)}`);
 
-            // Close reasoning if still open
-            if (state.reasoningStarted) {
-              send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
-              state.reasoningStarted = false;
-            }
-            // Close text if still open
-            if (state.textStarted) {
-              send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
-              state.textStarted = false;
-            }
-
-            // Inject error as a text block (or replace if no content was produced)
+            // Inject error as a text block (or replace if no content was produced).
+            // `openText` closes whatever block is still open — thinking, text, or
+            // a tool — which is where the hand-written close pair used to live.
             const isSocketClose = /socket.*closed|connection was closed|ECONNRESET/i.test(err || "");
-            const errorNotice = isSocketClose
-              ? `[The connection to the model provider was interrupted. This is usually temporary — please retry.]`
-              : `[Upstream stream error: ${(err || "unknown").substring(0, 200)}]`;
-            const errorIdx = state.curIdx++;
-            send("content_block_start", {
-              type: "content_block_start",
-              index: errorIdx,
-              content_block: { type: "text", text: "" },
-            });
-            send("content_block_delta", {
-              type: "content_block_delta",
-              index: errorIdx,
-              delta: { type: "text_delta", text: errorNotice },
-            });
-            send("content_block_stop", { type: "content_block_stop", index: errorIdx });
+            const errorNotice =
+              reason !== "error"
+                ? `[Upstream stream ended without a finish_reason while a tool call was in flight — the turn was cut and no tool was dispatched. This is usually temporary — please retry.]`
+                : isSocketClose
+                  ? `[The connection to the model provider was interrupted. This is usually temporary — please retry.]`
+                  : `[Upstream stream error: ${(err || "unknown").substring(0, 200)}]`;
+            const errorRef = writer.openText();
+            writer.append(errorRef, errorNotice);
+            writer.close(errorRef);
 
             send("message_delta", {
               type: "message_delta",
@@ -731,18 +778,10 @@ export function createStreamingResponseHandler(
                   : isOverflow
                     ? `The model returned an empty response and the conversation context is very large (finish_reason: ${fr || "stop"}, ~${promptTokens} input tokens). Try /compact to reduce the context size, or retry.`
                     : `The model returned an empty response (finish_reason: ${fr || "stop"}). This is usually transient — a momentary provider load or rate limit, NOT a context-size problem. Please retry. If it recurs repeatedly, then try /compact.`;
-              const blockIdx = state.curIdx++;
-              send("content_block_start", {
-                type: "content_block_start",
-                index: blockIdx,
-                content_block: { type: "text", text: "" },
-              });
-              send("content_block_delta", {
-                type: "content_block_delta",
-                index: blockIdx,
-                delta: { type: "text_delta", text: `[Error: ${emptyMsg}]` },
-              });
-              send("content_block_stop", { type: "content_block_stop", index: blockIdx });
+              const blockIdx = writer.reserve();
+              const noticeRef = writer.openText({ index: blockIdx });
+              writer.append(noticeRef, `[Error: ${emptyMsg}]`);
+              writer.close(noticeRef);
               const cls = fr === "content_filter" ? "content-filter" : isOverflow ? "overflow" : "transient";
               logStderr(
                 `[Stream] EMPTY RESPONSE from ${target} — finish_reason=${fr || "null"} prompt_tokens=${promptTokens} → ${cls} (injected ${cls} message)`
@@ -762,7 +801,16 @@ export function createStreamingResponseHandler(
             // `content_filter` is the same class: the provider refused, which
             // is Anthropic's "refusal". Both OUTRANK tool_use — a truncated
             // tool call must not be dispatched as a complete one.
-            const truncated = state.lastFinishReason === "length";
+            // A finish_reason-less turn that DID produce text is the same
+            // silent truncation (S4-b c1b907f): [DONE] and the final usage
+            // frame are transport punctuation, not completion. Tool content on
+            // such a turn never reaches here — it took the failure lane above.
+            // A turn that produced NOTHING and ended with nothing is a plain
+            // success: the empty-response notice above already covers the
+            // empty content array.
+            const truncated =
+              state.lastFinishReason === "length" ||
+              (state.lastFinishReason == null && hasContent);
             const refused = state.lastFinishReason === "content_filter";
             const stopReason = refused
               ? "refusal"
@@ -776,6 +824,27 @@ export function createStreamingResponseHandler(
                 `[Streaming] Upstream finish_reason=${state.lastFinishReason} → stop_reason=${stopReason} (${state.accumulatedText.length} chars produced)`
               );
             }
+
+            // A successful turn is never contentless (S4-b edd4ce9):
+            // `end_turn` with an empty content array is not a shape
+            // Anthropic's API produces. The guard fires only on end_turn —
+            // the one value that excludes every case where emptiness is
+            // MEANINGFUL (max_tokens, refusal, tool_use). An EMPTY text
+            // block, not placeholder prose and not an error: prose would
+            // enter history as the assistant's words, an error would trip
+            // the client's retry on a deterministic outcome. In this fork
+            // the gap it closes is specific: text held back pending a
+            // structured tool pattern that never completed counts as
+            // "content" for the empty-response notice above
+            // (accumulatedText > 0) but emitted no block.
+            if (stopReason === "end_turn" && !writer.anyBlockEmitted) {
+              const guardRef = writer.openText();
+              writer.close(guardRef);
+              log(
+                `[Stream] Contentless end_turn — emitting an empty text block (${state.accumulatedText.length} chars were accumulated but never emitted)`
+              );
+            }
+
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
@@ -898,10 +967,9 @@ export function createStreamingResponseHandler(
                   const errMsg = chunk.error.message || JSON.stringify(chunk.error);
                   if (isPolicyRefusal(errCode, errMsg)) {
                     const nothingVisible =
-                      !state.textStarted &&
-                      !state.reasoningStarted &&
-                      state.tools.size === 0 &&
-                      state.accumulatedText.length === 0;
+                      !writer.anyBlockEmitted &&
+                      state.accumulatedText.length === 0 &&
+                      state.tools.size === 0;
                     const canRetry =
                       !!retryOpts?.retryUpstream &&
                       policyRetryAttempts < policyRetryBackoff.length &&
@@ -947,35 +1015,9 @@ export function createStreamingResponseHandler(
                       `[OpenAISSE] policy refusal surfaced model=${target} reqN=${reqN} code=${errCode}`,
                       true
                     );
-                    if (state.reasoningStarted) {
-                      send("content_block_stop", {
-                        type: "content_block_stop",
-                        index: state.reasoningIdx,
-                      });
-                      state.reasoningStarted = false;
-                    }
-                    if (state.textStarted) {
-                      send("content_block_stop", {
-                        type: "content_block_stop",
-                        index: state.textIdx,
-                      });
-                      state.textStarted = false;
-                    }
-                    const refusalIdx = state.curIdx++;
-                    send("content_block_start", {
-                      type: "content_block_start",
-                      index: refusalIdx,
-                      content_block: { type: "text", text: "" },
-                    });
-                    send("content_block_delta", {
-                      type: "content_block_delta",
-                      index: refusalIdx,
-                      delta: { type: "text_delta", text: policyRefusalNotice(errMsg) },
-                    });
-                    send("content_block_stop", {
-                      type: "content_block_stop",
-                      index: refusalIdx,
-                    });
+                    const refusalRef = writer.openText();
+                    writer.append(refusalRef, policyRefusalNotice(errMsg));
+                    writer.close(refusalRef);
                     send("message_delta", {
                       type: "message_delta",
                       delta: { stop_reason: "end_turn", stop_sequence: null },
@@ -1068,20 +1110,18 @@ export function createStreamingResponseHandler(
                   const reasoning = delta.reasoning_content ?? delta.reasoning;
                   if (reasoning) {
                     state.lastActivity = Date.now();
-                    if (!state.reasoningStarted) {
-                      state.reasoningIdx = state.curIdx++;
-                      send("content_block_start", {
-                        type: "content_block_start",
-                        index: state.reasoningIdx,
-                        content_block: { type: "thinking", thinking: "" },
-                      });
-                      state.reasoningStarted = true;
-                    }
-                    send("content_block_delta", {
-                      type: "content_block_delta",
-                      index: state.reasoningIdx,
-                      delta: { type: "thinking_delta", thinking: reasoning },
-                    });
+                    // Real reasoning on its own field: this provider is not also
+                    // speaking in `<think>` tags, so a `<think>` in its content
+                    // is a model writing ABOUT tags — the open tag must not fire.
+                    // The close tag stays armed: that is what strips a leaked
+                    // `</think>` from the head of the content here. (S4-b d4cba87)
+                    thinkSplitter.disarmOpen();
+                    // Reasoning arriving AFTER text used to open a thinking
+                    // block while the text block was still open — two open
+                    // blocks, which Anthropic's wire does not allow.
+                    // `openThinking` closes the text block first. That
+                    // difference is the point of the BlockWriter. (S4-b ccca029)
+                    writer.append(writer.openThinking(), reasoning);
                   }
 
                   // Handle text content
@@ -1091,14 +1131,11 @@ export function createStreamingResponseHandler(
                   );
                   if (txt) {
                     state.lastActivity = Date.now();
-                    // Close thinking block before starting text
-                    if (state.reasoningStarted) {
-                      send("content_block_stop", {
-                        type: "content_block_stop",
-                        index: state.reasoningIdx,
-                      });
-                      state.reasoningStarted = false;
-                    }
+                    // The thinking block is NOT closed here any more: it closes
+                    // when `writer.openText()` actually runs below. A chunk that
+                    // the adapter empties, or that is held back pending a tool
+                    // pattern, no longer ends the thinking block on the strength
+                    // of text that never reaches the client. (S4-b ccca029)
                     const res = adapter.processTextContent(txt, "");
                     log(
                       `[Streaming] After adapter: "${res.cleanedText.substring(0, 30).replace(/\n/g, "\\n")}" (${res.cleanedText.length} chars, transformed=${res.wasTransformed})`
@@ -1110,54 +1147,11 @@ export function createStreamingResponseHandler(
                     }
 
                     if (res.cleanedText) {
-                      // Accumulate text for potential tool call extraction
-                      state.accumulatedText += res.cleanedText;
-
-                      // Check if text contains STRUCTURED tool call patterns that we should hold back
-                      // Only hold back for patterns we can actually parse (XML, JSON), not natural language
-                      // Natural language patterns are extracted at finalization, not held back
-                      const hasStructuredToolPattern =
-                        // Qwen XML-style: <function=ToolName>. Same shape the
-                        // extractor accepts (S4-b 2e18042 parser half), so text
-                        // held back here is always text the extractor can act
-                        // on. A looser test here withheld text that nothing
-                        // later emitted.
-                        hasExtractableFunctionTag(state.accumulatedText) ||
-                        // JSON tool call in text: {"name": "Task", "arguments":
-                        /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
-                          state.accumulatedText
-                        ) ||
-                        // XML tool_call tags: <tool_call>
-                        /<tool_call>/.test(state.accumulatedText);
-
-                      // Only hold back if we have a structured pattern AND haven't accumulated too much
-                      // (if we've accumulated > 1000 chars without a complete pattern, release the text)
-                      const shouldHoldBack =
-                        hasStructuredToolPattern && state.accumulatedText.length < 1000;
-
-                      if (shouldHoldBack) {
-                        log(
-                          `[Streaming] Text held back (structured tool pattern): ${state.accumulatedText.length} chars accumulated`
-                        );
-                      }
-
-                      if (!shouldHoldBack) {
-                        if (!state.textStarted) {
-                          state.textIdx = state.curIdx++;
-                          send("content_block_start", {
-                            type: "content_block_start",
-                            index: state.textIdx,
-                            content_block: { type: "text", text: "" },
-                          });
-                          state.textStarted = true;
-                          log(`[Streaming] Started text block at index ${state.textIdx}`);
-                        }
-                        send("content_block_delta", {
-                          type: "content_block_delta",
-                          index: state.textIdx,
-                          delta: { type: "text_delta", text: res.cleanedText },
-                        });
-                      }
+                      // Through the splitter: content carrying `<think>…</think>`
+                      // is split into a thinking block and a text block (S4-b
+                      // d4cba87); everything else takes the same accumulate /
+                      // hold-back / emit path as before.
+                      emitSplitContent(thinkSplitter.push(res.cleanedText));
                     }
                   }
 
@@ -1184,21 +1178,9 @@ export function createStreamingResponseHandler(
                         const rawName = accumulatedName;
                         const restoredName = toolNameMap?.get(rawName) || rawName;
                         if (!t) {
-                          // Close thinking and text blocks before starting tool
-                          if (state.reasoningStarted) {
-                            send("content_block_stop", {
-                              type: "content_block_stop",
-                              index: state.reasoningIdx,
-                            });
-                            state.reasoningStarted = false;
-                          }
-                          if (state.textStarted) {
-                            send("content_block_stop", {
-                              type: "content_block_stop",
-                              index: state.textIdx,
-                            });
-                            state.textStarted = false;
-                          }
+                          // The hand-written "close thinking, then close text"
+                          // pair that used to stand here is `openTool`'s job now.
+                          // (S4-b ccca029)
                           // Restore truncated tool name to original if mapping exists.
                           const isWebSearch = isWebSearchToolCall(restoredName);
                           const remapToWebSearch = isWebSearch && clientDeclaresWebSearch(toolSchemas);
@@ -1208,12 +1190,18 @@ export function createStreamingResponseHandler(
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
                             name: restoredName,
-                            blockIndex: state.curIdx++,
+                            // Reserved, not opened: a buffered tool keeps its place
+                            // in the index order and emits at finish_reason time.
+                            blockIndex: writer.reserve(),
                             started: false,
                             closed: false,
                             suppressed: isWebSearch && !remapToWebSearch,
                             remapped: remapToWebSearch,
                             arguments: "", // Initialize arguments accumulator
+                            ref: null,
+                            // Buffer if we have schemas to validate, OR if a behavior
+                            // rule wants to rewrite this call — repair is only
+                            // possible while the arguments are still withheld.
                             buffered: !!toolSchemas && toolSchemas.length > 0 && !isWebSearch,
                           };
                           // Seeded, not empty (S4-b baf19ef): fragments that
@@ -1253,10 +1241,10 @@ export function createStreamingResponseHandler(
                         // Only send content_block_start immediately if NOT buffering.
                         // Suppressed and remapped tools never stream their blocks live.
                         if (!t.started && !t.buffered && !t.suppressed && !t.remapped) {
-                          send("content_block_start", {
-                            type: "content_block_start",
+                          t.ref = writer.openTool({
+                            id: t.id,
+                            name: t.name,
                             index: t.blockIndex,
-                            content_block: { type: "tool_use", id: t.id, name: t.name },
                           });
                           t.started = true;
                           // Flush the seed as ONE delta, right after the start
@@ -1264,11 +1252,7 @@ export function createStreamingResponseHandler(
                           // every capture in the tree — so the common case is
                           // byte-identical.
                           if (t.arguments) {
-                            send("content_block_delta", {
-                              type: "content_block_delta",
-                              index: t.blockIndex,
-                              delta: { type: "input_json_delta", partial_json: t.arguments },
-                            });
+                            writer.append(t.ref, t.arguments);
                           }
                         }
                       }
@@ -1290,14 +1274,30 @@ export function createStreamingResponseHandler(
                         t.arguments += tc.function.arguments;
                         // Only stream immediately if NOT buffering/suppressed/remapped
                         if (!t.buffered && !t.suppressed && !t.remapped) {
-                          send("content_block_delta", {
-                            type: "content_block_delta",
-                            index: t.blockIndex,
-                            delta: {
-                              type: "input_json_delta",
-                              partial_json: tc.function.arguments,
-                            },
-                          });
+                          if (!t.ref || !writer.append(t.ref, tc.function.arguments)) {
+                            // OpenAI's wire lets `tool_calls[0]` and `tool_calls[1]`
+                            // fragments interleave; Anthropic's allows one open
+                            // block. So this tool's block is no longer the open one
+                            // — something else (another tool, or text) took over and
+                            // closed it. Degrade THIS tool to the buffered path: the
+                            // complete arguments go out as one block when the call
+                            // closes. Same recovery shape the repair path already
+                            // uses when it supersedes a partially-streamed block.
+                            // (S4-b ccca029)
+                            log(
+                              `[Streaming] tool ${t.name} (index ${idx}) lost its open block mid-arguments — buffering the rest`
+                            );
+                            t.buffered = true;
+                            t.started = false;
+                            t.ref = null;
+                            // Divergence from upstream, load-bearing for the very
+                            // invariant this migration enforces: the original
+                            // blockIndex was SPENT (its block opened and closed
+                            // when another superseded it). Flushing at a spent
+                            // index would emit a second `content_block_start`
+                            // for an index the client already saw. Re-reserve.
+                            t.blockIndex = writer.reserve();
+                          }
                         }
                       }
                     }
@@ -1332,20 +1332,11 @@ export function createStreamingResponseHandler(
                             ? `[Web search for "${query}" could not be executed. The search service (SearXNG) is not configured. Set SEARXNG_URL env var to enable.]`
                             : `[Web search was requested but no query was provided.]`;
                         }
-                        send("content_block_start", {
-                          type: "content_block_start",
-                          index: t.blockIndex,
-                          content_block: { type: "text", text: "" },
-                        });
-                        send("content_block_delta", {
-                          type: "content_block_delta",
-                          index: t.blockIndex,
-                          delta: { type: "text_delta", text: resultText },
-                        });
-                        send("content_block_stop", {
-                          type: "content_block_stop",
-                          index: t.blockIndex,
-                        });
+                        // The suppressed tool never opened its block, so its
+                        // reserved index is unspent — the text takes it.
+                        const ref = writer.openText({ index: t.blockIndex });
+                        writer.append(ref, resultText);
+                        writer.close(ref);
                         t.closed = true;
                       }
                       continue;
@@ -1373,71 +1364,51 @@ export function createStreamingResponseHandler(
                           // If buffered, this is the first time we're sending this tool call
                           // Send the complete repaired tool call as a single block
                           if (t.buffered && !t.started) {
-                            send("content_block_start", {
-                              type: "content_block_start",
-                              index: t.blockIndex,
-                              content_block: { type: "tool_use", id: t.id, name: t.name },
-                            });
-                            send("content_block_delta", {
-                              type: "content_block_delta",
-                              index: t.blockIndex,
-                              delta: { type: "input_json_delta", partial_json: repairedJson },
-                            });
-                            send("content_block_stop", {
-                              type: "content_block_stop",
+                            t.ref = writer.openTool({
+                              id: t.id,
+                              name: t.name,
                               index: t.blockIndex,
                             });
+                            writer.append(t.ref, repairedJson);
+                            writer.close(t.ref);
                             t.started = true;
                             t.closed = true;
                             continue;
                           }
 
-                          // If already started (non-buffered), close old and send new
+                          // If already started (non-buffered), close old and send new.
+                          // This is the one path that mints a SECOND block for a tool
+                          // that already has one — the partially-streamed original is
+                          // closed and superseded, under a new id. (S4-b ccca029)
                           if (t.started) {
-                            send("content_block_stop", {
-                              type: "content_block_stop",
-                              index: t.blockIndex,
-                            });
-                            const repairedIdx = state.curIdx++;
+                            if (t.ref) writer.close(t.ref);
+                            const repairedIdx = writer.reserve();
                             const repairedId = `tool_repaired_${Date.now()}_${repairedIdx}`;
-                            send("content_block_start", {
-                              type: "content_block_start",
-                              index: repairedIdx,
-                              content_block: { type: "tool_use", id: repairedId, name: t.name },
-                            });
-                            send("content_block_delta", {
-                              type: "content_block_delta",
-                              index: repairedIdx,
-                              delta: { type: "input_json_delta", partial_json: repairedJson },
-                            });
-                            send("content_block_stop", {
-                              type: "content_block_stop",
+                            const repairedRef = writer.openTool({
+                              id: repairedId,
+                              name: t.name,
                               index: repairedIdx,
                             });
+                            writer.append(repairedRef, repairedJson);
+                            writer.close(repairedRef);
+                            t.ref = repairedRef;
                             t.closed = true;
                             continue;
                           }
 
                           // Non-buffered and never started — emit repaired tool at a new index
-                          const fallbackIdx = state.curIdx++;
+                          const fallbackIdx = writer.reserve();
                           const fallbackId = `tool_repaired_${Date.now()}_${fallbackIdx}`;
                           log(
                             `[Streaming] Emitting repaired tool ${t.name} (non-buffered, not started) at fallback index ${fallbackIdx}`
                           );
-                          send("content_block_start", {
-                            type: "content_block_start",
-                            index: fallbackIdx,
-                            content_block: { type: "tool_use", id: fallbackId, name: t.name },
-                          });
-                          send("content_block_delta", {
-                            type: "content_block_delta",
-                            index: fallbackIdx,
-                            delta: { type: "input_json_delta", partial_json: repairedJson },
-                          });
-                          send("content_block_stop", {
-                            type: "content_block_stop",
+                          const fallbackRef = writer.openTool({
+                            id: fallbackId,
+                            name: t.name,
                             index: fallbackIdx,
                           });
+                          writer.append(fallbackRef, repairedJson);
+                          writer.close(fallbackRef);
                           t.closed = true;
                           continue;
                         }
@@ -1447,30 +1418,21 @@ export function createStreamingResponseHandler(
                           log(
                             `[Streaming] Tool call ${t.name} validation failed: ${validation.missingParams.join(", ")}`
                           );
-                          // Close the original tool block FIRST (lower index) so that
-                          // the error text block (higher index) doesn't open/close out of order.
-                          if (t.started && !t.buffered && !t.closed) {
-                            send("content_block_stop", {
-                              type: "content_block_stop",
-                              index: t.blockIndex,
-                            });
-                          }
-                          const errorIdx = t.buffered ? t.blockIndex : state.curIdx++;
+                          // A buffered tool never emitted its block, so its reserved
+                          // index is free and the warning text takes it. A
+                          // non-buffered one already spent its index on the tool
+                          // block, so the warning needs a fresh one.
+                          const errorIdx = t.buffered ? t.blockIndex : undefined;
                           const errorMsg = `\n\n⚠️ Tool call "${t.name}" failed: missing required parameters: ${validation.missingParams.join(", ")}. Local models sometimes generate incomplete tool calls. Please try again or use a model with better tool support.`;
-                          send("content_block_start", {
-                            type: "content_block_start",
-                            index: errorIdx,
-                            content_block: { type: "text", text: "" },
-                          });
-                          send("content_block_delta", {
-                            type: "content_block_delta",
-                            index: errorIdx,
-                            delta: { type: "text_delta", text: errorMsg },
-                          });
-                          send("content_block_stop", {
-                            type: "content_block_stop",
-                            index: errorIdx,
-                          });
+                          const errorRef = writer.openText({ index: errorIdx });
+                          writer.append(errorRef, errorMsg);
+                          writer.close(errorRef);
+                          // Close the invalid tool if it was already started.
+                          // `openText` above will already have closed it when it was
+                          // the open block; this covers the case where it was not.
+                          if (t.started && !t.buffered && t.ref) {
+                            writer.close(t.ref);
+                          }
                           t.closed = true;
                           continue;
                         }
@@ -1478,20 +1440,13 @@ export function createStreamingResponseHandler(
                         // Valid tool call - send if buffered, close if not
                         if (t.buffered && !t.started) {
                           const argsJson = JSON.stringify(validation.parsedArgs);
-                          send("content_block_start", {
-                            type: "content_block_start",
-                            index: t.blockIndex,
-                            content_block: { type: "tool_use", id: t.id, name: t.name },
-                          });
-                          send("content_block_delta", {
-                            type: "content_block_delta",
-                            index: t.blockIndex,
-                            delta: { type: "input_json_delta", partial_json: argsJson },
-                          });
-                          send("content_block_stop", {
-                            type: "content_block_stop",
+                          t.ref = writer.openTool({
+                            id: t.id,
+                            name: t.name,
                             index: t.blockIndex,
                           });
+                          writer.append(t.ref, argsJson);
+                          writer.close(t.ref);
                           t.started = true;
                           t.closed = true;
                           continue;
@@ -1500,10 +1455,7 @@ export function createStreamingResponseHandler(
 
                       // Non-buffered valid tool call or no validation - just close
                       if (t.started && !t.closed) {
-                        send("content_block_stop", {
-                          type: "content_block_stop",
-                          index: t.blockIndex,
-                        });
+                        if (t.ref) writer.close(t.ref);
                         t.closed = true;
                       }
                     }
