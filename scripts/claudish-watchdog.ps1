@@ -563,6 +563,30 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 Write-Log "=== Watchdog check ==="
 
+# Name the artifact that is actually executing, once per cycle.
+#
+# The scheduled tasks run these scripts DIRECTLY from a git working tree, so an
+# edit is in production at the next tick with no deployment step and no review
+# gate (measured across the fleet 2026-09-20: po-2025 runs this file from
+# D:\Dev\claudish\scripts\ every 15 min; po-2023 runs compress-captures.ps1 from
+# the same kind of tree nightly). That is how the remediation which took a host's
+# engine down reached production — by being edited, not by being deployed.
+#
+# Answering "what is armed here?" previously required an elevated session and
+# two instruments that are both blind (a non-elevated Get-ScheduledTask cannot
+# see a SYSTEM task; watchdog.log is hardcoded to an operator path that does not
+# exist on every machine). One line per cycle makes it a grep instead.
+#
+# Wrapped because this is observability, not function: a watchdog that dies on
+# its own provenance line is strictly worse than one that does not print it.
+try {
+    $prov = Get-ScriptProvenance -ScriptRoot $PSScriptRoot
+    Write-Log $prov.Summary
+}
+catch {
+    Write-Log "PROVENANCE: unavailable ($($_.Exception.Message))"
+}
+
 # Step 0: Engine recovery. After a reboot the Docker Desktop backend can die
 # outright ("backend process exited") — docker CLI then fails with rc 28/125 and
 # `docker start` is useless. Observed 2026-08-29: the first reboot of the hub

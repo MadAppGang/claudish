@@ -538,7 +538,183 @@ function Get-WedgeDecision {
     }
 }
 
+function Invoke-GitBounded {
+    <#
+    .SYNOPSIS
+        Run one git command, bounded, never throwing.
+    .DESCRIPTION
+        Same shape as the watchdog's Invoke-DockerBounded, and for the same
+        reason: an unbounded child process is how a 15-minute watchdog turns
+        into a permanently stuck one. git in particular can block on a locked
+        index while another process writes the tree.
+
+        Touching .Handle before WaitForExit is load-bearing — without it,
+        -PassThru hands back an object whose .ExitCode stays $null, so every
+        successful call reads as a failure. That trap already cost a cycle on
+        2026-09-02 in the docker equivalent.
+    #>
+    param(
+        [string]$WorkDir,
+        [string[]]$GitArgs,
+        [int]$TimeoutSec = 10
+    )
+
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $all = @('-C', $WorkDir) + $GitArgs
+        $p = Start-Process -FilePath 'git' -ArgumentList $all -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $null = $p.Handle
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill() } catch {}
+            return @{ Ok = $false; Out = ''; Reason = 'git timed out' }
+        }
+        $out = ''
+        try { $out = (Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } catch {}
+        if ($null -eq $out) { $out = '' }
+        return @{ Ok = ($p.ExitCode -eq 0); Out = $out.Trim(); Reason = "exit $($p.ExitCode)" }
+    }
+    catch {
+        # git.exe never launched: absent from PATH is the expected case under a
+        # SYSTEM principal, whose PATH is not the operator's.
+        return @{ Ok = $false; Out = ''; Reason = 'git not launchable' }
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-ScriptProvenance {
+    <#
+    .SYNOPSIS
+        Identify the artifact that is ACTUALLY executing: ref, HEAD sha and dirty
+        state of the tree this script runs from.
+    .DESCRIPTION
+        Measured across the fleet on 2026-09-20, after a watchdog remediation
+        took a host's Docker engine down: the scheduled tasks execute their
+        scripts DIRECTLY from a git working tree, so an edit is in production at
+        the next tick with no deployment step and no review gate. po-2025 runs
+        `claudish-watchdog.ps1` from `D:\Dev\claudish\scripts\` every 15 min;
+        po-2023 runs `compress-captures.ps1` from the same kind of tree nightly
+        at 02:47. That is how the code that killed the engine reached production
+        — not by a decision to deploy, but by being edited.
+
+        The property is symmetric, which is exactly why nobody noticed it: the
+        withdrawal took effect just as instantly as the defect. A mechanism that
+        makes both errors and fixes immediate never announces itself with a
+        lasting outage. It announces itself with one bad day.
+
+        So the first step is not a guard, it is identification: you cannot govern
+        what you cannot name. One line per cycle turns "what is armed here?" from
+        a question needing elevation and two blind instruments into a grep.
+
+        TRACKED vs UNTRACKED is the distinction that carries the meaning, and it
+        is the one both peers reported unprompted. Untracked-only dirt means the
+        EXECUTED files are exactly the committed ones, so the sha identifies the
+        artifact. A modified tracked file means the running artifact exists
+        nowhere in git and no sha can identify it.
+
+        InOriginMain is a HINT, never a fact: origin/main is only as fresh as the
+        last fetch, and this function deliberately does NO network git — a
+        watchdog must not reach the network to log a line. 'no' can therefore
+        mean "not fetched recently" as easily as "unreviewed". The sha is the
+        fact; this field only tells you where to look.
+
+        Never throws. Every unknown degrades to Versioned=$false with a stated
+        reason, because a watchdog that crashes on its own observability line is
+        worse than one that logs nothing.
+    #>
+    param(
+        [string]$ScriptRoot,
+        # Injectable so the whole decision table is exercisable without git, and
+        # so tests can drive the failure shapes (absent, timeout, detached HEAD).
+        [scriptblock]$GitInvoker = $null
+    )
+
+    $unknown = @{
+        Versioned = $false; Ref = ''; Sha = ''
+        Dirty = $false; TrackedDirty = 0; UntrackedDirty = 0
+        InOriginMain = 'unknown'; Root = $ScriptRoot
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ScriptRoot)) {
+        $unknown.Summary = 'PROVENANCE: unversioned (no script root)'
+        return [PSCustomObject]$unknown
+    }
+
+    if (-not $GitInvoker) {
+        $GitInvoker = { param($a) Invoke-GitBounded -WorkDir $ScriptRoot -GitArgs $a }
+    }
+
+    $invoke = {
+        param($a)
+        try { return (& $GitInvoker $a) }
+        catch { return @{ Ok = $false; Out = ''; Reason = 'invoker threw' } }
+    }
+
+    $sha = & $invoke @('rev-parse', 'HEAD')
+    if (-not $sha.Ok -or [string]::IsNullOrWhiteSpace($sha.Out)) {
+        $why = 'not a git tree'
+        if ($sha.Reason) { $why = $sha.Reason }
+        $unknown.Summary = "PROVENANCE: unversioned ($why) root=$ScriptRoot"
+        return [PSCustomObject]$unknown
+    }
+
+    $full = $sha.Out.Trim()
+    $short = $full
+    if ($full.Length -ge 7) { $short = $full.Substring(0, 7) }
+
+    $ref = '(detached)'
+    $refRes = & $invoke @('rev-parse', '--abbrev-ref', 'HEAD')
+    if ($refRes.Ok -and -not [string]::IsNullOrWhiteSpace($refRes.Out)) {
+        $ref = $refRes.Out.Trim()
+    }
+
+    $tracked = 0
+    $untracked = 0
+    $statusRes = & $invoke @('status', '--porcelain')
+    if ($statusRes.Ok -and -not [string]::IsNullOrWhiteSpace($statusRes.Out)) {
+        foreach ($line in ($statusRes.Out -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line.StartsWith('??')) { $untracked++ } else { $tracked++ }
+        }
+    }
+
+    # Best effort only, and never a fetch. See the InOriginMain note above.
+    $inMain = 'unknown'
+    $ancestor = & $invoke @('merge-base', '--is-ancestor', $full, 'origin/main')
+    if ($ancestor.Ok) { $inMain = 'yes' }
+    elseif ($ancestor.Reason -eq 'exit 1') { $inMain = 'no' }
+
+    $dirtyTxt = 'clean'
+    if ($tracked -gt 0 -and $untracked -gt 0) {
+        $dirtyTxt = "TRACKED($tracked)+untracked($untracked)"
+    }
+    elseif ($tracked -gt 0) {
+        $dirtyTxt = "TRACKED($tracked)"
+    }
+    elseif ($untracked -gt 0) {
+        $dirtyTxt = "untracked-only($untracked)"
+    }
+
+    return [PSCustomObject]@{
+        Versioned      = $true
+        Ref            = $ref
+        Sha            = $short
+        FullSha        = $full
+        Dirty          = (($tracked + $untracked) -gt 0)
+        TrackedDirty   = $tracked
+        UntrackedDirty = $untracked
+        InOriginMain   = $inMain
+        Root           = $ScriptRoot
+        Summary        = "PROVENANCE: ref=$ref sha=$short tree=$dirtyTxt in-origin/main=$inMain root=$ScriptRoot"
+    }
+}
+
 Export-ModuleMember -Function @(
+    'Get-ScriptProvenance'
+    'Invoke-GitBounded'
     'Get-ClaudishServingBase'
     'Resolve-ClaudishProbeUrl'
     'Get-LoopbackProbeUrl'

@@ -592,3 +592,153 @@ Describe 'Static guardrails over scripts/' {
         }
     }
 }
+
+Describe 'Get-ScriptProvenance — name the artifact that is actually executing' {
+    # Measured 2026-09-20 across the fleet: the scheduled tasks run these scripts
+    # DIRECTLY from a git working tree, so an edit is in production at the next
+    # tick, with no deployment step and no review gate. This is the
+    # identification step only — no guard, no actuator. Every test drives the
+    # injectable git seam, so none of them touches a real repository.
+
+    BeforeAll {
+        # A fake git: answers from a table keyed on the joined arguments, so each
+        # failure shape is reachable without breaking a real tree.
+        function New-FakeGit {
+            param([hashtable]$Answers)
+            return {
+                param($a)
+                $key = ($a -join ' ')
+                if ($Answers.ContainsKey($key)) { return $Answers[$key] }
+                return @{ Ok = $false; Out = ''; Reason = 'exit 128' }
+            }.GetNewClosure()
+        }
+        $script:FullSha = 'de74d6c1111111111111111111111111111111111'
+        $script:AncestorKey = "merge-base --is-ancestor $script:FullSha origin/main"
+        $script:CleanTree = @{
+            'rev-parse HEAD'              = @{ Ok = $true; Out = $script:FullSha; Reason = 'exit 0' }
+            'rev-parse --abbrev-ref HEAD' = @{ Ok = $true; Out = 'main'; Reason = 'exit 0' }
+            'status --porcelain'          = @{ Ok = $true; Out = ''; Reason = 'exit 0' }
+        }
+    }
+
+    It 'a clean tree on main reports ref, short sha and clean' {
+        $answers = $script:CleanTree.Clone()
+        $answers[$script:AncestorKey] = @{ Ok = $true; Out = ''; Reason = 'exit 0' }
+        $p = Get-ScriptProvenance -ScriptRoot 'D:\claudish\scripts' -GitInvoker (New-FakeGit $answers)
+        $p.Versioned | Should -BeTrue
+        $p.Ref | Should -Be 'main'
+        $p.Sha | Should -Be 'de74d6c'
+        $p.Dirty | Should -BeFalse
+        $p.InOriginMain | Should -Be 'yes'
+        $p.Summary | Should -Match 'PROVENANCE: ref=main sha=de74d6c tree=clean in-origin/main=yes'
+    }
+
+    It 'UNTRACKED-only dirt is reported as such — the executed files are still the committed ones' {
+        # po-2025's measured state on 2026-09-20: 3 untracked entries, 0 tracked
+        # modified. It matters because the sha still identifies the artifact.
+        $answers = $script:CleanTree.Clone()
+        $answers['rev-parse --abbrev-ref HEAD'] = @{ Ok = $true; Out = 'fix/watchdog-forwarder-wedge'; Reason = 'exit 0' }
+        $answers['status --porcelain'] = @{ Ok = $true; Reason = 'exit 0'; Out = (@(
+            '?? .env.rogue-relay-20260919'
+            '?? .mcp.json'
+            '?? .playwright-mcp/'
+        ) -join "`n") }
+        $p = Get-ScriptProvenance -ScriptRoot 'D:\Dev\claudish\scripts' -GitInvoker (New-FakeGit $answers)
+        $p.TrackedDirty | Should -Be 0
+        $p.UntrackedDirty | Should -Be 3
+        $p.Dirty | Should -BeTrue
+        $p.Summary | Should -Match 'tree=untracked-only\(3\)'
+        # -CMatch, not -Match: PowerShell's -Match is CASE-INSENSITIVE, so
+        # 'TRACKED' matches inside "unTRACKED-only" and this assertion failed
+        # against correct code on the first run. The loud marker is the uppercase
+        # one, so the assertion has to be case-sensitive to mean what it says.
+        # Same family as `-split` being case-insensitive (`-csplit` exists for
+        # the same reason).
+        $p.Summary | Should -Not -CMatch 'TRACKED\('
+    }
+
+    It 'a modified TRACKED file is shouted, because then the running artifact exists in no commit' {
+        $answers = $script:CleanTree.Clone()
+        $answers['status --porcelain'] = @{ Ok = $true; Reason = 'exit 0'; Out = (@(
+            ' M scripts/claudish-watchdog.ps1'
+            'M  scripts/lib/claudish-engine.psm1'
+            '?? notes.txt'
+        ) -join "`n") }
+        $p = Get-ScriptProvenance -ScriptRoot 'D:\Dev\claudish\scripts' -GitInvoker (New-FakeGit $answers)
+        $p.TrackedDirty | Should -Be 2
+        $p.UntrackedDirty | Should -Be 1
+        $p.Summary | Should -Match 'tree=TRACKED\(2\)\+untracked\(1\)'
+    }
+
+    It 'POSITIVE CONTROL — the tracked/untracked split actually discriminates' {
+        # Same function, two inputs differing ONLY in the porcelain prefix. If the
+        # parser matched nothing (or everything), both would land in one bucket
+        # and the distinction this line exists to carry would be silently fake.
+        $a = $script:CleanTree.Clone()
+        $a['status --porcelain'] = @{ Ok = $true; Out = '?? one'; Reason = 'exit 0' }
+        $b = $script:CleanTree.Clone()
+        $b['status --porcelain'] = @{ Ok = $true; Out = ' M one'; Reason = 'exit 0' }
+        $pa = Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker (New-FakeGit $a)
+        $pb = Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker (New-FakeGit $b)
+        $pa.UntrackedDirty | Should -Be 1
+        $pa.TrackedDirty   | Should -Be 0
+        $pb.UntrackedDirty | Should -Be 0
+        $pb.TrackedDirty   | Should -Be 1
+    }
+
+    It 'a detached HEAD is named, not reported as a branch' {
+        $answers = $script:CleanTree.Clone()
+        $answers['rev-parse --abbrev-ref HEAD'] = @{ Ok = $false; Out = ''; Reason = 'exit 128' }
+        $p = Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker (New-FakeGit $answers)
+        $p.Versioned | Should -BeTrue
+        $p.Ref | Should -Be '(detached)'
+        $p.Sha | Should -Be 'de74d6c'
+    }
+
+    It 'in-origin/main is a HINT with three states, never a silent boolean' {
+        # `no` can mean "unreviewed" OR "origin/main not fetched recently" — this
+        # function does no network git on purpose. Collapsing the third state into
+        # `no` would turn a missing fetch into an accusation.
+        $yes = $script:CleanTree.Clone()
+        $yes[$script:AncestorKey] = @{ Ok = $true; Out = ''; Reason = 'exit 0' }
+        $no = $script:CleanTree.Clone()
+        $no[$script:AncestorKey] = @{ Ok = $false; Out = ''; Reason = 'exit 1' }
+        (Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker (New-FakeGit $yes)).InOriginMain | Should -Be 'yes'
+        (Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker (New-FakeGit $no)).InOriginMain  | Should -Be 'no'
+        # No entry at all -> the fake returns exit 128 -> neither yes nor no.
+        (Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker (New-FakeGit $script:CleanTree)).InOriginMain | Should -Be 'unknown'
+    }
+
+    It 'REGRESSION: git absent from PATH degrades to unversioned WITH a reason, and does not throw' {
+        # The expected case under a SYSTEM principal, whose PATH is not the
+        # operator's. A watchdog must survive it.
+        $git = { param($a) return @{ Ok = $false; Out = ''; Reason = 'git not launchable' } }
+        $p = Get-ScriptProvenance -ScriptRoot 'D:\claudish\scripts' -GitInvoker $git
+        $p.Versioned | Should -BeFalse
+        $p.Summary | Should -Match 'unversioned \(git not launchable\)'
+        $p.Summary | Should -Match ([regex]::Escape('root=D:\claudish\scripts'))
+    }
+
+    It 'REGRESSION (mirrored trap): an invoker that THROWS yields unversioned, not an exception' {
+        # Same shape as the quser regression: a probe fails by throwing as often
+        # as by returning a bad value, and observability must not propagate it.
+        $git = { param($a) throw 'access denied' }
+        { Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker $git } | Should -Not -Throw
+        (Get-ScriptProvenance -ScriptRoot 'X:\t' -GitInvoker $git).Versioned | Should -BeFalse
+    }
+
+    It 'an empty script root is unversioned, and says so' {
+        $p = Get-ScriptProvenance -ScriptRoot '' -GitInvoker { param($a) throw 'never called' }
+        $p.Versioned | Should -BeFalse
+        $p.Summary | Should -Match 'no script root'
+    }
+
+    It 'the watchdog logs provenance once per cycle, inside a guard' {
+        # The wiring, asserted statically: an unguarded observability call is the
+        # one that turns a healthy cycle into a crash.
+        $wd = Get-Content -LiteralPath (Join-Path $script:ScriptsRoot 'claudish-watchdog.ps1') -Raw
+        $wd | Should -Match 'Get-ScriptProvenance'
+        $wd | Should -Match 'PROVENANCE: unavailable'
+        ([regex]::Matches($wd, 'Get-ScriptProvenance')).Count | Should -Be 1
+    }
+}
