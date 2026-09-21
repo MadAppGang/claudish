@@ -150,7 +150,16 @@ describe("consumeStreamNotice", () => {
     const second = consumeStreamNotice("opus", sid);
     expect(first).toBeTruthy();
     expect(first).toContain("Qwen 3.8 Max");
-    expect(first).toContain("conservative"); // degraded → risk-reduction wording
+    // #126: a degraded notice states CAPABILITY, never risk posture. The
+    // original assertion here required the word "conservative" — the very
+    // wording #126 retired after a fleet agent reported the notice as a prompt
+    // injection (it arrived unexplained in content block 0 telling the agent to
+    // adjust its "risk appetite" and undo decisions already made). Asserting
+    // the retired vocabulary made this test pull production back toward it.
+    expect(first).toContain("Capability note:");
+    expect(first).toContain("weaker than the nominal Opus model");
+    expect(first).not.toContain("conservative");
+    expect(first).not.toContain("risk appetite");
     expect(second).toBeNull();
   });
 
@@ -189,8 +198,13 @@ describe("consumeStreamNotice", () => {
     });
     const n = consumeStreamNotice("haiku", "sess-H");
     expect(n).toBeTruthy();
-    expect(n).toContain("stronger than the nominal model");
+    // Role-qualified since #126 ("the nominal Haiku model"), which is what broke
+    // the old unqualified substring. This positive control is load-bearing: the
+    // `not.toContain` below would pass happily on an empty or reshaped notice.
+    expect(n).toContain("Capability note:");
+    expect(n).toContain("stronger than the nominal Haiku model");
     expect(n).not.toContain("conservative");
+    expect(n).not.toContain("risk appetite");
   });
 
   test("TTL disarm clears the notified set so a re-arm re-notifies", () => {
