@@ -346,7 +346,12 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
         function Invoke-ReadyPreflight {
             param(
                 [bool]$DesktopRunning = $true,
-                [int]$TaskResult = 0,
+                # [long], NOT [int]: a real Windows failure code is an HRESULT
+                # with the high bit set (2147946720), and an [int] parameter
+                # would make this helper throw before the code under test ever
+                # ran — the harness sharing the defect it exists to catch.
+                [long]$TaskResult = 0,
+                [string]$TaskState = 'Running',
                 [switch]$StaleRunTime,
                 [switch]$NoInfo,
                 [switch]$InvokerThrows,
@@ -375,6 +380,7 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
                     if ($NoInfo) { return $null }
                     [PSCustomObject]@{ LastTaskResult = $TaskResult; LastRunTime = $runTime }
                 } `
+                -TaskStateReader { param($n) $TaskState } `
                 -ExecuteProbeTimeoutMs $TimeoutMs
         }
     }
@@ -418,6 +424,43 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:FAILED(result=1)'
         $r.Reason | Should -Match 'execute:'
+    }
+
+    It 'REGRESSION (live 2026-09-21): a high-bit failure code is READ, not thrown away' {
+        # The first live exercise of #185 (po-2025, 11:02Z) read LastTaskResult
+        # 2147946720 and the `[int]` cast THREW, so the check degraded to
+        # `execute:ERROR` — "the instrument broke", which is not what the value
+        # says. This pins the read against a different high-bit code so the
+        # assertion cannot be satisfied by the already-running special case.
+        # 0x80070002 = file not found: a real action failure, read as one.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 2147942402 -TaskState 'Ready'
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:FAILED(result=2147942402)'
+        $r.Checks | Should -Not -Contain 'execute:ERROR'
+        $r.Reason | Should -Match '0x80070002'
+    }
+
+    It 'a refusal beside a LIVE instance is no-fresh-exercise, never a FAILED' {
+        # 0x800710E0 with the task's instance still Running: the scheduler
+        # refused a second start because the GUI the previous launch produced is
+        # alive. Nothing was exercised and nothing failed — asserting Ready here
+        # would claim a proof this run never performed, and FAILED would raise a
+        # daily alarm on a healthy host.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 2147946720 -TaskState 'Running'
+        $r.Ready | Should -BeTrue
+        $r.Checks | Should -Contain 'execute:SKIPPED(already-running)'
+        $r.Reason | Should -Match 'no fresh exercise'
+        $r.Reason | Should -Not -Match 'executed'
+    }
+
+    It 'the SAME code with no live instance is a FAILED — the mapping cannot swallow it' {
+        # The state guard is the whole reason the special case above is safe: a
+        # refusal we cannot attribute to an already-running instance is a real
+        # refusal and must stay a failure.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 2147946720 -TaskState 'Ready'
+        $r.Ready | Should -BeFalse
+        $r.Checks | Should -Contain 'execute:FAILED(result=2147946720)'
+        $r.Checks | Should -Not -Contain 'execute:SKIPPED(already-running)'
     }
 
     It 'AC3: a task that never ran (stale LastRunTime) is refused, not assumed' {

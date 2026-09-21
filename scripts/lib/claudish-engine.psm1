@@ -413,6 +413,12 @@ function Test-EngineRelaunchReady {
         [scriptblock]$DesktopProbe = $null,
         [scriptblock]$TaskInvoker = $null,
         [scriptblock]$TaskInfoReader = $null,
+        # Refusal-vs-failure discriminator. The two arrive as the same
+        # LastTaskResult shape and mean opposite things, so the task's STATE is
+        # read as well: 0x800710E0 beside a live instance is "there was nothing
+        # to exercise", and the same code with no instance is a genuine refusal
+        # that must not be swallowed.
+        [scriptblock]$TaskStateReader = $null,
         [int]$ExecuteProbeTimeoutMs = 5000
     )
 
@@ -422,6 +428,12 @@ function Test-EngineRelaunchReady {
     if (-not $DesktopProbe)   { $DesktopProbe   = { [bool](Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue) } }
     if (-not $TaskInvoker)    { $TaskInvoker    = { param($n) Start-ScheduledTask -TaskName $n } }
     if (-not $TaskInfoReader) { $TaskInfoReader = { param($n) Get-ScheduledTaskInfo -TaskName $n -ErrorAction SilentlyContinue } }
+    if (-not $TaskStateReader) {
+        $TaskStateReader = { param($n)
+            $s = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
+            if ($s) { [string]$s.State } else { '' }
+        }
+    }
 
     $checks = New-Object System.Collections.Generic.List[string]
 
@@ -484,13 +496,26 @@ function Test-EngineRelaunchReady {
     }
     $checks.Add('verify:OK')
 
-    # 5. EXECUTE (#176). When the Desktop GUI is already running, invoking the
-    #    relaunch task is a no-op for the engine (a second instance exits
-    #    immediately), so the probe is free: run the task and read back its own
-    #    LastTaskResult/LastRunTime. When the GUI is NOT running the probe is
-    #    SKIPPED — invoking the task would START the engine, and a readiness
-    #    check must never perform the action it is only asking about (AC2).
-    #    A probe that throws is read as not-running for the same reason.
+    # 5. EXECUTE (#176). When the Desktop GUI is already running, the probe
+    #    invokes the relaunch task and reads back its LastTaskResult/LastRunTime.
+    #    When the GUI is NOT running the probe is SKIPPED — invoking the task
+    #    would START the engine, and a readiness check must never perform the
+    #    action it is only asking about (AC2). A probe that throws is read as
+    #    not-running for the same reason.
+    #
+    #    ⚠ The original rationale here said a second instance of the GUI "exits
+    #    immediately", so invoking it was a free no-op. MEASURED FALSE on the
+    #    first live exercise (po-2025, 2026-09-21 11:02Z): the task's action IS
+    #    the GUI process, so its instance stays RUNNING for as long as the GUI
+    #    lives, and `MultipleInstances=IgnoreNew` makes the scheduler REFUSE the
+    #    second start with 0x800710E0 *before the action runs at all*. No second
+    #    process appears — the control comparison is the same task on the same
+    #    host succeeding at the 2026-09-20 19:47 recovery (GUI down, processes
+    #    born 19:47:11-18) and being refused here (GUI up). So the invocation is
+    #    not a free exercise, and a refusal is NOT evidence that the action
+    #    failed: it is evidence the previous launch produced a live GUI. It is
+    #    classified below as "no fresh exercise performed" — the honest middle,
+    #    neither a pass claimed nor a failure invented.
     try { $desktopRunning = [bool](& $DesktopProbe) } catch { $desktopRunning = $false }
     if (-not $desktopRunning) {
         $checks.Add('execute:SKIPPED(desktop-not-running)')
@@ -512,12 +537,20 @@ function Test-EngineRelaunchReady {
         # is proof the action launched and is alive, so both it and 0 count as
         # executed. Anything else — 1 from a broken action, a file-not-found
         # code — is a task that ran and its action failed.
+        #
+        # ⚠ Read as [long], never [int]. Every real Windows failure code is an
+        # HRESULT with the high bit set (0x800710E0 = 2147946720), and a [int]
+        # cast of one THROWS rather than wrapping — so the poll loop died and
+        # the check degraded to `execute:ERROR`, which reads as "the instrument
+        # broke", never as the failure the value actually names. The unit suite
+        # missed it because its only failing fixture was result=1: the code and
+        # its fixtures were both Int32-shaped.
         $deadline = [DateTime]::Now.AddMilliseconds($ExecuteProbeTimeoutMs)
         $info = $null
         do {
             Start-Sleep -Milliseconds 250
             $info = & $TaskInfoReader $TaskName
-            if ($null -ne $info -and $info.LastRunTime -ge $invokedAt.AddSeconds(-2) -and [int]$info.LastTaskResult -ne 267009) { break }
+            if ($null -ne $info -and $info.LastRunTime -ge $invokedAt.AddSeconds(-2) -and [long]$info.LastTaskResult -ne 267009) { break }
         } while ([DateTime]::Now -lt $deadline)
 
         if ($null -eq $info) {
@@ -528,10 +561,31 @@ function Test-EngineRelaunchReady {
             $checks.Add('execute:STALE')
             return [PSCustomObject]@{ Ready = $false; Reason = "execute: task '$TaskName' was invoked but LastRunTime never advanced (still $($info.LastRunTime))"; Checks = $checks.ToArray() }
         }
-        $result = [int]$info.LastTaskResult
+        $result = [long]$info.LastTaskResult
+
+        # 0x800710E0 = the scheduler refused to start the task. Beside a LIVE
+        # instance that is the already-running signature measured on po-2025
+        # (2026-09-21 11:02Z): nothing was exercised, and nothing failed. Report
+        # it as such — a FAILED + ESCALATE here would raise a daily alarm on a
+        # perfectly healthy host, and a bare pass would claim a proof this run
+        # never performed. The state guard is what keeps the mapping from
+        # swallowing a genuine refusal that happens to carry the same code.
+        if ($result -eq 2147946720) {
+            $taskState = ''
+            try { $taskState = [string](& $TaskStateReader $TaskName) } catch { $taskState = '' }
+            if ($taskState -eq 'Running') {
+                $checks.Add('execute:SKIPPED(already-running)')
+                return [PSCustomObject]@{
+                    Ready  = $true
+                    Reason = "relaunch path proven (registration-only — task '$TaskName' is already running, so the second start was refused with 0x800710E0: no fresh exercise performed)"
+                    Checks = $checks.ToArray()
+                }
+            }
+        }
+
         if ($result -ne 0 -and $result -ne 267009) {
             $checks.Add("execute:FAILED(result=$result)")
-            return [PSCustomObject]@{ Ready = $false; Reason = "execute: task '$TaskName' ran and its action failed (LastTaskResult=$result)"; Checks = $checks.ToArray() }
+            return [PSCustomObject]@{ Ready = $false; Reason = ("execute: task '{0}' ran and its action failed (LastTaskResult={1} / 0x{1:X8})" -f $TaskName, $result); Checks = $checks.ToArray() }
         }
         $checks.Add("execute:OK(result=$result)")
     } catch {
