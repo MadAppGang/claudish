@@ -17,6 +17,7 @@ import {
   createUrlProvider,
 } from "./providers/provider-registry.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
@@ -72,6 +73,21 @@ import { executeWebSearch, executeWebFetch, isLowQualityWebContent, extractUrlFr
 import { convertOpenAIRequestToAnthropic } from "./handlers/shared/format/openai-request-to-anthropic.js";
 import { anthropicMessageToChatCompletion, createOpenAIChatStreamFromAnthropic } from "./handlers/shared/anthropic-to-openai.js";
 import { prependNoticeToAnthropicStream } from "./handlers/shared/failover-stream-notice.js";
+
+/**
+ * Routing failures are TERMINAL — no provider can serve the request (missing
+ * credential, empty chain, unknown model). They must surface to the client as a
+ * non-retryable HTTP 400, not a retryable 500: a 500 makes Claude Code loop on
+ * "API error · Retrying · attempt N/10" and hide the real cause. Tagging the
+ * error lets the request handlers map it to 400 with the actionable message.
+ * (Absorbed from upstream bbb448f6.)
+ */
+class RoutingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RoutingError";
+  }
+}
 
 /**
  * Intercept WebSearch/WebFetch tool calls and execute them via SearXNG instead
@@ -395,7 +411,9 @@ export async function createProxyServer(
       );
     }
     for (const err of customEpResult.errors) {
-      console.error(
+      // logStderr, NOT console.error: stderr under a relayed session is Claude
+      // Code's TTY, and this must also reach the durable log file. (218c3586.)
+      logStderr(
         `[claudish] customEndpoints['${err.name}'] failed validation: ${err.message}`
       );
     }
@@ -542,10 +560,15 @@ export async function createProxyServer(
     const resolution = resolveModelProvider(targetModel);
 
     if (resolution.wasAutoRouted && resolution.autoRouteMessage) {
+      // logStderr, NOT console.error: this fires PER REQUEST, i.e. while Claude
+      // Code owns the inherited TTY — a raw console write lands mid-frame.
+      // logStderr already writes the debug log file, so the quiet branch only
+      // needs the file line. (218c3586.)
       if (!options.quiet) {
-        console.error(`[Auto-route] ${resolution.autoRouteMessage}`);
+        logStderr(`[Auto-route] ${resolution.autoRouteMessage}`);
+      } else {
+        log(`[Auto-route] ${resolution.autoRouteMessage}`);
       }
-      log(`[Auto-route] ${resolution.autoRouteMessage}`);
     }
 
     // If resolver says use OpenRouter (including fallback cases), create the handler
@@ -726,6 +749,18 @@ export async function createProxyServer(
     // resolveModelNameSync then reads from the in-memory cache synchronously.
     // (LiteLLM catalog resolution was removed in commit 5 — users type the
     // exact LiteLLM model_group name now; see plan §D.)
+    //
+    // ⚠ Explicitness transition, ACCEPTED (a9112dce ruling, S4-d lot A review
+    // 2026-09-21): the one form this rewrites from non-explicit to explicit is
+    // `openrouter/<vendor>/<model>` — parseModelSpec auto-detects it through
+    // NATIVE_MODEL_PATTERNS, which is DERIVED from BUILTIN_PROVIDERS in
+    // provider-definitions.ts (l. 728: "Replaces NATIVE_MODEL_PATTERNS in
+    // model-parser.ts"), so a name-grep in THIS file is blind to it. After the
+    // rewrite, 2c sees isExplicitProvider:true and skips the provider-fallback
+    // chain. Deliberate (option b of the ruling; option a was preserving chain
+    // eligibility): the name names the aggregator, so it routes directly.
+    // Bare `vendor/model` forms (e.g. `qwen/...`) parse to their OWN provider
+    // and remain chain-eligible. Pinned in proxy-server-routing-error.test.ts.
     {
       const parsedTarget = parseModelSpec(target);
       if (parsedTarget.provider === "openrouter") {
@@ -802,10 +837,12 @@ export async function createProxyServer(
           // surfaces a clean error instead of silently falling through to a
           // legacy OpenRouter fallback. (Pre-commit-5 there was a hidden
           // OpenRouter step 7 that masked the no-route case.)
+          // RoutingError, not bare Error: the request handlers map it to a
+          // terminal 400 instead of a retryable 500 (bbb448f6).
           const message = plan.hint
             ? `[Route] ${plan.reason}\n${plan.hint}`
             : `[Route] ${plan.reason}`;
-          throw new Error(message);
+          throw new RoutingError(message);
         }
       }
     }
@@ -869,7 +906,33 @@ export async function createProxyServer(
       return nativeHandler;
     }
 
-    // 7. OpenRouter Handler (default for any model with "/" or explicit provider not matched above)
+    // 6b. Explicit non-OpenRouter spec that produced no handler above means its
+    // credential is MISSING — its key didn't resolve, so getRemoteProviderHandler
+    // returned null. Per the routing contract, an explicit provider@model must
+    // NOT silently fall through to OpenRouter (defaultProvider/last-resort
+    // fallback applies to BARE names only — CLAUDE.md §Model Routing). Absorbed
+    // from upstream bbb448f6: a retryable 500 here makes Claude Code loop on
+    // "API error · Retrying" while the real cause (no key for the named
+    // provider) stays hidden; a terminal 400 with the env-var hint surfaces it.
+    if (hasExplicitProvider) {
+      const parsedExplicit = parseModelSpec(target);
+      // openrouter@... (and its or@ shortcut — parseModelSpec normalizes both)
+      // legitimately uses the OpenRouter handler below.
+      if (parsedExplicit.provider !== "openrouter") {
+        const keyInfo = API_KEY_MAP[parsedExplicit.provider];
+        const keyNames = keyInfo
+          ? [keyInfo.envVar, ...(keyInfo.aliases ?? [])].join(" or ")
+          : undefined;
+        const hint = keyNames
+          ? `No API key for provider "${parsedExplicit.provider}". Set ${keyNames} (env, config, or 1Password import).`
+          : `No API key for provider "${parsedExplicit.provider}".`;
+        throw new RoutingError(
+          `Explicit model "${target}" could not be routed — its provider has no credential. ${hint}`
+        );
+      }
+    }
+
+    // 7. OpenRouter Handler (default for any model with "/" or explicit OpenRouter spec)
     return getOpenRouterHandler(target, invocationMode);
   };
 
@@ -1069,6 +1132,29 @@ export async function createProxyServer(
   const app = new Hono();
   app.use("*", cors());
 
+  // Terminal-safety backstop (absorbed from upstream 218c3586). Hono's DEFAULT
+  // error handler is literally `console.error(err)` + a text/plain
+  // "Internal Server Error" — so an unhandled route rejection prints a
+  // multi-line error dump onto stderr, which under a relayed session IS Claude
+  // Code's TTY, and hands the client a non-JSON body it cannot render. With
+  // onError installed, no route rejection can ever reach a console again: it
+  // goes to the log file, and the client gets a single-line Anthropic JSON
+  // envelope (c.json serializes; control bytes stay escaped inside the string).
+  app.onError((err, c) => {
+    logStderr(`[Proxy] Unhandled error on ${c.req.method} ${c.req.path}: ${err?.message ?? err}`);
+    log(`[Proxy] Unhandled error stack: ${err?.stack ?? "(no stack)"}`);
+    // A routing failure stays TERMINAL even when it arrives here. Every
+    // route that can raise one maps it already, so this is not a live gap —
+    // it is the place a FUTURE route lands, and a 500 there would hand back
+    // the retryable status this whole change exists to remove. The `return
+    // await` above is the proof the path is real: it fixed a rejection that
+    // escaped its try/catch and would have surfaced exactly here.
+    if (err instanceof RoutingError) {
+      return c.json(wrapAnthropicError(400, err.message, "invalid_request_error"), 400);
+    }
+    return c.json(wrapAnthropicError(500, `Proxy error: ${err?.message ?? String(err)}`), 500);
+  });
+
   // Fork extensions: proxy auth + model discovery
   registerForkExtensions(app, { proxyKeys });
 
@@ -1175,6 +1261,10 @@ export async function createProxyServer(
         return c.json({ input_tokens: Math.ceil(txt.length / 4) });
       }
     } catch (e) {
+      // Routing failures are terminal — surface as a non-retryable 400 (bbb448f6).
+      if (e instanceof RoutingError) {
+        return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
+      }
       return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
@@ -1242,9 +1332,18 @@ export async function createProxyServer(
         sessionKey,
         body.stream === true
       );
-      return applyCapabilityQueryAtCondensation(noticed, sessionKey, body.stream === true);
+      // The `await` is load-bearing (218c3586): `return promise` hands it back
+      // BEFORE it settles, so a rejection escapes this try/catch entirely and
+      // lands in the app.onError backstop instead of the mapped handler below.
+      return await applyCapabilityQueryAtCondensation(noticed, sessionKey, body.stream === true);
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
+      // Routing failures are terminal — surface as a non-retryable 400 so the
+      // client shows the real reason (e.g. missing key) instead of looping on
+      // "API error · Retrying". Other errors stay 500. (bbb448f6.)
+      if (e instanceof RoutingError) {
+        return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
+      }
       return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
@@ -1323,6 +1422,15 @@ export async function createProxyServer(
       });
     } catch (e) {
       log(`[Proxy] /v1/chat/completions error: ${e}`);
+      // Same RoutingError doctrine as /v1/messages (bbb448f6), on the OpenAI
+      // wire shape this ingress speaks — this route resolves through the same
+      // getHandlerForRequest, so the missing-credential throw reaches it too.
+      if (e instanceof RoutingError) {
+        return c.json(
+          { error: { message: e.message, type: "invalid_request_error", code: null } },
+          400
+        );
+      }
       return c.json(
         { error: { message: String(e), type: "api_error", code: null } },
         500
