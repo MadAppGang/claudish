@@ -44,9 +44,18 @@ Set-StrictMode -Version Latest
 $script:DefaultRelaunchTaskName = 'ClaudishDockerDesktopStart'
 $script:OptInFileName           = 'wedge-watch.enabled'
 $script:OptInToken              = 'enabled'
+# A SECOND opt-in file, deliberately not shared with the wedge watch (review of
+# #188). The two sit on different gestures: the wedge watch only issues HTTP GETs,
+# while the relaunch preflight registers a scheduled task and invokes it, which
+# launches an elevated Docker Desktop in the operator's session. One consent
+# covering both would let a machine that armed the harmless one inherit the
+# task-registering one silently — the sequencing collapse #172 AC4 exists to
+# prevent.
+$script:RelaunchPreflightOptInFileName = 'relaunch-preflight.enabled'
 
 function Get-ClaudishOptInFileName { return $script:OptInFileName }
 function Get-ClaudishOptInToken    { return $script:OptInToken }
+function Get-RelaunchPreflightOptInFileName { return $script:RelaunchPreflightOptInFileName }
 
 function Get-ClaudishServingBase {
     <#
@@ -192,26 +201,54 @@ function Test-HttpAlive {
     }
 }
 
-function Test-WedgeWatchOptIn {
+function Test-ClaudishOptIn {
     <#
-        Engine recovery is opt-in, per machine, through a file that must exist
-        AND carry the literal token 'enabled'.
+        Opt-in, per machine, through a file that must exist AND carry the
+        literal token 'enabled'.
 
         Requiring content is deliberate: an empty file created by an accidental
         New-Item or a stray redirect does NOT arm a teardown of the host's
         container engine. The previous attempt's guard was a comparison between
         two strings that merely coincided; when they stopped coinciding, the
         teardown armed on every machine in the fleet.
-    #>
-    param([Parameter(Mandatory)][string]$ClaudishHome)
 
-    $path = Join-Path $ClaudishHome $script:OptInFileName
+        One implementation, one token semantics, two distinct files (see the
+        $script:*OptInFileName declarations): the gesture behind each consent is
+        what differs, and the semantics of "armed" must not.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ClaudishHome,
+        [string]$FileName = ''
+    )
+
+    if ([string]::IsNullOrEmpty($FileName)) { $FileName = $script:OptInFileName }
+
+    $path = Join-Path $ClaudishHome $FileName
     if (-not (Test-Path -LiteralPath $path)) { return $false }
     try {
         $raw = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
     } catch { return $false }
     if ($null -eq $raw) { return $false }
     return ($raw.Trim() -eq $script:OptInToken)
+}
+
+function Test-WedgeWatchOptIn {
+    # The wedge watch's consent: HTTP GETs only, no task, no process launched.
+    param([Parameter(Mandatory)][string]$ClaudishHome)
+    return (Test-ClaudishOptIn -ClaudishHome $ClaudishHome -FileName $script:OptInFileName)
+}
+
+function Test-RelaunchPreflightOptIn {
+    <#
+        The relaunch preflight's consent, on its OWN file (#188 review).
+
+        This is a SEQUENCING device, not a permanent restriction: opt in on one
+        machine, obtain the real execute-probe answer (LastTaskResult 0 vs
+        267009 — the two readings mean different things and the fleet has
+        measured neither), then widen the measurement deliberately.
+    #>
+    param([Parameter(Mandatory)][string]$ClaudishHome)
+    return (Test-ClaudishOptIn -ClaudishHome $ClaudishHome -FileName $script:RelaunchPreflightOptInFileName)
 }
 
 function New-EngineRelaunchRegistration {
@@ -1365,6 +1402,9 @@ Export-ModuleMember -Function @(
     'Test-LoopbackListener'
     'Test-HttpAlive'
     'Test-WedgeWatchOptIn'
+    'Test-ClaudishOptIn'
+    'Test-RelaunchPreflightOptIn'
+    'Get-RelaunchPreflightOptInFileName'
     'New-EngineRelaunchRegistration'
     'Get-InteractiveUserId'
     'ConvertFrom-QuserOutput'

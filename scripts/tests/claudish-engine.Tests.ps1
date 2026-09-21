@@ -144,6 +144,37 @@ Describe 'Test-HttpAlive' {
     }
 }
 
+Describe 'Test-RelaunchPreflightOptIn (#188 review: its own consent, same semantics)' {
+    It 'is off with no file, and off on an empty or wrong-content file' {
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeFalse
+        Set-Content -Path (Join-Path $TestDrive (Get-RelaunchPreflightOptInFileName)) -Value '' -NoNewline
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeFalse
+        Set-Content -Path (Join-Path $TestDrive (Get-RelaunchPreflightOptInFileName)) -Value 'yes please'
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeFalse
+    }
+
+    It 'arms on the literal token, tolerating surrounding whitespace' {
+        Set-Content -Path (Join-Path $TestDrive (Get-RelaunchPreflightOptInFileName)) -Value "  $(Get-ClaudishOptInToken)  `n"
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeTrue
+    }
+
+    It 'REGRESSION: the preflight consent is NOT the wedge-watch consent' {
+        # The whole point of the #188 review: one consent must not carry the
+        # other. Written against the real files so a future "let's reuse the
+        # wedge file" refactor goes red here.
+        $drive = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $drive -Force | Out-Null
+
+        Set-Content -Path (Join-Path $drive (Get-ClaudishOptInFileName)) -Value 'enabled'
+        Test-RelaunchPreflightOptIn -ClaudishHome $drive | Should -BeFalse
+
+        Remove-Item (Join-Path $drive (Get-ClaudishOptInFileName)) -Force
+        Set-Content -Path (Join-Path $drive (Get-RelaunchPreflightOptInFileName)) -Value 'enabled'
+        Test-WedgeWatchOptIn -ClaudishHome $drive | Should -BeFalse
+        Test-RelaunchPreflightOptIn -ClaudishHome $drive | Should -BeTrue
+    }
+}
+
 Describe 'Test-WedgeWatchOptIn' {
     It 'is $false on a machine with no opt-in file (the default everywhere)' {
         Test-WedgeWatchOptIn -ClaudishHome $TestDrive | Should -BeFalse

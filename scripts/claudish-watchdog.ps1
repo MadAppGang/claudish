@@ -579,6 +579,13 @@ function Invoke-RelaunchPreflightWatch {
         GUI exe — a no-op for a live engine. Cost is bounded by the preflight's
         own internals (a ~5s execute-poll budget), once a day.
 
+        Consent (AC2b, review of #188): DEFAULT-OFF, on its own
+        <ClaudishHome>\relaunch-preflight.enabled file, checked before anything
+        else — merging this changes nothing on any machine until an operator
+        creates the file. Separate from the wedge watch's file on purpose: that
+        consent covers HTTP GETs, this one registers a task and launches a
+        process, and one consent must not silently carry the other.
+
         Rate limit (AC2), NAMED: one measured verdict per UTC day. The events
         that can invalidate the rebuild path between reboots — a Docker
         Desktop upgrade, a Windows update changing task-registration behaviour
@@ -607,6 +614,17 @@ function Invoke-RelaunchPreflightWatch {
     if (-not $Preflight) { $Preflight = { Test-EngineRelaunchReady } }
 
     try {
+        # AC2b (review of #188): default-OFF, on its OWN file, checked BEFORE the
+        # rate-limit state is even read — so a machine that never opted in is not
+        # measured, not counted and not written to. The asymmetry the reviewer
+        # measured: Invoke-LoopbackWedgeWatch gates before its probes for a watch
+        # that only issues HTTP GETs; this one registers a scheduled task and
+        # invokes it (an elevated Docker Desktop in the operator's session), so
+        # it cannot be the ungated one. Merging this changes nothing anywhere
+        # until an operator creates the file deliberately.
+        $optIn = Test-RelaunchPreflightOptIn -ClaudishHome $ClaudishHome
+        if (-not $optIn) { return }
+
         $st = Get-State
         $last = [string](Get-StateField $st 'relaunchProbeDate' '')
         $today = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
