@@ -1005,4 +1005,59 @@ Describe 'Invoke-GitBounded — dubious ownership (SYSTEM vs operator tree)' {
         $env:GIT_CONFIG_GLOBAL | Should -Be 'some-pre-existing-value'
         Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue
     }
+
+    # ------------------------------------------------------------------
+    # #184 — the temp config ADDS to the operator's global config.
+    #
+    # Before #184 it REPLACED it, so core.excludesFile stopped applying to
+    # these calls and the PROVENANCE line read untracked-only(2) where plain
+    # git said 1: two numbers for the same tree, with nothing on the line
+    # telling the reader which to believe. The fix routes through [include],
+    # and the AC2 measurement (2026-09-21, scratch repo under
+    # GIT_TEST_ASSUME_DIFFERENT_OWNER=1) is what makes it safe to do: git
+    # still honors the [safe] grant that way (exit 0, where a no-route
+    # control exits 128 on the same tree) AND the included ignore file still
+    # applies. Without that measurement the honest close was to document the
+    # divergence instead — a fix that silently failed to apply safe.directory
+    # would regress #183 straight back to exit 128.
+    # ------------------------------------------------------------------
+    It 'CONTROL for the #184 pin: a globally-ignored file IS visible without the operator config' {
+        # Otherwise the pin below could pass for the wrong reason (a local
+        # .gitignore, a name git never reports). Same tree, no global config:
+        # both untracked files must be counted.
+        Set-Content -Path (Join-Path $script:Repo 'noise.globalignored') -Value 'n' -Encoding ascii
+        Set-Content -Path (Join-Path $script:Repo 'real.txt') -Value 'r' -Encoding ascii
+        $prov = Get-ScriptProvenance -ScriptRoot $script:Repo
+        $prov.Versioned | Should -BeTrue
+        $prov.UntrackedDirty | Should -Be 2
+    }
+
+    It 'REGRESSION (#184): the operator global config survives — untracked-only(1), not (2)' {
+        $globalIgnore = Join-Path $TestDrive 'global-ignore'
+        Set-Content -Path $globalIgnore -Value 'noise.globalignored' -Encoding ascii
+        $operatorCfg = Join-Path $TestDrive 'operator.gitconfig'
+        @('[core]', "`texcludesFile = $($globalIgnore.Replace('\', '/'))") -join "`n" |
+            Set-Content -Path $operatorCfg -Encoding ascii
+
+        Set-Content -Path (Join-Path $script:Repo 'noise.globalignored') -Value 'n' -Encoding ascii
+        Set-Content -Path (Join-Path $script:Repo 'real.txt') -Value 'r' -Encoding ascii
+
+        $prevCfg = $env:GIT_CONFIG_GLOBAL
+        $env:GIT_CONFIG_GLOBAL = $operatorCfg
+        try {
+            $prov = Get-ScriptProvenance -ScriptRoot $script:Repo
+            # The [safe] grant still lands through the include — this is the
+            # half that would have been lost by a fix that switched routes
+            # without measuring, and it fails as `unversioned (exit 128)`.
+            $prov.Versioned | Should -BeTrue
+            $prov.Summary | Should -Not -Match 'exit 128'
+            # ...and the operator's global gitignore is back in force.
+            $prov.Summary | Should -Match 'tree=untracked-only\(1\)'
+            $prov.UntrackedDirty | Should -Be 1
+        }
+        finally {
+            if ($null -ne $prevCfg) { $env:GIT_CONFIG_GLOBAL = $prevCfg }
+            else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
+        }
+    }
 }

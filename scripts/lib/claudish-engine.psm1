@@ -706,7 +706,46 @@ function Invoke-GitBounded {
                 $dir = $parent
             }
             $safeCfg = [System.IO.Path]::GetTempFileName()
-            $lines = @('[safe]') + @($safe | ForEach-Object { "`tdirectory = $_" })
+            # #184: the temp config ADDS safe.directory instead of REPLACING the
+            # operator's global config. Pointing GIT_CONFIG_GLOBAL at a [safe]
+            # block alone silently dropped core.excludesFile, so the operator's
+            # global gitignore stopped applying to these calls and the
+            # PROVENANCE line read untracked-only(2) where plain git said 1 —
+            # two different numbers for the same tree, with nothing on the line
+            # telling the reader which one to believe.
+            #
+            # `[include]` is the route that keeps both, MEASURED 2026-09-21 under
+            # GIT_TEST_ASSUME_DIFFERENT_OWNER=1 in a scratch repo: with the [safe]
+            # grant in the MAIN file and the operator's config included, git
+            # exits 0 (a no-route control exits 128 on the same tree) AND the
+            # included core.excludesFile still applies — `status --porcelain`
+            # listed only the real untracked file, where the replace route listed
+            # two. Two fixture traps were hit measuring it, and both are worth
+            # keeping: a raw Windows backslash inside an include value is a PARSE
+            # error ("bad config line 2"), and so is a `key = value` line without
+            # its section header. In each case git answers nothing, and its
+            # `fatal:` line was itself counted as a status line by the probe.
+            #
+            # Only files that EXIST are included, in git's own precedence order:
+            # $GIT_CONFIG_GLOBAL, then $XDG_CONFIG_HOME/git/config, then
+            # ~/.gitconfig. Under SYSTEM none of them exists, so the config
+            # carries the [safe] block alone — byte-identical to the behaviour
+            # before this change, which is the case #183 was built for.
+            $includeTargets = New-Object System.Collections.Generic.List[string]
+            if (-not [string]::IsNullOrWhiteSpace($prevGlobal)) { $includeTargets.Add($prevGlobal) }
+            $xdgHome = $env:XDG_CONFIG_HOME
+            if ([string]::IsNullOrWhiteSpace($xdgHome)) { $xdgHome = Join-Path $HOME '.config' }
+            $includeTargets.Add((Join-Path $xdgHome 'git/config'))
+            $includeTargets.Add((Join-Path $HOME '.gitconfig'))
+            $includeLines = New-Object System.Collections.Generic.List[string]
+            foreach ($target in $includeTargets) {
+                if ($target -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                    $includeLines.Add("`tpath = " + $target.Replace($bsep, '/'))
+                }
+            }
+            $lines = @()
+            if ($includeLines.Count -gt 0) { $lines += @('[include]') + $includeLines.ToArray() }
+            $lines += @('[safe]') + @($safe | ForEach-Object { "`tdirectory = $_" })
             [System.IO.File]::WriteAllText($safeCfg, ($lines -join "`n") + "`n")
             $env:GIT_CONFIG_GLOBAL = $safeCfg
         } catch {
