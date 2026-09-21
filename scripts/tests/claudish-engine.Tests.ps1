@@ -144,6 +144,37 @@ Describe 'Test-HttpAlive' {
     }
 }
 
+Describe 'Test-RelaunchPreflightOptIn (#188 review: its own consent, same semantics)' {
+    It 'is off with no file, and off on an empty or wrong-content file' {
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeFalse
+        Set-Content -Path (Join-Path $TestDrive (Get-RelaunchPreflightOptInFileName)) -Value '' -NoNewline
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeFalse
+        Set-Content -Path (Join-Path $TestDrive (Get-RelaunchPreflightOptInFileName)) -Value 'yes please'
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeFalse
+    }
+
+    It 'arms on the literal token, tolerating surrounding whitespace' {
+        Set-Content -Path (Join-Path $TestDrive (Get-RelaunchPreflightOptInFileName)) -Value "  $(Get-ClaudishOptInToken)  `n"
+        Test-RelaunchPreflightOptIn -ClaudishHome $TestDrive | Should -BeTrue
+    }
+
+    It 'REGRESSION: the preflight consent is NOT the wedge-watch consent' {
+        # The whole point of the #188 review: one consent must not carry the
+        # other. Written against the real files so a future "let's reuse the
+        # wedge file" refactor goes red here.
+        $drive = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $drive -Force | Out-Null
+
+        Set-Content -Path (Join-Path $drive (Get-ClaudishOptInFileName)) -Value 'enabled'
+        Test-RelaunchPreflightOptIn -ClaudishHome $drive | Should -BeFalse
+
+        Remove-Item (Join-Path $drive (Get-ClaudishOptInFileName)) -Force
+        Set-Content -Path (Join-Path $drive (Get-RelaunchPreflightOptInFileName)) -Value 'enabled'
+        Test-WedgeWatchOptIn -ClaudishHome $drive | Should -BeFalse
+        Test-RelaunchPreflightOptIn -ClaudishHome $drive | Should -BeTrue
+    }
+}
+
 Describe 'Test-WedgeWatchOptIn' {
     It 'is $false on a machine with no opt-in file (the default everywhere)' {
         Test-WedgeWatchOptIn -ClaudishHome $TestDrive | Should -BeFalse
@@ -621,6 +652,69 @@ Describe 'Static guardrails over scripts/' {
         $hits = @($fn.FindAll({
             param($n) $n -is [System.Management.Automation.Language.CommandAst]
         }, $true) | Where-Object { $_.GetCommandName() -match '^(Restart-|Stop-)' })
+        $hits.Count | Should -BeGreaterThan 0
+        $fn.Extent.Text | Should -Match 'docker\s+(stop|restart|kill)'
+    }
+
+    It 'AC3 (#185): the healthy-cycle relaunch-preflight path contains no actuator' {
+        # jsboige/claudish#185 AC3, same rules as the wedge guard above, plus
+        # the watchdog's own engine entry points: calling
+        # Invoke-ClaudishDrainedRestart or Start-DockerEngine from the
+        # preflight watch would be an engine action by indirection. The probe
+        # deliberately MAY register and invoke the ClaudishEngineRelaunch task
+        # (that is the measurement), which launches a GUI exe — a launch is
+        # not a teardown and is not in the forbidden set.
+        $wdPath = Join-Path $script:ScriptsRoot 'claudish-watchdog.ps1'
+        $tokens = $null; $errs = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($wdPath, [ref]$tokens, [ref]$errs)
+
+        $fns = $ast.FindAll({
+            param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $n.Name -match 'RelaunchPreflight'
+        }, $true)
+        $fns.Count | Should -BeGreaterThan 0 -Because 'the guard must have something to guard'
+
+        $offenders = @()
+        foreach ($fn in $fns) {
+            foreach ($call in $fn.FindAll({
+                param($n) $n -is [System.Management.Automation.Language.CommandAst]
+            }, $true)) {
+                $name = $call.GetCommandName()
+                if ($name -and ($name -match '^(Restart-|Stop-)' -or $name -eq 'wsl.exe' -or $name -eq 'wsl' -or
+                    $name -eq 'Invoke-ClaudishDrainedRestart' -or $name -eq 'Start-DockerEngine')) {
+                    $offenders += ('{0}:{1} {2}' -f $fn.Name, $call.Extent.StartLineNumber, $name)
+                }
+                $flags = $call.CommandElements |
+                    Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
+                    ForEach-Object { $_.ParameterName }
+                if ($flags -contains 'Verb') { $offenders += ('{0}:{1} -Verb' -f $fn.Name, $call.Extent.StartLineNumber) }
+            }
+            if ($fn.Extent.Text -match 'docker\s+(stop|restart|kill)') {
+                $offenders += ('{0}: docker stop/restart/kill' -f $fn.Name)
+            }
+        }
+        $offenders | Should -BeNullOrEmpty
+    }
+
+    It 'AC3 (#185): the preflight actuator detector actually detects (positive control)' {
+        # Without this, deleting the preflight watch would make the guard above
+        # pass for the wrong reason — the same discipline as the wedge guard.
+        $tokens = $null; $errs = $null
+        $bad = [System.Management.Automation.Language.Parser]::ParseInput(
+            'function Invoke-RelaunchPreflightBad { Invoke-ClaudishDrainedRestart -Reason x; Stop-Service com.docker.service -Force; docker stop c }',
+            [ref]$tokens, [ref]$errs)
+        $fn = $bad.FindAll({
+            param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $n.Name -match 'RelaunchPreflight'
+        }, $true)[0]
+
+        $hits = @($fn.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst]
+        }, $true) | Where-Object {
+            $_.GetCommandName() -match '^(Restart-|Stop-)' -or $_.GetCommandName() -eq 'Invoke-ClaudishDrainedRestart'
+        })
         $hits.Count | Should -BeGreaterThan 0
         $fn.Extent.Text | Should -Match 'docker\s+(stop|restart|kill)'
     }

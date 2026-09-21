@@ -168,3 +168,174 @@ Describe 'Watchdog sandboxing' {
         $StateFile | Should -BeLike "$sandbox*"
     }
 }
+
+Describe 'Invoke-RelaunchPreflightWatch (wiring, #185)' {
+    # The #181 execute probe was unreachable in production: its only call site
+    # required the Docker Desktop GUI to be DOWN while the probe needs it UP.
+    # The fix is to exercise the preflight during a HEALTHY cycle. These tests
+    # pin the wiring around it: rate limit (AC2), the one-line verdict (AC1),
+    # escalate-without-acting (AC4) and never-block-the-cycle (AC5).
+    #
+    # Note there is deliberately NO wedge opt-in file here: the preflight watch
+    # has its OWN consent (`relaunch-preflight.enabled`, review of #188) and is
+    # not gated on wedge-watch consent — the two gestures differ (HTTP GETs vs
+    # registering a task and launching a process), so the consents must not.
+    BeforeEach {
+        $script:SandboxHome = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $script:SandboxHome -Force | Out-Null
+        . $script:WatchdogPath -ClaudishHome $script:SandboxHome
+
+        # Opted in by default for the measurement tests below; the gate's own
+        # test removes the file explicitly.
+        Set-Content -Path (Join-Path $script:SandboxHome (Get-RelaunchPreflightOptInFileName)) -Value 'enabled'
+
+        # Stubs defined in BeforeEach, never in the Describe body: a function
+        # or assignment there is invisible to It blocks (Pester 5/6 discovery).
+        $script:Invoked = 0
+        $script:OkPreflight = {
+            $script:Invoked++
+            [PSCustomObject]@{
+                Ready  = $true
+                Reason = 'relaunch path proven (registered, read back and executed)'
+                Checks = @('executable:OK', 'user:OK', 'register:OK', 'verify:OK', 'execute:OK(result=0)')
+            }
+        }
+        $script:FailPreflight = {
+            $script:Invoked++
+            [PSCustomObject]@{
+                Ready  = $false
+                Reason = "execute: task 'ClaudishEngineRelaunch' ran and its action failed (LastTaskResult=1)"
+                Checks = @('executable:OK', 'user:OK', 'register:OK', 'verify:OK', 'execute:FAILED(result=1)')
+            }
+        }
+    }
+
+    It 'AC2b: a machine that has not opted in is not measured, counted or written to' {
+        # The reviewer's asymmetry, made executable: the wedge watch gates BEFORE
+        # its probes for HTTP GETs; this one registers a task and launches a
+        # process, so it must not be the ungated one. The witness is the probe
+        # itself — asserting only on the log would pass with the gate moved
+        # after the call.
+        Remove-Item (Join-Path $SandboxHome (Get-RelaunchPreflightOptInFileName)) -Force
+
+        Invoke-RelaunchPreflightWatch -Preflight { $script:Invoked++; [PSCustomObject]@{ Ready = $true; Reason = 'x'; Checks = @('execute:OK(result=0)') } }
+
+        $script:Invoked | Should -Be 0
+        (Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw -ErrorAction SilentlyContinue) |
+            Should -Not -Match 'RELAUNCH-PREFLIGHT'
+        # No state file at all on this path, so Get-State is $null — read through
+        # the accessor the watchdog itself uses.
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') | Should -Be ''
+    }
+
+    It 'AC2b: the two consents are independent (wedge file does not arm the preflight)' {
+        # A machine that armed the harmless HTTP-GET watch must not silently
+        # inherit the task-registering one.
+        Remove-Item (Join-Path $SandboxHome (Get-RelaunchPreflightOptInFileName)) -Force
+        Set-Content -Path (Join-Path $SandboxHome (Get-ClaudishOptInFileName)) -Value 'enabled'
+
+        Invoke-RelaunchPreflightWatch -Preflight { $script:Invoked++; [PSCustomObject]@{ Ready = $true; Reason = 'x'; Checks = @('execute:OK(result=0)') } }
+
+        $script:Invoked | Should -Be 0
+        # ...and the converse: the preflight file does not arm the wedge watch.
+        Remove-Item (Join-Path $SandboxHome (Get-ClaudishOptInFileName)) -Force
+        Set-Content -Path (Join-Path $SandboxHome (Get-RelaunchPreflightOptInFileName)) -Value 'enabled'
+        Invoke-LoopbackWedgeWatch -ServingHealthy $true -HealthProbe { param($u) $false } -ListenerProbe { param($p) $true }
+        [int](Get-StateField (Get-State) 'consecutiveWedge' 0) | Should -Be 0
+    }
+
+    It 'is inert when a verdict was already measured today (AC2: 1/day)' {
+        Set-State -RelaunchProbeDate ([DateTime]::UtcNow.ToString('yyyy-MM-dd'))
+
+        Invoke-RelaunchPreflightWatch -Preflight $script:OkPreflight
+
+        $script:Invoked | Should -Be 0
+        (Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw -ErrorAction SilentlyContinue) |
+            Should -Not -Match 'RELAUNCH-PREFLIGHT'
+    }
+
+    It 'measures once, logs ONE line with verdict and checks, and consumes the day (AC1+AC2)' {
+        Invoke-RelaunchPreflightWatch -Preflight $script:OkPreflight
+
+        $script:Invoked | Should -Be 1
+        $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
+        ($log -split "`n" | Where-Object { $_ -match 'RELAUNCH-PREFLIGHT: (OK|FAILED)' }).Count |
+            Should -Be 1 -Because 'AC1 asks for one line per probe, countable over time'
+        $log | Should -Match 'RELAUNCH-PREFLIGHT: OK — relaunch path proven'
+        $log | Should -Match 'checks=\[executable:OK, ?user:OK, ?register:OK, ?verify:OK, ?execute:OK\(result=0\)\]'
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') |
+            Should -Be ([DateTime]::UtcNow.ToString('yyyy-MM-dd'))
+
+        # Second call the same day must not re-measure: 96 probes/day is churn.
+        Invoke-RelaunchPreflightWatch -Preflight $script:OkPreflight
+        $script:Invoked | Should -Be 1
+    }
+
+    It 'AC4: a failing verdict escalates IN THE LOG, takes no action, consumes the day' {
+        Invoke-RelaunchPreflightWatch -Preflight $script:FailPreflight
+
+        $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
+        $log | Should -Match 'RELAUNCH-PREFLIGHT: FAILED'
+        $log | Should -Match 'RELAUNCH-PREFLIGHT ESCALATE'
+        $log | Should -Match 'NO action taken'
+        # The escalation is detection-only: the string 'restart' may appear only
+        # negated ("NO action taken"), never as a command. The AST guard in
+        # claudish-engine.Tests.ps1 pins the structural half.
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') |
+            Should -Be ([DateTime]::UtcNow.ToString('yyyy-MM-dd')) -Because 'a failed probe escalated 96x/day would be noise'
+
+        Invoke-RelaunchPreflightWatch -Preflight $script:FailPreflight
+        $script:Invoked | Should -Be 1
+    }
+
+    It 'AC5: a throw degrades to "not measured", never blocks, and retries next cycle' {
+        { Invoke-RelaunchPreflightWatch -Preflight { throw 'boom' } } | Should -Not -Throw
+
+        $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
+        $log | Should -Match 'RELAUNCH-PREFLIGHT: not measured this cycle'
+        $log | Should -Not -Match 'ESCALATE' -Because '"not ready" would read as a fault (AC5)'
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') | Should -Be '' -Because 'an unmeasured attempt must not consume the day'
+
+        # Day unconsumed -> the next cycle retries and can succeed.
+        Invoke-RelaunchPreflightWatch -Preflight $script:OkPreflight
+        $script:Invoked | Should -Be 1
+        (Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw) | Should -Match 'RELAUNCH-PREFLIGHT: OK'
+    }
+
+    It 'AC5: a preflight returning no verdict is "not measured", not a fabricated failure' {
+        Invoke-RelaunchPreflightWatch -Preflight { $null }
+
+        $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
+        $log | Should -Match 'not measured this cycle'
+        $log | Should -Not -Match 'ESCALATE'
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') | Should -Be ''
+    }
+
+    It 'a SKIPPED verdict (GUI down, healthy engine) logs OK truthfully and consumes the day' {
+        $skipped = {
+            [PSCustomObject]@{
+                Ready  = $true
+                Reason = 'relaunch path proven (registration-only — Docker Desktop not running, execute probe skipped)'
+                Checks = @('executable:OK', 'user:OK', 'register:OK', 'verify:OK', 'execute:SKIPPED(desktop-not-running)')
+            }
+        }
+        Invoke-RelaunchPreflightWatch -Preflight $skipped
+
+        $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
+        $log | Should -Match 'RELAUNCH-PREFLIGHT: OK — relaunch path proven \(registration-only'
+        $log | Should -Match 'execute:SKIPPED\(desktop-not-running\)'
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') |
+            Should -Be ([DateTime]::UtcNow.ToString('yyyy-MM-dd'))
+    }
+
+    It 'wiring: the healthy branch calls the preflight watch right after the wedge watch' {
+        # The healthy branch is the ONLY place the execute probe can run (it
+        # needs the GUI up). This pins the call site so a refactor cannot
+        # silently move it back behind a GUI-down guard. Anchored on the call
+        # being followed by `exit 0`, because the function name also appears in
+        # the comment right above it.
+        $src = Get-Content $script:WatchdogPath -Raw
+        $src | Should -Match ('Invoke-LoopbackWedgeWatch -ServingHealthy \$true' +
+            '[\s\S]{0,400}?Invoke-RelaunchPreflightWatch\s*\r?\n\s*exit 0')
+    }
+}

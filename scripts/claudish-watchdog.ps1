@@ -282,7 +282,11 @@ function Set-State {
     # confirmation counter that cannot survive a cycle never confirms anything.
     param(
         [Nullable[int]]$ConsecutiveHangs = $null,
-        [Nullable[int]]$ConsecutiveWedge = $null
+        [Nullable[int]]$ConsecutiveWedge = $null,
+        # #185: UTC yyyy-MM-dd of the last MEASURED relaunch-preflight verdict.
+        # '' (the default) leaves the stored value untouched — strings cannot
+        # use the Nullable trick, and '' is never a valid stored date.
+        [string]$RelaunchProbeDate = ''
     )
     $cur = Get-State
     $obj = @{
@@ -291,6 +295,9 @@ function Set-State {
     }
     if ($null -ne $ConsecutiveHangs) { $obj.consecutiveHangs = [int]$ConsecutiveHangs }
     if ($null -ne $ConsecutiveWedge) { $obj.consecutiveWedge = [int]$ConsecutiveWedge }
+    $prevProbe = [string](Get-StateField $cur 'relaunchProbeDate' '')
+    if ($prevProbe) { $obj.relaunchProbeDate = $prevProbe }
+    if (-not [string]::IsNullOrEmpty($RelaunchProbeDate)) { $obj.relaunchProbeDate = $RelaunchProbeDate }
 
     $dir = Split-Path $StateFile -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -551,6 +558,116 @@ function Invoke-LoopbackWedgeWatch {
     }
 }
 
+function Invoke-RelaunchPreflightWatch {
+    <#
+        Exercises Test-EngineRelaunchReady during a HEALTHY cycle (#185).
+
+        The #181 execute probe — invoke the just-registered relaunch task and
+        read LastTaskResult back — was structurally unreachable in production:
+        its only call site sat behind `if (-not (Get-Process 'Docker Desktop'))`,
+        i.e. the branch that runs when the GUI is DOWN. The probe's
+        precondition is the GUI being UP. The two are mutually exclusive, so
+        "the rebuild half is proven while nothing is wrong" was never actually
+        tested anywhere (an AC1 blind spot in the review, not a defect in the
+        probe — see #185). This is the closure of the #173 lesson: the rebuild
+        half gets proven on a day when nothing is wrong, not on the day it is
+        needed.
+
+        When this runs the engine is serving, so the probe is free: registering
+        the task is an idempotent overwrite of our own ClaudishEngineRelaunch
+        task, and invoking it launches a second instance of an already-running
+        GUI exe — a no-op for a live engine. Cost is bounded by the preflight's
+        own internals (a ~5s execute-poll budget), once a day.
+
+        Consent (AC2b, review of #188): DEFAULT-OFF, on its own
+        <ClaudishHome>\relaunch-preflight.enabled file, checked before anything
+        else — merging this changes nothing on any machine until an operator
+        creates the file. Separate from the wedge watch's file on purpose: that
+        consent covers HTTP GETs, this one registers a task and launches a
+        process, and one consent must not silently carry the other.
+
+        Rate limit (AC2), NAMED: one measured verdict per UTC day. The events
+        that can invalidate the rebuild path between reboots — a Docker
+        Desktop upgrade, a Windows update changing task-registration behaviour
+        — are weeks apart, so a daily probe catches drift within a day, long
+        before the rebuild is needed, while bounding task churn to one
+        invocation/day (every-15-min would be 96/day of pure churn). A
+        measured verdict, pass or fail, consumes the day: a failed probe
+        escalated 96 times a day is noise, and tomorrow's probe is the retry.
+
+        AC4: a failing verdict is LOGGED and ESCALATED, never acted on. This
+        whole feature family is detection-only (#172 AC4): a not-proven
+        rebuild path must change an operator's TODO list, not the machine.
+
+        AC5: this function must never throw and never block a cycle. A throw
+        degrades to "not measured" — NOT to "not ready", which would read as a
+        fault — and leaves the day unconsumed so a transient failure retries
+        next cycle.
+
+        AC3: no teardown, no engine action, on every branch — enforced by a
+        static AST guard with a positive control (claudish-engine.Tests.ps1).
+    #>
+    # Injectable so the wiring (rate limit, verdict handling, state) is testable
+    # without registering a real task. Default is the live call, so production
+    # behaviour carries no seam.
+    param([scriptblock]$Preflight = $null)
+    if (-not $Preflight) { $Preflight = { Test-EngineRelaunchReady } }
+
+    try {
+        # AC2b (review of #188): default-OFF, on its OWN file, checked BEFORE the
+        # rate-limit state is even read — so a machine that never opted in is not
+        # measured, not counted and not written to. The asymmetry the reviewer
+        # measured: Invoke-LoopbackWedgeWatch gates before its probes for a watch
+        # that only issues HTTP GETs; this one registers a scheduled task and
+        # invokes it (an elevated Docker Desktop in the operator's session), so
+        # it cannot be the ungated one. Merging this changes nothing anywhere
+        # until an operator creates the file deliberately.
+        $optIn = Test-RelaunchPreflightOptIn -ClaudishHome $ClaudishHome
+        if (-not $optIn) { return }
+
+        $st = Get-State
+        $last = [string](Get-StateField $st 'relaunchProbeDate' '')
+        $today = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+
+        if ($last -eq $today) { return }
+
+        $lastTxt = $last
+        if (-not $lastTxt) { $lastTxt = 'never' }
+        Write-Log "RELAUNCH-PREFLIGHT: due (last=$lastTxt, policy=1/day UTC)"
+
+        # AC5: any throw from here lands in the catch as "not measured".
+        $verdict = & $Preflight
+
+        if ($null -eq $verdict) {
+            # A preflight that returns nothing did not measure; say so and
+            # retry next cycle rather than manufacturing a verdict.
+            Write-Log "RELAUNCH-PREFLIGHT: not measured this cycle (preflight returned no verdict) — no action taken"
+            return
+        }
+
+        # Measured, so the day is consumed — pass or fail (see header: a failed
+        # probe retried every cycle would escalate 96 times/day).
+        Set-State -RelaunchProbeDate $today
+
+        $checks = (@($verdict.Checks) -join ',')
+        if ($verdict.Ready) {
+            # AC1: one line per probe, verdict + checks, countable over time.
+            Write-Log "RELAUNCH-PREFLIGHT: OK — $($verdict.Reason) checks=[$checks]"
+        } else {
+            # AC4: escalate as a log line only — detection-only mandate. The
+            # SKIPPED variant never lands here (it reports Ready=$true), so a
+            # FAILED verdict always names the broken stage.
+            Write-Log "RELAUNCH-PREFLIGHT: FAILED — $($verdict.Reason) checks=[$checks]"
+            Write-Log "RELAUNCH-PREFLIGHT ESCALATE: the engine-rebuild path is NOT proven — operator attention required; NO action taken (detection only)"
+        }
+    } catch {
+        # AC5: "not measured", never "not ready" — and the day is NOT consumed.
+        # Test-EngineRelaunchReady is built not to throw; reaching here means
+        # something truly unexpected, and the cycle's own verdict stands.
+        Write-Log "RELAUNCH-PREFLIGHT: not measured this cycle ($($_.Exception.Message)) — no action taken"
+    }
+}
+
 # --- Main ---
 
 # Dot-sourcing this file loads its functions without running a cycle, the same
@@ -746,6 +863,11 @@ if ($result.Ok) {
     Write-Log "OK (uptime=${uptimeHours}h). $($result.Detail)"
     Set-State -ConsecutiveHangs 0
     Invoke-LoopbackWedgeWatch -ServingHealthy $true
+    # #185: the healthy cycle is the only moment the execute probe of the
+    # relaunch preflight CAN run — it needs the Desktop GUI up, the exact
+    # opposite of the recovery path that used to be its only call site.
+    # Rate-limited and fault-isolated inside Invoke-RelaunchPreflightWatch.
+    Invoke-RelaunchPreflightWatch
     exit 0
 }
 
