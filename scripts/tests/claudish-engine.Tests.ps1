@@ -1103,4 +1103,29 @@ Describe 'Invoke-GitBounded — dubious ownership (SYSTEM vs operator tree)' {
             else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
         }
     }
+
+    It 'PIN (#196 review): the [safe] grant is emitted AFTER the include — an empty safe.directory in the operator config must not reset it' {
+        # safe.directory is multi-valued, and an EMPTY value RESETS the whole
+        # list. Measured 2026-09-21 (scratch repo, same shape as the AC2 probe):
+        # with an included `[safe] directory =` (empty), include-then-grant
+        # exits 0 while grant-then-include exits 128 — the grant is wiped by
+        # the empty value that lands after it. The review of #196 found that
+        # inverting the two blocks in the emitted config left the whole suite
+        # at 148/0: the order is load-bearing and nothing pinned it. This test
+        # is that pin — it fails the moment [safe] is emitted before [include].
+        $emptySafeCfg = Join-Path $TestDrive 'operator-empty-safe.gitconfig'
+        @('[safe]', "`tdirectory =") -join "`n" | Set-Content -Path $emptySafeCfg -Encoding ascii
+
+        $prevCfg = $env:GIT_CONFIG_GLOBAL
+        $env:GIT_CONFIG_GLOBAL = $emptySafeCfg
+        try {
+            $r = Invoke-GitBounded -WorkDir $script:Repo -GitArgs @('rev-parse', 'HEAD')
+            $r.Ok | Should -BeTrue
+            $r.Out | Should -Not -BeNullOrEmpty
+        }
+        finally {
+            if ($null -ne $prevCfg) { $env:GIT_CONFIG_GLOBAL = $prevCfg }
+            else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
+        }
+    }
 }
