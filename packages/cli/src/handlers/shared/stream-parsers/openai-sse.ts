@@ -32,7 +32,7 @@ import {
 import { messageStartUsage } from "./message-start-usage.js";
 import { type BlockRef, createBlockWriter } from "./block-writer.js";
 import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
-import { splitPromptTokens } from "./usage-cache-split.js";
+import { splitPromptTokens, toAnthropicUsage } from "./usage-cache-split.js";
 
 /**
  * Hard ceiling, in characters, on ONE logged raw SSE payload.
@@ -231,62 +231,6 @@ export function createStreamingState(): StreamingState {
     lastFinishReason: null,
     pendingToolArgs: new Map(),
     pendingToolName: new Map(),
-  };
-}
-
-/**
- * Anthropic `usage` fields derived from an OpenAI-style `usage` object.
- *
- * OpenAI reports `prompt_tokens` as the FULL input — cached and uncached
- * together — and, where the provider caches, breaks the cached share out
- * beside it. Anthropic splits that same total across `input_tokens` (the part
- * billed at full rate) and `cache_read_input_tokens` (cache hits). Emitting
- * `prompt_tokens` as `input_tokens` *and* the cached count as
- * `cache_read_input_tokens` therefore counts the cached share TWICE — and the
- * client's context gauge sums the fields, so such a session would compact far
- * too early. Net it out and the total is preserved.
- *
- * Not netting would also corrupt our own accounting: `harness-injection-measure.py`
- * sums `input + cache_creation + cache_read` as the context size, so doubling
- * the cache inflates every openai-lane request there. This lane is ~72% of the
- * hub's volume and its cache was entirely invisible before — the `openai-sse`
- * parser never read the upstream's cache field at all (jsboige/claudish#99).
- */
-function toAnthropicUsage(u: any): {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens: number;
-  cache_creation_input_tokens: number;
-} {
-  // (S4-c) The two-way #99 netting became a three-way split derived in ONE
-  // place — see usage-cache-split.ts for the field spellings and the sum
-  // invariant every consumer depends on.
-  const split = splitPromptTokens(u);
-  // One degenerate turn is sent UNSPLIT, and this is not a special case so much
-  // as the client's merge rule read honestly.
-  //
-  // Claude Code only lets a delta value override its running total when that
-  // value is GREATER THAN ZERO (2.1.273: `n.input_tokens !== null &&
-  // n.input_tokens > 0 ? n.input_tokens : e.input_tokens`). So on a turn whose
-  // input is entirely cache — possible only when the request repeats one
-  // already cached, i.e. a retry — an `input_tokens: 0` is DISCARDED and the
-  // message_start seed (the PREVIOUS turn's full context) survives beside a
-  // full-size `cache_read_input_tokens`. The client would then sum the two and
-  // believe the conversation is roughly twice its real size. Reporting that
-  // turn as ordinary input keeps the client's sum exactly equal to
-  // `prompt_tokens`, which is the invariant that matters.
-  const fullyCached = split.promptTokens > 0 && split.inputTokens === 0;
-  return {
-    input_tokens: fullyCached ? split.promptTokens : split.inputTokens,
-    output_tokens: Number(u?.completion_tokens) || 0,
-    cache_read_input_tokens: fullyCached ? 0 : split.cacheReadTokens,
-    // All three input keys ship TOGETHER, unconditionally, and that is not
-    // stylistic: the client reconstructs the conversation size by SUMMING them
-    // (2.1.273 binary), so a reduced `input_tokens` without its two siblings
-    // understates the context by exactly the cached portion — the one shape
-    // that reproduces the failure #99 fixed. `splitPromptTokens` guarantees
-    // the three sum back to `prompt_tokens`.
-    cache_creation_input_tokens: fullyCached ? 0 : split.cacheCreationTokens,
   };
 }
 

@@ -862,3 +862,204 @@ describe("#90 — the Sol/Codex lane closes its capture on every exit path", () 
     });
   });
 });
+
+describe("#186 — three-counter usage shape on the Codex lane", () => {
+  // Pre-#186, this parser emitted `usage: { input_tokens: netted, output_tokens,
+  // cache_read_input_tokens }` on all six terminal sites and seeded
+  // message_start with `{ input_tokens: 0, output_tokens: 0 }` — a reduced
+  // input with ONE sibling, and a seed carrying NEITHER cache key. The
+  // client's per-key usage merge falls back to the seed for any delta key not
+  // strictly > 0, so the missing cache_creation key resolved to `undefined`,
+  // and the raw three-way sum feeding the context meter and the
+  // auto-compaction threshold turned NaN. These tests reproduce that chain
+  // against the documented client functions, then pin the fixed shape on
+  // every terminal path.
+
+  // Claude Code's per-key usage merge, verbatim from the shipped bundle
+  // (2.1.17 cli.js; identical in 2.1.273 — extraction recorded in #186): a
+  // delta value overrides the seed ONLY when strictly > 0; an absent delta
+  // key falls back to the seed's, and an absent seed key makes that
+  // fallback `undefined`.
+  function clientUsageMerge(seed: any, delta: any) {
+    const pick = (k: string) => (delta[k] !== null && delta[k] > 0 ? delta[k] : seed[k]);
+    return {
+      input_tokens: pick("input_tokens"),
+      cache_creation_input_tokens: pick("cache_creation_input_tokens"),
+      cache_read_input_tokens: pick("cache_read_input_tokens"),
+      output_tokens: delta.output_tokens ?? seed.output_tokens,
+    };
+  }
+  // The raw, non-coalescing three-way sum (same bundle) that feeds the
+  // context-occupancy percentage and the auto-compaction threshold.
+  const clientContextSum = (u: any) =>
+    u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
+
+  function usageAt(output: string, event: string, path?: string): any {
+    const re = new RegExp(`event: ${event}\\ndata: ([^\\n]*)`);
+    const m = output.match(re);
+    if (!m) return null;
+    const data = JSON.parse(m[1]);
+    return path ? path.split(".").reduce((o: any, k: string) => o?.[k], data) : data.usage;
+  }
+
+  function fixtureBody(name: string): Uint8Array {
+    return readFileSync(join(__dirname, "..", "..", "..", "test-fixtures", "sse-responses", name));
+  }
+
+  async function runBody(body: Uint8Array | string) {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(typeof body === "string" ? new TextEncoder().encode(body) : body);
+        controller.close();
+      },
+    });
+    const response = new Response(source, { headers: new Headers(SSE_HEADERS) });
+    return drainResponse(response);
+  }
+
+  async function drainResponse(response: Response) {
+    let output = "";
+    await captureStdout(() => {
+      const result = createResponsesStreamHandler(mockContext(), response, {
+        modelName: "gpt-5.6-sol",
+      }) as Response;
+      return result.body!.pipeTo(
+        new WritableStream({
+          write(chunk: Uint8Array) {
+            output += new TextDecoder().decode(chunk, { stream: true });
+          },
+        })
+      );
+    });
+    return output;
+  }
+
+  function failingResponse(events: Array<Record<string, unknown>>, error: Error): Response {
+    const stream = new ReadableStream({
+      start(controller) {
+        if (events.length > 0) {
+          controller.enqueue(new TextEncoder().encode(sseChunks(events)));
+        }
+        setTimeout(() => controller.error(error), 1);
+      },
+    });
+    return new Response(stream, { headers: new Headers(SSE_HEADERS) });
+  }
+
+  test("AC1 — the pre-#186 shape makes the client's context sum NaN (reproduction)", () => {
+    // The exact literals this parser emitted before #186, numbers from the
+    // SEED fixture: a seed without cache keys, a delta without cache_creation.
+    const oldSeed = { input_tokens: 0, output_tokens: 0 };
+    const oldDelta = { input_tokens: 3453, output_tokens: 214, cache_read_input_tokens: 95312 };
+    const merged = clientUsageMerge(oldSeed, oldDelta);
+    expect(merged.cache_creation_input_tokens).toBeUndefined();
+    expect(Number.isNaN(clientContextSum(merged))).toBe(true);
+  });
+
+  test("AC1 — the fixed shape survives the same merge: finite, exact sum", async () => {
+    const output = await runBody(fixtureBody("SEED-responses-cached-tokens.sse"));
+    const merged = clientUsageMerge(
+      usageAt(output, "message_start", "message.usage"),
+      usageAt(output, "message_delta")
+    );
+    expect(Number.isNaN(clientContextSum(merged))).toBe(false);
+    expect(clientContextSum(merged)).toBe(98765);
+  });
+
+  test("normal completion: all four usage keys on the delta, three input keys summing to the prompt", async () => {
+    const output = await runBody(fixtureBody("SEED-responses-cached-tokens.sse"));
+    const usage = usageAt(output, "message_delta");
+    expect(Object.keys(usage).sort()).toEqual([
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+      "input_tokens",
+      "output_tokens",
+    ]);
+    expect(usage.input_tokens).toBe(3453);
+    expect(usage.cache_read_input_tokens).toBe(95312);
+    expect(usage.cache_creation_input_tokens).toBe(0);
+    expect(usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens).toBe(98765);
+    expect(usage.output_tokens).toBe(214);
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("api-error termination: the four keys ship even at zero usage (never-hang intact)", async () => {
+    // server_error with no retryUpstream armed: the error is surfaced, the
+    // turn ends on message_delta + message_stop, and the usage carries all
+    // four keys — at explicit 0s rather than absent ones.
+    const output = await runBody(
+      sseChunks([{ type: "error", error: { code: "server_error", message: "boom" } }])
+    );
+    const usage = usageAt(output, "message_delta");
+    expect(Object.keys(usage).sort()).toEqual([
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+      "input_tokens",
+      "output_tokens",
+    ]);
+    expect(usage.input_tokens).toBe(0);
+    expect(usage.cache_creation_input_tokens).toBe(0);
+    expect(usage.cache_read_input_tokens).toBe(0);
+    expect(output).toContain("[API Error: server_error boom]");
+    expect(output).toContain("event: message_stop");
+  });
+
+  test("interrupted termination: the four keys ship with the accumulated counts (never-hang intact)", async () => {
+    // Text is visible (no transparent retry), usage was already accumulated
+    // by response.completed, then the socket dies: finishInterruptedStream
+    // emits the SAME four-key shape from those accumulated locals.
+    const cause = Object.assign(
+      new Error("The socket connection was closed unexpectedly."),
+      { code: "UND_ERR_SOCKET" }
+    );
+    const socketClose = Object.assign(new TypeError("fetch failed"), { cause });
+    const output = await drainResponse(
+      failingResponse(
+        [
+          { type: "response.output_text.delta", delta: "partial" },
+          {
+            type: "response.completed",
+            response: {
+              usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 60 }, output_tokens: 50 },
+            },
+          },
+        ],
+        socketClose
+      )
+    );
+    const usage = usageAt(output, "message_delta");
+    expect(Object.keys(usage).sort()).toEqual([
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+      "input_tokens",
+      "output_tokens",
+    ]);
+    expect(usage.input_tokens).toBe(40);
+    expect(usage.cache_read_input_tokens).toBe(60);
+    expect(usage.cache_creation_input_tokens).toBe(0);
+    expect(usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens).toBe(100);
+    expect(output).toContain("connection to the model provider was interrupted");
+    expect(output.match(/event: message_stop/g)?.length).toBe(1);
+  });
+
+  test("a fully-cached turn ships UNSPLIT — never input_tokens 0 beside a full cache_read", async () => {
+    // #179's rule, held by the shared shaper: the clamp makes cached === total,
+    // and a delta input_tokens of 0 would be DISCARDED by the client's merge,
+    // leaving the seed beside a full-size cache_read — roughly double context.
+    const sse = sseChunks([
+      { type: "response.output_text.delta", delta: "ok" },
+      {
+        type: "response.completed",
+        response: {
+          usage: { input_tokens: 500, input_tokens_details: { cached_tokens: 500 }, output_tokens: 7 },
+        },
+      },
+    ]);
+    const output = await runBody(sse);
+    const usage = usageAt(output, "message_delta");
+    expect(usage.input_tokens).toBe(500);
+    expect(usage.cache_read_input_tokens).toBe(0);
+    expect(usage.cache_creation_input_tokens).toBe(0);
+    expect(output).toContain("event: message_stop");
+  });
+});

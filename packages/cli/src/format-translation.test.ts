@@ -2518,7 +2518,7 @@ describe("Regression: Responses-lane cache visibility (#115)", () => {
   // as the chat-completions lane above (#99). The SEED fixture is synthetic —
   // provider proof is the AC-3 raw-upstream probe (issue #115), not this test.
 
-  async function responsesUsageOf(sse: string) {
+  async function responsesEventsOf(sse: string) {
     const mod = await import("./handlers/shared/stream-parsers/openai-responses-sse.js");
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -2534,7 +2534,11 @@ describe("Regression: Responses-lane cache visibility (#115)", () => {
     const handler = mod.createResponsesStreamHandler(createMockContext(), response, {
       modelName: "gpt-5.6-sol",
     });
-    const events = await parseClaudeSseStream(handler);
+    return await parseClaudeSseStream(handler);
+  }
+
+  async function responsesUsageOf(sse: string) {
+    const events = await responsesEventsOf(sse);
     const delta = events.find((e) => e.data?.type === "message_delta");
     expect(delta).toBeDefined();
     return delta?.data?.usage;
@@ -2573,7 +2577,13 @@ describe("Regression: Responses-lane cache visibility (#115)", () => {
     expect(usage.input_tokens).toBe(1500);
   });
 
-  test("a provider reporting more cached than total cannot emit negative input", async () => {
+  test("a provider reporting more cached than total ships UNSPLIT, never input 0 (#186)", async () => {
+    // Port of the S4-c ruling above to this lane (#186): the inclusive clamp
+    // makes cached === total a fully-cached turn, and a delta `input_tokens: 0`
+    // is DISCARDED by the client's usage merge — the seed would survive beside
+    // a full-size cache_read and roughly double the reported context. This
+    // test pinned exactly that 0/1000 shape before #186; it was the hazard in
+    // disguise, same as the original #99 pin was on the chat-completions lane.
     const usage = await responsesUsageOf(
       [
         `event: response.created`,
@@ -2584,7 +2594,44 @@ describe("Regression: Responses-lane cache visibility (#115)", () => {
         ``,
       ].join("\n")
     );
-    expect(usage.input_tokens).toBe(0);
-    expect(usage.cache_read_input_tokens).toBe(1000);
+    expect(usage.input_tokens).toBe(1000); // unsplit — never 0, never negative
+    expect(usage.cache_read_input_tokens).toBe(0);
+    expect(
+      usage.input_tokens + usage.cache_read_input_tokens + (usage.cache_creation_input_tokens ?? 0)
+    ).toBe(1000);
+  });
+
+  test("all three input counters ship TOGETHER on the delta (#186)", async () => {
+    // The pre-#186 shape carried input/output/cache_read but NOT
+    // cache_creation — an absent key reaches the client's merge as
+    // `undefined` and its raw three-way sum (context meter, auto-compaction
+    // threshold) becomes NaN. `in` first: a "=== 0" assert alone passes
+    // trivially when the key is missing (positive control).
+    const sse = readFileSync(join(FIXTURES_DIR, "SEED-responses-cached-tokens.sse"), "utf-8");
+    const usage = await responsesUsageOf(sse);
+    expect("cache_creation_input_tokens" in usage).toBe(true);
+    expect(usage.cache_creation_input_tokens).toBe(0);
+    expect(
+      usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+    ).toBe(98765);
+  });
+
+  test("message_start seeds BOTH cache counters at an explicit 0 (#186)", async () => {
+    const sse = readFileSync(join(FIXTURES_DIR, "SEED-responses-cached-tokens.sse"), "utf-8");
+    const events = await responsesEventsOf(sse);
+    const start = events.find((e) => e.data?.type === "message_start");
+    expect(start).toBeDefined();
+    const seed = start?.data?.message?.usage;
+    // All four keys present and numeric — an absent key is the NaN hazard.
+    expect(Object.keys(seed ?? {}).sort()).toEqual([
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+      "input_tokens",
+      "output_tokens",
+    ]);
+    expect(seed.input_tokens).toBe(0);
+    expect(seed.output_tokens).toBe(0);
+    expect(seed.cache_read_input_tokens).toBe(0);
+    expect(seed.cache_creation_input_tokens).toBe(0);
   });
 });

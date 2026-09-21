@@ -18,6 +18,7 @@ import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
 import { overflowReportedTokens, overflowReportFloor } from "../overflow-report-floor.js";
 import { createResponseCapture } from "../response-capture.js";
 import { isPolicyRefusal, logPolicyRefusal } from "./policy-refusal.js";
+import { toAnthropicUsage } from "./usage-cache-split.js";
 
 /**
  * Extract the token counts named by a context-overflow error.
@@ -215,6 +216,24 @@ export function createResponsesStreamHandler(
   > = new Map();
   const closedFunctionBlocks = new Set<number>();
 
+  // Terminal usage shape, ONE derivation point for all six emission sites
+  // (#186). The parser accumulates the Responses wire's numbers into locals
+  // as the events arrive (response.completed sets them, response.incomplete
+  // updates them, an overflow error synthesizes them), so this rebuilds the
+  // wire-shaped object and hands it to the shared shaper — `toAnthropicUsage`
+  // owns the fullyCached rule and the three-key contract, same as the
+  // chat-completions lane since #179. `cacheReadTokens` arrives here already
+  // clamped by `readCacheReadTokens`; the shaper's own clamp is idempotent on
+  // it. cache_creation stays 0 on this lane (the Responses API reports no
+  // cache-write signal) — explicit, so the client's raw three-way sum can
+  // never see `undefined`.
+  const finalUsage = () =>
+    toAnthropicUsage({
+      input_tokens: inputTokens,
+      input_tokens_details: { cached_tokens: cacheReadTokens },
+      output_tokens: outputTokens,
+    });
+
   const stream = new ReadableStream({
     start: async (controller) => {
       // Diagnostic tap (no-op unless CLAUDISH_CAPTURE_DIR is set): mirror every
@@ -274,7 +293,7 @@ export function createResponsesStreamHandler(
           send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: "end_turn", stop_sequence: null },
-            usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+            usage: finalUsage(),
           });
           send("message_stop", { type: "message_stop" });
         } catch {
@@ -289,7 +308,7 @@ export function createResponsesStreamHandler(
           path: "interrupted",
           detail,
           tools: functionCalls.size,
-          usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+          usage: finalUsage(),
         });
         try {
           controller.close();
@@ -356,7 +375,21 @@ export function createResponsesStreamHandler(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          // #186: the seed carries BOTH cache counters at an explicit 0. The
+          // client's per-key usage merge takes a delta only when it is > 0 and
+          // falls back to this seed otherwise — an absent key makes that
+          // fallback `undefined`, and the raw three-way sum that feeds the
+          // context meter and auto-compaction turns into NaN. NOT
+          // messageStartUsage(): that helper seeds input_tokens to the prior
+          // turn's count or 100 (S4-b) while this lane seeds 0 — #186's AC2
+          // forbids changing that number as a side effect, so the divergence
+          // stays until it is ruled on separately.
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
         },
       });
       send("ping", { type: "ping" });
@@ -628,7 +661,7 @@ export function createResponsesStreamHandler(
                 send("message_delta", {
                   type: "message_delta",
                   delta: { stop_reason: "end_turn", stop_sequence: null },
-                  usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+                  usage: finalUsage(),
                 });
                 send("message_stop", { type: "message_stop" });
                 isClosed = true;
@@ -644,7 +677,7 @@ export function createResponsesStreamHandler(
                   error: errCode,
                   tools: functionCalls.size,
                   overflow: overflowInfo,
-                  usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+                  usage: finalUsage(),
                 });
                 controller.close();
                 return;
@@ -681,7 +714,7 @@ export function createResponsesStreamHandler(
         send("message_delta", {
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+          usage: finalUsage(),
         });
         send("message_stop", { type: "message_stop" });
 
@@ -692,7 +725,7 @@ export function createResponsesStreamHandler(
           stop_reason: stopReason,
           path: "normal",
           tools: functionCalls.size,
-          usage: { input_tokens: inputTokens - cacheReadTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+          usage: finalUsage(),
         });
         controller.close();
       } catch (error) {
