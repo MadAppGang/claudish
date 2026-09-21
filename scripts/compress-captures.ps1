@@ -76,10 +76,21 @@ param(
   # 0 = GDrive is the only home: every local archive is deleted as soon as
   # its GDrive copy is confirmed (same run, right after the upload).
   # Negative = keep all local archives (escape hatch).
-  [int]   $KeepLocalDays = 0
+  [int]   $KeepLocalDays = 0,
+  # Machine qualifier for the archive name: captures-<day>-<tag>.7z.
+  # GDriveDir is a SHARED namespace across the fleet and the upload is a forced
+  # overwrite, so two producers writing captures-<day>.7z destroy each other's
+  # day (see Get-CaptureArchivePolicy). A tag makes the collision structurally
+  # impossible. Empty is allowed ONLY with -AllowUntaggedSharedArchive.
+  [string]$MachineTag = "",
+  # Opt-in for the ONE machine that owns the legacy untagged namespace, so its
+  # existing archive names — and every reader matching captures-<day>.7z —
+  # are unchanged. Any other machine must pass -MachineTag instead.
+  [switch]$AllowUntaggedSharedArchive
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'lib\claudish-engine.psm1') -Force -DisableNameChecking
 if (-not $ArchiveDir) { $ArchiveDir = Join-Path $CaptureDir "archive" }
 $logFile = Join-Path $CaptureDir "compaction.log"
 
@@ -90,6 +101,17 @@ function Log([string]$msg) {
 }
 
 # --- preconditions -----------------------------------------------------------
+# Namespace policy FIRST: refuse before archiving, never after uploading. A run
+# that joins the shared off-site directory anonymously overwrites another
+# machine's archive for the same day and then purges its own local copy, so the
+# day is lost everywhere — and that is the DEFAULT configuration, which is why
+# the refusal has to be the default too.
+$archivePolicy = Get-CaptureArchivePolicy -GDriveDir $GDriveDir -MachineTag $MachineTag `
+                   -AllowUntaggedSharedArchive:$AllowUntaggedSharedArchive
+if (-not $archivePolicy.Ok) { Log ("FATAL: {0}" -f $archivePolicy.Reason); exit 3 }
+$MachineTag = $archivePolicy.MachineTag
+Log ("NAMESPACE {0}" -f $archivePolicy.Reason)
+
 if (-not (Test-Path -LiteralPath $SevenZip))   { Log "FATAL: 7z not found at $SevenZip"; exit 2 }
 if (-not (Test-Path -LiteralPath $CaptureDir)) { Log "FATAL: capture dir not found: $CaptureDir"; exit 2 }
 if (-not (Test-Path -LiteralPath $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null }
@@ -120,7 +142,7 @@ $totalRaw = 0L; $totalArch = 0L; $totalFiles = 0; $errors = 0
 foreach ($day in $daysToArchive) {
   $files = $byDay[$day]
   $rawBytes = ($files | Measure-Object -Property Length -Sum).Sum
-  $archivePath = Join-Path $ArchiveDir "captures-$day.7z"
+  $archivePath = Join-Path $ArchiveDir (Get-CaptureArchiveName -Day $day -MachineTag $MachineTag)
 
   if ($PSCmdlet.ShouldProcess("$($files.Count) files for $day", "7z archive -> $archivePath then delete loose")) {
     # Write an exact file list (bare names, no BOM) for 7z's @listfile.
@@ -193,6 +215,10 @@ foreach ($day in $daysToArchive) {
 # which otherwise duplicated #63 but kept the pre-migration GDrive path.
 if ($GDriveDir -and (Test-Path -LiteralPath $ArchiveDir) -and (Test-Path -LiteralPath $GDriveDir)) {
   foreach ($arch in (Get-ChildItem -LiteralPath $ArchiveDir -Filter 'captures-*.7z' -File)) {
+    # Only ever re-upload archives this run OWNS. A machine that once ran
+    # untagged and now carries a tag still has those old names on disk; pushing
+    # them would walk straight back into the collision the tag exists to close.
+    if ((Get-CaptureArchiveMachineTag -Name $arch.Name) -ne $MachineTag) { continue }
     $dest = Join-Path $GDriveDir $arch.Name
     $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -eq $arch.Length)
     if (-not $ok) {
@@ -223,8 +249,10 @@ if ($KeepLocalDays -ge 0 -and $GDriveDir -and (Test-Path -LiteralPath $ArchiveDi
   $purgeCutoff = (Get-Date).ToUniversalTime().Date.AddDays(-$KeepLocalDays)
   $purged = 0; $purgeSkipped = 0
   foreach ($arch in (Get-ChildItem -LiteralPath $ArchiveDir -Filter 'captures-*.7z' -File)) {
-    if ($arch.Name -notmatch 'captures-(\d{4}-\d{2}-\d{2})\.7z') { continue }
-    $dayDate = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd', $null)
+    if ((Get-CaptureArchiveMachineTag -Name $arch.Name) -ne $MachineTag) { continue }
+    $archDay = Get-CaptureArchiveDay -Name $arch.Name
+    if (-not $archDay) { continue }   # unparseable name: skip, never guess before deleting
+    $dayDate = [datetime]::ParseExact($archDay, 'yyyy-MM-dd', $null)
     if ($dayDate -ge $purgeCutoff) { continue }   # within retention window
     $dest = Join-Path $GDriveDir $arch.Name
     # Require off-site copy to exist AND match local size before deleting.

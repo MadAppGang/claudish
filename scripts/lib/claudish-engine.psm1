@@ -1539,8 +1539,125 @@ function Get-ScriptProvenance {
     }
 }
 
+#region capture-archive naming ------------------------------------------------
+# The off-site archive namespace is SHARED: every machine's `compress-captures.ps1`
+# copies into the same Google Drive folder. The archive name carried no machine
+# dimension (`captures-<day>.7z`), and the upload is `Copy-Item -Force`, so a
+# SECOND producer arming the script with default parameters would:
+#   1. write its own (small) archive over the first machine's (large) one,
+#   2. "confirm" the upload by comparing the destination size to the file it had
+#      just written itself — a check that can only ever pass,
+#   3. purge its local copy (KeepLocalDays=0 makes off-site the ONLY home),
+# while the first machine had already purged its own copy the night before.
+# The day is then gone everywhere. That is a data-loss path, not a gap, and it
+# opens exactly when a fleet starts serving requests locally on more than one
+# machine — i.e. the moment sidecar archives become worth consolidating.
+#
+# The remedy is structural rather than procedural: give every archive a name
+# that cannot collide, and refuse to run at all when a run would otherwise join
+# a shared namespace anonymously. An unconfigured machine fails LOUDLY instead
+# of destroying; the single historical producer keeps its exact names behind an
+# explicit opt-in, so nothing that reads `captures-<day>.7z` changes.
+
+function Get-CaptureArchiveName {
+    <#
+        Archive file name for one day, optionally qualified by machine.
+
+        An empty tag yields the legacy `captures-<day>.7z`. That spelling is
+        kept — not deprecated — because the existing history is stored under it
+        and every reader (traffic-history.ps1, lane-matrix.py) matches it.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Day,
+        [string]$MachineTag = ''
+    )
+    if ($Day -notmatch '^\d{4}-\d{2}-\d{2}$') {
+        throw "Get-CaptureArchiveName: Day must be yyyy-MM-dd, got '$Day'"
+    }
+    if ([string]::IsNullOrWhiteSpace($MachineTag)) { return "captures-$Day.7z" }
+    if ($MachineTag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        throw "Get-CaptureArchiveName: MachineTag must match ^[A-Za-z0-9][A-Za-z0-9._-]*$, got '$MachineTag'"
+    }
+    return "captures-$Day-$MachineTag.7z"
+}
+
+function Get-CaptureArchiveDay {
+    <#
+        The day an archive name encodes, tagged or not; $null when the name is
+        not one of ours. The retention purge keys on this, so a name it cannot
+        parse must be SKIPPED rather than guessed at — deleting on a guess is
+        the failure this whole region exists to prevent.
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+    if ($Name -match '^captures-(\d{4}-\d{2}-\d{2})(?:-[A-Za-z0-9._-]+)?\.7z$') { return $matches[1] }
+    return $null
+}
+
+function Get-CaptureArchiveMachineTag {
+    <# The machine tag an archive name carries, or '' for a legacy untagged name. #>
+    param([Parameter(Mandatory)][string]$Name)
+    if ($Name -match '^captures-\d{4}-\d{2}-\d{2}-([A-Za-z0-9._-]+)\.7z$') { return $matches[1] }
+    return ''
+}
+
+function Get-CaptureArchivePolicy {
+    <#
+        Decides whether a run may write into the off-site namespace, BEFORE it
+        archives or copies anything.
+
+        Rules, in the order they are checked:
+          - No off-site directory  -> local compaction only, nothing is shared,
+                                      any tag (including none) is fine.
+          - A machine tag          -> names cannot collide. Allowed.
+          - No tag, opt-in passed  -> the single historical producer, keeping
+                                      its existing names. Allowed, explicitly.
+          - No tag, no opt-in      -> REFUSED. This is the destructive case, and
+                                      it is also the default, which is why the
+                                      refusal has to be the default too.
+
+        Returns an object rather than throwing so the caller can log one clean
+        FATAL line and exit non-zero; a thrown exception in an unattended job
+        tends to be read as a transient failure and retried.
+    #>
+    param(
+        [string]$GDriveDir = '',
+        [string]$MachineTag = '',
+        [switch]$AllowUntaggedSharedArchive
+    )
+    $tag = $MachineTag
+    if ($null -eq $tag) { $tag = '' }
+    $tag = $tag.Trim()
+
+    if ($tag -ne '' -and $tag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        return [pscustomobject]@{
+            Ok         = $false
+            MachineTag = $tag
+            Reason     = "MachineTag '$tag' is not filename-safe (expected ^[A-Za-z0-9][A-Za-z0-9._-]*$)"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($GDriveDir)) {
+        return [pscustomobject]@{ Ok = $true; MachineTag = $tag; Reason = 'local-only: no shared namespace' }
+    }
+    if ($tag -ne '') {
+        return [pscustomobject]@{ Ok = $true; MachineTag = $tag; Reason = "tagged: archives are named captures-<day>-$tag.7z" }
+    }
+    if ($AllowUntaggedSharedArchive) {
+        return [pscustomobject]@{ Ok = $true; MachineTag = ''; Reason = 'untagged shared namespace, explicitly allowed' }
+    }
+    return [pscustomobject]@{
+        Ok         = $false
+        MachineTag = ''
+        Reason     = 'refusing to write captures-<day>.7z into a shared off-site directory without -MachineTag: a second producer overwrites the first machine archive and then purges its own local copy, losing the day everywhere. Pass -MachineTag <name>, or -AllowUntaggedSharedArchive on the one machine that owns the untagged namespace.'
+    }
+}
+#endregion
+
 Export-ModuleMember -Function @(
     'Get-ScriptProvenance'
+    'Get-CaptureArchiveName'
+    'Get-CaptureArchiveDay'
+    'Get-CaptureArchiveMachineTag'
+    'Get-CaptureArchivePolicy'
     'Invoke-GitBounded'
     'ConvertFrom-DockerEventLine'
     'Get-DockerEventFingerprint'
