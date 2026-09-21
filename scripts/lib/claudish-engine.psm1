@@ -790,6 +790,123 @@ function Get-DockerEventFingerprint {
     return ('{0}|{1}|{2}' -f $Event.TimeNano, $Event.Action, $Event.ContainerId)
 }
 
+function Get-DockerEventActionName {
+    <#
+    .SYNOPSIS
+        The bare action verb, stripped of the payload docker appends after a colon.
+    .DESCRIPTION
+        Docker writes two shapes into the same field: a bare verb (`start`, `die`)
+        and `verb: payload`. The payload is what makes this function necessary —
+        for `exec_create` and `exec_start` it is THE FULL COMMAND LINE, so any
+        membership test written against the raw field silently fails to match and
+        the event sails through an allowlist that names the verb.
+    #>
+    param([string]$Action)
+
+    if ([string]::IsNullOrWhiteSpace($Action)) { return '' }
+    $idx = $Action.IndexOf(':')
+    if ($idx -lt 0) { return $Action.Trim() }
+    return $Action.Substring(0, $idx).Trim()
+}
+
+function Get-DockerEventLifecycleActions {
+    <#
+    .SYNOPSIS
+        The container actions this collector exists to preserve — the single
+        source of truth for both the daemon-side filter and the sink guard.
+    .DESCRIPTION
+        `health_status` is deliberately ABSENT despite carrying no command line.
+        With a healthcheck every 30s across the ~38 containers measured on these
+        hosts it would dominate the file, and the 5 MB rotation would then evict
+        the restart events #169 exists to keep. A collector whose noise pushes out
+        its own signal has the defect it was built to fix.
+    #>
+    return @(
+        'create'
+        'start'
+        'stop'
+        'die'
+        'kill'
+        'restart'
+        'destroy'
+        'oom'
+        'pause'
+        'unpause'
+        'rename'
+        'update'
+    )
+}
+
+function Get-DockerEventsFilterArgs {
+    <#
+    .SYNOPSIS
+        The `--filter` arguments that keep command-bearing events INSIDE the
+        daemon, so they are never read, let alone written.
+    .DESCRIPTION
+        Built from Get-DockerEventLifecycleActions so the wire filter and the sink
+        guard cannot drift apart — two lists naming the same policy is how one of
+        them ends up stale. Repeated `--filter event=` is an OR on docker's side.
+    #>
+    param([string[]]$Actions = @(Get-DockerEventLifecycleActions))
+
+    $out = @('--filter', 'type=container')
+    foreach ($a in @($Actions)) {
+        if ([string]::IsNullOrWhiteSpace($a)) { continue }
+        $out += '--filter'
+        $out += ("event={0}" -f $a)
+    }
+    return $out
+}
+
+function Select-LifecycleDockerEvents {
+    <#
+    .SYNOPSIS
+        Refuse to persist anything outside the lifecycle allowlist — enforced at
+        the sink, independently of the daemon-side filter.
+    .DESCRIPTION
+        WHY THIS IS NOT REDUNDANT WITH THE FILTER (incident 2026-09-21). Before
+        this, the only filter was `type=container`, which admits `exec_create` and
+        `exec_start` — and docker puts the executed COMMAND LINE in their Action
+        field. Every Docker healthcheck that passes a secret as an argument was
+        therefore copied verbatim into a persisted, rotated log, every 15 minutes.
+        Measured on ai-01 in a dry-run: 328 events in 8s, 328 of them carrying a
+        command line, several belonging to OTHER workspaces' containers — and
+        lifecycle events: 0 of 328. The collector captured none of what it exists
+        for and all of what it must never touch, from one missing filter.
+
+        So the filter is the fix and this is the guard: a server-side filter is a
+        REQUEST, honored by whatever docker version is installed, and the thing it
+        protects is third-party secrets. The guard holds on the one machine whose
+        daemon answers differently, and it is testable without docker at all.
+
+        `exec_*` is refused unconditionally, even if an operator widens -Actions:
+        the allowlist expresses which events are useful, this expresses which are
+        never safe to write down. Those are different questions.
+    #>
+    param(
+        $Events,
+        [string[]]$Actions = @(Get-DockerEventLifecycleActions)
+    )
+
+    $allow = @{}
+    foreach ($a in @($Actions)) { if ($a) { $allow[$a.ToLowerInvariant()] = $true } }
+
+    $kept = @()
+    $dropped = @()
+    foreach ($e in @($Events)) {
+        if ($null -eq $e) { continue }
+        $name = (Get-DockerEventActionName -Action $e.Action).ToLowerInvariant()
+        # Unconditional: these carry the command line in the Action payload.
+        if ($name.StartsWith('exec_')) { $dropped += $e; continue }
+        if ($allow.ContainsKey($name)) { $kept += $e } else { $dropped += $e }
+    }
+
+    return [PSCustomObject]@{
+        Kept    = $kept
+        Dropped = $dropped
+    }
+}
+
 function Select-NewDockerEvents {
     <#
     .SYNOPSIS
@@ -1351,6 +1468,10 @@ Export-ModuleMember -Function @(
     'Invoke-GitBounded'
     'ConvertFrom-DockerEventLine'
     'Get-DockerEventFingerprint'
+    'Get-DockerEventActionName'
+    'Get-DockerEventLifecycleActions'
+    'Get-DockerEventsFilterArgs'
+    'Select-LifecycleDockerEvents'
     'Select-NewDockerEvents'
     'ConvertTo-DockerSinceInstant'
     'Get-DockerEventsNextSince'

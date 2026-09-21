@@ -344,6 +344,113 @@ Describe 'Add-DockerEventsTickRecord' {
     }
 }
 
+Describe 'the collector never persists a command line (incident 2026-09-21)' {
+    # WHAT THIS GUARDS. The first version filtered on `type=container` alone,
+    # which admits exec_create/exec_start — and docker puts the EXECUTED COMMAND
+    # LINE in their Action field. Any healthcheck passing a secret as an argument
+    # was copied in clear text into the persisted, rotated log every 15 minutes,
+    # including containers belonging to other workspaces on the same host.
+    # Measured on ai-01 in a dry-run before installing: 328 events in 8s,
+    # 328 of 328 carrying a command line, lifecycle events 0 of 328.
+    #
+    # The sample below is the SHAPE of the leak with a placeholder where the
+    # secret was. Nothing observed is reproduced here: a test fixture is a
+    # published artifact, and a redacted secret in a repo is still a disclosure
+    # of where to look.
+
+    BeforeAll {
+        $script:ExecLeakShape = '{"Type":"container","Action":"exec_create: /bin/sh -c mysqladmin ping -h localhost -u root -pPLACEHOLDER-NOT-A-REAL-SECRET","Actor":{"ID":"aa27f99cbb06aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","Attributes":{"image":"mariadb:11","name":"some-other-workspace-db"}},"scope":"local","time":1789925500,"timeNano":1789925500000000000}'
+    }
+
+    It 'strips the payload docker appends after the colon' {
+        # Without this the membership test never matches and the verb sails
+        # through an allowlist that names it.
+        Get-DockerEventActionName -Action 'exec_create: /bin/sh -c secret' | Should -Be 'exec_create'
+        Get-DockerEventActionName -Action 'health_status: healthy' | Should -Be 'health_status'
+        Get-DockerEventActionName -Action 'start' | Should -Be 'start'
+        Get-DockerEventActionName -Action '' | Should -Be ''
+    }
+
+    It 'the lifecycle allowlist names no exec_* action' {
+        $actions = @(Get-DockerEventLifecycleActions)
+        $actions.Count | Should -BeGreaterThan 5
+        @($actions | Where-Object { $_ -like 'exec*' }) | Should -BeNullOrEmpty
+        # The events the 2026-09-20 incident could not recover must be in it.
+        $actions | Should -Contain 'die'
+        $actions | Should -Contain 'start'
+        $actions | Should -Contain 'destroy'
+    }
+
+    It 'the daemon-side filter asks for each lifecycle action and never for exec_*' {
+        $filterArgs = @(Get-DockerEventsFilterArgs)
+        # Positive control: the filter the original version had is still there,
+        # so a test that matches nothing cannot pass by matching nothing.
+        $filterArgs | Should -Contain 'type=container'
+        foreach ($a in @(Get-DockerEventLifecycleActions)) {
+            $filterArgs | Should -Contain ("event={0}" -f $a)
+        }
+        @($filterArgs | Where-Object { $_ -match 'exec' }) | Should -BeNullOrEmpty
+    }
+
+    It 'drops an exec event carrying a command line, keeps the lifecycle event' {
+        $leak = ConvertFrom-DockerEventLine -Line $script:ExecLeakShape
+        $leak | Should -Not -BeNullOrEmpty   # it parses — that is why it leaked
+        $ok = ConvertFrom-DockerEventLine -Line $script:RealCreateLine
+
+        $sel = Select-LifecycleDockerEvents -Events @($leak, $ok)
+        @($sel.Kept).Count | Should -Be 1
+        $sel.Kept[0].Action | Should -Be 'create'
+        @($sel.Dropped).Count | Should -Be 1
+        # And the dropped one is counted, never written: "filtered" must stay
+        # distinguishable from "the daemon was quiet".
+        $sel.Dropped[0].Action | Should -BeLike 'exec_create*'
+    }
+
+    It 'refuses exec_* EVEN IF an operator widens the allowlist' {
+        # The allowlist says which events are useful. This says which are never
+        # safe to write down. Different questions, so widening one must not
+        # silently answer the other.
+        $leak = ConvertFrom-DockerEventLine -Line $script:ExecLeakShape
+        $sel = Select-LifecycleDockerEvents -Events @($leak) -Actions @('create', 'exec_create', 'exec_start')
+        @($sel.Kept) | Should -BeNullOrEmpty
+        @($sel.Dropped).Count | Should -Be 1
+    }
+
+    It 'exec noise cannot manufacture the shared-cause verdict' {
+        # 5 distinct containers inside one second is the host-wide-event signal.
+        # Healthchecks fire on every container at once, so unfiltered exec events
+        # would make the collector report a shared cause on a perfectly calm host
+        # — inventing the very evidence it exists to supply.
+        $events = @()
+        foreach ($i in 1..6) {
+            $line = $script:ExecLeakShape -replace 'aa27f99cbb06', ('bb{0}7f99cbb06' -f $i)
+            $events += (ConvertFrom-DockerEventLine -Line $line)
+        }
+        # Positive control: unfiltered, this population DOES read as shared-cause.
+        (Get-DockerEventGroupVerdict -Events $events -GroupSpanMs 1000 -MinContainers 5).Verdict |
+            Should -Be 'shared-cause'
+        # Filtered, there is nothing left to draw a verdict from.
+        $kept = @((Select-LifecycleDockerEvents -Events $events).Kept)
+        $kept | Should -BeNullOrEmpty
+    }
+
+    It 'the collector filters at the source AND guards at the sink' {
+        $path = Join-Path $script:ScriptsRoot 'docker-events-collect.ps1'
+        $src = Get-Content -LiteralPath $path -Raw
+        $src | Should -Match 'Get-DockerEventsFilterArgs'
+        $src | Should -Match 'Select-LifecycleDockerEvents'
+        # The bare filter is what leaked. It must no longer be the only one, i.e.
+        # it must not appear as a hardcoded argument list in the invocation.
+        $src | Should -Not -Match "@\('events',\s*'--since',\s*\`$sinceUtc,\s*'--filter',\s*'type=container'"
+        # And the guard must run BEFORE the write, not after it.
+        $guardAt = $src.IndexOf('Select-LifecycleDockerEvents -Events')
+        $writeAt = $src.IndexOf('Write-EventsAppend -JsonLines')
+        $guardAt | Should -BeGreaterThan 0
+        $writeAt | Should -BeGreaterThan 0
+        $guardAt | Should -BeLessThan $writeAt
+    }
+}
+
 Describe 'the collector contains no actuator' {
     # Same shape and the same reasoning as the wedge path's AC4 test: collecting
     # is not acting. A collector that "helpfully" restarts something on a

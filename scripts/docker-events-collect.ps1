@@ -10,6 +10,23 @@
 # the next unexplained restart window is attributable within one cycle, from a
 # FILE, with no forensics archaeology.
 #
+# IT WRITES LIFECYCLE EVENTS ONLY, AND THAT IS A SECURITY PROPERTY, not a
+# tidiness one (incident 2026-09-21, ai-01). The first version filtered on
+# `type=container` alone — which admits `exec_create` and `exec_start`, whose
+# Action field carries THE EXECUTED COMMAND LINE. Every Docker healthcheck that
+# passes a secret as an argument was therefore copied in clear text into this
+# persisted, rotated log, every 15 minutes, including containers belonging to
+# other workspaces on the same host. Measured in a dry-run before installing:
+# 328 events / 453 532 bytes in 8 seconds, 328 of 328 carrying a command line,
+# and lifecycle events 0 of 328 — one missing filter made the collector capture
+# everything it must never touch and nothing it exists for.
+#
+# Two layers, because they answer different questions. The daemon-side filter
+# (Get-DockerEventsFilterArgs) means the bytes are never read; the sink guard
+# (Select-LifecycleDockerEvents) means they are never written even on a daemon
+# that honors the request differently, and it is testable with no docker at all.
+# `exec_*` is refused unconditionally, above any allowlist.
+#
 # THERE IS NO ACTUATOR HERE, deliberately and by mandate. Collecting is not
 # acting. A collector that "helpfully" restarts something on a suspicious event
 # is how a remediation tore a host's Docker engine down on 2026-09-20 (#173):
@@ -174,16 +191,27 @@ if ([string]::IsNullOrWhiteSpace($sinceUtc)) {
 }
 
 # Bounded. The kill closes the window; see -WindowSec.
-$res = Invoke-DockerEventsBounded -DockerArgs @('events', '--since', $sinceUtc, '--filter', 'type=container', '--format', '{{json .}}') -TimeoutSec $WindowSec
+# The filter args keep command-bearing events (exec_*) inside the daemon — see
+# Select-LifecycleDockerEvents for the incident that made that load-bearing.
+$dockerArgs = @('events', '--since', $sinceUtc) + @(Get-DockerEventsFilterArgs) + @('--format', '{{json .}}')
+$res = Invoke-DockerEventsBounded -DockerArgs $dockerArgs -TimeoutSec $WindowSec
 $killInstant = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ', $Invariant)
 
 # The window END is measured BEFORE parsing, so a slow parse cannot make the
 # watermark jump past events the daemon had already emitted.
-$parsed = @()
+$rawParsed = @()
 foreach ($line in @($res.Lines)) {
     $e = ConvertFrom-DockerEventLine -Line $line
-    if ($null -ne $e) { $parsed += $e }
+    if ($null -ne $e) { $rawParsed += $e }
 }
+
+# Enforced at the sink, independently of the daemon-side filter. This runs BEFORE
+# the group verdict on purpose: healthcheck exec events on five distinct
+# containers inside one second would otherwise read as `shared-cause`, i.e. the
+# collector would manufacture the host-wide-event signal it exists to report.
+$lifecycle = Select-LifecycleDockerEvents -Events $rawParsed
+$parsed = @($lifecycle.Kept)
+$filtered = @($lifecycle.Dropped).Count
 
 $seen = @()
 if ($null -ne $state) {
@@ -227,6 +255,10 @@ $record = [PSCustomObject]@{
     EventCount   = $parsed.Count
     Written      = $written
     Skipped      = $sel.Skipped.Count
+    # Non-lifecycle events the guard refused. Counted, never written: a number
+    # here says "the filter worked", and it must stay distinguishable from the
+    # daemon simply having been quiet.
+    Filtered     = $filtered
     Verdict      = $verdict.Verdict
     VerdictNote  = $verdict.Reason
 }
@@ -239,8 +271,8 @@ Write-CollectorState -State $newState
 
 Invoke-RotationIfNeeded
 
-Write-Output ("[docker-events] ok={0} reason={1} since={2}({3}) events={4} written={5} skipped={6} verdict={7} -> next={8}" -f `
-    $res.Ok, $res.Reason, $sinceUtc, $sinceSource, $parsed.Count, $written, $sel.Skipped.Count, $verdict.Verdict, $watermark.SinceUtc)
+Write-Output ("[docker-events] ok={0} reason={1} since={2}({3}) events={4} filtered={5} written={6} skipped={7} verdict={8} -> next={9}" -f `
+    $res.Ok, $res.Reason, $sinceUtc, $sinceSource, $parsed.Count, $filtered, $written, $sel.Skipped.Count, $verdict.Verdict, $watermark.SinceUtc)
 
 if (-not $res.Ok) { exit 1 }
 exit 0
