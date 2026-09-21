@@ -258,11 +258,12 @@ Describe 'Test-EngineRelaunchReady (the no-teardown-without-a-proven-rebuild gat
         $script:okUser  = { 'MACHINE\operator' }   # a full resolver, not one probe
         $script:okReg   = { param($n, $exe, $u) }
         $script:okVerif = { param($n) $true }
-        # #176: stage 5 must not leak to the live machine. Without this stub
-        # the default probe runs a real Get-Process, and on a machine where
-        # Docker Desktop IS running the preflight proceeds to invoke the REAL
-        # Start-ScheduledTask — a unit test reaching for the scheduler.
-        $script:okDesktop = { $false }
+        # #176/#205: stage 5 must not leak to the live machine. GUI-running is
+        # the non-invoking branch since #205 inverted the execute condition,
+        # so $true is what keeps this stub out of the scheduler. ($false would
+        # now take the INVOKE path and reach a real Start-ScheduledTask — the
+        # inversion silently swapped which value isolates.)
+        $script:okDesktop = { $true }
     }
 
     It 'is Ready when every stage succeeds' {
@@ -345,7 +346,11 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
         # AC2's "never" is about the invocation, not just the verdict.
         function Invoke-ReadyPreflight {
             param(
-                [bool]$DesktopRunning = $true,
+                # Default = GUI ABSENT: since the #205 inversion this is the
+                # branch that invokes and measures, which is what the execute
+                # scenarios below exercise. GUI-running (the skip branch) is
+                # passed explicitly by its own tests.
+                [bool]$DesktopRunning = $false,
                 # [long], NOT [int]: a real Windows failure code is an HRESULT
                 # with the high bit set (2147946720), and an [int] parameter
                 # would make this helper throw before the code under test ever
@@ -386,7 +391,7 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
     }
 
     It 'AC1: invokes the registered task and reports execute:OK on a clean completion' {
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 0
+        $r = Invoke-ReadyPreflight -TaskResult 0
         $r.Ready | Should -BeTrue
         $r.Checks | Should -Contain 'execute:OK(result=0)'
         $r.Reason | Should -Match 'executed'
@@ -396,31 +401,67 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
     It 'AC1: LastTaskResult 267009 (action launched, still running) also counts as executed' {
         # A GUI exe that keeps running leaves 267009 behind: the action
         # demonstrably launched and is alive. That is execution, not failure.
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 267009
+        $r = Invoke-ReadyPreflight -TaskResult 267009
         $r.Ready | Should -BeTrue
         $r.Checks | Should -Contain 'execute:OK(result=267009)'
     }
 
-    It 'AC2: skips the probe and NEVER invokes the task when Docker Desktop is not running' {
-        $r = Invoke-ReadyPreflight -DesktopRunning $false
+    It '#205 AC1/AC2: GUI RUNNING => NEVER invokes; the honest SKIPPED verdict, no success claim' {
+        # The inversion: invoking with the GUI up is a single-instance FORWARD —
+        # it returns 0 having exercised nothing (the false green #205 exists
+        # to remove) and spawns a resident renderer child. The guard skips
+        # BEFORE the invocation, and the verdict takes the #199 form: Ready
+        # (nothing failed) but explicitly not a proof.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true
         $r.Ready | Should -BeTrue
-        $r.Checks | Should -Contain 'execute:SKIPPED(desktop-not-running)'
-        $r.Reason | Should -Match 'registration-only'
-        $script:InvokeCount | Should -Be 0
+        $r.Checks | Should -Contain 'execute:SKIPPED(gui-running)'
+        $r.Reason | Should -Match 'no fresh exercise performed'
+        $r.Reason | Should -Match 'not re-proven'
+        # The success wording is the NEGATED form only: "relaunch path proven"
+        # (the definitive claim) must not appear — 'proven' alone can't be the
+        # discriminator because "not re-proven" contains it.
+        $r.Reason | Should -Not -Match 'relaunch path proven'
+        $r.Checks | Should -Not -Contain 'execute:OK(result=0)'
+        $script:InvokeCount | Should -Be 0 -Because 'the guard must fire before any invocation'
     }
 
-    It 'AC2: a DesktopProbe that THROWS skips too (fail-safe on the side of not invoking)' {
-        $r = Invoke-ReadyPreflight -ProbeThrows
+    It '#205 AC3: the gui-running skip carries Skipped=$true so the caller cannot bill it as measured' {
+        # The daily budget (relaunchProbeDate) is consumed by measured verdicts
+        # only. The property is the seam the watchdog keys on — without it a
+        # skip would consume the day and, on a GUI-autostart machine, certify a
+        # daily probe that never measured anything.
+        $r = Invoke-ReadyPreflight -DesktopRunning $true
+        $r.PSObject.Properties['Skipped'] | Should -Not -BeNullOrEmpty
+        [bool]$r.Skipped | Should -BeTrue
+    }
+
+    It '#205 AC4 (side 2): GUI ABSENT => the measured path still executes — the guard must not eat the only real measurement' {
+        # Pinned from the other side: the guard exists to skip the false-green
+        # branch, and the false-green branch only. If it ever skipped the
+        # GUI-absent invocation too, this preflight could never measure
+        # anything anywhere, and no test would notice.
+        $r = Invoke-ReadyPreflight -DesktopRunning $false -TaskResult 0
         $r.Ready | Should -BeTrue
-        $r.Checks | Should -Contain 'execute:SKIPPED(desktop-not-running)'
-        $script:InvokeCount | Should -Be 0
+        $r.Checks | Should -Contain 'execute:OK(result=0)'
+        $script:InvokeCount | Should -Be 1
+        $r.PSObject.Properties['Skipped'] | Should -BeNullOrEmpty -Because 'a measured verdict is not a skip'
+    }
+
+    It '#205: a DesktopProbe that THROWS falls toward the MEASURING branch, not the skip' {
+        # An unreadable process table must not become a reason to measure
+        # nothing: the throw is read as GUI-absent, so the task is invoked and
+        # the real behaviour is observed. (The pre-#205 shape skipped here.)
+        $r = Invoke-ReadyPreflight -ProbeThrows -TaskResult 0
+        $r.Ready | Should -BeTrue
+        $r.Checks | Should -Contain 'execute:OK(result=0)'
+        $script:InvokeCount | Should -Be 1
     }
 
     It 'AC3 POSITIVE CONTROL: a deliberately broken action (LastTaskResult=1) is REFUSED' {
         # exit 1 is exactly what a wrong executable path or a policy-blocked
         # action leaves in LastTaskResult. The whole point of #176: a task that
         # registers cleanly and fails on execution must not read as ready.
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 1
+        $r = Invoke-ReadyPreflight -TaskResult 1
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:FAILED(result=1)'
         $r.Reason | Should -Match 'execute:'
@@ -433,7 +474,7 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
         # says. This pins the read against a different high-bit code so the
         # assertion cannot be satisfied by the already-running special case.
         # 0x80070002 = file not found: a real action failure, read as one.
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 2147942402 -TaskState 'Ready'
+        $r = Invoke-ReadyPreflight -TaskResult 2147942402 -TaskState 'Ready'
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:FAILED(result=2147942402)'
         $r.Checks | Should -Not -Contain 'execute:ERROR'
@@ -446,7 +487,7 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
         # alive. Nothing was exercised and nothing failed — asserting Ready here
         # would claim a proof this run never performed, and FAILED would raise a
         # daily alarm on a healthy host.
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 2147946720 -TaskState 'Running'
+        $r = Invoke-ReadyPreflight -TaskResult 2147946720 -TaskState 'Running'
         $r.Ready | Should -BeTrue
         $r.Checks | Should -Contain 'execute:SKIPPED(already-running)'
         $r.Reason | Should -Match 'no fresh exercise'
@@ -457,34 +498,34 @@ Describe 'Test-EngineRelaunchReady execute probe (#176)' {
         # The state guard is the whole reason the special case above is safe: a
         # refusal we cannot attribute to an already-running instance is a real
         # refusal and must stay a failure.
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -TaskResult 2147946720 -TaskState 'Ready'
+        $r = Invoke-ReadyPreflight -TaskResult 2147946720 -TaskState 'Ready'
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:FAILED(result=2147946720)'
         $r.Checks | Should -Not -Contain 'execute:SKIPPED(already-running)'
     }
 
     It 'AC3: a task that never ran (stale LastRunTime) is refused, not assumed' {
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -StaleRunTime
+        $r = Invoke-ReadyPreflight -StaleRunTime
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:STALE'
         $r.Reason | Should -Match 'STALE|never advanced'
     }
 
     It 'AC3: a reader that returns nothing is not-ready (NO-INFO), never a guess' {
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -NoInfo
+        $r = Invoke-ReadyPreflight -NoInfo
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:NO-INFO'
     }
 
     It 'AC4 + fail-safe: an invoker that THROWS yields execute:ERROR, and the preflight never throws' {
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -InvokerThrows
+        $r = Invoke-ReadyPreflight -InvokerThrows
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:ERROR'
         $r.Reason | Should -Match 'execute:'
     }
 
     It 'AC4 + fail-safe: a reader that THROWS is execute:ERROR, not a crash' {
-        $r = Invoke-ReadyPreflight -DesktopRunning $true -ReaderThrows
+        $r = Invoke-ReadyPreflight -ReaderThrows
         $r.Ready | Should -BeFalse
         $r.Checks | Should -Contain 'execute:ERROR'
     }

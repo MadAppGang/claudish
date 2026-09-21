@@ -496,33 +496,48 @@ function Test-EngineRelaunchReady {
     }
     $checks.Add('verify:OK')
 
-    # 5. EXECUTE (#176). When the Desktop GUI is already running, the probe
-    #    invokes the relaunch task and reads back its LastTaskResult/LastRunTime.
-    #    When the GUI is NOT running the probe is SKIPPED — invoking the task
-    #    would START the engine, and a readiness check must never perform the
-    #    action it is only asking about (AC2). A probe that throws is read as
-    #    not-running for the same reason.
+    # 5. EXECUTE (#176, INVERTED by the #205 arbitration). The invoke condition
+    #    is the OPPOSITE of the first design: GUI RUNNING => do NOT invoke;
+    #    GUI ABSENT => invoke, because that is the only branch where the
+    #    measurement means anything. Two measured facts forced the inversion:
     #
-    #    ⚠ The original rationale here said a second instance of the GUI "exits
-    #    immediately", so invoking it was a free no-op. MEASURED FALSE on the
-    #    first live exercise (po-2025, 2026-09-21 11:02Z): the task's action IS
-    #    the GUI process, so its instance stays RUNNING for as long as the GUI
-    #    lives, and `MultipleInstances=IgnoreNew` makes the scheduler REFUSE the
-    #    second start with 0x800710E0 *before the action runs at all*. No second
-    #    process appears — the control comparison is the same task on the same
-    #    host succeeding at the 2026-09-20 19:47 recovery (GUI down, processes
-    #    born 19:47:11-18) and being refused here (GUI up). So the invocation is
-    #    not a free exercise, and a refusal is NOT evidence that the action
-    #    failed: it is evidence the previous launch produced a live GUI. It is
-    #    classified below as "no fresh exercise performed" — the honest middle,
-    #    neither a pass claimed nor a failure invented.
+    #    (a) Invoking while the GUI runs returns 0 by single-instance FORWARD,
+    #        not by exercising the rebuild path. Measured po-2025, 2026-09-21:
+    #        the process born at invocation is a renderer CHILD of the live GUI
+    #        (parent = the pre-existing GUI, --type=renderer), the exe hands
+    #        over and exits, and nothing about the cold-start path ran. A `0`
+    #        obtained that way proves "the scheduler can start the action",
+    #        never "the action can raise a cold engine" — and the latter is the
+    #        ONE defect this preflight exists to catch (-LogonType threw for
+    #        this function's whole existence while its catch logged success).
+    #        A GUI-up invocation is therefore a FALSE GREEN, and it leaves a
+    #        resident renderer behind as a side effect. It reports the honest
+    #        SKIPPED form #199 established: no success claimed, no failure
+    #        invented — and carries Skipped=$true so the caller knows the day
+    #        was not measured (a skip that consumed the daily budget would
+    #        certify a probe that never ran — the same false green, one level
+    #        up).
+    #    (b) With the GUI absent, invoking the just-registered task cold-starts
+    #        the engine. The first design skipped this branch ("a readiness
+    #        check must never perform the action it is only asking about"), but
+    #        a probe that only ever fires while the GUI is up can never measure
+    #        the only thing it exists to measure: post-reboot, after a GUI
+    #        crash, is precisely when the rebuild path must be proven. The
+    #        #205 arbitration inverts it — on an opt-in machine, a once-a-day
+    #        launch of an engine that is down is the measurement, not a side
+    #        effect to avoid.
+    #
+    #    A DesktopProbe that THROWS is read as not-running, i.e. toward the
+    #    branch that observes real behaviour — an unreadable process table must
+    #    not become a reason to measure nothing.
     try { $desktopRunning = [bool](& $DesktopProbe) } catch { $desktopRunning = $false }
-    if (-not $desktopRunning) {
-        $checks.Add('execute:SKIPPED(desktop-not-running)')
+    if ($desktopRunning) {
+        $checks.Add('execute:SKIPPED(gui-running)')
         return [PSCustomObject]@{
-            Ready  = $true
-            Reason = 'relaunch path proven (registration-only — Docker Desktop not running, execute probe skipped)'
-            Checks = $checks.ToArray()
+            Ready   = $true
+            Skipped = $true
+            Reason  = 'relaunch path not re-proven (Docker Desktop GUI is running — an invocation would single-instance-forward and exercise nothing: no fresh exercise performed)'
+            Checks  = $checks.ToArray()
         }
     }
 

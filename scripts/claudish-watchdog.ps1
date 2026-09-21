@@ -575,9 +575,13 @@ function Invoke-RelaunchPreflightWatch {
 
         When this runs the engine is serving, so the probe is free: registering
         the task is an idempotent overwrite of our own ClaudishEngineRelaunch
-        task, and invoking it launches a second instance of an already-running
-        GUI exe — a no-op for a live engine. Cost is bounded by the preflight's
-        own internals (a ~5s execute-poll budget), once a day.
+        task. The EXECUTE half follows the #205 arbitration: while the GUI is
+        running, invoking is a single-instance FORWARD that exercises nothing
+        and returns a false 0 (measured po-2025, 2026-09-21) — so the preflight
+        skips without invoking, and the invocation that actually measures the
+        rebuild path happens on the first cycle where the GUI is ABSENT, i.e.
+        exactly when a relaunch might be needed. A skip is free and does NOT
+        consume the day (AC3, #205); only a measured verdict does.
 
         Consent (AC2b, review of #188): DEFAULT-OFF, on its own
         <ClaudishHome>\relaunch-preflight.enabled file, checked before anything
@@ -642,6 +646,19 @@ function Invoke-RelaunchPreflightWatch {
             # A preflight that returns nothing did not measure; say so and
             # retry next cycle rather than manufacturing a verdict.
             Write-Log "RELAUNCH-PREFLIGHT: not measured this cycle (preflight returned no verdict) — no action taken"
+            return
+        }
+
+        # #205 AC3: a gui-running SKIP is a free look at the process table — it
+        # measured nothing, so it must not consume the day. It ranks with the
+        # THROW branch, not the measured one: on a GUI-autostart machine, a
+        # skip that stamped relaunchProbeDate daily would have the state
+        # certify a daily probe that never measured anything — the same false
+        # green the guard exists to remove, one level up.
+        $isSkip = ($null -ne $verdict.PSObject.Properties['Skipped']) -and [bool]$verdict.Skipped
+        if ($isSkip) {
+            $checks = (@($verdict.Checks) -join ',')
+            Write-Log "RELAUNCH-PREFLIGHT: SKIPPED (gui-running) — $($verdict.Reason) checks=[$checks] (day NOT consumed; the first GUI-absent cycle performs the measurement)"
             return
         }
 

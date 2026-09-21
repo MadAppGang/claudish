@@ -311,19 +311,51 @@ Describe 'Invoke-RelaunchPreflightWatch (wiring, #185)' {
         [string](Get-StateField (Get-State) 'relaunchProbeDate' '') | Should -Be ''
     }
 
-    It 'a SKIPPED verdict (GUI down, healthy engine) logs OK truthfully and consumes the day' {
+    It '#205 AC3: a gui-running SKIP logs its own line and does NOT consume the day' {
         $skipped = {
             [PSCustomObject]@{
-                Ready  = $true
-                Reason = 'relaunch path proven (registration-only — Docker Desktop not running, execute probe skipped)'
-                Checks = @('executable:OK', 'user:OK', 'register:OK', 'verify:OK', 'execute:SKIPPED(desktop-not-running)')
+                Ready   = $true
+                Skipped = $true
+                Reason  = 'relaunch path not re-proven (Docker Desktop GUI is running — an invocation would single-instance-forward and exercise nothing: no fresh exercise performed)'
+                Checks  = @('executable:OK', 'user:OK', 'register:OK', 'verify:OK', 'execute:SKIPPED(gui-running)')
             }
         }
         Invoke-RelaunchPreflightWatch -Preflight $skipped
 
         $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
-        $log | Should -Match 'RELAUNCH-PREFLIGHT: OK — relaunch path proven \(registration-only'
-        $log | Should -Match 'execute:SKIPPED\(desktop-not-running\)'
+        $log | Should -Match 'RELAUNCH-PREFLIGHT: SKIPPED \(gui-running\)'
+        $log | Should -Match 'no fresh exercise performed'
+        $log | Should -Match 'day NOT consumed'
+        $log | Should -Not -Match 'RELAUNCH-PREFLIGHT: OK' -Because 'a skip is neither a success claim nor routed through the OK line'
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') |
+            Should -Be '' -Because 'on a GUI-autostart machine a consuming skip would certify a daily probe that never measured anything'
+
+        # The behavioural half of AC3: the day being unconsumed means the very
+        # next cycle can still measure. Skip-then-measure in one day works.
+        Invoke-RelaunchPreflightWatch -Preflight $script:OkPreflight
+        $script:Invoked | Should -Be 1
+        (Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw) | Should -Match 'RELAUNCH-PREFLIGHT: OK'
+        [string](Get-StateField (Get-State) 'relaunchProbeDate' '') |
+            Should -Be ([DateTime]::UtcNow.ToString('yyyy-MM-dd'))
+    }
+
+    It '#199 pin kept: SKIPPED(already-running) WITHOUT the Skipped property is still measured and consumes the day' {
+        # The no-consume rule is scoped to the gui-running skip by the #205
+        # arbitration. The already-running variant is a measured observation of
+        # scheduler state (the refusal was real, the state read was real), so
+        # it keeps consuming — and this pin keeps a future refactor from
+        # widening the free-skip to every Ready verdict.
+        $alreadyRunning = {
+            [PSCustomObject]@{
+                Ready  = $true
+                Reason = "relaunch path proven (registration-only — task 'x' is already running, so the second start was refused with 0x800710E0: no fresh exercise performed)"
+                Checks = @('executable:OK', 'user:OK', 'register:OK', 'verify:OK', 'execute:SKIPPED(already-running)')
+            }
+        }
+        Invoke-RelaunchPreflightWatch -Preflight $alreadyRunning
+
+        $log = Get-Content (Join-Path $SandboxHome 'watchdog.log') -Raw
+        $log | Should -Match 'RELAUNCH-PREFLIGHT: OK'
         [string](Get-StateField (Get-State) 'relaunchProbeDate' '') |
             Should -Be ([DateTime]::UtcNow.ToString('yyyy-MM-dd'))
     }
