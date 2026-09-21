@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach } from "bun:test";
 import { gzipSync } from "node:zlib";
+import { readFileSync } from "node:fs";
 import {
   createRelayState,
   readRequestBody,
   forwardToUpstream,
   deepProbe,
   relayHealthFields,
+  redactUpstreamForLog,
   FORWARD_HEADERS_TIMEOUT_MS,
   type RelayState,
 } from "./relay.js";
@@ -636,6 +638,74 @@ describe("relayHealthFields", () => {
   it("leaves an upstream with no userinfo untouched", () => {
     const s = createRelayState({ upstream: "http://192.168.0.50:3000" });
     expect(relayHealthFields(s).upstream).toBe("http://192.168.0.50:3000");
+  });
+});
+
+// ── redactUpstreamForLog (#160): the LOG must not carry credentials either ──
+//
+// #159 fixed `/health`; the three log lines that interpolate `state.upstream`
+// kept printing it verbatim — boot and both hysteresis transitions. `docker
+// logs` is read by every cycle, quoted into dashboard reports and archived, so
+// a credential printed there outlives the session that printed it.
+//
+// Two properties are being pinned, and they pull in opposite directions:
+//   - a credential-free upstream comes back BYTE-IDENTICAL, so arming this on
+//     the fleet changes no log line on any machine configured as they are today;
+//   - a credentialed one loses userinfo but KEEPS host, port and path, because
+//     that is what makes a misconfigured upstream diagnosable. Deliberately
+//     wider than the origin-only `/health` field above.
+
+describe("redactUpstreamForLog", () => {
+  it("returns a credential-free upstream byte-identical (no fleet-wide log change)", () => {
+    for (const u of [
+      "http://192.168.0.50:3000",
+      "http://host.docker.internal:3000",
+      "https://models.example.io",
+      "http://127.0.0.1:3002",
+    ]) {
+      expect(redactUpstreamForLog(u)).toBe(u);
+    }
+  });
+
+  it("strips userinfo but keeps host, port and path", () => {
+    expect(redactUpstreamForLog("https://user:secret@hub.example:3000")).toBe("https://hub.example:3000");
+    expect(redactUpstreamForLog("https://user:secret@hub.example:3000/api")).toBe(
+      "https://hub.example:3000/api"
+    );
+    expect(redactUpstreamForLog("https://user@hub.example:3000")).toBe("https://hub.example:3000");
+  });
+
+  // Same two-branch trap as `/health`: the leak needed an unparseable upstream
+  // AND an unencoded `@` in the password. Positive control: the parsable branch
+  // must also come back clean, or this test would pass on a regex never run.
+  it("strips a password containing an unencoded @, on BOTH branches", () => {
+    expect(redactUpstreamForLog("https://user:p@ss@hub.example:3000")).toBe("https://hub.example:3000");
+
+    const out = redactUpstreamForLog("https://user:p@ss@not a url");
+    expect(out).toBe("https://not a url");
+    expect(out).not.toContain("@");
+  });
+
+  it("never throws, whatever it is handed", () => {
+    for (const u of ["", "not a url", "://", "http://", "user:pass@host"]) {
+      expect(() => redactUpstreamForLog(u)).not.toThrow();
+    }
+  });
+
+  // The function being correct proves nothing about the CALL SITES, and the
+  // call sites are where the leak lived. This pins them structurally, so a
+  // future log line added verbatim fails here rather than on a hub's disk.
+  it("no log line in relay.ts interpolates state.upstream verbatim", () => {
+    const src = readFileSync(new URL("./relay.ts", import.meta.url), "utf-8");
+    const logCalls = src.match(/log\(\s*`\[Relay\][^`]*`/g) ?? [];
+
+    // Positive control: the matcher must find the log calls at all, and must
+    // find the redacted form — otherwise "0 verbatim" would mean "0 matched".
+    expect(logCalls.length).toBeGreaterThan(3);
+    expect(logCalls.filter((l) => l.includes("redactUpstreamForLog(state.upstream)")).length).toBe(3);
+
+    const verbatim = logCalls.filter((l) => /\$\{state\.upstream\}/.test(l));
+    expect(verbatim).toEqual([]);
   });
 });
 

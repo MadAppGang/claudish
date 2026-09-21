@@ -123,6 +123,53 @@ export function createRelayState(opts: {
 }
 
 /**
+ * Strip userinfo from an upstream that `new URL` cannot parse.
+ *
+ * `[^/]*` (not `[^/@]+`) so the cut lands on the LAST `@` before the path: an
+ * unencoded `@` inside the password made the narrow class stop at the first one
+ * and republish the tail. Measured 2026-09-20 in review of #159:
+ * `https://user:p@ss@not a url` → `https://ss@not a url`. `new URL` reads that
+ * form correctly, so the hole existed only on the unparseable branch — which is
+ * precisely the branch whose whole job is to leak nothing.
+ *
+ * Shared by `/health` publication and by log redaction so the regex, and the
+ * reason it is written this way, live in ONE place.
+ */
+function stripUnparseableUserinfo(upstream: string): string {
+  return upstream.replace(/\/\/[^/]*@/, "//");
+}
+
+/**
+ * #160: the upstream, safe to LOG. `/health` already refused to publish
+ * credentials (see `relayHealthFields`), but three log lines interpolated
+ * `state.upstream` verbatim — boot, and both hysteresis transitions. A relay
+ * upstream may legitimately carry basic-auth userinfo (`https://user:pass@host`,
+ * the documented SearXNG form), and `docker logs` is read by every cycle, quoted
+ * into dashboard reports and archived: a credential there outlives the session
+ * that printed it.
+ *
+ * Deliberately NARROWER than the `/health` field, which publishes the origin
+ * only: a log keeps host, port and path, because those are what makes a
+ * misconfigured upstream diagnosable. **A credential-free upstream is returned
+ * byte-identical**, so on every machine in the fleet today these lines do not
+ * change at all — the redaction arms only for the form that needs it.
+ *
+ * Never throws: an unparseable upstream degrades to the regex above.
+ */
+export function redactUpstreamForLog(upstream: string): string {
+  try {
+    const u = new URL(upstream);
+    if (!u.username && !u.password) return upstream;
+    u.username = "";
+    u.password = "";
+    // `toString()` re-adds the trailing slash `createRelayState` strips.
+    return u.toString().replace(/\/+$/, "");
+  } catch {
+    return stripUnparseableUserinfo(upstream);
+  }
+}
+
+/**
  * #157: the role this node believes it is playing, for `/health`. On
  * 2026-09-19 a hub recreated as a relay forwarding to ITSELF (ARR loops back)
  * served 4h40 of `200 {"status":"ok"}` while flapping 193 times — healthy and
@@ -144,13 +191,8 @@ export function relayHealthFields(
     upstream = new URL(relay.upstream).origin;
   } catch {
     // Unparseable config: still never publish credentials — strip any userinfo.
-    // `[^/]*` (not `[^/@]+`) so the cut lands on the LAST `@` before the path:
-    // an unencoded `@` inside the password made the narrow class stop at the
-    // first one and republish the tail. Measured 2026-09-20 in review of #159:
-    // `https://user:p@ss@not a url` → `https://ss@not a url`. `new URL` reads
-    // that form correctly, so the hole existed only on the unparseable branch —
-    // which is precisely the branch whose whole job is to leak nothing.
-    upstream = relay.upstream.replace(/\/\/[^/]*@/, "//");
+    // See `stripUnparseableUserinfo` for why the class is `[^/]*`.
+    upstream = stripUnparseableUserinfo(relay.upstream);
   }
   return { role: relay.alive ? "relay-nominal" : "relay-autonomous", upstream };
 }
@@ -162,7 +204,7 @@ function markFail(state: RelayState, reason: string): void {
     state.alive = false;
     state.lastFlipAt = Date.now();
     log(
-      `[Relay] upstream ${state.upstream} DOWN after ${state.consecutiveFail} failure(s) (${reason}) → AUTONOMOUS`,
+      `[Relay] upstream ${redactUpstreamForLog(state.upstream)} DOWN after ${state.consecutiveFail} failure(s) (${reason}) → AUTONOMOUS`,
       true
     );
   }
@@ -573,7 +615,10 @@ export function startUpstreamProber(state: RelayState): () => void {
               state.consecutiveFail = 0;
               state.consecutiveOk = 0;
               state.lastFlipAt = Date.now();
-              log(`[Relay] upstream ${state.upstream} healthy again → NOMINAL (relay resumed)`, true);
+              log(
+                `[Relay] upstream ${redactUpstreamForLog(state.upstream)} healthy again → NOMINAL (relay resumed)`,
+                true
+              );
             } else {
               // deepProbe logged the reason on every false path.
               state.consecutiveOk = 0; // keep waiting
@@ -591,7 +636,10 @@ export function startUpstreamProber(state: RelayState): () => void {
 
   const interval = setInterval(() => void tick(), HEARTBEAT_INTERVAL_MS);
   void tick(); // correct boot-time state fast
-  log(`[Relay] sidecar mode: upstream=${state.upstream} compress=${state.compress}`, true);
+  log(
+    `[Relay] sidecar mode: upstream=${redactUpstreamForLog(state.upstream)} compress=${state.compress}`,
+    true
+  );
 
   return () => {
     stopped = true;
