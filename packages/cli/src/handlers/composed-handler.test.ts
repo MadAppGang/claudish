@@ -5,6 +5,7 @@ import {
   ComposedHandler,
   STRIPPED_IMAGE_PLACEHOLDER,
   stripImageBlocksFromMessages,
+  strippedMediaNotice,
   getRecoveryHint,
 } from "./composed-handler.js";
 import {
@@ -227,21 +228,54 @@ describe("stripImageBlocksFromMessages — empty-content regression", () => {
     expect((messages[0].content as string).length).toBeGreaterThan(0);
   });
 
-  test("single remaining text block collapses to a plain string", () => {
+  test("single remaining text block with NOTHING stripped still collapses to a plain string", () => {
     const messages = [
       {
         role: "user",
-        content: [
-          { type: "text", text: "hello" },
-          { type: "image", source: {} },
-        ],
+        content: [{ type: "text", text: "hello" }],
       },
     ];
     stripImageBlocksFromMessages(messages, ["image_url", "image", "document"]);
     expect(messages[0].content).toBe("hello");
   });
 
-  test("text + multiple text blocks stay an array", () => {
+  test("#222 mixed [text, image] keeps the text AND announces the removal — never silent", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What color is this image?" },
+          { type: "image", source: { type: "base64" } },
+        ],
+      },
+    ];
+    stripImageBlocksFromMessages(messages, ["image_url", "image", "document"]);
+    expect(messages[0].content).toEqual([
+      { type: "text", text: "What color is this image?" },
+      { type: "text", text: strippedMediaNotice(1) },
+    ]);
+  });
+
+  test("#222 multiple stripped parts produce ONE notice carrying the count", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "a" },
+          { type: "image", source: {} },
+          { type: "image", source: {} },
+          { type: "document", source: {} },
+        ],
+      },
+    ];
+    stripImageBlocksFromMessages(messages, ["image", "document"]);
+    expect(messages[0].content).toEqual([
+      { type: "text", text: "a" },
+      { type: "text", text: strippedMediaNotice(3) },
+    ]);
+  });
+
+  test("text + multiple text blocks stay an array, with the removal announced (#222)", () => {
     const messages = [
       {
         role: "user",
@@ -256,7 +290,20 @@ describe("stripImageBlocksFromMessages — empty-content regression", () => {
     expect(messages[0].content).toEqual([
       { type: "text", text: "a" },
       { type: "text", text: "b" },
+      { type: "text", text: strippedMediaNotice(1) },
     ]);
+  });
+
+  test("#222 both removal texts name the proxy's decision and carry no instruction", () => {
+    // The strip decision is the catalog's supportsVision flag, which #222 measured
+    // wrong for a vision model — so the text must not assert it as a model fact,
+    // and must not tell the agent what to do (doctrine 2026-08-23).
+    for (const text of [STRIPPED_IMAGE_PLACEHOLDER, strippedMediaNotice(1), strippedMediaNotice(3)]) {
+      expect(text).toContain("removed by the proxy");
+      expect(text).toContain("not flagged as accepting image input");
+      expect(text).not.toContain("does not support");
+      expect(text).not.toMatch(/\bask\b|\bplease\b|\buse a\b/i);
+    }
   });
 
   test("PDF-read shape (tool result already extracted, images-only user msg) never yields empty content", () => {

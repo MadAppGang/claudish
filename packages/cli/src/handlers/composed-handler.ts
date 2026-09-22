@@ -82,14 +82,35 @@ function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
  * "The prompt parameter was not received normally", which the client then
  * retries into the same wall. The placeholder keeps the turn structure and
  * tells the model an image existed.
+ *
+ * Both texts name the PROXY's decision, not a property of the model: the
+ * verdict comes from the catalog's `supportsVision` flag, which #222 measured
+ * wrong for a vision model (glm-4.6v stripped on the hub). "This model does not
+ * support image input" would state that verdict as a fact about the model —
+ * exactly the claim #222 refutes. No instruction either (doctrine 2026-08-23).
  */
 export const STRIPPED_IMAGE_PLACEHOLDER =
-  "[An image was present in the original request but was removed: this model does not support image input. Ask the user to use a vision-capable model for visual tasks.]";
+  "[An image was present in the original request but was removed by the proxy: this model is not flagged as accepting image input.]";
+
+/**
+ * Factual removal notice appended when stripped parts had surviving siblings.
+ * States the fact (count, actor, reason) — never instructions (doctrine 2026-08-23).
+ */
+export function strippedMediaNotice(count: number): string {
+  const subject =
+    count === 1 ? "1 image/document part was" : `${count} image/document parts were`;
+  return `[${subject} present in this message but removed by the proxy: this model is not flagged as accepting image input.]`;
+}
 
 /**
  * Remove all parts of the given types from every message's content array
  * (in place), collapsing single-text messages to plain strings and
  * substituting STRIPPED_IMAGE_PLACEHOLDER when nothing remains.
+ *
+ * A message that keeps other content after the strip gets a
+ * strippedMediaNotice() text part appended — removal must be announced, not
+ * silent (#222: [text, image] collapsed to bare text and vision agents
+ * answered blind with zero signal).
  */
 export function stripImageBlocksFromMessages(
   messages: any[],
@@ -97,7 +118,19 @@ export function stripImageBlocksFromMessages(
 ): void {
   for (const msg of messages) {
     if (Array.isArray(msg.content)) {
-      msg.content = msg.content.filter((part: any) => !partTypes.includes(part.type));
+      const kept: any[] = [];
+      let strippedCount = 0;
+      for (const part of msg.content) {
+        if (partTypes.includes(part.type)) {
+          strippedCount++;
+        } else {
+          kept.push(part);
+        }
+      }
+      if (strippedCount > 0 && kept.length > 0) {
+        kept.push({ type: "text", text: strippedMediaNotice(strippedCount) });
+      }
+      msg.content = kept;
       if (msg.content.length === 1 && msg.content[0].type === "text") {
         msg.content = msg.content[0].text;
       } else if (msg.content.length === 0) {
