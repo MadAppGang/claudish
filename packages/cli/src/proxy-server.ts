@@ -367,6 +367,54 @@ export function resolveRoleMappedModel(
   return undefined;
 }
 
+/**
+ * Native-lane version pin: which Anthropic model id the body must carry.
+ *
+ * `resolveRoleMappedModel` decides the LANE (native vs a budget provider); on the
+ * native lane it historically decided nothing else, because `NativeHandler.handle`
+ * forwards `payload.model` verbatim (native-handler.ts: `const target = payload.model`)
+ * and the resolved target never reached the wire. A `modelMap.opus` naming a specific
+ * Anthropic version was therefore a no-op on the version axis — measured 2026-09-22 on
+ * the hub: the map read `claude-opus-4-8` for weeks while 6 487 consecutive native
+ * responses in 48 h were served as `claude-opus-5`, the id the clients named. That is
+ * the natural experiment; the entry classified the lane and pinned nothing.
+ *
+ * This function closes that gap, so `modelMap.opus` means what it reads like: every
+ * request the fleet routes to the native lane for a role is served by the version the
+ * hub configures, without touching any client's own config.
+ *
+ * Deliberately narrow — it returns a pin ONLY when all of these hold:
+ *  - the role resolves to a mapped target (otherwise there is nothing to pin);
+ *  - that target differs from what the client asked for (never rewrite a no-op);
+ *  - the target is an ANTHROPIC id (`claude-*`). Bare and native are NOT the same
+ *    predicate, and conflating them is how this would misfire: the hub's own
+ *    `sonnet: "glm-5.3"` is bare too, and is saved today only by resolving to a
+ *    remote handler. Drop `glm-5.3` from the routing table and `isNative`
+ *    (`!includes("/") && !includes("@")`) calls it native — at which point a pin
+ *    without this guard would put `glm-5.3` on the Anthropic wire. Plain
+ *    passthrough would have sent a real Claude id, so a loose guard here is
+ *    strictly worse than no pin at all. Every native-lane model is `claude-*`;
+ *  - the REQUESTED model is bare too, so an explicit `zai@claude-opus-5` — a
+ *    deliberate provider route that merely contains a role keyword — is left alone.
+ *
+ * Kill switch `CLAUDISH_NATIVE_MODEL_PIN=0` restores the pre-pin passthrough. It is
+ * read per request, on purpose: the same rationale as the thinking flags — the fleet
+ * must be able to flip it without restarting the proxy that is at that moment keeping
+ * everyone working.
+ */
+export function resolveNativeModelPin(
+  requestedModel: string,
+  modelMap?: RoleModelMap,
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  if (env.CLAUDISH_NATIVE_MODEL_PIN === "0") return undefined;
+  if (requestedModel.includes("@") || requestedModel.includes("/")) return undefined;
+  const roleTarget = resolveRoleMappedModel(requestedModel.toLowerCase(), modelMap);
+  if (!roleTarget || roleTarget === requestedModel) return undefined;
+  if (!roleTarget.startsWith("claude-")) return undefined;
+  return roleTarget;
+}
+
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
   quiet?: boolean; // Suppress informational stderr output (e.g., [Auto-route])
@@ -964,7 +1012,22 @@ export async function createProxyServer(
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const handler = await getHandlerForRequest(requestedModel, 0, sessionKey);
       const { stepIndex } = role ? resolveFailoverTargetForSession(role, sessionKey) : { stepIndex: -1 };
+      // Native-lane version pin. Applied HERE rather than at the route, because the
+      // cascade re-resolves the handler every attempt: only the attempt that actually
+      // lands on NativeHandler may carry a bare Anthropic id, and a later attempt is a
+      // budget provider that must see the body untouched. Restored on failure so the
+      // mutation can never outlive the attempt that earned it (ComposedHandler reads
+      // payload.model for its `originalModel` telemetry).
+      const pinnedModel = handler instanceof NativeHandler
+        ? resolveNativeModelPin(body.model, modelMap)
+        : undefined;
+      const modelBeforePin = body.model;
+      if (pinnedModel) {
+        log(`[Proxy] native pin: '${modelBeforePin}' → '${pinnedModel}' (modelMap role target)`, true);
+        body.model = pinnedModel;
+      }
       response = await handler.handle(c, body);
+      if (pinnedModel && !response.ok) body.model = modelBeforePin;
       if (response.ok) {
         if (role) {
           if (stepIndex === -1) onNominalSuccess(role); // nominal healthy → fresh episode + maybe recovery
@@ -1222,6 +1285,10 @@ export async function createProxyServer(
 
       // If native, forward transparently (all client headers passthrough).
       if (handler instanceof NativeHandler) {
+        // Same pin as the serving path: counting against a different model than the
+        // one that will answer makes the client's own context accounting drift.
+        const pinnedModel = resolveNativeModelPin(body.model, modelMap);
+        if (pinnedModel) body.model = pinnedModel;
         const HOP_BY_HOP = new Set([
           "host", "connection", "keep-alive", "transfer-encoding", "te",
           "trailer", "upgrade", "content-length",
