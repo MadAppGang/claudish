@@ -64,18 +64,79 @@ def find_7z():
     sys.exit("7z.exe not found in: " + " | ".join(SEVENZ_CANDIDATES))
 
 
+# Deliberately permissive AFTER the date, and matched against the basename so a
+# dated directory cannot bleed in. Requiring `-<tag>.7z` to close the name looks
+# equivalent and is not: measured on the live off-site directory it drops
+# `captures-<day> (1).7z`, a Drive-duplicate name that holds a real producer's
+# day. Which files are enumerated must never depend on parsing the suffix —
+# the producer is already named in the `source` label, built from basenames.
+ARCHIVE_DAY_RX = re.compile(r"captures-(\d{4}-\d{2}-\d{2})")
+
+
 def archive_days(archives_dir):
-    out = {}
+    """day -> [paths], one entry per PRODUCER of that day, sorted.
+
+    The off-site directory is a namespace shared by the whole fleet. Since #201
+    a machine writes `captures-<day>-<tag>.7z` so two producers cannot overwrite
+    each other's archive, and the recovery of overwritten days lands under those
+    tagged names too. Matching only the untagged spelling returns silently LESS,
+    which reads as a quiet period rather than a defect (#203).
+
+    Returning a bare day -> path map would not be a fix either: the second
+    producer of a day would overwrite the first *in the dict*, so the blindness
+    would just move. Both paths are kept and the caller merges their counts —
+    two producers of one day are two parts of that day, never duplicates to
+    dedupe, and never one to pick silently.
+    """
+    out = defaultdict(list)
     for path in glob.glob(os.path.join(archives_dir, "captures-*.7z")):
-        m = re.search(r"captures-(\d{4}-\d{2}-\d{2})\.7z$", path)
+        m = ARCHIVE_DAY_RX.search(os.path.basename(path))
         if m:
-            out[m.group(1)] = path
-    return out
+            out[m.group(1)].append(path)
+    return {day: sorted(paths) for day, paths in out.items()}
+
+
+def archive_source_label(paths):
+    """Stable `source` naming every producer ingested for a day.
+
+    It doubles as the staleness key. The skip used to be "have I seen this day
+    at all", which made two things permanently invisible: a tagged archive
+    appearing next to one already ingested (the recovery case — archives are
+    added to a day long AFTER it was first seen), and the archived version of a
+    day first ingested loose, which stayed pinned to its partial counts forever.
+    Comparing the label instead re-ingests exactly when the set of producers
+    changed, and leaves an unchanged day untouched — so an existing store does
+    not re-ingest wholesale on upgrade.
+    """
+    return "archive:" + "+".join(sorted(os.path.basename(p) for p in paths))
 
 
 def list_archive_members(sevenz, path):
     proc = subprocess.run([sevenz, "l", "-ba", path], capture_output=True, text=True)
     return proc.stdout.splitlines()
+
+
+def merge_archive_day(paths, lister):
+    """(counts, member count, resp count) summed over every producer of a day.
+
+    Summing is what makes two producers two PARTS of one day. Ingesting each
+    archive in turn instead would leave only the last one's counts, because
+    `ingest_day` deletes the day's rows before inserting — the very failure
+    #203 is about, one layer deeper and invisible in the totals.
+
+    `lister` is injected so this can be exercised without 7z or a filesystem.
+    """
+    merged = defaultdict(int)
+    n_members = 0
+    resp_files = 0
+    for path in paths:
+        lines = lister(path)
+        n_members += sum(1 for ln in lines if ln.strip())
+        counts, n_resp = parse_listing(lines)
+        for key, n in counts.items():
+            merged[key] += n
+        resp_files += n_resp
+    return merged, n_members, resp_files
 
 
 def parse_listing(lines):
@@ -236,16 +297,19 @@ def main():
         wanted = None
 
     ingested, skipped = 0, 0
-    for day, path in sorted(archive_days(args.archives_dir).items()):
+    for day, paths in sorted(archive_days(args.archives_dir).items()):
         if wanted is not None and day not in wanted:
             continue
-        if day in known and not args.refresh:
+        source = archive_source_label(paths)
+        if known.get(day) == source and not args.refresh:
             skipped += 1
             continue
-        lines = list_archive_members(sevenz, path)
-        n_members = sum(1 for ln in lines if ln.strip())
-        counts, resp_files = parse_listing(lines)
-        ingest_day(conn, day, f"archive:{os.path.basename(path)}", n_members, counts, resp_files)
+        # Every producer of the day is merged BEFORE ingesting — see
+        # merge_archive_day for why ingesting them in turn would under-count.
+        merged, n_members, resp_files = merge_archive_day(
+            paths, lambda p: list_archive_members(sevenz, p)
+        )
+        ingest_day(conn, day, source, n_members, merged, resp_files)
         ingested += 1
 
     if args.loose_date:

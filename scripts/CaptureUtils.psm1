@@ -311,16 +311,54 @@ function Get-ArchivedDays {
     $archiveDir = Join-Path $Dir 'archive'
     if (-not (Test-Path $archiveDir)) { return @() }
 
+    # The pattern is deliberately NOT anchored on '.7z$' after the date, so the
+    # machine-tagged spelling `captures-<day>-<tag>.7z` (#201) is enumerated too
+    # — measured, this half was already correct. What was missing is the tag
+    # itself: two producers of one day were two objects with the same Date and
+    # nothing to tell them apart, so a caller printing per-day figures showed
+    # two identical lines (#203). Tag is $null for the untagged producer.
     Get-ChildItem (Join-Path $archiveDir 'captures-*.7z') -File |
         ForEach-Object {
             if ($_.Name -match 'captures-(\d{4}-\d{2}-\d{2})') {
+                $day = $Matches[1]
+                # Tag extraction runs SECOND and is allowed to fail, because it
+                # must never decide which files are enumerated. Anchoring the
+                # date pattern to also carry the tag looked equivalent and was
+                # not: measured on the live off-site directory it dropped
+                # `captures-<day> (1).7z` — a Drive-duplicate name that holds a
+                # real producer's day — turning a legibility fix into a second
+                # blindness. Untagged and unparseable-suffix files keep Tag
+                # $null and stay enumerated exactly as before.
+                $tag = $null
+                if ($_.Name -match 'captures-\d{4}-\d{2}-\d{2}-(.+)\.7z$') { $tag = $Matches[1] }
                 [PSCustomObject]@{
-                    Date = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd', $null)
+                    Date = [datetime]::ParseExact($day, 'yyyy-MM-dd', $null)
+                    Tag  = $tag
                     File = $_.FullName
                     Size = $_.Length
                 }
             }
-        } | Sort-Object Date
+        } | Sort-Object Date, Tag
+}
+
+function Get-ArchiveDayLabel {
+    <#
+    .SYNOPSIS
+    Human label for one archived day: the date, plus the producer when there is one.
+
+    .DESCRIPTION
+    One spelling, shared by every reader. Printing the bare date makes the two
+    producers of a shared day render as two identical lines, which reads as a
+    duplicate rather than as two halves of the day (#203). An untagged archive
+    keeps the exact legacy spelling, so output for a fleet that never tagged
+    anything is byte-identical to before.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Archive)
+
+    $day = $Archive.Date.ToString('yyyy-MM-dd')
+    if ($Archive.Tag) { return "$day [$($Archive.Tag)]" }
+    return $day
 }
 
 function Get-OutageArchives {
@@ -419,4 +457,4 @@ function Resolve-MachineFromDevice {
 }
 
 Export-ModuleMember -Function Get-CaptureRequests, Get-WorkspaceFromBody, Get-WorkspaceFromSystem, Get-SessionIdFromMetadata,
-    Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Get-OutageArchives, Expand-ArchiveDay, Resolve-MachineFromDevice
+    Get-CCVersionFromSystem, Get-ResponseForRequest, Get-ArchivedDays, Get-ArchiveDayLabel, Get-OutageArchives, Expand-ArchiveDay, Resolve-MachineFromDevice

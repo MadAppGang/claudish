@@ -23,6 +23,7 @@
     "test": "bun run --cwd packages/cli test && bun --cwd packages/macos-bridge run test",
     "test:scripts": "pwsh -NoProfile -Command \"Invoke-Pester ./scripts/tests -Output Detailed\"",
     "test:scripts:win51": "powershell -NoProfile -Command \"Invoke-Pester ./scripts/tests -Output Detailed\"",
+    "test:scripts:py": "python scripts/tests/test_lane_matrix_archives.py",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules",
     "postinstall": "node scripts/postinstall.cjs"
   },

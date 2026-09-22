@@ -48,7 +48,7 @@ if ($archives.Count -eq 0) {
         Write-Host "  (none)" -ForegroundColor DarkGray
     } else {
         $allArchives | ForEach-Object {
-            Write-Host ("  {0}  {1:N1} MB" -f $_.Date.ToString('yyyy-MM-dd'), ($_.Size / 1MB))
+            Write-Host ("  {0}  {1:N1} MB" -f (Get-ArchiveDayLabel -Archive $_), ($_.Size / 1MB))
         }
     }
     exit 0
@@ -63,7 +63,7 @@ $tempDirs = @()
 
 try {
     foreach ($arch in $archives) {
-        Write-Host ("Processing {0} ({1:N1} MB)..." -f $arch.Date.ToString('yyyy-MM-dd'), ($arch.Size / 1MB)) -ForegroundColor Yellow
+        Write-Host ("Processing {0} ({1:N1} MB)..." -f (Get-ArchiveDayLabel -Archive $arch), ($arch.Size / 1MB)) -ForegroundColor Yellow
 
         $extractDir = Expand-ArchiveDay $arch.File
         if (-not $extractDir) {
