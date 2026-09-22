@@ -368,4 +368,26 @@ describe("S4-d lot A: structural invariant pins on proxy-server.ts source", () =
     const fallbackAt = body.indexOf("wrapAnthropicError(500");
     expect(fallbackAt).toBeGreaterThan(mapAt); // the 400 must be reached first
   });
+
+  // Added 2026-09-22 (po-2025, hub-bearer cycle). The /v1/messages catch and the
+  // /count_tokens catch both returned 500 through log(), which writes to the
+  // debug FILE only and is a no-op unless --debug — and the hub container runs
+  // with debug off. So the hub could serve a 500 while its own `docker logs`
+  // showed nothing at all, which is precisely the shape the fleet reported as
+  // `hub HTTP 500` with no obtainable cause (relay.ts maps any `status >= 500`
+  // to markFail → AUTONOMOUS hysteresis). Measured on the hub 2026-09-22
+  // 03:18:02Z: 18 requests across 6 machines and 4 models reached no upstream
+  // (no `[ttft]` for any of them) and the hub logged no line — while the
+  // instrument that WOULD have carried one was demonstrably live (773
+  // `[claudish]` lines in the same 20-minute window, all through logStderr).
+  // Structural pin: a future refactor must not silence this again.
+  test("a 500 on a forwarded route emits a countable stderr marker, not a silent log()", () => {
+    const markers = source.match(/\[Proxy\] ERROR 500/g) ?? [];
+    // Positive control: the pattern must actually match, or "not silent" would
+    // be vacuous. Two sites: /v1/messages and /count_tokens.
+    expect(markers.length).toBeGreaterThanOrEqual(2);
+    expect(source).toContain("logStderr(`[Proxy] ERROR 500");
+    // and never the silent form: `log(` here would be invisible without --debug
+    expect(source).not.toContain("log(`[Proxy] ERROR 500");
+  });
 });

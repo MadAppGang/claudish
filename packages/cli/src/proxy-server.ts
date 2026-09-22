@@ -1265,6 +1265,9 @@ export async function createProxyServer(
       if (e instanceof RoutingError) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
       }
+      // This branch logged NOTHING at all before: same blind spot as the
+      // /v1/messages catch, and this route is on the relay's forward path too.
+      logStderr(`[Proxy] ERROR 500 on POST ${c.req.path}: ${e}`);
       return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
@@ -1344,6 +1347,14 @@ export async function createProxyServer(
       if (e instanceof RoutingError) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
       }
+      // logStderr, NOT log: log() is file-only and a no-op unless --debug, and a
+      // hub runs with debug off — so a 500 here was invisible on the very machine
+      // that produced it. Measured 2026-09-22 03:18:02Z: 18 requests across 6
+      // machines reached no upstream (no [ttft]) and the hub logged nothing,
+      // while the relays reported `hub HTTP 500` and armed their AUTONOMOUS
+      // hysteresis off it (relay.ts: `res.status >= 500` → markFail). The
+      // instrument was verified live in that same window: 773 `[claudish]` lines.
+      logStderr(`[Proxy] ERROR 500 on POST ${c.req.path}: ${e}`);
       return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
