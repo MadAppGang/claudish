@@ -182,19 +182,37 @@ foreach ($day in $daysToArchive) {
       # aren't confirmed on GDrive, so a missed upload retries the next night.
       if ($GDriveDir) {
         if (Test-Path -LiteralPath $GDriveDir) {
-          try {
-            Copy-Item -LiteralPath $archivePath -Destination $GDriveDir -Force -ErrorAction Stop
-            # Confirm the copy landed with matching size before trusting it.
-            $dest = Join-Path $GDriveDir (Split-Path $archivePath -Leaf)
-            if ((Test-Path -LiteralPath $dest) -and (Get-Item -LiteralPath $dest).Length -eq $archBytes) {
-              Log ("GDRIVE {0}: uploaded ({1:N1} MB)" -f $day, ($archBytes/1MB))
-            } else {
-              $errors++
-              Log ("WARN  {0}: GDrive copy size mismatch -> local kept, retry next run" -f $day)
-            }
-          } catch {
+          # Read the destination AS IT EXISTS PRIOR TO THE WRITE (#208). The forced
+          # overwrite below must never replace a different producer's file: a
+          # different size on a name this run owns means someone else wrote it, and
+          # the post-copy confirmation cannot catch it (it would compare against
+          # the very bytes this run just wrote). Refuse -> no copy; the retention
+          # purge below requires an exact size match, so the local archive
+          # survives and the next run re-runs the decision.
+          $dest = Join-Path $GDriveDir (Split-Path $archivePath -Leaf)
+          $destItem = Get-Item -LiteralPath $dest -ErrorAction SilentlyContinue
+          $destBytes = 0L
+          if ($destItem) { $destBytes = $destItem.Length }
+          $verdict = Get-OffsiteWriteVerdict -DestExists ([bool]$destItem) -DestBytes $destBytes -LocalBytes $archBytes
+          if ($verdict.Action -eq 'refuse') {
             $errors++
-            Log ("WARN  {0}: GDrive copy failed: {1} -> local kept, retry next run" -f $day, $_.Exception.Message)
+            Log ("REFUSE {0}: off-site {1} -> local kept, purge will skip, NOT overwritten" -f $day, $verdict.Reason)
+          } elseif ($verdict.Action -eq 'idempotent') {
+            Log ("GDRIVE {0}: already current ({1} bytes), idempotent - no copy needed" -f $day, $archBytes)
+          } else {
+            try {
+              Copy-Item -LiteralPath $archivePath -Destination $GDriveDir -Force -ErrorAction Stop
+              # Confirm the copy landed with matching size before trusting it.
+              if ((Test-Path -LiteralPath $dest) -and (Get-Item -LiteralPath $dest).Length -eq $archBytes) {
+                Log ("GDRIVE {0}: uploaded ({1:N1} MB)" -f $day, ($archBytes/1MB))
+              } else {
+                $errors++
+                Log ("WARN  {0}: GDrive copy size mismatch -> local kept, retry next run" -f $day)
+              }
+            } catch {
+              $errors++
+              Log ("WARN  {0}: GDrive copy failed: {1} -> local kept, retry next run" -f $day, $_.Exception.Message)
+            }
           }
         } else {
           Log ("WARN  GDriveDir not mounted ({0}) -> off-site deferred, local kept" -f $GDriveDir)
@@ -207,8 +225,11 @@ foreach ($day in $daysToArchive) {
   }
 }
 
-# --- re-upload pass: retry any local archive whose GDrive copy is missing or
-# size-mismatched. Without this, a night where the Drive was unmounted strands
+# --- re-upload pass: retry any local archive whose GDrive copy is MISSING. A
+# destination that exists at a DIFFERENT size is not retried — it is refused
+# (#208): that file belongs to another producer on this name, and re-uploading
+# would silently destroy it (the pre-#208 code copied blind exactly then).
+# Without the missing-copy retry, a night where the Drive was unmounted strands
 # the archive locally forever: with KeepLocalDays=0 the compress loop above
 # never revisits an already-archived day, so nothing would ever retry the copy
 # and the purge would (correctly) refuse to delete it. Ported from PR #64,
@@ -220,20 +241,30 @@ if ($GDriveDir -and (Test-Path -LiteralPath $ArchiveDir) -and (Test-Path -Litera
     # them would walk straight back into the collision the tag exists to close.
     if ((Get-CaptureArchiveMachineTag -Name $arch.Name) -ne $MachineTag) { continue }
     $dest = Join-Path $GDriveDir $arch.Name
-    $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -eq $arch.Length)
-    if (-not $ok) {
-      try {
-        Copy-Item -LiteralPath $arch.FullName -Destination $GDriveDir -Force -ErrorAction Stop
-        if ((Test-Path -LiteralPath $dest) -and (Get-Item -LiteralPath $dest).Length -eq $arch.Length) {
-          Log ("GDRIVE {0}: re-uploaded ({1:N1} MB, was missing/mismatched)" -f $arch.BaseName, ($arch.Length/1MB))
-        } else {
-          $errors++
-          Log ("WARN  {0}: re-upload size mismatch -> kept local, retried next run" -f $arch.BaseName)
-        }
-      } catch {
+    $destItem = Get-Item -LiteralPath $dest -ErrorAction SilentlyContinue
+    $destBytes = 0L
+    if ($destItem) { $destBytes = $destItem.Length }
+    $verdict = Get-OffsiteWriteVerdict -DestExists ([bool]$destItem) -DestBytes $destBytes -LocalBytes $arch.Length
+    if ($verdict.Action -eq 'refuse') {
+      $errors++
+      Log ("REFUSE {0}: off-site {1} -> local kept, NOT overwritten" -f $arch.BaseName, $verdict.Reason)
+      continue
+    }
+    if ($verdict.Action -eq 'idempotent') {
+      Log ("GDRIVE {0}: already current ({1} bytes), idempotent - no re-upload needed" -f $arch.BaseName, $arch.Length)
+      continue
+    }
+    try {
+      Copy-Item -LiteralPath $arch.FullName -Destination $GDriveDir -Force -ErrorAction Stop
+      if ((Test-Path -LiteralPath $dest) -and (Get-Item -LiteralPath $dest).Length -eq $arch.Length) {
+        Log ("GDRIVE {0}: re-uploaded ({1:N1} MB, was missing)" -f $arch.BaseName, ($arch.Length/1MB))
+      } else {
         $errors++
-        Log ("WARN  {0}: re-upload failed: {1} -> kept local, retried next run" -f $arch.BaseName, $_.Exception.Message)
+        Log ("WARN  {0}: re-upload size mismatch -> kept local, retried next run" -f $arch.BaseName)
       }
+    } catch {
+      $errors++
+      Log ("WARN  {0}: re-upload failed: {1} -> kept local, retried next run" -f $arch.BaseName, $_.Exception.Message)
     }
   }
 }

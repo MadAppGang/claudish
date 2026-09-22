@@ -1719,6 +1719,52 @@ function Get-CaptureArchivePolicy {
         Reason     = 'refusing to write captures-<day>.7z into a shared off-site directory without -MachineTag: a second producer overwrites the first machine archive and then purges its own local copy, losing the day everywhere. Pass -MachineTag <name>, or -AllowUntaggedSharedArchive on the one machine that owns the untagged namespace.'
     }
 }
+
+function Get-OffsiteWriteVerdict {
+    <#
+        Decides whether THIS run may overwrite a file that already exists at the
+        off-site destination, read as it exists PRIOR to the write (#208).
+
+        Get-CaptureArchivePolicy guards the namespace at the name level (which
+        spelling this run may use); this guards the write itself. The two compose,
+        and this one is strictly stronger than a tag: it holds even when two
+        machines are configured to write the SAME name, which is exactly the
+        14-day loss the tag could not prevent (the allowed untagged producer
+        overwrote the other producer's archive nightly, then confirmed the copy
+        against the bytes it had just written itself — a check that cannot fail).
+
+        Rules:
+          - Destination absent        -> write. The legitimate first upload.
+          - Same size as this run's   -> idempotent re-upload, fine as-is (a
+                                         retried night must not start failing).
+          - Different size            -> REFUSE, naming both sizes. A different
+                                         size on a name this run owns means
+                                         another producer wrote it; there is no
+                                         benign interpretation, and the correct
+                                         action is never to overwrite.
+
+        Returns an object (Action: write | idempotent | refuse) rather than
+        throwing, same contract as Get-CaptureArchivePolicy.
+    #>
+    param(
+        [bool]$DestExists = $false,
+        [long]$DestBytes = 0,
+        [long]$LocalBytes = 0
+    )
+    if (-not $DestExists) {
+        return [pscustomobject]@{ Action = 'write'; Reason = 'destination absent' }
+    }
+    if ($DestBytes -eq $LocalBytes) {
+        return [pscustomobject]@{
+            Action = 'idempotent'
+            Reason = ("destination already holds these exact {0} bytes" -f $LocalBytes)
+        }
+    }
+    return [pscustomobject]@{
+        Action = 'refuse'
+        Reason = ("destination exists with a DIFFERENT size (dest {0} bytes vs this run {1} bytes) - another producer owns this name; overwriting would destroy it" -f $DestBytes, $LocalBytes)
+    }
+}
 #endregion
 
 Export-ModuleMember -Function @(
@@ -1727,6 +1773,7 @@ Export-ModuleMember -Function @(
     'Get-CaptureArchiveDay'
     'Get-CaptureArchiveMachineTag'
     'Get-CaptureArchivePolicy'
+    'Get-OffsiteWriteVerdict'
     'Invoke-GitBounded'
     'ConvertFrom-DockerEventLine'
     'Get-DockerEventFingerprint'

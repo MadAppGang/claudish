@@ -151,3 +151,183 @@ Describe 'compress-captures.ps1 wiring' {
         } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'Get-OffsiteWriteVerdict' {
+    It 'allows the write when the destination is absent (the legitimate first upload)' {
+        (Get-OffsiteWriteVerdict -DestExists $false -LocalBytes 100).Action | Should -Be 'write'
+    }
+    It 'treats an identical-size destination as an idempotent re-upload' {
+        (Get-OffsiteWriteVerdict -DestExists $true -DestBytes 100 -LocalBytes 100).Action |
+            Should -Be 'idempotent'
+    }
+    It 'REFUSES a different-size destination and names BOTH sizes (AC1)' {
+        $v = Get-OffsiteWriteVerdict -DestExists $true -DestBytes 42 -LocalBytes 6
+        $v.Action | Should -Be 'refuse'
+        $v.Reason | Should -Match '42 bytes'
+        $v.Reason | Should -Match '6 bytes'
+    }
+    It 'the refusal names the cause: another producer owns the name' {
+        (Get-OffsiteWriteVerdict -DestExists $true -DestBytes 1 -LocalBytes 2).Reason |
+            Should -Match 'another producer'
+    }
+}
+
+Describe 'compress-captures.ps1 off-site overwrite guard (#208)' {
+    BeforeAll {
+        # A fake 7z as a .bat: batch receives the raw argument line (a .ps1 would
+        # choke on the flag-looking args -t7z/-mx=9 at the parameter binder), and
+        # `exit /b N` maps to $LASTEXITCODE. It writes a deterministic 6-byte
+        # archive ("fake" + CRLF) on `a`, and answers `t` from file existence —
+        # enough to drive the REAL script through compress -> upload -> re-upload
+        # -> purge with no real 7z anywhere near the test.
+        $script:FakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-fake7z-{0}" -f ([guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $script:FakeRoot -Force | Out-Null
+        $script:Fake7z = Join-Path $script:FakeRoot 'fake7z.bat'
+        [System.IO.File]::WriteAllText($script:Fake7z, @'
+@echo off
+setlocal
+set "MODE=%~1"
+set "TARGET="
+rem Match the archive by EXTENSION (%%~x), never by a fixed suffix length: the
+rem last-4-chars test cannot match ".7z" (3 chars) on a real name - the last 4
+rem chars of "x.7z" are "x.7z" - and native arg passing to a .bat splits
+rem "-m0=lzma2" into two tokens, so flag-position assumptions do not survive
+rem the interpreter either. Sandbox paths contain no spaces by construction.
+for %%F in (%*) do if /i "%%~xF"==".7z" set "TARGET=%%~fF"
+if /i "%MODE%"=="a" goto add
+if /i "%MODE%"=="t" goto test
+exit /b 1
+:add
+if not defined TARGET exit /b 1
+echo fake> "%TARGET%"
+exit /b 0
+:test
+if not defined TARGET exit /b 2
+if not exist "%TARGET%" exit /b 2
+exit /b 0
+'@, (New-Object System.Text.ASCIIEncoding))
+
+        # Runs the real script under the CURRENT interpreter in a caller-made
+        # sandbox; everything (loose files, local archive, GDrive dir, log) lives
+        # under $tmp. The fake archive is always exactly 6 bytes.
+        function Invoke-CompactionRun {
+            param([string]$CaptureDir, [string]$GDriveDir)
+            & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $script:ScriptPath `
+                -CaptureDir $CaptureDir -GDriveDir $GDriveDir `
+                -ArchiveDir (Join-Path $CaptureDir 'archive') -MachineTag 'testbox' `
+                -SevenZip $script:Fake7z -KeepLocalDays 0 *> $null
+        }
+        function New-GuardSandbox {
+            $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-guard-{0}" -f ([guid]::NewGuid().ToString('N')))
+            New-Item -ItemType Directory -Path (Join-Path $tmp 'cap') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $tmp 'gd')  -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $tmp 'cap\archive') -Force | Out-Null
+            return $tmp
+        }
+        # One loose capture for yesterday, so the run reaches the compress loop
+        # (with zero loose files the script exits long before the upload paths).
+        function Add-LooseCapture {
+            param([string]$CaptureDir, [int]$DaysBack)
+            $day = (Get-Date).ToUniversalTime().Date.AddDays(-$DaysBack).ToString('yyyy-MM-dd')
+            [System.IO.File]::WriteAllText((Join-Path $CaptureDir "req-1-1-$($day)T00-00-00.json"), 'loose')
+            return $day
+        }
+    }
+    AfterAll {
+        Remove-Item -LiteralPath $script:FakeRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'AC1+AC3+AC5: a different-size destination is REFUSED, untouched, local kept, loud log with both sizes' {
+        $tmp = New-GuardSandbox
+        try {
+            $cap = Join-Path $tmp 'cap'; $gd = Join-Path $tmp 'gd'
+            $day  = Add-LooseCapture -CaptureDir $cap -DaysBack 1
+            $dest = Join-Path $gd "captures-$($day)-testbox.7z"
+            [System.IO.File]::WriteAllText($dest, ('x' * 42))   # another producer's 42-byte archive
+            Invoke-CompactionRun -CaptureDir $cap -GDriveDir $gd
+            $log = Get-Content (Join-Path $cap 'compaction.log') -Raw
+            $LASTEXITCODE | Should -BeGreaterThan 0     # the refusal counts as an error
+            $log   | Should -Match 'REFUSE'             # loud, countable marker (AC5)
+            $log   | Should -Match 'dest 42 bytes vs this run 6 bytes'   # both sizes (AC1)
+            (Get-Item -LiteralPath $dest).Length | Should -Be 42         # destination NOT overwritten
+            # AC3: the refused archive is still local — the purge requires an
+            # exact size match, and 6 != 42, so nothing was deleted.
+            Get-Item (Join-Path $cap "archive\captures-$($day)-testbox.7z") | Should -Not -BeNullOrEmpty
+            # blast radius: the run logged inside the sandbox, not in production
+            Test-Path (Join-Path $cap 'compaction.log') | Should -BeTrue
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'AC2: an identical-size destination is an idempotent success (retried nights do not start failing)' {
+        $tmp = New-GuardSandbox
+        try {
+            $cap = Join-Path $tmp 'cap'; $gd = Join-Path $tmp 'gd'
+            $day  = Add-LooseCapture -CaptureDir $cap -DaysBack 1
+            $dest = Join-Path $gd "captures-$($day)-testbox.7z"
+            [System.IO.File]::WriteAllText($dest, 'IDENTI')    # 6 bytes, same size as the fake archive
+            Invoke-CompactionRun -CaptureDir $cap -GDriveDir $gd
+            $log = Get-Content (Join-Path $cap 'compaction.log') -Raw
+            $LASTEXITCODE | Should -Be 0
+            $log | Should -Match 'already current'
+            $log | Should -Not -Match 'REFUSE'
+            # same size but DIFFERENT bytes still there => no copy was performed
+            [System.IO.File]::ReadAllText($dest) | Should -Be 'IDENTI'
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'AC4 side 2: an empty namespace still receives its first upload (the guard has not eaten the feature)' {
+        $tmp = New-GuardSandbox
+        try {
+            $cap = Join-Path $tmp 'cap'; $gd = Join-Path $tmp 'gd'
+            $day  = Add-LooseCapture -CaptureDir $cap -DaysBack 1
+            Invoke-CompactionRun -CaptureDir $cap -GDriveDir $gd
+            $log = Get-Content (Join-Path $cap 'compaction.log') -Raw
+            $LASTEXITCODE | Should -Be 0
+            $log | Should -Match 'GDRIVE .*uploaded'
+            (Get-Item (Join-Path $gd "captures-$($day)-testbox.7z")).Length | Should -Be 6
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'the re-upload pass refuses a different-size destination too (second write site)' {
+        $tmp = New-GuardSandbox
+        try {
+            $cap = Join-Path $tmp 'cap'; $gd = Join-Path $tmp 'gd'
+            $null = Add-LooseCapture -CaptureDir $cap -DaysBack 1      # today's work: uploads normally
+            $oldDay = (Get-Date).ToUniversalTime().Date.AddDays(-2).ToString('yyyy-MM-dd')
+            [System.IO.File]::WriteAllText((Join-Path $cap "archive\captures-$($oldDay)-testbox.7z"), ('y' * 30))
+            [System.IO.File]::WriteAllText((Join-Path $gd "captures-$($oldDay)-testbox.7z"), ('z' * 7))
+            Invoke-CompactionRun -CaptureDir $cap -GDriveDir $gd
+            $log = Get-Content (Join-Path $cap 'compaction.log') -Raw
+            $LASTEXITCODE | Should -BeGreaterThan 0
+            $log | Should -Match ("REFUSE captures-$($oldDay)-testbox")
+            (Get-Item (Join-Path $gd "captures-$($oldDay)-testbox.7z")).Length | Should -Be 7
+            Get-Item (Join-Path $cap "archive\captures-$($oldDay)-testbox.7z") | Should -Not -BeNullOrEmpty
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'wiring: the verdict is consulted BEFORE the Copy-Item at BOTH write sites' {
+        $text = Get-Content -LiteralPath $script:ScriptPath -Raw
+        @([regex]::Matches($text, 'Get-OffsiteWriteVerdict')).Count | Should -Be 2
+        $v1 = $text.IndexOf('Get-OffsiteWriteVerdict')
+        $c1 = $text.IndexOf('Copy-Item -LiteralPath $archivePath')
+        $v1 | Should -BeGreaterThan 0
+        $c1 | Should -BeGreaterThan 0
+        $v1 | Should -BeLessThan $c1
+        $v2 = $text.IndexOf('Get-OffsiteWriteVerdict', $v1 + 1)
+        $c2 = $text.IndexOf('Copy-Item -LiteralPath $arch.FullName')
+        $v2 | Should -BeGreaterThan 0
+        $c2 | Should -BeGreaterThan 0
+        $v2 | Should -BeLessThan $c2
+    }
+
+    It 'AC3 wiring: the purge still requires an exact destination size match before any local delete' {
+        $text = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $purgeStart = $text.IndexOf('local retention purge')
+        $purgeCheck = $text.IndexOf('(Get-Item -LiteralPath $dest).Length -eq $arch.Length', $purgeStart)
+        $purgeDelete = $text.IndexOf('Remove-Item -LiteralPath $arch.FullName -Force', $purgeStart)
+        $purgeStart  | Should -BeGreaterThan 0
+        $purgeCheck  | Should -BeGreaterThan 0
+        $purgeDelete | Should -BeGreaterThan 0
+        $purgeCheck  | Should -BeLessThan $purgeDelete
+    }
+}
