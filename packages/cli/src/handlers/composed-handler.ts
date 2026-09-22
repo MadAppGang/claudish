@@ -512,9 +512,19 @@ export class ComposedHandler implements ModelHandler {
       }
     }
     // Update context window if provider dynamically discovered it
-    // (e.g., from OpenRouter model catalog or local model API)
+    // (e.g., from OpenRouter model catalog or local model API).
+    //
+    // Only a POSITIVE number is applied. A transport returns 0 to mean "I have
+    // no opinion" — our OpenRouterProviderTransport says so in as many words
+    // (openrouter.ts:62 returns a literal 0). Applying that 0 unconditionally
+    // overwrote the window the model dialect had already resolved, so every
+    // OpenRouter-routed model wrote `"context_window": "unknown"` and lost its
+    // context field in the status line. 0 must be a no-op, not a reset.
     if (this.provider.getContextWindow) {
-      this.tokenTracker.setContextWindow(this.provider.getContextWindow());
+      const providerWindow = this.provider.getContextWindow();
+      if (providerWindow > 0) {
+        this.tokenTracker.setContextWindow(providerWindow);
+      }
     }
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)

@@ -309,3 +309,75 @@ describe("getRecoveryHint — a quota 403 is not an auth fault", () => {
     expect(hint).toMatch(/model not supported/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Provider context-window guard (S4-e lot E2, upstream c9e97c9c hunk)
+//
+// A transport returning 0 from getContextWindow() means "I have no opinion" —
+// our OpenRouterProviderTransport does exactly that (openrouter.ts:62 returns a
+// literal 0). Applying it unconditionally overwrote the window the model
+// dialect had already resolved, so every OpenRouter-routed model reported
+// "context_window: unknown" and lost its context field in the status line.
+// 0 must be a no-op, not a reset; a positive window is still applied.
+// ---------------------------------------------------------------------------
+
+describe("ComposedHandler — provider context-window guard (S4-e lot E2)", () => {
+  function transportWithWindow(getContextWindow: () => number): ProviderTransport {
+    return {
+      name: "windowed",
+      displayName: "Windowed",
+      streamFormat: "openai-sse",
+      getEndpoint: () => "http://upstream.test/v1/chat/completions",
+      getHeaders: () => ({}),
+      getContextWindow,
+    } as unknown as ProviderTransport;
+  }
+
+  const okBody = JSON.stringify({
+    id: "x",
+    object: "chat.completion",
+    choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+  });
+
+  async function runWindowed(getContextWindow: () => number): Promise<number[]> {
+    const handler = new ComposedHandler(
+      transportWithWindow(getContextWindow),
+      "fugu-ultra",
+      "fugu-ultra",
+      8466,
+      {}
+    );
+    const tracker = handler.getTokenTracker() as unknown as {
+      setContextWindow: (n: number) => void;
+    };
+    const applied: number[] = [];
+    tracker.setContextWindow = (n: number) => applied.push(n);
+
+    const original = (globalThis as any).fetch;
+    (globalThis as any).fetch = countingFetch(200, okBody).impl;
+    try {
+      const app = new Hono();
+      const payload = { model: "fugu-ultra", max_tokens: 16, messages: [{ role: "user", content: "hi" }] };
+      app.post("/v1/messages", async (c: any) => handler.handle(c, payload));
+      await app.request("/v1/messages", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json" },
+      });
+    } finally {
+      (globalThis as any).fetch = original;
+    }
+    return applied;
+  }
+
+  test("a transport answering 0 (\"no opinion\") does not reset the dialect-resolved window", async () => {
+    const applied = await runWindowed(() => 0);
+    expect(applied).toEqual([]); // 0 must be a no-op, not a reset
+  });
+
+  test("a positive transport window is still applied", async () => {
+    const applied = await runWindowed(() => 131072);
+    expect(applied).toEqual([131072]);
+  });
+});
