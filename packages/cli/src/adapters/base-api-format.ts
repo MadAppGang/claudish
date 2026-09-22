@@ -28,6 +28,17 @@ import { lookupModel } from "./model-catalog.js";
 const OPENAI_TOOL_NAME_LIMIT = 64;
 
 /**
+ * OpenAI's Chat Completions API hard-caps the `tools` array at 128 — exceeding
+ * it fails the whole request with HTTP 400 "Invalid 'tools': array too long".
+ * Keyed on the WIRE, not the format class: in this tree the converter that
+ * actually serves a bare `gpt-4o` (api.openai.com, Chat Completions) is
+ * DefaultAPIFormat, so a class-scoped cap would protect almost nothing
+ * (measured — see S4-e lot E3). The Responses wire (Codex) is deliberately
+ * excluded: upstream keeps that path uncapped.
+ */
+const OPENAI_TOOL_COUNT_LIMIT = 128;
+
+/**
  * Match a model ID against a model family name, handling vendor-prefixed IDs.
  *
  * Matches: "grok-beta", "x-ai/grok-beta", "openrouter/x-ai/grok-beta"
@@ -125,6 +136,25 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   getToolNameLimit(): number | null {
     const wire = this.wireFormat ?? this.getStreamFormat();
     return wire === "openai-sse" || wire === "openai-responses-sse" ? OPENAI_TOOL_NAME_LIMIT : null;
+  }
+
+  /**
+   * Maximum number of tools this API accepts in a single request. Returns null
+   * if no limit (default for every wire but openai-sse). The ComposedHandler
+   * head-slices the converted tools to this count so a session with many MCP
+   * tools still works (Claude Code's built-in tools come first and are
+   * preserved); exceeding OpenAI's cap fails the WHOLE request with HTTP 400
+   * "Invalid 'tools': array too long".
+   *
+   * Keys on the wire the request will actually ride, like getToolNameLimit():
+   * the caller (ComposedHandler) passes the resolved stream format —
+   * transport override included — so a Gemini model served through an
+   * OpenAI-shaped gateway is capped, and an OpenAI model on the Responses
+   * wire is not. With no argument, the instance's own wire applies.
+   */
+  getMaxToolCount(wireFormat?: StreamFormat): number | null {
+    const wire = wireFormat ?? this.wireFormat ?? this.getStreamFormat();
+    return wire === "openai-sse" ? OPENAI_TOOL_COUNT_LIMIT : null;
   }
 
   /**

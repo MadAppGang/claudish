@@ -287,11 +287,21 @@ export class ComposedHandler implements ModelHandler {
         );
       }
     }
-    const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
+    let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
-    // Per-API tool count limits (e.g., OpenAI's 128-tool cap) are enforced
-    // by the transport's transformPayload() hook, which runs later in the
-    // pipeline with full knowledge of the target API.
+    // Per-API tool-count cap (e.g. OpenAI Chat Completions hard-caps `tools` at
+    // 128 — exceeding it fails the WHOLE request with HTTP 400 "array too long").
+    // Head-slice to the limit: Claude Code emits its built-in agentic tools
+    // first and appends MCP-server tools after, so keeping the first N preserves
+    // the load-bearing built-ins and drops the tail-most MCP tools. Truncating
+    // is recoverable; failing the whole request is not.
+    const maxToolCount = adapter.getMaxToolCount(this.resolveStreamFormat());
+    if (maxToolCount && tools.length > maxToolCount) {
+      log(
+        `[ComposedHandler] Capping tools from ${tools.length} to ${maxToolCount} for ${this.targetModel} (API limit)`
+      );
+      tools = tools.slice(0, maxToolCount);
+    }
 
     // Handle image content for models that don't support vision
     if (!this.getModelSupportsVision()) {
