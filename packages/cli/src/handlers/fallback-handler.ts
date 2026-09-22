@@ -13,6 +13,7 @@ import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
+import { wrapAnthropicError } from "./shared/anthropic-error.js";
 
 export interface FallbackCandidate {
   /** Human-readable provider name for logging */
@@ -120,6 +121,22 @@ export class FallbackHandler implements ModelHandler {
       `[Fallback] All ${errors.length} provider(s) failed for ${modelName || "model"}:\n${summary}`
     );
 
+    // Every candidate was unreachable: that is the user's network (or DNS/VPN),
+    // not a provider fault, and it is the case where the message matters MOST.
+    // A 502 would be retried by Claude Code as overloaded_error and bury the one
+    // actionable sentence behind the retry banner, so re-surface the first
+    // host's connection error as a 400 connection_error — same status and type
+    // the single-candidate path already returns verbatim.
+    const allConnectionErrors = errors.every((e) => e.message.toLowerCase().includes('"connection_error"'));
+    if (allConnectionErrors) {
+      const firstMessage = parseErrorMessage(errors[0].message);
+      const message =
+        errors.length === 1
+          ? firstMessage
+          : `Cannot reach any of the ${errors.length} provider hosts for model '${modelName || "unknown"}'. ${firstMessage}`;
+      return c.json(wrapAnthropicError(400, message, "connection_error"), 400 as any);
+    }
+
     return c.json(
       {
         error: {
@@ -179,6 +196,17 @@ function isRetryableError(status: number, errorBody: string): boolean {
       return true;
     }
   }
+
+  // A connection failure is retryable ACROSS providers: this handler's
+  // candidates are different providers by construction, hence different hosts,
+  // and a DNS failure or a refused port on one says nothing about the
+  // reachability of another. ComposedHandler surfaces these as a 400 carrying
+  // the `connection_error` type (never as a throw, which used to reach the
+  // catch below); without this the chain would stop on exactly the class of
+  // failure a fallback chain exists for. When the last candidate fails too,
+  // formatCombinedError re-surfaces it as a 400 connection_error rather than a
+  // 502 that Claude Code would retry as overloaded_error.
+  if (lower.includes('"connection_error"')) return true;
 
   // Bad request — only retryable if it's a model-not-found variant
   if (status === 400) {
