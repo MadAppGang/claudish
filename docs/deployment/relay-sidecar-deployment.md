@@ -122,6 +122,21 @@ If the cascades were armed by hand (container env, never written to the `.env` �
 - **Refusals.** The installer **exits non-zero** before writing anything when the `.env` it is about to produce carries no armed `CLAUDISH_FAILOVER_*` while the live container has one; `claudish-drain.ps1 -Recreate` refuses the same condition against its `-EnvFile` (an env file can *exist* and still gut the cascades — it merely lacks them).
 - **Recovery.** `install-sidecar.ps1 -RebuildEnvFromContainer` rebuilds the `.env` from the live container's env record (`docker inspect`), reports which armed vars were missing (names only), and verifies the write by reading it back — no pull, no compose, container untouched. The output file contains `CLAUDISH_PROXY_KEY`: local file only, never committed, never displayed. `-WriteEnvOnly` refreshes the `.env` (with the preserve rules above) without touching the container.
 
+### An armed cascade is blind to bare model ids without `ROLE_MODELS` — measured both ways, 2026-09-22
+
+Arming `CLAUDISH_FAILOVER_<ROLE>` is necessary but not sufficient: `roleFromModelName()` matches only `opus|sonnet|haiku|fable`, so a client naming the model directly (`model=glm-5.2` in an sdk-ts request, no role anywhere) resolves to `null` and the cascade never engages — the request walks the full retry ladder against the wall with nowhere to fall. Two measurements the same morning:
+
+- **Without the mapping** (ai-01 sidecar, 08:35Z, *reported by ai-01*): 7 consecutive dead turns against the GLM 5h wall — every one a full ladder of retries, ~62s each, no fallback ever taken.
+- **With it** (hub po-2025, 08:05Z): a bare `model=glm-5.2` request hit the same wall, `[Failover] ARMED sonnet → Mistral GLM — HTTP 429 from glm-5.2`, Mistral also walled (402), the session was pinned to step 2 (Kimi K3) and the **turn completed** (`resp … model=k3 … closed=true stop=tool_use`).
+
+The line the hub runs (copy into the sidecar `.env` when arming, adjusting to the models its clients actually name — check the `[Request] model=` lines in the container log):
+
+```
+CLAUDISH_FAILOVER_ROLE_MODELS=glm-5.2:sonnet,glm-5.3:sonnet,minimax-m3:haiku
+```
+
+Once written it survives every installer rewrite (#141 carries `CLAUDISH_FAILOVER_*` verbatim); the gap is that nothing provisions it by default — `.env.sidecar.example` documents the var empty, and this runbook's arming checklist never mentioned it until now.
+
 ## Repoint the client
 
 After the installer reports **SIDECAR INSTALLED … mode: NOMINAL relay**, edit this machine's `~/.claude/settings.json`:
