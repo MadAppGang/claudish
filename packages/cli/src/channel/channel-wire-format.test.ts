@@ -32,6 +32,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { envDescribe } from "../test-support/env-gate";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -187,7 +188,15 @@ async function captureSessionFrames(opts: {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe("Channel notification wire format", () => {
+envDescribe(
+  {
+    id: "posix-path-shim",
+    active: process.platform !== "win32",
+    reason: "the #!/bin/sh PATH shim (extension-less `claudish`) cannot be spawned on win32 — spawn resolves .exe/.cmd only, so the MCP server under test never launches its fake claudish session",
+    activation: "run on a POSIX host, or port the shim to a claudish.cmd wrapper",
+  },
+  "Channel notification wire format"
+)((test) => {
   test(
     "emits well-formed notifications/claude/channel JSON-RPC frames",
     async () => {

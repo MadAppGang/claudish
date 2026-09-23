@@ -29,6 +29,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupSession, runModels } from "./team-orchestrator.js";
+import { envDescribe } from "./test-support/env-gate";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,15 @@ afterEach(() => {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe("Bug #1: TIMEOUT despite successful completion", () => {
+envDescribe(
+  {
+    id: "posix-path-shim",
+    active: process.platform !== "win32",
+    reason: "makeFakeClaudish writes a #!/bin/bash script and joins PATH with `:` — neither executes on win32, so every REPRO in this block fails at spawn",
+    activation: "run on a POSIX host, or port the fake to a claudish.cmd wrapper",
+  },
+  "Bug #1: TIMEOUT despite successful completion"
+)((it) => {
   it("REPRO: process that completes before timeout should be COMPLETED, not TIMEOUT", async () => {
     // Setup session with 2 "models"
     setupSession(tempDir, ["fast-model-a", "fast-model-b"], "Say hello");

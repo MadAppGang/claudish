@@ -19,7 +19,7 @@
  *   - bun                — runs the dev claudish via `bun run src/index.ts`
  */
 
-import { describe, it, expect, beforeAll } from "bun:test";
+import { expect } from "bun:test";
 import { join } from "node:path";
 import {
   findMagmuxForTest,
@@ -29,18 +29,22 @@ import {
   writeGridfile,
   type MagmuxSubscription,
 } from "./team-grid.e2e-helpers.js";
+import { envDescribe } from "./test-support/env-gate";
 
 const E2E_TIMEOUT = 150_000; // per real-model test (includes cold-start slack)
 
-let magmuxPath = "";
+const magmuxPath = findMagmuxForTest();
 
-beforeAll(() => {
-  magmuxPath = findMagmuxForTest();
-});
+const magmuxGate = {
+  id: "team-grid-magmux-pty",
+  active: process.platform !== "win32" && magmuxPath !== "",
+  reason: "e2e needs the magmux binary (npm @claudish/magmux-* or Homebrew) AND the expect(1) PTY allocator — neither ships on this machine",
+  activation: "bun install the platform magmux package on a POSIX host with expect(1)",
+};
 
 // ─── Fast tier: socket protocol ──────────────────────────────────────────────
 
-describe("magmux socket protocol (shell commands)", () => {
+envDescribe({ ...magmuxGate }, "magmux socket protocol (shell commands)")((it) => {
   it(
     "broadcasts snapshot, exit, results, shutdown for a short-lived pane",
     async () => {
@@ -208,7 +212,7 @@ describe("magmux socket protocol (shell commands)", () => {
 
 // ─── Fast tier: crash fallback ───────────────────────────────────────────────
 
-describe("magmux crash fallback", () => {
+envDescribe({ ...magmuxGate }, "magmux crash fallback")((it) => {
   it(
     "SIGKILL before results event → no results received",
     async () => {
@@ -254,7 +258,7 @@ function devClaudishCommand(model: string, prompt: string): string {
   return `bun run ${entry} --model ${model} -y --quiet '${escPrompt}'`;
 }
 
-describe("claudish team with real models and Claude Code", () => {
+envDescribe({ ...magmuxGate }, "claudish team with real models and Claude Code")((it) => {
   it(
     "default mode: pane runs a real model, magmux emits completed results",
     async () => {

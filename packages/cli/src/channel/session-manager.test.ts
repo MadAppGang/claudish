@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 
 import { SessionManager } from "./session-manager.js";
 import type { SessionManagerOptions, ChannelEvent } from "./types.js";
+import { envDescribe } from "../test-support/env-gate";
 
 // ─── Setup: PATH shim ────────────────────────────────────────────────────────
 
@@ -101,7 +102,15 @@ function quickSession(
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe("SessionManager", () => {
+envDescribe(
+  {
+    id: "posix-path-shim",
+    active: process.platform !== "win32",
+    reason: "the #!/bin/sh PATH shim (extension-less `claudish`) cannot be spawned on win32 — spawn resolves .exe/.cmd only, so every SessionManager test hits ENOENT on the fake claudish",
+    activation: "run on a POSIX host, or port the shim to a claudish.cmd wrapper",
+  },
+  "SessionManager"
+)((test) => {
   let manager: SessionManager;
 
   beforeEach(() => {

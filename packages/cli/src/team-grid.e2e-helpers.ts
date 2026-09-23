@@ -48,9 +48,10 @@ export function findMagmuxForTest(): string {
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  throw new Error(
-    "magmux not found for e2e tests. Install via `bun install` or PATH."
-  );
+  // Absent prerequisites are a GATE concern, not a crash: returning "" lets
+  // the e2e file's envDescribe gate skip loudly instead of dying as (unnamed)
+  // in a beforeAll throw (see test-support/env-gate.ts).
+  return "";
 }
 
 // ─── PTY Runner ──────────────────────────────────────────────────────────────
