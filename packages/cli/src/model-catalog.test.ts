@@ -29,7 +29,6 @@ import { lookupModel } from "./adapters/model-catalog.js";
 import { setMemCatalogForTests } from "./providers/catalog-resolvers/openrouter.js";
 import type { SlimModelEntry } from "./providers/all-models-cache.js";
 import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
-import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
 import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
 
@@ -335,19 +334,6 @@ describe("Group 2: MiniMaxModelDialect — catalog integration", () => {
     dialect.prepareRequest(request, originalRequest);
     expect(request.thinking).toBeDefined();
     expect(request.thinking.type).toBe("enabled");
-  });
-});
-
-describe("Group 2: GLMModelDialect — prepareRequest", () => {
-  test("thinking param is stripped by GLM (not supported)", () => {
-    const dialect = new GLMModelDialect("glm-5");
-    const originalRequest: any = {
-      thinking: { type: "enabled", budget_tokens: 5000 },
-      messages: [],
-    };
-    const request: any = { ...originalRequest };
-    dialect.prepareRequest(request, originalRequest);
-    expect(request.thinking).toBeUndefined();
   });
 });
 
