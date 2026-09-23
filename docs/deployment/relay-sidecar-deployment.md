@@ -60,7 +60,7 @@ After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** si
 | myia-ai-01 | `https://models.myia.io` | — | **no** | The one Anthropic authority; Opus traverses the relay via the header fix (OAuth preserved). **Not the LAN IP** — this machine's Docker has no route to it (see "Docker cannot reach the LAN hub"). Also needs `-HostPort 3002 -ContainerName claudish-sidecar` (3000 taken by a third-party service). |
 | myia-po-2024 | `http://192.168.0.50:3000` | — | yes | LAN — ⚠ **measured stale 2026-09-14**: the installed sidecar still carries `192.168.0.46` (see "A hub migration does not propagate") |
 | myia-po-2025 | `https://models.myia.io` | yes | yes | WAN external — **this machine is the hub** |
-| myia-po-2026 | `http://192.168.0.50:3000` | — | yes | LAN — repointed `.46`→`.50` by hand on 2026-09-13 |
+| myia-po-2026 | `http://192.168.0.50:3000` | — | yes | LAN — ⚠ **measured stale 2026-09-23**: compose `.env` (mtime 26/07) AND live container still carry `192.168.0.46` (see "A hub migration does not propagate"); client bypasses the sidecar direct to `.50`, so the drift is latent |
 
 - **web1**: no sidecar — stays on `https://models.myia.io` directly.
 - **po-2023**: no longer the hub; it runs a relay sidecar like the others.
@@ -69,7 +69,17 @@ After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** si
 
 `CLAUDISH_RELAY_UPSTREAM` is a **literal baked into the sidecar's `.env` at install time**. Nothing re-resolves it: move the hub and every sidecar keeps forwarding to the old address until someone edits that file by hand.
 
-The 2026-09 migration (hub po-2023 `192.168.0.46` → po-2025 `192.168.0.50`) exposed this on **po-2024**, where a standalone sidecar (`:3914`, auto-started from HKCU `Run` via `.start-claudish-sidecar.ps1`) still carries the hardcoded `http://192.168.0.46:3000`. It relays po-2024 → po-203 → hub, re-introducing po-203 into a path the sidecar design exists to remove. po-2026's `.env` was repointed to `.50` by hand on 2026-09-13; po-2024's was not, and nothing flagged it — the drift surfaced only by cross-reading that machine's *four* seats against the relay's own traffic.
+The 2026-09 migration (hub po-2023 `192.168.0.46` → po-2025 `192.168.0.50`) exposed this on **po-2024**, where a standalone sidecar (`:3914`, auto-started from HKCU `Run` via `.start-claudish-sidecar.ps1`) still carries the hardcoded `http://192.168.0.46:3000`. It relays po-2024 → po-203 → hub, re-introducing po-203 into a path the sidecar design exists to remove. This document previously stated that **po-2026's `.env` was repointed to `.50` by hand on 2026-09-13 — that never landed**: measured 2026-09-23, the compose `.env` (`C:\dev\claudish\.env`, mtime 2026-07-26) and the live container env **both** still carry `.46`. Both machines are in the same drift state; po-2026's is latent only because its client points at the hub directly and the sidecar serves zero streams. The repoint is planned for the next drained recreate, via `[PROPOSAL]` + single ACK (coordinator arbitration 2026-09-22). Nothing flagged the drift on either machine until the live paths were cross-read — a settings file alone proves nothing about the container.
+
+### The compose dir may be a different clone than the one you develop in
+
+On po-2026 the sidecar's compose project lives in **`C:\dev\claudish`**, while the working/dev tree is `D:\Dev\claudish`. The `.env` that governs the container is the one **in the compose dir**, not the one nearest your editor — a repoint edited into the wrong clone is a silent no-op on the running container (and a plausible origin for "repointed" claims that never landed). Read the authoritative path from the container itself:
+
+```powershell
+docker inspect claudish-proxy --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+```
+
+Then verify the change the same way the change is consumed: `docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}' | Select-String '^CLAUDISH_RELAY_UPSTREAM='` — **filter before anything is printed**: the unfiltered env carries `CLAUDISH_PROXY_KEY` in clear, and a console output tends to end up in a transcript, a capture or a dashboard. The **container env**, never the file alone, is the live path (a start does not reload `.env`; only a recreate does).
 
 **Why a per-consumer verification misses it**: `ANTHROPIC_BASE_URL` on po-2024 reads `http://192.168.0.50:3000` — correct. The drift lives in a **second, independent consumer** (an auto-start process), not in the settings file. Verifying "where each client lands" therefore means **enumerating processes**, not reading `~/.claude/settings.json`:
 
