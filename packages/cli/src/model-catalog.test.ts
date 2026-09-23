@@ -13,11 +13,21 @@
  * don't depend on the user's ~/.claudish/all-models.json.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import {
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lookupModel } from "./adapters/model-catalog.js";
+import { setMemCatalogForTests } from "./providers/catalog-resolvers/openrouter.js";
+import type { SlimModelEntry } from "./providers/all-models-cache.js";
 import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
@@ -35,6 +45,7 @@ const MINIMAX_API_BASE = MINIMAX_CODING_KEY
 
 let tmpDir: string;
 let mockCachePath: string;
+const missingCachePath = () => join(tmpDir, "does-not-exist.json");
 
 beforeAll(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "claudish-catalog-test-"));
@@ -185,6 +196,102 @@ describe("Group 1: Model Catalog — lookupModel()", () => {
   test("no cache file → undefined (cold start)", () => {
     const nonexistent = join(tmpDir, "does-not-exist.json");
     expect(lookupModel("glm-5", nonexistent)).toBeUndefined();
+  });
+});
+
+// ─── Group 1b: Memory-catalog fallback (#222 c) ─────────────────────────────
+
+describe("Group 1b: lookupModel() — memory fallback without disk cache (#222 c)", () => {
+  // Real catalog values (witness: po-2026 ~/.claudish/all-models.json, 2026-09-23).
+  const MEMORY_ENTRIES: SlimModelEntry[] = [
+    {
+      modelId: "glm-4.6v",
+      aliases: [],
+      sources: {},
+      contextWindow: 131_072,
+      supportsVision: true,
+    },
+    {
+      modelId: "glm-5.3-flash",
+      aliases: [],
+      sources: {},
+      contextWindow: 1_000_000,
+      supportsVision: true,
+    },
+    {
+      modelId: "glm-5.3",
+      aliases: [],
+      sources: {},
+      contextWindow: 1_000_000,
+      supportsVision: false,
+    },
+    {
+      modelId: "minimax-m2.7",
+      aliases: ["MiniMax-M2.7", "minimax-m2-7"],
+      sources: {},
+      contextWindow: 204_800,
+      supportsVision: false,
+    },
+  ];
+
+  beforeEach(() => setMemCatalogForTests(MEMORY_ENTRIES));
+  // The module-level catalog is shared state — clear it so the "cold start"
+  // assertions in Group 1 stay hermetic regardless of test order.
+  afterEach(() => setMemCatalogForTests(null));
+
+  test("vision model resolves true with NO disk cache (the hub case)", () => {
+    const entry = lookupModel("glm-4.6v", missingCachePath());
+    expect(entry).toBeDefined();
+    expect(entry!.contextWindow).toBe(131_072);
+    expect(entry!.supportsVision).toBe(true);
+  });
+
+  test("alias match works through the memory fallback", () => {
+    const entry = lookupModel("MiniMax-M2.7", missingCachePath());
+    expect(entry).toBeDefined();
+    expect(entry!.contextWindow).toBe(204_800);
+    expect(entry!.supportsVision).toBe(false);
+  });
+
+  test("text-only model resolves false vision with NO disk cache", () => {
+    const entry = lookupModel("glm-5.3", missingCachePath());
+    expect(entry).toBeDefined();
+    expect(entry!.supportsVision).toBe(false);
+  });
+
+  test("unknown id with seeded memory → undefined (fail-closed)", () => {
+    expect(lookupModel("totally-unknown-xyz", missingCachePath())).toBeUndefined();
+  });
+
+  test("disk cache stays authoritative when both sources are populated", () => {
+    setMemCatalogForTests([
+      {
+        modelId: "minimax-m2.7",
+        aliases: [],
+        sources: {},
+        contextWindow: 42,
+        supportsVision: false,
+      },
+    ]);
+    const entry = lookupModel("minimax-m2.7", mockCachePath);
+    expect(entry!.contextWindow).toBe(204_800);
+  });
+
+  test("memory entry without contextWindow → undefined, same fail-closed contract as disk", () => {
+    setMemCatalogForTests([
+      { modelId: "glm-unknown", aliases: [], sources: {}, contextWindow: undefined },
+    ]);
+    expect(lookupModel("glm-unknown", missingCachePath())).toBeUndefined();
+  });
+
+  test("cold memory (null) + no disk → undefined, behaviour unchanged from before", () => {
+    setMemCatalogForTests(null);
+    expect(lookupModel("glm-4.6v", missingCachePath())).toBeUndefined();
+  });
+
+  test("empty memory catalog + no disk → undefined", () => {
+    setMemCatalogForTests([]);
+    expect(lookupModel("glm-4.6v", missingCachePath())).toBeUndefined();
   });
 });
 

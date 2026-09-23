@@ -29,6 +29,25 @@ export type DiskCache = DiskCacheV2;
 let _memCache: SlimModelEntry[] | null = null;
 
 /**
+ * Read-only access to the module-level memory catalog (#222 c).
+ * `lookupModel()` falls back to this when the disk cache misses — the hub's
+ * config bind is read-only, so its disk cache is structurally absent while the
+ * startup `warmAllCatalogs()` populates memory. Callers must not mutate;
+ * the array is replaced atomically, never written in place.
+ */
+export function getMemCatalogEntries(): SlimModelEntry[] | null {
+  return _memCache;
+}
+
+/**
+ * Test seam (same convention as resetOverflowCapsForTests): seed or clear the
+ * module-level catalog without a fetch. `null`/`[]` restores cold state.
+ */
+export function setMemCatalogForTests(entries: SlimModelEntry[] | null): void {
+  _memCache = entries;
+}
+
+/**
  * Promise that resolves when the cache is warm (from warmCache or lazy load).
  * Stored so multiple callers can await the same in-flight fetch.
  */

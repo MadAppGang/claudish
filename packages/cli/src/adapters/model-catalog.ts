@@ -10,7 +10,8 @@
  * constraints, not model metadata.
  */
 
-import { readAllModelsCache } from "../providers/all-models-cache.js";
+import { readAllModelsCache, type SlimModelEntry } from "../providers/all-models-cache.js";
+import { getMemCatalogEntries } from "../providers/catalog-resolvers/openrouter.js";
 
 export interface ModelEntry {
   /** Model ID as stored in the slim catalog (not lowercased) */
@@ -19,6 +20,36 @@ export interface ModelEntry {
   contextWindow: number;
   /** Whether model supports vision/image input (may be undefined if Firebase didn't specify) */
   supportsVision?: boolean;
+}
+
+function findEntry(entries: readonly SlimModelEntry[], modelId: string): SlimModelEntry | undefined {
+  const lower = modelId.toLowerCase();
+  // Vendor-prefixed IDs like "x-ai/grok-beta" — match on segment after "/"
+  const unprefixed = lower.includes("/")
+    ? lower.substring(lower.lastIndexOf("/") + 1)
+    : lower;
+
+  for (const entry of entries) {
+    const entryId = entry.modelId.toLowerCase();
+
+    const exactMatch = entryId === unprefixed || entryId === lower;
+    const aliasMatch = entry.aliases?.some(
+      (a) => a.toLowerCase() === unprefixed || a.toLowerCase() === lower
+    );
+
+    if (exactMatch || aliasMatch) return entry;
+  }
+
+  return undefined;
+}
+
+function toModelEntry(entry: SlimModelEntry): ModelEntry | undefined {
+  if (entry.contextWindow === undefined) return undefined;
+  return {
+    modelId: entry.modelId,
+    contextWindow: entry.contextWindow,
+    supportsVision: entry.supportsVision,
+  };
 }
 
 /**
@@ -46,31 +77,22 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
     );
   }
 
+  // 1. Disk cache — historical primary. An entry found here is authoritative,
+  //    including the fail-closed missing-contextWindow case; the memory
+  //    fallback only fires on a disk MISS (#222 c).
   const cache = readAllModelsCache(cachePath);
-  if (!cache || cache.entries.length === 0) return undefined;
+  const diskEntry =
+    cache && cache.entries.length > 0 ? findEntry(cache.entries, modelId) : undefined;
+  if (diskEntry) return toModelEntry(diskEntry);
 
-  const lower = modelId.toLowerCase();
-  // Vendor-prefixed IDs like "x-ai/grok-beta" — match on segment after "/"
-  const unprefixed = lower.includes("/")
-    ? lower.substring(lower.lastIndexOf("/") + 1)
-    : lower;
-
-  for (const entry of cache.entries) {
-    const entryId = entry.modelId.toLowerCase();
-
-    const exactMatch = entryId === unprefixed || entryId === lower;
-    const aliasMatch = entry.aliases?.some(
-      (a) => a.toLowerCase() === unprefixed || a.toLowerCase() === lower
-    );
-
-    if (exactMatch || aliasMatch) {
-      if (entry.contextWindow === undefined) return undefined;
-      return {
-        modelId: entry.modelId,
-        contextWindow: entry.contextWindow,
-        supportsVision: entry.supportsVision,
-      };
-    }
+  // 2. Memory-catalog fallback: the hub's config bind is read-only, so its
+  //    disk cache is structurally absent while the startup `warmAllCatalogs()`
+  //    populates the resolver's in-memory catalog. Read-only, fail-closed —
+  //    an id absent from both sources still yields undefined.
+  const memEntries = getMemCatalogEntries();
+  if (memEntries && memEntries.length > 0) {
+    const memEntry = findEntry(memEntries, modelId);
+    if (memEntry) return toModelEntry(memEntry);
   }
 
   return undefined;
