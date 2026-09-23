@@ -31,7 +31,14 @@ function claudeRequest() {
     system: "You are Claude Code. SYSTEM_PROMPT_HEAD",
     messages: [
       { role: "user", content: "mission initiale" },
-      { role: "assistant", content: [{ type: "text", text: "je commence" }] },
+      {
+        role: "assistant",
+        // The real wire shape: the steer lands BETWEEN the assistant's
+        // tool_calls and the user turn carrying their results (S3 lot 1 made
+        // the fixture honest — a text-only assistant made the old third test
+        // assert a sequence the wire rejects).
+        content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }],
+      },
       { role: "system", content: STEER },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
     ],
@@ -52,14 +59,22 @@ describe("mid-turn user steer keeps its position (OpenAI wire)", () => {
     expect(carrier?.role).toBe("user");
   });
 
-  test("it lands before the tool result Claude Code attached it to", () => {
+  test("it rides with the tool-result turn and never splits the tool round", () => {
     const messages = convertMessagesToOpenAI(claudeRequest(), "glm-5.3");
     const steerAt = messages.findIndex((m: any) =>
       JSON.stringify(m.content ?? "").includes(NEEDLE)
     );
     const toolAt = messages.findIndex((m: any) => m.role === "tool");
     expect(steerAt).toBeGreaterThan(0);
-    expect(toolAt).toBeGreaterThan(steerAt);
+    expect(toolAt).toBeGreaterThan(0);
+    // The round stays WHOLE: the tool message directly answers the assistant's
+    // tool_calls (no synthetic "no result" — splitting the round on the steer
+    // would fabricate one), and the steer lands in the same turn neighborhood,
+    // right after the result it accompanied.
+    expect(toolAt).toBeLessThan(steerAt);
+    expect(messages[toolAt - 1]?.role).toBe("assistant");
+    expect(messages[toolAt - 1]?.tool_calls?.[0]?.id).toBe("t1");
+    expect(JSON.stringify(messages)).not.toContain("No tool result was provided");
   });
 });
 

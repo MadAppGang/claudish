@@ -460,8 +460,16 @@ describe("Adapter: convertMessagesToOpenAI", () => {
 
   test("converts user tool_result to OpenAI tool message", async () => {
     const convert = await getConverter();
+    // The tool_result rides with the assistant turn that made the call — the
+    // real wire shape. A lone tool_result answers no open tool round and is
+    // degraded to a user message by normalizeMessageSequence (S3 lot 1,
+    // upstream b9e2163 changed its twin the same way).
     const req = {
       messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "call_123", name: "read_file", input: {} }],
+        },
         {
           role: "user",
           content: [
@@ -472,10 +480,12 @@ describe("Adapter: convertMessagesToOpenAI", () => {
     };
 
     const messages = convert(req, "test-model");
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("tool");
-    expect(messages[0].tool_call_id).toBe("call_123");
-    expect(messages[0].content).toBe("file contents here");
+    expect(messages).toHaveLength(2);
+    expect(messages[0].role).toBe("assistant");
+    expect(messages[0].tool_calls[0].id).toBe("call_123");
+    expect(messages[1].role).toBe("tool");
+    expect(messages[1].tool_call_id).toBe("call_123");
+    expect(messages[1].content).toBe("file contents here");
   });
 
   test("Kimi K2.5: empty thinking block still produces reasoning_content field", async () => {
@@ -1075,7 +1085,9 @@ describe("sanitizeSchemaForOpenAI", () => {
 
   test("removes pattern recursively from nested schema positions", async () => {
     const sanitize = await getSanitizer();
-    const constrained = { type: "string", pattern: "^[a-z]+$" };
+    // Unportable (the \p class OpenAI's Python validator rejects) — dropped at
+    // every depth. Since S3 lot 1 a PORTABLE pattern is kept (asserted below).
+    const constrained = { type: "string", pattern: String.raw`[^\p{Cc}]` };
     const schema = {
       type: "object",
       properties: {
@@ -1096,6 +1108,13 @@ describe("sanitizeSchemaForOpenAI", () => {
     expect(result.properties.map.additionalProperties.pattern).toBeUndefined();
     expect(result.properties.choice.anyOf[0].pattern).toBeUndefined();
     expect(result.properties.choice.anyOf[1].allOf[0].oneOf[0].pattern).toBeUndefined();
+    // The new half of the contract (S3 lot 1, upstream 0997da5): a PORTABLE
+    // pattern is advisory value, kept even in a nested position.
+    const portable = sanitize({
+      type: "object",
+      properties: { nested: { type: "array", items: { type: "string", pattern: "^[a-z]+$" } } },
+    });
+    expect(portable.properties.nested.items.pattern).toBe("^[a-z]+$");
   });
 
   test("preserves a user property literally named pattern", async () => {
@@ -1104,7 +1123,9 @@ describe("sanitizeSchemaForOpenAI", () => {
       type: "object",
       properties: {
         pattern: { type: "string", description: "A user-supplied search pattern" },
-        field: { type: "string", pattern: "^[a-z]+$" },
+        // Unportable on purpose: this test pins name-vs-keyword, not the
+        // portability predicate (the suite above covers that).
+        field: { type: "string", pattern: String.raw`[^\p{Cc}]` },
       },
       required: ["pattern"],
     };
