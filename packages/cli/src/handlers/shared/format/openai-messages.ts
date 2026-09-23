@@ -446,6 +446,8 @@ function processUserMessage(
           const others: any[] = [];
           let forwardedImages = 0;
           let droppedImages = 0;
+          let droppedDocuments = 0;
+          let wireDroppedImages = 0;
           for (const inner of block.content) {
             if (inner.type === "text") {
               texts.push(inner.text);
@@ -461,7 +463,23 @@ function processUserMessage(
                 } else {
                   droppedImages++;
                 }
+              } else {
+                // A text-only wire (simpleFormat) has no part for an image.
+                // Count it as dropped so the marker names the omission: an
+                // uncounted one contributed nothing and the tool result came
+                // out EMPTY — a silent drop (#222 class). Counted apart from
+                // droppedImages: the source is fine, the WIRE has no part for
+                // it, and the marker states that fact (doctrine #126).
+                wireDroppedImages++;
               }
+            } else if (inner.type === "image" || inner.type === "document") {
+              // Media this wire has no part for: an image without a usable
+              // source, a document (PDF base64). Counted, NEVER serialized —
+              // stringifying the block ships its base64 as text inside the
+              // tool message on every later turn of the session (#224, the
+              // same mechanism the hoist above closes for forwardable images).
+              if (inner.type === "document") droppedDocuments++;
+              else droppedImages++;
             } else {
               others.push(inner);
             }
@@ -469,16 +487,18 @@ function processUserMessage(
           resultText = texts.join("\n");
           if (others.length) resultText += (resultText ? "\n" : "") + JSON.stringify(others);
           // Tool/function messages must be non-empty; point at the forwarded
-          // image. An image whose source could not be expressed leaves nothing
-          // to point at, so the omission is named instead — otherwise a
-          // tool_result whose only block was that image becomes an empty tool
-          // message, which OpenAI rejects.
-          if (!resultText) {
-            if (forwardedImages) resultText = "[image returned; see following message]";
-            else if (droppedImages)
-              resultText = "[image returned, but its source could not be forwarded]";
-            else resultText = "";
-          }
+          // image. Every omission is named, and each counter speaks for
+          // itself: a result with one forwarded AND one dropped image used to
+          // say only "see following message", leaving the drop silent. An
+          // image whose source could not be expressed leaves nothing to point
+          // at — otherwise a tool_result whose only block was that image
+          // becomes an empty tool message, which OpenAI rejects.
+          const markers: string[] = [];
+          if (forwardedImages && !resultText) markers.push("[image returned; see following message]");
+          if (droppedImages) markers.push("[image returned, but its source could not be forwarded]");
+          if (wireDroppedImages) markers.push("[image returned, but this wire cannot forward it]");
+          if (droppedDocuments) markers.push("[document returned, but this wire cannot forward it]");
+          if (markers.length) resultText += (resultText ? "\n" : "") + markers.join("\n");
         } else {
           resultText = JSON.stringify(block.content);
         }

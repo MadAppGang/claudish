@@ -95,19 +95,56 @@ export class OllamaAPIFormat extends BaseAPIFormat {
   private processUserMessage(msg: any): any {
     if (Array.isArray(msg.content)) {
       const textParts: string[] = [];
+      let droppedMedia = 0;
       for (const block of msg.content) {
         if (block.type === "text") {
           textParts.push(block.text);
+        } else if (block.type === "image" || block.type === "document") {
+          // Counted, never serialized: this lane carries text only
+          // (OllamaCloud has no vision), and a serialized media block ships
+          // its base64 as text on every later turn of the session (#224 —
+          // the leak the hoist closes on the Chat Completions wire). A named
+          // omission beats a silent drop (#222).
+          droppedMedia++;
         } else if (block.type === "tool_result") {
-          const resultContent =
-            typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-          textParts.push(`[Tool Result]: ${resultContent}`);
+          textParts.push(`[Tool Result]: ${this.toolResultText(block.content)}`);
         }
-        // Skip images — OllamaCloud doesn't support vision
+      }
+      if (droppedMedia > 0) {
+        textParts.push(
+          `[${droppedMedia === 1 ? "1 image/document part was" : `${droppedMedia} image/document parts were`} present in this message but not forwarded: this lane carries text only.]`
+        );
       }
       return { role: "user", content: textParts.join("\n\n") };
     }
     return { role: "user", content: msg.content };
+  }
+
+  /**
+   * A tool_result's content as text: text parts joined, media blocks counted
+   * (never serialized — their base64 as text is the #224 leak), unknown
+   * blocks stringified as before so no signal is lost.
+   */
+  private toolResultText(content: any): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return JSON.stringify(content);
+    const parts: string[] = [];
+    let droppedMedia = 0;
+    for (const inner of content) {
+      if (inner?.type === "text") {
+        parts.push(inner.text);
+      } else if (inner?.type === "image" || inner?.type === "document") {
+        droppedMedia++;
+      } else {
+        parts.push(JSON.stringify(inner));
+      }
+    }
+    if (droppedMedia > 0) {
+      parts.push(
+        `[${droppedMedia === 1 ? "1 image/document part was" : `${droppedMedia} image/document parts were`} present in this tool result but not forwarded: this lane carries text only.]`
+      );
+    }
+    return parts.join("\n");
   }
 
   private processAssistantMessage(msg: any): any {
