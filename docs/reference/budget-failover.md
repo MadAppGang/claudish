@@ -71,8 +71,11 @@ incomplete: versioned ids it does not list still serve (probe before trusting ei
 Pinning the final PAYG step to the alias (`ds@deepseek-flash`, hub po-2025 since 2026-09-10) adopts
 each new Flash release **the moment the provider rolls the alias**, no nudge. Trade-off: an alias
 roll is unreviewed — after any provider release, check which build the alias actually serves.
-Subscription steps (`qwen-token-plan@deepseek-v4-flash-0731`) stay version-pinned because plans
-publish versioned builds only: those DO need the manual env-edit + drained recreate. When probing
+Subscription steps (`qwen-token-plan@deepseek-v4.1-flash`, hub po-2025 since 2026-09-23) stay version-pinned because plans
+publish versioned builds only: those DO need the manual env-edit + drained recreate. Build selection is
+evidence-based: on 2026-09-23 the HF catalog showed `DeepSeek-V4-Flash-0731` (2026-07-31) superseded by
+`DeepSeek-V4.1-Flash` (2026-09-10) — the old id was replaced after an acceptance probe (`deepseek-v4.1-flash`
+200 on the MaaS subscription; the dash spelling `deepseek-v4-1-flash` is 400). When probing
 an id one-shot (`stream:false`), give it `max_tokens ≥ 64` — the thinking block consumes the budget
 first and a low cap returns empty text, which reads like a failure but is not.
 
