@@ -69,6 +69,17 @@
 # did not happen (LastTaskResult=0, uptime 32h35). Raised to PT15M. Only the
 # budget and the limit together reach `docker restart`; changing either alone
 # recreates the silent non-restart.
+#
+# WORST-CASE WALL TIME (#233 AC4)
+# ObserveSec 300 + adaptive up to 300 + compose stop grace 120 + settle 20
+# ≈ 12.5 min — beyond a typical agent tool-call cap (10 min). Agent callers
+# MUST run this DETACHED (scheduled task or Start-Process) and poll drain.log
+# for the OUTCOME line, never inline inside a capped tool call: a caller
+# killed mid-compose leaves the old container stopped with no rename/start
+# ever issued — the 2026-09-23 09:35Z gap (16 min) is exactly that shape
+# (#233). Every exit now writes a terminal `OUTCOME` line, and a later run
+# that finds a RECREATE with no OUTCOME after it logs
+# `PREVIOUS RUN INTERRUPTED`.
 
 param(
     [string]$ContainerName = "claudish-proxy",
@@ -85,7 +96,11 @@ param(
     # Standalone form of the function's deploy switch (#124): forwarded to
     # Invoke-ClaudishDrainedRestart below so `-File -Recreate` recreates
     # instead of silently draining into a plain `docker restart`.
-    [switch]$Recreate
+    [switch]$Recreate,
+    # #233 AC2: auto-remove leftover Created-state compose twins before a
+    # recreate. Off by default — the default path REFUSES and names the exact
+    # removal command, because deleting containers is the operator's call.
+    [switch]$RemoveCreatedTwins
 )
 
 Import-Module (Join-Path $PSScriptRoot 'lib\claudish-engine.psm1') -Force
@@ -97,6 +112,89 @@ function Write-DrainLog {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     Add-Content -Path $LogPath -Value $line -Encoding UTF8
     Write-Host $line
+}
+
+function Write-DrainOutcome {
+    <#
+        #233 AC3 — a terminal line on EVERY exit. The 09:35Z run of
+        2026-09-23 has a RECREATE line and no outcome: the log could not tell
+        "still running" from "died mid-compose". Every path out of
+        Invoke-ClaudishDrainedRestart now writes exactly one OUTCOME line.
+    #>
+    param([string]$Kind, [string]$Detail)
+    Write-DrainLog "OUTCOME ${Kind} ($Detail)"
+}
+
+function Test-DrainPreviousRunInterrupted {
+    <#
+        #233 AC3 — called at the start of a -Recreate run. compose output
+        lines are logged with the same `RECREATE (...)` prefix as the start
+        line, so the invariant is simply: no OUTCOME line after the last
+        RECREATE line means the previous run never reached an exit. A caller
+        killed mid-compose (the 09:35Z shape) is detected here, by the NEXT
+        run, because the killed process itself can log nothing.
+    #>
+    if (-not (Test-Path -LiteralPath $LogPath)) { return }
+    $lines = @()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try { $lines = @(Get-Content -LiteralPath $LogPath) } finally { $ErrorActionPreference = $prevEap }
+    $lastStart = -1
+    $lastOutcome = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match 'RECREATE \(') { $lastStart = $i }
+        elseif ($lines[$i] -match 'OUTCOME ') { $lastOutcome = $i }
+    }
+    if ($lastStart -gt $lastOutcome) {
+        $ts = ''
+        if ($lines[$lastStart] -match '^\[([^\]]+)\]') { $ts = $Matches[1] }
+        Write-DrainLog "PREVIOUS RUN INTERRUPTED — last trace at $ts has no OUTCOME line (killed mid-compose? see #233)"
+    }
+}
+
+function Invoke-DrainRollback {
+    <#
+        #233 AC1 — after a failed `docker compose up -d`, bring the previous
+        container back up. Returns one of:
+          'started'          — docker start issued, /health re-probed
+          'already-running'  — compose failed before stopping anything
+          'start-failed'     — docker start itself failed (escalate by hand)
+          'inspect-failed'   — docker inspect could not answer
+        Never throws: a rollback path that throws would hide the failure it
+        is recovering from.
+    #>
+    param([string]$Reason, [string]$Container, [string]$Url)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $running = docker inspect --format '{{.State.Running}}' $Container 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-DrainLog "ROLLBACK ($Reason): docker inspect $Container failed — cannot tell if the old container is stopped"
+            return 'inspect-failed'
+        }
+        if ($running -match 'true') {
+            Write-DrainLog "ROLLBACK ($Reason): container '$Container' still running — compose failed before stopping it, nothing to roll back"
+            return 'already-running'
+        }
+        docker start $Container 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-DrainLog "ROLLBACK ($Reason): docker start $Container FAILED (exit $LASTEXITCODE) — container left stopped, start it by hand"
+            return 'start-failed'
+        }
+        # Give the proxy a moment to bind before probing; /health usually
+        # answers within seconds of container start.
+        $health = 'unreachable'
+        foreach ($attempt in 1..3) {
+            Start-Sleep -Seconds 3
+            $after = Get-ClaudishActiveStreams -Url $Url
+            if ($null -ne $after) { $health = "ok (activeStreams=$after)"; break }
+        }
+        Write-DrainLog "ROLLBACK started $Container — health $health"
+        return 'started'
+    } catch {
+        Write-DrainLog "ROLLBACK ($Reason): EXCEPTION — $($_.Exception.Message)"
+        return 'inspect-failed'
+    } finally { $ErrorActionPreference = $prevEap }
 }
 
 function Get-ClaudishProbeUrl {
@@ -151,7 +249,7 @@ function Get-ClaudishActiveStreams {
     }
 }
 
-function Invoke-ClaudishDrainedRestart {
+function Invoke-ClaudishDrainedRestartImpl {
     <#
         Restarts the container at the quietest moment it can find.
 
@@ -190,7 +288,10 @@ function Invoke-ClaudishDrainedRestart {
         [switch]$Recreate,
         # Interpolation env file for `docker compose up -d` ($Recreate only).
         [string]$EnvFile = "",
-        [string]$ComposeDir = (Split-Path -Parent $PSScriptRoot)
+        [string]$ComposeDir = (Split-Path -Parent $PSScriptRoot),
+        # #233 AC2 — auto-remove leftover Created-state compose twins instead
+        # of refusing. Never removes a twin that ever ran.
+        [switch]$RemoveCreatedTwins
     )
 
     # --env-file guard (incident 2026-09-07, EISDIR aftermath): docker compose
@@ -205,12 +306,15 @@ function Invoke-ClaudishDrainedRestart {
     # exist. Verified BEFORE the drain so a doomed recreate costs no
     # 10-minute drain wait.
     if ($Recreate) {
+        Test-DrainPreviousRunInterrupted
         if (-not $EnvFile) {
             Write-DrainLog "RECREATE REFUSED ($Reason): -Recreate requires -EnvFile — docker compose interpolates every `$\{VAR:-\} from it, and the hub's real file lives outside the compose dir (incident 2026-09-07: bare recreate emptied every CLAUDISH_FAILOVER_*). Pass -EnvFile D:\claudish-shadow\.env on the hub."
+            Write-DrainOutcome "refused" "${Reason}: -Recreate without -EnvFile — nothing stopped"
             return $false
         }
         if (-not (Test-Path -LiteralPath $EnvFile)) {
             Write-DrainLog "RECREATE REFUSED ($Reason): -EnvFile '$EnvFile' does not exist — nothing done (a recreate against a wrong or missing env file empties every CLAUDISH_FAILOVER_* variable)"
+            Write-DrainOutcome "refused" "${Reason}: -EnvFile missing — nothing stopped"
             return $false
         }
         # #141 point 3, second surface: an env file can EXIST and still gut the
@@ -235,7 +339,51 @@ function Invoke-ClaudishDrainedRestart {
         } finally { $ErrorActionPreference = $prevEap }
         if ($contArmed -gt 0 -and $envArmed -eq 0) {
             Write-DrainLog "RECREATE REFUSED ($Reason): -EnvFile '$EnvFile' carries no armed CLAUDISH_FAILOVER_* while container '$Container' has $contArmed — the recreate would wipe an armed state that exists nowhere on disk. Recover it with install-sidecar.ps1 -RebuildEnvFromContainer, then retry (#141)."
+            Write-DrainOutcome "refused" "${Reason}: env file carries no armed cascade while container has $contArmed — nothing stopped"
             return $false
+        }
+
+        # #233 AC2 — leftover-twin preflight, BEFORE anything is stopped. An
+        # interrupted `compose up` leaves a `<id>_claudish-proxy` twin behind
+        # (Created state); its name conflict then fails every later recreate
+        # AFTER compose has stopped the old container — on 2026-09-23 each
+        # retry was a fresh outage and recovery waited on the 15-min watchdog.
+        # Refuse by default and name the exact removal command; auto-removal
+        # only via -RemoveCreatedTwins and only for twins that never ran.
+        # (The --format deliberately separates fields with a SPACE, not "|":
+        # PowerShell does not quote a "|" argument when handing it to a .cmd
+        # shim, and cmd.exe re-parses it as a pipe operator — measured while
+        # building this suite's docker.cmd shim. The real docker.exe is
+        # unaffected either way.)
+        $twinLines = @()
+        $prevEap2 = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $psLines = docker ps -a --filter "name=$Container" --format '{{.Names}} {{.State}}' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $psLines) {
+                $twinLines = @($psLines | Where-Object { $_ -and (($_.Trim() -split '\s+')[0]) -ne $Container })
+            }
+        } finally { $ErrorActionPreference = $prevEap2 }
+        if ($twinLines.Count -gt 0) {
+            $createdTwins = @($twinLines | Where-Object { (($_.Trim() -split '\s+')[1] -eq 'created') })
+            $nonCreatedTwins = @($twinLines | Where-Object { (($_.Trim() -split '\s+')[1] -ne 'created') })
+            if ($RemoveCreatedTwins -and $nonCreatedTwins.Count -eq 0) {
+                foreach ($t in $createdTwins) {
+                    $tname = ($t.Trim() -split '\s+')[0]
+                    docker rm $tname 2>$null
+                    Write-DrainLog "RECREATE ($Reason): removed Created-state twin '$tname' (-RemoveCreatedTwins — never ran, holds no state)"
+                }
+            } else {
+                if ($RemoveCreatedTwins -and $nonCreatedTwins.Count -gt 0) {
+                    Write-DrainLog "RECREATE REFUSED ($Reason): -RemoveCreatedTwins only covers Created-state twins; non-Created twin(s) present — refusing"
+                }
+                foreach ($t in $twinLines) {
+                    $tparts = $t.Trim() -split '\s+'
+                    Write-DrainLog "RECREATE REFUSED ($Reason): leftover twin '$($tparts[0])' (state=$($tparts[1])) — remove it first: docker rm $($tparts[0])"
+                }
+                Write-DrainOutcome "refused" "${Reason}: leftover twin(s) present — nothing stopped"
+                return $false
+            }
         }
         Write-DrainLog "RECREATE ($Reason): interpolating from -EnvFile '$EnvFile' (armed cascades: file=$envArmed container=$contArmed)"
     }
@@ -330,6 +478,21 @@ function Invoke-ClaudishDrainedRestart {
         } finally { Pop-Location }
         if ($code -ne 0) {
             Write-DrainLog "RECREATE ($Reason): docker compose up -d FAILED (exit $code) in $ComposeDir"
+            # #233 AC1 — rollback. compose may already have stopped the old
+            # container before failing (name conflict 2026-09-23, killed
+            # caller). A failed deploy must leave the hub SERVING the previous
+            # image, never stopped: recovery time otherwise falls to the
+            # 15-min watchdog or a human.
+            $rollback = Invoke-DrainRollback -Reason $Reason -Container $Container -Url $Url
+            if ($rollback -eq 'started') {
+                Write-DrainOutcome "failed" "${Reason}: compose exit $code — ROLLBACK started, hub serving previous image"
+            } elseif ($rollback -eq 'already-running') {
+                Write-DrainOutcome "failed" "${Reason}: compose exit $code — container still running, no rollback needed"
+            } elseif ($rollback -eq 'start-failed') {
+                Write-DrainOutcome "failed" "${Reason}: compose exit $code — ROLLBACK FAILED, container stopped: manual 'docker start $Container' needed"
+            } else {
+                Write-DrainOutcome "failed" "${Reason}: compose exit $code — rollback indeterminate ($rollback), verify container state by hand"
+            }
             return $false
         }
         $verb = "docker compose up -d"
@@ -337,6 +500,7 @@ function Invoke-ClaudishDrainedRestart {
         docker restart -t 120 $Container 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-DrainLog "RESTART ($Reason): docker restart $Container FAILED (exit $LASTEXITCODE)"
+            Write-DrainOutcome "failed" "${Reason}: docker restart exit $LASTEXITCODE"
             return $false
         }
         $verb = "docker restart"
@@ -349,14 +513,45 @@ function Invoke-ClaudishDrainedRestart {
     $after = Get-ClaudishActiveStreams -Url $Url
     if ($null -eq $after) {
         Write-DrainLog "RESTART ($Reason): container restarted, but /health not answering yet after 20s"
+        Write-DrainOutcome "success" "${Reason}: $verb returned; /health not answering yet after 20s"
     } else {
         Write-DrainLog "RESTART ($Reason): container restarted, /health answering (activeStreams=$after)"
+        Write-DrainOutcome "success" "${Reason}: $verb returned; /health answering (activeStreams=$after)"
     }
     return $true
 }
 
+function Invoke-ClaudishDrainedRestart {
+    <#
+        #233 AC3 public wrapper. Every exit of the implementation writes a
+        terminal OUTCOME line; this wrapper guarantees the exception path too
+        — an unhandled throw now logs its outcome instead of dying with the
+        same log shape as the interrupted 09:35Z run.
+    #>
+    param(
+        [string]$Reason = "unspecified",
+        [string]$Container = $ContainerName,
+        [string]$Url = $ProxyUrl,
+        [int]$MaxWait = $MaxWaitSec,
+        [int]$ObserveSec = 300,
+        [int]$RelaxSec = 30,
+        [int]$PollSec = 2,
+        [switch]$Recreate,
+        [string]$EnvFile = "",
+        [string]$ComposeDir = (Split-Path -Parent $PSScriptRoot),
+        [switch]$RemoveCreatedTwins
+    )
+    try {
+        return Invoke-ClaudishDrainedRestartImpl @PSBoundParameters
+    } catch {
+        Write-DrainLog "RESTART ($Reason): EXCEPTION — $($_.Exception.Message)"
+        Write-DrainOutcome "exception" "${Reason}: $($_.Exception.GetType().Name)"
+        return $false
+    }
+}
+
 # Standalone mode: run the restart. Dot-sourced, define the functions only.
 if ($MyInvocation.InvocationName -ne '.') {
-    $ok = Invoke-ClaudishDrainedRestart -Reason $Reason -Recreate:$Recreate -EnvFile $EnvFile
+    $ok = Invoke-ClaudishDrainedRestart -Reason $Reason -Recreate:$Recreate -EnvFile $EnvFile -RemoveCreatedTwins:$RemoveCreatedTwins
     exit $(if ($ok) { 0 } else { 1 })
 }
