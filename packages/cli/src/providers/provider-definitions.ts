@@ -256,6 +256,17 @@ export interface ProviderDefinition {
    * builtin declares it, and none should, since every hosted vendor authenticates.
    */
   authScheme?: "x-api-key" | "bearer" | "none";
+  /**
+   * Where the endpoint reads prompt-cache `cache_control`.
+   *
+   * Absent means on content blocks, which is where Anthropic reads the
+   * breakpoints Claude Code places on its system prompt and latest turn.
+   * `"top-level"` is an endpoint that honours only the request-level field
+   * (Anthropic's automatic caching) and ignores block markers, so a request
+   * carrying the client's breakpoints alone never writes a cache entry. The
+   * Anthropic-compatible transport lifts them to that field.
+   */
+  cacheControlPlacement?: "top-level";
   /** Provider shortcuts (e.g., ["g", "gemini"] → "google") */
   shortcuts: string[];
   /** Legacy prefix patterns for backwards compat (e.g., ["g/", "gemini/"]) */
@@ -797,6 +808,10 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     baseUrl: "https://api.moonshot.ai",
     baseUrlEnvVars: ["MOONSHOT_BASE_URL", "KIMI_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
+    // "only effective at the top level; cache_control markers inside the
+    // messages array are ignored", and a request without it only reads the
+    // cache: https://platform.kimi.ai/docs/api/messages
+    cacheControlPlacement: "top-level",
     modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     apiKeyAliases: ["KIMI_API_KEY"],
@@ -1926,6 +1941,7 @@ export function toRemoteProvider(def: ProviderDefinition): RemoteProvider {
     prefixes: def.legacyPrefixes.map((lp) => lp.prefix),
     headers: def.headers,
     authScheme: def.authScheme,
+    cacheControlPlacement: def.cacheControlPlacement,
   };
 }
 
