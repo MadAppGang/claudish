@@ -130,10 +130,14 @@ export class OpenRouterRequestQueue extends RequestQueue {
       const quotaPercent = state.remainingRequests / state.limitRequests;
       if (quotaPercent < 0.2) {
         delayMs = Math.max(delayMs, 3000);
-        this.debug(`Low quota (${(quotaPercent * 100).toFixed(1)}%), increasing delay to ${delayMs}ms`);
+        this.debug(
+          `Low quota (${(quotaPercent * 100).toFixed(1)}%), increasing delay to ${delayMs}ms`
+        );
       } else if (quotaPercent < 0.5) {
         delayMs = Math.max(delayMs, 2000);
-        this.debug(`Medium quota (${(quotaPercent * 100).toFixed(1)}%), increasing delay to ${delayMs}ms`);
+        this.debug(
+          `Medium quota (${(quotaPercent * 100).toFixed(1)}%), increasing delay to ${delayMs}ms`
+        );
       }
     }
 
