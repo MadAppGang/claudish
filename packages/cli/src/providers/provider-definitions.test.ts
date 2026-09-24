@@ -48,7 +48,7 @@ describe("github-models (gh@) provider", () => {
   });
 
   test("gh shortcut and prefix resolve to github-models", () => {
-    expect(getShortcuts()["gh"]).toBe("github-models");
+    expect(getShortcuts().gh).toBe("github-models");
     expect(getShortestPrefix("github-models")).toBe("gh");
   });
 
