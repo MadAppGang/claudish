@@ -11,9 +11,12 @@
 // and is not part of the Anthropic public API spec — Kimi rejects it with HTTP 400.
 // Fix: stripUnsupportedContentTypes() filters tool_reference from tool_result content arrays.
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import type { Context } from "hono";
 import { AnthropicAPIFormat } from "../../adapters/anthropic-api-format.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { getProviderByName, toRemoteProvider } from "../provider-definitions.js";
+import { anthropicCompatProfile } from "../provider-profiles.js";
 import { AnthropicProviderTransport } from "./anthropic-compat.js";
 
 const TEST_API_KEY = "test-key-abc123";
@@ -91,6 +94,195 @@ describe("AnthropicProviderTransport.getHeaders()", () => {
     expect(headers["anthropic-version"]).toBe("2023-06-01");
     expect("Authorization" in headers).toBe(false);
     expect("x-api-key" in headers).toBe(false);
+  });
+});
+
+describe("AnthropicProviderTransport.transformPayload(): request-level cache_control", () => {
+  const topLevel: RemoteProvider = {
+    name: "kimi",
+    baseUrl: "https://api.moonshot.ai",
+    apiPath: "/anthropic/v1/messages",
+    apiKeyEnvVar: "MOONSHOT_API_KEY",
+    prefixes: ["kimi/"],
+    cacheControlPlacement: "top-level",
+  };
+  const transport = new AnthropicProviderTransport(topLevel, TEST_API_KEY);
+  const hour = { type: "ephemeral", ttl: "1h" };
+  const fiveMinutes = { type: "ephemeral" };
+
+  it("lifts a breakpoint to the request level and leaves the block markers in place", () => {
+    const system = [{ type: "text", text: "You are Claude Code.", cache_control: hour }];
+    const out = transport.transformPayload({ model: "kimi-k3", system, messages: [] });
+
+    expect(out.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(out.system).toEqual(system);
+  });
+
+  it("writes a breakpoint without a ttl at Anthropic's 5m default", () => {
+    const out = transport.transformPayload({
+      model: "kimi-k3",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi", cache_control: fiveMinutes }] },
+      ],
+    });
+
+    expect(out.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
+  });
+
+  it("keeps the longest TTL any breakpoint asked for", () => {
+    const out = transport.transformPayload({
+      model: "kimi-k3",
+      tools: [{ name: "Read", input_schema: { type: "object" }, cache_control: fiveMinutes }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [{ type: "text", text: "file body", cache_control: hour }],
+            },
+          ],
+        },
+        { role: "user", content: [{ type: "text", text: "next", cache_control: fiveMinutes }] },
+      ],
+    });
+
+    expect(out.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("adds nothing to a request that asked for no caching", () => {
+    const payload = {
+      model: "kimi-k3",
+      system: [{ type: "text", text: "You are Claude Code." }],
+      messages: [{ role: "user", content: "hi" }],
+    };
+
+    expect(transport.transformPayload(payload)).toEqual(payload);
+    expect("cache_control" in transport.transformPayload(payload)).toBe(false);
+  });
+
+  it("honours the client's own request-level field, which the payload is rebuilt without", () => {
+    const out = transport.transformPayload(
+      { model: "kimi-k3", messages: [{ role: "user", content: "hi" }] },
+      { cache_control: hour }
+    );
+
+    expect(out.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("sends only type and ttl, whatever else a breakpoint carries", () => {
+    const out = transport.transformPayload({
+      model: "kimi-k3",
+      system: [{ type: "text", text: "sys", cache_control: { ...hour, evict_on_complete: true } }],
+      messages: [],
+    });
+
+    expect(out.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("keeps an explicit cache_control already on the payload", () => {
+    const explicit = { type: "ephemeral", ttl: "5m" };
+    const out = transport.transformPayload({
+      model: "kimi-k3",
+      cache_control: explicit,
+      system: [{ type: "text", text: "sys", cache_control: hour }],
+      messages: [],
+    });
+
+    expect(out.cache_control).toBe(explicit);
+  });
+
+  it("returns the payload untouched for an endpoint that reads block markers", () => {
+    const blocks = new AnthropicProviderTransport(
+      { ...topLevel, cacheControlPlacement: undefined },
+      TEST_API_KEY
+    );
+    const payload = {
+      model: "MiniMax-M2.5",
+      system: [{ type: "text", text: "sys", cache_control: hour }],
+      messages: [],
+    };
+
+    expect(blocks.transformPayload(payload)).toBe(payload);
+  });
+
+  it("applies to the Kimi API endpoint and not to Kimi Code's", () => {
+    const payload = {
+      model: "kimi-k3",
+      system: [{ type: "text", text: "sys", cache_control: hour }],
+      messages: [],
+    };
+    const through = (name: string) =>
+      new AnthropicProviderTransport(
+        toRemoteProvider(getProviderByName(name)!),
+        TEST_API_KEY
+      ).transformPayload(payload);
+
+    expect(through("kimi").cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(through("kimi-coding")).toBe(payload);
+  });
+});
+
+describe("kimi@: cache_control on the wire", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const context = {
+    req: { header: () => ({}) },
+    header: () => {},
+    body: (body: BodyInit | null, init?: ResponseInit) => new Response(body, init),
+    json: (body: unknown, status?: number) =>
+      new Response(JSON.stringify(body), { status: status ?? 200 }),
+  } as unknown as Context;
+
+  const hour = { type: "ephemeral", ttl: "1h" };
+  const claudeCodeTurn = {
+    model: "claude-opus-5-5",
+    max_tokens: 64,
+    system: [{ type: "text", text: "You are Claude Code.", cache_control: hour }],
+    messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: hour }] }],
+  };
+
+  async function sendToKimi(modelParams?: Record<string, unknown>): Promise<any[]> {
+    const sent: any[] = [];
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      if (!String(url).endsWith("/anthropic/v1/messages"))
+        return new Response(null, { status: 404 });
+      sent.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "invalid_request_error", message: "stub" },
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    const handler = anthropicCompatProfile.createHandler({
+      provider: toRemoteProvider(getProviderByName("kimi")!),
+      modelName: "kimi-k3",
+      apiKey: TEST_API_KEY,
+      targetModel: "kimi@kimi-k3",
+      port: 8080,
+      sharedOpts: modelParams ? { modelParams } : {},
+    });
+    await handler!.handle(context, structuredClone(claudeCodeTurn));
+    return sent;
+  }
+
+  it("sends a Claude Code turn's breakpoints as the request-level field", async () => {
+    const [body] = await sendToKimi();
+
+    expect(body.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("keeps a cache_control given with --model-params", async () => {
+    const [body] = await sendToKimi({ cache_control: { type: "ephemeral", ttl: "5m" } });
+
+    expect(body.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
   });
 });
 
