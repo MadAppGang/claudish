@@ -73,7 +73,9 @@ function siblingEndpoint(pathname: string, fallback: string): string {
 
 /** The subscription-plans endpoint, derived from the catalog URL unless set. */
 export function plansUrl(): string {
-  return process.env.CLAUDISH_PLANS_URL ?? siblingEndpoint("/queryPlans", `${DEFAULT_HOST}/queryPlans`);
+  return (
+    process.env.CLAUDISH_PLANS_URL ?? siblingEndpoint("/queryPlans", `${DEFAULT_HOST}/queryPlans`)
+  );
 }
 
 /** The probe-roster endpoint, derived from the catalog URL unless set. */
