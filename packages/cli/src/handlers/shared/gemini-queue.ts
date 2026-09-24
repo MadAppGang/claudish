@@ -91,7 +91,9 @@ export class GeminiRequestQueue extends RequestQueue {
     try {
       const errorData = JSON.parse(errorText);
       const quotaDetail = errorData?.error?.details?.find((d: any) => d.quotaResetDelay);
-      const delaySeconds = quotaDetail ? Number.parseFloat(quotaDetail.quotaResetDelay) : Number.NaN;
+      const delaySeconds = quotaDetail
+        ? Number.parseFloat(quotaDetail.quotaResetDelay)
+        : Number.NaN;
       if (!Number.isNaN(delaySeconds)) {
         const suggestedDelayMs = Math.ceil(delaySeconds * 1000);
         this.minDelayMs = Math.max(suggestedDelayMs, this.minDelayMs, this.baseDelayMs);
