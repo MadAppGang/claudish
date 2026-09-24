@@ -815,8 +815,7 @@ export function createTempSettingsFile(
   // path blanked below, the path published to the child, and the path its
   // figures land in are then the same by construction rather than by two
   // independent `join(claudishDir, ...)` calls agreeing.
-  const tokenFilePath =
-    process.env.CLAUDISH_TOKEN_FILE || join(claudishDir, `tokens-${port}.json`);
+  const tokenFilePath = process.env.CLAUDISH_TOKEN_FILE || join(claudishDir, `tokens-${port}.json`);
 
   // Sweep the orphans FIRST (so this session's fresh file is never a candidate),
   // then blank the file for the port we are about to use. Without this the
