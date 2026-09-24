@@ -808,8 +808,14 @@ export function createTempSettingsFile(
   const timestamp = Date.now();
   const tempPath = join(claudishDir, `settings-${timestamp}.json`);
 
-  // Token file path - also in .claudish directory
-  const tokenFilePath = join(claudishDir, `tokens-${port}.json`);
+  // Token file path - also in .claudish directory, unless a parent named one.
+  //
+  // `CLAUDISH_TOKEN_FILE` is the seam `TokenTracker` and `session-stats.ts`
+  // already read, and honouring it here keeps one launch writing one file: the
+  // path blanked below, the path published to the child, and the path its
+  // figures land in are then the same by construction rather than by two
+  // independent `join(claudishDir, ...)` calls agreeing.
+  const tokenFilePath = process.env.CLAUDISH_TOKEN_FILE || join(claudishDir, `tokens-${port}.json`);
 
   // Sweep the orphans FIRST (so this session's fresh file is never a candidate),
   // then blank the file for the port we are about to use. Without this the
