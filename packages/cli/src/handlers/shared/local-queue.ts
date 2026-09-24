@@ -80,7 +80,9 @@ export class LocalModelQueue extends RequestQueue {
 
   private constructor() {
     super({ name: "Local", maxParallel: maxParallelFromEnv(), dispatchDelayMs: 100 });
-    this.debug(`Queue initialized with maxParallel=${this.maxParallel}, maxQueueSize=${this.maxQueueSize}`);
+    this.debug(
+      `Queue initialized with maxParallel=${this.maxParallel}, maxQueueSize=${this.maxQueueSize}`
+    );
   }
 
   static getInstance(): LocalModelQueue {

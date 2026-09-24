@@ -13,7 +13,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { GeminiRequestQueue } from "./gemini-queue.js";
 import { LocalModelQueue } from "./local-queue.js";
 import { OpenRouterRequestQueue } from "./openrouter-queue.js";
-import { RequestQueue, type RequestQueueOptions } from "./request-queue.js";
+import { RequestQueue } from "./request-queue.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -25,10 +25,6 @@ class TestQueue extends RequestQueue {
   retryPredicate: ((response: Response, attempt: number) => boolean) | null = null;
   onResponseThrow = false;
   retryWaitMs = 1;
-
-  constructor(opts: RequestQueueOptions) {
-    super(opts);
-  }
 
   run(fetchFn: () => Promise<Response>, meta?: string, signal?: AbortSignal): Promise<Response> {
     return this.enqueueInternal(fetchFn, meta, signal);
