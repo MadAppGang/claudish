@@ -1078,7 +1078,7 @@ export class ComposedHandler implements ModelHandler {
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
 
     // Merge provider-specific extra fields
-    const extraFields = this.provider.getExtraPayloadFields?.();
+    const extraFields = await this.provider.getExtraPayloadFields?.();
     if (extraFields) {
       Object.assign(requestPayload, extraFields);
     }
