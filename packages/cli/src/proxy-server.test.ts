@@ -268,3 +268,32 @@ describe('proxy handler routing for authScheme "none"', () => {
     }
   });
 });
+
+describe("ProxyServer.fetch (in-process dispatch)", () => {
+  test("dispatches through the app with no TCP loopback, matching the served port", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "claudish-inproc-"));
+    const configPath = join(tempDir, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ version: "2", defaultProfile: "default", profiles: {} }),
+      "utf8"
+    );
+    setConfigFileOverride(configPath);
+    let proxy: ProxyServer | undefined;
+
+    try {
+      proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
+        quiet: true,
+      });
+      const viaTcp = await fetch(`${proxy.url}/v1/models`);
+      const viaApp = await proxy.fetch(new Request("http://proxy.local/v1/models"));
+
+      expect(viaApp.status).toBe(viaTcp.status);
+      expect(await viaApp.json()).toEqual(await viaTcp.json());
+    } finally {
+      if (proxy) await proxy.shutdown();
+      setConfigFileOverride(null);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
