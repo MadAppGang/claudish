@@ -253,7 +253,9 @@ export class LocalTransport implements ProviderTransport {
     } catch {
       this._isOllamaBackend = false;
     }
-    log(`[${this.displayName}] Ollama backend probe (${this.config.baseUrl}): ${this._isOllamaBackend}`);
+    log(
+      `[${this.displayName}] Ollama backend probe (${this.config.baseUrl}): ${this._isOllamaBackend}`
+    );
     return this._isOllamaBackend;
   }
 
