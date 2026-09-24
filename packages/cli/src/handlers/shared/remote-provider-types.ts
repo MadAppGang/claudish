@@ -88,6 +88,8 @@ export interface RemoteProvider {
   headers?: Record<string, string>;
   /** Auth scheme for the API key header (defaults to "x-api-key") */
   authScheme?: "x-api-key" | "bearer" | "none";
+  /** Where the endpoint reads `cache_control`; see ProviderDefinition.cacheControlPlacement. */
+  cacheControlPlacement?: "top-level";
   /**
    * Optional stream-format override surfaced via ProviderTransport.overrideStreamFormat().
    * When the transport's wire format differs from what the model's dialect would
