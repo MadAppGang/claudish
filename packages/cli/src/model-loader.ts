@@ -864,9 +864,7 @@ function isFreshEnough(doc: RecommendedModelsDoc): boolean {
  * Network-only — no local caching. Callers handle error UX.
  */
 export async function searchModels(query: string, limit = 50): Promise<ModelDoc[]> {
-  const url = `${modelsBaseUrl()}?search=${encodeURIComponent(
-    query
-  )}&limit=${limit}&status=active`;
+  const url = `${modelsBaseUrl()}?search=${encodeURIComponent(query)}&limit=${limit}&status=active`;
   const data = await fetchCatalogData<{ models?: ModelDoc[]; total?: number }>(
     url,
     SEARCH_FETCH_TIMEOUT_MS
