@@ -17,6 +17,11 @@ export const ENV = {
   CLAUDISH_PROVIDER_NAME: "CLAUDISH_PROVIDER_NAME", // Provider display name (e.g. "Alibaba Token Plan"); UNSET when not known at spawn time
   ANTHROPIC_MODEL: "ANTHROPIC_MODEL", // Claude Code standard env var for model selection
   ANTHROPIC_SMALL_FAST_MODEL: "ANTHROPIC_SMALL_FAST_MODEL", // Claude Code standard env var for fast model
+  // Claude Code's marker for a session whose provider routing and credential belong
+  // to the process that launched it: settings files can then set neither.
+  CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+  // Claude Code treats its base URL as Anthropic's own API only with this set to 1.
+  CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
   // Claudish model mapping overrides (highest priority)
   CLAUDISH_MODEL_OPUS: "CLAUDISH_MODEL_OPUS",
   CLAUDISH_MODEL_SONNET: "CLAUDISH_MODEL_SONNET",
