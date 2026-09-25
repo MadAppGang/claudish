@@ -1808,6 +1808,16 @@ export async function runClaudeWithProxy(
       // key alone still redirected to the payment page, hence the token too).
       env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
       env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+      // claudish owns this session's provider and credential, which is what Claude
+      // Code's host marker says: an `env` block in the user's settings, which
+      // otherwise overwrites the environment given here, then sets neither the
+      // base URL nor a credential for it (https://code.claude.com/docs/en/env-vars).
+      // It also ignores a settings-file trust flag, but not one this process
+      // inherited, from a shell inside a trusted session for one, and a routed
+      // session must not claim Anthropic's first-party trust.
+      // ai-docs/architecture/settings-env.md has the measurements.
+      env[ENV.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST] = "1";
+      env[ENV.CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL] = "";
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects

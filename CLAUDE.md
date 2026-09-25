@@ -19,6 +19,7 @@ lives in `ROADMAP.md`.
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux
+- `settings-env.md` — a settings `env` block overwrites the environment claudish gives Claude Code; why a proxy-auth launch is marked host-managed and withholds first-party trust, and why a launch that keeps the user's login is not; read before changing the child's environment
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
