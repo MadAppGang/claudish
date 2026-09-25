@@ -33,8 +33,8 @@ import {
 // team, …) still writes its line at exit. Idempotent — an explicit finalize
 // wins. quiet:true → the fallback never prints the slow-start stderr line
 // (a management command's total isn't "startup"), but the opt-in table still
-// prints. MCP/serve are excluded: they run for hours, so an at-exit total is
-// process lifetime, not startup, and would pollute the metrics.
+// prints. MCP, serve and daemon are excluded: they run for hours, so an at-exit
+// total is process lifetime, not startup, and would pollute the metrics.
 function classifyStartupKind(): string {
   const argv = process.argv.slice(2);
   const first = argv.find((a) => !a.startsWith("-"));
@@ -52,15 +52,20 @@ function classifyStartupKind(): string {
     "quota",
     "usage",
   ]);
-  if ((first && management.has(first)) || argv.includes("--mcp") || first === "serve") {
+  if (
+    (first && management.has(first)) ||
+    argv.includes("--mcp") ||
+    first === "serve" ||
+    first === "daemon"
+  ) {
     return "other";
   }
   return "run";
 }
 process.on("exit", () => {
   const argv = process.argv.slice(2);
-  const longRunningServer =
-    argv.includes("--mcp") || argv.find((a) => !a.startsWith("-")) === "serve";
+  const first = argv.find((a) => !a.startsWith("-"));
+  const longRunningServer = argv.includes("--mcp") || first === "serve" || first === "daemon";
   if (longRunningServer) return;
   finalizeStartupTrace(classifyStartupKind(), { quiet: true });
 });
@@ -349,6 +354,8 @@ const isStatsCommand = firstPositional === "stats";
 const isConfigCommand = firstPositional === "config";
 // Serve subcommand: claudish serve --port <n> --models <path> (Claude Desktop redirect gateway)
 const isServeCommand = firstPositional === "serve";
+// Daemon subcommand: claudish daemon --port <n> (Claude Code's supervisor behind a --monitor proxy)
+const isDaemonCommand = firstPositional === "daemon";
 // Providers subcommand: claudish providers --json (credential presence, no key material)
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
@@ -401,6 +408,16 @@ if (isMcpMode) {
   import("./serve-command.js").then((m) =>
     m.serveCommand(args.slice(serveArgIndex + 1)).catch((e) => {
       console.error(`[claudish serve] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
+} else if (isDaemonCommand) {
+  // Claude Code's supervisor as a child of a --monitor proxy on a fixed port:
+  // claudish daemon --port <n> [-- <claude daemon run options>].
+  const daemonArgIndex = args.indexOf("daemon");
+  import("./daemon-command.js").then((m) =>
+    m.daemonCommand(args.slice(daemonArgIndex + 1)).catch((e) => {
+      console.error(`[claudish daemon] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     })
   );
@@ -579,6 +596,7 @@ async function runCli() {
     checkClaudeInstalled,
     runClaudeWithProxy,
     isAdvisorNativeSession,
+    isPassthroughSession,
     resolveAdvisorToolEnv,
   } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
@@ -1148,6 +1166,7 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          passthrough: isPassthroughSession(cliConfig),
         }
       )
     );

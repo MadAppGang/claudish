@@ -19,6 +19,8 @@ lives in `ROADMAP.md`.
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux
+- `first-party.md` — what Claude Code gates on trusting its base URL, why a `--monitor` session can be given that trust, and what the proxy then owes each request; read before editing native forwarding
+- `daemon-mode.md` — `claudish daemon` as the service manager of Claude Code's supervisor: what `claude daemon run` does per origin, the exit-70 restart and its reinstall wait, one signal through a separate process group, and why sessions reach the proxy only through a settings `env` block; read before editing `daemon-command.ts`
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
