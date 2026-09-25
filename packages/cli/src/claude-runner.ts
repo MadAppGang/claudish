@@ -29,6 +29,7 @@ import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
 import { signalExitCode } from "./signal-exit-code.js";
+import { releaseSignalHandlers } from "./stats-buffer.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -2140,6 +2141,10 @@ function setupSignalHandlers(
     ? ["SIGINT", "SIGTERM"]
     : ["SIGINT", "SIGTERM", "SIGHUP"];
 
+  // stats-buffer exits the process on SIGINT and SIGTERM before any handler added
+  // later can run, which would leave Claude Code running and the settings file
+  // behind. The handlers below stop both and exit with the same code.
+  releaseSignalHandlers();
   for (const signal of signals) {
     process.on(signal, () => {
       // Lift the firewall first — the child is going away, and the shutdown
