@@ -579,6 +579,7 @@ async function runCli() {
     checkClaudeInstalled,
     runClaudeWithProxy,
     isAdvisorNativeSession,
+    isPassthroughSession,
     resolveAdvisorToolEnv,
   } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
@@ -1148,6 +1149,7 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          passthrough: isPassthroughSession(cliConfig),
         }
       )
     );

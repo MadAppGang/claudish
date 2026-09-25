@@ -308,6 +308,20 @@ export function isProxyAuthMode(config: ClaudishConfig): boolean {
 }
 
 /**
+ * A session whose every request reaches api.anthropic.com as Claude Code built
+ * it: `--monitor` sends everything to NativeHandler unchanged. The advisor is
+ * left out because its decorator rewrites requests on the way through.
+ *
+ * Such a session's proxy stands in for Anthropic's own API, so it also forwards
+ * the paths it does not serve. Whether Claude Code trusts it as that API is the
+ * launcher's to say, with `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` in the
+ * environment claudish starts with, which the child environment carries.
+ */
+export function isPassthroughSession(config: ClaudishConfig): boolean {
+  return config.monitor && !config.advisor;
+}
+
+/**
  * OS-specific path to Claude Code's *managed* settings file — the highest-precedence
  * tier, which "cannot be overridden by anything" (not even our --settings overlay).
  * https://code.claude.com/docs/en/settings
