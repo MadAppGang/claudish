@@ -104,6 +104,7 @@ Then just ask Claude:
 - **[Single-Shot Mode](usage/single-shot-mode.md)** - Run one task, get result, exit. Perfect for scripts
 - **[MCP Server Mode](usage/mcp-server.md)** - Use external models as tools inside Claude Code
 - **[Monitor Mode](usage/monitor-mode.md)** - Debug by watching real Anthropic API traffic
+- **[Daemon Mode](usage/daemon-mode.md)** - Run Claude Code's background sessions and agent view through claudish
 
 ### Models
 - **[Choosing Models](models/choosing-models.md)** - Which model for which task? I'll share my picks
