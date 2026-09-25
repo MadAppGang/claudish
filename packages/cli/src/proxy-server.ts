@@ -23,6 +23,12 @@ import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
+import {
+  forwardedSearch,
+  recordInboundBody,
+  requestHeadersToForward,
+  responseHeadersToReturn,
+} from "./handlers/shared/anthropic-forward.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
@@ -153,6 +159,12 @@ export interface ProxyServerOptions {
    * no filesystem work at all.
    */
   proOnUltracode?: boolean;
+  /**
+   * Every request of the session reaches api.anthropic.com as Claude Code built
+   * it (`isPassthroughSession`), so this proxy stands in for Anthropic's API and
+   * any path it does not serve is forwarded there instead of answered with a 404.
+   */
+  passthrough?: boolean;
 }
 
 /**
@@ -1112,23 +1124,17 @@ export async function createProxyServer(
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {
     try {
-      const body = await c.req.json();
+      const raw = await c.req.text();
+      const body = JSON.parse(raw);
+      recordInboundBody(c, raw, body);
       if (typeof body?.model !== "string" || body.model.length === 0) {
         return c.json(wrapAnthropicError(400, "missing required field: model"), 400);
       }
       const handler = await getHandlerForRequest(body.model);
 
-      // If native, we just forward. OpenRouter needs estimation.
+      // Native counts are Anthropic's own; every other provider is estimated.
       if (handler instanceof NativeHandler) {
-        const headers: any = { "Content-Type": "application/json" };
-        if (anthropicApiKey) headers["x-api-key"] = anthropicApiKey;
-
-        const res = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body),
-        });
-        return c.json(await res.json());
+        return await handler.countTokens(c, body);
       }
       // OpenRouter handler logic (estimation)
       const txt = JSON.stringify(body);
@@ -1143,7 +1149,9 @@ export async function createProxyServer(
 
   app.post("/v1/messages", async (c) => {
     try {
-      const body = await c.req.json();
+      const raw = await c.req.text();
+      const body = JSON.parse(raw);
+      recordInboundBody(c, raw, body);
       // Request-metadata trace (debug log only — the [RequestMeta] prefix is
       // NOT structural-log-worthy, so it never reaches the always-on redacted
       // log). Captures the three fields claudish otherwise never reads, to
@@ -1198,6 +1206,25 @@ export async function createProxyServer(
       return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
+
+  // For a passthrough session this proxy stands in for api.anthropic.com, so
+  // whatever else Claude Code asks of its base URL (`HEAD /api/hello` at startup,
+  // any endpoint a later release adds) is Anthropic's to answer. Registered
+  // last, it only sees paths no route above claimed.
+  if (options.passthrough) {
+    app.all("*", async (c) => {
+      const method = c.req.method;
+      const upstream = await fetch(`https://api.anthropic.com${c.req.path}${forwardedSearch(c)}`, {
+        method,
+        headers: requestHeadersToForward(c.req.raw.headers),
+        body: method === "GET" || method === "HEAD" ? undefined : await c.req.arrayBuffer(),
+      });
+      return new Response(method === "HEAD" ? null : upstream.body, {
+        status: upstream.status,
+        headers: responseHeadersToReturn(upstream.headers),
+      });
+    });
+  }
 
   // Bun's NATIVE server — not @hono/node-server.
   //

@@ -8,6 +8,12 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import {
+  bodyToForward,
+  forwardedSearch,
+  requestHeadersToForward,
+  responseHeadersToReturn,
+} from "./shared/anthropic-forward.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
 
@@ -67,72 +73,40 @@ export class NativeHandler implements ModelHandler {
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 
-    // Build headers - pass through auth headers exactly as received
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
-    };
-
-    // Pass through auth headers as-is. If the incoming request carries NO auth
-    // (e.g. the --probe client, which doesn't replicate Claude Code's injected
-    // key) fall back to the api key this handler was constructed with, so the
-    // native passthrough can still authenticate against api.anthropic.com.
-    if (originalHeaders.authorization) {
-      headers.authorization = originalHeaders.authorization;
-    }
-    if (originalHeaders["x-api-key"]) {
-      headers["x-api-key"] = originalHeaders["x-api-key"];
-    }
-    if (!originalHeaders.authorization && !originalHeaders["x-api-key"]) {
-      // No inbound auth → fall back to the construction-time key, else resolve
-      // ANTHROPIC_API_KEY through the credential authority (env → config → op://),
-      // so even the native fallback is sourced from the single layer.
-      let fallbackKey = this.apiKey;
-      if (!fallbackKey) {
-        const auth = await credentials.getRequestAuth("native-anthropic", { model: target });
-        fallbackKey = auth.headers["x-api-key"];
+    const headers = await this.forwardedHeaders(c, target);
+    const incomingBeta = headers["anthropic-beta"];
+    if (incomingBeta && advisorSwapped) {
+      // When we swap the advisor tool we must also strip the matching beta
+      // flag; otherwise Anthropic rejects the request (beta enabled but no
+      // matching server tool declared).
+      const { stripped, changed } = stripAdvisorBeta(incomingBeta);
+      if (changed) {
+        log(
+          `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
+        );
+        logAdvisorEvent(loadAdvisorSwapConfig(this.advisorModels, this.advisorCollector), {
+          kind: "beta_stripped",
+          before: incomingBeta,
+          after: stripped ?? "",
+        });
       }
-      if (fallbackKey) {
-        headers["x-api-key"] = fallbackKey;
-      }
-    }
-    if (originalHeaders["anthropic-beta"]) {
-      const incomingBeta = originalHeaders["anthropic-beta"];
-      if (advisorSwapped) {
-        // When we swap the advisor tool we must also strip the matching beta
-        // flag; otherwise Anthropic rejects the request (beta enabled but no
-        // matching server tool declared).
-        const { stripped, changed } = stripAdvisorBeta(incomingBeta);
-        if (changed) {
-          log(
-            `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
-          );
-          logAdvisorEvent(loadAdvisorSwapConfig(this.advisorModels, this.advisorCollector), {
-            kind: "beta_stripped",
-            before: incomingBeta,
-            after: stripped ?? "",
-          });
-        }
-        if (stripped) headers["anthropic-beta"] = stripped;
-      } else {
-        headers["anthropic-beta"] = incomingBeta;
-      }
+      if (stripped) headers["anthropic-beta"] = stripped;
+      else delete headers["anthropic-beta"];
     }
 
-    // Execute fetch
     try {
-      const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
+      const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages${forwardedSearch(c)}`, {
         method: "POST",
         headers,
-        body: JSON.stringify(payload),
+        body: bodyToForward(c, payload),
       });
-
+      const status = anthropicResponse.status;
+      const responseHeaders = responseHeadersToReturn(anthropicResponse.headers);
       const contentType = anthropicResponse.headers.get("content-type") || "";
 
-      // Handle streaming
       if (contentType.includes("text/event-stream")) {
         log("[Native] Streaming response detected");
-        return c.body(
+        return new Response(
           new ReadableStream({
             async start(controller) {
               const reader = anthropicResponse.body?.getReader();
@@ -164,32 +138,64 @@ export class NativeHandler implements ModelHandler {
               }
             },
           }),
-          {
-            headers: {
-              "Content-Type": contentType,
-              "Cache-Control": "no-cache",
-              Connection: "keep-alive",
-              "anthropic-version": "2023-06-01",
-            },
-          }
+          { status, headers: responseHeaders }
         );
       }
 
-      // Handle JSON
-      const data = await anthropicResponse.json();
+      const text = await anthropicResponse.text();
       log("\n=== [NATIVE] Response ===");
-      log(JSON.stringify(data, null, 2));
-
-      const responseHeaders: Record<string, string> = { "Content-Type": "application/json" };
-      if (anthropicResponse.headers.has("anthropic-version")) {
-        responseHeaders["anthropic-version"] = anthropicResponse.headers.get("anthropic-version")!;
-      }
-
-      return c.json(data, { status: anthropicResponse.status as any, headers: responseHeaders });
+      log(text);
+      return new Response(text, { status, headers: responseHeaders });
     } catch (error) {
       log(`[Native] Fetch Error: ${error}`);
       return c.json(wrapAnthropicError(500, String(error)), 500);
     }
+  }
+
+  /**
+   * `POST /v1/messages/count_tokens`, forwarded the way `handle` forwards a
+   * message: with Claude Code's own headers, its auth among them.
+   */
+  async countTokens(c: Context, payload: { model: string }): Promise<Response> {
+    try {
+      const upstream = await fetch(
+        `${this.baseUrl}/v1/messages/count_tokens${forwardedSearch(c)}`,
+        {
+          method: "POST",
+          headers: await this.forwardedHeaders(c, payload.model),
+          body: bodyToForward(c, payload),
+        }
+      );
+      return new Response(await upstream.text(), {
+        status: upstream.status,
+        headers: responseHeadersToReturn(upstream.headers),
+      });
+    } catch (error) {
+      log(`[Native] count_tokens Fetch Error: ${error}`);
+      return c.json(wrapAnthropicError(500, String(error)), 500);
+    }
+  }
+
+  /**
+   * Every header Claude Code sent, less the per-connection ones. A request that
+   * carries no auth of its own (the --probe client does not replicate the key
+   * Claude Code injects) falls back to the key this handler was constructed
+   * with, else to ANTHROPIC_API_KEY through the credential authority (env,
+   * config, op://), so even the fallback is sourced from the single layer.
+   */
+  private async forwardedHeaders(c: Context, target: string): Promise<Record<string, string>> {
+    const headers = requestHeadersToForward(c.req.raw.headers);
+    headers["content-type"] = "application/json";
+    if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
+    if (!headers.authorization && !headers["x-api-key"]) {
+      let fallbackKey = this.apiKey;
+      if (!fallbackKey) {
+        const auth = await credentials.getRequestAuth("native-anthropic", { model: target });
+        fallbackKey = auth.headers["x-api-key"];
+      }
+      if (fallbackKey) headers["x-api-key"] = fallbackKey;
+    }
+    return headers;
   }
 
   async shutdown(): Promise<void> {
