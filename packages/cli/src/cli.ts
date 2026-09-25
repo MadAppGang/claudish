@@ -2071,6 +2071,7 @@ ${h("MODEL MAPPING")} ${dim("(per-role override)")}
 ${h("SUBCOMMANDS")}
   ${green("claudish config")}                        Open the interactive config TUI (profiles,
                                           ${dim("providers, routing, 1Password)")}
+  ${green("claudish daemon")} ${yellow("--port <n>")}              Run Claude Code's supervisor behind a --monitor proxy
   ${green("claudish providers")} ${yellow("[--json]")}             Show provider credential status (no key material)
   ${green("claudish quota")} ${yellow("[provider]")}              Show remaining quota/usage (alias: usage)
   ${green("claudish serve")} ${yellow("--port <n> --models <p>")}  Run the Claude Desktop redirect gateway

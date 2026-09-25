@@ -67,6 +67,7 @@ Claudish is a **BYOK AI coding assistant**:
 - ✅ **Universal compatibility** - Use with `npx` or `bunx` - no installation required
 - ✅ **Interactive setup** - Prompts for API key and model if not provided (zero config!)
 - ✅ **Monitor mode** - Proxy to real Anthropic API and log all traffic (for debugging)
+- ✅ **Daemon mode** - Run Claude Code's supervisor behind a monitor proxy, so background sessions and agent view go through claudish too (`claudish daemon --port <n>`)
 - ✅ **Protocol compliance** - 1:1 compatibility with Claude Code communication protocol
 - ✅ **Headless mode** - Automatic print mode for non-interactive execution
 - ✅ **Quiet mode** - Clean output by default (no log pollution)
