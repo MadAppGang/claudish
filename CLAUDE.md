@@ -25,6 +25,7 @@ lives in `ROADMAP.md`.
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, the frozen mod contract v1. Read before editing
   `pane/`, team spawn or channel spawn
+- `settings-env.md` — a settings `env` block overwrites the environment claudish gives Claude Code; why a proxy-auth launch is marked host-managed and withholds first-party trust, and why a launch that keeps the user's login is not; read before changing the child's environment
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
