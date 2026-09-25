@@ -224,10 +224,11 @@ process.on("exit", syncFlushOnExit);
 /**
  * `128 + signum`, the shell convention for "died from signal N".
  *
- * These two handlers are registered at MODULE LOAD, i.e. before
- * `claude-runner.ts`'s `setupSignalHandlers` ever runs, and they call
- * `process.exit` unconditionally — so they, not that one, are what a SIGTERM
- * actually reaches first. While they exited 0, a claudish process that a
+ * These two handlers are registered at MODULE LOAD, before any command's own,
+ * and they call `process.exit` unconditionally, so a SIGTERM reaches them first
+ * unless a command that must stop something before the process goes takes them
+ * off with `releaseSignalHandlers` (the runner does, once Claude Code is
+ * running). While they exited 0, a claudish process that a
  * supervisor had KILLED reported a clean success to everything above it:
  * measured 2026-08-22, a group SIGTERM against a running channel session still
  * produced `code=0, signal=null` with `claude-runner.ts` already fixed.
@@ -241,13 +242,28 @@ process.on("exit", syncFlushOnExit);
  */
 const SIGNAL_EXIT_CODE: Record<"SIGTERM" | "SIGINT", number> = { SIGTERM: 143, SIGINT: 130 };
 
+const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  process.on(signal, () => {
+  const handler = () => {
     try {
       syncFlushOnExit();
     } catch {
       // Silently ignore
     }
     process.exit(SIGNAL_EXIT_CODE[signal]);
-  });
+  };
+  process.on(signal, handler);
+  signalHandlers.push([signal, handler]);
+}
+
+/**
+ * Take the two handlers above off their signals, for a command that must finish its
+ * own shutdown before the process goes, such as one stopping a child that still
+ * depends on it. Stats still flush on `exit`, and the caller owes the `128 + signum`
+ * exit these handlers give.
+ */
+export function releaseSignalHandlers(): void {
+  for (const [signal, handler] of signalHandlers) {
+    process.off(signal, handler);
+  }
 }

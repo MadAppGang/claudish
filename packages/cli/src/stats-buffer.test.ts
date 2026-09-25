@@ -137,3 +137,17 @@ describe("stats-buffer", () => {
     expect(Array.isArray(parsed.events)).toBe(true);
   });
 });
+
+describe("releaseSignalHandlers", () => {
+  it("takes the SIGTERM and SIGINT handlers off, and does nothing the second time", async () => {
+    const { releaseSignalHandlers } = await import("./stats-buffer.js");
+    const term = process.listenerCount("SIGTERM");
+    const int = process.listenerCount("SIGINT");
+    releaseSignalHandlers();
+    expect(process.listenerCount("SIGTERM")).toBe(term - 1);
+    expect(process.listenerCount("SIGINT")).toBe(int - 1);
+    releaseSignalHandlers();
+    expect(process.listenerCount("SIGTERM")).toBe(term - 1);
+    expect(process.listenerCount("SIGINT")).toBe(int - 1);
+  });
+});
