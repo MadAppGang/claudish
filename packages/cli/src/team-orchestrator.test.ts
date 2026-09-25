@@ -572,6 +572,31 @@ describe("team-orchestrator", () => {
     });
   });
 
+  describe("runModels — exit after output", () => {
+    it("records the exit code of a child whose output ends before it exits", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+
+      await withFakeClaudish("fake-claudish.ts", async () => {
+        setupSession(tempDir, ["vendor/model"], "Analyze this input");
+        const status = await runModels(tempDir, {
+          captureMode: "print",
+          claudeFlags: ["--close-stdout-first", "300"],
+          spawnPlanner,
+        });
+
+        const [anonId, modelStatus] = Object.entries(status.models)[0];
+        expect(modelStatus.error).toBeUndefined();
+        expect(modelStatus.state).toBe("COMPLETED");
+        expect(modelStatus.exitCode).toBe(0);
+        const argv = JSON.parse(
+          readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
+        ) as string[];
+        expect(argv).toContain("--close-stdout-first");
+      });
+    });
+  });
+
   describe("runModels — stream-json answer recovery", () => {
     it("keeps the voted answer that print mode loses to a later epilogue", async () => {
       const { runModels, setupSession } = await getOrchestrator();

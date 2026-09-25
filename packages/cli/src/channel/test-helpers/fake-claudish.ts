@@ -5,6 +5,7 @@
  * - packages/cli/src/team-orchestrator.test.ts (--print-argv pins the exact spawn contract,
  *   including flag order)
  * - focused spawn-environment tests (--print-env reports one selected variable)
+ * - team-orchestrator.test.ts (--close-stdout-first ends the output before the exit)
  * A flag unused by one consumer may be load-bearing for the other; running only the channel
  * suite will not catch its removal.
  */
@@ -202,6 +203,18 @@ async function main(): Promise<void> {
       permission_denials: [],
       result: answer,
     });
+    process.exit(0);
+  }
+
+  // --close-stdout-first <ms>: write the argv, close stdout, and exit 0 only
+  // <ms> later, so the parent sees its output end well before the child's
+  // exit. A supervisor that settles on the output alone reads no exit code.
+  const closeFirstMs = getFlag("--close-stdout-first");
+  if (closeFirstMs !== null) {
+    const { closeSync, writeSync } = await import("node:fs");
+    writeSync(1, `${JSON.stringify(args)}\n`);
+    closeSync(1);
+    await sleep(Number.parseInt(closeFirstMs, 10));
     process.exit(0);
   }
 

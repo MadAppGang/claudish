@@ -1303,6 +1303,8 @@ export async function startModels(
 
     const completionPromise = new Promise<void>((resolve) => {
       let exitCode: number | null = null;
+      let exitSignal: NodeJS.Signals | null = null;
+      let exited = false;
       let resolved = false;
 
       /**
@@ -1335,8 +1337,8 @@ export async function startModels(
         // The timeout handler may have fired between proc "exit" and
         // outputStream "close". Don't clobber TIMEOUT — but do RECONCILE.
         //
-        // Reaching here means the stdout pipe has closed, so `response-<id>.md`
-        // is final and `byteCount` is its true size. A child killed at the
+        // Reaching here means the child has exited and the stdout pipe has
+        // closed, so `response-<id>.md` is final and `byteCount` is its true size. A child killed at the
         // deadline can still have flushed a complete answer in the window
         // between the signal and the pipe closing, and the old code threw that
         // away: it recorded whatever byte count existed at KILL time (0 B for a
@@ -1394,7 +1396,9 @@ export async function startModels(
             ? 'Stopped on the caller\'s instruction via team(mode:"cancel"). ' +
               "Whatever the child had written up to that point is in its response file."
             : crashed
-              ? `Child exited with code ${exitCode}.`
+              ? exitCode === null && exitSignal !== null
+                ? `Child was killed by ${exitSignal}.`
+                : `Child exited with code ${exitCode}.`
               : degraded!.detail;
 
           persistErrorLog(errorLogPath, `${state}: ${detail}`, stderr, stdoutTail);
@@ -1439,24 +1443,24 @@ export async function startModels(
         resolve();
       };
 
-      // "close" always fires after the stream ends or errors — single resolution point
-      outputStream.on("close", finish);
+      // A slot settles once the child has exited AND its output stream has
+      // closed: "exit" gives the exit code, "close" makes `response-<id>.md`
+      // final. The two arrive in either order. A child can still be flushing
+      // its answer when "exit" arrives (a killed one included, which is what
+      // the TIMEOUT reconcile in finish() re-measures), and a fast child's
+      // output can close before its "exit" is delivered, when there is no exit
+      // code yet to judge it by. `runModels` bounds the wait, so a pipe that
+      // never closes degrades to a stale read rather than a hang.
+      outputStream.on("close", () => {
+        if (exited) finish();
+      });
 
-      proc.on("exit", (code) => {
+      proc.on("exit", (code, signal) => {
         const timedOut = statusCache.models[anonId]?.state === "TIMEOUT";
 
-        // On TIMEOUT this handler must NOT settle the promise. "exit" fires
-        // BEFORE the stdout pipe closes, and an answer flushed during shutdown
-        // is still in flight at this moment — resolving here marked the run
-        // finished with the byte count from KILL time and made the later
-        // "close" a no-op, which is how a complete answer was reported as 0 B
-        // and judged as an empty submission. Let "close" drive finish(), which
-        // re-measures. `runModels` bounds the wait, so a pipe that never closes
-        // degrades to a stale read rather than a hang.
-        //
-        // Still guard the error log: persistErrorLog has just written the
-        // TIMEOUT diagnostics there and a raw stderr dump would erase them.
-        // Only write a log when there is something worth reading. Every healthy
+        // On TIMEOUT, persistErrorLog has just written the timeout diagnostics
+        // to the error log, and a raw stderr dump would erase them. Otherwise
+        // write a log only when there is something worth reading. Every healthy
         // child emits Claude Code's `unrecognized_model` line — normal for a
         // proxied model — and writing it produced an `errors/NN.log` for runs
         // that had no error at all, which is exactly the noise that hides a real
@@ -1468,11 +1472,9 @@ export async function startModels(
         }
 
         exitCode = code;
-        // If the stream already closed before exit fired, finish immediately
-        if (outputStream.destroyed) {
-          finish();
-        }
-        // Otherwise wait for outputStream "close" to call finish()
+        exitSignal = signal;
+        exited = true;
+        if (outputStream.destroyed) finish();
       });
     });
 
