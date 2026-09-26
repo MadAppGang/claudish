@@ -59,6 +59,12 @@ async function describeHandler(providerName: string, modelName: string): Promise
 const expectedCompositions = [
   {
     provider: "opencode-zen-go",
+    model: "grok-4.7",
+    streamFormat: "openai-responses-sse",
+    endpoint: "https://opencode.ai/zen/go/v1/responses",
+  },
+  {
+    provider: "opencode-zen-go",
     model: "minimax-m2.5",
     streamFormat: "anthropic-sse",
     endpoint: "https://opencode.ai/zen/go/v1/messages",

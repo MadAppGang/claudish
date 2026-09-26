@@ -419,8 +419,11 @@ export const openCodeZenProfile: ProviderProfile = {
       });
     }
 
-    // GPT models are served via the OpenAI Responses API (/v1/responses), not /v1/chat/completions.
-    if (model.startsWith("gpt-") || (!isGoProvider && model.startsWith("grok-"))) {
+    // GPT and Grok models are served via the OpenAI Responses API (/v1/responses),
+    // not /v1/chat/completions — on Go as well as Zen. Go's grok-4.7 answers chat
+    // completions with 400 ModelProtocolUnsupported "Model does not support this
+    // protocol." and /v1/responses with 200 (measured 2026-09-26).
+    if (model.startsWith("gpt-") || model.startsWith("grok-")) {
       const responsesProvider = { ...ctx.provider, apiPath: "/v1/responses" };
       const transport = new OpenCodeZenTransport(responsesProvider, ctx.modelName, zenApiKey);
       const adapter = new CodexAPIFormat(ctx.modelName);
