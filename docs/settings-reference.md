@@ -672,6 +672,13 @@ For OpenAI- or Anthropic-compatible servers:
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
 
+**The picker lists what an `openai` endpoint serves.** `format: "openai"` means the host speaks
+the OpenAI API, so claudish asks it — `GET /models` beside the `/chat/completions` it already
+uses — when you scope to that provider in the interactive picker. Nothing is fetched at startup.
+A host that does not serve the path reports the URL and the status instead of showing an empty
+list. `format: "anthropic"` endpoints are not asked; enter the model name directly, or launch
+with `--model my-endpoint@some-model`.
+
 **No-credential endpoints**: for a local router or a server on a trusted network, set
 `authScheme: "none"` and omit `apiKey`. claudish then sends no auth header at all:
 
@@ -729,6 +736,9 @@ Full control over transport, auth, headers, and stream format:
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
 | `models` | string[] | no | Restrict to listed models |
+
+With `transport: "openai"`, the picker asks this endpoint for its models at the `/models` path
+beside the `apiPath` it declares — `/api/v2/chat/completions` above is asked at `/api/v2/models`.
 
 ### Environment variable expansion
 
