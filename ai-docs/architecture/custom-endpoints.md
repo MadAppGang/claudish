@@ -56,6 +56,41 @@ Use as: `claudish --model my-vllm@llama3.1-70b "task"` or `claudish --model corp
 - **`modelPrefix` field** (optional): Prepended to the user-specified model name before sending to the API.
 - **`authScheme` is a lowercase enum** — `"bearer"`, `"x-api-key"`, or `"none"` (`config-schema.ts`). A capitalized `"X-Api-Key"` fails Zod validation and the WHOLE entry is skipped with a stderr warning, which reads as "my endpoint disappeared" rather than as a typo. This doc carried the wrong spelling until v7.48.0; the example above is the validated one.
 
+## The picker asks an `openai` endpoint what it serves
+
+A custom endpoint carried no `modelDiscovery` descriptor, so
+`PickerDataSource.providerList()` read `hasDiscovery: false` and **nothing ever asked the host
+what it serves**. The consequence was the founding defect of [`picker.md`](picker.md), in the one
+place the endpoint could have answered for itself: the provider row printed `0 models`, and `⏎`
+opened an empty list with no explanation. The row's other phrasing — `lists its own models`,
+written in `rows.tsx:315` for "a self-hosted vLLM" — was unreachable, because that branch needs
+`hasDiscovery`.
+
+`buildProviderDefinition` now derives one:
+
+| declared | discovery path |
+|---|---|
+| `simple`, `format: "openai"` (`apiPath` is always `/chat/completions`) | `/models` |
+| `complex`, `transport: "openai"`, default `apiPath` | `/v1/models` |
+| `complex`, `transport: "openai"`, `apiPath: "/api/v2/chat/completions"` | `/api/v2/models` |
+| `format`/`transport` anything else | none — unchanged |
+
+**DERIVED FROM THE DECLARED FORMAT, never configured.** `format: "openai"` is already the user's
+statement that the host speaks the OpenAI API, and `GET /models` is part of that API, published
+as a sibling of `/chat/completions`. So the path is one RULE applied to the path the entry
+already carries — not a pinned URL, which is what the "never hardcode a provider's models"
+invariant forbids. All 27 rows of the bundled catalog travel this same function
+(`predefined-catalog.ts` declares only `/v1/chat/completions` or `/chat/completions`, the version
+segment being in `baseUrl`) and each lands on the path its vendor serves.
+
+An endpoint that does not serve the path is now a `failed` outcome naming the URL and the status,
+which is strictly more than the silent empty list it replaces. Discovery is still on demand: it
+runs when the user scopes to that provider, never at startup.
+
+Only `openai`. The `anthropic` transport's own `/v1/models` wants an `anthropic-version` header
+and answers `created_at` where `openai-models-list` reads `created`; `litellm` and `gemini` are
+different shapes again. Each is its own change, with its own live verification.
+
 ## `authScheme: "none"` — endpoints that take NO credential (v7.64.0, #139)
 
 A local router or an inference server on a trusted network wants no auth header at all, and
