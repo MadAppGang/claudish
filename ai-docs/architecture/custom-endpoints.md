@@ -91,6 +91,13 @@ Only `openai`. The `anthropic` transport's own `/v1/models` wants an `anthropic-
 and answers `created_at` where `openai-models-list` reads `created`; `litellm` and `gemini` are
 different shapes again. Each is its own change, with its own live verification.
 
+One gate had to move with it. `authScheme: "none"` reaches
+`discoverProviderModelsCatalog` with static headers and no auth header at all
+(`api-key-credential.ts:362`), which the blank-credential check read as an unset key — so a
+keyless endpoint, the #139 shape below, was told `no-credentials` and its user sent to find a
+variable they correctly do not have. The scheme is exempt from that check: it DECLARES that no
+credential was ever expected.
+
 ## `authScheme: "none"` — endpoints that take NO credential (v7.64.0, #139)
 
 A local router or an inference server on a trusted network wants no auth header at all, and
