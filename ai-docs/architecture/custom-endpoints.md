@@ -52,7 +52,7 @@ Use as: `claudish --model my-vllm@llama3.1-70b "task"` or `claudish --model corp
 - **`${VAR_NAME}` expansion**: The `apiKey` field expands environment variables at startup. Use this instead of hardcoding secrets in config.
 - **Zod validation**: Claudish validates all custom endpoints at proxy startup. Invalid entries emit a stderr warning and are skipped — they don't crash the proxy.
 - **Runtime registration**: Endpoints call `registerRuntimeProvider()` and `registerRuntimeProfile()` to inject themselves into the provider resolver and transport layers.
-- **`models` field** (optional): When present, limits the endpoint to listed models. Omit to allow any model name.
+- **`models` field** (optional): the ids claudish ADVERTISES for this endpoint — the only consumer is the proxy's own `/v1/models` route (`proxy-server.ts:1028`), which is what the nested Claude Code's `/model` command reads. It is not an allowlist: nothing filters a request against it, so `--model my-vllm@anything` reaches the endpoint whether the name is listed or not. It is also NOT the picker's list, which comes from the endpoint itself — see below. (This entry read "limits the endpoint to listed models" until the discovery change; no code ever did that.)
 - **`modelPrefix` field** (optional): Prepended to the user-specified model name before sending to the API.
 - **`authScheme` is a lowercase enum** — `"bearer"`, `"x-api-key"`, or `"none"` (`config-schema.ts`). A capitalized `"X-Api-Key"` fails Zod validation and the WHOLE entry is skipped with a stderr warning, which reads as "my endpoint disappeared" rather than as a typo. This doc carried the wrong spelling until v7.48.0; the example above is the validated one.
 
