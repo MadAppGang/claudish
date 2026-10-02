@@ -165,6 +165,58 @@ file that exists only during the wait cannot give it that. `finalize` settles be
 `appendFileSync` of < 200 bytes per line; a write failure goes to stderr and loses only that
 line; the file stops at 1 MB. A one-shot session never writes one.
 
+### `spawn.json` — the start-time record, and who started the run
+
+`createSession` writes `<sessionDir>/spawn.json` after `prompt.md` and BEFORE `spawn()`,
+atomically (`spawn.json.tmp` + rename), one key per line, and NOT inside a `try`: a session
+that cannot be recorded fails the tool call rather than run unrecorded. It exists before
+every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, `meta.json`)
+and is never removed.
+
+```jsonc
+{
+  "schema": 1,                       // versions spawn.json only
+  "kind": "session",                 // "session" | "team"
+  "sessionId": "1a2b3c4d",
+  "parentClaudeSessionId": "<uuid>", // OPTIONAL — present only when proven
+  "hostPid": 12345,                  // the Claude Code process that launched this server
+  "launcherPid": 12398,              // OPTIONAL — present only on the npm launcher path
+  "mcpPid": 12399,                   // this process: the one that writes meta.json
+  "startedAt": "2026-10-02T10:00:00.000Z",
+  "model": "<as the caller asked for it>",
+  "timeoutSeconds": 600,             // effective: min(requested ?? 600, 3600)
+  "claudeSessionId": "<the child's uuid>"
+}
+```
+
+It exists for observers OUTSIDE this process — the magus `claudish` plugin monitor polls the
+sessions directory and reports progress to the Claude Code window that started a run.
+
+**`hostPid` is structural, computed once at startup** (`hostPidFrom`, `channel/parent-proof.ts`).
+A compiled binary or `bun src/index.ts` is the direct child of Claude Code, so `hostPid` is
+`process.ppid`. An npm/bun global install runs Claude Code → `node bin/claudish.cjs` → `bun
+dist/index.js`, so the launcher puts `CLAUDISH_LAUNCHER_PID` (itself) and
+`CLAUDISH_LAUNCHER_PPID` (its parent) in the child's env, and the child believes the pair only
+when `CLAUDISH_LAUNCHER_PID` is its real `ppid` — a pair leaked into a nested claudish is
+inert. `launcherPid` is recorded exactly when that branch ran. No `ps`, no tree walk.
+
+**`parentClaudeSessionId` is proven per call, or absent** (`proveCallingConversation`). The
+environment's `CLAUDE_CODE_SESSION_ID` goes stale on `/clear`, on a resume, and whenever two
+windows share a conversation, so it is never stored as such. Claude Code puts the calling
+tool-use id in the request `_meta["claudecode/toolUseId"]` (the dispatcher passes it as
+`ctx.toolUseId`), and the tool_use block is on disk in the caller's transcript before the tool
+runs. For at most two candidates — the env id (only when `CLAUDE_CODE_CHILD_SESSION` is empty)
+and the `sessionId` of the host's live record `<configDir>/sessions/<hostPid>.json` (only when
+its `pid` matches) — the proof finds the candidate's project directory (fast path: the host
+record's `cwd` with every non-alphanumeric character replaced by `-`; else one listing of
+`projects/`, cached per candidate), then searches the last 256 KB of `<C>.jsonl` and up to 32
+subagent transcripts modified in the last 10 minutes for the quoted id. No hit → wait 250 ms
+once, look again, then absent. A tool-use id is unique and lives only in the transcript of the
+conversation that issued it, so a hit is proof and every failure degrades to "absent". It is
+`await`ed with `fs/promises` before `createSession`, so the server keeps pumping live sessions
+while it looks. `meta.json` (`SessionInfo.parentClaudeSessionId`) carries the same key with the
+same value exactly when `spawn.json` does.
+
 ### Diagnostics are captured unconditionally, and reachable from the API
 
 Two sessions once ran 900 s of genuine billed work — 241 assistant messages, ~94 k output

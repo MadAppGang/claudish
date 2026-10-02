@@ -24,6 +24,7 @@ import { assertAgentAvailable } from "./agent-availability.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
+import { TOOL_USE_ID_META_KEY, proveParentForCall } from "./channel/parent-proof.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type HeartbeatHandle,
@@ -147,6 +148,13 @@ interface ToolCallContext {
    * heartbeat has been stopped. Never throws.
    */
   reportProgress: (message?: string) => void;
+  /**
+   * The calling tool-use id, from the request `_meta["claudecode/toolUseId"]`
+   * Claude Code attaches to every MCP tool call. Undefined when the client sent
+   * none. Untrusted input: `proveCallingConversation` validates it before any
+   * use, and it is only ever used to PROVE which conversation called.
+   */
+  toolUseId?: string;
 }
 
 interface ToolDefinition {
@@ -1714,7 +1722,7 @@ function defineTools(
       required: ["model"],
     },
     group: "channel",
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags);
 
@@ -1741,6 +1749,14 @@ function defineTools(
           pin: workDir === undefined || resolve(workDir) === process.cwd(),
         });
 
+        // Which conversation called, PROVEN from its transcript or left absent.
+        // Asynchronous throughout (fs/promises, one 250 ms timer at most), so
+        // this process keeps pumping every live session while it looks.
+        const parentClaudeSessionId = await proveParentForCall({
+          toolUseId: ctx.toolUseId,
+          hostPid: sessionManager.hostPid,
+        });
+
         const sessionId = sessionManager.createSession({
           model: requestedModel,
           spawnModel: plan.pinned.get(requestedModel),
@@ -1748,6 +1764,7 @@ function defineTools(
           timeoutSeconds: args.timeout_seconds as number | undefined,
           claudishFlags,
           cwd: workDir,
+          parentClaudeSessionId,
         });
 
         return {
@@ -2153,7 +2170,11 @@ async function main() {
             extra.sendNotification({ method: "notifications/progress", params: frame }),
         })
       : NOOP_HEARTBEAT;
-    const ctx: ToolCallContext = { reportProgress: (message) => heartbeat.tick(message) };
+    const rawToolUseId = extra._meta?.[TOOL_USE_ID_META_KEY];
+    const ctx: ToolCallContext = {
+      reportProgress: (message) => heartbeat.tick(message),
+      ...(typeof rawToolUseId === "string" ? { toolUseId: rawToolUseId } : {}),
+    };
 
     try {
       return await tool.handler(args ?? {}, ctx);

@@ -89,6 +89,13 @@ export interface SessionInfo {
    */
   claudeSessionId: string | null;
   /**
+   * The Claude Code conversation that called create_session, PROVEN at call
+   * time: the calling tool-use id was found in that conversation's transcript
+   * (channel/parent-proof.ts). Absent when not proven — never a guess, never
+   * the id the MCP server happened to start with.
+   */
+  parentClaudeSessionId?: string;
+  /**
    * Absolute path to the child's authoritative JSONL transcript, or null before
    * `claudeSessionId` is known.
    *
@@ -167,6 +174,12 @@ export interface SessionCreateOptions {
    * consumers differ.
    */
   keepUnrecognizedJson?: boolean;
+  /**
+   * The calling conversation, when the caller PROVED it (see
+   * `proveCallingConversation`). Recorded verbatim in `spawn.json` and
+   * `SessionInfo`; absent means not proven. Never pass an unproven id.
+   */
+  parentClaudeSessionId?: string;
 }
 
 export interface ChannelEvent {
@@ -231,4 +244,10 @@ export interface SessionManagerOptions {
    * unaffected by eviction.
    */
   terminalRetentionMs?: number;
+  /**
+   * Test override for the host pid recorded in `spawn.json`. Default:
+   * `hostPidFrom(process.env, process.ppid)` (channel/parent-proof.ts). An
+   * override records no `launcherPid`.
+   */
+  hostPid?: number;
 }

@@ -309,8 +309,9 @@ contract.
 
 | File | Written | Contents |
 |------|---------|----------|
+| `spawn.json` | once, before the session's process starts; atomic | `schema`, `kind: "session"`, `sessionId`, `hostPid` (the Claude Code process running this MCP server), `mcpPid`, `startedAt`, `model`, `timeoutSeconds`, `claudeSessionId`; `launcherPid` when claudish runs through the npm launcher; `parentClaudeSessionId` only when claudish proved which Claude Code conversation made the call |
 | `waits.jsonl` | one line each time the session starts and stops waiting for `send_input` | `{"wait":"open","since":…,"turns":…}` then `{"wait":"closed","since":…,"at":…,"to":…}`. Interactive sessions only; append-only, so a wait that opened and closed between two reads still shows. Stops at 1 MB |
-| `meta.json` | once, when the session ends | the final `SessionInfo`: status, exit code, turns, tokens, cost |
+| `meta.json` | once, when the session ends | the final `SessionInfo`: status, exit code, turns, tokens, cost, and `parentClaudeSessionId` exactly when `spawn.json` has it |
 
 ---
 

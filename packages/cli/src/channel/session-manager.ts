@@ -32,6 +32,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -48,6 +49,7 @@ import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { decodeChunk } from "../stdio-decode.js";
 import { STDOUT_TAIL_LIMIT, classifyRunOutput, meaningfulStderr } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
+import { hostPidFrom } from "./parent-proof.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import {
   type ResultSummary,
@@ -299,6 +301,22 @@ const DEFAULT_EVENT_LIMIT = 40;
  * bound on a file the child appends to on every failed request.
  */
 const UPSTREAM_ERROR_TAIL_BYTES = 64 * 1024;
+
+/**
+ * `spawn.json`'s `schema`. Bumped only on a breaking change to `spawn.json`; it
+ * versions that file alone, not `waits.jsonl` or a team record's `meta.json`.
+ */
+const SPAWN_RECORD_SCHEMA = 1;
+
+/**
+ * Write JSON so a reader never sees half of it: `<path>.tmp`, then rename over
+ * `<path>`. Throws on failure; callers that must not throw catch it themselves.
+ */
+function writeJsonAtomic(path: string, value: unknown): void {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2), "utf-8");
+  renameSync(tmp, path);
+}
 
 /** Marker `recordStderr` leaves where it dropped the middle of the buffer. */
 const STDERR_TRUNCATION_MARKER = "[claudish] … stderr truncated to";
@@ -634,6 +652,10 @@ function readJsonObject(path: string, maxBytes: number): Record<string, unknown>
 const metaString = (v: unknown): string | null =>
   typeof v === "string" && v.length > 0 ? v : null;
 
+/** `{ parentClaudeSessionId }` when there is one, else nothing — never the key with no value. */
+const optionalParent = (id: string | null | undefined): { parentClaudeSessionId?: string } =>
+  id ? { parentClaudeSessionId: id } : {};
+
 /** A field of a `meta.json` that must be a finite number, or null. */
 const metaNumber = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -747,8 +769,18 @@ export class SessionManager {
   private terminalRetentionMs: number;
   private onStateChange?: (sessionId: string, event: ChannelEvent) => void;
   private sigintHandler: (() => void) | null = null;
+  private readonly _hostPid: number;
+  private readonly _launcherPid: number | undefined;
 
   constructor(options?: SessionManagerOptions) {
+    // Computed once: the Claude Code process that launched this MCP server
+    // does not change for the life of the process. See parent-proof.ts.
+    const host =
+      options?.hostPid !== undefined
+        ? { hostPid: options.hostPid }
+        : hostPidFrom(process.env, process.ppid);
+    this._hostPid = host.hostPid;
+    this._launcherPid = host.launcherPid;
     this.maxSessions = options?.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.scrollbackCapacity = options?.scrollbackCapacity ?? DEFAULT_SCROLLBACK;
     this.terminalRetentionMs = options?.terminalRetentionMs ?? TERMINAL_RETENTION_MS;
@@ -758,6 +790,55 @@ export class SessionManager {
       join(homedir(), ".claudish", "sessions");
     this.stallSeconds = options?.stallSeconds;
     this.onStateChange = options?.onStateChange;
+  }
+
+  /** The Claude Code process that launched this MCP server (`spawn.json` `hostPid`). */
+  get hostPid(): number {
+    return this._hostPid;
+  }
+
+  /** The npm `node` launcher between Claude Code and this process, when there is one. */
+  get launcherPid(): number | undefined {
+    return this._launcherPid;
+  }
+
+  /**
+   * Write `<dir>/spawn.json`, the start-time record, atomically (tmp + rename),
+   * one key per line.
+   *
+   * Deliberately NOT wrapped in a `try`: a run that cannot be recorded must not
+   * run unrecorded, so a failure here fails the tool call before any child
+   * exists. `hostPid`, `launcherPid` (only when the launcher branch produced
+   * `hostPid`) and `mcpPid` — this process, the one that writes `meta.json` —
+   * are filled in here; the caller supplies the rest.
+   */
+  private writeSpawnRecord(
+    dir: string,
+    record: {
+      kind: "session" | "team";
+      sessionId: string;
+      parentClaudeSessionId?: string;
+      startedAt: string;
+      model?: string;
+      timeoutSeconds?: number;
+      claudeSessionId?: string;
+      teamPath?: string;
+      slots?: number;
+    }
+  ): void {
+    const { kind, sessionId, parentClaudeSessionId, startedAt, ...rest } = record;
+    const body = {
+      schema: SPAWN_RECORD_SCHEMA,
+      kind,
+      sessionId,
+      ...(parentClaudeSessionId ? { parentClaudeSessionId } : {}),
+      hostPid: this._hostPid,
+      ...(this._launcherPid !== undefined ? { launcherPid: this._launcherPid } : {}),
+      mcpPid: process.pid,
+      startedAt,
+      ...rest,
+    };
+    writeJsonAtomic(join(dir, "spawn.json"), body);
   }
 
   /** Create and start a new session. Returns the session ID. */
@@ -786,6 +867,20 @@ export class SessionManager {
     if (opts.prompt) {
       writeFileSync(join(sessionDir, "prompt.md"), opts.prompt, "utf-8");
     }
+
+    // The start-time record, BEFORE spawn and before every runtime file, so a
+    // session never runs unrecorded and an observer of the sessions directory
+    // can attribute it from its first moment (`hostPid`, and the calling
+    // conversation when the caller proved it). Throws rather than continue.
+    this.writeSpawnRecord(sessionDir, {
+      kind: "session",
+      sessionId,
+      parentClaudeSessionId: opts.parentClaudeSessionId,
+      startedAt,
+      model: opts.model,
+      timeoutSeconds: timeout,
+      claudeSessionId,
+    });
 
     // `spawnModel` is the parent-resolved explicit "provider@model" spec when
     // routing was pinned; absent means spawn the caller's string. `info.model`
@@ -865,6 +960,9 @@ export class SessionManager {
         toolCallCount: 0,
         terminalReason: null,
         claudeSessionId,
+        // Present only when proven, so `meta.json` carries the key exactly when
+        // `spawn.json` does, with the same value.
+        ...optionalParent(opts.parentClaudeSessionId),
         // Derived from the spawn cwd now, and re-derived from the child's own
         // `system:init.cwd` if that turns out to differ. See refreshTranscriptPath.
         transcriptPath: transcriptPathFor(cwd, claudeSessionId),
@@ -1401,7 +1499,15 @@ export class SessionManager {
       return null;
     }
 
+    // A team run's record lives in the same directory (`team-<8 hex>/`, written
+    // for the plugin monitor) and its id passes SESSION_ID_RE, but it is not a
+    // session: read as one it would come back a confident `model: "unknown"`
+    // record. `spawn.json` exists from creation, so it is checked first; an
+    // id-addressed tool then answers a team id exactly like an unknown id.
+    const spawnRecord = readJsonObject(join(sessionDir, "spawn.json"), META_READ_LIMIT);
+    if (spawnRecord?.kind === "team") return null;
     const meta = readJsonObject(join(sessionDir, "meta.json"), META_READ_LIMIT);
+    if (meta?.kind === "team") return null;
     const partial = meta === null;
     const measured = diskAccounting(sessionDir);
 
@@ -1449,6 +1555,8 @@ export class SessionManager {
         // plus this marker say "ended without a record", not "ended in error".
         terminalReason: metaString(meta?.terminalReason) ?? (partial ? NO_TERMINAL_RECORD : null),
         claudeSessionId: metaString(meta?.claudeSessionId),
+        // Absent unless the file carries a non-empty value: `""` is "not proven".
+        ...optionalParent(metaString(meta?.parentClaudeSessionId)),
         transcriptPath: metaString(meta?.transcriptPath),
       },
     };
