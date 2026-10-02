@@ -188,6 +188,14 @@ a record that already said `start-failed`. The handler's `catch` then writes
 is the seam a test uses to make one spawn throw, `terminateGraceMs` the one that
 shortens the grace period (`team-start-failure.test.ts`).
 
+**The record ends exactly once because the two paths cannot both run.**
+`onSettled` is called only from `done`, and `done` is built after the spawn loop;
+when the loop throws, `startModels` rejects without ever building it, however
+fast the spawned slots exit. When the loop completes, nothing after it throws, so
+`startModels` resolves and the handler's `catch` never runs. And `finishTeamRun`
+keeps its first outcome, so a second call could not overwrite it anyway.
+`team-run-settles-once.test.ts` pins all three on the real code.
+
 `summarise` counts `COMPLETED` as ok, a `cancelled` reason as cancelled, and every
 other state — `PENDING` and `RUNNING` included — as failed; the verdict is
 `completed` when any slot is ok (the channel frame's rule), `cancelled` when all
