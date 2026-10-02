@@ -18,7 +18,15 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -151,6 +159,28 @@ describe("team run record settles once", () => {
       expect(meta.status).toBe("completed");
       expect(meta.ok).toBe(2);
       expect(meta.reason).toBeUndefined();
+    } finally {
+      await manager.shutdownAll();
+    }
+  });
+
+  it("does not spend the record's one end on a write that failed", async () => {
+    const sessionsDir = join(tempRoot, "sessions");
+    const manager = new SessionManager({ hostPid: 1, sessionsDir });
+    const outcome = { status: "completed", slots: 1, ok: 1, failed: 0, cancelled: 0 } as const;
+    try {
+      const record = manager.recordTeamRun({ teamPath: tempRoot, slots: 1 });
+      const metaPath = join(sessionsDir, record, "meta.json");
+      // A non-empty directory where meta.json goes: the rename onto it fails.
+      mkdirSync(join(metaPath, "blocker"), { recursive: true });
+      manager.finishTeamRun(record, outcome);
+      expect(statSync(metaPath).isDirectory()).toBe(true);
+
+      rmSync(metaPath, { recursive: true, force: true });
+      manager.finishTeamRun(record, outcome);
+      const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+      expect(meta.status).toBe("completed");
+      expect(meta.ok).toBe(1);
     } finally {
       await manager.shutdownAll();
     }

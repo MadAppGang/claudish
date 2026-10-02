@@ -778,7 +778,7 @@ export class SessionManager {
   private readonly _launcherPid: number | undefined;
   /** Team run record id → its `startedAt`, until `finishTeamRun` writes its end. */
   private readonly teamRunStarts = new Map<string, string>();
-  /** Team run records already ended. First `finishTeamRun` call wins. */
+  /** Team run records whose end is on disk. The first `finishTeamRun` write to succeed wins. */
   private readonly settledTeamRuns = new Set<string>();
 
   constructor(options?: SessionManagerOptions) {
@@ -855,18 +855,19 @@ export class SessionManager {
    * End a team run's record: write `<record dir>/meta.json` atomically, at most
    * once.
    *
-   * First call wins; a later call writes nothing and reports one stderr line.
-   * It NEVER throws: a write failure is reported on stderr, so a caller's
-   * `catch` always rethrows its ORIGINAL error rather than a disk error that
-   * masked it. A lost write leaves a record with no end, which an observer
-   * reports from the writer's liveness — never a false verdict.
+   * The first call whose write SUCCEEDS wins; a later call writes nothing and
+   * reports one stderr line. A failed write does not count, so a retry can
+   * still end the record. It NEVER throws: a write failure is reported on
+   * stderr, so a caller's `catch` always rethrows its ORIGINAL error rather
+   * than a disk error that masked it. A lost write leaves a record with no
+   * end, which an observer reports from the writer's liveness — never a false
+   * verdict.
    */
   finishTeamRun(record: string, outcome: TeamRunOutcome): void {
     if (this.settledTeamRuns.has(record)) {
       process.stderr.write(`[claudish] team run record ${record} already ended; ignoring\n`);
       return;
     }
-    this.settledTeamRuns.add(record);
     try {
       const dir = this.diskSessionDir(record);
       if (dir === null) throw new Error("not a record id");
@@ -888,13 +889,14 @@ export class SessionManager {
         cancelled: outcome.cancelled,
         ...(outcome.reason ? { reason: outcome.reason } : {}),
       });
+      // Only now: the end is on disk. `startedAt` stays for a retry until then.
+      this.settledTeamRuns.add(record);
+      this.teamRunStarts.delete(record);
     } catch (err) {
       process.stderr.write(
         `[claudish] could not write the end of team run record ${record}: ` +
           `${err instanceof Error ? err.message : String(err)}\n`
       );
-    } finally {
-      this.teamRunStarts.delete(record);
     }
   }
 

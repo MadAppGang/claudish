@@ -165,7 +165,8 @@ directory the magus `claudish` plugin monitor already watches:
 - `<sessionsDir>/team-<8 hex>/meta.json` — `{kind:"team", status, startedAt,
   completedAt, elapsedSeconds, slots, ok, failed, cancelled}` plus
   `reason: "start-failed"` when the run never started; written atomically by
-  `finishTeamRun`, which is first-call-wins and never throws.
+  `finishTeamRun`, which never throws and keeps the first outcome it managed to
+  write — a failed write does not use up the record's one end.
 
 **The end is wired INTO `startModels`, not after it.** `TeamRunOptions.onSettled`
 is called from `done`'s `finally`, after the settled `status.txt` render, inside
