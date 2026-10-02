@@ -47,7 +47,12 @@ import { redactSecrets } from "../redact.js";
 import { transcriptPathFor } from "../session/session-discovery.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { decodeChunk } from "../stdio-decode.js";
-import { STDOUT_TAIL_LIMIT, classifyRunOutput, meaningfulStderr } from "../team-orchestrator.js";
+import {
+  STDOUT_TAIL_LIMIT,
+  type TeamRunOutcome,
+  classifyRunOutput,
+  meaningfulStderr,
+} from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { hostPidFrom } from "./parent-proof.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
@@ -771,6 +776,10 @@ export class SessionManager {
   private sigintHandler: (() => void) | null = null;
   private readonly _hostPid: number;
   private readonly _launcherPid: number | undefined;
+  /** Team run record id → its `startedAt`, until `finishTeamRun` writes its end. */
+  private readonly teamRunStarts = new Map<string, string>();
+  /** Team run records already ended. First `finishTeamRun` call wins. */
+  private readonly settledTeamRuns = new Set<string>();
 
   constructor(options?: SessionManagerOptions) {
     // Computed once: the Claude Code process that launched this MCP server
@@ -800,6 +809,94 @@ export class SessionManager {
   /** The npm `node` launcher between Claude Code and this process, when there is one. */
   get launcherPid(): number | undefined {
     return this._launcherPid;
+  }
+
+  /**
+   * Start the record of one `team(mode:"run")`: create
+   * `<sessionsDir>/team-<8 hex>/` and write its `spawn.json` (`kind: "team"`).
+   * Returns the record id.
+   *
+   * Called BEFORE `startModels`, so a run never starts unrecorded, and it
+   * throws — failing the tool call before any child exists — when the record
+   * cannot be written. The directory holds only `spawn.json` and, once the run
+   * ends, `meta.json` (`finishTeamRun`). It is invisible to `list_sessions`
+   * (in-memory only), and `loadDiskRecord` refuses its id, so no session tool
+   * mistakes it for a session.
+   */
+  recordTeamRun(opts: { teamPath: string; slots: number; parentClaudeSessionId?: string }): string {
+    mkdirSync(this.sessionsDir, { recursive: true });
+    let id = "";
+    let dir = "";
+    // Non-recursive mkdir fails on an existing directory, so a collision of
+    // two random 8-hex ids can never adopt someone else's record.
+    for (let attempt = 0; ; attempt++) {
+      id = `team-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+      dir = join(this.sessionsDir, id);
+      try {
+        mkdirSync(dir);
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== "EEXIST" || attempt >= 4) throw err;
+      }
+    }
+    const startedAt = new Date().toISOString();
+    this.writeSpawnRecord(dir, {
+      kind: "team",
+      sessionId: id,
+      parentClaudeSessionId: opts.parentClaudeSessionId,
+      startedAt,
+      teamPath: resolve(opts.teamPath),
+      slots: opts.slots,
+    });
+    this.teamRunStarts.set(id, startedAt);
+    return id;
+  }
+
+  /**
+   * End a team run's record: write `<record dir>/meta.json` atomically, at most
+   * once.
+   *
+   * First call wins; a later call writes nothing and reports one stderr line.
+   * It NEVER throws: a write failure is reported on stderr, so a caller's
+   * `catch` always rethrows its ORIGINAL error rather than a disk error that
+   * masked it. A lost write leaves a record with no end, which an observer
+   * reports from the writer's liveness — never a false verdict.
+   */
+  finishTeamRun(record: string, outcome: TeamRunOutcome): void {
+    if (this.settledTeamRuns.has(record)) {
+      process.stderr.write(`[claudish] team run record ${record} already ended; ignoring\n`);
+      return;
+    }
+    this.settledTeamRuns.add(record);
+    try {
+      const dir = this.diskSessionDir(record);
+      if (dir === null) throw new Error("not a record id");
+      const completedAt = new Date().toISOString();
+      const startedAt =
+        this.teamRunStarts.get(record) ??
+        metaString(readJsonObject(join(dir, "spawn.json"), META_READ_LIMIT)?.startedAt) ??
+        completedAt;
+      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
+      writeJsonAtomic(join(dir, "meta.json"), {
+        kind: "team",
+        status: outcome.status,
+        startedAt,
+        completedAt,
+        elapsedSeconds: Number.isFinite(elapsedMs) ? Math.max(0, Math.round(elapsedMs / 1000)) : 0,
+        slots: outcome.slots,
+        ok: outcome.ok,
+        failed: outcome.failed,
+        cancelled: outcome.cancelled,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[claudish] could not write the end of team run record ${record}: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`
+      );
+    } finally {
+      this.teamRunStarts.delete(record);
+    }
   }
 
   /**

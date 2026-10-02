@@ -148,6 +148,50 @@ ceiling ever mattered rather than working around it.
 `runModels` remains as the blocking form, for `run-and-judge` — a pipeline
 cannot judge answers that do not exist yet.
 
+### The run's record in the sessions directory, ended exactly once
+
+Returning early has a cost: the run's completion reaches the caller only through
+a channel frame, and Claude Code drops channel frames unless the session named
+claudish in `--channels`. The run's own `status.json` sits wherever the caller
+pointed `path`, which no outside observer knows. Review panels finished unseen
+for days this way. So `team(mode:"run")` also writes a record into the sessions
+directory the magus `claudish` plugin monitor already watches:
+
+- `<sessionsDir>/team-<8 hex>/spawn.json` — `kind: "team"`, `teamPath`, `slots`,
+  `hostPid`, `mcpPid` (and `launcherPid`, `parentClaudeSessionId` when they
+  apply), written by `SessionManager.recordTeamRun` BEFORE `startModels`; a throw
+  fails the call with nothing started. The `run` result carries the id as
+  `monitor_record`.
+- `<sessionsDir>/team-<8 hex>/meta.json` — `{kind:"team", status, startedAt,
+  completedAt, elapsedSeconds, slots, ok, failed, cancelled}` plus
+  `reason: "start-failed"` when the run never started; written atomically by
+  `finishTeamRun`, which is first-call-wins and never throws.
+
+**The end is wired INTO `startModels`, not after it.** `TeamRunOptions.onSettled`
+is called from `done`'s `finally`, after the settled `status.txt` render, inside
+its own `try`. Read inside `startModels`, it exists before the first child does,
+so a run that settles at once and a slow one take the same path. A settle hung
+on `handle.done.then(…)` in the handler would depend on code that runs after
+`startModels` returns, and would never be installed when `startModels` throws.
+
+**A throw inside the spawn loop kills what it already spawned.** The ticker, the
+registry entry and `done` are all built after the loop, so a synchronous
+`spawn()` error or a failed `status.json` write for slot N used to leave slots
+1..N-1 running and billing, unreachable, with the SIGINT handler still installed.
+The loop's `catch` sends SIGTERM to every spawned slot's process group
+(`signalProcessTree`, as the SIGINT handler does), removes the SIGINT handler and
+rethrows; the handler's `catch` writes `failed`, `reason: start-failed` with
+counts from `status.json` (`summarise(readTeamStatus(path))`), then rethrows the
+ORIGINAL error. `spawnChild` is the seam a test uses to make one spawn throw.
+
+`summarise` counts `COMPLETED` as ok, a `cancelled` reason as cancelled, and every
+other state — `PENDING` and `RUNNING` included — as failed; the verdict is
+`completed` when any slot is ok (the channel frame's rule), `cancelled` when all
+were cancelled. Only `run` writes a record: `run-and-judge` returns its verdict in
+the call, and `judge`/`status`/`cancel` start no work. `loadDiskRecord` returns
+null for a `kind: "team"` directory, so session tools answer a `team-*` id as
+unknown and `list_sessions` (in-memory only) never lists one.
+
 ### Blinding is unaffected
 
 `run` returns display model → slot id. That does not weaken blind judging. The

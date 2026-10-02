@@ -200,6 +200,23 @@ export interface TeamRunOptions {
   heartbeatSeconds?: number;
   /** Spawn-plan factory seam for hermetic call-site tests. */
   spawnPlanner?: (models: (string | undefined)[]) => Promise<SpawnPlan>;
+  /**
+   * Child-process spawn seam for hermetic tests (default `node:child_process`
+   * `spawn`). Lets a test make one slot's spawn throw synchronously.
+   */
+  spawnChild?: typeof spawn;
+  /**
+   * Called exactly once, when the run SETTLES: after the last slot finished and
+   * the settled `status.txt` render, from inside `done`'s `finally`. Receives
+   * the final status.
+   *
+   * Read inside `startModels`, so the hook exists before the first child is
+   * spawned and does not depend on anything the caller does after
+   * `startModels` returns — a run that settles at once takes the same path as a
+   * slow one. A throwing consumer cannot fail the run. NOT called when
+   * `startModels` itself throws: no run started, and the caller settles that.
+   */
+  onSettled?: (status: TeamStatus) => void;
 }
 
 /**
@@ -1054,436 +1071,461 @@ export async function startModels(
 
   const completionPromises: Promise<void>[] = [];
 
-  for (const [anonId, entry] of Object.entries(manifest.models)) {
-    const outputPath = join(sessionPath, `response-${anonId}.md`);
-    const errorLogPath = join(sessionPath, "errors", `${anonId}.log`);
-    const upstreamErrorLogPath = join(sessionPath, "errors", `${anonId}-upstream.jsonl`);
+  // The spawn loop has its own catch because NOTHING after it exists yet when
+  // it throws: the ticker, the registry entry and `done` are all built below.
+  // A synchronous `spawn()` error or a failed `status.json` write for slot N
+  // would otherwise leave slots 1..N-1 running and billing with no `done`, no
+  // registry entry to cancel them through, and the SIGINT handler installed.
+  try {
+    for (const [anonId, entry] of Object.entries(manifest.models)) {
+      const outputPath = join(sessionPath, `response-${anonId}.md`);
+      const errorLogPath = join(sessionPath, "errors", `${anonId}.log`);
+      const upstreamErrorLogPath = join(sessionPath, "errors", `${anonId}-upstream.jsonl`);
 
-    // Spawn with the parent-resolved explicit spec when there is one, so the
-    // child skips routing entirely and finds its key in the inherited env.
-    // ABSENT from the map is not an error — it means "spawn it bare", which is
-    // exactly the pre-pinning behaviour. The manifest keeps `entry.model` (the
-    // user's string) as the run's identity; only argv changes.
-    const spawnModel = spawnPlan.pinned.get(entry.model) ?? entry.model;
+      // Spawn with the parent-resolved explicit spec when there is one, so the
+      // child skips routing entirely and finds its key in the inherited env.
+      // ABSENT from the map is not an error — it means "spawn it bare", which is
+      // exactly the pre-pinning behaviour. The manifest keeps `entry.model` (the
+      // user's string) as the run's identity; only argv changes.
+      const spawnModel = spawnPlan.pinned.get(entry.model) ?? entry.model;
 
-    // CRITICAL FIX: do NOT use -p flag (-p means --profile in claudish)
-    // --stdin triggers non-interactive single-shot mode
-    //
-    // ORDER IS LOAD-BEARING when recovery is on. claudish consumes --verbose as
-    // its OWN log-verbosity flag (it sets quiet=false) and separately forwards a
-    // copy to the child `claude`, which hard-errors on
-    // `--print --output-format stream-json` without it. Putting --verbose BEFORE
-    // --quiet gets the forward while letting --quiet win claudish's own
-    // verbosity — reversed, every child would narrate itself onto stderr.
-    // `--output-format stream-json` is an unknown flag to claudish and passes
-    // through to `claude` with its value.
-    const args = [
-      "--model",
-      spawnModel,
-      "-y",
-      "--stdin",
-      ...(captureMode === "stream-json"
-        ? ["--verbose", "--quiet", "--output-format", "stream-json"]
-        : ["--quiet"]),
-      ...(opts.claudeFlags ?? []),
-    ];
-
-    updateModelStatus(anonId, {
-      state: "RUNNING",
-      startedAt: new Date().toISOString(),
-    });
-
-    // See session-manager: resolved so a harness can spawn the tree under test
-    // instead of the installed binary. Unset in production → plain "claudish".
-    const teamSpawnTarget = resolveClaudishSpawn();
-    const proc = spawn(teamSpawnTarget.command, [...teamSpawnTarget.prefixArgs, ...args], {
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: false,
-      // Each child leads its OWN process group, so we can signal the whole
-      // subtree with `process.kill(-pid)`.
+      // CRITICAL FIX: do NOT use -p flag (-p means --profile in claudish)
+      // --stdin triggers non-interactive single-shot mode
       //
-      // `claudish` is a tree, not a process: the bin is a Node launcher that
-      // runs the real CLI under Bun, which spawns `claude`, which spawns its
-      // own tools and MCP servers. Signalling the direct child alone reaches
-      // only the launcher — measured 2026-08-15, both SIGTERM and SIGKILL to
-      // the pid left the Bun process alive and still holding the write end of
-      // the pipe feeding `response-<id>.md`, which is how a run declared
-      // TIMEOUT with 0 B gained a complete 40,699 B answer six minutes later.
-      // Only the group kill was clean.
-      //
-      // Trade-off: a detached child no longer receives the terminal's Ctrl+C
-      // (that goes to the foreground group, which the child has just left), so
-      // the SIGINT handler below MUST kill the groups explicitly. It also means
-      // an orchestrator that dies without running its handlers leaves children
-      // behind — the same exposure as before this change, not a new one.
-      detached: KILL_PROCESS_GROUP,
-      env: {
-        ...process.env,
-        // Point this child's token tracker at a path WE choose, so its
-        // tokens/cost can be attributed back to this model. Without this the
-        // child writes to tokens-<its-own-port>.json and nothing links the two.
-        [ENV.CLAUDISH_TOKEN_FILE]: tokenFileFor(sessionPath, anonId),
-        // Un-no-op `captureUpstreamError` (handlers/composed-handler.ts), which
-        // is opt-in on this env var and was therefore a guaranteed no-op for
-        // every team child. Its own comment says what that costs: `log()` only
-        // persists under `--debug`, so the upstream body that separates a
-        // retryable rate limit from a hard quota wall is gone the moment it has
-        // been classified — and a run that already failed cannot be re-run with
-        // a flag. The channel has set this all along; team never did.
-        //
-        // Per SLOT, unconditionally: the records carry no slot id, so one shared
-        // path would interleave every model in the run into an unattributable
-        // file.
-        [UPSTREAM_ERROR_LOG_ENV]: upstreamErrorLogPath,
-      },
-    });
+      // ORDER IS LOAD-BEARING when recovery is on. claudish consumes --verbose as
+      // its OWN log-verbosity flag (it sets quiet=false) and separately forwards a
+      // copy to the child `claude`, which hard-errors on
+      // `--print --output-format stream-json` without it. Putting --verbose BEFORE
+      // --quiet gets the forward while letting --quiet win claudish's own
+      // verbosity — reversed, every child would narrate itself onto stderr.
+      // `--output-format stream-json` is an unknown flag to claudish and passes
+      // through to `claude` with its value.
+      const args = [
+        "--model",
+        spawnModel,
+        "-y",
+        "--stdin",
+        ...(captureMode === "stream-json"
+          ? ["--verbose", "--quiet", "--output-format", "stream-json"]
+          : ["--quiet"]),
+        ...(opts.claudeFlags ?? []),
+      ];
 
-    /**
-     * When this child last wrote on either pipe.
-     *
-     * A SEPARATE listener from the capture below, deliberately. Capture asks
-     * "is this an answer?" and answers no for a `tool_progress` heartbeat or a
-     * thinking frame; liveness asks "is anything alive down there?" and those
-     * same frames answer yes. Conflating the two questions is precisely how the
-     * old reaper concluded that a compiling child was dead.
-     */
-    let lastOutputAt = Date.now();
-    const stampLiveness = (): void => {
-      lastOutputAt = Date.now();
-    };
-
-    /**
-     * One decoder per pipe, never shared.
-     *
-     * A `data` chunk ends at the pipe's read boundary, which lands mid-codepoint
-     * often enough to matter: `chunk.toString()` replaces the dangling bytes
-     * with U+FFFD, so any CJK character or emoji straddling a boundary was
-     * permanently mangled in `response-<id>.md` and mis-sized in `outputSize`.
-     * The channel has decoded this way all along; team did not.
-     */
-    const stdoutDecoder = newStdioDecoder();
-    const stderrDecoder = newStdioDecoder();
-    proc.stdout?.on("data", stampLiveness);
-    proc.stderr?.on("data", stampLiveness);
-
-    // Count bytes flowing through stdout for accurate outputSize tracking
-    let byteCount = 0;
-    // Bounded tail of stdout. Claude Code writes "[API Error: ...]" to stdout
-    // and still exits 0, so the failure signal is often here rather than on
-    // stderr. Bounded so a 30 KB answer doesn't get buffered twice.
-    let stdoutTail = "";
-
-    const outputStream = createWriteStream(outputPath);
-
-    /** See ModelRuntime.flushPartial. Reassigned below when recovery is on. */
-    let flushPartial: () => void = () => {};
-
-    /**
-     * The stream-json supervisor for this slot, or null under `"print"`.
-     *
-     * `team` used to drive `createAssistantTextCapture()` directly and hand-roll
-     * everything around it. The channel wraps that SAME capture in
-     * `StreamJsonReducer` and adds what team was missing: a state machine that
-     * knows the difference between thinking and running a tool, and `sawResult`
-     * — the child's own terminal `result` frame, which is a real completion
-     * oracle where exit 0 is not (`claude -p` exits 0 on API errors too).
-     *
-     * Two implementations of one job existed because this file predates the
-     * reducer by four months. There is now one parser; this is the caller that
-     * moved onto it.
-     */
-    let reducer: StreamJsonReducer | null = null;
-
-    if (captureMode === "print") {
-      // Legacy path: whatever `claude -p` printed, byte for byte.
-      proc.stdout?.on("data", (chunk: Buffer) => {
-        byteCount += chunk.length;
-        stdoutTail = (stdoutTail + decodeChunk(stdoutDecoder, chunk)).slice(-STDOUT_TAIL_LIMIT);
+      updateModelStatus(anonId, {
+        state: "RUNNING",
+        startedAt: new Date().toISOString(),
       });
-      // Stream stdout to disk via pipe — no memory buffering
-      proc.stdout?.pipe(outputStream);
-    } else {
-      // Recovery path. The child's stdout is a stream-json event log, so the
-      // ANSWER has to be extracted from it rather than piped through.
-      //
-      // byteCount and stdoutTail are deliberately fed the RECOVERED prose, not
-      // the raw JSON. Every downstream consumer — the empty check, the
-      // minOutputBytes threshold, the [API Error:] match, the reported
-      // outputSize — is asking about the answer, and raw JSON bytes would
-      // inflate all of them (an empty answer wrapped in events is still
-      // kilobytes). Feeding recovered prose keeps `classifyRunOutput`
-      // completely unaware that the wire format changed.
-      const slotReducer = new StreamJsonReducer({
-        sessionId: anonId,
-        // 0 disables the reducer's stall watchdog. That watchdog ANNOUNCES
-        // silence; team publishes the number through `teamSlotIdleSeconds` and
-        // leaves the verdict to the caller, so a second opinion on the same
-        // question would only be noise. It also means no timer is armed here.
-        stallSeconds: 0,
-        // Preserve anything not positively recognised. `response-<id>.md` is the
-        // only place a reader sees what this child printed, and discarding a
-        // real answer is the failure this file has already been burned by —
-        // see ai-docs/architecture/team-capture.md.
-        keepUnrecognizedJson: true,
-        // State changes are read on demand via `getActivity`, not pushed. Team
-        // already has its own status file and progress ticker; routing reducer
-        // transitions into a second notification path would duplicate it.
-        callback: () => {},
-        // stdin is written and ended right after spawn (below), so a `result`
-        // is always the end of the slot's work: `finishing` until it exits,
-        // never `waiting_for_input`.
-        onResult: () => "stdin-closed",
-      });
-      reducer = slotReducer;
 
-      const absorb = (text: string): void => {
-        if (text.length === 0) return;
-        byteCount += Buffer.byteLength(text);
-        stdoutTail = (stdoutTail + text).slice(-STDOUT_TAIL_LIMIT);
-        outputStream.write(text);
-      };
-
-      // `feed` returns exactly what `capture.write` returned — the recovered
-      // prose for this chunk — so every downstream consumer of `byteCount` and
-      // `stdoutTail` is unaffected by the swap.
-      proc.stdout?.on("data", (chunk: Buffer) =>
-        absorb(slotReducer.feed(decodeChunk(stdoutDecoder, chunk)))
+      // See session-manager: resolved so a harness can spawn the tree under test
+      // instead of the installed binary. Unset in production → plain "claudish".
+      const teamSpawnTarget = resolveClaudishSpawn();
+      const proc = (opts.spawnChild ?? spawn)(
+        teamSpawnTarget.command,
+        [...teamSpawnTarget.prefixArgs, ...args],
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          shell: false,
+          // Each child leads its OWN process group, so we can signal the whole
+          // subtree with `process.kill(-pid)`.
+          //
+          // `claudish` is a tree, not a process: the bin is a Node launcher that
+          // runs the real CLI under Bun, which spawns `claude`, which spawns its
+          // own tools and MCP servers. Signalling the direct child alone reaches
+          // only the launcher — measured 2026-08-15, both SIGTERM and SIGKILL to
+          // the pid left the Bun process alive and still holding the write end of
+          // the pipe feeding `response-<id>.md`, which is how a run declared
+          // TIMEOUT with 0 B gained a complete 40,699 B answer six minutes later.
+          // Only the group kill was clean.
+          //
+          // Trade-off: a detached child no longer receives the terminal's Ctrl+C
+          // (that goes to the foreground group, which the child has just left), so
+          // the SIGINT handler below MUST kill the groups explicitly. It also means
+          // an orchestrator that dies without running its handlers leaves children
+          // behind — the same exposure as before this change, not a new one.
+          detached: KILL_PROCESS_GROUP,
+          env: {
+            ...process.env,
+            // Point this child's token tracker at a path WE choose, so its
+            // tokens/cost can be attributed back to this model. Without this the
+            // child writes to tokens-<its-own-port>.json and nothing links the two.
+            [ENV.CLAUDISH_TOKEN_FILE]: tokenFileFor(sessionPath, anonId),
+            // Un-no-op `captureUpstreamError` (handlers/composed-handler.ts), which
+            // is opt-in on this env var and was therefore a guaranteed no-op for
+            // every team child. Its own comment says what that costs: `log()` only
+            // persists under `--debug`, so the upstream body that separates a
+            // retryable rate limit from a hard quota wall is gone the moment it has
+            // been classified — and a run that already failed cannot be re-run with
+            // a flag. The channel has set this all along; team never did.
+            //
+            // Per SLOT, unconditionally: the records carry no slot id, so one shared
+            // path would interleave every model in the run into an unattributable
+            // file.
+            [UPSTREAM_ERROR_LOG_ENV]: upstreamErrorLogPath,
+          },
+        }
       );
-
-      // `end()` is idempotent, so a caller draining early does not disturb the
-      // normal finalisation below.
-      flushPartial = () => absorb(slotReducer.end());
-
-      // The write stream is ours to close now that nothing pipes into it, and
-      // `finish()` hangs off its "close". Both events are wired because "end"
-      // does not fire on a destroyed stream (a killed child), and a run that
-      // never resolves is worse than one that resolves empty.
-      let captureFinalized = false;
-      const finalizeCapture = (): void => {
-        if (captureFinalized) return;
-        captureFinalized = true;
-        absorb(slotReducer.end());
-        // NOT disposed here: `finish()` decides the slot's outcome later, off
-        // outputStream "close", and a disposed reducer ignores `settle()`. It
-        // settles and disposes the reducer there, once.
-        outputStream.end();
-      };
-      proc.stdout?.on("end", finalizeCapture);
-      proc.stdout?.on("close", finalizeCapture);
-    }
-
-    // Collect stderr for error logging
-    let stderr = "";
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += decodeChunk(stderrDecoder, chunk);
-    });
-
-    const command = `claudish ${args.join(" ")}`;
-    runtimes.set(anonId, {
-      command,
-      errorLogPath,
-      getStderr: () => stderr,
-      getStdoutTail: () => stdoutTail,
-      getByteCount: () => byteCount,
-      // The raw-pipe stamp, not `reducer.idleMs`. The reducer's clock advances
-      // per complete LINE, so a child writing one long line slowly would look
-      // quiet; this one sees every byte, on both pipes. Broadest definition of
-      // "still alive", which is the question being asked.
-      getIdleMs: () => Math.max(0, Date.now() - lastOutputAt),
-      getActivity: () => reducer?.state ?? null,
-      flushPartial: () => flushPartial(),
-    });
-
-    // Pipe input to stdin. A slot cancelled (or a child that exits) before it
-    // drains stdin closes the pipe under a pending write, and Node surfaces
-    // that as an `error` event on the stream — unhandled, it is an uncaught
-    // exception in the orchestrator, not the child. EPIPE here means only
-    // "the reader went away", which the exit/close handlers already report;
-    // anything else is still worth a log line.
-    proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
-      if (err?.code === "EPIPE") return;
-      stderr += `[claudish] stdin error for slot ${anonId}: ${err?.message ?? String(err)}\n`;
-    });
-    proc.stdin?.write(inputContent);
-    proc.stdin?.end();
-
-    const completionPromise = new Promise<void>((resolve) => {
-      let exitCode: number | null = null;
-      let resolved = false;
+      // Tracked the moment it exists, so a throw later in this iteration still
+      // reaches it through the loop's catch below.
+      processes.set(anonId, proc);
 
       /**
-       * Settle the reducer to the outcome just recorded, then release it.
+       * When this child last wrote on either pipe.
        *
-       * Without the settle the reducer stays wherever the stream left it — a
-       * `result` frame parks it in `finishing` — so an exited slot read as
-       * still exiting rather than done. Runs only once `state` is final, which is why
-       * the dispose lives here and not in `finalizeCapture`. No-op under
-       * `"print"`, which has no reducer.
+       * A SEPARATE listener from the capture below, deliberately. Capture asks
+       * "is this an answer?" and answers no for a `tool_progress` heartbeat or a
+       * thinking frame; liveness asks "is anything alive down there?" and those
+       * same frames answer yes. Conflating the two questions is precisely how the
+       * old reaper concluded that a compiling child was dead.
        */
-      const settleReducer = (): void => {
-        if (!reducer) return;
-        const state = statusCache.models[anonId]?.state;
-        const failed = state === "FAILED" || state === "EMPTY";
-        reducer.settle(
-          failed && cancelledSlots.has(anonId)
-            ? "cancelled"
-            : state === "COMPLETED"
-              ? "completed"
-              : state === "TIMEOUT"
-                ? "timeout"
-                : "failed"
-        );
-        reducer.dispose();
+      let lastOutputAt = Date.now();
+      const stampLiveness = (): void => {
+        lastOutputAt = Date.now();
       };
 
-      const finish = () => {
-        if (resolved) return;
-        // The timeout handler may have fired between proc "exit" and
-        // outputStream "close". Don't clobber TIMEOUT — but do RECONCILE.
-        //
-        // Reaching here means the stdout pipe has closed, so `response-<id>.md`
-        // is final and `byteCount` is its true size. A child killed at the
-        // deadline can still have flushed a complete answer in the window
-        // between the signal and the pipe closing, and the old code threw that
-        // away: it recorded whatever byte count existed at KILL time (0 B for a
-        // `--quiet` child, which emits only at the end) and never looked again.
-        // The judging phase then scored a real answer as an empty submission.
-        if (statusCache.models[anonId].state === "TIMEOUT") {
-          resolved = true;
-          reconcileTimedOutOutput(anonId, byteCount, stdoutTail, stderr);
-          // After the reconcile, which can upgrade TIMEOUT to COMPLETED.
-          settleReducer();
-          resolve();
-          return;
-        }
-        resolved = true;
+      /**
+       * One decoder per pipe, never shared.
+       *
+       * A `data` chunk ends at the pipe's read boundary, which lands mid-codepoint
+       * often enough to matter: `chunk.toString()` replaces the dangling bytes
+       * with U+FFFD, so any CJK character or emoji straddling a boundary was
+       * permanently mangled in `response-<id>.md` and mis-sized in `outputSize`.
+       * The channel has decoded this way all along; team did not.
+       */
+      const stdoutDecoder = newStdioDecoder();
+      const stderrDecoder = newStdioDecoder();
+      proc.stdout?.on("data", stampLiveness);
+      proc.stderr?.on("data", stampLiveness);
 
-        const outputSize = byteCount;
+      // Count bytes flowing through stdout for accurate outputSize tracking
+      let byteCount = 0;
+      // Bounded tail of stdout. Claude Code writes "[API Error: ...]" to stdout
+      // and still exits 0, so the failure signal is often here rather than on
+      // stderr. Bounded so a 30 KB answer doesn't get buffered twice.
+      let stdoutTail = "";
 
-        // A non-zero exit is an outright failure. A zero exit still has to earn
-        // it: `claude -p` exits 0 on API errors and on background-task
-        // termination, so exit code alone would file both as success.
-        const crashed = exitCode !== 0;
-        const fullOutput = readFullOutputIfNeeded({
-          crashed,
-          requirePattern,
-          outputSize,
-          outputPath,
+      const outputStream = createWriteStream(outputPath);
+
+      /** See ModelRuntime.flushPartial. Reassigned below when recovery is on. */
+      let flushPartial: () => void = () => {};
+
+      /**
+       * The stream-json supervisor for this slot, or null under `"print"`.
+       *
+       * `team` used to drive `createAssistantTextCapture()` directly and hand-roll
+       * everything around it. The channel wraps that SAME capture in
+       * `StreamJsonReducer` and adds what team was missing: a state machine that
+       * knows the difference between thinking and running a tool, and `sawResult`
+       * — the child's own terminal `result` frame, which is a real completion
+       * oracle where exit 0 is not (`claude -p` exits 0 on API errors too).
+       *
+       * Two implementations of one job existed because this file predates the
+       * reducer by four months. There is now one parser; this is the caller that
+       * moved onto it.
+       */
+      let reducer: StreamJsonReducer | null = null;
+
+      if (captureMode === "print") {
+        // Legacy path: whatever `claude -p` printed, byte for byte.
+        proc.stdout?.on("data", (chunk: Buffer) => {
+          byteCount += chunk.length;
+          stdoutTail = (stdoutTail + decodeChunk(stdoutDecoder, chunk)).slice(-STDOUT_TAIL_LIMIT);
         });
-        const degraded = crashed
-          ? null
-          : classifyRunOutput({
-              outputSize,
-              stdoutTail,
-              stderr,
-              minOutputBytes,
-              requirePattern,
-              fullOutput,
-              captureMode,
-            });
-
-        const failed = crashed || degraded !== null;
-        const state: ModelState = crashed ? "FAILED" : degraded ? "EMPTY" : "COMPLETED";
-
-        if (failed) {
-          // A slot the caller stopped exited non-zero, but it did not crash and
-          // saying so would be a lie in the permanent record. `cancelled` is the
-          // one failure reason that is not a defect: the caller looked at the
-          // evidence and decided. Nothing else in claudish can produce it.
-          const wasCancelled = cancelledSlots.has(anonId);
-          const reason: FailureReason = wasCancelled
-            ? "cancelled"
-            : crashed
-              ? "nonzero_exit"
-              : degraded!.reason;
-          const detail = wasCancelled
-            ? 'Stopped on the caller\'s instruction via team(mode:"cancel"). ' +
-              "Whatever the child had written up to that point is in its response file."
-            : crashed
-              ? `Child exited with code ${exitCode}.`
-              : degraded!.detail;
-
-          persistErrorLog(errorLogPath, `${state}: ${detail}`, stderr, stdoutTail);
-
-          updateModelStatus(anonId, {
-            state,
-            exitCode: exitCode ?? 1,
-            completedAt: new Date().toISOString(),
-            outputSize,
-            error: {
-              model: anonId,
-              command,
-              reason,
-              detail,
-              // Redacted: these land in status.json on disk and are read back
-              // by anything inspecting the run.
-              stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
-              stdoutSnippet: stdoutTail ? snippetHeadAndTail(redactSecrets(stdoutTail)) : undefined,
-              errorLogPath,
-              // Only when the child actually wrote one. Naming a file that does
-              // not exist sends a reader after evidence that was never captured.
-              upstreamErrorLogPath: existsSync(upstreamErrorLogPath)
-                ? upstreamErrorLogPath
-                : undefined,
-              workDir: sessionPath,
-            },
-          });
-        } else {
-          updateModelStatus(anonId, {
-            state,
-            exitCode: exitCode ?? 0,
-            completedAt: new Date().toISOString(),
-            outputSize,
-            error: undefined,
-          });
-        }
-
-        // Before the caller's callback, so a throwing consumer cannot skip the
-        // dispose and leak the reducer's tool-batch timer.
-        settleReducer();
-        opts.onStatusChange?.(anonId, statusCache.models[anonId]);
-        resolve();
-      };
-
-      // "close" always fires after the stream ends or errors — single resolution point
-      outputStream.on("close", finish);
-
-      proc.on("exit", (code) => {
-        const timedOut = statusCache.models[anonId]?.state === "TIMEOUT";
-
-        // On TIMEOUT this handler must NOT settle the promise. "exit" fires
-        // BEFORE the stdout pipe closes, and an answer flushed during shutdown
-        // is still in flight at this moment — resolving here marked the run
-        // finished with the byte count from KILL time and made the later
-        // "close" a no-op, which is how a complete answer was reported as 0 B
-        // and judged as an empty submission. Let "close" drive finish(), which
-        // re-measures. `runModels` bounds the wait, so a pipe that never closes
-        // degrades to a stale read rather than a hang.
+        // Stream stdout to disk via pipe — no memory buffering
+        proc.stdout?.pipe(outputStream);
+      } else {
+        // Recovery path. The child's stdout is a stream-json event log, so the
+        // ANSWER has to be extracted from it rather than piped through.
         //
-        // Still guard the error log: persistErrorLog has just written the
-        // TIMEOUT diagnostics there and a raw stderr dump would erase them.
-        // Only write a log when there is something worth reading. Every healthy
-        // child emits Claude Code's `unrecognized_model` line — normal for a
-        // proxied model — and writing it produced an `errors/NN.log` for runs
-        // that had no error at all, which is exactly the noise that hides a real
-        // one. `finish()` still writes the full log on any genuine failure.
-        if (!timedOut && meaningfulStderr(stderr)) {
-          // Redacted like every other persistence point — provider stderr can
-          // echo key material and this file is read by agents.
-          writeFileSync(errorLogPath, redactSecrets(stderr), "utf-8");
-        }
+        // byteCount and stdoutTail are deliberately fed the RECOVERED prose, not
+        // the raw JSON. Every downstream consumer — the empty check, the
+        // minOutputBytes threshold, the [API Error:] match, the reported
+        // outputSize — is asking about the answer, and raw JSON bytes would
+        // inflate all of them (an empty answer wrapped in events is still
+        // kilobytes). Feeding recovered prose keeps `classifyRunOutput`
+        // completely unaware that the wire format changed.
+        const slotReducer = new StreamJsonReducer({
+          sessionId: anonId,
+          // 0 disables the reducer's stall watchdog. That watchdog ANNOUNCES
+          // silence; team publishes the number through `teamSlotIdleSeconds` and
+          // leaves the verdict to the caller, so a second opinion on the same
+          // question would only be noise. It also means no timer is armed here.
+          stallSeconds: 0,
+          // Preserve anything not positively recognised. `response-<id>.md` is the
+          // only place a reader sees what this child printed, and discarding a
+          // real answer is the failure this file has already been burned by —
+          // see ai-docs/architecture/team-capture.md.
+          keepUnrecognizedJson: true,
+          // State changes are read on demand via `getActivity`, not pushed. Team
+          // already has its own status file and progress ticker; routing reducer
+          // transitions into a second notification path would duplicate it.
+          callback: () => {},
+          // stdin is written and ended right after spawn (below), so a `result`
+          // is always the end of the slot's work: `finishing` until it exits,
+          // never `waiting_for_input`.
+          onResult: () => "stdin-closed",
+        });
+        reducer = slotReducer;
 
-        exitCode = code;
-        // If the stream already closed before exit fired, finish immediately
-        if (outputStream.destroyed) {
-          finish();
-        }
-        // Otherwise wait for outputStream "close" to call finish()
+        const absorb = (text: string): void => {
+          if (text.length === 0) return;
+          byteCount += Buffer.byteLength(text);
+          stdoutTail = (stdoutTail + text).slice(-STDOUT_TAIL_LIMIT);
+          outputStream.write(text);
+        };
+
+        // `feed` returns exactly what `capture.write` returned — the recovered
+        // prose for this chunk — so every downstream consumer of `byteCount` and
+        // `stdoutTail` is unaffected by the swap.
+        proc.stdout?.on("data", (chunk: Buffer) =>
+          absorb(slotReducer.feed(decodeChunk(stdoutDecoder, chunk)))
+        );
+
+        // `end()` is idempotent, so a caller draining early does not disturb the
+        // normal finalisation below.
+        flushPartial = () => absorb(slotReducer.end());
+
+        // The write stream is ours to close now that nothing pipes into it, and
+        // `finish()` hangs off its "close". Both events are wired because "end"
+        // does not fire on a destroyed stream (a killed child), and a run that
+        // never resolves is worse than one that resolves empty.
+        let captureFinalized = false;
+        const finalizeCapture = (): void => {
+          if (captureFinalized) return;
+          captureFinalized = true;
+          absorb(slotReducer.end());
+          // NOT disposed here: `finish()` decides the slot's outcome later, off
+          // outputStream "close", and a disposed reducer ignores `settle()`. It
+          // settles and disposes the reducer there, once.
+          outputStream.end();
+        };
+        proc.stdout?.on("end", finalizeCapture);
+        proc.stdout?.on("close", finalizeCapture);
+      }
+
+      // Collect stderr for error logging
+      let stderr = "";
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        stderr += decodeChunk(stderrDecoder, chunk);
       });
-    });
 
-    processes.set(anonId, proc);
-    completionPromises.push(completionPromise);
+      const command = `claudish ${args.join(" ")}`;
+      runtimes.set(anonId, {
+        command,
+        errorLogPath,
+        getStderr: () => stderr,
+        getStdoutTail: () => stdoutTail,
+        getByteCount: () => byteCount,
+        // The raw-pipe stamp, not `reducer.idleMs`. The reducer's clock advances
+        // per complete LINE, so a child writing one long line slowly would look
+        // quiet; this one sees every byte, on both pipes. Broadest definition of
+        // "still alive", which is the question being asked.
+        getIdleMs: () => Math.max(0, Date.now() - lastOutputAt),
+        getActivity: () => reducer?.state ?? null,
+        flushPartial: () => flushPartial(),
+      });
+
+      // Pipe input to stdin. A slot cancelled (or a child that exits) before it
+      // drains stdin closes the pipe under a pending write, and Node surfaces
+      // that as an `error` event on the stream — unhandled, it is an uncaught
+      // exception in the orchestrator, not the child. EPIPE here means only
+      // "the reader went away", which the exit/close handlers already report;
+      // anything else is still worth a log line.
+      proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+        if (err?.code === "EPIPE") return;
+        stderr += `[claudish] stdin error for slot ${anonId}: ${err?.message ?? String(err)}\n`;
+      });
+      proc.stdin?.write(inputContent);
+      proc.stdin?.end();
+
+      const completionPromise = new Promise<void>((resolve) => {
+        let exitCode: number | null = null;
+        let resolved = false;
+
+        /**
+         * Settle the reducer to the outcome just recorded, then release it.
+         *
+         * Without the settle the reducer stays wherever the stream left it — a
+         * `result` frame parks it in `finishing` — so an exited slot read as
+         * still exiting rather than done. Runs only once `state` is final, which is why
+         * the dispose lives here and not in `finalizeCapture`. No-op under
+         * `"print"`, which has no reducer.
+         */
+        const settleReducer = (): void => {
+          if (!reducer) return;
+          const state = statusCache.models[anonId]?.state;
+          const failed = state === "FAILED" || state === "EMPTY";
+          reducer.settle(
+            failed && cancelledSlots.has(anonId)
+              ? "cancelled"
+              : state === "COMPLETED"
+                ? "completed"
+                : state === "TIMEOUT"
+                  ? "timeout"
+                  : "failed"
+          );
+          reducer.dispose();
+        };
+
+        const finish = () => {
+          if (resolved) return;
+          // The timeout handler may have fired between proc "exit" and
+          // outputStream "close". Don't clobber TIMEOUT — but do RECONCILE.
+          //
+          // Reaching here means the stdout pipe has closed, so `response-<id>.md`
+          // is final and `byteCount` is its true size. A child killed at the
+          // deadline can still have flushed a complete answer in the window
+          // between the signal and the pipe closing, and the old code threw that
+          // away: it recorded whatever byte count existed at KILL time (0 B for a
+          // `--quiet` child, which emits only at the end) and never looked again.
+          // The judging phase then scored a real answer as an empty submission.
+          if (statusCache.models[anonId].state === "TIMEOUT") {
+            resolved = true;
+            reconcileTimedOutOutput(anonId, byteCount, stdoutTail, stderr);
+            // After the reconcile, which can upgrade TIMEOUT to COMPLETED.
+            settleReducer();
+            resolve();
+            return;
+          }
+          resolved = true;
+
+          const outputSize = byteCount;
+
+          // A non-zero exit is an outright failure. A zero exit still has to earn
+          // it: `claude -p` exits 0 on API errors and on background-task
+          // termination, so exit code alone would file both as success.
+          const crashed = exitCode !== 0;
+          const fullOutput = readFullOutputIfNeeded({
+            crashed,
+            requirePattern,
+            outputSize,
+            outputPath,
+          });
+          const degraded = crashed
+            ? null
+            : classifyRunOutput({
+                outputSize,
+                stdoutTail,
+                stderr,
+                minOutputBytes,
+                requirePattern,
+                fullOutput,
+                captureMode,
+              });
+
+          const failed = crashed || degraded !== null;
+          const state: ModelState = crashed ? "FAILED" : degraded ? "EMPTY" : "COMPLETED";
+
+          if (failed) {
+            // A slot the caller stopped exited non-zero, but it did not crash and
+            // saying so would be a lie in the permanent record. `cancelled` is the
+            // one failure reason that is not a defect: the caller looked at the
+            // evidence and decided. Nothing else in claudish can produce it.
+            const wasCancelled = cancelledSlots.has(anonId);
+            const reason: FailureReason = wasCancelled
+              ? "cancelled"
+              : crashed
+                ? "nonzero_exit"
+                : degraded!.reason;
+            const detail = wasCancelled
+              ? 'Stopped on the caller\'s instruction via team(mode:"cancel"). ' +
+                "Whatever the child had written up to that point is in its response file."
+              : crashed
+                ? `Child exited with code ${exitCode}.`
+                : degraded!.detail;
+
+            persistErrorLog(errorLogPath, `${state}: ${detail}`, stderr, stdoutTail);
+
+            updateModelStatus(anonId, {
+              state,
+              exitCode: exitCode ?? 1,
+              completedAt: new Date().toISOString(),
+              outputSize,
+              error: {
+                model: anonId,
+                command,
+                reason,
+                detail,
+                // Redacted: these land in status.json on disk and are read back
+                // by anything inspecting the run.
+                stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
+                stdoutSnippet: stdoutTail
+                  ? snippetHeadAndTail(redactSecrets(stdoutTail))
+                  : undefined,
+                errorLogPath,
+                // Only when the child actually wrote one. Naming a file that does
+                // not exist sends a reader after evidence that was never captured.
+                upstreamErrorLogPath: existsSync(upstreamErrorLogPath)
+                  ? upstreamErrorLogPath
+                  : undefined,
+                workDir: sessionPath,
+              },
+            });
+          } else {
+            updateModelStatus(anonId, {
+              state,
+              exitCode: exitCode ?? 0,
+              completedAt: new Date().toISOString(),
+              outputSize,
+              error: undefined,
+            });
+          }
+
+          // Before the caller's callback, so a throwing consumer cannot skip the
+          // dispose and leak the reducer's tool-batch timer.
+          settleReducer();
+          opts.onStatusChange?.(anonId, statusCache.models[anonId]);
+          resolve();
+        };
+
+        // "close" always fires after the stream ends or errors — single resolution point
+        outputStream.on("close", finish);
+
+        proc.on("exit", (code) => {
+          const timedOut = statusCache.models[anonId]?.state === "TIMEOUT";
+
+          // On TIMEOUT this handler must NOT settle the promise. "exit" fires
+          // BEFORE the stdout pipe closes, and an answer flushed during shutdown
+          // is still in flight at this moment — resolving here marked the run
+          // finished with the byte count from KILL time and made the later
+          // "close" a no-op, which is how a complete answer was reported as 0 B
+          // and judged as an empty submission. Let "close" drive finish(), which
+          // re-measures. `runModels` bounds the wait, so a pipe that never closes
+          // degrades to a stale read rather than a hang.
+          //
+          // Still guard the error log: persistErrorLog has just written the
+          // TIMEOUT diagnostics there and a raw stderr dump would erase them.
+          // Only write a log when there is something worth reading. Every healthy
+          // child emits Claude Code's `unrecognized_model` line — normal for a
+          // proxied model — and writing it produced an `errors/NN.log` for runs
+          // that had no error at all, which is exactly the noise that hides a real
+          // one. `finish()` still writes the full log on any genuine failure.
+          if (!timedOut && meaningfulStderr(stderr)) {
+            // Redacted like every other persistence point — provider stderr can
+            // echo key material and this file is read by agents.
+            writeFileSync(errorLogPath, redactSecrets(stderr), "utf-8");
+          }
+
+          exitCode = code;
+          // If the stream already closed before exit fired, finish immediately
+          if (outputStream.destroyed) {
+            finish();
+          }
+          // Otherwise wait for outputStream "close" to call finish()
+        });
+      });
+
+      completionPromises.push(completionPromise);
+    }
+  } catch (err) {
+    // Nothing reported as failed to start may keep running or billing: signal
+    // every slot already spawned, by process group, exactly as the SIGINT
+    // handler does. `onSettled` is NOT called — no run started; the caller
+    // records the failure.
+    for (const [, proc] of processes) {
+      signalProcessTree(proc, "SIGTERM");
+    }
+    process.off("SIGINT", sigintHandler);
+    throw err;
   }
 
   // ── Live progress ─────────────────────────────────────────────────────────
@@ -1581,6 +1623,13 @@ export async function startModels(
       // A settled run answers from status.json, not from memory. Dropping the
       // entry is also what stops this map growing for the life of the server.
       liveTeamRuns.delete(teamSessionId);
+      // The caller's settle hook, exactly once, after the settled render. Its
+      // own try, the `onProgress` convention: a consumer can never fail the run.
+      try {
+        opts.onSettled?.(statusCache);
+      } catch {
+        // A settle consumer must never be able to fail the run.
+      }
     }
     return statusCache;
   })();
@@ -1676,6 +1725,77 @@ export async function judgeResponses(
  */
 export function getStatus(sessionPath: string): TeamStatus {
   return JSON.parse(readFileSync(join(sessionPath, "status.json"), "utf-8"));
+}
+
+/**
+ * `<sessionPath>/status.json`, or a status with an EMPTY `models` map when it
+ * cannot be read. Never throws: it feeds the start-failure record, which must
+ * be written whatever state the run's directory is in.
+ */
+export function readTeamStatus(sessionPath: string): TeamStatus {
+  try {
+    const parsed = getStatus(sessionPath);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      parsed.models &&
+      typeof parsed.models === "object"
+    ) {
+      return parsed;
+    }
+  } catch {
+    // Unreadable or partial — `status.json` writes are not atomic.
+  }
+  return { startedAt: new Date().toISOString(), models: {} };
+}
+
+/**
+ * How one `team(mode:"run")` ended, as its session-directory record states it
+ * (`<sessionsDir>/team-<8 hex>/meta.json`, written by `finishTeamRun`).
+ */
+export interface TeamRunOutcome {
+  status: "completed" | "failed" | "cancelled";
+  slots: number;
+  ok: number;
+  failed: number;
+  cancelled: number;
+  /** Present only when the run never started: `startModels` threw. */
+  reason?: "start-failed";
+}
+
+/**
+ * Counts and verdict for ANY `TeamStatus`, settled or not, so a run that failed
+ * partway still yields counts.
+ *
+ * - `COMPLETED` → ok.
+ * - `FAILED` / `EMPTY` / `TIMEOUT` whose `error.reason` is `cancelled` →
+ *   cancelled; with any other reason → failed.
+ * - `PENDING` / `RUNNING` → failed. A settled run has none; in a run that
+ *   failed to start they are the slots never started and the slots just killed.
+ *
+ * `slots` is the number of entries. `status` is `completed` when at least one
+ * slot is ok (the channel frame's rule), `cancelled` when every slot was
+ * cancelled, otherwise `failed`.
+ */
+export function summarise(status: TeamStatus): TeamRunOutcome {
+  const models = Object.values(status?.models ?? {});
+  let ok = 0;
+  let failed = 0;
+  let cancelled = 0;
+  for (const model of models) {
+    if (model?.state === "COMPLETED") ok++;
+    else if (
+      model?.error?.reason === "cancelled" &&
+      model.state !== "PENDING" &&
+      model.state !== "RUNNING"
+    ) {
+      cancelled++;
+    } else failed++;
+  }
+  const slots = models.length;
+  const verdict: TeamRunOutcome["status"] =
+    ok >= 1 ? "completed" : slots > 0 && cancelled === slots ? "cancelled" : "failed";
+  return { status: verdict, slots, ok, failed, cancelled };
 }
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────

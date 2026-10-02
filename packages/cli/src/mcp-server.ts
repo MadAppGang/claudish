@@ -55,14 +55,17 @@ import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
 import {
+  type TeamRunOutcome,
   cancelTeamRun,
   getStatus,
   judgeResponses,
   readTeamInputFile,
+  readTeamStatus,
   runModels,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
+  summarise,
   teamSlotActivity,
   teamSlotIdleSeconds,
   teamSlotLiveBytes,
@@ -1414,12 +1417,53 @@ function defineTools(
           case "run": {
             if (!models?.length) throw new Error("'models' is required for 'run' mode");
             setupSession(resolved, models, input);
+
+            // The run's record in the sessions directory, for observers outside
+            // this process (the magus claudish plugin monitor): the run's own
+            // status.json lives wherever the caller pointed `path`, and its only
+            // completion push is a channel frame Claude Code drops without
+            // `--channels`. Written BEFORE any child exists; a throw here fails
+            // the call with nothing started.
+            const parentClaudeSessionId = await proveParentForCall({
+              toolUseId: ctx.toolUseId,
+              hostPid: sessionManager.hostPid,
+            });
+            const monitorRecord = sessionManager.recordTeamRun({
+              teamPath: resolved,
+              slots: models.length,
+              parentClaudeSessionId,
+            });
+            const settleRecord = (outcome: TeamRunOutcome): void =>
+              sessionManager.finishTeamRun(monitorRecord, outcome);
+
             // Returns once the children EXIST, not once they finish. A team slot
             // is a full Claude Code session and can legitimately work for a long
             // time; holding the tool call open for that made the run's duration
             // the client's problem, and the deadline that existed to bound it
             // killed working slots. Poll `mode: "status"` instead.
-            const handle = await startModels(resolved, runOpts);
+            //
+            // The record's end is passed IN as `onSettled`, so it exists before
+            // the first child and fires however fast the run settles. If
+            // `startModels` throws, it has already killed whatever it spawned;
+            // the record ends `failed`, `reason: start-failed`, and the ORIGINAL
+            // error reaches the caller (`finishTeamRun` never throws).
+            let handle: Awaited<ReturnType<typeof startModels>>;
+            try {
+              handle = await startModels(resolved, {
+                ...runOpts,
+                onSettled: (status) => settleRecord(summarise(status)),
+              });
+            } catch (err) {
+              const counts = summarise(readTeamStatus(resolved));
+              settleRecord({
+                ...counts,
+                slots: Math.max(counts.slots, models.length),
+                failed: models.length - counts.ok - counts.cancelled,
+                status: "failed",
+                reason: "start-failed",
+              });
+              throw err;
+            }
             return {
               content: [
                 {
@@ -1429,6 +1473,7 @@ function defineTools(
                       started: true,
                       team_session_id: handle.teamSessionId,
                       session_path: handle.sessionPath,
+                      monitor_record: monitorRecord,
                       slots: handle.slots,
                       next: {
                         status: `team(mode:"status", path:"${handle.sessionPath}")`,

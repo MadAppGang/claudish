@@ -137,6 +137,9 @@ describe("MCP team shape contract", () => {
             CLAUDISH_CONFIG: configPath,
             CLAUDISH_DISABLE_OP: "1",
             CLAUDISH_MCP_TOOLS: "all",
+            // A team run writes its record under the sessions directory; keep
+            // it inside this test's temp root, never the real ~/.claudish.
+            CLAUDISH_SESSIONS_DIR: join(tempRoot, "sessions"),
           },
         });
 

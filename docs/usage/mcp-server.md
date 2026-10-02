@@ -136,7 +136,7 @@ Run AI models on a task with anonymized outputs and optional blind judging.
 **Modes:**
 | Mode | What it does |
 |------|-------------|
-| `run` | Run models on the task, write anonymized outputs to session directory |
+| `run` | Start the models on the task and return at once; outputs are written anonymized to the session directory. The result's `monitor_record` names the run's record under `~/.claudish/sessions/` (see "Session records on disk") |
 | `judge` | Blind-vote on existing outputs in the session directory |
 | `run-and-judge` | Full pipeline: run models, then judge the outputs |
 | `status` | Check progress of a running or completed session |
@@ -312,6 +312,13 @@ contract.
 | `spawn.json` | once, before the session's process starts; atomic | `schema`, `kind: "session"`, `sessionId`, `hostPid` (the Claude Code process running this MCP server), `mcpPid`, `startedAt`, `model`, `timeoutSeconds`, `claudeSessionId`; `launcherPid` when claudish runs through the npm launcher; `parentClaudeSessionId` only when claudish proved which Claude Code conversation made the call |
 | `waits.jsonl` | one line each time the session starts and stops waiting for `send_input` | `{"wait":"open","since":…,"turns":…}` then `{"wait":"closed","since":…,"at":…,"to":…}`. Interactive sessions only; append-only, so a wait that opened and closed between two reads still shows. Stops at 1 MB |
 | `meta.json` | once, when the session ends | the final `SessionInfo`: status, exit code, turns, tokens, cost, and `parentClaudeSessionId` exactly when `spawn.json` has it |
+
+A `team(mode:"run")` gets a record in the same directory, `team-<8 hex>/`, named by the
+`monitor_record` key of the `run` result. Its `spawn.json` has `kind: "team"`, `teamPath` and
+`slots` in place of the session fields; its `meta.json`, written atomically once the run
+settles (or fails to start), is `{"kind":"team","status":…,"startedAt":…,"completedAt":…,"elapsedSeconds":…,"slots":…,"ok":…,"failed":…,"cancelled":…}`,
+plus `"reason":"start-failed"` when no run started. Session tools such as `get_session`
+answer a `team-*` id as unknown; use `team(mode:"status")` for the run itself.
 
 ---
 
