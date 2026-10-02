@@ -36,7 +36,6 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
@@ -54,6 +53,7 @@ import {
   meaningfulStderr,
 } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
+import { sessionsDirFrom } from "./home-dir.js";
 import { hostPidFrom } from "./parent-proof.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import {
@@ -793,10 +793,9 @@ export class SessionManager {
     this.maxSessions = options?.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.scrollbackCapacity = options?.scrollbackCapacity ?? DEFAULT_SCROLLBACK;
     this.terminalRetentionMs = options?.terminalRetentionMs ?? TERMINAL_RETENTION_MS;
-    this.sessionsDir =
-      options?.sessionsDir ??
-      process.env.CLAUDISH_SESSIONS_DIR ??
-      join(homedir(), ".claudish", "sessions");
+    // `$HOME` before `os.homedir()`, by the rule the plugin monitor shares —
+    // see home-dir.ts. Diverging here makes every run invisible to it.
+    this.sessionsDir = options?.sessionsDir ?? sessionsDirFrom(process.env);
     this.stallSeconds = options?.stallSeconds;
     this.onStateChange = options?.onStateChange;
   }

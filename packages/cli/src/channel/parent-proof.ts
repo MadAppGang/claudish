@@ -20,8 +20,9 @@
 // degrades to "absent", never to a wrong answer.
 
 import * as fsPromises from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+
+import { userHomeFrom } from "./home-dir.js";
 
 /** What a Claude Code session id or tool-use id may look like. Also the path-safety gate. */
 export const CLAUDE_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
@@ -104,10 +105,14 @@ export function parentSessionIdFrom(env: Record<string, string | undefined>): st
   return id;
 }
 
-/** `CLAUDE_CONFIG_DIR`, else `~/.claude`. */
+/**
+ * `CLAUDE_CONFIG_DIR`, else `<home>/.claude`, with `<home>` resolved by the
+ * same `$HOME`-first rule as the sessions directory (home-dir.ts): Claude Code
+ * follows `$HOME`, and Bun's `os.homedir()` does not.
+ */
 export function claudeConfigDir(env: Record<string, string | undefined>): string {
   const fromEnv = env.CLAUDE_CONFIG_DIR;
-  return fromEnv && fromEnv.length > 0 ? fromEnv : join(homedir(), ".claude");
+  return fromEnv && fromEnv.length > 0 ? fromEnv : join(userHomeFrom(env), ".claude");
 }
 
 /** The subset of `node:fs/promises` the proof uses. Injectable for tests. */

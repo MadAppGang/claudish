@@ -29,8 +29,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { userHomeFrom } from "../channel/home-dir.js";
 import { redactSecrets } from "../redact.js";
 import { REAL_CONFIG_PATH, buildArmConfig, buildArmEnv, checkPreconditions } from "./env.js";
 import { driveServer } from "./jsonrpc-client.js";
@@ -40,7 +40,10 @@ import type { Observation, ObservationView, Scenario, SessionLog, Verdict } from
 const REPO_ROOT = resolve(import.meta.dir, "../../../..");
 const SERVER_ENTRY = resolve(REPO_ROOT, "packages/cli/src/index.ts");
 const LOG_ROOT = resolve(REPO_ROOT, "logs/mcp-e2e");
-const SESSIONS_DIR = join(homedir(), ".claudish", "sessions");
+// Where the server under test writes: env.ts passes HOME through and strips
+// CLAUDISH_SESSIONS_DIR, so the server resolves `$HOME/.claudish/sessions` by
+// the shared rule in channel/home-dir.ts. `os.homedir()` would ignore HOME.
+const SESSIONS_DIR = join(userHomeFrom(process.env), ".claudish", "sessions");
 
 // ── args ─────────────────────────────────────────────────────────────────────
 
