@@ -119,7 +119,9 @@ export function claudeConfigDir(env: Record<string, string | undefined>): string
 export interface ProofFs {
   readFile: (path: string, encoding: "utf-8") => Promise<string>;
   readdir: (path: string) => Promise<string[]>;
-  stat: (path: string) => Promise<{ mtimeMs: number; size: number; isDirectory(): boolean }>;
+  stat: (
+    path: string
+  ) => Promise<{ mtimeMs: number; size: number; isDirectory(): boolean; isFile(): boolean }>;
   open: (
     path: string,
     flags: "r"
@@ -222,18 +224,20 @@ export function projectDirNameFor(cwd: string): string {
 }
 
 /**
- * `<configDir>\0<candidate>` → the project directory holding `<candidate>.jsonl`.
- * A hit is kept for the server's life, so the listing fallback runs at most
- * once per candidate.
+ * `<configDir>\0<candidate>` → the project directory the LISTING found holding
+ * `<candidate>.jsonl`, so the listing runs about once per candidate per server
+ * life. The fast path is never cached (it is one `stat`), and an entry whose
+ * transcript is gone is dropped and resolved again: a wrong entry would
+ * otherwise answer every later call for the server's whole life.
  */
 export type ProjectDirCache = Map<string, string>;
 
 const serverProjectDirCache: ProjectDirCache = new Map();
 
-async function exists(fs: ProofFs, path: string): Promise<boolean> {
+/** A regular file at `path`. A directory that happens to carry the name is not a transcript. */
+async function isTranscriptFile(fs: ProofFs, path: string): Promise<boolean> {
   try {
-    await fs.stat(path);
-    return true;
+    return (await fs.stat(path)).isFile();
   } catch {
     return false;
   }
@@ -246,18 +250,18 @@ async function findProjectDir(
   cache: ProjectDirCache
 ): Promise<string | undefined> {
   const cacheKey = `${configDir}\0${candidate.sessionId}`;
-  const cached = cache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
   const projectsDir = join(configDir, "projects");
   const fileName = `${candidate.sessionId}.jsonl`;
 
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) {
+    if (await isTranscriptFile(fs, join(cached, fileName))) return cached;
+    cache.delete(cacheKey);
+  }
+
   if (candidate.cwd) {
     const fast = join(projectsDir, projectDirNameFor(candidate.cwd));
-    if (await exists(fs, join(fast, fileName))) {
-      cache.set(cacheKey, fast);
-      return fast;
-    }
+    if (await isTranscriptFile(fs, join(fast, fileName))) return fast;
   }
 
   let names: string[];
@@ -268,7 +272,7 @@ async function findProjectDir(
   }
   for (const name of names) {
     const dir = join(projectsDir, name);
-    if (await exists(fs, join(dir, fileName))) {
+    if (await isTranscriptFile(fs, join(dir, fileName))) {
       cache.set(cacheKey, dir);
       return dir;
     }
@@ -355,7 +359,7 @@ export interface ProveCallingConversationOptions {
   fs?: ProofFs;
   /** The single 250 ms wait. Default a real timer. */
   sleep?: (ms: number) => Promise<void>;
-  /** Project-directory hits. Default: one cache for the server's life. */
+  /** Project directories the listing found. Default: one cache for the server's life. */
   cache?: ProjectDirCache;
 }
 
