@@ -142,7 +142,8 @@ describe("SessionManager", () => {
     const info = manager.getSession(id);
     expect(info.sessionId).toBe(id);
     expect(info.model).toBe("test-model");
-    expect(["starting", "running"]).toContain(info.status);
+    // Promptless: it waits for its first send_input from the moment it exists.
+    expect(info.status).toBe("waiting_for_input");
     expect(info.pid).not.toBeNull();
     expect(typeof info.startedAt).toBe("string");
     expect(info.completedAt).toBeNull();
@@ -291,11 +292,9 @@ describe("SessionManager", () => {
 
     await waitForCompleted(callbackManager, id);
 
-    expect(events.map(({ event }) => event.type)).toEqual([
-      "running",
-      "waiting_for_input",
-      "completed",
-    ]);
+    // A one-shot session's turn end is `finishing`: claudish closed stdin, so
+    // nothing waits for input. It never passes through `waiting_for_input`.
+    expect(events.map(({ event }) => event.type)).toEqual(["running", "finishing", "completed"]);
     for (const observed of events) {
       expect(observed.sessionId).toBe(id);
       expect(observed.event.model).toBe("test-model");
@@ -358,7 +357,8 @@ describe("SessionManager", () => {
         claudishFlags: ["--result-then-hang", "--trap-term-exit-zero"],
       });
 
-      await waitForStatus(timeoutManager, id, ["running"]);
+      // Promptless, so it waits for its first input from creation.
+      await waitForStatus(timeoutManager, id, ["waiting_for_input"]);
       expect(timeoutManager.sendInput(id, "interactive turn")).toBe(true);
       await waitForStatus(timeoutManager, id, ["waiting_for_input"]);
 
@@ -391,7 +391,8 @@ describe("SessionManager", () => {
   test("G7: a promptless session reaches a usable state and accepts later input", async () => {
     const id = manager.createSession({ model: "test-model", timeoutSeconds: 5 });
 
-    await waitForStatus(manager, id, ["running"], 2000);
+    // Waiting for input from creation: nothing happens until send_input.
+    await waitForStatus(manager, id, ["waiting_for_input"], 2000);
     expect(manager.sendInput(id, "first interactive turn")).toBe(true);
     await waitUntil(
       () =>

@@ -199,12 +199,15 @@ When a session runs, Claude Code receives `<channel source="claudish">` notifica
 |-------|---------|
 | `session_started` | Session began. Note the `session_id` for future calls. |
 | `tool_executing` | Model is using a tool (Read, Write, Bash, etc.). |
-| `input_required` | Model is waiting for input. Call `send_input` with your answer. |
+| `input_required` | The session finished a turn and waits for `send_input`. Only interactive sessions do this: created without a `prompt`, or after a `send_input`. |
+| `finishing` | The session's last turn ended and claudish closed its input; it is exiting. Nothing to do — `completed` follows. |
 | `completed` | Session finished. Call `get_output` for the full response. |
 | `failed` | Session exited with an error. Check the notification content for details. |
 | `cancelled` | Session was cancelled via `cancel_session`. |
 
 ### Workflow example
+
+One-shot — a `prompt` is given, so the session ends on its own after its answer:
 
 ```
 1. create_session(model: "google@gemini-2.0-flash", prompt: "Refactor this module")
@@ -213,15 +216,29 @@ When a session runs, Claude Code receives `<channel source="claudish">` notifica
 2. <channel event="session_started" session_id="sess_abc123" ...>
    <channel event="tool_executing" tool_count="3" ...>
 
-3. <channel event="input_required" session_id="sess_abc123">
-   "Should I keep the old interface for backwards compatibility?"
+3. <channel event="finishing" session_id="sess_abc123">
 
-4. send_input(session_id: "sess_abc123", text: "Yes, keep the old interface")
+4. <channel event="completed" session_id="sess_abc123">
 
-5. <channel event="completed" session_id="sess_abc123">
-
-6. get_output(session_id: "sess_abc123")
+5. get_output(session_id: "sess_abc123")
    → { lines: [...], status: "completed" }
+```
+
+Interactive — no `prompt`, so the session waits for input from the start and after every
+turn, until you cancel it or it times out:
+
+```
+1. create_session(model: "google@gemini-2.0-flash")
+   → { session_id: "sess_def456", status: "starting" }
+
+2. <channel event="input_required" session_id="sess_def456">
+
+3. send_input(session_id: "sess_def456", text: "Refactor this module")
+
+4. <channel event="tool_executing" ...>
+   <channel event="input_required" session_id="sess_def456">
+
+5. get_output(session_id: "sess_def456"), then send_input again or cancel_session
 ```
 
 ### `create_session`
@@ -241,7 +258,7 @@ Spawn an async external model session.
 
 ### `send_input`
 
-Send text to a session's stdin. Use when the session is in `waiting_for_input` state (after an `input_required` channel event).
+Send text to a session's stdin. Use when the session is in `waiting_for_input` state (after an `input_required` channel event). A session in `finishing` has already closed its input and refuses it.
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
@@ -280,6 +297,20 @@ List all active channel sessions.
 - `include_completed` (optional) - Include completed, failed, and cancelled sessions (default: false)
 
 **Returns:** Array of session objects with ID, model, status, and elapsed time.
+
+---
+
+### Session records on disk
+
+Every `create_session` session keeps its record under `~/.claudish/sessions/<session_id>/`
+(`CLAUDISH_SESSIONS_DIR` overrides the root). Tools that watch sessions from outside the MCP
+server — such as the magus `claudish` plugin's monitor — read these files; they are a stable
+contract.
+
+| File | Written | Contents |
+|------|---------|----------|
+| `waits.jsonl` | one line each time the session starts and stops waiting for `send_input` | `{"wait":"open","since":…,"turns":…}` then `{"wait":"closed","since":…,"at":…,"to":…}`. Interactive sessions only; append-only, so a wait that opened and closed between two reads still shows. Stops at 1 MB |
+| `meta.json` | once, when the session ends | the final `SessionInfo`: status, exit code, turns, tokens, cost |
 
 ---
 

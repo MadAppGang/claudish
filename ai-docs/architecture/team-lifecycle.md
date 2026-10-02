@@ -69,7 +69,8 @@ activity frozen at `waiting_for_input`, idle counting up from its exit. Measured
 a real status payload: `completedAt + idle_seconds` landed on the poll time for
 both finished slots (idle 57 s and 571 s), while the third slot was still working.
 A caller read `waiting_for_input` as a slot that needed an answer, which `team`
-has no way to send.
+has no way to send. A slot now never reports `waiting_for_input` at all:
+between its `result` and its exit it reads `finishing` (see below).
 
 **The caller decides, and `cancel` is how it acts.** `cancelTeamRun` is the only
 thing that kills a slot. It kills the process GROUP: `claudish` is a launcher
@@ -197,11 +198,13 @@ and the slot was classified EMPTY.
 
 ### Team must settle the reducer itself
 
-A `result` frame moves the reducer to `waiting_for_input`, on the premise that
-stdin is still open and the supervisor decides what happens next. The channel's
-`SessionManager` is that supervisor and calls `settle()`. `team` closes stdin at
-spawn, so the premise never holds, and until 2026-09-12 nothing settled the
-reducer: it stayed in `waiting_for_input` after the child had exited.
+A `result` frame ends a turn, and the reducer asks its owner whether stdin stays
+open (`onResult` returns `TurnEnd`). `team` closes stdin at spawn, so it always
+answers `"stdin-closed"` and the slot moves to `finishing`, which only a terminal
+state may follow. Before `finishing` existed, every `result` moved the reducer to
+`waiting_for_input`, on the premise that stdin was still open — a premise that
+never held for a slot — and until 2026-09-12 nothing settled the reducer after
+that: it stayed in `waiting_for_input` after the child had exited.
 
 `finish()` now settles it to the outcome it just recorded (COMPLETED → `completed`,
 EMPTY or FAILED → `failed`, a cancelled slot → `cancelled`, TIMEOUT → `timeout`)

@@ -104,7 +104,8 @@ When channel mode is active, you receive <channel source="claudish" ...> notific
 
 - session_started: A session began producing output. Note the session_id for future calls.
 - tool_executing: The model is using a tool (Read, Write, Bash, etc.). May include tool_count for batched events.
-- input_required: The model is asking a question and waiting for input. Call send_input with the session_id and your answer.
+- input_required: The session finished a turn and waits for send_input. Only interactive sessions do this (no prompt, or after a send_input). Call send_input with the session_id and your answer.
+- finishing: The session's last turn ended and claudish closed its input; it is exiting. Nothing to do; completed follows.
 - completed: The session finished successfully. Call get_output to retrieve the full output.
 - failed: The session exited with an error. Call get_diagnostics for the cause.
 - timeout: The session hit its timeout_seconds and was killed. Call get_diagnostics to see how far it got.
@@ -114,7 +115,7 @@ When channel mode is active, you receive <channel source="claudish" ...> notific
 
 1. Call create_session with a model and prompt to start an async session.
 2. Watch for <channel> notifications — they arrive automatically.
-3. On input_required: call send_input with the answer.
+3. On input_required (interactive sessions only: no prompt, or after a send_input): call send_input with the answer.
 4. On completed: call get_output to get the full response.
 5. On failed or timeout — or on a completed session whose output is empty or
    surprising — call get_diagnostics. It returns the child's stderr, the upstream
@@ -1959,7 +1960,7 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
 }
 
 // ─── SEP-1686 status mapping ─────────────────────────────────────────────────
-// Maps Claudish's 7-value `event` enum to SEP-1686's 5-value `TaskStatus`.
+// Maps Claudish's 9-value `event` enum to SEP-1686's 5-value `TaskStatus`.
 // See: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
 // Migration plan: ai-docs/sessions/.../sep-1686-migration-schema.md
 type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
@@ -1969,6 +1970,10 @@ const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>([
   ["running", "working"],
   ["tool_executing", "working"],
   ["waiting_for_input", "input_required"],
+  // Explicit although the fall-through below gives the same value: a missing
+  // key is how the timeout projection hid (see the `timeout` entry). The final
+  // turn ended and the child is exiting; nothing is asked of the caller.
+  ["finishing", "working"],
   ["completed", "completed"],
   ["failed", "failed"],
   ["cancelled", "cancelled"],

@@ -18,6 +18,7 @@ function feedLine(line: string, keepUnrecognizedJson?: true): string {
     sessionId: "unrecognized-json-test",
     stallSeconds: 0,
     callback: () => {},
+    onResult: () => "stdin-closed",
     ...(keepUnrecognizedJson === true ? { keepUnrecognizedJson } : {}),
   });
 

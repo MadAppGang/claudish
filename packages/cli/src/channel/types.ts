@@ -5,6 +5,13 @@ export type SessionStatus =
   | "running"
   | "tool_executing"
   | "waiting_for_input"
+  /**
+   * The session's FINAL turn ended and claudish closed the child's stdin; the
+   * child has not exited yet. Non-terminal, and nothing waits for input: only
+   * a terminal state follows. Distinct from `waiting_for_input`, which holds
+   * only while stdin stays open and the session waits for `send_input`.
+   */
+  | "finishing"
   | "completed"
   | "failed"
   | "cancelled"
@@ -114,10 +121,12 @@ export interface SessionCreateOptions {
    * The first turn. Its presence also selects the session's SHAPE:
    *
    * - given  → one-shot. Sent as the opening `user` frame; stdin is closed as
-   *   soon as the child reports a terminal `result`, so the session ends at
-   *   `completed` instead of idling to the timeout.
-   * - absent → interactive. Stdin stays open indefinitely and the session sits
-   *   in `waiting_for_input` between turns, waiting for `send_input`.
+   *   soon as the child reports a terminal `result`, so the session passes
+   *   through `finishing` and ends at `completed` instead of idling to the
+   *   timeout. It never enters `waiting_for_input`.
+   * - absent → interactive. Stdin stays open indefinitely. The session is in
+   *   `waiting_for_input` from creation until the first `send_input`, and again
+   *   after every turn the child finishes.
    *
    * A `send_input` call converts a one-shot session to interactive — the caller
    * has taken over driving it, so we stop deciding when it is finished.

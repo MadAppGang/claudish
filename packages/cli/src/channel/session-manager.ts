@@ -49,7 +49,12 @@ import { decodeChunk } from "../stdio-decode.js";
 import { STDOUT_TAIL_LIMIT, classifyRunOutput, meaningfulStderr } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
-import { type ResultSummary, StreamJsonReducer, labelForLine } from "./stream-json-reducer.js";
+import {
+  type ResultSummary,
+  StreamJsonReducer,
+  type TurnEnd,
+  labelForLine,
+} from "./stream-json-reducer.js";
 import type {
   ChannelEvent,
   SessionCreateOptions,
@@ -203,6 +208,15 @@ interface SessionEntry {
    */
   autoCloseOnResult: boolean;
   stdinClosed: boolean;
+  /** `<sessionDir>/waits.jsonl`. See `appendWait`. */
+  waitLogPath: string;
+  /** Bytes already appended to `waits.jsonl`; the log stops at WAIT_LOG_LIMIT. */
+  waitLogBytes: number;
+  /**
+   * The `since` of the wait that is open now, or null. Kept so the `closed`
+   * line repeats its `open` line's key exactly.
+   */
+  waitSince: string | null;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
@@ -256,6 +270,13 @@ const STDERR_SIDE_LIMIT = 32 * 1024;
 const EVENT_LOG_LIMIT = 4 * 1024 * 1024;
 
 /**
+ * Cap on `waits.jsonl`. One line is under 200 bytes, so this is about 6 000
+ * waits — far beyond any real interactive session. Past it, later waits are
+ * not recorded.
+ */
+const WAIT_LOG_LIMIT = 1024 * 1024;
+
+/**
  * How many semantic frames `get_diagnostics` can hand back, and how much of each.
  *
  * Bounded on both axes because this ring is held per session for the whole
@@ -290,6 +311,7 @@ const KNOWN_STATUSES: readonly SessionStatus[] = [
   "running",
   "tool_executing",
   "waiting_for_input",
+  "finishing",
   "completed",
   "failed",
   "cancelled",
@@ -877,6 +899,9 @@ export class SessionManager {
       finalized: false,
       autoCloseOnResult: Boolean(opts.prompt),
       stdinClosed: false,
+      waitLogPath: join(sessionDir, "waits.jsonl"),
+      waitLogBytes: 0,
+      waitSince: null,
     };
 
     entry.reducer = new StreamJsonReducer({
@@ -894,6 +919,10 @@ export class SessionManager {
         // now, so `ChannelEventType === SessionStatus` and the override is gone.
         current.info.status = data.newState;
         current.info.elapsedSeconds = this.getElapsed(current.info.startedAt);
+
+        // Before the notification, so the wait line is on disk by the time
+        // anyone hears of the transition.
+        this.recordWaitTransition(current, data);
 
         this.onStateChange?.(sid, {
           type: data.newState,
@@ -954,9 +983,7 @@ export class SessionManager {
     // The prompt is the opening frame, not a positional argument. stdin stays
     // OPEN: that is what makes `send_input` real, and closing it here is what
     // used to make a promptless session hang until the timeout.
-    if (opts.prompt) {
-      this.writeFrame(entry, opts.prompt);
-    }
+    this.openFirstTurn(entry, opts.prompt);
 
     proc.on("exit", (code, signal) => this.handleExit(sessionId, code, signal));
 
@@ -1707,23 +1734,119 @@ export class SessionManager {
   }
 
   /**
-   * A turn ended. For a one-shot session that is also the end of the session:
-   * close stdin, and the child exits 0 on its own (measured — see §3.2 of the
-   * design). For an interactive one, stay in `waiting_for_input`.
+   * A turn ended; answer the reducer's question "does stdin stay open?".
+   *
+   * Called BEFORE the reducer changes state, so the answer decides it:
+   *
+   * - one-shot (`autoCloseOnResult`): close stdin now and answer
+   *   `"stdin-closed"`. The session moves to `finishing` and the child exits 0
+   *   on its own (measured — see §3.2 of the channel design).
+   * - stdin already closed (the child broke the pipe, or exit raced us):
+   *   `"stdin-closed"` too — nothing can send it input any more.
+   * - otherwise `"stdin-open"`: an interactive session now waits for
+   *   `send_input` in `waiting_for_input`.
+   *
+   * The bookkeeping runs first in every case, so a wait opened by this turn end
+   * logs the turn count that includes it.
    */
-  private handleResult(sessionId: string, summary: ResultSummary): void {
+  private handleResult(sessionId: string, summary: ResultSummary): TurnEnd {
     const entry = this.sessions.get(sessionId);
-    if (!entry) return;
+    // No entry means no stdin held open for anyone, so nothing can wait.
+    if (!entry) return "stdin-closed";
 
     entry.info.turnsCompleted = summary.numTurns || entry.info.turnsCompleted;
     entry.info.terminalReason = summary.terminalReason;
 
-    if (!entry.autoCloseOnResult || entry.stdinClosed) return;
+    if (entry.stdinClosed) return "stdin-closed";
+    if (!entry.autoCloseOnResult) return "stdin-open";
     entry.stdinClosed = true;
     try {
       entry.process.stdin?.end();
     } catch {
       /* the child may already be gone */
+    }
+    return "stdin-closed";
+  }
+
+  /**
+   * Hand the child its opening turn, or record that the session waits for one.
+   *
+   * A promptless session waits for its first `send_input` from the moment it
+   * exists, and says so (`starting → waiting_for_input`). Called after
+   * `sessions.set`, so the reducer callback finds the entry and the wait is
+   * logged.
+   */
+  private openFirstTurn(entry: SessionEntry, prompt: string | undefined): void {
+    if (prompt) {
+      this.writeFrame(entry, prompt);
+      return;
+    }
+    entry.reducer.awaitInput();
+  }
+
+  /**
+   * The wait log's two hooks: one `open` line on every transition INTO
+   * `waiting_for_input`, one `closed` line on every transition OUT of it,
+   * including into a terminal state.
+   *
+   * Runs in the same callback that changes the state, so a wait cannot happen
+   * unrecorded while this process lives. `settle()` goes through `transition()`,
+   * so cancel and timeout close an open wait, and `finalize` settles before
+   * `writeArtifacts` — no `meta.json` ever sits beside an unclosed wait written
+   * by a live process. Self-transitions never reach the callback unless
+   * `repeat`, and no `repeat` caller targets `waiting_for_input`.
+   */
+  private recordWaitTransition(
+    entry: SessionEntry,
+    data: { previousState: SessionStatus; newState: SessionStatus; timestamp: string }
+  ): void {
+    const wasWaiting = data.previousState === "waiting_for_input";
+    const isWaiting = data.newState === "waiting_for_input";
+    if (!wasWaiting && isWaiting) {
+      entry.waitSince = data.timestamp;
+      this.appendWait(entry, {
+        wait: "open",
+        since: data.timestamp,
+        turns: entry.info.turnsCompleted,
+      });
+      return;
+    }
+    if (wasWaiting && !isWaiting) {
+      this.appendWait(entry, {
+        wait: "closed",
+        since: entry.waitSince ?? data.timestamp,
+        at: data.timestamp,
+        to: data.newState,
+      });
+      entry.waitSince = null;
+    }
+  }
+
+  /**
+   * Append one line to `waits.jsonl`.
+   *
+   * Durable on purpose: a wait can open and close between two reads of any
+   * observer, and an append-only line survives that where a marker file that
+   * exists only during the wait would not. One `appendFileSync` of under 200
+   * bytes per line. A write failure is reported on stderr and changes nothing
+   * else — only that line is lost. The log stops at WAIT_LOG_LIMIT.
+   */
+  private appendWait(
+    entry: SessionEntry,
+    line:
+      | { wait: "open"; since: string; turns: number }
+      | { wait: "closed"; since: string; at: string; to: SessionStatus }
+  ): void {
+    if (entry.waitLogBytes >= WAIT_LOG_LIMIT) return;
+    const payload = `${JSON.stringify(line)}\n`;
+    entry.waitLogBytes += Buffer.byteLength(payload, "utf-8");
+    try {
+      appendFileSync(entry.waitLogPath, payload);
+    } catch (err) {
+      process.stderr.write(
+        `[claudish] session ${entry.info.sessionId}: could not append to waits.jsonl: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`
+      );
     }
   }
 

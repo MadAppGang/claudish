@@ -288,7 +288,9 @@ export function teamSlotIdleSeconds(teamSessionId: string): Record<string, numbe
 
 /**
  * What each still-running slot is doing, from the stream-json reducer:
- * `running`, `tool_executing` or `waiting_for_input`. Null for a run that is not
+ * `starting`, `running`, `tool_executing` or `finishing` (its `result` arrived
+ * and it is exiting). A slot never reports `waiting_for_input`: its stdin is
+ * closed at spawn, so nothing can wait for input. Null for a run that is not
  * live; a slot is absent once it has exited (its outcome is `state` in
  * `status.json`), and under `"print"` capture, which emits no frames to read.
  *
@@ -999,7 +1001,7 @@ export async function startModels(
     getIdleMs: () => number;
     /**
      * What this slot is doing right now, from the shared stream-json reducer:
-     * `running`, `tool_executing`, `waiting_for_input`, a terminal state, or
+     * `starting`, `running`, `tool_executing`, `finishing`, a terminal state, or
      * null under `"print"` capture, which produces no frames to read.
      *
      * This is the other half of the idle number. 90 seconds of silence means
@@ -1227,6 +1229,10 @@ export async function startModels(
         // already has its own status file and progress ticker; routing reducer
         // transitions into a second notification path would duplicate it.
         callback: () => {},
+        // stdin is written and ended right after spawn (below), so a `result`
+        // is always the end of the slot's work: `finishing` until it exits,
+        // never `waiting_for_input`.
+        onResult: () => "stdin-closed",
       });
       reducer = slotReducer;
 
@@ -1309,8 +1315,8 @@ export async function startModels(
        * Settle the reducer to the outcome just recorded, then release it.
        *
        * Without the settle the reducer stays wherever the stream left it — a
-       * `result` frame parks it in `waiting_for_input` — so an exited slot read
-       * as idle rather than done. Runs only once `state` is final, which is why
+       * `result` frame parks it in `finishing` — so an exited slot read as
+       * still exiting rather than done. Runs only once `state` is final, which is why
        * the dispose lives here and not in `finalizeCapture`. No-op under
        * `"print"`, which has no reducer.
        */

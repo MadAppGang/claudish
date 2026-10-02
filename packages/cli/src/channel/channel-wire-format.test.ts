@@ -237,7 +237,7 @@ describe("Channel notification wire format", () => {
     }
   }, 20_000);
 
-  test("SEP-1686 status mapping: 7-value event collapses to 5-value status correctly", async () => {
+  test("SEP-1686 status mapping: 9-value event collapses to 5-value status correctly", async () => {
     const captured = await captureSessionFrames({ shimArgs: ["--lines", "3"] });
     expect(captured.notifications.length).toBeGreaterThan(0);
 
@@ -248,9 +248,11 @@ describe("Channel notification wire format", () => {
       running: "working",
       tool_executing: "working",
       waiting_for_input: "input_required",
+      finishing: "working",
       completed: "completed",
       failed: "failed",
       cancelled: "cancelled",
+      timeout: "failed",
     };
 
     for (const n of captured.notifications) {

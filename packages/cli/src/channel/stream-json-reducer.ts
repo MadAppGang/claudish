@@ -98,10 +98,14 @@ const TERMINAL_STATES: readonly ChannelEventType[] = [
  * ended, nothing may revise it.
  */
 const LEGAL_TRANSITIONS: Record<ChannelEventType, readonly ChannelEventType[]> = {
-  starting: ["running", "tool_executing", "waiting_for_input", ...TERMINAL_STATES],
-  running: ["tool_executing", "waiting_for_input", ...TERMINAL_STATES],
-  tool_executing: ["running", "waiting_for_input", ...TERMINAL_STATES],
+  starting: ["running", "tool_executing", "waiting_for_input", "finishing", ...TERMINAL_STATES],
+  running: ["tool_executing", "waiting_for_input", "finishing", ...TERMINAL_STATES],
+  tool_executing: ["running", "waiting_for_input", "finishing", ...TERMINAL_STATES],
   waiting_for_input: ["running", "tool_executing", ...TERMINAL_STATES],
+  // The final turn ended and stdin is closed: only the exit verdict may follow.
+  // A frame arriving here is outside the stream-json contract, so it is refused
+  // and recorded as an anomaly rather than moving the session backwards.
+  finishing: [...TERMINAL_STATES],
   completed: [],
   failed: [],
   cancelled: [],
@@ -120,7 +124,8 @@ const TOOL_BATCH_MS = 500;
  * Only `starting` and `running` are watched. `tool_executing` is deliberately
  * exempt: a 10-minute `Bash` produces no frames at all and is not stalled, it is
  * working. `waiting_for_input` is exempt for the same reason — silence there is
- * the contract.
+ * the contract. `finishing` is exempt too: the child is exiting, and the session
+ * timeout bounds it.
  */
 const DEFAULT_STALL_SECONDS = 120;
 
@@ -146,6 +151,18 @@ export interface ResultSummary {
   permissionDenials: number;
 }
 
+/**
+ * The owner's answer, at a turn end, to "does stdin stay open?".
+ *
+ * - `"stdin-open"`   → the session waits for `send_input`: `waiting_for_input`.
+ * - `"stdin-closed"` → that was the final turn and the child is exiting:
+ *   `finishing`, then a terminal state.
+ *
+ * The reducer cannot see stdin, so it asks. Deciding it here instead is what
+ * used to put every one-shot session through a false `waiting_for_input`.
+ */
+export type TurnEnd = "stdin-open" | "stdin-closed";
+
 export interface StreamJsonReducerOptions {
   sessionId: string;
   callback: ReducerCallback;
@@ -169,11 +186,17 @@ export interface StreamJsonReducerOptions {
    */
   keepUnrecognizedJson?: boolean;
   /**
-   * Fired once per terminal `result` frame. SessionManager uses the FIRST one to
-   * close stdin on a one-shot session, which is what lets it reach `completed`
-   * instead of idling until the timeout.
+   * Fired once per terminal `result` frame, BEFORE the state changes, and its
+   * answer decides the state the turn end moves to (see `TurnEnd`).
+   * SessionManager closes stdin on a one-shot session's first `result` and
+   * answers `"stdin-closed"`, which is what lets the session reach `completed`
+   * instead of idling until the timeout; `team` closes stdin at spawn and always
+   * answers `"stdin-closed"`.
+   *
+   * Required, so the compiler names every construction site: a default would
+   * silently pick one of the two states for a caller that never decided.
    */
-  onResult?: (summary: ResultSummary) => void;
+  onResult: (summary: ResultSummary) => TurnEnd;
   /**
    * Every line except the delta firehose, verbatim. Persisted to `events.jsonl`
    * so a post-mortem has the structured record the prose cannot carry.
@@ -390,6 +413,10 @@ export class StreamJsonReducer {
    * `_turns`, the token counters and `_terminalReason` are deliberately NOT
    * reset — they are cumulative session accounting and the last observed
    * reason, not completion evidence.
+   *
+   * A session that was `waiting_for_input` is no longer waiting once a turn is
+   * handed over, so this moves it to `running` — the only transition it makes.
+   * From any other state it only resets the flags above.
    */
   beginTurn(): void {
     if (this.disposed) return;
@@ -399,6 +426,21 @@ export class StreamJsonReducer {
     // A turn was just sent, so the stream is legitimately busy again.
     this.lastFrameAt = Date.now();
     this.stallAnnounced = false;
+    if (this._state === "waiting_for_input") {
+      this.transition("running", { content: "input received" });
+    }
+  }
+
+  /**
+   * A promptless session waits for its first `send_input` from the moment it
+   * exists: `starting → waiting_for_input`. A no-op from any other state.
+   *
+   * Without it such a session read `starting`, then `running` on the child's
+   * `system:init`, while nothing would happen until the caller sent input.
+   */
+  awaitInput(): void {
+    if (this.disposed || this._state !== "starting") return;
+    this.transition("waiting_for_input", { content: "waiting for the first input" });
   }
 
   /**
@@ -485,7 +527,10 @@ export class StreamJsonReducer {
           // metric ("93 tool calls") the silent-success incident was measured by.
           this._toolUseCount += tools.length;
           this.batchToolUse(tools[0], tools.length);
-        } else if (this._state === "starting") {
+        } else if (this._state === "starting" || this._state === "finishing") {
+          // From `finishing` the transition table refuses this and records the
+          // anomaly: a frame after the final `result`, with stdin closed, is
+          // outside the stream-json contract and must not revive the session.
           this.transition("running", { content: "assistant turn started" });
         }
         return;
@@ -494,8 +539,13 @@ export class StreamJsonReducer {
       case "user":
         // A `tool_result` closes a tool round trip; a replayed user message
         // (`--replay-user-messages`) is the child acking our input. Either way
-        // the model is the thing that runs next.
-        if (this._state === "tool_executing" || this._state === "waiting_for_input") {
+        // the model is the thing that runs next. From `finishing` the table
+        // refuses it and records the anomaly, as for `assistant` above.
+        if (
+          this._state === "tool_executing" ||
+          this._state === "waiting_for_input" ||
+          this._state === "finishing"
+        ) {
           this.transition("running");
         } else if (this._state === "starting") {
           this.transition("running");
@@ -520,6 +570,9 @@ export class StreamJsonReducer {
     if (subtype === "init") {
       this._claudeSessionId = asString(frame.session_id);
       this._cwd = asString(frame.cwd);
+      // A promptless session announces itself with `init` while it still waits
+      // for its first input; that is not a turn starting, so the wait stands.
+      if (this._state === "waiting_for_input") return;
       this.transition("running", { content: "session initialised" });
       return;
     }
@@ -566,17 +619,16 @@ export class StreamJsonReducer {
         : 0,
     };
 
-    // A turn boundary with stdin still open IS `waiting_for_input` — a fact, not
-    // the 2-second quiet-period guess it replaces. Whether the session stays
-    // there is SessionManager's call: for a one-shot it closes stdin here and
-    // the child walks to `completed` on its own.
-    this.transition("waiting_for_input", {
-      content: summary.isError
-        ? `turn ended with an error (${summary.terminalReason ?? summary.subtype ?? "unknown"})`
-        : `turn ${summary.numTurns} complete`,
-    });
-
-    this.opts.onResult?.(summary);
+    // The owner decides FIRST whether stdin stays open, and the state follows
+    // its answer. A turn boundary with stdin still open IS `waiting_for_input`;
+    // one where the owner just closed stdin is `finishing`, and the child walks
+    // to a terminal state on its own. Transitioning before asking is what put
+    // every one-shot session through a `waiting_for_input` nothing waited in.
+    const turnEnd = this.opts.onResult(summary);
+    const content = summary.isError
+      ? `turn ended with an error (${summary.terminalReason ?? summary.subtype ?? "unknown"})`
+      : `turn ${summary.numTurns} complete`;
+    this.transition(turnEnd === "stdin-closed" ? "finishing" : "waiting_for_input", { content });
   }
 
   /** Every `tool_use` block in an assistant message, in order. */

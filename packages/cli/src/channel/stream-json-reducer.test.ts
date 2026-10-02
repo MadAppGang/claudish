@@ -30,8 +30,11 @@ describe("StreamJsonReducer", () => {
       stallSeconds: 0,
       callback: (_sessionId, event) => events.push(event),
       onSemanticLine: (semanticLine) => semanticLines.push(semanticLine),
+      // The captured stream is a one-shot run: its owner closes stdin at the
+      // result, so the turn end moves to `finishing`, never `waiting_for_input`.
       onResult: (result) => {
         summary = result;
+        return "stdin-closed";
       },
     };
     const reducer = new StreamJsonReducer(options);
@@ -43,9 +46,9 @@ describe("StreamJsonReducer", () => {
     prose += reducer.feed(line(capturedSuccessResult(CAPTURED_ASSISTANT_PROSE)));
     prose += reducer.end();
 
-    expect(events.map((event) => event.newState)).toEqual(["running", "waiting_for_input"]);
+    expect(events.map((event) => event.newState)).toEqual(["running", "finishing"]);
     expect(prose).toBe(`${CAPTURED_ASSISTANT_PROSE}\n`);
-    expect(reducer.state).toBe("waiting_for_input");
+    expect(reducer.state).toBe("finishing");
     expect(reducer.sawResult).toBe(true);
     expect(reducer.turns).toBe(1);
     expect(reducer.tokens).toBeGreaterThan(0);
@@ -61,6 +64,7 @@ describe("StreamJsonReducer", () => {
       sessionId: "delta-regression",
       stallSeconds: 0,
       callback: () => {},
+      onResult: () => "stdin-closed",
     });
     const appendRecovered = (chunk: string): void => {
       const recovered = reducer.feed(chunk);

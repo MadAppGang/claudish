@@ -124,10 +124,46 @@ the divergence — is gone. **Mutation-proven**: remove the map key and a timed-
 goes back to `status: "working"` on the wire.
 
 **Session shape follows the prompt.** `create_session` WITH a prompt is one-shot: stdin is
-closed on the first `result` and the child exits 0 → `completed`. WITHOUT a prompt it is
-interactive: stdin stays open, the session sits in `waiting_for_input` between turns, and
-it ends on `send_input` → … → `cancel_session` or the timeout. A `send_input` call converts
-a one-shot session to interactive.
+closed on the first `result`, the session is `finishing` until the child exits 0, then
+`completed`. WITHOUT a prompt it is interactive: stdin stays open, the session is in
+`waiting_for_input` from creation and again between turns, and it ends on `send_input` → …
+→ `cancel_session` or the timeout. A `send_input` call converts a one-shot session to
+interactive.
+
+**`waiting_for_input` means a real wait, and nothing else.** It holds iff claudish holds the
+child's stdin open and the child has finished a turn no `send_input` has followed yet, or a
+promptless session has received no input yet. Before `finishing` existed, every `result` frame moved the
+reducer there, including a one-shot's last one, and `handleResult` closed stdin a moment
+later — so every one-shot session emitted an `input_required` nothing could answer. The turn
+end is now the OWNER's decision: `StreamJsonReducerOptions.onResult` is required and returns
+`TurnEnd` (`"stdin-open" | "stdin-closed"`), and `applyResultFrame` asks it BEFORE
+transitioning, to `waiting_for_input` or to `finishing`. `finishing` (non-terminal) admits
+only terminal successors; a late `assistant`/`user` frame there is refused and recorded as an
+anomaly (`get_diagnostics`). It projects to SEP-1686 `working`, and `checkStall` leaves it
+unwatched — the session timeout bounds it. `team` closes stdin at spawn, so its reducer
+always answers `"stdin-closed"`: a slot reads `finishing` between its `result` and its exit.
+A promptless session enters `waiting_for_input` through `awaitInput()` at creation; its
+`system:init` frame does not move it, and `beginTurn()` (every `writeFrame`) moves it to
+`running`.
+
+### `waits.jsonl` — the wait log
+
+`<sessionDir>/waits.jsonl` gets one line per transition INTO `waiting_for_input` and one per
+transition OUT of it (terminal states included), written in the reducer callback that changes
+the state:
+
+```jsonc
+{"wait":"open","since":"2026-10-02T10:03:12.000Z","turns":1}
+{"wait":"closed","since":"2026-10-02T10:03:12.000Z","at":"2026-10-02T10:03:13.400Z","to":"running"}
+```
+
+`since` keys the wait (the `closed` line repeats it); `turns` is `turnsCompleted` at the
+open. It is append-only because an observer polling the directory (the magus `claudish`
+plugin monitor) must see a wait that opened and closed between two of its reads — a marker
+file that exists only during the wait cannot give it that. `finalize` settles before
+`writeArtifacts`, so a live writer never leaves an open wait beside a `meta.json`. One
+`appendFileSync` of < 200 bytes per line; a write failure goes to stderr and loses only that
+line; the file stops at 1 MB. A one-shot session never writes one.
 
 ### Diagnostics are captured unconditionally, and reachable from the API
 
@@ -225,7 +261,7 @@ The wire format is contractually pinned by `channel-wire-format.test.ts`:
     "content": "<string>",
     "meta": {
       "session_id": "<8-char hex>",
-      "event": "starting|running|tool_executing|waiting_for_input|completed|failed|cancelled|timeout",
+      "event": "starting|running|tool_executing|waiting_for_input|finishing|completed|failed|cancelled|timeout",
       "model": "<model-id>",
       "elapsed_seconds": "<numeric string>",
       "task_id": "<same as session_id>",
