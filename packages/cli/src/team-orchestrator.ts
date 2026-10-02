@@ -12,7 +12,12 @@ import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credential
 import { StreamJsonReducer } from "./channel/stream-json-reducer.js";
 import { ENV } from "./config.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
-import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "./process-tree.js";
+import {
+  KILL_PROCESS_GROUP,
+  TERMINATE_GRACE_MS,
+  signalProcessTree,
+  terminateChildTree,
+} from "./process-tree.js";
 import { redactSecrets } from "./redact.js";
 import { resolveClaudishSpawn } from "./spawn-claudish.js";
 import { decodeChunk, newStdioDecoder } from "./stdio-decode.js";
@@ -205,6 +210,11 @@ export interface TeamRunOptions {
    * `spawn`). Lets a test make one slot's spawn throw synchronously.
    */
   spawnChild?: typeof spawn;
+  /**
+   * Pause between SIGTERM and SIGKILL when the spawn loop throws and the slots
+   * already spawned are stopped. Default `TERMINATE_GRACE_MS`. A test seam.
+   */
+  terminateGraceMs?: number;
   /**
    * Called exactly once, when the run SETTLES: after the last slot finished and
    * the settled `status.txt` render, from inside `done`'s `finally`. Receives
@@ -1517,13 +1527,15 @@ export async function startModels(
       completionPromises.push(completionPromise);
     }
   } catch (err) {
-    // Nothing reported as failed to start may keep running or billing: signal
-    // every slot already spawned, by process group, exactly as the SIGINT
-    // handler does. `onSettled` is NOT called — no run started; the caller
-    // records the failure.
-    for (const [, proc] of processes) {
-      signalProcessTree(proc, "SIGTERM");
-    }
+    // Nothing reported as failed to start may keep running or billing: stop
+    // every slot already spawned, by process group — SIGTERM, then SIGKILL
+    // after the grace period, as `cancel_session` does — and only then let
+    // the error out, so the caller's `start-failed` record is true when it
+    // is written. A slot that traps SIGTERM would otherwise run on. The SIGINT
+    // handler stays installed while we wait. `onSettled` is NOT called — no run
+    // started; the caller records the failure.
+    const graceMs = opts.terminateGraceMs ?? TERMINATE_GRACE_MS;
+    await Promise.all([...processes.values()].map((proc) => terminateChildTree(proc, graceMs)));
     process.off("SIGINT", sigintHandler);
     throw err;
   }

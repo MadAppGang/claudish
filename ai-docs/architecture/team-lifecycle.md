@@ -178,11 +178,15 @@ on `handle.done.then(…)` in the handler would depend on code that runs after
 registry entry and `done` are all built after the loop, so a synchronous
 `spawn()` error or a failed `status.json` write for slot N used to leave slots
 1..N-1 running and billing, unreachable, with the SIGINT handler still installed.
-The loop's `catch` sends SIGTERM to every spawned slot's process group
-(`signalProcessTree`, as the SIGINT handler does), removes the SIGINT handler and
-rethrows; the handler's `catch` writes `failed`, `reason: start-failed` with
-counts from `status.json` (`summarise(readTeamStatus(path))`), then rethrows the
-ORIGINAL error. `spawnChild` is the seam a test uses to make one spawn throw.
+The loop's `catch` stops every spawned slot's process group with
+`terminateChildTree` — SIGTERM, then SIGKILL after `TERMINATE_GRACE_MS`, as
+`cancel_session` does — and waits for that before it removes the SIGINT handler
+and rethrows. SIGTERM alone left a slot that traps it running and billing under
+a record that already said `start-failed`. The handler's `catch` then writes
+`failed`, `reason: start-failed` with counts from `status.json`
+(`summarise(readTeamStatus(path))`), and rethrows the ORIGINAL error. `spawnChild`
+is the seam a test uses to make one spawn throw, `terminateGraceMs` the one that
+shortens the grace period (`team-start-failure.test.ts`).
 
 `summarise` counts `COMPLETED` as ok, a `cancelled` reason as cancelled, and every
 other state — `PENDING` and `RUNNING` included — as failed; the verdict is
