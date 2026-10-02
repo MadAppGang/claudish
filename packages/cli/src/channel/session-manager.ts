@@ -244,6 +244,23 @@ const DRAIN_TIMEOUT_MS = 10_000;
 const DEFAULT_SCROLLBACK = 2000;
 const DEFAULT_TIMEOUT = 600;
 const MAX_TIMEOUT = 3600;
+
+/**
+ * The caller's `timeout_seconds` as a whole number of seconds in
+ * 1..MAX_TIMEOUT: rounded, then clamped. Anything that is not a finite number
+ * (absent, null, NaN, Infinity, garbage from a client that ignored the schema)
+ * is DEFAULT_TIMEOUT; a numeric string is read as its number.
+ *
+ * `spawn.json` is a contract with the magus plugin monitor, which drops any
+ * record whose `timeoutSeconds` is not an integer in 1..3600 — so a raw 90.5,
+ * 0 or -5 made the whole run invisible, and 0 or less also timed the session
+ * out at once.
+ */
+export function normaliseTimeoutSeconds(raw: unknown): number {
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  if (typeof n !== "number" || !Number.isFinite(n)) return DEFAULT_TIMEOUT;
+  return Math.min(MAX_TIMEOUT, Math.max(1, Math.round(n)));
+}
 const KILL_GRACE_MS = 5000;
 
 /**
@@ -957,7 +974,9 @@ export class SessionManager {
     // filename under ~/.claude/projects/<slug>/, so knowing it BEFORE spawn
     // removes the cwd+mtime guessing a post-hoc search would need.
     const claudeSessionId = randomUUID();
-    const timeout = Math.min(opts.timeoutSeconds ?? DEFAULT_TIMEOUT, MAX_TIMEOUT);
+    // Normalised once, here, so `spawn.json` and the timer agree on one value
+    // the plugin monitor accepts (an integer in 1..MAX_TIMEOUT).
+    const timeout = normaliseTimeoutSeconds(opts.timeoutSeconds);
     const startedAt = new Date().toISOString();
 
     const sessionDir = opts.sessionDir ?? join(this.sessionsDir, sessionId);

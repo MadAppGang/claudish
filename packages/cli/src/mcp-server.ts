@@ -1743,8 +1743,11 @@ function defineTools(
           description: "Initial prompt to send. If omitted, send later via send_input.",
         },
         timeout_seconds: {
-          type: "number",
-          description: "Session timeout in seconds (default: 600, max: 3600)",
+          type: "integer",
+          minimum: 1,
+          maximum: 3600,
+          description:
+            "Session timeout in whole seconds, 1-3600 (default: 600). Out-of-range values are clamped.",
         },
         agent: {
           type: "string",

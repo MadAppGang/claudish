@@ -248,7 +248,7 @@ Spawn an async external model session.
 **Parameters:**
 - `model` (required) - Model identifier (e.g., `google@gemini-2.0-flash`, `x-ai/grok-code-fast-1`)
 - `prompt` (optional) - Initial prompt. If omitted, send later via `send_input`.
-- `timeout_seconds` (optional) - Session timeout (default: 600, max: 3600)
+- `timeout_seconds` (optional) - Session timeout in whole seconds, 1-3600 (default: 600). A fractional value is rounded and an out-of-range one clamped, so `spawn.json` always carries an integer in that range
 - `claude_flags` (optional) - Extra flags to pass to claudish (space-separated)
 - `work_dir` (optional) - Working directory for the session (default: current directory)
 
