@@ -2,6 +2,131 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.4.0] - 2026-10-06
+
+### ⚠ BREAKING CHANGES
+
+- create_session, send_input, cancel_session, *(mcp)* ([`352e1ee`](https://github.com/MadAppGang/claudish/commit/352e1ee15350e3784675df84a3997f9175e02c1f))
+- MCP `team` and CLI `claudish team` / `--team --mode *(mcp)* ([`7a22c84`](https://github.com/MadAppGang/claudish/commit/7a22c8447009513c98f2547a8251cca47b6b5c8e))
+
+### Bug Fixes
+
+- refuse a non-boolean include_completed or spans argument *(mcp)* ([`3fe6bc2`](https://github.com/MadAppGang/claudish/commit/3fe6bc2c4db2fc8ada44581f99a5bad75ab52cd3))
+- check team verb argument types before resolving the run *(mcp)* ([`856e2d5`](https://github.com/MadAppGang/claudish/commit/856e2d5bac19df6b0016103bfce50420ab36715c))
+- accept /compact at its typed record, not after compaction *(mcp)* ([`4311d6f`](https://github.com/MadAppGang/claudish/commit/4311d6f45b50401e6a949fe12c815d82d8ccc75c))
+- keep a pane's escaped background shell after its parent dies *(mcp)* ([`70c0f11`](https://github.com/MadAppGang/claudish/commit/70c0f11a552bea88fb8a223861d0b68c3e7d6132))
+- give a settled disk-read run a finished_at without completedAt *(team)* ([`fb27b07`](https://github.com/MadAppGang/claudish/commit/fb27b07e4f47fd8f78c6b99f1ed388510b2d8647))
+- map legacy models[slot].state into the closed SlotState set *(team)* ([`bb276f1`](https://github.com/MadAppGang/claudish/commit/bb276f1af8d32c1508e7ea875088e9d8ea9dcecd))
+- leave nothing behind when pane-drive is interrupted *(scripts)* ([`a700335`](https://github.com/MadAppGang/claudish/commit/a7003352d5a144e60f1313f6aab336a33683a69d))
+- write a session's meta.json atomically *(mcp)* ([`9aef742`](https://github.com/MadAppGang/claudish/commit/9aef742c0344ed6bad23559a5ec9e659abe572f0))
+- name the final screen, not stderr, in the failed-frame hint *(mcp)* ([`f791b44`](https://github.com/MadAppGang/claudish/commit/f791b44f6f3622976962f4426db56ad6d73eec1e))
+- answer an invalid_args create_session without the report hint *(mcp)* ([`6d7ec7f`](https://github.com/MadAppGang/claudish/commit/6d7ec7fcb6a1745129e20a106829f725c9b9b77f))
+- refuse to judge a team run that is still ACTIVE *(team)* ([`780cb66`](https://github.com/MadAppGang/claudish/commit/780cb66cb6af42181b0c42f3e606d7dff86e19b1))
+- write a slot's terminal row even when its response file fails *(team)* ([`511b122`](https://github.com/MadAppGang/claudish/commit/511b1227dbf0077f0f18f1ee8f6c6e5d9c6c62aa))
+- refuse an invalid require_pattern before writing the session *(team)* ([`dd5abb7`](https://github.com/MadAppGang/claudish/commit/dd5abb70a0b474271c317f560dccc663020929a3))
+- run the magmux --version probe without blocking the event loop *(mcp)* ([`cab1585`](https://github.com/MadAppGang/claudish/commit/cab15850bc7b2ec50d7621724ef0b3a8e95a1fa2))
+- treat a code-less exit after a delivered /exit as clean *(mcp)* ([`d02be60`](https://github.com/MadAppGang/claudish/commit/d02be60fb9667950f1519d8b88f0cb9cd7a13fda))
+- end a pane whose watcher or record could not be created *(mcp)* ([`8c08a61`](https://github.com/MadAppGang/claudish/commit/8c08a61de74e471b4c2c3ecbc403c86e161819ff))
+- refuse a claude_flags value after a Claude Code boolean flag *(mcp)* ([`3541459`](https://github.com/MadAppGang/claudish/commit/3541459b9de12f18c209e2d9e82baebfa1b30b54))
+- keep a nested claudish off its parent session's token file *(statusline)* ([`ca64ba8`](https://github.com/MadAppGang/claudish/commit/ca64ba8505cfcf0d02f1afd7cf3e1cb9366bec8b))
+- write the token file at the path its readers resolve *(statusline)* ([`0295054`](https://github.com/MadAppGang/claudish/commit/0295054afb4c714c12a31e8732e055016de422e0))
+- redact a pane's failure detail before any owner records it *(mcp)* ([`8358698`](https://github.com/MadAppGang/claudish/commit/83586981361bee7394df105a87c968915c37ef9a))
+- end every run's record before shutdownAllTeamRuns resolves *(team)* ([`f34725a`](https://github.com/MadAppGang/claudish/commit/f34725adc869a76df49339708bfa6e3f053e5e58))
+- show turn_end_record_missing in slot rows only while it holds *(team)* ([`6b51920`](https://github.com/MadAppGang/claudish/commit/6b51920472be19bbb9f1ef0bded06ad97b7d9b6e))
+- signal a pane's background shells that left its process group *(mcp)* ([`b7c6901`](https://github.com/MadAppGang/claudish/commit/b7c6901b783fbc076b98faabf1f358bfacf281bd))
+- read the input box before retyping a send whose reply was lost *(mcp)* ([`5330afe`](https://github.com/MadAppGang/claudish/commit/5330afe6a31505583a9b5a7cf65ceccf75b68d06))
+- keep only the newest turn's state in the transcript follower *(mcp)* ([`606187e`](https://github.com/MadAppGang/claudish/commit/606187ecaf941e0c159dd1abedaad978653303fd))
+- drop dead members from a pane's group snapshot on refresh *(mcp)* ([`47d5780`](https://github.com/MadAppGang/claudish/commit/47d5780cb309a995a785ae1d907dee9d3946ef56))
+- report a command turn's unread file as unverified, not failed *(mcp)* ([`2f1fcc2`](https://github.com/MadAppGang/claudish/commit/2f1fcc27c3c8581bee719a2cbad252d9cccb8dab))
+- reject a pane record whose paneId is not its own filename *(mcp)* ([`bc0bebb`](https://github.com/MadAppGang/claudish/commit/bc0bebb04cd91c50d80b6100894328dcf6cfef62))
+- resolve CLAUDISH_PANE_ROOT before comparing pane paths to it *(mcp)* ([`8f6ff7e`](https://github.com/MadAppGang/claudish/commit/8f6ff7ebf15962d5d50bfe664ea682990cbc2910))
+- decide a turn settled inside send_input as interactive *(mcp)* ([`75f7f0a`](https://github.com/MadAppGang/claudish/commit/75f7f0a6e4a144f29ef36f733fbd8967eeb4ecf1))
+- end a panel command's admission without a turn after Esc *(mcp)* ([`581042f`](https://github.com/MadAppGang/claudish/commit/581042fa2906f54b0dd119e1f0c709b634c90b3f))
+- accept a system/local_command record as a command witness *(mcp)* ([`9e79bc8`](https://github.com/MadAppGang/claudish/commit/9e79bc8d7e3905c17bfc4d6e840d1dccc9e35dc1))
+- settle a local slash-command turn on its local-command-stdout *(mcp)* ([`d0f59a1`](https://github.com/MadAppGang/claudish/commit/d0f59a1f9f852b10997ed1ae82aaaff70abd6b6c))
+- end a pane session COMPLETED on /exit after a settled turn *(mcp)* ([`58284ee`](https://github.com/MadAppGang/claudish/commit/58284eea0a648a6554b179190ad59d2509a3b60f))
+- truncate project-dir names over 200 characters with a hash *(session)* ([`2ec4d8d`](https://github.com/MadAppGang/claudish/commit/2ec4d8d8cd143c439c1e314eab540d04f05deb76))
+- decode transcript lines only once their newline has arrived *(mcp)* ([`b9c238f`](https://github.com/MadAppGang/claudish/commit/b9c238fff5645fa83a3da15fb149cd07f0318136))
+- attach the magmux dial's error listener before connect *(mcp)* ([`bd49e68`](https://github.com/MadAppGang/claudish/commit/bd49e683f64cab44194a60471530194ad071fa49))
+- end session and team records before exiting on SIGTERM *(mcp)* ([`6a71068`](https://github.com/MadAppGang/claudish/commit/6a710686177abd7ff787fb33a463b069ce45b011))
+- use up a held pane reservation when startPaneSession throws *(mcp)* ([`8213dd2`](https://github.com/MadAppGang/claudish/commit/8213dd29edb72834b5365ad1b25e2722fc47ae82))
+- drop the retry watchdog in MCP pane children *(recovery)* ([`f38c7e9`](https://github.com/MadAppGang/claudish/commit/f38c7e94b4b01d2493e5e535b0cc56ac003a71d9))
+- map the awaiting_permission channel event to input_required *(mcp)* ([`415b76b`](https://github.com/MadAppGang/claudish/commit/415b76b29dcde7c2532c607d6fdae2e03d0ce365))
+- strip CLAUDE_CODE_CHILD_SESSION from interactive Claude Code *(runner)* ([`3bb5fee`](https://github.com/MadAppGang/claudish/commit/3bb5fee5d3021b451572dd11241c6a64b9e5950a))
+- read an inherited CLAUDISH_TOKEN_FILE in the status line *(statusline)* ([`e6309f0`](https://github.com/MadAppGang/claudish/commit/e6309f0df63b2f72bf0bc324bad2f05dcc1e7c82))
+- read CLAUDE_CONFIG_DIR for the transcript projects dir *(session)* ([`980964b`](https://github.com/MadAppGang/claudish/commit/980964b840f324326280e6b1d1b1fe8d6134ee6b))
+- slug every non-alphanumeric cwd character in transcriptPathFor *(session)* ([`31c908d`](https://github.com/MadAppGang/claudish/commit/31c908d5a22c3f2308feb51a15f9f3274bf60dbc))
+- poll the transcript for 2 s to prove parentClaudeSessionId *(mcp)* ([`51104c7`](https://github.com/MadAppGang/claudish/commit/51104c769b58c64985b41a34750613847d6cfebf))
+- round and clamp timeout_seconds to 1-3600 in createSession *(channel)* ([`9d511f4`](https://github.com/MadAppGang/claudish/commit/9d511f4c9bed3b8579b58ea6dd8ddfa4fdd57ab4))
+- keep a team run record open when its meta.json write fails *(team)* ([`d3bb554`](https://github.com/MadAppGang/claudish/commit/d3bb55405e82dc59fc607db33f71fe996dc07a7c))
+- send SIGKILL to spawned slots when the spawn loop throws *(team)* ([`a63d517`](https://github.com/MadAppGang/claudish/commit/a63d51723ab2908d29fc8f33104fef631ded7840))
+- cache only a verified parent-proof project directory *(channel)* ([`6527d4e`](https://github.com/MadAppGang/claudish/commit/6527d4ea3e7d7dfed3c71777b8f6dad5de4c7045))
+- resolve the sessions directory from $HOME before homedir *(channel)* ([`1d87bfd`](https://github.com/MadAppGang/claudish/commit/1d87bfd7296de65658e0d4d036d793b8822a369e))
+- report waiting_for_input only while stdin stays open *(channel)* ([`c315ebc`](https://github.com/MadAppGang/claudish/commit/c315ebc522964fe14371dc9a7ec9c08f41e765d6))
+
+### Documentation
+
+- record the live validation of pane-based team and sessions *(mcp)* ([`907c63a`](https://github.com/MadAppGang/claudish/commit/907c63adb11336f24ec85f7036b6df207ab1c286))
+- add the 2.1.291 code-review captures to the capture report *(mcp)* ([`f2b83ca`](https://github.com/MadAppGang/claudish/commit/f2b83ca783848927cbd26d023c1248d603bdbd20))
+- say that a value after a Claude Code switch is refused *(mcp)* ([`b28cae7`](https://github.com/MadAppGang/claudish/commit/b28cae7fb9cc0d73a3a4147e60ab2ad955e147db))
+- describe the one token-file rule and the published marker *(statusline)* ([`88a91a4`](https://github.com/MadAppGang/claudish/commit/88a91a4b3d4c896c4fede7acb41cbeec7ab88916))
+- record the 2.1.291 captures behind the pane review fixes *(mcp)* ([`12f0635`](https://github.com/MadAppGang/claudish/commit/12f063548ef4a58ed87eebdd47c4b83460aa5500))
+- record the bun 1.3.10 socket ENOENT that a 1.4.0 run hid *(test)* ([`54d99ae`](https://github.com/MadAppGang/claudish/commit/54d99ae43f2ebb3718771b6884ee13bd27eb547f))
+- document the magmux 0.14.0 requirement and the capture verbs *(mcp)* ([`3c249b1`](https://github.com/MadAppGang/claudish/commit/3c249b1378b3675e78fb5df5900580112ff20c04))
+- document hermetic pane tests and the opt-in live tests *(test)* ([`e4c5aea`](https://github.com/MadAppGang/claudish/commit/e4c5aea7cdeb7a3fce048a034a05922266b47445))
+- record why a pane child exports no retry watchdog *(recovery)* ([`281b65f`](https://github.com/MadAppGang/claudish/commit/281b65f787b28bb4bacfd9673e3953026566c439))
+- point headless-vs-interactive.md at the pane driver *(mcp)* ([`74852e7`](https://github.com/MadAppGang/claudish/commit/74852e7bb7d202cff83e421872c420c5e494a7ce))
+- describe team slots as panes in team-lifecycle and capture *(team)* ([`d4a4eb3`](https://github.com/MadAppGang/claudish/commit/d4a4eb3975ea31e198e45a1b33f320a06bca0d14))
+- rewrite mcp-channel.md for channel sessions in panes *(mcp)* ([`00e1c3f`](https://github.com/MadAppGang/claudish/commit/00e1c3f30eebe69fd4313e4c4e6c18420a7f2548))
+- add pane-session.md, the rationale of the headless pane driver *(mcp)* ([`1365e84`](https://github.com/MadAppGang/claudish/commit/1365e84a6114248bbb1ddf7f1d6f92235eb2d1eb))
+- record the phase-2 Claude Code captures *(mcp)* ([`441c98e`](https://github.com/MadAppGang/claudish/commit/441c98efebab357449fedb83e42e111d53f93b48))
+- poll npm for 15 minutes before calling a package missing *(release)* ([`fbf759a`](https://github.com/MadAppGang/claudish/commit/fbf759a36beec9b9f3a95dec90d061b9e3e4ae02))
+- require a typecheck after the last test file lands *(release)* ([`0d4bfe9`](https://github.com/MadAppGang/claudish/commit/0d4bfe92453f0706df57723a9a286eb8cf509a3d))
+- check the merge tree against the tested PR merge *(release)* ([`4cfb678`](https://github.com/MadAppGang/claudish/commit/4cfb67839dbbf37d13ac235f48db11bb2dbdc77e))
+- mark the playbook verified by the 10.3.0 release *(release)* ([`610402f`](https://github.com/MadAppGang/claudish/commit/610402f3bfce21957ea8fad73a4b9bd42945a03e))
+- update CHANGELOG.md for v10.3.0([`fa8d630`](https://github.com/MadAppGang/claudish/commit/fa8d63041ad124454981db61c702989b659d19a5))
+
+### New Features
+
+- run create_session as an interactive pane in headless magmux *(mcp)* ([`352e1ee`](https://github.com/MadAppGang/claudish/commit/352e1ee15350e3784675df84a3997f9175e02c1f))
+- expose assistant message ids and pane diagnostics on PaneSession *(mcp)* ([`20a0104`](https://github.com/MadAppGang/claudish/commit/20a01049e5ae05efb3205defa91f23990246579e))
+- run team slots as interactive panes in headless magmux *(mcp)* ([`7a22c84`](https://github.com/MadAppGang/claudish/commit/7a22c8447009513c98f2547a8251cca47b6b5c8e))
+- export deliveryRefusal and ContractErrorException from pane/ *(mcp)* ([`3833e61`](https://github.com/MadAppGang/claudish/commit/3833e618f0955da540d6b0e2f6ae13d6ac68709d))
+- replace magmux-drive-session.ts with pane-drive.ts *(scripts)* ([`750b7a2`](https://github.com/MadAppGang/claudish/commit/750b7a21ae2f286da0c6ec4a73e9a99446c48280))
+- add PaneSession, the live interactive pane, and pane/index.ts *(mcp)* ([`3cc4820`](https://github.com/MadAppGang/claudish/commit/3cc48205d13fd1f4cf01e165488bd9f7c220bcaa))
+- add the pane registry: records, sweep, limit, shutdown hooks *(mcp)* ([`9a56240`](https://github.com/MadAppGang/claudish/commit/9a56240617fbe093af4efd3cb4459131c038071e))
+- add pane launch: env snapshot, sh shim, launcher, flag check *(mcp)* ([`1789253`](https://github.com/MadAppGang/claudish/commit/1789253a9efb71ea086af3d5b506c9ce0c4425e5))
+- add the magmux socket client for pane sessions *(mcp)* ([`7525976`](https://github.com/MadAppGang/claudish/commit/75259760ed252dabb048078d4c7b5b05b554ce51))
+- add pane process identity and the generated pane watcher *(mcp)* ([`08ba88d`](https://github.com/MadAppGang/claudish/commit/08ba88d6eeab1bcbb46c2821b5f80ff8618a9a48))
+- build contract slot rows from pane accounting *(mcp)* ([`c454a44`](https://github.com/MadAppGang/claudish/commit/c454a44da2bdf51edea673c166d640c030bf02a5))
+- read billed_input_tokens from the proxy token file *(team)* ([`98e6d15`](https://github.com/MadAppGang/claudish/commit/98e6d15988c51777c38c2ea9e525d602c02a595e))
+- add pane prompt delivery for typed, command and file turns *(mcp)* ([`ccc8f34`](https://github.com/MadAppGang/claudish/commit/ccc8f34f5a66bd57a1e72ab20357ac43ec63af33))
+- add the pane transcript follower and settle rule *(mcp)* ([`2132e5c`](https://github.com/MadAppGang/claudish/commit/2132e5c173336258827f62d20a8df225f38c25b4))
+- add the pane screen model and screen classifier *(mcp)* ([`fb10f8f`](https://github.com/MadAppGang/claudish/commit/fb10f8f6c131e305f4aaa6cc6149d51887f07a7f))
+- add the pane contract types and slot lifecycle table *(mcp)* ([`ac17b1c`](https://github.com/MadAppGang/claudish/commit/ac17b1c86467eb06cc96bc43a3963336b126be04))
+- strip the CLAUDISH_PANE_* markers from Claude Code's env *(mcp)* ([`5c6b397`](https://github.com/MadAppGang/claudish/commit/5c6b3974747977ce29e7d76cab9ca5c7430a98ec))
+- set skipDangerousModePermissionPrompt in a pane child overlay *(mcp)* ([`cc1e41d`](https://github.com/MadAppGang/claudish/commit/cc1e41de9ed3826e1369c52c220e59a4c93140f7))
+- apply the CLAUDISH_PANE_ENV snapshot in a pane child claudish *(mcp)* ([`aa9c5a2`](https://github.com/MadAppGang/claudish/commit/aa9c5a22ba2e40928674c56979ad6691d31d7f92))
+- write a sessions-directory record for each team run *(team)* ([`0558546`](https://github.com/MadAppGang/claudish/commit/0558546e6eec093660db452a178b31e34312b46d))
+- record the calling Claude Code session in spawn.json *(channel)* ([`011fffb`](https://github.com/MadAppGang/claudish/commit/011fffb0441a9af2b25677f090d0eb8cb2298bfd))
+
+### Other Changes
+
+- remove references to the deleted reducer and agent probe *(mcp)* ([`e1e40cf`](https://github.com/MadAppGang/claudish/commit/e1e40cfa720561414b6b79dc7708113dd62767da))
+- pin the bundled magmux to v0.14.0 and verify it *(release)* ([`7563ab2`](https://github.com/MadAppGang/claudish/commit/7563ab213eb3da39373762cbe5ede20715bf5ce7))
+- sort the channel/types import in mcp-server.ts *(mcp)* ([`c13addb`](https://github.com/MadAppGang/claudish/commit/c13addb063f9104b219e0d6f4f03b3bfc3c847de))
+- set the version to 10.4.0 for the session records *(release)* ([`a1edfd7`](https://github.com/MadAppGang/claudish/commit/a1edfd74e7bbf0b6d2f7c97574c76d5cd91410d3))
+
+### Performance
+
+- run the startup pane sweep once per root through ensureSwept *(mcp)* ([`b0c9b9a`](https://github.com/MadAppGang/claudish/commit/b0c9b9ae5a233e5e3064b4daf9650f6e269653eb))
+- cache the magmux version check per binary path *(mcp)* ([`113c558`](https://github.com/MadAppGang/claudish/commit/113c5585ec9d427932fcacd0e43f58265f447c4c))
+
+### Refactoring
+
+- extract parseArgs's token rule as classifyPassthroughTokens *(cli)* ([`d4179ed`](https://github.com/MadAppGang/claudish/commit/d4179ed573a62bc3d461ea156b1e6aae138a27f0))
+- read magmuxPaneCapability in the ambient UI branch *(recovery)* ([`3863ddf`](https://github.com/MadAppGang/claudish/commit/3863ddf048907ad57612595d6db542da747301bd))
+
 ## [10.3.0] - 2026-09-24
 
 ### Bug Fixes
