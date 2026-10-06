@@ -8,18 +8,57 @@
  * "tool adapters" section at the bottom, is the exact argument and result field names of the
  * claudish tools. Each adapter is marked INFERRED; fix a mismatch there, once.
  */
-import { chmodSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
+import {
+  type OrphanReport,
+  killLeftovers,
+  waitNoOrphans,
+} from "../pane/test-helpers/hermetic-env.js";
 import type { TempLayout } from "./contract-records.js";
 
 export const SRC_DIR = join(import.meta.dir, "..");
 export const PACKAGE_DIR = join(SRC_DIR, "..");
 export const SERVER_ENTRY = join(SRC_DIR, "index.ts");
+/** The stream-json child the channel suites still run (until the channel moves onto panes). */
 export const FAKE_CHILD = join(import.meta.dir, "contract-fake-child.ts");
+/** The pane fake: the team suites pass it explicitly as CLAUDISH_BIN (marker mode). */
+export const PANE_FAKE_CHILD = join(SRC_DIR, "pane", "test-helpers", "fake-interactive-child.ts");
 /** Design §3.5 step 1: the dispatcher reads `extra._meta?.["claudecode/toolUseId"]`. */
 export const TOOL_USE_ID_META_KEY_FROM_SPEC = "claudecode/toolUseId";
 export const FAKE_MODEL = "contract-fake-model";
+
+/** Suites that start panes skip with this message when magmux is absent (testing.md). */
+export const MAGMUX_AVAILABLE = findMagmuxBinaryOrNull() !== null;
+export const NO_MAGMUX_MESSAGE = "magmux not installed — not checked";
+
+/**
+ * A short pane root per layout (`/tmp/cpt-<8 hex>`, so socket paths stay < 100 bytes),
+ * passed to the server as CLAUDISH_PANE_ROOT: its sweep, its pane limit and the
+ * no-orphan check stay inside the test (§20.4).
+ */
+const paneRoots = new Map<string, string>();
+export function paneRootOf(layout: TempLayout): string {
+  let root = paneRoots.get(layout.root);
+  if (!root) {
+    root = `/tmp/cpt-${randomBytes(4).toString("hex")}`;
+    paneRoots.set(layout.root, root);
+  }
+  return root;
+}
+
+/** Wait until nothing of the layout's panes remains, then remove the pane root. */
+export async function paneOrphans(layout: TempLayout, ms = 10_000): Promise<OrphanReport> {
+  const sockRoot = paneRootOf(layout);
+  const report = await waitNoOrphans({ sockRoot }, ms);
+  killLeftovers({ sockRoot });
+  rmSync(sockRoot, { recursive: true, force: true });
+  paneRoots.delete(layout.root);
+  return report;
+}
 
 /**
  * A server environment built from scratch, so nothing leaks in from the shell that runs the
@@ -39,6 +78,17 @@ export function serverEnv(
     CLAUDISH_BIN: FAKE_CHILD,
     CLAUDE_CONFIG_DIR: layout.configDir,
     NO_COLOR: "1",
+    // The hermetic keys of makePaneTestEnv: a pane child built from this env reads no
+    // real config, keychain or 1Password, and its pane root is the test's own.
+    ZDOTDIR: layout.home,
+    SHELL: "/bin/zsh",
+    USER: process.env.USER ?? "test",
+    LANG: "en_US.UTF-8",
+    CLAUDISH_DISABLE_KEYCHAIN: "1",
+    CLAUDISH_DISABLE_OP: "1",
+    CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_NO_PREDEFINED_ENDPOINTS: "1",
+    CLAUDISH_PANE_ROOT: paneRootOf(layout),
   };
   for (const [key, value] of Object.entries(extra)) {
     if (value === undefined) delete env[key];

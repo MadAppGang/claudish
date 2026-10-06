@@ -1,13 +1,41 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { installPaneShutdownHooks } from "./pane/index.js";
 import {
+  type TeamRunOptions,
   type TeamStatus,
   getStatus,
   judgeResponses,
+  preflightTeamRun,
   runModels,
   setupSession,
   validateSessionPath,
 } from "./team-orchestrator.js";
+
+/**
+ * `claudish team run|run-and-judge` (json mode) runs every slot as an interactive pane,
+ * like the MCP `team` tool (they share `runModels`). The refusals come first, before
+ * the session directory is written: a bad flag exits 2, a missing magmux or a full pane
+ * limit exits 1. Ctrl-C (and SIGTERM / SIGHUP) reaps every pane in ≤ 3 s, then exits
+ * 128 + the signal number — 130 for Ctrl-C.
+ */
+async function runPaneTeam(
+  sessionPath: string,
+  models: string[],
+  input: string | undefined,
+  opts: TeamRunOptions
+): Promise<TeamStatus> {
+  installPaneShutdownHooks({ exitAfter: true });
+  try {
+    await preflightTeamRun({ path: sessionPath, slots: models.length, input });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Error: ${msg}`);
+    process.exit(msg.startsWith("invalid_args") ? 2 : 1);
+  }
+  setupSession(sessionPath, models, input);
+  return runModels(sessionPath, opts);
+}
 
 // ─── Arg Parsing Helpers ─────────────────────────────────────────────────────
 
@@ -57,6 +85,8 @@ Options (run / run-and-judge):
   --input <text>      Task prompt (or create input.md in --path beforehand)
   --timeout <secs>    Grid modes only: magmux's own per-pane timeout (default: 300).
                       json mode has no deadline — nothing kills a working model.
+                      json mode runs each model as an interactive pane in a headless
+                      magmux (>= 0.14.0; darwin and linux).
   --grid              Show all models in a magmux grid with live output + status bar
 
 Options (judge / run-and-judge):
@@ -143,8 +173,7 @@ export async function teamCommand(args: string[]): Promise<void> {
         process.exit(1);
       }
       if (effectiveMode === "json") {
-        setupSession(sessionPath, models, input);
-        const runStatus = await runModels(sessionPath, {
+        const runStatus = await runPaneTeam(sessionPath, models, input, {
           onStatusChange: (id, s) => {
             process.stderr.write(`[team] ${id}: ${s.state}\n`);
           },
@@ -172,8 +201,7 @@ export async function teamCommand(args: string[]): Promise<void> {
         console.error("Error: --models is required");
         process.exit(1);
       }
-      setupSession(sessionPath, models, input);
-      const status = await runModels(sessionPath, {
+      const status = await runPaneTeam(sessionPath, models, input, {
         onStatusChange: (id, s) => {
           process.stderr.write(`[team] ${id}: ${s.state}\n`);
         },

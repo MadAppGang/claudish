@@ -74,6 +74,22 @@ describe("REQ-19 summarise counts every ModelState as the table says", () => {
       expect(outcome).toEqual({ status: "failed", slots: 2, ok: 0, failed: 2, cancelled: 0 });
     }
   );
+
+  // Added for the pane migration (§20.2): the closed nine-value set.
+  test("CANCELLED with error.reason 'cancelled' counts as cancelled (RB6)", () => {
+    const outcome = summarise(status([cancelledSlot("CANCELLED"), { state: S.COMPLETED }]));
+
+    expect(outcome).toEqual({ status: "completed", slots: 2, ok: 1, failed: 0, cancelled: 1 });
+  });
+
+  test.each(["AWAITING_INPUT", "AWAITING_PERMISSION"])(
+    "%s counts as failed, like every non-terminal state",
+    (state) => {
+      const outcome = summarise(status([{ state }, cancelledSlot(state)]));
+
+      expect(outcome).toEqual({ status: "failed", slots: 2, ok: 0, failed: 2, cancelled: 0 });
+    }
+  );
 });
 
 describe("REQ-19 summarise derives the run's status", () => {

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { TEAM_CAPTURE_ENV_VAR, resolveCaptureMode } from "./team-orchestrator.js";
 import { createAssistantTextCapture } from "./team-stream-capture.js";
 
 interface FixtureEvent {
@@ -209,38 +208,5 @@ describe("createAssistantTextCapture — protocol frames are not prose", () => {
     const line = '{"type":"something-we-have-never-seen","x":1}\n';
     const out = cap.write(line) + cap.end();
     expect(out).toContain("something-we-have-never-seen");
-  });
-});
-
-describe("resolveCaptureMode", () => {
-  it("lets an explicit mode win over the environment", () => {
-    expect(resolveCaptureMode("stream-json", { [TEAM_CAPTURE_ENV_VAR]: "print" })).toBe(
-      "stream-json"
-    );
-    expect(resolveCaptureMode("print", { [TEAM_CAPTURE_ENV_VAR]: "stream-json" })).toBe("print");
-  });
-
-  it.each(["print", " PRINT ", "\tPrInT\n"])(
-    "resolves the case-insensitive environment value %j to print",
-    (value) => {
-      expect(resolveCaptureMode(undefined, { [TEAM_CAPTURE_ENV_VAR]: value })).toBe("print");
-    }
-  );
-
-  it.each([undefined, "", "   ", "stream-json", "typo"])(
-    "defaults the unset or invalid environment value %j to stream-json",
-    (value) => {
-      const env = value === undefined ? {} : { [TEAM_CAPTURE_ENV_VAR]: value };
-
-      expect(resolveCaptureMode(undefined, env)).toBe("stream-json");
-    }
-  );
-
-  it("does not throw for garbage in the environment", () => {
-    const resolveGarbage = () =>
-      resolveCaptureMode(undefined, { [TEAM_CAPTURE_ENV_VAR]: "definitely-not-a-mode" });
-
-    expect(resolveGarbage).not.toThrow();
-    expect(resolveGarbage()).toBe("stream-json");
   });
 });

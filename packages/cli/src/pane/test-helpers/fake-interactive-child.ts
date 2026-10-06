@@ -886,8 +886,13 @@ function dumpClaudeMode(): void {
 
 async function boot(): Promise<void> {
   if (asClaude) dumpClaudeMode();
+  // `{session}` in the path is replaced by this child's --session-id, so several slots of
+  // one run can each leave a probe.
   if (env.FAKE_PROBE_FILE && scenario === "env_probe")
-    writeFileSync(env.FAKE_PROBE_FILE, JSON.stringify({ env: { ...env }, cwd, argv }, null, 1));
+    writeFileSync(
+      env.FAKE_PROBE_FILE.replace("{session}", sessionId),
+      JSON.stringify({ env: { ...env }, cwd, argv }, null, 1)
+    );
   if (agent?.startsWith("zzz")) {
     process.stdout.write(
       `--agent '${agent}' not found. Available agents: claude, claude-code-guide, Explore, general-purpose, Plan, statusline-setup\r\n`

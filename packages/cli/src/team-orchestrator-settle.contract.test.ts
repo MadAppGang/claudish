@@ -5,33 +5,59 @@
  *
  *   - `TeamRunOptions.onSettled` is called exactly once, after the settled `status.txt`
  *     render, for a run that settles at once; a throwing consumer cannot fail the run.
- *   - A throw inside the spawn loop SIGTERMs every child already spawned, removes the SIGINT
- *     handler, rethrows the ORIGINAL error, and never calls `onSettled`.
+ *   - A throw inside the spawn loop stops every pane already started, rethrows the
+ *     ORIGINAL error, and never calls `onSettled`.
  *   - A throw before the loop (unreadable manifest.json) spawns nothing and never settles.
  *
- * Children are the contract fake, injected through `TeamRunOptions.spawnChild` (documented).
+ * Ported to panes (architecture §20.2): every slot is the pane fake (marker mode) in a real
+ * headless magmux, reached through `TeamRunOptions.parentEnv` (CLAUDISH_BIN) instead of the
+ * deleted `spawnChild` seam. Only the adapters and the fake changed; an assertion that no
+ * longer holds is replaced and cites its reason.
+ *
  * INFERRED (adapters in test-helpers/contract-adapters.ts): `setupSession(path, models, input)`,
- * `startModels(path, opts)` resolving to a handle with `done`, the spawnChild call shape, and
- * the file names `manifest.json` and `status.txt` in the team directory (both named in §3.3).
+ * `startModels(path, opts)` resolving to a handle with `done`, and the file names
+ * `manifest.json` and `status.txt` in the team directory (both named in §3.3).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { orphanReport } from "./pane/test-helpers/hermetic-env.js";
 import { readTeamStatus, summarise } from "./team-orchestrator.js";
-import { setupTeamSession, spawnSeam, startModels } from "./test-helpers/contract-adapters.js";
+import { setupTeamSession, startModels } from "./test-helpers/contract-adapters.js";
 import { type TempLayout, makeTempLayout, waitFor } from "./test-helpers/contract-records.js";
+import {
+  MAGMUX,
+  NO_MAGMUX_MESSAGE,
+  type PaneTestEnv,
+  finishPaneTest,
+  makePaneTestEnv,
+  paneRunOptions,
+} from "./test-helpers/team-pane.js";
+
+if (!MAGMUX) console.warn(NO_MAGMUX_MESSAGE);
 
 const T_TEST = 30_000;
 const MODELS = ["contract-fake-a", "contract-fake-b"];
 
 let layout: TempLayout;
+let panes: PaneTestEnv;
 let teamDir: string;
 
 beforeEach(() => {
   layout = makeTempLayout("settle");
+  panes = makePaneTestEnv();
   teamDir = join(layout.root, "team");
 });
-afterEach(() => layout.cleanup());
+afterEach(async () => {
+  try {
+    chmodSync(join(teamDir, "status.json"), 0o644);
+  } catch {
+    // no status.json in this test
+  }
+  const report = await finishPaneTest(panes);
+  layout.cleanup();
+  expect(report).toEqual({ processes: [], files: [] });
+});
 
 async function settledWithin<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -45,137 +71,145 @@ async function settledWithin<T>(p: Promise<T>, ms: number, what: string): Promis
   }
 }
 
-describe("REQ-21 onSettled: called once, after the settled render, for a run that settles at once", () => {
-  test(
-    "every slot answers and exits at once: onSettled runs exactly once with a completed status",
-    async () => {
-      await setupTeamSession(teamDir, MODELS, "answer once and exit");
-      const seam = spawnSeam({});
-      const calls: Array<{ status: unknown; statusTxtExisted: boolean }> = [];
+/** Every slot that got a pane has its pane id in status.json. */
+function panesStarted(): number {
+  return Object.values(readTeamStatus(teamDir).models).filter((m) => Boolean(m.pane)).length;
+}
 
-      const handle = await startModels(teamDir, {
-        spawnChild: seam.spawnChild,
-        onSettled: (status: unknown) =>
-          calls.push({ status, statusTxtExisted: existsSync(join(teamDir, "status.txt")) }),
-      });
-      await settledWithin(handle.done, 15_000, "the team run");
-      await Bun.sleep(200);
+describe.skipIf(!MAGMUX)(
+  "REQ-21 onSettled: called once, after the settled render, for a run that settles at once",
+  () => {
+    test(
+      "every slot answers at once: onSettled runs exactly once with a completed status",
+      async () => {
+        await setupTeamSession(teamDir, MODELS, "answer once and exit");
+        const calls: Array<{ status: unknown; statusTxtExisted: boolean }> = [];
 
-      expect(seam.calls()).toBe(MODELS.length);
-      expect(calls).toHaveLength(1);
-      expect(calls[0]?.statusTxtExisted).toBe(true);
-      expect(summarise(calls[0]?.status as never)).toEqual({
-        status: "completed",
-        slots: 2,
-        ok: 2,
-        failed: 0,
-        cancelled: 0,
-      });
-    },
-    T_TEST
-  );
+        const handle = await startModels(teamDir, {
+          ...paneRunOptions(panes),
+          onSettled: (status: unknown) =>
+            calls.push({ status, statusTxtExisted: existsSync(join(teamDir, "status.txt")) }),
+        });
+        await settledWithin(handle.done, 15_000, "the team run");
+        await Bun.sleep(200);
 
-  test(
-    "a consumer that throws inside onSettled cannot fail the run",
-    async () => {
-      await setupTeamSession(teamDir, MODELS, "answer once and exit");
-      const seam = spawnSeam({});
-      let called = 0;
+        // was: the spawn seam was called once per model
+        expect(panesStarted()).toBe(MODELS.length);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.statusTxtExisted).toBe(true);
+        expect(summarise(calls[0]?.status as never)).toEqual({
+          status: "completed",
+          slots: 2,
+          ok: 2,
+          failed: 0,
+          cancelled: 0,
+        });
+      },
+      T_TEST
+    );
 
-      const handle = await startModels(teamDir, {
-        spawnChild: seam.spawnChild,
-        onSettled: () => {
-          called += 1;
-          throw new Error("contract: a broken consumer");
-        },
-      });
-      let rejected: unknown;
-      await settledWithin(handle.done, 15_000, "the team run").catch((err) => {
-        rejected = err;
-      });
+    test(
+      "a consumer that throws inside onSettled cannot fail the run",
+      async () => {
+        await setupTeamSession(teamDir, MODELS, "answer once and exit");
+        let called = 0;
 
-      expect(rejected).toBeUndefined();
-      expect(called).toBe(1);
-    },
-    T_TEST
-  );
-});
+        const handle = await startModels(teamDir, {
+          ...paneRunOptions(panes),
+          onSettled: () => {
+            called += 1;
+            throw new Error("contract: a broken consumer");
+          },
+        });
+        let rejected: unknown;
+        await settledWithin(handle.done, 15_000, "the team run").catch((err) => {
+          rejected = err;
+        });
 
-describe("REQ-22 a throw inside the spawn loop leaves nothing running (amendment 4)", () => {
-  test(
-    "slot 2's spawn throws: the original error is rethrown, slot 1 gets SIGTERM, SIGINT handler removed, onSettled never called",
-    async () => {
-      await setupTeamSession(teamDir, MODELS, "@@HANG@@ stay alive until signalled");
-      const injected = new Error("contract: spawn of slot 2 failed");
-      const marker = (n: number) => join(layout.root, `sigterm-slot-${n}`);
-      const seam = spawnSeam({ throwOn: 2, error: injected, markerFor: marker, hang: true });
-      const sigintBefore = process.listenerCount("SIGINT");
-      let settledCalls = 0;
+        expect(rejected).toBeUndefined();
+        expect(called).toBe(1);
+      },
+      T_TEST
+    );
+  }
+);
 
-      const thrown = await startModels(teamDir, {
-        spawnChild: seam.spawnChild,
-        onSettled: () => {
-          settledCalls += 1;
-        },
-      }).then(
-        () => undefined,
-        (err: unknown) => err
-      );
-      const slot1 = seam.children[0];
-      await waitFor(
-        () => slot1 !== undefined && (slot1.exitCode !== null || slot1.signalCode !== null),
-        {
-          what: "slot 1 to exit",
-          timeoutMs: 5_000,
-        }
-      );
-      await Bun.sleep(300);
-      // The SIGTERM can arrive before the fake child has installed its handler (the loop throws
-      // within milliseconds of the first spawn); the default action then ends it by SIGTERM with
-      // no marker. Either is proof of SIGTERM; a SIGKILL or a clean exit is not.
-      const sigtermProof = slot1?.signalCode === "SIGTERM" || existsSync(marker(1));
+describe.skipIf(!MAGMUX)(
+  "REQ-22 a throw inside the spawn loop leaves nothing running (amendment 4)",
+  () => {
+    test(
+      "slot 2's status.json write throws: the original error is rethrown, slot 1's pane is reaped first, onSettled never called",
+      async () => {
+        await setupTeamSession(teamDir, MODELS, "@@HANG@@ stay alive until signalled");
+        let settledCalls = 0;
 
-      expect(sigtermProof).toBe(true);
-      expect(thrown).toBe(injected);
-      expect(seam.calls()).toBe(2);
-      expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
-      expect(settledCalls).toBe(0);
-      expect(summarise(readTeamStatus(teamDir))).toEqual({
-        status: "failed",
-        slots: 2,
-        ok: 0,
-        failed: 2,
-        cancelled: 0,
-      });
-    },
-    T_TEST
-  );
+        const run = startModels(teamDir, {
+          ...paneRunOptions(panes),
+          onSettled: () => {
+            settledCalls += 1;
+          },
+        }).then(
+          () => undefined,
+          (err: unknown) => err
+        );
+        // The fault (§20.2, replacing the spawn seam's throw): once slot 1's pane exists — its
+        // pane record is written before anything is spawned — status.json turns read-only,
+        // inside the 300 ms boot stagger, so slot 2's STARTING write throws EACCES. (The file,
+        // not the directory: an overwrite in place needs write permission on the file.)
+        await waitFor(
+          () => {
+            const recs = join(panes.sockRoot, "panes");
+            return existsSync(recs) && readdirSync(recs).length > 0;
+          },
+          { what: "slot 1's pane record", timeoutMs: 5_000, intervalMs: 5 }
+        );
+        chmodSync(join(teamDir, "status.json"), 0o444);
+        const thrown = await run;
 
-  test(
-    "a throw before the loop (unreadable manifest.json): rejects, spawns nothing, never settles",
-    async () => {
-      await setupTeamSession(teamDir, MODELS, "answer once and exit");
-      writeFileSync(join(teamDir, "manifest.json"), "{ this is not json");
-      const seam = spawnSeam({});
-      const sigintBefore = process.listenerCount("SIGINT");
-      let settledCalls = 0;
+        // was: slot 1 got SIGTERM. Now: every started pane is reaped (no process, socket or
+        // record) before the rejection.
+        expect(orphanReport({ sockRoot: panes.sockRoot })).toEqual({ processes: [], files: [] });
+        expect((thrown as NodeJS.ErrnoException).code).toBe("EACCES");
+        expect(String((thrown as Error).message)).toContain("status.json");
+        // deleted: "removes the SIGINT handler" — there is no per-run handler any more (§2.11)
+        expect(settledCalls).toBe(0);
+        expect(summarise(readTeamStatus(teamDir))).toEqual({
+          status: "failed",
+          slots: 2,
+          ok: 0,
+          failed: 2,
+          cancelled: 0,
+        });
+      },
+      T_TEST
+    );
 
-      const thrown = await startModels(teamDir, {
-        spawnChild: seam.spawnChild,
-        onSettled: () => {
-          settledCalls += 1;
-        },
-      }).then(
-        () => undefined,
-        (err: unknown) => err
-      );
-      await Bun.sleep(300);
+    test(
+      "a throw before the loop (unreadable manifest.json): rejects, spawns nothing, never settles",
+      async () => {
+        await setupTeamSession(teamDir, MODELS, "answer once and exit");
+        writeFileSync(join(teamDir, "manifest.json"), "{ this is not json");
+        const sigintBefore = process.listenerCount("SIGINT");
+        let settledCalls = 0;
 
-      expect(thrown).toBeInstanceOf(Error);
-      expect(seam.calls()).toBe(0);
-      expect(settledCalls).toBe(0);
-      expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
-    },
-    T_TEST
-  );
-});
+        const thrown = await startModels(teamDir, {
+          ...paneRunOptions(panes),
+          onSettled: () => {
+            settledCalls += 1;
+          },
+        }).then(
+          () => undefined,
+          (err: unknown) => err
+        );
+        await Bun.sleep(300);
+
+        expect(thrown).toBeInstanceOf(Error);
+        // was: the spawn seam was never called
+        expect(existsSync(join(panes.sockRoot, "panes"))).toBe(false);
+        expect(settledCalls).toBe(0);
+        expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
+      },
+      T_TEST
+    );
+  }
+);

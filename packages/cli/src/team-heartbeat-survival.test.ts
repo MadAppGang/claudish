@@ -1,88 +1,97 @@
-import { describe, expect, it } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+/**
+ * NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted (D10,
+ * team-lifecycle.md). A slot inside a long silent tool call, and a slot whose Stop hook
+ * runs for a long time after its answer, both settle on Claude Code's own end-of-turn
+ * record with their answer intact — and report what they are doing meanwhile.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { runModels, setupSession } from "./team-orchestrator.js";
+import { runModels, setupSession, startModels, teamLiveMaps } from "./team-orchestrator.js";
+import {
+  MAGMUX,
+  NO_MAGMUX_MESSAGE,
+  type PaneTestEnv,
+  finishPaneTest,
+  makePaneTestEnv,
+  paneRunOptions,
+  teamDirOf,
+  waitUntil,
+} from "./test-helpers/team-pane.js";
 
-const ANSWER = "The long-running tool call finished and the answer survived intact.";
+if (!MAGMUX) console.warn(NO_MAGMUX_MESSAGE);
 
-describe("team slot heartbeat survival", () => {
-  it("keeps a working slot alive through a scaled-down silent tool-call interval", async () => {
-    const sessionPath = mkdtempSync(join(tmpdir(), "team-heartbeat-survival-"));
-    const fakeDir = mkdtempSync(join(tmpdir(), "fake-claudish-heartbeat-"));
-    const fakeClaudish = join(fakeDir, "claudish");
-    const originalClaudishBin = process.env.CLAUDISH_BIN;
+let t: PaneTestEnv;
 
-    const heartbeatOne = JSON.stringify({
-      type: "tool_progress",
-      tool_use_id: "toolu_fake_long_call",
-      tool_name: "Bash",
-      elapsed_time_seconds: 0.025,
-      heartbeat: true,
-      session_id: "fake-heartbeat-session",
-    });
-    const heartbeatTwo = JSON.stringify({
-      type: "tool_progress",
-      tool_use_id: "toolu_fake_long_call",
-      tool_name: "Bash",
-      elapsed_time_seconds: 0.05,
-      heartbeat: true,
-      session_id: "fake-heartbeat-session",
-    });
-    const assistantMessage = JSON.stringify({
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: ANSWER }],
-      },
-      session_id: "fake-heartbeat-session",
-    });
+beforeEach(() => {
+  t = makePaneTestEnv();
+});
 
-    writeFileSync(
-      fakeClaudish,
-      `#!/bin/sh
-cat > /dev/null
-printf '%s\n' '${heartbeatOne}'
-sleep 0.025
-printf '%s\n' '${heartbeatTwo}'
-# Scaled-down analogue of the old 90-second apparent-silence window.
-sleep 0.250
-printf '%s\n' '${assistantMessage}'
-exit 0
-`,
-      "utf-8"
+afterEach(async () => {
+  const report = await finishPaneTest(t);
+  expect(report).toEqual({ processes: [], files: [] });
+});
+
+describe.skipIf(!MAGMUX)("team slot heartbeat survival", () => {
+  it("keeps a slot alive through a silent tool call and reports activity Bash", async () => {
+    const sessionPath = teamDirOf(t);
+    setupSession(sessionPath, ["fake-tool_slow"], "Run the long tool call.");
+
+    const startedAt = Date.now();
+    const handle = await startModels(
+      sessionPath,
+      paneRunOptions(t, {}, { FAKE_GAP_MS_TOOL: "3000" })
     );
-    chmodSync(fakeClaudish, 0o755);
+    const slotId = handle.slots["fake-tool_slow"] as string;
+    const seen = new Set<string>();
+    let maxIdle = 0;
+    const watch = setInterval(() => {
+      const live = teamLiveMaps(sessionPath);
+      if (live?.activity[slotId]) seen.add(live.activity[slotId] as string);
+      maxIdle = Math.max(maxIdle, live?.idle[slotId] ?? 0);
+    }, 100);
+    const status = await handle.done;
+    clearInterval(watch);
+    const elapsedMs = Date.now() - startedAt;
+    const model = status.models[slotId];
+    const response = readFileSync(join(sessionPath, `response-${slotId}.md`), "utf-8");
 
-    try {
-      process.env.CLAUDISH_BIN = fakeClaudish;
-      setupSession(sessionPath, ["heartbeat-model"], "Run the long tool call.");
+    expect(elapsedMs).toBeGreaterThanOrEqual(3000);
+    expect(seen.has("Bash")).toBe(true);
+    expect(maxIdle).toBeGreaterThanOrEqual(1);
+    expect(model?.state).toBe("COMPLETED");
+    expect(model?.error).toBeUndefined();
+    expect(response).toStartWith("ANSWER fake-tool_slow ");
+    expect(response.split("ANSWER")).toHaveLength(2);
+  }, 30_000);
 
-      const startedAt = Date.now();
-      const status = await runModels(sessionPath, {
-        captureMode: "stream-json",
-        minOutputBytes: 0,
-        spawnPlanner: async () => ({ pinned: new Map<string, string>() }),
-      });
-      const elapsedMs = Date.now() - startedAt;
-      const [slotId, model] = Object.entries(status.models)[0];
-      const response = readFileSync(join(sessionPath, `response-${slotId}.md`), "utf-8");
+  it("waits out a slow Stop hook after the answer, reading finishing meanwhile", async () => {
+    const sessionPath = teamDirOf(t);
+    setupSession(sessionPath, ["fake-slow_stop_hook"], "Answer, then let the hook run.");
 
-      expect(elapsedMs).toBeGreaterThanOrEqual(200);
-      expect(model.state).toBe("COMPLETED");
-      expect(model.state).not.toBe("TIMEOUT");
-      expect(model.exitCode).toBe(0);
-      expect(model.error).toBeUndefined();
-      expect(response).toContain(ANSWER);
-      expect(response.split(ANSWER)).toHaveLength(2);
-    } finally {
-      if (originalClaudishBin === undefined) {
-        delete process.env.CLAUDISH_BIN;
-      } else {
-        process.env.CLAUDISH_BIN = originalClaudishBin;
-      }
-      rmSync(sessionPath, { recursive: true, force: true });
-      rmSync(fakeDir, { recursive: true, force: true });
-    }
-  });
+    const handle = await startModels(
+      sessionPath,
+      paneRunOptions(t, {}, { FAKE_GAP_MS_HOOK: "3000" })
+    );
+    const slotId = handle.slots["fake-slow_stop_hook"] as string;
+    await waitUntil(
+      () => teamLiveMaps(sessionPath)?.activity[slotId] === "finishing",
+      "activity finishing",
+      5_000
+    );
+    const status = await handle.done;
+
+    expect(status.models[slotId]?.state).toBe("COMPLETED");
+    expect(readFileSync(join(sessionPath, `response-${slotId}.md`), "utf-8")).toStartWith(
+      "ANSWER fake-slow_stop_hook "
+    );
+  }, 30_000);
+
+  it("runModels resolves with the settled status of a quick slot", async () => {
+    const sessionPath = teamDirOf(t);
+    setupSession(sessionPath, ["fake-answer"], "Reply with exactly PEAR");
+    const status = await runModels(sessionPath, paneRunOptions(t));
+    expect(Object.values(status.models).map((m) => m.state)).toEqual(["COMPLETED"]);
+  }, 30_000);
 });

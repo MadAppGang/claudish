@@ -46,12 +46,7 @@ import { redactSecrets } from "../redact.js";
 import { transcriptPathFor } from "../session/session-discovery.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { decodeChunk } from "../stdio-decode.js";
-import {
-  STDOUT_TAIL_LIMIT,
-  type TeamRunOutcome,
-  classifyRunOutput,
-  meaningfulStderr,
-} from "../team-orchestrator.js";
+import { STDOUT_TAIL_LIMIT, type TeamRunOutcome } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { sessionsDirFrom } from "./home-dir.js";
 import { hostPidFrom } from "./parent-proof.js";
@@ -342,6 +337,57 @@ function writeJsonAtomic(path: string, value: unknown): void {
 
 /** Marker `recordStderr` leaves where it dropped the middle of the buffer. */
 const STDERR_TRUNCATION_MARKER = "[claudish] … stderr truncated to";
+
+/*
+ * The stream-json child's output checks. Team moved onto interactive panes, whose
+ * transcript replaces both, and took `classifyRunOutput`'s print-mode branch and
+ * `meaningfulStderr` with it; this channel path keeps private copies until it moves onto
+ * panes too, when these go with the pipe readers.
+ */
+
+/** Claude Code prints API failures into its stdout and still exits 0. */
+const API_ERROR_RE = /\[API Error:\s*([^\]]{0,300})\]/i;
+/** Claude Code's print-mode background-task ceiling: partial output, exit 0. */
+const BG_CEILING_RE = /Background tasks still running after (\d+)s; terminating/i;
+/** stderr lines every healthy child emits (`unrecognized_model` is normal for a proxied model). */
+const BENIGN_STDERR_PATTERNS: readonly RegExp[] = [/^\s*\[claude-code:unrecognized_model\]/];
+
+/** The part of stderr worth persisting — everything that is not known boilerplate. */
+function meaningfulStderr(stderr: string): string {
+  if (!stderr) return "";
+  return stderr
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => !BENIGN_STDERR_PATTERNS.some((re) => re.test(line)))
+    .join("\n")
+    .trim();
+}
+
+/** "Exit 0 with nothing to show for it": an API error, the bg ceiling, or no prose. */
+function classifyStreamJsonProse(
+  outputSize: number,
+  proseTail: string,
+  stderr: string
+): { reason: string; detail: string } | null {
+  const apiError = API_ERROR_RE.exec(proseTail);
+  if (apiError)
+    return {
+      reason: "api_error",
+      detail: `Child exited 0 but stdout carries an API error: ${apiError[1]?.trim() || "unknown"}`,
+    };
+  const bg = BG_CEILING_RE.exec(stderr);
+  if (bg)
+    return {
+      reason: "background_task_ceiling",
+      detail: `Claude Code terminated the turn after ${bg[1]}s waiting on background tasks, flushing only partial output.`,
+    };
+  if (outputSize === 0 || (outputSize <= STDOUT_TAIL_LIMIT && proseTail.trim().length === 0))
+    return {
+      reason: "empty_output",
+      detail: `Child exited 0 but produced no non-whitespace output (${outputSize} B).`,
+    };
+  return null;
+}
 
 const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "cancelled", "timeout"];
 
@@ -2315,13 +2361,7 @@ export class SessionManager {
       };
     }
 
-    const reason = classifyRunOutput({
-      outputSize: entry.proseBytes,
-      stdoutTail: entry.proseTail,
-      stderr: entry.stderr,
-      minOutputBytes: 0,
-      captureMode: "stream-json",
-    });
+    const reason = classifyStreamJsonProse(entry.proseBytes, entry.proseTail, entry.stderr);
     if (reason) {
       return { state: "failed", content: withStderr(`${reason.reason}: ${reason.detail}`) };
     }

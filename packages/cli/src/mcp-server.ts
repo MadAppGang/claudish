@@ -43,6 +43,15 @@ import {
   groupRecommendedModels,
   normalizePricingDisplay,
 } from "./model-loader.js";
+import {
+  ContractErrorException,
+  type FailureReason,
+  SLOT_STATES,
+  type SlotState,
+  TERMINAL_STATES,
+  type TeamRunRow,
+  contractMeta,
+} from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
@@ -56,20 +65,25 @@ import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
 import {
+  type ModelStatus,
   type TeamRunOutcome,
+  type TeamStatus,
   cancelTeamRun,
+  captureTeamSlot,
   getStatus,
+  isSupersededRun,
   judgeResponses,
+  listTeamRuns,
+  preflightTeamRun,
   readTeamInputFile,
   readTeamStatus,
-  runModels,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
   summarise,
-  teamSlotActivity,
-  teamSlotIdleSeconds,
-  teamSlotLiveBytes,
+  teamLiveMaps,
+  teamRunRow,
+  teamRunRowFromDisk,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
@@ -386,20 +400,37 @@ function orderingKey(model: any): { releaseDate?: string; id?: string } {
  * The action a caller should take for each failure class. Deterministic strings
  * so the agent branches on a known value instead of parsing prose.
  */
-const NEXT_STEP: Record<string, string> = {
-  nonzero_exit: "read the evidence log, then retry or drop the model",
+export const NEXT_STEP: Record<FailureReason, string> = {
   cancelled:
     "you stopped this slot; nothing is wrong with it. Re-run it if you still want its vote",
   timeout: "grid mode only — magmux ended the pane. The orchestrator has no deadline",
+  boot_timeout:
+    "the child never reached its prompt and its screen kept changing — read the evidence " +
+    "screen; usually a slow catalog fetch or MCP server start",
+  boot_blocked:
+    "a screen claudish does not know stopped boot — its text is in `what`; answer it once " +
+    "interactively in that directory",
+  first_run_dialog:
+    "run claude (or claudish --model X) once interactively in that directory and answer the " +
+    "dialog named in `what`; claudish never accepts it for you",
+  agent_rejected: "fix the agent name; the available agents are listed in `what`",
+  prompt_not_accepted: "the REPL never took the prompt — read the evidence screen; retry",
+  prompt_not_read:
+    "the child never read all of its task file — check that its agent or tool flags allow " +
+    "Read and that the model can call tools; `what` says which lines were read",
+  child_exited: "read the evidence screen, then retry or drop the model",
+  pane_lost: "magmux died — check `magmux --version` ≥ 0.14.0 and retry",
+  blocked:
+    "the child asked a question team cannot answer — make the prompt self-contained or use " +
+    "create_session",
   api_error: "retry once, or route via a different provider (or@<model>)",
-  background_task_ceiling:
-    "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 for children, or forbid background work in the prompt",
+  refused: "the model refused — rephrase or drop the model",
   empty_output: "retry once; if it repeats, drop the model",
   shape_mismatch:
-    "the response does not carry the shape you required. Every assistant message the " +
-    "child emitted was captured, so nothing was lost in transit — the model did not " +
-    "produce it. Re-prompt with the required format restated; do NOT count this slot " +
-    "as a vote",
+    "the answer (assistant text after the task was read) did not match. Every assistant " +
+    "message of the turn was read from the transcript, so nothing was lost in transit — " +
+    "the model did not produce it. Re-prompt with the required format restated; do NOT " +
+    "count this slot as a vote",
 };
 
 /** `18864` → `18.4KB`. */
@@ -475,21 +506,26 @@ export function buildChildClaudeFlags(agent: unknown, claudeFlags: unknown): str
 /**
  * The prose that stops a caller reading `outputSize` as progress.
  *
- * A slot's `outputSize` is written once, when it finishes, so a RUNNING slot
+ * A slot's `outputSize` is written once, when it finishes, so a working slot
  * always reports 0. Real orchestrators have read that 0 next to a 20-minute-old
  * `startedAt` and concluded the slot produced nothing; one then had to reason its
  * way back out in front of the user. The note leads with that, because a caller
  * skimming a JSON blob reads the first clause and stops.
  *
- * Returned only while something is still RUNNING — on a settled run the states
- * are final, `outputSize` means exactly what it says, and this would be noise.
+ * Returned only while some slot is not terminal — on a settled run the states are
+ * final, `outputSize` means exactly what it says, and this would be noise.
  */
-export function teamStatusNote(opts: { anyRunning: boolean; live: boolean }): string | undefined {
-  if (!opts.anyRunning) return undefined;
+export function teamStatusNote(opts: {
+  anyActive: boolean;
+  live: boolean;
+  /** slots whose turn sits in `finishing` with no end-of-turn record (R3-M4) */
+  endRecordMissing?: string[];
+}): string | undefined {
+  if (!opts.anyActive) return undefined;
   const trap =
     "outputSize is the size of the FINAL answer and is written once, when a slot " +
-    "finishes. Every RUNNING slot therefore reports 0 however much work it has done: " +
-    "it is NOT a progress signal, and 0 there does not mean the slot produced nothing.";
+    "finishes. Every slot still working therefore reports 0 however much work it has " +
+    "done: it is NOT a progress signal, and 0 there does not mean the slot produced nothing.";
   // No live handles means this server did not spawn the run, or was restarted
   // under it. Promising fields that are null would send the reader after
   // evidence that is not there.
@@ -500,62 +536,95 @@ export function teamStatusNote(opts: { anyRunning: boolean; live: boolean }): st
       "whatever was last written to status.json."
     );
   }
+  const missing = opts.endRecordMissing ?? [];
+  const missingNote = missing.length
+    ? ` Slot(s) ${missing.join(", ")}: the model's message ended long ago with a static ` +
+      "screen and no Stop hook running, but Claude Code never wrote its end-of-turn record " +
+      "(turn_end_record_missing). Nothing ends such a slot on a timer — cancel it if it " +
+      "stays this way."
+    : "";
   return (
-    `${trap} Judge a running slot on three fields read TOGETHER: ` +
+    `${trap} Judge a working slot on three fields read TOGETHER: ` +
     "live_output_bytes_by_slot (answer bytes so far, the number outputSize will become), " +
-    "idle_seconds_by_slot (seconds of silence) and activity_by_slot (what it is doing). " +
-    "Silence in tool_executing is a build or test suite running, and is not a failure " +
-    'signal. Nothing cancels on your behalf — use mode:"cancel" if you decide to.'
+    "idle_seconds_by_slot (seconds of silence) and activity_by_slot (what it is doing: a " +
+    'tool name, "thinking", "background" or "finishing"). Silence while a tool runs is a ' +
+    "build or test suite, and is not a failure signal. Nothing cancels on your behalf — " +
+    `use mode:"cancel" if you decide to.${missingNote}`
   );
 }
 
+/** A persisted state outside the closed set reads FAILED (terminal), as §8 B says. */
+function slotStateOf(m: ModelStatus): string {
+  return (SLOT_STATES as readonly string[]).includes(m.state) ? m.state : "FAILED";
+}
+
 /**
- * Assemble the `status` response. Pure and exported so the contract above can be
- * tested without spawning a run: every liveness input is a parameter.
+ * Assemble the `status` response: the legacy path-based payload, the contract's
+ * `contract_version`/`capabilities`, and `run` (§8 B). Pure and exported so the payload
+ * can be tested without spawning a run: every liveness input is a parameter.
  */
 export function buildTeamStatusPayload(opts: {
-  status: import("./team-orchestrator.js").TeamStatus;
+  status: TeamStatus;
   sessionPath: string;
   idle: Record<string, number> | null;
   activity: Record<string, string> | null;
   liveBytes: Record<string, number> | null;
+  run: TeamRunRow;
+  endRecordMissing?: string[];
 }): Record<string, unknown> {
   const { status, sessionPath, idle, activity, liveBytes } = opts;
-  const anyRunning = Object.values(status.models).some((m) => m.state === "RUNNING");
-  // Keyed on RUNNING, not on liveness. A run this server never spawned can still
-  // show RUNNING slots from a stale status.json, and that is precisely a reader
-  // who is about to misjudge an `outputSize` of 0.
-  const note = teamStatusNote({ anyRunning, live: idle !== null });
+  // Keyed on the states, not on liveness. A run this server never spawned can still
+  // show working slots from a stale status.json, and that is precisely a reader who
+  // is about to misjudge an `outputSize` of 0.
+  const anyActive = Object.values(status.models).some(
+    (m) => !TERMINAL_STATES.includes(slotStateOf(m) as SlotState)
+  );
+  const note = teamStatusNote({
+    anyActive,
+    live: idle !== null,
+    endRecordMissing: opts.endRecordMissing,
+  });
   return {
     ...status,
-    // Bytes of answer produced SO FAR, per still-running slot. `outputSize` cannot
-    // answer this — see teamSlotLiveBytes.
+    // Bytes of answer produced SO FAR, per slot still working. `outputSize` cannot
+    // answer this.
     live_output_bytes_by_slot: liveBytes,
     idle_seconds_by_slot: idle,
-    // What each slot is DOING, which is what makes the idle number readable.
-    // Silence in `tool_executing` is a build; the same silence in `running` is a
-    // stalled answer.
+    // What each slot is DOING, which is what makes the idle number readable. Silence
+    // while a tool runs is a build; the same silence in "thinking" is a stalled answer.
     activity_by_slot: activity,
     ...(note ? { note } : {}),
-    // The rendered result card, once there is a result to render. This is the
-    // summary `run` used to return before it stopped waiting; a settled `status`
-    // is now where it belongs, since that is the call that knows the outcome.
-    ...(anyRunning ? {} : { summary: formatTeamResult(status, sessionPath) }),
+    // The rendered result card, once there is a result to render.
+    ...(anyActive ? {} : { summary: formatTeamResult(status, sessionPath) }),
+    ...contractMeta(),
+    run: opts.run,
   };
 }
 
-export function formatTeamResult(
-  status: import("./team-orchestrator.js").TeamStatus,
-  sessionPath: string
-): string {
-  const entries = Object.entries(status.models).sort(([a], [b]) => a.localeCompare(b));
-  // EMPTY belongs with the failures: the process exited 0 but produced no usable
-  // answer. Filing it under "succeeded" is what forced callers to infer failure
-  // from outputSize by hand.
-  const failed = entries.filter(
-    ([, m]) => m.state === "FAILED" || m.state === "TIMEOUT" || m.state === "EMPTY"
+/** One failed slot on the result card: reason, what happened, next step, evidence. */
+function failureLines(id: string, m: ModelStatus): string[] {
+  const reason = m.error?.reason;
+  const out = [`  ${id}  ${slotStateOf(m)}  reason=${reason ?? "unknown"}`];
+  // A blocked slot's detail is the question it stopped on.
+  if (m.error?.detail)
+    out.push(`      ${reason === "blocked" ? "question" : "what"}: ${m.error.detail}`);
+  out.push(`      next: ${(reason && NEXT_STEP[reason]) || "read the evidence log"}`);
+  out.push(
+    m.error?.errorLogPath
+      ? `      evidence: ${m.error.errorLogPath}`
+      : "      evidence: NONE CAPTURED — orchestrator bug, report via report_error"
   );
+  return out;
+}
+
+export function formatTeamResult(status: TeamStatus, sessionPath: string): string {
+  const entries = Object.entries(status.models).sort(([a], [b]) => a.localeCompare(b));
+  // Everything that is not COMPLETED belongs with the failures: EMPTY (the turn settled
+  // but its answer is unusable), CANCELLED (the caller stopped it), FAILED and TIMEOUT.
+  // Filing EMPTY under "succeeded" is what forced callers to infer failure from
+  // outputSize by hand.
   const succeeded = entries.filter(([, m]) => m.state === "COMPLETED");
+  const failed = entries.filter(([, m]) => m.state !== "COMPLETED");
 
   const lines: string[] = [];
   lines.push(`<<<TEAM_RESULT path="${sessionPath}">>>`);
@@ -568,35 +637,135 @@ export function formatTeamResult(
     lines.push("succeeded:");
     for (const [id, m] of succeeded) {
       lines.push(`  ${id}  ${fmtSize(m.outputSize)}  response-${id}.md`);
+      // R3-M5: an open background shell (or a truncated turn) is worth a line.
+      for (const a of m.anomalies ?? []) lines.push(`      note: ${a}`);
     }
   }
 
   if (failed.length > 0) {
     lines.push("failures:");
-    for (const [id, m] of failed) {
-      const reason = m.error?.reason ?? "unknown";
-      const next = NEXT_STEP[reason] ?? "read the evidence log";
-      lines.push(`  ${id}  ${m.state}  reason=${reason}`);
-      if (m.error?.detail) lines.push(`      what: ${m.error.detail}`);
-      lines.push(`      next: ${next}`);
-      if (m.error?.errorLogPath) {
-        lines.push(`      evidence: ${m.error.errorLogPath}`);
-      } else {
-        lines.push("      evidence: NONE CAPTURED — orchestrator bug, report via report_error");
-      }
-    }
+    for (const [id, m] of failed) lines.push(...failureLines(id, m));
     lines.push("actions:");
-    lines.push("  full stderr/stdout for one failure  → Read the evidence path above");
+    lines.push("  final screen and answer for one failure → Read the evidence path above");
     lines.push(
-      `  machine-readable status             → team(mode="status", path="${sessionPath}")`
+      `  machine-readable status                → team(mode="status", path="${sessionPath}")`
     );
     lines.push(
-      `  report a provider bug               → report_error(session_path="${sessionPath}")`
+      `  report a provider bug                  → report_error(session_path="${sessionPath}")`
     );
   }
 
   lines.push("<<<END_TEAM_RESULT>>>");
   return lines.join("\n");
+}
+
+// ─── team: the mod-contract verbs (§8 A–D) ───────────────────────────────────
+
+type ToolAnswer = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+function contractAnswer(value: unknown): ToolAnswer {
+  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+}
+
+/** Every §8 verb answers its errors as the `ContractError` JSON with `isError: true`. */
+function contractErrorAnswer(e: unknown): ToolAnswer {
+  const err =
+    e instanceof ContractErrorException
+      ? e
+      : new ContractErrorException("invalid_args", e instanceof Error ? e.message : String(e));
+  return {
+    content: [{ type: "text", text: JSON.stringify(err.toContractError()) }],
+    isError: true,
+  };
+}
+
+function contractPath(raw: unknown, mode: string): string {
+  if (typeof raw !== "string" || !raw)
+    throw new ContractErrorException("invalid_args", `'path' is required for mode '${mode}'`);
+  try {
+    return validateSessionPath(raw);
+  } catch (e) {
+    throw new ContractErrorException("invalid_args", e instanceof Error ? e.message : String(e));
+  }
+}
+
+function optionalString(raw: unknown, name: string): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string" || !raw)
+    throw new ContractErrorException("invalid_args", `'${name}' must be a non-empty string`);
+  return raw;
+}
+
+/**
+ * `team(mode="status")` (§8 B): the legacy payload of the newest run at `path` plus
+ * `contract_version`, `capabilities` and `run`. Given a `run_id` that a newer run at the
+ * same path superseded, only `run` and the contract keys: `status.json` there now
+ * belongs to the newer run.
+ */
+export function teamStatusAnswer(path: string, runId?: string): Record<string, unknown> {
+  let row: TeamRunRow | null = null;
+  if (runId) {
+    row = teamRunRow(path, runId);
+    if (!row)
+      throw new ContractErrorException(
+        "unknown_run",
+        `no team run with run_id ${runId} at ${path} is retained by this server`
+      );
+    if (isSupersededRun(runId)) return { ...contractMeta(), run: row };
+  } else {
+    row = teamRunRow(path);
+  }
+  let status: TeamStatus;
+  try {
+    status = getStatus(path);
+  } catch {
+    if (row) return { ...contractMeta(), run: row };
+    throw new ContractErrorException(
+      "unknown_run",
+      `no team run at ${path}: no status.json there and no run held by this server`
+    );
+  }
+  const live = teamLiveMaps(path, runId);
+  return buildTeamStatusPayload({
+    status,
+    sessionPath: path,
+    idle: live?.idle ?? null,
+    activity: live?.activity ?? null,
+    liveBytes: live?.liveBytes ?? null,
+    run: row ?? teamRunRowFromDisk(path, status),
+    endRecordMissing: live?.endRecordMissing,
+  });
+}
+
+/** `list` / `status` / `cancel` / `capture`: memory reads, JSON answers, ContractError errors. */
+export async function teamContractVerb(
+  mode: "list" | "status" | "cancel" | "capture",
+  args: Record<string, unknown>
+): Promise<ToolAnswer> {
+  try {
+    if (mode === "list") return contractAnswer(listTeamRuns());
+    const path = contractPath(args.path, mode);
+    const runId = optionalString(args.run_id, "run_id");
+    const slot = optionalString(args.slot, "slot");
+    switch (mode) {
+      case "status":
+        return contractAnswer(teamStatusAnswer(path, runId));
+      case "cancel":
+        return contractAnswer(await cancelTeamRun(path, slot, runId));
+      case "capture": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'capture'");
+        const since = args.since_seq;
+        if (since !== undefined && (typeof since !== "number" || !Number.isInteger(since)))
+          throw new ContractErrorException("invalid_args", "'since_seq' must be an integer");
+        return contractAnswer(
+          captureTeamSlot(path, slot, since as number | undefined, args.spans === true, runId)
+        );
+      }
+    }
+  } catch (e) {
+    return contractErrorAnswer(e);
+  }
 }
 
 /**
@@ -1223,43 +1392,66 @@ function defineTools(
   tools.push({
     name: "team",
     description:
-      "Run AI models on a task with anonymized outputs and optional blind judging. " +
-      "Modes: 'run' (START the models and return a slot map immediately — it does NOT " +
-      "wait), 'status' (per-slot state, plus live answer bytes, seconds of silence and " +
-      "current activity per slot), " +
-      "'cancel' (stop one slot or the whole run), 'judge' (blind-vote on existing " +
-      "outputs), 'run-and-judge' (the blocking pipeline). " +
-      "NO SLOT IS EVER KILLED ON A TIMER. A team slot is a full Claude Code session and " +
-      "may work for a long time; a slot inside a build or test suite emits nothing for " +
-      "minutes and is working, not stuck. Poll 'status', judge the silence against the " +
-      "task you set, and use 'cancel' if you decide a slot is wedged. " +
-      "JUDGING A RUNNING SLOT: read live_output_bytes_by_slot, idle_seconds_by_slot and " +
-      "activity_by_slot. Do NOT use 'outputSize' — it is the size of the final answer, " +
-      "written only when a slot finishes, so it is 0 for every running slot no matter how " +
-      "much that slot has produced.",
+      "Run AI models on a task with anonymized outputs and optional blind judging. Every " +
+      "slot is an interactive Claude Code session in its own headless magmux pane. " +
+      "Modes: 'run' (START the models and return once each has taken its prompt — it does " +
+      "NOT wait for answers), 'status' (per-slot state; read `run.slots`), 'list' (every " +
+      "run this server holds), 'capture' (one slot's screen), 'cancel' (stop one slot or " +
+      "the whole run), 'judge' (blind-vote on existing outputs), 'run-and-judge' (the " +
+      "blocking pipeline). Poll 'status' (read run.slots) or 'list'. " +
+      "NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted. A team slot is a full " +
+      "Claude Code session and may work for a long time; a slot inside a build or test " +
+      "suite emits nothing for minutes and is working, not stuck. Judge the silence " +
+      "against the task you set, and use 'cancel' if you decide a slot is wedged. A slot " +
+      "that stops on a question it cannot answer is FAILED 'blocked' (team has no way to " +
+      "answer it). JUDGING A WORKING SLOT: read live_output_bytes_by_slot, " +
+      "idle_seconds_by_slot and activity_by_slot (or each row's idle_seconds and " +
+      "activity). Do NOT use 'outputSize' — it is the size of the final answer, written " +
+      "only when a slot finishes, so it is 0 for every working slot no matter how much " +
+      "that slot has produced.",
     inputSchema: {
       type: "object",
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status", "cancel"],
+          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture"],
           description:
-            "Operation mode. 'run' STARTS the models and returns immediately with a " +
-            "slot map — it does not wait. Poll 'status' for progress (read it from " +
-            "live_output_bytes_by_slot and activity_by_slot, never from outputSize, " +
-            "which stays 0 until a slot finishes), then 'judge' once the slots have " +
-            "finished. 'run-and-judge' is the blocking pipeline and holds the call open " +
-            "for the whole run. 'cancel' stops one slot or the whole run.",
+            "Operation mode. 'run' STARTS the models and returns once every slot has taken " +
+            "its prompt (or failed to) — it does not wait for answers. Poll 'status' (read " +
+            "`run.slots`) or 'list' for progress, then 'judge' once the slots have " +
+            "finished. 'capture' returns one slot's screen. 'run-and-judge' is the blocking " +
+            "pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
+            "the whole run.",
         },
         slot: {
           type: "string",
           description:
-            "For 'cancel': the anonymised slot id to stop (e.g. '02'), from the slot map " +
-            "'run' returned. Omit to cancel every slot in the run.",
+            "For 'cancel' and 'capture': the anonymised slot id (e.g. '02') from the slot " +
+            "map 'run' returned. 'capture' requires it; for 'cancel', omit it to stop every " +
+            "slot in the run.",
         },
         path: {
           type: "string",
-          description: "Session directory path (must be within current working directory)",
+          description:
+            "Session directory path (must be within current working directory). Required " +
+            "by every mode except 'list'.",
+        },
+        run_id: {
+          type: "string",
+          description:
+            "For 'status', 'cancel' and 'capture': the run_id a 'run' answer returned. It " +
+            "addresses THAT run while this server retains it, even after a newer run reused " +
+            "the path. Omit it to address the newest run at 'path'.",
+        },
+        since_seq: {
+          type: "number",
+          description:
+            "For 'capture': the `seq` of the screen you already hold. When it is still " +
+            "current the answer is `{unchanged:true}`; any other value returns the full screen.",
+        },
+        spans: {
+          type: "boolean",
+          description: "For 'capture': also return the colour/attribute spans of each line.",
         },
         models: {
           type: "array",
@@ -1271,8 +1463,8 @@ function defineTools(
             "'opus'/'sonnet'/'haiku'/'claude-*' select a specific one. They run on the " +
             "user's Claude subscription through the native passthrough (no API key, no " +
             "translation), and — unlike a Task agent — they are covered by require_pattern, " +
-            "so a native reviewer that never produced the required shape is reported FAILED " +
-            "instead of silently succeeding.",
+            "so a native reviewer that never produced the required shape is reported " +
+            "EMPTY 'shape_mismatch' instead of silently succeeding.",
         },
         judges: {
           type: "array",
@@ -1299,18 +1491,17 @@ function defineTools(
         require_pattern: {
           type: "string",
           description:
-            "Regex the response MUST match, or the slot is reported FAILED (state EMPTY, " +
-            "reason 'shape_mismatch') instead of succeeded. Strongly recommended whenever " +
-            "your prompt mandates an output shape — e.g. '```vote' for a voting panel. " +
-            "Exit code 0 is not a success oracle: it is 0 on API errors and on a child " +
-            "that simply never followed the format. Answers are no longer LOST to print " +
-            "mode (every assistant message is captured), so a mismatch now means the model " +
-            "did not produce the shape, not that the shape was discarded.",
+            "Regex (no flags) the slot's answer MUST match, or the slot is reported EMPTY " +
+            "with reason 'shape_mismatch' instead of succeeded. The answer is the turn's " +
+            "assistant text, read from the transcript; for a prompt delivered as a file it " +
+            "starts after the child read that file, so `^` anchors to the answer's start. " +
+            "Strongly recommended whenever your prompt mandates an output shape — e.g. " +
+            "'```vote' for a voting panel.",
         },
         min_output_bytes: {
           type: "number",
           description:
-            "Report a slot FAILED if it produced fewer than this many bytes (default 0 = " +
+            "Report a slot EMPTY if its answer is shorter than this many bytes (default 0 = " +
             "off). A blunter instrument than require_pattern — short answers can be " +
             "legitimate — so prefer require_pattern when you know the expected shape.",
         },
@@ -1321,21 +1512,23 @@ function defineTools(
             "Each child is a full Claude Code session, so this loads that agent's system " +
             "prompt and tool allowlist — the same specialisation a Task agent gets, but " +
             "inside the team run, where require_pattern still applies. Applies to EVERY " +
-            "model in the run (native and external alike); there is no per-model form.",
+            "model in the run (native and external alike); there is no per-model form. An " +
+            "unknown agent fails the slot 'agent_rejected', listing the available agents.",
         },
         claude_flags: {
           type: "string",
           description:
             "Any other Claude Code flags, space-separated (e.g. '--effort high " +
-            "--permission-mode plan'). Unrecognised flags pass straight through to the " +
-            "child Claude Code, so anything Claude Code accepts works here. Prefer the " +
-            "dedicated 'agent' parameter for the subagent; an --agent given here is " +
-            "ignored when 'agent' is also set. NOTE: split on whitespace, so a flag " +
-            'VALUE containing spaces (e.g. --append-system-prompt "two words") cannot ' +
-            "be expressed here.",
+            "--permission-mode plan'): flags and their values only, never positional text. " +
+            "One value per flag (write '--allowedTools Read,Bash'). Flags that would break " +
+            "the interactive pane (-p, --output-format, --resume, …) and print-mode-only " +
+            "flags (--max-turns, --max-budget-usd, …) are refused. Prefer the dedicated " +
+            "'agent' parameter for the subagent; an --agent given here is ignored when " +
+            "'agent' is also set. NOTE: split on whitespace, so a flag VALUE containing " +
+            'spaces (e.g. --append-system-prompt "two words") cannot be expressed here.',
         },
       },
-      required: ["mode", "path"],
+      required: ["mode"],
     },
     group: "agentic",
     // The tool the whole keepalive exists for: a real run was aborted at exactly
@@ -1343,19 +1536,24 @@ function defineTools(
     // failure happened in a session with channels unregistered, so gating the
     // keepalive behind the channel group would reproduce the bug exactly.
     //
-    // Still needed even though `run` no longer blocks: `run-and-judge` is the
-    // pipeline mode and holds the call open for the whole run, which is exactly
-    // the shape that hit the ceiling. `run` returning early does not remove the
-    // exposure, it just stops the common path from carrying it.
+    // Still needed even though `run` no longer blocks on answers: `run-and-judge` is
+    // the pipeline mode and holds the call open for the whole run, and `run` itself
+    // waits up to boot + admission (≤ 120 s) for every slot to take its prompt.
     //
     // The background run keeps calling `ctx.reportProgress` after `run` has
     // returned. That is safe by contract — see ToolCallContext: a no-op once the
     // heartbeat is stopped, and it never throws.
     heartbeat: true,
     handler: async (args, ctx) => {
+      const mode = args.mode as string;
+      if (mode === "list" || mode === "status" || mode === "cancel" || mode === "capture") {
+        return teamContractVerb(mode, args);
+      }
       try {
-        const mode = args.mode as string;
-        const path = args.path as string;
+        if (mode !== "run" && mode !== "judge" && mode !== "run-and-judge")
+          throw new Error(`Unknown mode: ${mode}`);
+        const path = args.path;
+        if (typeof path !== "string" || !path) throw new Error(`'path' is required for '${mode}'`);
         const models = args.models as string[] | undefined;
         const judges = args.judges as string[] | undefined;
         // `input_file` is the preferred form: a team prompt is usually a long
@@ -1373,11 +1571,9 @@ function defineTools(
         const input = inputFile !== undefined ? readTeamInputFile(inputFile) : inlineInput;
         const requirePattern = args.require_pattern as string | undefined;
         const minOutputBytes = args.min_output_bytes as number | undefined;
-        const childFlags = buildChildClaudeFlags(args.agent, args.claude_flags);
-        // Reject an unknown agent BEFORE spawning N children. `team` spawns with
-        // --stdin so Claude Code would catch it, but centrally is where the two
-        // spawn sites stay consistent — see agent-availability.ts.
-        await assertAgentAvailable(args.agent as string | undefined, process.cwd());
+        const childFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
+        // No agent probe here: the interactive child refuses an unknown --agent itself,
+        // before any model request, and that slot is FAILED agent_rejected (D11).
 
         const resolved = validateSessionPath(path);
 
@@ -1414,16 +1610,31 @@ function defineTools(
           },
         };
 
+        /** The prompt the slots will get: `input`, else an input.md already in the dir. */
+        const promptText = (): string | undefined => {
+          if (input !== undefined) return input;
+          const existing = join(resolved, "input.md");
+          return existsSync(existing) ? readFileSync(existing, "utf-8") : undefined;
+        };
+
         switch (mode) {
           case "run": {
             if (!models?.length) throw new Error("'models' is required for 'run' mode");
+            // Every refusal BEFORE anything is written: a refused run leaves no
+            // session directory, no record and no pane (§4.1).
+            await preflightTeamRun({
+              path: resolved,
+              slots: models.length,
+              claudeFlags: childFlags,
+              input: promptText(),
+            });
             setupSession(resolved, models, input);
 
             // The run's record in the sessions directory, for observers outside
             // this process (the magus claudish plugin monitor): the run's own
             // status.json lives wherever the caller pointed `path`, and its only
             // completion push is a channel frame Claude Code drops without
-            // `--channels`. Written BEFORE any child exists; a throw here fails
+            // `--channels`. Written BEFORE any pane exists; a throw here fails
             // the call with nothing started.
             const parentClaudeSessionId = await proveParentForCall({
               toolUseId: ctx.toolUseId,
@@ -1437,15 +1648,14 @@ function defineTools(
             const settleRecord = (outcome: TeamRunOutcome): void =>
               sessionManager.finishTeamRun(monitorRecord, outcome);
 
-            // Returns once the children EXIST, not once they finish. A team slot
-            // is a full Claude Code session and can legitimately work for a long
-            // time; holding the tool call open for that made the run's duration
-            // the client's problem, and the deadline that existed to bound it
-            // killed working slots. Poll `mode: "status"` instead.
+            // Returns once every slot has LEFT STARTING (D9): its prompt was
+            // accepted, or it failed to boot or to take it. Never once the answers
+            // exist: a team slot can legitimately work for a long time, and holding
+            // the call open for that made the run's duration the client's problem.
             //
             // The record's end is passed IN as `onSettled`, so it exists before
-            // the first child and fires however fast the run settles. If
-            // `startModels` throws, it has already killed whatever it spawned;
+            // the first pane and fires however fast the run settles. If
+            // `startModels` throws, it has already reaped whatever it started;
             // the record ends `failed`, `reason: start-failed`, and the ORIGINAL
             // error reaches the caller (`finishTeamRun` never throws).
             let handle: Awaited<ReturnType<typeof startModels>>;
@@ -1465,6 +1675,8 @@ function defineTools(
               });
               throw err;
             }
+            const run = teamRunRow(resolved, handle.runId);
+            const p = handle.sessionPath;
             return {
               content: [
                 {
@@ -1472,52 +1684,28 @@ function defineTools(
                   text: JSON.stringify(
                     {
                       started: true,
+                      run_id: handle.runId,
                       team_session_id: handle.teamSessionId,
-                      session_path: handle.sessionPath,
+                      session_path: p,
                       monitor_record: monitorRecord,
                       slots: handle.slots,
+                      run,
                       next: {
-                        status: `team(mode:"status", path:"${handle.sessionPath}")`,
-                        cancel: `team(mode:"cancel", path:"${handle.sessionPath}", slot:"<id>")`,
-                        judge: `team(mode:"judge", path:"${handle.sessionPath}") once every slot has finished`,
+                        status: `team(mode:"status", path:"${p}", run_id:"${handle.runId}") — read run.slots`,
+                        list: `team(mode:"list")`,
+                        capture: `team(mode:"capture", path:"${p}", slot:"<id>")`,
+                        cancel: `team(mode:"cancel", path:"${p}", slot:"<id>")`,
+                        judge: `team(mode:"judge", path:"${p}") once every slot has finished`,
                       },
                       note:
-                        "Nothing terminates a slot on a timer. `status` reports how many " +
-                        "seconds each slot has been silent; a slot inside a long build is " +
+                        "Every slot has taken its prompt or failed to. Nothing terminates a " +
+                        "working slot on a timer: `status` reports each slot's state, " +
+                        "activity and seconds of silence; a slot inside a long build is " +
                         "quiet and working. You decide whether to cancel.",
                     },
                     null,
                     2
                   ),
-                },
-              ],
-            };
-          }
-          case "cancel": {
-            const slot = args.slot as string | undefined;
-            const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
-            const result = await cancelTeamRun(teamSessionId, slot);
-            if (!result.found) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify({
-                      cancelled: [],
-                      note:
-                        "No live run for that path. It already settled (read `status`), or " +
-                        "it was started by a different process — this server can only stop " +
-                        "children it spawned.",
-                    }),
-                  },
-                ],
-              };
-            }
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({ cancelled: result.cancelled }, null, 2),
                 },
               ],
             };
@@ -1528,32 +1716,22 @@ function defineTools(
           }
           case "run-and-judge": {
             if (!models?.length) throw new Error("'models' is required for 'run-and-judge' mode");
+            await preflightTeamRun({
+              path: resolved,
+              slots: models.length,
+              claudeFlags: childFlags,
+              input: promptText(),
+            });
             setupSession(resolved, models, input);
-            await runModels(resolved, runOpts);
+            const handle = await startModels(resolved, runOpts);
+            await handle.done;
+            const run = teamRunRow(resolved, handle.runId);
             const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
-            return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
-          }
-          case "status": {
-            const status = getStatus(resolved);
-            const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
-            // All three liveness reads are null once the run has settled or if it
-            // was never spawned here — the states in `status` are then whatever
-            // status.json last recorded, and there is no child left to ask.
             return {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify(
-                    buildTeamStatusPayload({
-                      status,
-                      sessionPath: resolved,
-                      idle: teamSlotIdleSeconds(teamSessionId),
-                      activity: teamSlotActivity(teamSessionId),
-                      liveBytes: teamSlotLiveBytes(teamSessionId),
-                    }),
-                    null,
-                    2
-                  ),
+                  text: JSON.stringify({ ...verdict, run_id: handle.runId, run }, null, 2),
                 },
               ],
             };

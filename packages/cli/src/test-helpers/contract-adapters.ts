@@ -9,17 +9,18 @@
  *     documented), `recordTeamRun({ teamPath, slots, parentClaudeSessionId })` and
  *     `finishTeamRun(record, outcome)` (documented by name and argument).
  *   - team-orchestrator: `setupSession` (named, signature not given), `startModels(path, opts)`
- *     (named), `ModelState` member values, and the `spawnChild` seam's call shape.
+ *     (named), and the slot state values (`modelStates`). Team slots are panes now; their
+ *     suites drive the pane fake through `TeamRunOptions.parentEnv` (CLAUDISH_BIN), not a
+ *     spawn seam.
  *
  * Every test asserts the SPEC; only these functions bend to the implementation. If a contract
  * test fails with "ADAPTER:", fix this file, not the test.
  */
-import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import * as sessionManagerModule from "../channel/session-manager.js";
 import * as reducerModule from "../channel/stream-json-reducer.js";
 import type { TurnEnd } from "../channel/stream-json-reducer.js";
+import type { SlotState } from "../pane/index.js";
 import * as orchestrator from "../team-orchestrator.js";
-import { FAKE_CHILD } from "./contract-mcp.js";
 
 type AnyRecord = Record<string, unknown>;
 type Fn = (...args: unknown[]) => unknown;
@@ -240,20 +241,22 @@ export function newSessionManager(
 // team-orchestrator internals
 // ------------------------------------------------------------------------------------------
 
-/** `ModelState` member values; falls back to the member names when it is a type only. */
+/**
+ * The slot state values the record suites name. `status.json` now carries the contract's
+ * closed `SlotState` set, which has no PENDING: a not-yet-started slot is STARTING
+ * (`setupSession` writes it), and `summarise` counts it as failed either way (§20.2).
+ */
 export function modelStates(): Record<
   "COMPLETED" | "FAILED" | "EMPTY" | "TIMEOUT" | "PENDING" | "RUNNING",
-  string
+  SlotState
 > {
-  const ms = (orchestrator as unknown as AnyRecord).ModelState as AnyRecord | undefined;
-  const pick = (k: string) => (ms && typeof ms[k] === "string" ? (ms[k] as string) : k);
   return {
-    COMPLETED: pick("COMPLETED"),
-    FAILED: pick("FAILED"),
-    EMPTY: pick("EMPTY"),
-    TIMEOUT: pick("TIMEOUT"),
-    PENDING: pick("PENDING"),
-    RUNNING: pick("RUNNING"),
+    COMPLETED: "COMPLETED",
+    FAILED: "FAILED",
+    EMPTY: "EMPTY",
+    TIMEOUT: "TIMEOUT",
+    PENDING: "STARTING",
+    RUNNING: "RUNNING",
   };
 }
 
@@ -278,54 +281,4 @@ export async function startModels(dir: string, opts: AnyRecord): Promise<TeamHan
   if (typeof fn !== "function")
     throw new Error("ADAPTER: team-orchestrator does not export startModels");
   return (await fn(dir, opts)) as TeamHandleLike;
-}
-
-export interface SpawnSeam {
-  spawnChild: (...args: unknown[]) => ChildProcess;
-  calls(): number;
-  children: ChildProcess[];
-}
-
-/**
- * A `TeamRunOptions.spawnChild` seam. INFERRED call shape: node's `spawn(command, args, options)`;
- * an object-shaped single argument `{ command, args, options }` is also accepted. Whatever the
- * orchestrator asks to run, the contract fake runs instead, with the orchestrator's own options
- * (stdio, detached, cwd) passed through so its process-group signalling still applies.
- *
- * `throwOn`: the 1-based call that throws synchronously, like a failed `spawn()`.
- * `hang`: every child stays alive until signalled, whatever input it gets.
- * `markerFor(n)`: file the n-th child writes when it receives SIGTERM.
- */
-export function spawnSeam(opts: {
-  throwOn?: number;
-  error?: Error;
-  markerFor?: (n: number) => string;
-  hang?: boolean;
-}): SpawnSeam {
-  let n = 0;
-  const children: ChildProcess[] = [];
-  const spawnChild = (...args: unknown[]): ChildProcess => {
-    n += 1;
-    if (opts.throwOn === n) throw opts.error ?? new Error("contract: injected spawn failure");
-    const [a, b, c] = args;
-    let options: AnyRecord | undefined;
-    if (a && typeof a === "object" && !Array.isArray(a))
-      options = ((a as AnyRecord).options as AnyRecord | undefined) ?? undefined;
-    else options = (Array.isArray(b) ? c : b) as AnyRecord | undefined;
-    const baseEnv =
-      (options?.env as Record<string, string> | undefined) ??
-      (process.env as Record<string, string>);
-    const env: Record<string, string> = { ...baseEnv };
-    if (opts.markerFor) env.CONTRACT_FAKE_SIGTERM_MARKER = opts.markerFor(n);
-    // The task text reaches a team slot by a route the contract does not name (argument, file or
-    // stdin), so a slot that must stay alive is told so through its environment instead.
-    if (opts.hang) env.CONTRACT_FAKE_HANG = "1";
-    const child = nodeSpawn(process.execPath, [FAKE_CHILD], {
-      ...(options ?? {}),
-      env,
-    } as Parameters<typeof nodeSpawn>[2]);
-    children.push(child);
-    return child;
-  };
-  return { spawnChild, calls: () => n, children };
 }

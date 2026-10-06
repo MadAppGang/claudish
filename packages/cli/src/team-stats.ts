@@ -12,6 +12,8 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+// contract.ts directly, not the pane facade: pane/accounting.ts imports this file.
+import { isTerminalState } from "./pane/contract.js";
 import type { ModelStatus, TeamManifest, TeamStatus } from "./team-orchestrator.js";
 
 /** Subset of the token file (`token-tracker.ts` writeFile) that we surface. */
@@ -110,8 +112,14 @@ function fmtState(state: ModelStatus["state"]): string {
       return "TIME";
     case "EMPTY":
       return "EMPT";
-    case "PENDING":
-      return "wait";
+    case "STARTING":
+      return "boot";
+    case "AWAITING_INPUT":
+      return "ask ";
+    case "AWAITING_PERMISSION":
+      return "perm";
+    case "CANCELLED":
+      return "CANC";
     default:
       return "?   ";
   }
@@ -160,7 +168,7 @@ export function renderTeamStats(
     const stats = readTokenStats(sessionPath, id);
 
     if (m.state === "COMPLETED") done++;
-    else if (m.state === "RUNNING" || m.state === "PENDING") running++;
+    else if (!isTerminalState(m.state)) running++;
     else failed++;
 
     const inTok = stats?.input_tokens ?? 0;
@@ -236,7 +244,7 @@ export function renderTeamStatsCompact(
     const stats = readTokenStats(sessionPath, id);
 
     if (m.state === "COMPLETED") done++;
-    else if (m.state === "RUNNING" || m.state === "PENDING") running++;
+    else if (!isTerminalState(m.state)) running++;
     else failed++;
 
     totalTokens += stats?.total_tokens ?? 0;

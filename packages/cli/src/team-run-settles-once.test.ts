@@ -8,131 +8,143 @@
  * overwrites the real outcome. These tests reproduce that scenario on the real
  * `startModels` and `SessionManager.finishTeamRun`:
  *
- * 1. a failed start never calls `onSettled`, however fast its spawned slot
- *    exits — `done` is built after the spawn loop, so a throwing loop never
+ * 1. a failed start never calls `onSettled`, however fast its started slot
+ *    answers — `done` is built after the spawn loop, so a throwing loop never
  *    builds it;
  * 2. a run that settles at once calls `onSettled` exactly once, and only after
  *    `startModels` has returned — so the handler's `catch` cannot run for it;
  * 3. a second `finishTeamRun` for one record never replaces the first.
+ *
+ * Ported to panes (architecture §20.2): the print-mode `/bin/sh` fake is the pane fake
+ * in a real headless magmux, and the spawn throw is a failed status.json write after slot
+ * 1's pane started. All three properties are kept.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { SessionManager } from "./channel/session-manager.js";
-import { type TeamStatus, getStatus, setupSession, startModels } from "./team-orchestrator.js";
+import { waitNoOrphans } from "./pane/test-helpers/hermetic-env.js";
+import { type TeamStatus, setupSession, startModels } from "./team-orchestrator.js";
+import {
+  MAGMUX,
+  NO_MAGMUX_MESSAGE,
+  type PaneTestEnv,
+  finishPaneTest,
+  makePaneTestEnv,
+  paneRunOptions,
+  waitUntil,
+} from "./test-helpers/team-pane.js";
 
-const spawnPlanner = async () => ({ pinned: new Map<string, string>() });
+if (!MAGMUX) console.warn(NO_MAGMUX_MESSAGE);
+
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/**
- * Until the one spawned slot's end is recorded in `status.json`. The slot whose
- * spawn threw stays `RUNNING` there: it was marked before the throw.
- */
-async function waitForSpawnedSlotEnd(sessionPath: string, limitMs = 5_000): Promise<void> {
-  const deadline = Date.now() + limitMs;
-  const ended = () =>
-    Object.values(getStatus(sessionPath).models).some((m) => Boolean(m.completedAt));
-  while (!ended()) {
-    if (Date.now() > deadline) throw new Error(`the spawned slot never ended: ${sessionPath}`);
-    await delay(10);
-  }
-}
-
 let tempRoot: string;
-let originalClaudishBin: string | undefined;
+let panes: PaneTestEnv;
 
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), "team-run-settles-once-test-"));
-  originalClaudishBin = process.env.CLAUDISH_BIN;
-  // A slot that answers and exits at once.
-  const fake = join(tempRoot, "claudish");
-  writeFileSync(
-    fake,
-    "#!/bin/sh\ncat > /dev/null\necho 'PONG answer from the fake slot'\nexit 0\n"
-  );
-  chmodSync(fake, 0o755);
-  process.env.CLAUDISH_BIN = fake;
+  panes = makePaneTestEnv();
 });
 
-afterEach(() => {
-  if (originalClaudishBin === undefined) delete process.env.CLAUDISH_BIN;
-  else process.env.CLAUDISH_BIN = originalClaudishBin;
+afterEach(async () => {
+  for (const dir of readdirSync(tempRoot)) {
+    try {
+      chmodSync(join(tempRoot, dir, "status.json"), 0o644);
+    } catch {
+      // not a team dir
+    }
+  }
   rmSync(tempRoot, { recursive: true, force: true });
+  const report = await finishPaneTest(panes);
+  expect(report).toEqual({ processes: [], files: [] });
 });
 
 describe("team run record settles once", () => {
-  it("never calls onSettled for a failed start whose spawned slot exits at once", async () => {
-    const sessionPath = join(tempRoot, "fast-then-throw");
-    setupSession(sessionPath, ["model-a", "model-b"], "ping");
+  it.skipIf(!MAGMUX)(
+    "never calls onSettled for a failed start whose started slot answers at once",
+    async () => {
+      const sessionPath = join(tempRoot, "fast-then-throw");
+      // fake-answer answers the moment its prompt is accepted.
+      setupSession(sessionPath, ["fake-answer", "model-b"], "ping");
 
-    let first: ChildProcess | undefined;
-    let calls = 0;
-    const spawnChild = ((command: string, args: string[], options: object) => {
-      calls++;
-      if (calls === 1) {
-        first = spawn(command, args, options);
-        return first;
+      let settledCalls = 0;
+      const run = startModels(sessionPath, {
+        ...paneRunOptions(panes),
+        onSettled: () => {
+          settledCalls++;
+        },
+      }).catch((err: unknown) => err);
+      // The fault: slot 1's pane record exists, so status.json turns read-only and slot
+      // 2's STARTING write throws (was: slot 2's spawn threw EMFILE).
+      await waitUntil(
+        () => {
+          const recs = join(panes.sockRoot, "panes");
+          return existsSync(recs) && readdirSync(recs).length > 0;
+        },
+        "slot 1's pane record",
+        5_000,
+        5
+      );
+      chmodSync(join(sessionPath, "status.json"), 0o444);
+      const error = await run;
+
+      expect((error as NodeJS.ErrnoException).code).toBe("EACCES");
+      // The started slot is gone — the path that would settle a started run — and a stray
+      // settle has had time.
+      expect(await waitNoOrphans({ sockRoot: panes.sockRoot }, 5_000)).toEqual({
+        processes: [],
+        files: [],
+      });
+      await delay(300);
+      expect(settledCalls).toBe(0);
+    },
+    30_000
+  );
+
+  it.skipIf(!MAGMUX)(
+    "calls onSettled exactly once, after startModels returned, for a run that settles at once",
+    async () => {
+      const sessionPath = join(tempRoot, "fast");
+      setupSession(sessionPath, ["model-a", "model-b"], "ping");
+
+      const order: string[] = [];
+      const settled: TeamStatus[] = [];
+      const handle = await startModels(sessionPath, {
+        ...paneRunOptions(panes),
+        minOutputBytes: 1,
+        onSettled: (status) => {
+          order.push("settled");
+          settled.push(status);
+        },
+      });
+      order.push("returned");
+
+      await handle.done;
+      await delay(100);
+      expect(order).toEqual(["returned", "settled"]);
+      expect(settled).toHaveLength(1);
+      // Settled: every slot has an outcome. Which one is not the point here.
+      for (const model of Object.values(settled[0]?.models ?? {})) {
+        expect(["STARTING", "RUNNING", "AWAITING_INPUT", "AWAITING_PERMISSION"]).not.toContain(
+          model.state
+        );
       }
-      throw new Error("spawn EMFILE");
-    }) as unknown as typeof spawn;
-
-    let settledCalls = 0;
-    const error = await startModels(sessionPath, {
-      captureMode: "print",
-      spawnPlanner,
-      spawnChild,
-      onSettled: () => {
-        settledCalls++;
-      },
-    }).catch((err: unknown) => err);
-
-    expect((error as Error).message).toBe("spawn EMFILE");
-    expect(first).toBeDefined();
-    // The first slot's exit and close handlers have run and recorded its end
-    // — the path that settles a started run — and a stray settle has had time.
-    await waitForSpawnedSlotEnd(sessionPath);
-    await delay(300);
-    expect(settledCalls).toBe(0);
-  });
-
-  it("calls onSettled exactly once, after startModels returned, for a run that settles at once", async () => {
-    const sessionPath = join(tempRoot, "fast");
-    setupSession(sessionPath, ["model-a", "model-b"], "ping");
-
-    const order: string[] = [];
-    const settled: TeamStatus[] = [];
-    const handle = await startModels(sessionPath, {
-      captureMode: "print",
-      spawnPlanner,
-      minOutputBytes: 1,
-      onSettled: (status) => {
-        order.push("settled");
-        settled.push(status);
-      },
-    });
-    order.push("returned");
-
-    await handle.done;
-    await delay(100);
-    expect(order).toEqual(["returned", "settled"]);
-    expect(settled).toHaveLength(1);
-    // Settled: every slot has an outcome. Which one is not the point here.
-    for (const model of Object.values(settled[0].models)) {
-      expect(["PENDING", "RUNNING"]).not.toContain(model.state);
-    }
-  });
+    },
+    30_000
+  );
 
   it("keeps the first finishTeamRun outcome when a second call arrives", async () => {
     const manager = new SessionManager({ hostPid: 1, sessionsDir: join(tempRoot, "sessions") });

@@ -669,12 +669,27 @@ async function runCli() {
       const sessionPath = join(process.cwd(), `.claudish-team-${Date.now()}`);
 
       if (mode === "json") {
-        // JSON mode: run models without grid, collect JSON output to stdout
-        const { setupSession, runModels } = await import("./team-orchestrator.js");
+        // JSON mode: every model runs as an interactive pane in a headless magmux (the
+        // same runModels as the MCP `team` tool); each answer is read from its
+        // transcript, so no child output flag is passed. Ctrl-C reaps every pane.
+        const { installPaneShutdownHooks } = await import("./pane/index.js");
+        const { preflightTeamRun, setupSession, runModels } = await import(
+          "./team-orchestrator.js"
+        );
+        installPaneShutdownHooks({ exitAfter: true });
+        try {
+          await preflightTeamRun({
+            path: sessionPath,
+            slots: cliConfig.team.length,
+            input: prompt,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`Error: ${msg}`);
+          process.exit(msg.startsWith("invalid_args") ? 2 : 1);
+        }
         setupSession(sessionPath, cliConfig.team, prompt);
-        const status = await runModels(sessionPath, {
-          claudeFlags: ["--json"],
-        });
+        const status = await runModels(sessionPath);
 
         // Build JSON result with model responses included
         const result: Record<string, unknown> = { ...status, responses: {} };

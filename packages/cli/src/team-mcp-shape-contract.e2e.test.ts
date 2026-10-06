@@ -9,11 +9,11 @@
  * precisely the quiet failure this feature exists to remove. This test closes
  * that gap by driving a real `claudish --mcp` server over real stdio JSON-RPC.
  *
- * The measured failure is subtle: `claude -p` prints only the final assistant
- * message. If a child answers and then takes one more turn when a background
- * task completes, its real answer is replaced by a short epilogue. The process
- * still exits 0 with plausible prose and no API error, so only the caller's
- * required output shape distinguishes that dropout from success.
+ * Every slot is an interactive pane (the fake interactive child, via CLAUDISH_BIN, in
+ * a real headless magmux). The answer `require_pattern` is matched against is the
+ * turn's assistant text read from the transcript. A model that answers without the
+ * shape is EMPTY `shape_mismatch`; the same model with no pattern is COMPLETED; a
+ * pattern contained in the answer passes.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -21,11 +21,18 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  MAGMUX,
+  NO_MAGMUX_MESSAGE,
+  makePaneTestEnv,
+  waitNoOrphans,
+} from "./pane/test-helpers/hermetic-env.js";
+
+if (!MAGMUX) console.warn(NO_MAGMUX_MESSAGE);
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SRC_DIR, "../../..");
 const SERVER_ENTRY = join(SRC_DIR, "index.ts");
-const FAKE_CHILD = join(SRC_DIR, "channel", "test-helpers", "fake-dropout-child.ts");
 const REQUEST_TIMEOUT_MS = 30_000;
 
 interface JsonRpcResponse {
@@ -110,30 +117,34 @@ function parseToolJson<T>(result: ToolCallResult, context: string): T {
   }
 }
 
-describe("MCP team shape contract", () => {
+describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
   it(
     "exposes and enforces require_pattern without misclassifying the healthy child",
     async () => {
       const tempRoot = mkdtempSync(join(REPO_ROOT, ".tmp-mcp-shape-"));
+      const paneEnv = makePaneTestEnv();
       const requiredShapeSession = join(tempRoot, "required-shape");
       const controlSession = join(tempRoot, "control");
+      const containedSession = join(tempRoot, "contained");
       const configPath = join(tempRoot, "config.json");
       let server: ChildProcessWithoutNullStreams | undefined;
       let serverClosed: Promise<void> | undefined;
 
       try {
-        mkdirSync(requiredShapeSession);
-        mkdirSync(controlSession);
-        writeFileSync(join(requiredShapeSession, "input.md"), "Review the implementation.\n");
-        writeFileSync(join(controlSession, "input.md"), "Review the implementation.\n");
+        for (const dir of [requiredShapeSession, controlSession, containedSession]) {
+          mkdirSync(dir);
+          // Two lines: delivered as a task file, so the answer starts after the Read.
+          writeFileSync(join(dir, "input.md"), "Review the implementation.\n");
+        }
         writeFileSync(configPath, "{}\n");
 
         server = spawn(process.execPath, ["run", SERVER_ENTRY, "--mcp"], {
           cwd: REPO_ROOT,
           stdio: ["pipe", "pipe", "pipe"],
           env: {
-            ...process.env,
-            CLAUDISH_BIN: FAKE_CHILD,
+            // Hermetic: HOME, CLAUDE_CONFIG_DIR, the pane root and CLAUDISH_BIN (the fake)
+            // come from makePaneTestEnv; nothing is inherited from this shell.
+            ...paneEnv.env,
             CLAUDISH_CONFIG: configPath,
             CLAUDISH_DISABLE_OP: "1",
             CLAUDISH_MCP_TOOLS: "all",
@@ -286,7 +297,7 @@ describe("MCP team shape contract", () => {
             if (!models || typeof models !== "object") {
               throw new Error(`${label} status has no models object`);
             }
-            if (Object.values(models).every((model) => model.state !== "RUNNING")) {
+            if ((lastStatus as { run?: { state?: string } }).run?.state === "SETTLED") {
               return lastStatus;
             }
 
@@ -300,55 +311,63 @@ describe("MCP team shape contract", () => {
           );
         };
 
-        const mismatchResult = (await request("tools/call", {
-          name: "team",
-          arguments: {
-            mode: "run",
-            path: requiredShapeSession,
-            models: ["fake-dropout"],
-            require_pattern: "```vote",
-          },
-        })) as ToolCallResult;
-        expect(mismatchResult.isError).not.toBe(true);
-        const mismatchStart = parseToolJson<TeamStartPayload>(mismatchResult, "shape-required run");
-        expect(mismatchStart.started).toBe(true);
-        expect(mismatchStart.team_session_id).toBe("required-shape");
-        expect(mismatchStart.session_path).toBe(requiredShapeSession);
-        expect(mismatchStart.slots).toHaveProperty("fake-dropout");
-        const mismatchSlot = mismatchStart.slots?.["fake-dropout"];
-        expect(typeof mismatchSlot).toBe("string");
+        const runAndSettle = async (
+          sessionPath: string,
+          model: string,
+          label: string,
+          requirePattern?: string
+        ) => {
+          const result = (await request("tools/call", {
+            name: "team",
+            arguments: {
+              mode: "run",
+              path: sessionPath,
+              models: [model],
+              ...(requirePattern === undefined ? {} : { require_pattern: requirePattern }),
+            },
+          })) as ToolCallResult;
+          expect(result.isError).not.toBe(true);
+          const start = parseToolJson<TeamStartPayload>(result, label);
+          expect(start.started).toBe(true);
+          expect(start.session_path).toBe(sessionPath);
+          expect(start.slots).toHaveProperty(model);
+          const slot = start.slots?.[model];
+          expect(typeof slot).toBe("string");
+          const status = await pollSettledStatus(sessionPath, label);
+          return status.models?.[String(slot)];
+        };
 
-        const mismatchStatus = await pollSettledStatus(requiredShapeSession, "shape-required run");
-        const mismatchedModel = mismatchStatus.models?.[String(mismatchSlot)];
-        expect(mismatchedModel).toBeDefined();
-        expect(mismatchedModel?.state).toBe("EMPTY");
-        expect(mismatchedModel?.error?.reason).toBe("shape_mismatch");
+        // Negative control on the transcript answer: the fake answers prose with no vote.
+        const mismatched = await runAndSettle(
+          requiredShapeSession,
+          "fake-no_shape",
+          "shape-required run",
+          "```vote"
+        );
+        expect(mismatched).toBeDefined();
+        expect(mismatched?.state).toBe("EMPTY");
+        expect(mismatched?.error?.reason).toBe("shape_mismatch");
 
-        // This control is load-bearing: the same exit-0 child must succeed when
-        // no shape is required, proving the first failure was not a broken fake.
-        const controlResult = (await request("tools/call", {
-          name: "team",
-          arguments: {
-            mode: "run",
-            path: controlSession,
-            models: ["fake-dropout"],
-          },
-        })) as ToolCallResult;
-        expect(controlResult.isError).not.toBe(true);
-        const controlStart = parseToolJson<TeamStartPayload>(controlResult, "control run");
-        expect(controlStart.started).toBe(true);
-        expect(controlStart.slots).toHaveProperty("fake-dropout");
-        const controlSlot = controlStart.slots?.["fake-dropout"];
-        expect(typeof controlSlot).toBe("string");
+        // This control is load-bearing: the same child must succeed when no shape is
+        // required, proving the first failure was not a broken fake.
+        const control = await runAndSettle(controlSession, "fake-no_shape", "control run");
+        expect(control?.state).toBe("COMPLETED");
+        expect(control?.error).toBeUndefined();
 
-        const controlStatus = await pollSettledStatus(controlSession, "control run");
-        const controlModel = controlStatus.models?.[String(controlSlot)];
-        expect(controlModel).toBeDefined();
-        expect(controlModel?.state).toBe("COMPLETED");
-        expect(controlModel?.error).toBeUndefined();
+        // A pattern contained in the answer passes.
+        const contained = await runAndSettle(
+          containedSession,
+          "fake-answer",
+          "contained-pattern run",
+          "ANSWER fake-answer [0-9a-f]{8}"
+        );
+        expect(contained?.state).toBe("COMPLETED");
       } finally {
         if (server && serverClosed) await terminateServer(server, serverClosed);
         rmSync(tempRoot, { recursive: true, force: true });
+        const report = await waitNoOrphans({ sockRoot: paneEnv.sockRoot });
+        paneEnv.cleanup();
+        expect(report).toEqual({ processes: [], files: [] });
       }
     },
     { timeout: 120_000 }
