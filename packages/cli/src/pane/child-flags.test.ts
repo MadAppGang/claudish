@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { classifyPassthroughTokens } from "../cli.js";
 import {
   PRINT_ONLY_FLAGS,
@@ -107,5 +109,21 @@ describe("flagsRemoveRead (§2.3 rule 4)", () => {
     expect(flagsRemoveRead(["--tools", "Read,Bash"])).toBe(false);
     expect(flagsRemoveRead(["--disallowedTools", "ReadMcpResource"])).toBe(false);
     expect(flagsRemoveRead([])).toBe(false);
+  });
+});
+
+describe("SUBCOMMAND_WORDS matches index.ts's subcommand dispatch (drift guard)", () => {
+  test("every word index.ts dispatches on is refused as a flag value, and nothing else", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "index.ts"), "utf8");
+    const words = new Set<string>();
+    for (const re of [
+      /args\.includes\("([^"]+)"\)/g,
+      /args\[0\] === "([^"]+)"/g,
+      /\ba === "([^"]+)"/g,
+      /firstPositional === "([^"]+)"/g,
+    ])
+      for (const m of src.matchAll(re)) if (!m[1]?.startsWith("-")) words.add(m[1] as string);
+    expect(words.size).toBeGreaterThan(10); // the scan still finds the dispatch block
+    expect([...words].sort()).toEqual([...SUBCOMMAND_WORDS].sort());
   });
 });
