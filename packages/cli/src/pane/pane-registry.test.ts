@@ -23,11 +23,13 @@ import {
   MAX_LIVE_PANES,
   PaneLimitError,
   type PaneRecord,
+  type RegisteredPane,
   livePaneCount,
   ownerStartOfSelf,
   readRecord,
   readRecords,
   reapAllPanes,
+  refreshGroupOf,
   releasePaneReservations,
   removePaneFiles,
   reservePanes,
@@ -504,6 +506,100 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
       chmodSync(join(root, "panes"), 0o700);
     }
   }, 20_000);
+});
+
+/** `ps -o <field>= -p <pid>`, or null when the pid is gone. */
+function psField(pid: number, field: string): number | null {
+  try {
+    const v = execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" });
+    return Number(v.trim());
+  } catch {
+    return null;
+  }
+}
+
+describe("escaped background shells (code-review iteration 2, M2)", () => {
+  test("a shell whose parent died before the wrapper stays in the group file; the watcher ends it, no orphan", async () => {
+    const t = env();
+    ensureSockRoot(t.sockRoot);
+    const ctl = join(t.sockRoot, "launch-EsCaP1");
+    const turn = join(t.sockRoot, "launch-EsCaP2");
+    mkdirSync(ctl, { mode: 0o700 });
+    mkdirSync(turn, { mode: 0o700 });
+    const uuid = crypto.randomUUID();
+    const paneId = `c${deadPid()}-zz-tescape-abcdef`;
+    // The pane group, as a real pane runs it: a session leader standing in for the claudish
+    // wrapper (its argv carries --session-id), and under it "claude", which starts a
+    // background shell in a process group of its own (as 2.1.291 runs run_in_background)
+    // and then dies on a line from the test while the wrapper lives on.
+    const claude = `const c = require("node:child_process").spawn("sleep", ["300"], { detached: true, stdio: "ignore" }); c.unref(); console.log(c.pid); process.stdin.once("data", () => process.exit(0));`;
+    const wrapper = spawn(
+      "/bin/sh",
+      ["-c", `"${process.execPath}" -e "$CLAUDE"; sleep 60; :`, "wrapper", "--session-id", uuid],
+      {
+        detached: true,
+        stdio: ["pipe", "pipe", "ignore"],
+        env: { PATH: "/usr/bin:/bin", CLAUDE: claude },
+      }
+    );
+    extraProcs.push(wrapper);
+    const bgPid = await new Promise<number>((resolve, reject) => {
+      let buf = "";
+      wrapper.stdout?.on("data", (d: Buffer) => {
+        buf += d.toString();
+        if (buf.includes("\n")) resolve(Number(buf.trim()));
+      });
+      wrapper.on("exit", (c) => reject(new Error(`wrapper exited ${c}`)));
+    });
+    const wrapperPid = wrapper.pid as number;
+    try {
+      expect(psField(bgPid, "pgid")).toBe(bgPid);
+      const pane = {
+        paneId,
+        root: t.sockRoot,
+        identity: { paneId, sessionUuid: uuid, ctlDir: ctl },
+        panePid: () => wrapperPid,
+        group: null,
+      } as unknown as RegisteredPane;
+      refreshGroupOf(pane, readProcessTable());
+      expect(pane.group?.escaped?.map((m) => m.pid)).toEqual([bgPid]);
+
+      wrapper.stdin?.write("die\n"); // claude dies without its own cleanup
+      for (let i = 0; i < 100 && psField(bgPid, "ppid") !== 1; i++) await Bun.sleep(50);
+      expect(psField(bgPid, "ppid")).toBe(1);
+      // a refresh in the window between claude's death and the wrapper's exit, while the
+      // wrapper still carries the identity (so the fresh snapshot is a verified one)
+      const table = readProcessTable();
+      expect(table.find((r) => r.pid === wrapperPid)?.command).toContain(`--session-id ${uuid}`);
+      refreshGroupOf(pane, table);
+      expect(pane.group?.members.some((m) => m.pid === wrapperPid)).toBe(true);
+      expect(pane.group?.escaped?.map((m) => m.pid)).toEqual([bgPid]);
+
+      // the owner is gone: the watcher reads the same group file and ends both
+      const w = spawnPaneWatcher({
+        paneId,
+        sessionUuid: uuid,
+        ctlDir: ctl,
+        sockPath: join(t.sockRoot, `magmux-${paneId}.sock`),
+        recordPath: join(t.sockRoot, "panes", `${paneId}.json`),
+        turnDir: turn,
+        sockRoot: t.sockRoot,
+      });
+      w.stdin?.end();
+      expect(await waitForExit(w, 10_000)).toBe(true);
+      expect(alive(wrapperPid)).toBe(false);
+      expect(alive(bgPid)).toBe(false);
+      expect(existsSync(ctl)).toBe(false);
+    } finally {
+      for (const target of [bgPid, -wrapperPid]) {
+        try {
+          process.kill(target, "SIGKILL");
+        } catch {
+          // already ended by the watcher
+        }
+      }
+    }
+  }, 30_000);
 });
 
 describe("records", () => {

@@ -122,8 +122,8 @@ describe("TS predicates", () => {
   test("group file round trip and snapshot merge", () => {
     const snap = verifiedGroupSnapshot(table, fx.panePid, pane);
     expect(parseGroupFile(formatGroupFile(snap!))).toEqual(snap);
-    expect(mergeSnapshots(snap, { pgid: 7, members: [] })).toBe(snap);
-    expect(mergeSnapshots(snap, null)).toBe(snap);
+    expect(mergeSnapshots(snap, { pgid: 7, members: [] }, table)).toBe(snap);
+    expect(mergeSnapshots(snap, null, table)).toBe(snap);
   });
 
   test("merge prunes members that died: a long session's group record stays bounded", () => {
@@ -131,13 +131,46 @@ describe("TS predicates", () => {
     // 500 ticks, each sampling a different short-lived process in the pane group
     for (let i = 0; i < 500; i++) {
       const brief: PsRow = { ...leader, pid: 90_000 + i, ppid: leader.pid, command: "ls -la" };
-      rec = mergeSnapshots(rec, verifiedGroupSnapshot([...table, brief], fx.panePid, pane));
+      const withBrief = [...table, brief];
+      rec = mergeSnapshots(rec, verifiedGroupSnapshot(withBrief, fx.panePid, pane), withBrief);
     }
     const live = verifiedGroupSnapshot(table, fx.panePid, pane);
-    rec = mergeSnapshots(rec, live);
+    rec = mergeSnapshots(rec, live, table);
     expect(rec?.members.length).toBe(live?.members.length);
     expect(sameSnapshot(rec, live)).toBe(true);
     expect(groupCheck(table, rec)).toBe(true);
+  });
+
+  test("merge keeps a recorded escaped shell whose parent died while a verified member lives", () => {
+    // claude (in the pane group) starts a run_in_background shell in its own group (measured on
+    // 2.1.291), then dies without its own cleanup: the shell is reparented to pid 1 while the
+    // claudish wrapper, which carries --session-id, is still a verified member.
+    const claude: PsRow = { ...leader, pid: leader.pid + 11, ppid: leader.pid, command: "claude" };
+    const bg: PsRow = {
+      pid: leader.pid + 7002,
+      ppid: claude.pid,
+      pgid: leader.pid + 7002,
+      lstart: leader.lstart,
+      command: "/bin/zsh -c eval 'npm run dev'",
+    };
+    const before = [...table, claude, bg];
+    const rec = verifiedGroupSnapshot(before, fx.panePid, pane) as GroupSnapshot;
+    expect(rec.escaped).toEqual([{ pid: bg.pid, lstart: bg.lstart }]);
+
+    const devServer: PsRow = { ...bg, pid: bg.pid + 1, ppid: bg.pid, command: "node server.js" };
+    const after = [...table, { ...bg, ppid: 1 }, devServer];
+    const fresh = verifiedGroupSnapshot(after, fx.panePid, pane) as GroupSnapshot;
+    expect(fresh.escaped).toBeUndefined(); // the chain now ends at pid 1
+    const merged = mergeSnapshots(rec, fresh, after) as GroupSnapshot;
+    expect(merged.members).toEqual(fresh.members);
+    expect(liveEscaped(after, merged).sort()).toEqual([bg.pid, devServer.pid].sort());
+
+    // a recorded pair that died, or whose pid now has another start time, drops out
+    const reused = after.map((r) =>
+      r.pid === bg.pid ? { ...r, lstart: "Thu Jan 1 00:00:00 2099" } : r
+    );
+    expect(mergeSnapshots(rec, fresh, reused)?.escaped).toBeUndefined();
+    expect(mergeSnapshots(rec, fresh, table)?.escaped).toBeUndefined();
   });
 });
 

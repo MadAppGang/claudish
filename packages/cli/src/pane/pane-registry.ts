@@ -258,7 +258,7 @@ export function refreshGroupOf(p: RegisteredPane, table: PsRow[]): void {
   const pid = p.panePid();
   if (!pid) return;
   const fresh = verifiedGroupSnapshot(table, pid, p.identity);
-  const merged = mergeSnapshots(p.group, fresh);
+  const merged = mergeSnapshots(p.group, fresh, table);
   if (!merged || sameSnapshot(merged, p.group)) return;
   p.group = merged;
   writeGroupFile(p.identity.ctlDir, merged);
@@ -426,7 +426,8 @@ function sweepGroup(
   const pgid = recorded?.pgid ?? rec.panePid ?? null;
   const group = mergeSnapshots(
     recorded,
-    pgid ? verifiedGroupSnapshot(table, pgid, identity) : null
+    pgid ? verifiedGroupSnapshot(table, pgid, identity) : null,
+    table
   );
   if (group || !mag) return group;
   const lead = table.find((r) => r.ppid === mag && r.pgid === r.pid);

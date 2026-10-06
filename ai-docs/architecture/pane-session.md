@@ -187,7 +187,13 @@ after it, which was never observed.
   The normal reap ends it anyway — `close_pane` lets Claude Code end its own shells (measured) —
   but the group backstop, the owner-EOF watcher and the startup sweep record such descendants as
   `escaped` (pid, start) pairs after `--` in the group file and signal each by pid while its pair
-  still matches.
+  still matches. A fresh snapshot finds an escaped process only while its parent chain reaches a
+  member, and when `claude` dies without its own cleanup the shell is reparented to pid 1 while the
+  claudish wrapper (a verified member) lives on. So a refresh keeps every recorded escaped pair
+  that still matches the live table, plus that survivor's own descendants outside the group;
+  replacing the list with the fresh one dropped the shell in exactly the crash this exists for
+  (code-review iteration 2, M2). Dead or reused pairs drop out, so the list stays bounded. A shell
+  started and orphaned between two 2 s ticks is never recorded; that window remains.
 
 **A turn that never gets its record.** When the activity is `finishing` (the model's message ended,
 Claude Code's end-of-turn record has not arrived) and the screen has been static with no Stop-hook

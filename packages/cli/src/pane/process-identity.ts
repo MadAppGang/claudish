@@ -217,14 +217,40 @@ export function liveEscaped(table: PsRow[], snap: GroupSnapshot | null): number[
  * the recorded pgid): the fresh one replaces the record, which therefore stays bounded
  * over a session of days. With no fresh snapshot (no member carries the identity any
  * more) the record is kept as it is: it is what still recognises an orphaned grandchild.
+ *
+ * Escaped descendants are the exception to "the fresh one replaces": the fresh snapshot
+ * finds one only while its parent chain still reaches a member, and when `claude` dies
+ * without its own cleanup its `run_in_background` shells are reparented to pid 1 while
+ * the claudish wrapper (a verified member) lives on. So the merged list is the fresh one
+ * PLUS every recorded escaped (pid, start) pair still in `table` — the same process, by
+ * the identity rule — plus that survivor's own descendants outside the group. Dead or
+ * reused entries drop out, so this list stays bounded too.
  */
 export function mergeSnapshots(
   a: GroupSnapshot | null,
-  b: GroupSnapshot | null
+  b: GroupSnapshot | null,
+  table: PsRow[]
 ): GroupSnapshot | null {
   if (!a) return b;
   if (!b || b.pgid !== a.pgid || b.members.length === 0) return a;
-  return withEscaped(a.pgid, [...b.members], [...(b.escaped ?? [])]);
+  const kept = new Set(liveEscaped(table, a));
+  const survivors = table
+    .filter((r) => kept.has(r.pid) && r.pgid !== a.pgid)
+    .map((r) => ({ pid: r.pid, lstart: r.lstart }));
+  const theirs = escapedDescendants(table, a.pgid, new Set(survivors.map((m) => m.pid)));
+  return withEscaped(a.pgid, [...b.members], unionMembers(b.escaped ?? [], survivors, theirs));
+}
+
+function unionMembers(...lists: GroupMember[][]): GroupMember[] {
+  const seen = new Set<string>();
+  const out: GroupMember[] = [];
+  for (const m of lists.flat()) {
+    const k = `${m.pid} ${collapse(m.lstart)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(m);
+  }
+  return out;
 }
 
 /** Same pgid and the same (pid, start) members, in any order. */
