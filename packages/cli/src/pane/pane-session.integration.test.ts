@@ -129,6 +129,16 @@ async function finish(r: Run, ms = 20_000): Promise<PaneSnapshot> {
   }
 }
 
+/**
+ * End a session the test leaves idle (interactive, AWAITING_INPUT), then reap and prove
+ * nothing is left. `finish` alone waits for a terminal state, which an idle interactive
+ * fake reaches only at its 20 s safety exit: every such test cost ~20 s of wall time.
+ */
+async function close(r: Run): Promise<PaneSnapshot> {
+  r.s.cancel();
+  return finish(r);
+}
+
 async function until(
   r: Run,
   pred: (s: PaneSnapshot) => boolean,
@@ -298,7 +308,7 @@ describe.skipIf(!MAGMUX)(
           r.s.send("second turn please");
           await until(r, (s) => s.turnsCompleted === 2);
           expect(r.turns.map((t) => t.settledBy)).toEqual(["turn_duration", "quiet"]);
-          await finish(r);
+          await close(r);
         },
         T
       );
@@ -573,7 +583,7 @@ describe.skipIf(!MAGMUX)(
           expect(r.turns[0]?.stopReason).toBe("interrupted");
           expect(r.turns[0]?.settledBy).toBe("interrupt");
           expect(r.turns[1]?.answer).toBe(`ANSWER fake-ask_user_send ${sha8("Pear, please")}`);
-          await finish(r);
+          await close(r);
         },
         T
       );
@@ -590,7 +600,7 @@ describe.skipIf(!MAGMUX)(
           r.s.send("next");
           await until(r, (s) => s.turnsCompleted === 2);
           expect(r.turns).toHaveLength(2);
-          await finish(r);
+          await close(r);
         },
         T
       );
@@ -774,7 +784,7 @@ describe.skipIf(!MAGMUX)(
           );
           r.s.send("second, answered");
           await until(r, (s) => s.turnsCompleted === 1);
-          await finish(r);
+          await close(r);
           expect(r.transitions.slice(0, 3)).toEqual([
             ["STARTING", "AWAITING_INPUT"],
             ["AWAITING_INPUT", "RUNNING"],
@@ -878,7 +888,7 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.capture().seq).toBeGreaterThan(s0);
           r.s.send("go");
           await until(r, (s) => s.turnsCompleted === 1);
-          await finish(r);
+          await close(r);
         },
         T
       );
@@ -921,7 +931,7 @@ describe.skipIf(!MAGMUX)(
           await until(r, (s) => s.turnsCompleted === 2, 20_000);
           const toAwaiting = r.transitions.filter(([, to]) => to === "AWAITING_INPUT");
           expect(toAwaiting).toHaveLength(1); // only after turn 2
-          await finish(r);
+          await close(r);
         },
         T
       );
