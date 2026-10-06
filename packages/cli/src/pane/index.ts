@@ -35,6 +35,7 @@ export {
 } from "./pane-registry.js";
 export {
   type PaneBlock,
+  type PaneDiagnostics,
   type PaneSession,
   type PaneSessionOptions,
   PaneStartError,

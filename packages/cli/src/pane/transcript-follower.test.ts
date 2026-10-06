@@ -150,6 +150,21 @@ describe("usage and tool calls", () => {
         for (const b of r.message.content) if (b.type === "tool_use") ids.add(b.id);
     expect(without.toolCalls).toBe(ids.size);
   });
+
+  test("assistantMessageIds lists each main-chain message id once, in order, never a subagent's", () => {
+    const n = "tools-session";
+    const r = run(n, [], {
+      subagents: join(FIXTURES, "transcripts", "tools-session", "subagents"),
+    });
+    const expected: string[] = [];
+    for (const rec of transcriptRecords(n))
+      if (rec.type === "assistant" && !rec.isSidechain && !expected.includes(rec.message.id))
+        expected.push(rec.message.id);
+    const lines = transcriptRecords(n).filter((rec) => rec.type === "assistant").length;
+    expect(expected.length).toBeGreaterThan(1);
+    expect(expected.length).toBeLessThan(lines); // one message spans several records
+    expect([...r.follower.assistantMessageIds()]).toEqual(expected);
+  });
 });
 
 describe("Stop hooks, provenHookless and turn_duration", () => {

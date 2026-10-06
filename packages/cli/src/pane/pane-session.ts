@@ -179,6 +179,21 @@ export type SendResult =
   | { ok: true; queued: number }
   | { ok: false; reason: "terminal" | "delivery_unavailable" | "unsupported_command" };
 
+/** What `get_diagnostics` reads from a live pane beyond the snapshot (§4.2). */
+export interface PaneDiagnostics {
+  /** the head of magmux's own stderr (≤ 8 KB) */
+  magmuxStderr: string;
+  /** assistant text before a file-delivered turn's task file was read (X-H4) */
+  preambleBytes: number;
+  /** read coverage of the current turn's task file; null for a typed turn or no turn */
+  readCoverage: {
+    linesTotal: number;
+    linesReturned: number;
+    complete: boolean;
+    reads: number;
+  } | null;
+}
+
 export interface PaneSession {
   readonly paneId: string;
   readonly sockPath: string;
@@ -189,6 +204,9 @@ export interface PaneSession {
   capture(sinceSeq?: number, opts?: { spans?: boolean }): CaptureResult | CaptureUnchanged;
   send(text: string): SendResult;
   turnAnswer(index: number): string;
+  /** main-chain assistant message ids the transcript has shown, first-seen order, each once */
+  assistantMessageIds(): readonly string[];
+  diagnostics(): PaneDiagnostics;
   cancel(): { changed: boolean; state: SlotState };
   expire(): { changed: boolean; state: SlotState };
   reaped(): Promise<void>;
@@ -1354,6 +1372,26 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (done !== undefined) return done;
     const cur = this.follower.view().current;
     return cur && cur.index === index ? cur.assistantText.join("\n\n") : "";
+  }
+
+  assistantMessageIds(): readonly string[] {
+    return this.follower.assistantMessageIds();
+  }
+
+  diagnostics(): PaneDiagnostics {
+    const cur = this.follower.view().current;
+    return {
+      magmuxStderr: this.stderrHead,
+      preambleBytes: cur?.preambleBytes ?? 0,
+      readCoverage: cur?.delivery
+        ? {
+            linesTotal: cur.delivery.lines,
+            linesReturned: cur.readCoverage.linesReturned,
+            complete: cur.readCoverage.complete,
+            reads: cur.readCoverage.reads,
+          }
+        : null,
+    };
   }
 
   cancel(): { changed: boolean; state: SlotState } {

@@ -146,6 +146,9 @@ export interface FollowerState {
   turns: TurnState[];
   usage: Map<string, { in: number; out: number }>;
   toolUseIds: Set<string>;
+  /** main-chain assistant message ids, in first-seen order, each once (the monitor's replies) */
+  mainAssistantIds: string[];
+  mainAssistantSeen: Set<string>;
   session: SessionFacts;
   records: number;
   resolvePath: (p: string) => string;
@@ -158,6 +161,8 @@ export function initialFollowerState(
     turns: [],
     usage: new Map(),
     toolUseIds: new Set(),
+    mainAssistantIds: [],
+    mainAssistantSeen: new Set(),
     session: { stopHooksSeen: false, provenHookless: false },
     records: 0,
     resolvePath,
@@ -423,6 +428,15 @@ function acceptIfWitness(t: TurnState, r: Rec, offset: number): void {
   t.lastChatOffset = offset;
 }
 
+/** One main-chain assistant message id, once: Claude Code writes one record per content block. */
+function noteMainAssistant(state: FollowerState, r: Rec): void {
+  const id = r.type === "assistant" ? r.message?.id : undefined;
+  if (typeof id !== "string" || !id) return;
+  if (state.mainAssistantSeen.has(id)) return;
+  state.mainAssistantSeen.add(id);
+  state.mainAssistantIds.push(id);
+}
+
 /** Pure: fold one main-transcript record at byte `offset` into the state. */
 export function applyRecord(
   state: FollowerState,
@@ -433,6 +447,7 @@ export function applyRecord(
   state.records++;
   recordUsage(state, r);
   if (r.isSidechain) return state;
+  noteMainAssistant(state, r);
   if (r.type === "system" && r.subtype === "stop_hook_summary") {
     state.session.stopHooksSeen = true;
     state.session.provenHookless = false;
@@ -679,6 +694,11 @@ export class TranscriptFollower {
 
   markSettled(): void {
     this.settled++;
+  }
+
+  /** Main-chain assistant message ids seen so far, in first-seen order, each once. */
+  assistantMessageIds(): readonly string[] {
+    return this.state.mainAssistantIds;
   }
 
   markSavingOff(): void {
