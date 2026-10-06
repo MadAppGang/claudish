@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildTeamStatusPayload, teamStatusNote } from "./mcp-server.js";
 import { CAPABILITIES, type TeamRunRow } from "./pane/index.js";
 import { type ModelStatus, type TeamStatus, teamRunRowFromDisk } from "./team-orchestrator.js";
@@ -64,6 +67,28 @@ describe("teamStatusNote", () => {
     expect(teamStatusNote({ anyActive: true, live: true }) ?? "").not.toContain(
       "turn_end_record_missing"
     );
+  });
+});
+
+describe("teamRunRowFromDisk", () => {
+  test("a SETTLED run whose rows carry no completedAt still has a finished_at", () => {
+    const dir = mkdtempSync(join(tmpdir(), "team-disk-row-"));
+    try {
+      const status = {
+        startedAt: "2026-09-09T00:00:00.000Z",
+        models: {
+          "01": { ...slot("CANCELLED", 0), completedAt: undefined },
+          "02": { ...slot("CANCELLED", 0), completedAt: undefined },
+        },
+      } as unknown as TeamStatus;
+      writeFileSync(join(dir, "status.json"), JSON.stringify(status));
+      const row = teamRunRowFromDisk(dir, status);
+      expect(row.state).toBe("SETTLED");
+      expect(typeof row.finished_at).toBe("string");
+      expect(Date.parse(row.finished_at as string)).toBeGreaterThan(Date.parse(status.startedAt));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

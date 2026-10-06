@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { ENV } from "./config.js";
@@ -539,12 +539,27 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
     path,
     kind: status.kind ?? (basename(path) === "judging" ? "judge" : "run"),
     started_at: status.startedAt,
-    finished_at:
-      settled && completions.length ? new Date(Math.max(...completions)).toISOString() : null,
+    // a SETTLED run always has finished_at (§8 A): pre-contract CANCELLED rows carry no
+    // completedAt, so the file's own last write stands in, else the start
+    finished_at: settled
+      ? new Date(
+          completions.length
+            ? Math.max(...completions)
+            : (statusMtimeMs(path) ?? Date.parse(status.startedAt))
+        ).toISOString()
+      : null,
     state: settled ? "SETTLED" : "ACTIVE",
     outcome: settled ? outcomeOf(slots.map((s) => s.state)) : null,
     slots,
   };
+}
+
+function statusMtimeMs(path: string): number | null {
+  try {
+    return statSync(join(path, "status.json")).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 function readManifestOrNull(path: string): TeamManifest | null {
