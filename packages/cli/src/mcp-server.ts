@@ -24,8 +24,8 @@ import { assertAgentAvailable } from "./agent-availability.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
-import type { ChannelEventType } from "./channel/types.js";
 import { TOOL_USE_ID_META_KEY, proveParentForCall } from "./channel/parent-proof.js";
+import type { ChannelEventType } from "./channel/types.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type HeartbeatHandle,
