@@ -408,3 +408,19 @@ Each is recorded as an `[impl-2]` note in the session's `architecture.md`.
 - The real-capture token-file fixtures (`test-fixtures/token-files/`) are a served foreign session
   (`provider_name:"X-ai"`, `billed_input_tokens` 221,807 vs `input_tokens` 39,594) and the initialised
   zeros, both copied from `~/.claudish/tokens-*.json` (counts only, no content).
+
+## 11. Code-review captures (2026-10-06, Claude Code 2.1.291)
+
+Same harness and login handling as §1 (hermetic HOME, the OAuth token in memory only, native
+haiku), scripts `phase2/cr1-commands.ts` and `phase2/cr1-bgshell.ts` in the session scratch. Every
+process and socket was gone afterwards (`runs/ps.log`).
+
+| run | what | result |
+|---|---|---|
+| cr1-commands | a turn, `/color yellow`, `/model haiku`, `/compact`, a turn, `/exit` | `/color` → `agent-color` + two `system/local_command` records (`<command-name>/color`, `<local-command-stdout>Session color set to: yellow`); `/model haiku` → user caveat (isMeta), `<command-name>/model`, `<local-command-stdout>Set model to …`; `/compact` as in §4.3; `/exit` → only `file-history-snapshot` + two `cost-state`, **no user record**; exit code 0. Copied verbatim as `transcripts/local-commands.jsonl`. |
+| cr1-longcwd | one turn in a 259-character cwd | projects dir `<200 slug chars>-g32rlu` (207 characters) = `slug.slice(0,200) + "-" + Math.abs(hash(realpath)).toString(36)`, hash `(h<<5)-h+charCode` over UTF-16 units, as read from the 2.1.291 bundle (`eI`, `Le`, `_ne`). |
+| cr1-bgshell | `run_in_background` Bash `sleep 317`, production `PaneSession` reap | the shell `/bin/zsh -c … eval 'sleep 317'` was pid 58621, **pgid 58621** (its own group), parent the `claude` process; pane group 58218. Gone after the reap (Claude Code ends its own shells on `close_pane`). |
+
+Older versions write `/exit`'s records: real 2.1.282 and 2.1.285 transcripts show the caveat,
+`<command-name>/exit</command-name>…` and `<local-command-stdout>(no content)` (or `See ya!` on
+2.1.281); the 2.1.285 triple is redacted into `transcripts/corpus-redacted/exit-command.jsonl`.
