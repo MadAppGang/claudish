@@ -16,6 +16,7 @@ import {
   paneIdentityMatches,
   parseGroupFile,
   parsePsTable,
+  sameSnapshot,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 import { FIXTURES } from "./test-helpers/fixtures.js";
@@ -119,9 +120,22 @@ describe("TS predicates", () => {
   test("group file round trip and snapshot merge", () => {
     const snap = verifiedGroupSnapshot(table, fx.panePid, pane);
     expect(parseGroupFile(formatGroupFile(snap!))).toEqual(snap);
-    const merged = mergeSnapshots(snap, { pgid: fx.panePid, members: [{ pid: 5, lstart: "x" }] });
-    expect(merged?.members).toHaveLength(2);
     expect(mergeSnapshots(snap, { pgid: 7, members: [] })).toBe(snap);
+    expect(mergeSnapshots(snap, null)).toBe(snap);
+  });
+
+  test("merge prunes members that died: a long session's group record stays bounded", () => {
+    let rec = verifiedGroupSnapshot(table, fx.panePid, pane);
+    // 500 ticks, each sampling a different short-lived process in the pane group
+    for (let i = 0; i < 500; i++) {
+      const brief: PsRow = { ...leader, pid: 90_000 + i, ppid: leader.pid, command: "ls -la" };
+      rec = mergeSnapshots(rec, verifiedGroupSnapshot([...table, brief], fx.panePid, pane));
+    }
+    const live = verifiedGroupSnapshot(table, fx.panePid, pane);
+    rec = mergeSnapshots(rec, live);
+    expect(rec?.members.length).toBe(live?.members.length);
+    expect(sameSnapshot(rec, live)).toBe(true);
+    expect(groupCheck(table, rec)).toBe(true);
   });
 });
 

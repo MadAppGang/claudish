@@ -170,17 +170,29 @@ export function verifiedGroupSnapshot(
   return { pgid, members: members.map((r) => ({ pid: r.pid, lstart: r.lstart })) };
 }
 
-/** Merge a fresh snapshot into a recorded one (members only accumulate). */
+/**
+ * Merge a fresh VERIFIED snapshot into a recorded one. The fresh snapshot lists every
+ * live member of the group, so a recorded member missing from it is dead (its (pid,
+ * start) pair can never match again) or has left the group (`groupCheck` only looks at
+ * the recorded pgid): the fresh one replaces the record, which therefore stays bounded
+ * over a session of days. With no fresh snapshot (no member carries the identity any
+ * more) the record is kept as it is: it is what still recognises an orphaned grandchild.
+ */
 export function mergeSnapshots(
   a: GroupSnapshot | null,
   b: GroupSnapshot | null
 ): GroupSnapshot | null {
   if (!a) return b;
-  if (!b || b.pgid !== a.pgid) return a;
-  const seen = new Set(a.members.map((m) => `${m.pid} ${m.lstart}`));
-  const members = [...a.members];
-  for (const m of b.members) if (!seen.has(`${m.pid} ${m.lstart}`)) members.push(m);
-  return { pgid: a.pgid, members };
+  if (!b || b.pgid !== a.pgid || b.members.length === 0) return a;
+  return { pgid: a.pgid, members: [...b.members] };
+}
+
+/** Same pgid and the same (pid, start) members, in any order. */
+export function sameSnapshot(a: GroupSnapshot | null, b: GroupSnapshot | null): boolean {
+  if (!a || !b) return a === b;
+  if (a.pgid !== b.pgid || a.members.length !== b.members.length) return false;
+  const keys = new Set(a.members.map((m) => `${m.pid} ${collapse(m.lstart)}`));
+  return b.members.every((m) => keys.has(`${m.pid} ${collapse(m.lstart)}`));
 }
 
 /**

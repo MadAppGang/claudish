@@ -46,6 +46,7 @@ import {
   readProcessTable,
   readProcessTableAsync,
   recordPathOf,
+  sameSnapshot,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 
@@ -257,10 +258,7 @@ export function refreshGroupOf(p: RegisteredPane, table: PsRow[]): void {
   if (!pid) return;
   const fresh = verifiedGroupSnapshot(table, pid, p.identity);
   const merged = mergeSnapshots(p.group, fresh);
-  if (!merged) return;
-  const changed =
-    !p.group || merged.pgid !== p.group.pgid || merged.members.length !== p.group.members.length;
-  if (!changed) return;
+  if (!merged || sameSnapshot(merged, p.group)) return;
   p.group = merged;
   writeGroupFile(p.identity.ctlDir, merged);
 }
