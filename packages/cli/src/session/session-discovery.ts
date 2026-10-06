@@ -23,6 +23,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { projectDirNameFor } from "../channel/parent-proof.js";
 
 /** Head bytes scanned for the `entrypoint` marker. See `isAgentSession`. */
 const ENTRYPOINT_BYTES = 8192;
@@ -31,17 +32,25 @@ const ENTRYPOINT_BYTES = 8192;
 export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
 /**
- * Claude Code's directory name for a working directory: every `/` and `.` becomes `-`.
- * MEASURED against real directories — `/Users/jack/mag/claudish/.claude/worktrees/x`
- * becomes `-Users-jack-mag-claudish--claude-worktrees-x`, the doubled dash being the
- * `/` and the `.` of `/.claude` in sequence.
+ * Claude Code's directory name for a working directory: every character outside
+ * `[A-Za-z0-9]` becomes `-`. MEASURED against real directories —
+ * `/Users/jack/mag/claudish/.claude/worktrees/x` becomes
+ * `-Users-jack-mag-claudish--claude-worktrees-x`, the doubled dash being the `/` and
+ * the `.` of `/.claude` in sequence, and a live run in a cwd named `fresh_cwd.v1`
+ * created `…-fresh-cwd-v1`: the `_` is replaced too. This used to replace only `/` and
+ * `.`, so a cwd with `_`, a space or `@` produced a transcript path that did not exist.
+ *
+ * ONE rule: this is `projectDirNameFor` (`channel/parent-proof.ts`), the function the
+ * parent-conversation proof searches with, so the path claudish derives for a child's
+ * transcript and the directory the proof looks in cannot drift apart. Callers pass a
+ * realpath (`transcriptPathFor` resolves one; git hands out real paths).
  *
  * The mapping is deliberately NOT inverted anywhere in this file. It is lossy — a `-`
- * in the slug could have been `/`, `.` or a literal `-` — so un-slugging a path would
- * guess. Every real path here comes from git or from the caller instead.
+ * in the slug could have been any non-alphanumeric character — so un-slugging a path
+ * would guess. Every real path here comes from git or from the caller instead.
  */
 export function slugForPath(absPath: string): string {
-  return absPath.replace(/[/.]/g, "-");
+  return projectDirNameFor(absPath);
 }
 
 /**

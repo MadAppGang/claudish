@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectDirNameFor } from "../channel/parent-proof.js";
 import {
   ACTIVE_WINDOW_MS,
   type SessionRow,
@@ -59,6 +60,24 @@ describe("session discovery pure helpers", () => {
   test("slugForPath replaces both slashes and dots without collapsing them", () => {
     expect(slugForPath("/a/b")).toBe("-a-b");
     expect(slugForPath("/Users/x/.claude/worktrees/y")).toBe("-Users-x--claude-worktrees-y");
+  });
+
+  test("slugForPath replaces EVERY non-alphanumeric character, as Claude Code does", () => {
+    // The directory Claude Code 2.1.287 created for a live run whose cwd was
+    // `…/research-scratch/fresh_cwd.v1` (research-transcript-and-launch.md §1.1):
+    // the `_` became `-` along with `/` and `.`.
+    const cwd =
+      "/Users/jack/mag/claudish/.claude/worktrees/claudish-mcp-magmux/ai-docs/sessions/dev-feature-mcp-magmux-panes-20261002-a7c3/research-scratch/fresh_cwd.v1";
+    expect(slugForPath(cwd)).toBe(
+      "-Users-jack-mag-claudish--claude-worktrees-claudish-mcp-magmux-ai-docs-sessions-dev-feature-mcp-magmux-panes-20261002-a7c3-research-scratch-fresh-cwd-v1"
+    );
+    expect(slugForPath("/tmp/a b@c+d")).toBe("-tmp-a-b-c-d");
+  });
+
+  test("slugForPath is the parent proof's projectDirNameFor, so the two cannot drift", () => {
+    for (const p of ["/a/b_c.d", "/x y/@z", "/Users/x/.claude/worktrees/y"]) {
+      expect(slugForPath(p)).toBe(projectDirNameFor(p));
+    }
   });
 
   test("isActive respects the explicit recency-window boundary", () => {
