@@ -86,6 +86,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "cancel_session",
+      "capture_session",
       "compare_models",
       "create_session",
       "get_diagnostics",
@@ -115,6 +116,8 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     });
     const parsed = JSON.parse((result.content as any)[0].text);
     expect(parsed.sessions).toEqual([]);
+    // CA-12: the answer says which contract it speaks.
+    expect(parsed.contract_version).toBe(1);
   });
 
   test("send_input returns false for non-existent session", async () => {
@@ -124,6 +127,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     });
     const parsed = JSON.parse((result.content as any)[0].text);
     expect(parsed.success).toBe(false);
+    expect(parsed.reason).toBe("unknown_session");
   });
 
   test("get_output errors for non-existent session", async () => {
@@ -131,13 +135,25 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     expect(result.isError).toBe(true);
   });
 
-  test("cancel_session returns false for non-existent session", async () => {
+  test("cancel_session answers unknown_session for a non-existent session", async () => {
+    // A §8 verb: errors are a JSON ContractError with isError (was `{success:false}`).
     const result = await client.callTool({
       name: "cancel_session",
       arguments: { session_id: "bad" },
     });
-    const parsed = JSON.parse((result.content as any)[0].text);
-    expect(parsed.success).toBe(false);
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse((result.content as Array<{ text: string }>)[0]?.text ?? "");
+    expect(parsed.error.code).toBe("unknown_session");
+  });
+
+  test("capture_session answers unknown_session for a non-existent session", async () => {
+    const result = await client.callTool({
+      name: "capture_session",
+      arguments: { session_id: "bad" },
+    });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse((result.content as Array<{ text: string }>)[0]?.text ?? "");
+    expect(parsed.error.code).toBe("unknown_session");
   });
 
   test("unknown tool returns isError", async () => {
@@ -169,7 +185,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
       // Poll until the session reaches a terminal state. Use a wall-clock
       // budget so scheduler contention cannot turn a slow session into a
       // misleading empty-output failure.
-      const terminalStatuses = new Set(["completed", "failed", "timeout"]);
+      const terminalStatuses = new Set(["COMPLETED", "FAILED", "TIMEOUT", "EMPTY"]);
       const pollStartedAt = Date.now();
       const pollBudgetMs = 120_000;
       let lastObservedStatus = "not found";
@@ -182,9 +198,9 @@ describe("Group 1: MCP Protocol — channel capability", () => {
           arguments: { include_completed: true },
         });
         const sessions = JSON.parse((list.content as any)[0].text).sessions;
-        const s = sessions.find((x: any) => x.sessionId === sid);
-        lastObservedStatus = s?.status ?? "not found";
-        if (s && terminalStatuses.has(s.status)) {
+        const s = sessions.find((x: any) => x.session_id === sid);
+        lastObservedStatus = s?.state ?? "not found";
+        if (s && terminalStatuses.has(s.state)) {
           reachedTerminal = true;
           break;
         }
@@ -257,11 +273,12 @@ describe("Group 1b: MCP Protocol — channel-only tools", () => {
     } catch {}
   });
 
-  test("lists only the 6 channel tools when CLAUDISH_MCP_TOOLS=channel", async () => {
+  test("lists only the 7 channel tools when CLAUDISH_MCP_TOOLS=channel", async () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "cancel_session",
+      "capture_session",
       "create_session",
       "get_diagnostics",
       "get_output",

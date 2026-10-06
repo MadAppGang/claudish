@@ -9,9 +9,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { type Baseline, baselineCost, getBaselines } from "./baseline-pricing.js";
+import { resolveTokenFilePath } from "./token-file.js";
 
 /** One tool's share of the session. */
 export interface ToolCall {
@@ -74,10 +73,7 @@ export interface SessionStats {
   billedInputTokens: number;
 }
 
-/** The path `TokenTracker.writeFile` wrote to, resolved the same way it resolves it. */
-export function tokenFilePath(port: number): string {
-  return process.env.CLAUDISH_TOKEN_FILE || join(homedir(), ".claudish", `tokens-${port}.json`);
-}
+export { resolveTokenFilePath };
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
@@ -93,7 +89,7 @@ export function readSessionStats(
 ): SessionStats | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(tokenFilePath(port), "utf-8"));
+    raw = JSON.parse(readFileSync(resolveTokenFilePath(port), "utf-8"));
   } catch {
     return null;
   }

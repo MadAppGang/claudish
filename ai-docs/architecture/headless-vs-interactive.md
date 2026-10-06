@@ -121,8 +121,16 @@ One deliberate constraint worth knowing before you try to automate around it (`m
 So the MCP server will not create a session for you. That is accountability, not an omission —
 an agent driving another agent is exactly the case where a human needs to be able to look.
 
-`packages/magmux-{darwin,linux}-*` ship with the CLI; `team-grid.ts` is the current consumer, and
-`--grid` is the side-by-side feature rather than the rationale.
+`packages/magmux-{darwin,linux}-*` ship with the CLI. Since 10.4 its main consumer is
+`packages/cli/src/pane/`: every MCP `team` slot, every CLI `team`/`--team --mode json` slot and every
+`create_session` is an interactive Claude Code in its own headless magmux pane, and the MCP server
+no longer starts any child with `-p` ([`pane-session.md`](pane-session.md)). `team-grid.ts` and
+`--grid` remain the side-by-side viewer for a human, not the rationale.
+
+The MCP-server constraint quoted above is about `magmux mcp`, magmux's OWN MCP server. claudish's
+MCP server spawns its panes itself, headless, because a team slot or a channel session has no human
+in front of it; the pane's screen is still readable through `team(mode:"capture")` and
+`capture_session`, which is what the peer's Claude Code mod draws.
 
 ## Driving an interactive session to completion — the part that bites
 
@@ -144,6 +152,12 @@ work happens.
 So neither flag drives a session. The controlled-session loop does.
 
 ### The validated sequence
+
+This is the sequence for a pane running `claude` itself, which magmux attaches its
+`ClaudeCodeController` to. A `claudish` pane has NO controller (the command must never name
+`claude`, or the controller's mtime-based transcript discovery can lock onto the wrong session), so
+`PaneSession` replaces the state edges with screen CONTENT for boot and the transcript for the turn;
+see `pane-session.md`. The edges are still the right mental model.
 
 1. Launch WITHOUT `-w`: `magmux --headless --id <name> -e 'claude'`.
 2. **Strip `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE` from the child env.** Inherited from a
@@ -176,29 +190,38 @@ the content is. Same lesson as `require_pattern` in `team-capture.md`, one layer
 
 ### A working implementation
 
-`scripts/magmux-drive-session.ts` implements the sequence above and is the thing to read (or
-copy) rather than reconstructing it:
+`packages/cli/src/pane/` (`PaneSession`) implements the sequence above for MCP `team` slots and
+`create_session`, and `scripts/pane-drive.ts` drives one session through it from the command
+line (it replaced the polling reference driver `magmux-drive-session.ts`, whose measurements
+follow):
 
-    bun scripts/magmux-drive-session.ts <id> "Reply with exactly OK and nothing else."
-    -> {"ok":true,"answer":"OK","costSeen":true,
-        "states":["boot=awaiting_input","started=running","settled=awaiting_input"]}
+    bun scripts/pane-drive.ts "Reply with exactly OK and nothing else."
+    bun scripts/pane-drive.ts --fake answer "hello"      # the test fake, hermetic, no cost
 
-Measured: 8/8 deterministic runs, 14-25s each; distinct prompts return their real answers
-(`BANANA`, `51` for 17x3, `PEAR`), so it reports model output rather than a fixed string; a
-forced turn deadline returns `turn_timeout` in 16.7s instead of hanging; and no run left an
+The old driver measured: 8/8 deterministic runs, 14-25s each; distinct prompts returned their real
+answers (`BANANA`, `51` for 17x3, `PEAR`), so it reported model output rather than a fixed string;
+a forced turn deadline returned `turn_timeout` in 16.7s instead of hanging; and no run left an
 orphaned process or a stale socket.
 
-It POLLS `list` every 600ms, which was enough to validate the sequence but is not the best
-design. The protocol is built for event SUBSCRIPTION (`snapshot` / `exit` frames) — madbench's
-`internal/magmux/socket.go` consumes those instead, deriving terminal state from an `exit` event
-and its code. Prefer events over polling for anything long-lived; there is no poll-interval race
-in that model.
+It POLLED `list` every 600ms, which was enough to validate the sequence but is not the best
+design. The protocol is built for event SUBSCRIPTION — madbench's `internal/magmux/socket.go`
+derives terminal state from an `exit` event and its code. `PaneSession` subscribes: one persistent
+`watch` of frames per pane, `exit` events for liveness, and a `list` on every attach only to catch a
+child that died before the subscription existed. Prefer events over polling for anything
+long-lived; there is no poll-interval race in that model.
 
 ### Permission prompts
 
-`ClaudeCodeController` models `CtrlAwaitingPermission` distinctly from `CtrlAwaitingInput`, so a
-driver CAN see "it asked a question" rather than hanging. The cheaper route for automation is not
-to be asked: claudish's team children already spawn with `-y`.
+The controller's `CtrlAwaitingPermission` state is not something a driver can rely on. Read in
+magmux 0.14.0's source: `ClaudeCodeController` never produces `awaiting_permission` (only a plugin
+controller can push it), so a permission block shows up in `list` as `awaiting_input`; and a
+`claudish` pane has no controller at all. The
+cheaper route for automation is not to be asked: claudish's pane children run with `-y`, under
+which `--permission-mode default` produces no dialog (measured), and `--no-auto-approve` is a
+reserved flag. A permission dialog therefore appears only for plan approval
+(`--permission-mode plan`). `PaneSession` recognises it, and AskUserQuestion, from a closed list of
+named dialog headers on the screen plus the pending tool in the transcript; team fails such a slot
+`blocked`, a channel session waits in `AWAITING_PERMISSION` or `AWAITING_INPUT` for `send_input`.
 
 ## What this means when you are writing code here
 
@@ -207,10 +230,12 @@ to be asked: claudish's team children already spawn with `-y`.
 - **`exit 0` from a headless child is not evidence the flags were honoured.** This is the same
   lesson `team-capture.md` records for output: exit 0 proves nothing, which is why
   `require_pattern` exists. Argument handling has the same hole.
-- **Validate at the claudish boundary when the child will not.** `agent-availability.ts` does
-  this for `--agent`: it discovers the agent names live (`claude --agent <sentinel> -p`, ~0.5s, no
-  API call, no tokens), caches them PER CWD because that list is cwd-dependent (24 names in this
-  repo, 5 in `/tmp`), and fails OPEN when the list cannot be determined — blocking every session
-  because a probe broke would be a worse failure than the one it guards.
+- **Prefer a child that validates itself over a validator in front of it.** claudish once probed
+  `--agent` names itself (`agent-availability.ts`: `claude --agent <sentinel> -p`, cached per cwd,
+  failing open) because the stream-json child would not refuse a bad one. The interactive pane child
+  does refuse it — measured, the pane exits 319 ms after the child starts, before any model request
+  — so the probe was deleted: with two validators the cheap one always decides and the real one is
+  never exercised. A refused agent is FAILED `agent_rejected` with the child's own line.
 - **Prefer magmux over `-p`** for anything where a silent behavioural difference would corrupt
-  the result rather than merely degrade it.
+  the result rather than merely degrade it. claudish's own `-p` single-shot mode still exists for
+  users who pipe a prompt in; nothing in the MCP server uses it.

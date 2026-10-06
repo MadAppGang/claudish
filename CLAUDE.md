@@ -18,16 +18,25 @@ lives in `ROADMAP.md`.
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
-  silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux
+  silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux,
+  and why the MCP server starts no child with `-p`
+- `pane-session.md` — MCP and CLI `team` slots and `create_session` as interactive Claude Code in
+  headless magmux panes: transcript turn oracle, settle on `turn_duration` (32 s quiet path gated
+  on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
+  watcher and identity-checked reap, socket traps, the frozen mod contract v1. Read before editing
+  `pane/`, team spawn or channel spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-channel.md` — MCP tool surface, channel wire format, progress keepalive
-- `team-capture.md` — why `team`'s exit 0 proves nothing
-- `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns before its
-  children finish, idle time as information, why `outputSize` reads 0 on a RUNNING slot and
-  what to read instead, and why `keepUnrecognizedJson` is an option
-  rather than one rule for both the channel and `team`
+- `mcp-channel.md` — the 14-tool MCP surface, channel sessions on panes (`send_input` queueing,
+  `capture_session`, the session records the magus monitor reads), channel wire format
+  (`awaiting_permission`, no `finishing`), progress keepalive
+- `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
+  assistant message of its turn, from the transcript, starting after the task file was read
+- `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every
+  prompt is accepted (≤ 120 s) and not when the slots finish, idle time as information, why
+  `outputSize` reads 0 on a RUNNING slot and what to read instead, the run registry by `run_id`,
+  and the team record ended exactly once
 - `picker.md` — the OpenTUI model picker: a dialog, not a dashboard; the provider list first
   with nothing prefetched; why an empty list must say WHY; the no-terminal gate; capture and
   compiled-binary traps. Read before editing `picker/` or `selectModel`

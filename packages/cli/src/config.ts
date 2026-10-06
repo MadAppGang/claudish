@@ -14,6 +14,10 @@ export const ENV = {
   // CLAUDISH_TOKEN_FILE is running against a proxied, non-Anthropic account and
   // must not render Anthropic plan/rate-limit data.
   CLAUDISH_TOKEN_FILE: "CLAUDISH_TOKEN_FILE", // Absolute path to ~/.claudish/tokens-<port>.json for this session
+  // The same path again, set ONLY by claude-runner when it publishes the session's own
+  // file to Claude Code. A claudish started from that session's Bash tool inherits both;
+  // equal values mean "a parent session's status-line file", never "your file".
+  CLAUDISH_PUBLISHED_TOKEN_FILE: "CLAUDISH_PUBLISHED_TOKEN_FILE",
   CLAUDISH_PROVIDER_NAME: "CLAUDISH_PROVIDER_NAME", // Provider display name (e.g. "Alibaba Token Plan"); UNSET when not known at spawn time
   ANTHROPIC_MODEL: "ANTHROPIC_MODEL", // Claude Code standard env var for model selection
   ANTHROPIC_SMALL_FAST_MODEL: "ANTHROPIC_SMALL_FAST_MODEL", // Claude Code standard env var for fast model
@@ -72,6 +76,17 @@ export const ENV = {
   // is READ, never written, because it is the hard ceiling any in-request hold
   // must land inside. See recovery/settings.ts's resolveTier1DeadlineMs.
   API_TIMEOUT_MS: "API_TIMEOUT_MS",
+  // Internal markers of an MCP pane child: the claudish an MCP `team` slot or
+  // `create_session` starts inside a headless magmux pane. Set by the pane
+  // launcher, consumed by `pane/child-env.ts`, deleted from Claude Code's
+  // environment by claude-runner. Never set by a user.
+  CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" in a pane child, nowhere else
+  CLAUDISH_PANE_ENV: "CLAUDISH_PANE_ENV", // JSON snapshot of the MCP server's environment; re-applied, then deleted
+  CLAUDISH_PANE_CWD: "CLAUDISH_PANE_CWD", // realpath of the cwd the pane child must run in
+  // Where pane sockets, records and launcher dirs live (default /tmp/claudish-mux-<uid>).
+  // A location, like CLAUDISH_SESSIONS_DIR: test suites that start a real MCP server point
+  // it at their own root so the startup sweep and the pane limit stay inside the test.
+  CLAUDISH_PANE_ROOT: "CLAUDISH_PANE_ROOT",
 } as const;
 
 // OpenRouter API Configuration

@@ -1,185 +1,186 @@
 import { describe, expect, it } from "bun:test";
+import type { SettledTurn } from "./pane/index.js";
 import {
   DEFAULT_MIN_OUTPUT_BYTES,
-  STDOUT_TAIL_LIMIT,
+  TRUNCATION_NOTE,
   classifyRunOutput,
 } from "./team-orchestrator.js";
 
-const CLEAN_LARGE_OUTPUT = "A".repeat(STDOUT_TAIL_LIMIT);
+/*
+ * `classifyRunOutput` decides a settled pane turn. Its inputs are the turn's ANSWER (the
+ * assistant text read from the transcript — for a file-delivered prompt, only the text
+ * after the task file was read), the transcript's API-error entry, the stop_reason and
+ * the read coverage of the task file. Precedence: api_error (FAILED) → prompt_not_read
+ * (FAILED) → refused (EMPTY) → empty_output → min_output_bytes → shape_mismatch LAST.
+ */
+
+const CLEAN_LARGE_OUTPUT = "A".repeat(4000);
+
+function delivery(over: Partial<SettledTurn["delivery"]> = {}): SettledTurn["delivery"] {
+  return {
+    mode: "file",
+    linesTotal: 40,
+    linesRead: 40,
+    complete: true,
+    preambleBytes: 0,
+    ...over,
+  };
+}
 
 describe("classifyRunOutput", () => {
-  it("classifies an API error printed to stdout", () => {
+  it("classifies a turn that ended in an API error entry as FAILED api_error", () => {
     const result = classifyRunOutput({
-      outputSize: 98,
-      stdoutTail:
-        "[API Error: server_is_overloaded Our servers are currently overloaded. Please try again later.]",
-      stderr: "",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
+      answer: "",
+      apiError: {
+        status: 529,
+        text: "API Error: 529 Our servers are currently overloaded. Please try again later.",
+      },
     });
 
+    expect(result?.state).toBe("FAILED");
     expect(result?.reason).toBe("api_error");
-    expect(result?.detail).toContain(
-      "server_is_overloaded Our servers are currently overloaded. Please try again later."
-    );
-  });
-
-  it("classifies Claude Code's background-task wait ceiling", () => {
-    const result = classifyRunOutput({
-      outputSize: 195,
-      stdoutTail: "A short preamble that is not a complete model response.",
-      stderr:
-        "Background tasks still running after 600s; terminating. " +
-        "Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-    });
-
-    expect(result?.reason).toBe("background_task_ceiling");
-    expect(result?.detail).toContain("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS");
+    expect(result?.detail).toContain("status 529");
+    expect(result?.detail).toContain("Our servers are currently overloaded");
   });
 
   it("classifies output below the configured minimum as empty", () => {
     const shortOutput = "A".repeat(300);
-    const result = classifyRunOutput({
-      outputSize: 300,
-      stdoutTail: shortOutput,
-      stderr: "",
-      minOutputBytes: 500,
-    });
+    const result = classifyRunOutput({ answer: shortOutput, apiError: null, minOutputBytes: 500 });
 
+    expect(result?.state).toBe("EMPTY");
     expect(result?.reason).toBe("empty_output");
-    expect(result?.detail).toContain("caller required at least 500 B");
+    expect(result?.detail).toContain("at least 500 B");
     expect(
       classifyRunOutput({
-        outputSize: 300,
-        stdoutTail: shortOutput,
-        stderr: "",
+        answer: shortOutput,
+        apiError: null,
         minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
       })
     ).toBeNull();
   });
 
   it.each([
-    {
-      outputSize: 141,
-      stdoutTail:
-        "Observability provides visibility into complex system behaviors, enabling rapid diagnosis and resolution of issues before they impact users.",
-    },
-    {
-      outputSize: 96,
-      stdoutTail:
-        "Observability matters because it turns opaque failures into diagnosable signals you can act on.",
-    },
-  ])(
-    "accepts the measured $outputSize B regression answer at default",
-    ({ outputSize, stdoutTail }) => {
-      expect(
-        classifyRunOutput({
-          outputSize,
-          stdoutTail,
-          stderr: "",
-          minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-        })
-      ).toBeNull();
-    }
-  );
+    "Observability provides visibility into complex system behaviors, enabling rapid diagnosis and resolution of issues before they impact users.",
+    "Observability matters because it turns opaque failures into diagnosable signals you can act on.",
+  ])("accepts a measured short regression answer at default (%#)", (answer) => {
+    expect(classifyRunOutput({ answer, apiError: null })).toBeNull();
+  });
 
   it.each([
-    { name: "a newline", outputSize: 1, stdoutTail: "\n" },
-    {
-      name: "mixed spaces, newline, and tab",
-      outputSize: Buffer.byteLength("   \n\t "),
-      stdoutTail: "   \n\t ",
-    },
-    { name: "zero bytes", outputSize: 0, stdoutTail: "" },
-  ])("classifies $name as empty at default", ({ outputSize, stdoutTail }) => {
-    const result = classifyRunOutput({
-      outputSize,
-      stdoutTail,
-      stderr: "",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-    });
+    { name: "a newline", answer: "\n" },
+    { name: "mixed spaces, newline, and tab", answer: "   \n\t " },
+    { name: "zero bytes", answer: "" },
+  ])("classifies $name as empty at default", ({ answer }) => {
+    const result = classifyRunOutput({ answer, apiError: null });
 
+    expect(result?.state).toBe("EMPTY");
     expect(result?.reason).toBe("empty_output");
   });
 
   it("accepts large clean output", () => {
-    expect(
-      classifyRunOutput({
-        outputSize: Buffer.byteLength(CLEAN_LARGE_OUTPUT),
-        stdoutTail: CLEAN_LARGE_OUTPUT,
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      })
-    ).toBeNull();
+    expect(classifyRunOutput({ answer: CLEAN_LARGE_OUTPUT, apiError: null })).toBeNull();
   });
 
-  it("does not treat a large answer with a whitespace-only retained tail as empty", () => {
-    expect(
-      classifyRunOutput({
-        outputSize: 30_000,
-        stdoutTail: "   \n  ",
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      })
-    ).toBeNull();
-  });
-
-  it("classifies whitespace-only output at the retained-tail boundary as empty", () => {
-    const result = classifyRunOutput({
-      outputSize: STDOUT_TAIL_LIMIT,
-      stdoutTail: " ".repeat(STDOUT_TAIL_LIMIT),
-      stderr: "",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-    });
-
-    expect(result?.reason).toBe("empty_output");
+  it("measures min_output_bytes in UTF-8 bytes of the answer", () => {
+    const answer = "答え".repeat(10); // 60 bytes, 20 chars
+    expect(classifyRunOutput({ answer, apiError: null, minOutputBytes: 60 })).toBeNull();
+    expect(classifyRunOutput({ answer, apiError: null, minOutputBytes: 61 })?.reason).toBe(
+      "empty_output"
+    );
   });
 
   it("gives an API error precedence over empty output", () => {
-    const apiError = "[API Error: request failed]";
     const result = classifyRunOutput({
-      outputSize: Buffer.byteLength(apiError),
-      stdoutTail: apiError,
-      stderr: "",
+      answer: "",
+      apiError: { status: null, text: "request failed" },
       minOutputBytes: 500,
     });
 
     expect(result?.reason).toBe("api_error");
   });
 
-  it("gives the background-task ceiling precedence over whitespace-only output", () => {
+  it("classifies a refusal as EMPTY refused", () => {
     const result = classifyRunOutput({
-      outputSize: 1,
-      stdoutTail: "\n",
-      stderr: "Background tasks still running after 600s; terminating.",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
+      answer: "I can't help with that.",
+      apiError: null,
+      stopReason: "refusal",
     });
 
-    expect(result?.reason).toBe("background_task_ceiling");
+    expect(result).toEqual({
+      state: "EMPTY",
+      reason: "refused",
+      detail: expect.stringContaining("refusal"),
+    });
   });
 
-  it.each([
-    {
-      name: "API error in stdout",
-      stdoutTail: `${CLEAN_LARGE_OUTPUT}[API Error: rate limit exceeded]`,
-      stderr: "",
-      reason: "api_error",
-    },
-    {
-      name: "background-task ceiling in stderr",
-      stdoutTail: CLEAN_LARGE_OUTPUT,
-      stderr: "Background tasks still running after 600s; terminating.",
-      reason: "background_task_ceiling",
-    },
-  ])("detects $name even when outputSize is large", ({ stdoutTail, stderr, reason }) => {
+  it("adds the truncation note to whatever results from a max_tokens turn", () => {
     const result = classifyRunOutput({
-      outputSize: 10_000,
-      stdoutTail,
-      stderr,
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
+      answer: "",
+      apiError: null,
+      stopReason: "max_tokens",
     });
 
-    expect(result?.reason).toBe(reason);
+    expect(result?.reason).toBe("empty_output");
+    expect(result?.detail).toContain(TRUNCATION_NOTE);
+    expect(
+      classifyRunOutput({ answer: "complete", apiError: null, stopReason: "max_tokens" })
+    ).toBeNull();
+  });
+});
+
+describe("classifyRunOutput — prompt_not_read", () => {
+  it("fails a turn whose task file was never read", () => {
+    const result = classifyRunOutput({
+      answer: "VERDICT: ok",
+      apiError: null,
+      promptRead: delivery({ linesRead: 0, complete: false }),
+    });
+
+    expect(result?.state).toBe("FAILED");
+    expect(result?.reason).toBe("prompt_not_read");
+    expect(result?.detail).toContain("never read");
+  });
+
+  it("names the lines a partial read returned", () => {
+    const result = classifyRunOutput({
+      answer: "VERDICT: ok",
+      apiError: null,
+      promptRead: delivery({ linesTotal: 3400, linesRead: 2000, complete: false }),
+    });
+
+    expect(result?.reason).toBe("prompt_not_read");
+    expect(result?.detail).toContain("2000 of 3400");
+  });
+
+  it("comes after api_error and before refused and the shape contract", () => {
+    const unread = delivery({ linesRead: 0, complete: false });
+    expect(
+      classifyRunOutput({
+        answer: "",
+        apiError: { status: 500, text: "boom" },
+        promptRead: unread,
+      })?.reason
+    ).toBe("api_error");
+    expect(
+      classifyRunOutput({
+        answer: "no",
+        apiError: null,
+        stopReason: "refusal",
+        promptRead: unread,
+        requirePattern: "VERDICT",
+      })?.reason
+    ).toBe("prompt_not_read");
+  });
+
+  it("does not apply to a typed prompt (complete is null) or a fully read file", () => {
+    expect(
+      classifyRunOutput({
+        answer: "ok",
+        apiError: null,
+        promptRead: delivery({ mode: "typed", linesTotal: null, linesRead: null, complete: null }),
+      })
+    ).toBeNull();
+    expect(classifyRunOutput({ answer: "ok", apiError: null, promptRead: delivery() })).toBeNull();
   });
 });
 
@@ -187,8 +188,8 @@ describe("classifyRunOutput — requirePattern", () => {
   const requirePattern = "```vote";
 
   // These are the three real epilogues that replaced complete answers in the
-  // measured dropout runs. Their byte counts are deliberately derived from the
-  // captured text so the fixtures cannot drift away from what is classified.
+  // measured print-mode dropout runs. A pane turn keeps every assistant message, but
+  // an answer that IS only an epilogue still has no vote, and must still be refused.
   const dropoutFixtures = [
     {
       name: "repro4 response-01 from gc@glm-5.2",
@@ -211,18 +212,12 @@ describe("classifyRunOutput — requirePattern", () => {
   ];
 
   it.each(dropoutFixtures)("classifies $name as a shape mismatch", ({ text }) => {
-    const outputSize = Buffer.byteLength(text);
-    const result = classifyRunOutput({
-      outputSize,
-      stdoutTail: text,
-      stderr: "",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      requirePattern,
-    });
+    const result = classifyRunOutput({ answer: text, apiError: null, requirePattern });
 
+    expect(result?.state).toBe("EMPTY");
     expect(result?.reason).toBe("shape_mismatch");
     expect(result?.detail).toContain(requirePattern);
-    expect(result?.detail).toContain(`${outputSize} B`);
+    expect(result?.detail).toContain(`${Buffer.byteLength(text)} B`);
   });
 
   it("accepts output that contains the required shape", () => {
@@ -234,103 +229,61 @@ describe("classifyRunOutput — requirePattern", () => {
       "```",
     ].join("\n");
 
-    expect(
-      classifyRunOutput({
-        outputSize: Buffer.byteLength(text),
-        stdoutTail: text,
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-        requirePattern,
-      })
-    ).toBeNull();
+    expect(classifyRunOutput({ answer: text, apiError: null, requirePattern })).toBeNull();
   });
 
   it("leaves shape validation off when requirePattern is omitted", () => {
-    const text = dropoutFixtures[0].text;
-
-    expect(
-      classifyRunOutput({
-        outputSize: Buffer.byteLength(text),
-        stdoutTail: text,
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      })
-    ).toBeNull();
+    expect(classifyRunOutput({ answer: dropoutFixtures[0].text, apiError: null })).toBeNull();
   });
 
-  it("matches the complete output when the required marker is outside the bounded tail", () => {
-    // The answer contract can appear near the start of a multi-KB response. The
-    // retained tail alone recreates the exact false failure fullOutput prevents.
-    const text = `Review complete.\n${requirePattern}\n${"A".repeat(STDOUT_TAIL_LIMIT + 100)}`;
-    const stdoutTail = text.slice(-STDOUT_TAIL_LIMIT);
-    const opts = {
-      outputSize: Buffer.byteLength(text),
-      stdoutTail,
-      stderr: "",
-      minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      requirePattern,
-    };
+  it("matches the FULL answer: a marker at the start of a long answer is found", () => {
+    const text = `Review complete.\n${requirePattern}\n${"A".repeat(40_000)}`;
+    expect(classifyRunOutput({ answer: text, apiError: null, requirePattern })).toBeNull();
+  });
 
-    expect(stdoutTail).not.toContain(requirePattern);
-    expect(classifyRunOutput({ ...opts, fullOutput: text })).toBeNull();
-    expect(classifyRunOutput(opts)?.reason).toBe("shape_mismatch");
+  it("anchors ^ to the start of the whole answer, with no flags (no m)", () => {
+    const answer = "VERDICT: PASS\n\nThe change is sound.";
+    expect(classifyRunOutput({ answer, apiError: null, requirePattern: "^VERDICT:" })).toBeNull();
+
+    // A verdict on a later line does not satisfy ^: the pattern has no `m` flag.
+    const later = "I read the file.\n\nVERDICT: PASS";
+    expect(
+      classifyRunOutput({ answer: later, apiError: null, requirePattern: "^VERDICT:" })?.reason
+    ).toBe("shape_mismatch");
+    // $ anchors to the end of the whole answer.
+    expect(classifyRunOutput({ answer, apiError: null, requirePattern: "sound\\.$" })).toBeNull();
   });
 
   it.each([
     {
-      name: "an API error in stdout",
+      name: "an API error",
       expectedReason: "api_error",
-      opts: {
-        outputSize: Buffer.byteLength("[API Error: server_is_overloaded ...]"),
-        stdoutTail: "[API Error: server_is_overloaded ...]",
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      },
+      input: { answer: "", apiError: { status: 529, text: "overloaded" } },
     },
     {
-      name: "the background-task ceiling in stderr",
-      expectedReason: "background_task_ceiling",
-      opts: {
-        outputSize: Buffer.byteLength("A real response was started."),
-        stdoutTail: "A real response was started.",
-        stderr: "Background tasks still running after 600s; terminating",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      },
+      name: "a refusal",
+      expectedReason: "refused",
+      input: { answer: "No.", apiError: null, stopReason: "refusal" },
     },
     {
       name: "zero-byte output",
       expectedReason: "empty_output",
-      opts: {
-        outputSize: 0,
-        stdoutTail: "",
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      },
+      input: { answer: "", apiError: null },
     },
     {
       name: "whitespace-only output",
       expectedReason: "empty_output",
-      opts: {
-        outputSize: Buffer.byteLength("\n"),
-        stdoutTail: "\n",
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      },
+      input: { answer: "\n", apiError: null },
     },
     {
       name: "output below the caller's minimum",
       expectedReason: "empty_output",
-      opts: {
-        outputSize: Buffer.byteLength("A short but non-empty response."),
-        stdoutTail: "A short but non-empty response.",
-        stderr: "",
-        minOutputBytes: 500,
-      },
+      input: { answer: "A short but non-empty response.", apiError: null, minOutputBytes: 500 },
     },
-  ])("gives $name precedence over shape validation", ({ expectedReason, opts }) => {
-    const result = classifyRunOutput({ ...opts, requirePattern });
+  ])("gives $name precedence over shape validation", ({ expectedReason, input }) => {
+    const result = classifyRunOutput({ ...input, requirePattern });
 
-    expect(result?.reason).toBe(expectedReason);
+    expect(result?.reason).toBe(expectedReason as never);
     expect(result?.reason).not.toBe("shape_mismatch");
   });
 
@@ -339,41 +292,8 @@ describe("classifyRunOutput — requirePattern", () => {
     let result: ReturnType<typeof classifyRunOutput> | undefined;
 
     expect(() => {
-      result = classifyRunOutput({
-        outputSize: Buffer.byteLength(text),
-        stdoutTail: text,
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-        requirePattern: "(",
-      });
+      result = classifyRunOutput({ answer: text, apiError: null, requirePattern: "(" });
     }).not.toThrow();
     expect(result).toBeNull();
   });
-
-  it.each([
-    {
-      outputSize: 141,
-      stdoutTail:
-        "Observability provides visibility into complex system behaviors, enabling rapid diagnosis and resolution of issues before they impact users.",
-    },
-    {
-      outputSize: 96,
-      stdoutTail:
-        "Observability matters because it turns opaque failures into diagnosable signals you can act on.",
-    },
-  ])(
-    "still accepts the measured $outputSize B answer when requirePattern is omitted",
-    ({ outputSize, stdoutTail }) => {
-      // These real short answers exposed the old minimum-size false positive.
-      // The opt-in shape contract must not recreate that failure by default.
-      expect(
-        classifyRunOutput({
-          outputSize,
-          stdoutTail,
-          stderr: "",
-          minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-        })
-      ).toBeNull();
-    }
-  );
 });

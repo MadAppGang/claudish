@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { readSessionStats } from "../../session/session-stats.js";
+import { resolveTokenFilePath } from "../../session/token-file.js";
 import { TokenTracker, computeCacheReadDiscount } from "./token-tracker.js";
 
 interface TokenFile {
@@ -51,6 +53,39 @@ afterEach(() => {
   createdTokenFiles.clear();
   if (originalTokenFile === undefined) delete process.env.CLAUDISH_TOKEN_FILE;
   else process.env.CLAUDISH_TOKEN_FILE = originalTokenFile;
+});
+
+describe("the token file path: one rule for the writer and its readers", () => {
+  test("with no override the tracker writes where resolveTokenFilePath says, $HOME first", () => {
+    const home = mkdtempSync(join(tmpdir(), "claudish-token-home-"));
+    const savedHome = process.env.HOME;
+    const port = nextPort++;
+    try {
+      process.env.HOME = home; // Bun's os.homedir() would ignore this
+      delete process.env.CLAUDISH_TOKEN_FILE;
+      const expected = join(home, ".claudish", `tokens-${port}.json`);
+      expect(resolveTokenFilePath(port)).toBe(expected);
+      const tracker = new TokenTracker(port, {
+        contextWindow: 400_000,
+        providerName: "openai",
+        modelName: "test-model",
+      });
+      tracker.updateWithDelta(1_000, 10);
+      expect(readTokenFile(expected).input_tokens).toBe(1_000);
+      // the end-of-session summary reads the same file
+      expect(readSessionStats(port)).not.toBeNull();
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("source guard: token-tracker.ts never builds the path itself (no os.homedir)", () => {
+    const src = readFileSync(join(import.meta.dir, "token-tracker.ts"), "utf8");
+    expect(src).toContain("resolveTokenFilePath(this.port)");
+    expect(src).not.toMatch(/homedir\(/);
+  });
 });
 
 describe("TokenTracker live input-token tracking", () => {

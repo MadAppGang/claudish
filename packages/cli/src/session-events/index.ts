@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { projectDirNameFor } from "../channel/parent-proof.js";
 import { log } from "../logger.js";
 import { translateLine } from "./event-translator.js";
 import { initialState, reduceEvent } from "./session-state.js";
@@ -69,9 +70,9 @@ export function extractSessionId(metadata: unknown): string | undefined {
   return match?.[1];
 }
 
-/** Claude Code's project-dir slug: every non-alphanumeric char becomes "-". */
+/** Claude Code's project-dir name for a cwd: the one rule, `projectDirNameFor`. */
 export function slugFromCwd(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  return projectDirNameFor(cwd);
 }
 
 export class SessionEventRegistry {

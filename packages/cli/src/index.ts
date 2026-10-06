@@ -1,5 +1,10 @@
 #!/usr/bin/env bun
 
+// FIRST import, on purpose: in an MCP pane child it restores the server's exact
+// environment and cwd at import time — before `.env` loading and before any module
+// below reads the environment while it is being evaluated. A no-op everywhere else.
+import { assertPaneChildInteractive, paneChildBootNotes } from "./pane/child-env.js";
+
 // Load .env file before anything else (quiet mode to suppress verbose output)
 import { config } from "dotenv";
 config({ quiet: true }); // Loads .env from current working directory
@@ -590,7 +595,7 @@ async function runCli() {
     getMissingKeyResolutions,
     getMissingKeysError,
   } = await import("./providers/provider-resolver.js");
-  const { initLogger, getLogFilePath, getAlwaysOnLogPath, setDiagOutput } = await import(
+  const { initLogger, getLogFilePath, getAlwaysOnLogPath, setDiagOutput, log } = await import(
     "./logger.js"
   );
   const { createDiagOutput } = await import("./diag-output.js");
@@ -627,6 +632,11 @@ async function runCli() {
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
 
+    // An MCP pane child must be an interactive REPL: a positional prompt, -p,
+    // --stdin or --team that slipped past the server's flag check exits 64 here,
+    // before any team dispatch or proxy start. A no-op outside a pane child.
+    assertPaneChildInteractive(cliConfig);
+
     // Register the bundled endpoint catalog before ANYTHING enumerates or
     // validates providers. Two consumers below need it and both run long before
     // the proxy (which has always registered endpoints for the request path):
@@ -659,12 +669,27 @@ async function runCli() {
       const sessionPath = join(process.cwd(), `.claudish-team-${Date.now()}`);
 
       if (mode === "json") {
-        // JSON mode: run models without grid, collect JSON output to stdout
-        const { setupSession, runModels } = await import("./team-orchestrator.js");
+        // JSON mode: every model runs as an interactive pane in a headless magmux (the
+        // same runModels as the MCP `team` tool); each answer is read from its
+        // transcript, so no child output flag is passed. Ctrl-C reaps every pane.
+        const { installPaneShutdownHooks } = await import("./pane/index.js");
+        const { preflightTeamRun, setupSession, runModels } = await import(
+          "./team-orchestrator.js"
+        );
+        installPaneShutdownHooks({ exitAfter: true });
+        try {
+          await preflightTeamRun({
+            path: sessionPath,
+            slots: cliConfig.team.length,
+            input: prompt,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`Error: ${msg}`);
+          process.exit(msg.startsWith("invalid_args") ? 2 : 1);
+        }
         setupSession(sessionPath, cliConfig.team, prompt);
-        const status = await runModels(sessionPath, {
-          claudeFlags: ["--json"],
-        });
+        const status = await runModels(sessionPath);
 
         // Build JSON result with model responses included
         const result: Record<string, unknown> = { ...status, responses: {} };
@@ -784,6 +809,7 @@ async function runCli() {
 
     // Initialize logger: always-on structural logging + optional debug logging
     initLogger(cliConfig.debug, cliConfig.logLevel, cliConfig.noLogs);
+    for (const note of paneChildBootNotes()) log(note);
 
     // Initialize telemetry (reads consent, generates session_id)
     // Must come after parseArgs() so cliConfig.interactive is known

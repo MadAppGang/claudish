@@ -63,15 +63,25 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # team-grid.e2e.test.ts resolves magmux via findMagmuxForTest(), which
-      # checks packages/cli/node_modules/@claudish/magmux-<platform>-<arch>/bin
-      # then /opt/homebrew/bin then /usr/local/bin. The npm optionalDependency
-      # packages install as EMPTY DIRECTORIES — no bin/magmux inside — so the
-      # only candidate that ever resolves is the Homebrew copy. Locally that is
-      # already present, which is why the gap only showed up on a runner.
-      # This is the install path team-grid.ts itself points users at.
-      - name: Install magmux (e2e dependency)
-        run: brew install MadAppGang/tap/magmux
+      # The pane suites run against the SAME magmux the release ships: the tag and
+      # checksums in .github/magmux.env, which release.yml reads too. The Homebrew
+      # tap served whatever was current, so CI could go green against 0.15 while
+      # 0.14.0 shipped untested. Installed to /usr/local/bin, a path
+      # findMagmuxForTest() and the launcher both search (no Homebrew copy exists on
+      # the runner, so nothing earlier in the search shadows it).
+      - name: Install the pinned magmux (pane suites)
+        run: |
+          set -a; . .github/magmux.env; set +a
+          ARCH=$(uname -m); case "$ARCH" in (arm64|aarch64) ARCH=arm64;; (x86_64) ARCH=amd64;; esac
+          ASSET="magmux_darwin_${ARCH}.tar.gz"
+          WANT=$(eval echo "\$MAGMUX_SHA256_darwin_${ARCH}")
+          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
+          echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
+          tar xzf "/tmp/${ASSET}" -C /tmp
+          sudo install -m 0755 /tmp/magmux /usr/local/bin/magmux
+          magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Typecheck
         run: bun run typecheck
@@ -91,10 +101,15 @@ jobs:
       # killed (observed: >12 min on run 31172281077 before cancellation).
       # The file's own flag short-circuits that probe.
       #
-      # The timeout is the backstop: a future hang should fail in 10 minutes,
-      # not burn a 6-hour runner slot. A healthy run is ~60s.
+      # The timeout is the backstop: a hang should fail in 25 minutes, not burn a
+      # 6-hour runner slot. "A healthy run is ~60s" stopped being true long ago:
+      # measured locally (M-series, 2026-10-06) packages/cli alone takes 697 s
+      # before the pane suites and 832-846 s with them (bun 1.4.0 and the pinned
+      # 1.3.10), already past 10 minutes; the recovery-contract black-box suites
+      # and the real-magmux pane suites dominate. 25 minutes leaves ~1.7x headroom
+      # for a slower runner.
       - name: Hermetic tests
         run: bun run test
-        timeout-minutes: 10
+        timeout-minutes: 25
         env:
           CLAUDISH_SKIP_LIVE_E2E: "1"

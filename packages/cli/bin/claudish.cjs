@@ -111,7 +111,16 @@ Learn more: https://bun.sh`);
   try {
     child = spawn(bun, [entry, ...process.argv.slice(2)], {
       stdio: "inherit",
-      env: process.env,
+      // The pid pair tells the Bun child who launched it: this launcher, and the
+      // launcher's own parent (Claude Code, for an MCP server). The child
+      // believes the pair only when CLAUDISH_LAUNCHER_PID is its real parent
+      // (channel/parent-proof.ts `hostPidFrom`), so a value leaked into a
+      // nested claudish is inert.
+      env: {
+        ...process.env,
+        CLAUDISH_LAUNCHER_PID: String(process.pid),
+        CLAUDISH_LAUNCHER_PPID: String(process.ppid),
+      },
     });
   } catch (err) {
     console.error("Failed to start claudish:", err.message);

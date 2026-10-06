@@ -280,6 +280,10 @@ function buildTeamStatus(
         startedAt,
         completedAt: null,
         outputSize: 0,
+        model: manifest.models[anonId]?.model,
+        spawnModel: null,
+        provider: null,
+        pane: null,
       };
       continue;
     }
@@ -303,6 +307,10 @@ function buildTeamStatus(
       startedAt: result.startedAt ?? startedAt,
       completedAt: result.completedAt ?? new Date().toISOString(),
       outputSize: result.response?.length ?? 0,
+      model: manifest.models[anonId]?.model,
+      spawnModel: null,
+      provider: null,
+      pane: null,
     };
   }
 

@@ -11,11 +11,11 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { TOOL_NAME_SHAPE } from "../../adapters/tool-name-utils.js";
 import { type PlanUsage, isPlanStale } from "../../auth/quota/types.js";
 import { log } from "../../logger.js";
+import { resolveTokenFilePath } from "../../session/token-file.js";
 import { type ModelPricing, getModelPricing } from "./remote-provider-types.js";
 
 export interface TokenTrackerConfig {
@@ -554,8 +554,8 @@ export class TokenTracker {
       // orchestrator spawning N children has no way to tell which file belongs
       // to which model. Pointing each child at a known path is what makes
       // per-model token/cost reporting possible.
-      const override = process.env.CLAUDISH_TOKEN_FILE;
-      const outPath = override || join(homedir(), ".claudish", `tokens-${this.port}.json`);
+      // The ONE rule the status line and the end-of-session summary read by.
+      const outPath = resolveTokenFilePath(this.port);
       mkdirSync(dirname(outPath), { recursive: true });
       writeFileSync(outPath, JSON.stringify(data), "utf-8");
     } catch (e) {

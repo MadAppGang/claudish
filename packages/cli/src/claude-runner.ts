@@ -17,10 +17,15 @@ import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
-import { magmuxPaneCapability, planMagmuxWrap } from "./launcher/magmux-wrapper.js";
+import {
+  STRIPPED_CHILD_VARS,
+  magmuxPaneCapability,
+  planMagmuxWrap,
+} from "./launcher/magmux-wrapper.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
+import { PANE_MARKER_VARS, isPaneChild } from "./pane/child-env.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -28,6 +33,7 @@ import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
+import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -808,15 +814,23 @@ export function createTempSettingsFile(
   const timestamp = Date.now();
   const tempPath = join(claudishDir, `settings-${timestamp}.json`);
 
-  // Token file path - also in .claudish directory
-  const tokenFilePath = join(claudishDir, `tokens-${port}.json`);
+  // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
+  // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
+  // An enclosing claudish session's PUBLISHED file (inherited by a claudish run from its
+  // Bash tool) is not an assignment — see assignedTokenFile. Resolved by the same
+  // function as the tracker and the summary, so the status line can never be pointed at
+  // a file the tracker does not write.
+  const assignedFile = assignedTokenFile(process.env) !== null;
+  const tokenFilePath = resolveTokenFilePath(port);
 
   // Sweep the orphans FIRST (so this session's fresh file is never a candidate),
   // then blank the file for the port we are about to use. Without this the
   // status line can show a dead session's provider, cost and context — the file
-  // is keyed by port, and ports are recycled.
+  // is keyed by port, and ports are recycled. An assigned file is the parent's to
+  // read, unique to this child, so it is left for the tracker to create: a blank
+  // record would read as "answered with zero tokens".
   cleanupStaleTokenFiles(claudishDir);
-  initializeTokenFile(tokenFilePath);
+  if (!assignedFile) initializeTokenFile(tokenFilePath);
 
   let statusCommand: string;
 
@@ -958,6 +972,33 @@ export function createTempSettingsFile(
 }
 
 /**
+ * Delete, from the environment built for Claude Code, the inherited variables that
+ * must not reach it. Called right after that environment is assembled.
+ *
+ * Interactive launches lose every `STRIPPED_CHILD_VARS` key. `CLAUDE_CODE_CHILD_SESSION`
+ * is set by Claude Code for its Bash-tool children; a claudish started from one (a
+ * user in a tool shell, a `team --grid` pane, an MCP pane) passed it on, and an
+ * interactive Claude Code that inherits it prints "Transcript saving is off" and
+ * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
+ * left as it was.
+ *
+ * Every launch loses the `CLAUDISH_PANE_*` markers (`PANE_MARKER_VARS`). They describe
+ * THIS claudish (an MCP pane child), not Claude Code; inherited, a claudish started
+ * from the slot's Bash tool would take itself for a pane child (re-apply a stale
+ * environment snapshot, refuse a prompt, lose its recovery surface). The markers stay
+ * in this process's own `process.env`, which `magmuxPaneCapability()` reads.
+ */
+export function scrubChildEnv(
+  env: Record<string, string | undefined>,
+  opts: { interactive: boolean }
+): void {
+  if (opts.interactive) {
+    for (const key of STRIPPED_CHILD_VARS) delete env[key];
+  }
+  for (const key of PANE_MARKER_VARS) delete env[key];
+}
+
+/**
  * Build the claudish `--settings` overlay object. This loads at the CLI-args precedence
  * tier, above the user/project/local settings files, so keys here override those three.
  *
@@ -966,16 +1007,25 @@ export function createTempSettingsFile(
  *   via the placeholder ANTHROPIC_API_KEY, and a user/project/local
  *   `forceLoginMethod: "claudeai"` would block that at startup. In native-Anthropic /
  *   --monitor mode we leave it out so the user's real claude.ai subscription keeps working.
+ * - `skipDangerousModePermissionPrompt: true` is added ONLY in an MCP pane child
+ *   (`CLAUDISH_PANE_CHILD=1`). The pane runs `--dangerously-skip-permissions`, and its
+ *   one-time confirmation dialog defaults to "No, exit": nobody is at a headless pane to
+ *   answer it, so every slot would fail at boot. Verified to suppress the dialog at this
+ *   tier. Gated on the marker so no other launch changes.
  *
  * (The OS *managed* tier can't be overridden — that case aborts before we get here.)
  */
 export function buildClaudishSettingsOverlay(
   statusLine: { type: string; command: string; padding: number },
-  proxyAuthMode: boolean
+  proxyAuthMode: boolean,
+  paneChild: boolean = isPaneChild()
 ): Record<string, unknown> {
   const settings: Record<string, unknown> = { statusLine, disableClaudeAiConnectors: true };
   if (proxyAuthMode) {
     settings.forceLoginMethod = "console";
+  }
+  if (paneChild) {
+    settings.skipDangerousModePermissionPrompt = true;
   }
   return settings;
 }
@@ -992,11 +1042,12 @@ export function buildClaudishSettingsOverlay(
  * Mutates: config.claudeArgs (removes --settings and path if found)
  * Mutates: tempSettingsPath file content (replaces with merged JSON)
  */
-function mergeUserSettingsIfPresent(
+export function mergeUserSettingsIfPresent(
   config: ClaudishConfig,
   tempSettingsPath: string,
   statusLine: { type: string; command: string; padding: number },
-  proxyAuthMode: boolean
+  proxyAuthMode: boolean,
+  paneChild: boolean = isPaneChild()
 ): void {
   const idx = config.claudeArgs.indexOf("--settings");
   if (idx === -1 || !config.claudeArgs[idx + 1]) {
@@ -1028,6 +1079,12 @@ function mergeUserSettingsIfPresent(
     // own --settings explicitly sets forceLoginMethod, in which case respect their choice.
     if (proxyAuthMode && !("forceLoginMethod" in userSettings)) {
       userSettings.forceLoginMethod = "console";
+    }
+
+    // In an MCP pane child, suppress the dangerous-mode confirmation (see
+    // buildClaudishSettingsOverlay) unless the caller's --settings decides it.
+    if (paneChild && !("skipDangerousModePermissionPrompt" in userSettings)) {
+      userSettings.skipDangerousModePermissionPrompt = true;
     }
 
     // Overwrite the temp settings file with the merged result
@@ -1630,12 +1687,16 @@ export async function runClaudeWithProxy(
     // of guessing a path, and can tell that the session is proxied (and therefore
     // that Anthropic plan/rate-limit numbers describe the wrong account).
     [ENV.CLAUDISH_TOKEN_FILE]: tokenFilePath,
+    // ...and marked as published, so a claudish started from this session's Bash tool
+    // keeps a file of its own instead of writing into ours (assignedTokenFile).
+    [ENV.CLAUDISH_PUBLISHED_TOKEN_FILE]: tokenFilePath,
     // Turn on Claude Code's experimental advisor tool under --advisor. The value
     // is `"1"` and nothing else (see resolveAdvisorToolEnv), and this spread is
     // empty when the parent environment already carries one — the `...process.env`
     // above then forwards the user's value untouched.
     ...advisorToolEnv.vars,
   };
+  scrubChildEnv(env, { interactive: Boolean(config.interactive) });
 
   // Can this launch put a recovery banner on screen at all? Asked HERE, before
   // the child environment is finalised, because the answer gates the watchdog
@@ -2019,7 +2080,7 @@ export async function runClaudeWithProxy(
       // after the user had already quit.
       void shutdownRecoveryUi();
     });
-  } else if (recoverySurfaceAllowed() && config.interactive && process.env.MAGMUX_SOCK) {
+  } else if (recoverySurfaceAllowed() && paneCapability.kind === "ambient") {
     // Already inside someone else's magmux — `team --grid --mode interactive`,
     // or a user who launched claudish in a pane by hand. There is nothing to
     // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI
@@ -2028,6 +2089,11 @@ export async function runClaudeWithProxy(
     // serves the banner, and the losers still retry and still recover — they
     // simply hold no lease and answer inline at exhaustion, which is exactly
     // what "a retryable status only while the reason is legible" requires.
+    //
+    // The predicate is `magmuxPaneCapability()`'s, the same one the watchdog
+    // and the wrap above read. It used to be restated here as
+    // `config.interactive && process.env.MAGMUX_SOCK` — two statements of one
+    // rule, which `network-recovery.md` forbids because they drift.
     installRecoveryUi(null);
   }
 

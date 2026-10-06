@@ -7,17 +7,25 @@
  *   - architecture.md: public API signatures, manifest.json schema,
  *     status.json schema, security (path validation), revision #5 (zero-padded IDs)
  *
- * Most runModels and judgeResponses behavior lives in integration tests; this
- * file keeps one hermetic fake-child run to pin the manifest identity contract.
+ * Most runModels and judgeResponses behavior lives in integration tests; this file
+ * keeps hermetic pane runs (the fake interactive child in a real headless magmux) to
+ * pin the manifest identity, the pane argv and the per-slot environment.
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import type { ModelStatus, TeamManifest, TeamStatus, VoteResult } from "./team-orchestrator.js";
+import {
+  MAGMUX,
+  type PaneTestEnv,
+  finishPaneTest,
+  makePaneTestEnv,
+  paneRunOptions,
+  teamDirOf,
+} from "./test-helpers/team-pane.js";
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
 //     until the tests actually run) ──────────────────────────────────────────
@@ -38,59 +46,23 @@ function readJson<T>(filePath: string): T {
   return JSON.parse(readFileSync(filePath, "utf-8")) as T;
 }
 
-/** Run a callback with `claudish` resolved to one of the real-process helpers. */
-async function withFakeClaudish<T>(
-  helperName: string,
-  callback: (helperPath: string) => Promise<T>
-): Promise<T> {
-  const originalPath = process.env.PATH;
-  const originalClaudishBin = process.env.CLAUDISH_BIN;
-  const originalCaptureMode = process.env.CLAUDISH_TEAM_CAPTURE;
-  const originalUpstreamErrorLog = process.env[UPSTREAM_ERROR_LOG_ENV];
-  const shimDir = mkdtempSync(join(tmpdir(), "team-orchestrator-shim-"));
-  const helperPath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "channel",
-    "test-helpers",
-    helperName
-  );
-
-  writeFileSync(join(shimDir, "claudish"), `#!/bin/sh\nexec bun run "${helperPath}" "$@"\n`, {
-    mode: 0o755,
-  });
-
-  try {
-    // CLAUDISH_BIN outranks PATH, and a capture env override would make the
-    // default-mode assertion depend on the developer's shell.
-    delete process.env.CLAUDISH_BIN;
-    delete process.env.CLAUDISH_TEAM_CAPTURE;
-    delete process.env[UPSTREAM_ERROR_LOG_ENV];
-    process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
-    return await callback(helperPath);
-  } finally {
-    process.env.PATH = originalPath;
-    if (originalClaudishBin === undefined) {
-      delete process.env.CLAUDISH_BIN;
-    } else {
-      process.env.CLAUDISH_BIN = originalClaudishBin;
-    }
-    if (originalCaptureMode === undefined) {
-      delete process.env.CLAUDISH_TEAM_CAPTURE;
-    } else {
-      process.env.CLAUDISH_TEAM_CAPTURE = originalCaptureMode;
-    }
-    if (originalUpstreamErrorLog === undefined) {
-      delete process.env[UPSTREAM_ERROR_LOG_ENV];
-    } else {
-      process.env[UPSTREAM_ERROR_LOG_ENV] = originalUpstreamErrorLog;
-    }
-    rmSync(shimDir, { recursive: true, force: true });
-  }
-}
-
 // ─── Test state ───────────────────────────────────────────────────────────────
 
 let tempDir: string;
+
+/** The hermetic pane env of the current pane test (set by `usePaneHooks`). */
+let t: PaneTestEnv;
+
+/** Per-test pane env, and the no-orphan check after every pane test. */
+function usePaneHooks(): void {
+  beforeEach(() => {
+    t = makePaneTestEnv();
+  });
+  afterEach(async () => {
+    const report = await finishPaneTest(t);
+    expect(report).toEqual({ processes: [], files: [] });
+  });
+}
 
 beforeEach(() => {
   tempDir = makeTempDir();
@@ -245,7 +217,7 @@ describe("team-orchestrator", () => {
   // ── FR6: status.json ──────────────────────────────────────────────────────
 
   describe("setupSession — status.json", () => {
-    it("TEST-08: all models start with PENDING state in status.json", async () => {
+    it("TEST-08: all models start STARTING in status.json (the closed set has no PENDING)", async () => {
       const { setupSession } = await getOrchestrator();
       const models = ["model-a", "model-b", "model-c"];
 
@@ -253,7 +225,7 @@ describe("team-orchestrator", () => {
 
       const status = readJson<TeamStatus>(join(tempDir, "status.json"));
       const states = Object.values(status.models).map((m) => m.state);
-      expect(states.every((s) => s === "PENDING")).toBe(true);
+      expect(states.every((s) => s === "STARTING")).toBe(true);
     });
 
     it("TEST-09: status.json model count matches input models array length", async () => {
@@ -302,6 +274,31 @@ describe("team-orchestrator", () => {
   });
 
   // ── FR8: input validation — empty models ──────────────────────────────────
+
+  // Moved from the deleted team-timeout-repro.test.ts (its bug #3).
+  describe("setupSession — session directory overwrite protection", () => {
+    it("rejects an existing session directory", async () => {
+      const { setupSession } = await getOrchestrator();
+      setupSession(tempDir, ["model-a"], "First run input");
+      expect(() => setupSession(tempDir, ["model-b"], "Second run input")).toThrow(
+        /Session already exists/
+      );
+    });
+
+    it("preserves the session artifacts when a re-run is rejected", async () => {
+      const { setupSession } = await getOrchestrator();
+      setupSession(tempDir, ["model-a"], "First run input");
+      const originalManifest = readFileSync(join(tempDir, "manifest.json"), "utf-8");
+      const originalInput = readFileSync(join(tempDir, "input.md"), "utf-8");
+      const originalStatus = readFileSync(join(tempDir, "status.json"), "utf-8");
+
+      expect(() => setupSession(tempDir, ["model-b"], "DIFFERENT input")).toThrow();
+
+      expect(readFileSync(join(tempDir, "manifest.json"), "utf-8")).toBe(originalManifest);
+      expect(readFileSync(join(tempDir, "input.md"), "utf-8")).toBe(originalInput);
+      expect(readFileSync(join(tempDir, "status.json"), "utf-8")).toBe(originalStatus);
+    });
+  });
 
   describe("setupSession — input validation", () => {
     it("TEST-13: throws for an empty models array", async () => {
@@ -429,7 +426,7 @@ describe("team-orchestrator", () => {
   // ── FR6: getStatus ────────────────────────────────────────────────────────
 
   describe("getStatus", () => {
-    it("TEST-16: returns parsed status.json with PENDING state after setupSession", async () => {
+    it("TEST-16: returns parsed status.json with STARTING state after setupSession", async () => {
       const { setupSession, getStatus } = await getOrchestrator();
 
       setupSession(tempDir, ["model-a", "model-b"], "task");
@@ -440,7 +437,7 @@ describe("team-orchestrator", () => {
       expect(typeof status.models).toBe("object");
 
       const states = Object.values(status.models).map((m: ModelStatus) => m.state);
-      expect(states.every((s) => s === "PENDING")).toBe(true);
+      expect(states.every((s) => s === "STARTING")).toBe(true);
     });
 
     it("TEST-17: getStatus throws when status.json does not exist", async () => {
@@ -451,183 +448,220 @@ describe("team-orchestrator", () => {
     });
   });
 
-  describe("runModels — pinned spawn identity", () => {
-    it("keeps manifest identity and uses the default stream-json argv contract", async () => {
+  describe.skipIf(!MAGMUX)("runModels on panes — spawn identity and argv", () => {
+    usePaneHooks();
+
+    it("keeps manifest identity and launches an interactive child with the pane argv", async () => {
       const { runModels, setupSession } = await getOrchestrator();
       const spawnPlanner = mock(async () => ({
-        pinned: new Map([["vendor/model", "or@vendor/model"]]),
+        pinned: new Map([["vendor/model", "fake-env_probe"]]),
       }));
+      const probe = join(t.tmp, "probe-{session}.json");
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["vendor/model"], "Analyze this input");
 
-      await withFakeClaudish("fake-claudish.ts", async () => {
-        setupSession(tempDir, ["vendor/model"], "Analyze this input");
-        const status = await runModels(tempDir, {
-          claudeFlags: ["--print-argv"],
-          spawnPlanner,
-        });
-        expect(Object.values(status.models)[0].state).toBe("COMPLETED");
-        expect(spawnPlanner).toHaveBeenCalledWith(["vendor/model"]);
-
-        const manifest = readJson<TeamManifest>(join(tempDir, "manifest.json"));
-        const [anonId, entry] = Object.entries(manifest.models)[0];
-        expect(entry.model).toBe("vendor/model");
-
-        const argv = JSON.parse(
-          readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
-        ) as string[];
-        const modelFlag = argv.indexOf("--model");
-        expect(argv[modelFlag + 1]).toBe("or@vendor/model");
-        const outputFormatFlag = argv.indexOf("--output-format");
-        expect(argv.slice(outputFormatFlag, outputFormatFlag + 2)).toEqual([
-          "--output-format",
-          "stream-json",
-        ]);
-
-        const verboseFlag = argv.indexOf("--verbose");
-        const quietFlag = argv.indexOf("--quiet");
-        expect(verboseFlag).toBeGreaterThanOrEqual(0);
-        expect(quietFlag).toBeGreaterThanOrEqual(0);
-        // Mutation guard: claudish consumes --verbose for itself and also
-        // forwards a copy to claude, which rejects print + stream-json without
-        // it. --quiet must come later so only claudish's own narration stays off.
-        expect(verboseFlag).toBeLessThan(quietFlag);
-
-        // The manifest identity is re-used by the judge round; the pinned argv
-        // must never replace it with the provider wire spec.
-        const reread = readJson<TeamManifest>(join(tempDir, "manifest.json"));
-        expect(reread.models[anonId].model).toBe("vendor/model");
+      const status = await runModels(sessionPath, {
+        ...paneRunOptions(t, {}, { FAKE_PROBE_FILE: probe }),
+        spawnPlanner,
       });
-    });
+      const [anonId, slot] = Object.entries(status.models)[0] ?? [];
+      expect(slot?.state).toBe("COMPLETED");
+      expect(spawnPlanner).toHaveBeenCalledWith(["vendor/model"]);
+      expect(slot?.model).toBe("vendor/model");
+      expect(slot?.spawnModel).toBe("fake-env_probe");
 
-    it("omits stream-json-only flags when captureMode is print", async () => {
+      const { argv } = readJson<{ argv: string[] }>(
+        probe.replace("{session}", slot?.sessionUuid as string)
+      );
+      // -i --model <spawnModel> -y --quiet --session-id <uuid> --add-dir <turn dir>
+      expect(argv.slice(0, 6)).toEqual([
+        "-i",
+        "--model",
+        "fake-env_probe",
+        "-y",
+        "--quiet",
+        "--session-id",
+      ]);
+      expect(argv[6]).toBe(slot?.sessionUuid as string);
+      expect(argv[7]).toBe("--add-dir");
+      for (const banned of ["-p", "--print", "--stdin", "--output-format", "--verbose", "--json"])
+        expect(argv).not.toContain(banned);
+
+      // The manifest identity is re-used by the judge round; the pinned argv must never
+      // replace it with the provider wire spec.
+      const reread = readJson<TeamManifest>(join(sessionPath, "manifest.json"));
+      expect(reread.models[anonId as string]?.model).toBe("vendor/model");
+    }, 30_000);
+
+    it("gives every model slot its own upstream-error log and token file", async () => {
       const { runModels, setupSession } = await getOrchestrator();
-      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+      const probe = join(t.tmp, "probe-{session}.json");
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-env_probe-1", "fake-env_probe-2"], "Analyze this input");
 
-      await withFakeClaudish("fake-claudish.ts", async () => {
-        setupSession(tempDir, ["vendor/model"], "Analyze this input");
-        const status = await runModels(tempDir, {
-          captureMode: "print",
-          claudeFlags: ["--print-argv"],
-          spawnPlanner,
-        });
+      const status = await runModels(
+        sessionPath,
+        paneRunOptions(t, {}, { FAKE_PROBE_FILE: probe })
+      );
 
-        const [anonId, modelStatus] = Object.entries(status.models)[0];
-        expect(modelStatus.state).toBe("COMPLETED");
-        const argv = JSON.parse(
-          readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
-        ) as string[];
-
-        expect(argv).toContain("--quiet");
-        expect(argv).not.toContain("--output-format");
-        expect(argv).not.toContain("--verbose");
+      const paths = Object.entries(status.models).map(([anonId, m]) => {
+        expect(m.state).toBe("COMPLETED");
+        const { env } = readJson<{ env: Record<string, string> }>(
+          probe.replace("{session}", m.sessionUuid as string)
+        );
+        const path = env[UPSTREAM_ERROR_LOG_ENV];
+        expect(path).toBe(join(sessionPath, "errors", `${anonId}-upstream.jsonl`));
+        expect(env.CLAUDISH_TOKEN_FILE).toBe(join(sessionPath, "stats", `${anonId}.json`));
+        return path;
       });
-    });
-
-    it("gives every model slot its own upstream-error log path", async () => {
-      const { runModels, setupSession } = await getOrchestrator();
-      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
-
-      await withFakeClaudish("fake-claudish.ts", async () => {
-        setupSession(tempDir, ["vendor/model-a", "vendor/model-b"], "Analyze this input");
-        const status = await runModels(tempDir, {
-          claudeFlags: ["--print-env", UPSTREAM_ERROR_LOG_ENV],
-          spawnPlanner,
-        });
-
-        const manifest = readJson<TeamManifest>(join(tempDir, "manifest.json"));
-        const paths = Object.keys(manifest.models).map((anonId) => {
-          expect(status.models[anonId].state).toBe("COMPLETED");
-          const childEnv = JSON.parse(
-            readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
-          ) as Record<string, string | null>;
-          const path = childEnv[UPSTREAM_ERROR_LOG_ENV];
-
-          expect(path).toBe(join(tempDir, "errors", `${anonId}-upstream.jsonl`));
-          expect(dirname(path!)).toBe(join(tempDir, "errors"));
-          expect(path).toContain(anonId);
-          return path;
-        });
-
-        expect(new Set(paths).size).toBe(paths.length);
-      });
-    });
+      expect(new Set(paths).size).toBe(paths.length);
+    }, 30_000);
 
     it("omits upstreamErrorLogPath from a recorded error when the child wrote no file", async () => {
       const { runModels, setupSession } = await getOrchestrator();
-      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-exit_mid_turn"], "Analyze this input");
+      await runModels(sessionPath, paneRunOptions(t));
 
-      await withFakeClaudish("fake-claudish.ts", async () => {
-        setupSession(tempDir, ["vendor/failing-model"], "Analyze this input");
-        await runModels(tempDir, {
-          claudeFlags: ["--fail"],
-          spawnPlanner,
-        });
+      const recorded = readJson<TeamStatus>(join(sessionPath, "status.json"));
+      const [anonId, modelStatus] = Object.entries(recorded.models)[0] ?? [];
+      expect(modelStatus?.state).toBe("FAILED");
+      expect(modelStatus?.error?.reason).toBe("child_exited");
+      expect(modelStatus?.error).not.toHaveProperty("upstreamErrorLogPath");
+      expect(existsSync(join(sessionPath, "errors", `${anonId}-upstream.jsonl`))).toBe(false);
+      expect(existsSync(join(sessionPath, "errors", `${anonId}.log`))).toBe(true);
+    }, 30_000);
+  });
 
-        const recorded = readJson<TeamStatus>(join(tempDir, "status.json"));
-        const [anonId, modelStatus] = Object.entries(recorded.models)[0];
-        expect(modelStatus.state).toBe("FAILED");
-        expect(modelStatus.error).toBeDefined();
-        expect(modelStatus.error).not.toHaveProperty("upstreamErrorLogPath");
-        expect(existsSync(join(tempDir, "errors", `${anonId}-upstream.jsonl`))).toBe(false);
-      });
+  describe.skipIf(!MAGMUX)("startModels on panes — team policy", () => {
+    usePaneHooks();
+    const TWO_LINES = "Review the change below.\nReply starting with VERDICT:.";
+
+    it("returns once every slot left STARTING (D9)", async () => {
+      const { startModels, setupSession, getStatus } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["contract-fake-a", "contract-fake-b"], "@@HANG@@ hold");
+      const handle = await startModels(sessionPath, paneRunOptions(t));
+      const states = Object.values(getStatus(sessionPath).models).map((m) => m.state);
+      expect(states).toEqual(["RUNNING", "RUNNING"]);
+      const { cancelTeamRun } = await getOrchestrator();
+      await cancelTeamRun(sessionPath);
+      await handle.done;
+    }, 30_000);
+
+    it("fails a slot that stops on a question team cannot answer: FAILED blocked (D19)", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-ask_user"], "Pick a fruit.");
+      const status = await runModels(sessionPath, paneRunOptions(t));
+      const [id, m] = Object.entries(status.models)[0] ?? [];
+      expect(m?.state).toBe("FAILED");
+      expect(m?.error?.reason).toBe("blocked");
+      expect(m?.error?.detail.length).toBeGreaterThan(0);
+      // The answer so far is kept for inspection.
+      expect(existsSync(join(sessionPath, `response-${id}.md`))).toBe(true);
+    }, 30_000);
+
+    it("matches ^VERDICT: on the answer that starts after the task file was read (§2.13)", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-narrate_then_read"], TWO_LINES);
+      const status = await runModels(
+        sessionPath,
+        paneRunOptions(t, { requirePattern: "^VERDICT:" })
+      );
+      const [id, m] = Object.entries(status.models)[0] ?? [];
+      expect(m?.state).toBe("COMPLETED");
+      // The narration before the Read never reaches response-<id>.md.
+      expect(readFileSync(join(sessionPath, `response-${id}.md`), "utf-8")).toBe("VERDICT: ok");
+    }, 30_000);
+
+    it("fails a slot that never read its task file: FAILED prompt_not_read", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-no_read"], TWO_LINES);
+      const status = await runModels(sessionPath, paneRunOptions(t));
+      const m = Object.values(status.models)[0];
+      expect(m?.state).toBe("FAILED");
+      expect(m?.error?.reason).toBe("prompt_not_read");
+      expect(m?.error?.detail).toContain("never read");
+    }, 30_000);
+
+    it("fails a slot whose child refuses --agent: FAILED agent_rejected (D11)", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-answer"], "Reply with exactly PEAR");
+      const status = await runModels(
+        sessionPath,
+        paneRunOptions(t, { claudeFlags: ["--agent", "zzz-missing"] })
+      );
+      const m = Object.values(status.models)[0];
+      expect(m?.state).toBe("FAILED");
+      expect(m?.error?.reason).toBe("agent_rejected");
+    }, 30_000);
+
+    it("names an open background shell in the slot's anomalies (R3-M5)", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-bg_server"], "Start the dev server.");
+      const status = await runModels(sessionPath, paneRunOptions(t));
+      const m = Object.values(status.models)[0];
+      expect(m?.state).toBe("COMPLETED");
+      expect(m?.anomalies?.some((a) => a.startsWith("background_shell_open: "))).toBe(true);
+    }, 30_000);
+
+    it("refuses reserved claude_flags before anything is written or spawned", async () => {
+      const { startModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-answer"], "Reply with exactly PEAR");
+      await expect(
+        startModels(sessionPath, paneRunOptions(t, { claudeFlags: ["--max-budget-usd", "5"] }))
+      ).rejects.toThrow(/^invalid_args: .*--max-budget-usd/);
+      await expect(
+        startModels(
+          sessionPath,
+          paneRunOptions(t, { claudeFlags: ["--allowedTools", "Read", "Bash"] })
+        )
+      ).rejects.toThrow(/^invalid_args: .*positional/);
+      expect(existsSync(join(t.sockRoot, "panes"))).toBe(false);
+    });
+
+    it("refuses a non-plain prompt when the flags remove Read (§2.3 rule 4)", async () => {
+      const { startModels, setupSession } = await getOrchestrator();
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-answer"], TWO_LINES);
+      await expect(
+        startModels(sessionPath, paneRunOptions(t, { claudeFlags: ["--disallowedTools", "Read"] }))
+      ).rejects.toThrow(/^invalid_args: .*Read tool is unavailable/);
     });
   });
 
-  describe("runModels — stream-json answer recovery", () => {
-    it("keeps the voted answer that print mode loses to a later epilogue", async () => {
+  describe.skipIf(!MAGMUX)("runModels on panes — the whole turn is the answer", () => {
+    usePaneHooks();
+
+    it("keeps the voted answer AND the message a re-wake added after it", async () => {
+      // Print mode kept only the final assistant message, so a late message replaced the
+      // vote. A pane turn settles on Claude Code's own turn_duration, after the re-wake,
+      // and its answer is every assistant text block of the turn.
       const { runModels, setupSession } = await getOrchestrator();
-      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
-      const input = "Review the implementation and return the required fenced vote block.";
-
-      await withFakeClaudish("fake-streamjson-child.ts", async (fakeChild) => {
-        const rawProc = Bun.spawn(
-          [process.execPath, "run", fakeChild, "--output-format", "stream-json"],
-          { stdin: "ignore", stdout: "pipe", stderr: "pipe" }
-        );
-        const [rawStream, rawStderr, rawExitCode] = await Promise.all([
-          new Response(rawProc.stdout).text(),
-          new Response(rawProc.stderr).text(),
-          rawProc.exited,
-        ]);
-        expect(rawExitCode).toBe(0);
-        expect(rawStderr).toBe("");
-
-        const recoveredDir = join(tempDir, "recovered");
-        setupSession(recoveredDir, ["vendor/model"], input);
-        const recoveredStatus = await runModels(recoveredDir, {
-          requirePattern: "```vote",
-          spawnPlanner,
-        });
-
-        const [recoveredId, recoveredModel] = Object.entries(recoveredStatus.models)[0];
-        const recoveredOutput = readFileSync(
-          join(recoveredDir, `response-${recoveredId}.md`),
-          "utf-8"
-        );
-        expect(recoveredOutput).toContain("```vote");
-        expect(recoveredOutput).toContain("The background task has now finished");
-        expect(recoveredModel.state).toBe("COMPLETED");
-
-        const recoveredFileSize = Buffer.byteLength(recoveredOutput);
-        const rawStreamSize = Buffer.byteLength(rawStream);
-        expect(recoveredModel.outputSize).toBe(recoveredFileSize);
-        expect(rawStreamSize).toBeGreaterThan(recoveredModel.outputSize * 8);
-
-        const printDir = join(tempDir, "print");
-        setupSession(printDir, ["vendor/model"], input);
-        const printStatus = await runModels(printDir, {
-          captureMode: "print",
-          requirePattern: "```vote",
-          spawnPlanner,
-        });
-
-        const [printId, printModel] = Object.entries(printStatus.models)[0];
-        const printOutput = readFileSync(join(printDir, `response-${printId}.md`), "utf-8");
-        expect(printOutput).toContain("The background task has now finished");
-        expect(printOutput).not.toContain("```vote");
-        expect(printModel.state).toBe("EMPTY");
-        expect(printModel.error?.reason).toBe("shape_mismatch");
+      const sessionPath = teamDirOf(t);
+      setupSession(sessionPath, ["fake-rewake"], "Review and vote.");
+      const status = await runModels(sessionPath, {
+        ...paneRunOptions(
+          t,
+          { requirePattern: "^ANSWER fake-rewake " },
+          { FAKE_GAP_MS_REWAKE: "1000" }
+        ),
+        paneTimings: { replStableMs: 200, secondaryQuietMs: 4_000 },
       });
-    });
+
+      const [id, model] = Object.entries(status.models)[0] ?? [];
+      const response = readFileSync(join(sessionPath, `response-${id}.md`), "utf-8");
+      expect(model?.state).toBe("COMPLETED");
+      expect(response).toStartWith("ANSWER fake-rewake ");
+      expect(response).toEndWith("\n\nLATE second message");
+      expect(model?.outputSize).toBe(Buffer.byteLength(response));
+    }, 30_000);
   });
 
   describe("runModels — requirePattern validation", () => {

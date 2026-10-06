@@ -90,9 +90,11 @@ export const SCENARIOS: Scenario[] = [
         }
 
         const createSessionText = observation.toolText.create_session;
-        if (!/\{"session_id":"[0-9a-f]{8}","status":"starting"\}/.test(createSessionText ?? "")) {
+        if (
+          !/"session_id":\s*"[0-9a-f]{8}",\s*"state":\s*"STARTING"/.test(createSessionText ?? "")
+        ) {
           failures.push(
-            `expected create_session tool text containing an 8-hex session_id with status starting, observed: ${createSessionText ? JSON.stringify(createSessionText) : "none"}`
+            `expected create_session tool text containing an 8-hex session_id with state STARTING, observed: ${createSessionText ? JSON.stringify(createSessionText) : "none"}`
           );
         }
         if (observation.timedOut) {

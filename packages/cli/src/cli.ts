@@ -185,6 +185,274 @@ export function parseAdvisorFlag(value: string): {
   };
 }
 
+// ─── The passthrough token rule, as a pure function ──────────────────────────
+//
+// `parseArgs` decides, token by token, what is claudish's own flag, what is a value,
+// what is forwarded to Claude Code, and what is a positional PROMPT. That last class
+// is the dangerous one for a caller that builds an argv for an interactive child: a
+// positional token makes claudish run print mode (`-p`), so `--allowedTools Read Bash`
+// — two values for one flag — silently becomes a one-shot run with the prompt "Bash".
+//
+// `classifyPassthroughTokens` states the same rule without running anything, so the MCP
+// server can refuse such `claude_flags` before a spawn. `cli-passthrough-walker.test.ts`
+// runs both on one table of inputs and scans `parseArgs`'s source for every flag it
+// matches, so the two cannot drift.
+
+/**
+ * How many tokens one of claudish's own flags consumes, as `parseArgs` implements it:
+ *
+ * - `none`        — the flag alone.
+ * - `value`       — the next token, whatever it looks like (`args[++i]`).
+ * - `value-if-any`— the next token when one exists; with none, `parseArgs` does not
+ *                   match the flag at all and forwards it to Claude Code.
+ * - `optional`    — the next token when it does not start with `-`.
+ * - `query`       — the next token when it does not start with `--`.
+ * - `variadic`    — every following token up to the next one starting with `--`.
+ *
+ * The flags in `CLAUDISH_EXITING_FLAGS` end the process inside `parseArgs` (they print
+ * and exit), so they are never compared against it; they are listed so the walker
+ * still consumes their values correctly.
+ */
+export type ClaudishFlagArity =
+  | "none"
+  | "value"
+  | "value-if-any"
+  | "optional"
+  | "query"
+  | "variadic";
+
+export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = {
+  "--model": "value",
+  "-m": "value",
+  "--model-opus": "value",
+  "--model-sonnet": "value",
+  "--model-haiku": "value",
+  "--model-subagent": "value",
+  "--port": "value",
+  "--auto-approve": "none",
+  "-y": "none",
+  "--no-auto-approve": "none",
+  "--dangerous": "none",
+  "--interactive": "none",
+  "-i": "none",
+  "--debug-claudish": "none",
+  "-d": "none",
+  "--recovery-ui": "none",
+  "--no-recovery-ui": "none",
+  "--recovery": "none",
+  "--no-recovery": "none",
+  "--no-debug-claudish": "none",
+  "--log-debug": "none",
+  "--log-level": "value",
+  "--quiet": "none",
+  "-q": "none",
+  "--verbose": "none",
+  "-v": "none",
+  "--json": "none",
+  "--monitor": "none",
+  "--advisor": "value",
+  "--stdin": "none",
+  "--free": "none",
+  "--models-refresh": "none",
+  "--models-skip-update": "none",
+  "--profile": "value",
+  "--default-provider": "optional",
+  "--anthropic-api-billing": "none",
+  "--classifier-model": "value",
+  "--classifier-provider": "value",
+  "--model-params": "value",
+  "--effort-override": "value",
+  "--pro-on-ultracode": "none",
+  "--no-pro-on-ultracode": "none",
+  "--op-env": "value",
+  "--op": "value",
+  "--cost-track": "none",
+  "--cost-audit": "none",
+  "--cost-reset": "none",
+  "--version": "none",
+  "--help": "none",
+  "-h": "none",
+  "--help-ai": "none",
+  "--init": "none",
+  "--probe": "variadic",
+  "--models-top": "none",
+  "--providers": "none",
+  "--models": "query",
+  "-s": "query",
+  "--models-search": "query",
+  "--summarize-tools": "none",
+  "--log-off": "none",
+  "--log-diag": "value-if-any",
+  "--team": "value-if-any",
+  "--mode": "value-if-any",
+  "--keep": "none",
+  "-f": "value-if-any",
+  "--file": "value-if-any",
+};
+
+/** Flags `parseArgs` also accepts in `--flag=value` form, consuming nothing more. */
+export const CLAUDISH_INLINE_VALUE_FLAGS = ["--default-provider", "--op-env", "--op"] as const;
+
+/** Flags whose branch in `parseArgs` prints and exits, so no comparison can reach past them. */
+export const CLAUDISH_EXITING_FLAGS = [
+  "--log-debug",
+  "--version",
+  "--help",
+  "-h",
+  "--help-ai",
+  "--init",
+  "--probe",
+  "--models-top",
+  "--providers",
+  "--models",
+  "-s",
+  "--models-search",
+] as const;
+
+/**
+ * The value rule for a flag claudish does not know: it consumes the next token iff
+ * that token exists and does not start with `-`. Shared by `parseArgs` and the walker.
+ */
+export function passthroughFlagTakesValue(next: string | undefined): boolean {
+  return next !== undefined && !next.startsWith("-");
+}
+
+export type PassthroughTokenKind =
+  | "claudish-flag"
+  | "claudish-value"
+  | "passthrough-flag"
+  | "passthrough-value"
+  | "separator"
+  | "positional";
+
+export interface ClassifiedToken {
+  index: number;
+  token: string;
+  kind: PassthroughTokenKind;
+}
+
+export interface PassthroughClassification {
+  tokens: ClassifiedToken[];
+  /** Every positional token, including all tokens after a `--` separator. */
+  positionals: string[];
+  /** What `parseArgs` forwards to Claude Code, in order (its `claudeArgs`). */
+  passthrough: string[];
+  /** Index of a `--` separator, or null. */
+  separatorAt: number | null;
+}
+
+/** How many tokens after index `i` one of claudish's own flags consumes. */
+function claudishValueCount(
+  arity: ClaudishFlagArity,
+  tokens: readonly string[],
+  i: number
+): number {
+  const next = tokens[i + 1];
+  switch (arity) {
+    case "value":
+    case "value-if-any":
+      return next === undefined ? 0 : 1;
+    case "optional":
+      return passthroughFlagTakesValue(next) ? 1 : 0;
+    case "query":
+      return next && !next.startsWith("--") ? 1 : 0;
+    case "variadic": {
+      let n = 0;
+      while (i + 1 + n < tokens.length && !(tokens[i + 1 + n] as string).startsWith("--")) n++;
+      return n;
+    }
+    default:
+      return 0;
+  }
+}
+
+/**
+ * The arity `parseArgs` applies to `arg` with `next` following, or undefined when it
+ * forwards `arg` to Claude Code. A bare `--resume` (no id) is claudish's session picker.
+ */
+function claudishArityFor(arg: string, next: string | undefined): ClaudishFlagArity | undefined {
+  if (CLAUDISH_INLINE_VALUE_FLAGS.some((f) => arg.startsWith(`${f}=`))) return "none";
+  if (arg === "--resume") return next === undefined || next.startsWith("-") ? "none" : undefined;
+  if (!Object.hasOwn(CLAUDISH_FLAG_ARITY, arg)) return undefined;
+  const arity = CLAUDISH_FLAG_ARITY[arg] as ClaudishFlagArity;
+  // `parseArgs` matches these only when a value follows; alone, they fall through.
+  return arity === "value-if-any" && next === undefined ? undefined : arity;
+}
+
+/**
+ * Classify the token at `i` and any values it consumes. Returns the index of the next
+ * unclassified token, or -1 when `tokens[i]` is a `--` separator.
+ */
+function classifyStep(
+  tokens: readonly string[],
+  i: number,
+  push: (index: number, kind: PassthroughTokenKind) => void
+): number {
+  const arg = tokens[i] as string;
+  const next = tokens[i + 1];
+  const arity = claudishArityFor(arg, next);
+  if (arity !== undefined) {
+    push(i, "claudish-flag");
+    const n = claudishValueCount(arity, tokens, i);
+    for (let k = 1; k <= n; k++) push(i + k, "claudish-value");
+    return i + n + 1;
+  }
+  if (arg === "--") return -1;
+  if (!arg.startsWith("-")) {
+    push(i, "positional");
+    return i + 1;
+  }
+  push(i, "passthrough-flag");
+  if (!passthroughFlagTakesValue(next)) return i + 1;
+  push(i + 1, "passthrough-value");
+  return i + 2;
+}
+
+function summarizeClassification(
+  tokens: ClassifiedToken[],
+  separatorAt: number | null
+): PassthroughClassification {
+  const forwarded = new Set<PassthroughTokenKind>([
+    "passthrough-flag",
+    "passthrough-value",
+    "positional",
+  ]);
+  return {
+    tokens,
+    positionals: tokens.filter((t) => t.kind === "positional").map((t) => t.token),
+    passthrough: tokens.filter((t) => forwarded.has(t.kind)).map((t) => t.token),
+    separatorAt,
+  };
+}
+
+/**
+ * Classify `tokens` exactly as `parseArgs` would walk them, without side effects.
+ *
+ * A `--` makes every following token positional (`parseArgs` forwards them and marks a
+ * positional prompt when any follow). A bare `--resume` (no value) is claudish's
+ * session picker; `--resume <id>` is forwarded with its id.
+ */
+export function classifyPassthroughTokens(tokens: readonly string[]): PassthroughClassification {
+  const out: ClassifiedToken[] = [];
+  const push = (index: number, kind: PassthroughTokenKind) =>
+    out.push({ index, token: tokens[index] as string, kind });
+  let separatorAt: number | null = null;
+  let i = 0;
+  while (i < tokens.length) {
+    const after = classifyStep(tokens, i, push);
+    if (after === -1) {
+      separatorAt = i;
+      break;
+    }
+    i = after;
+  }
+  if (separatorAt !== null) {
+    push(separatorAt, "separator");
+    for (let j = separatorAt + 1; j < tokens.length; j++) push(j, "positional");
+  }
+  return summarizeClassification(out, separatorAt);
+}
+
 /**
  * Parse CLI arguments and environment variables
  */
@@ -748,7 +1016,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       if (arg === "-p" || arg === "--print") {
         config._hasPrintFlag = true;
       }
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+      if (passthroughFlagTakesValue(args[i + 1])) {
         config.claudeArgs.push(args[++i]);
       }
     } else {

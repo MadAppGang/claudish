@@ -79,7 +79,8 @@ export interface Observation {
 export interface SessionLog {
   sessionId: string;
   meta: Record<string, unknown> | null;
-  stderr: string;
+  /** `screen.txt`: the pane's final screen (a pane has no separate stderr). */
+  screen: string;
   output: string;
 }
 

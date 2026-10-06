@@ -1,99 +1,112 @@
 // ─── Channel Mode Types ──────────────────────────────────────────────────────
 
-export type SessionStatus =
-  | "starting"
-  | "running"
-  | "tool_executing"
-  | "waiting_for_input"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "timeout";
+import type { FailureReason, PaneSessionOptions, SlotState } from "../pane/index.js";
 
 /**
- * The values the channel wire's `event` field may carry. Identical to
- * `SessionStatus` — the record and the wire agree.
+ * Every value the channel wire's `event` field may carry, as a runtime list so a
+ * test can walk it (`event-task-status.test.ts` checks each one against
+ * `EVENT_TO_TASK_STATUS`). `ChannelEventType` is derived from it.
  *
- * They did not always. This alias was `Exclude<SessionStatus, "timeout">`,
- * because `EVENT_TO_TASK_STATUS` (mcp-server.ts) maps the event enum onto
- * SEP-1686's 5-value `TaskStatus` and had **no `"timeout"` key**: it fell
- * through to `?? "working"`, so emitting `"timeout"` reported a dead session as
- * still working. The timeout path therefore recorded `"timeout"` and emitted
- * `"failed"`, and a consumer watching only the wire could not tell a session
- * that ran out of time from one that errored.
- *
- * `["timeout", "failed"]` now exists in that map — SEP-1686 has no `timeout`
- * member and `failed` is its only honest projection — so the divergence is gone
- * and `ReducerEvent` no longer carries a `sessionStatus` override.
+ * It is its own union, derived from the session's `SlotState` by `channelEventFor`
+ * (session-manager.ts): the stream-json `SessionStatus` it once mirrored is gone with
+ * that transport. 10.4.0's `finishing` is not here (architecture §20.3 item 5, RB1): a
+ * pane session decides a one-shot verdict at settle, so the "exiting" interval it named
+ * does not exist; the wait for Claude Code's end-of-turn record is `activity:"finishing"`
+ * on a RUNNING row.
  */
-export type ChannelEventType = SessionStatus;
+export const CHANNEL_EVENT_TYPES = [
+  "starting",
+  "running",
+  "tool_executing",
+  "waiting_for_input",
+  /** A tool call waits on Claude Code's permission dialog; answered with `send_input`. */
+  "awaiting_permission",
+  "completed",
+  "failed",
+  "cancelled",
+  "timeout",
+] as const;
 
+/**
+ * The values the channel wire's `event` field may carry.
+ *
+ * `EVENT_TO_TASK_STATUS` (mcp-server.ts) maps each onto SEP-1686's 5-value
+ * `TaskStatus`; it is a `Record` over this type, so an event without a projection is a
+ * compile error. `timeout` has its own key (→ `failed`): before it existed the timeout
+ * path fell through to `?? "working"` and reported a dead session as still working.
+ */
+export type ChannelEventType = (typeof CHANNEL_EVENT_TYPES)[number];
+
+/**
+ * One channel session, in memory (architecture §3.3). Persisted as `meta.json` through
+ * `toMetaRecord`, which keeps every 10.4.0 key under its 10.4.0 name (the magus monitor
+ * reads them) and adds the pane keys.
+ */
 export interface SessionInfo {
   sessionId: string;
+  /** The model as the caller asked for it; the display identity, never rewritten. */
   model: string;
   /**
-   * The explicit `provider@model` spec the child was actually SPAWNED with, when
-   * the parent pinned one (see `prehydrateCredentialsForSpawn`). Null means the
-   * child was handed `model` verbatim and did its own routing.
-   *
-   * `model` is the display identity an agent correlates on and is never
-   * rewritten, so without this field the resolved half of the chain is invisible
-   * — and "which provider actually served this?" is the first question a routing
-   * failure raises.
+   * The explicit `provider@model` spec the child was actually SPAWNED with, when the
+   * parent pinned one (see `prehydrateCredentialsForSpawn`). Null means the child was
+   * handed `model` verbatim and did its own routing.
    */
   spawnModel: string | null;
-  status: SessionStatus;
-  pid: number | null;
+  /** Display name of the claudish provider serving it; null until known. */
+  provider: string | null;
+  state: SlotState;
+  /** "one-shot" when created with a prompt; a send_input converts it to "interactive". */
+  shape: "one-shot" | "interactive";
+  /** Informational pane id; null when no pane was ever spawned. */
+  pane: string | null;
+  panePid: number | null;
   startedAt: string;
   completedAt: string | null;
+  /** The child's own exit code; null when claudish ended the pane (verdict, cancel, timeout). */
   exitCode: number | null;
-  /** `result.num_turns` from the child's terminal frame. 0 until one arrives. */
+  /** Prompts whose turn settled (a re-wake adds none). */
   turnsCompleted: number;
-  /** Total tokens, PROXY-measured where possible. See SessionManager.refreshAccounting. */
-  tokensUsed: number;
+  /** From the transcript or the proxy's token file; null = no source yet. */
+  tokensIn: number | null;
+  tokensOut: number | null;
+  /** Real spend from the proxy's token file; null = unknown (always null for native routes). */
+  costUsd: number | null;
+  toolCalls: number;
+  /** ISO 8601: last screen change or transcript append. */
+  lastActivityAt: string | null;
   elapsedSeconds: number;
   /**
-   * Seconds since the child last put anything on stdout. Null for a session
-   * with no live reducer (already finalised, or restored from disk).
-   *
-   * INFORMATION, not a verdict. Nothing in claudish terminates a session for
-   * being idle. A child inside a long `Bash` is silent and working; only the
-   * caller knows whether that is expected for the task it set. Read this, decide,
-   * and call `cancel_session` if the answer is no.
+   * Seconds since `lastActivityAt`; null in terminal states and for a record read from
+   * disk. INFORMATION, not a verdict: nothing in claudish ends a session for being idle.
    */
   idleSeconds: number | null;
+  /** RUNNING: tool name, "thinking", "background" or "finishing"; a blocked tool; else null. */
+  activity: string | null;
+  /** Set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). */
+  reason: FailureReason | null;
+  detail: string | null;
+  /** send_input texts queued behind the current turn. */
+  pendingInputs: number;
   /**
-   * Real spend in USD, from the proxy's own token file.
-   *
-   * Deliberately NOT `result.total_cost_usd`: the child prices every model at
-   * Anthropic's rates, so for a proxied model that figure is fiction — and for a
-   * subscription provider it invents spend that will never be billed.
+   * The child Claude Code's own session uuid — minted here and passed as `--session-id`.
+   * It is the transcript's basename.
    */
-  costUsd: number;
-  /** Tool invocations the proxy counted, falling back to `tool_use` blocks seen on the stream. */
-  toolCallCount: number;
-  /** `result.terminal_reason` verbatim. Null when no terminal frame ever arrived. */
-  terminalReason: string | null;
+  claudeSessionId: string;
   /**
-   * The child `claude`'s own session uuid — minted here and passed as
-   * `--session-id`, then confirmed from its `system:init` frame. This is the
-   * transcript filename under `~/.claude/projects/<slug>/`, so a diagnostic
-   * consumer can find the full record without guessing by mtime.
+   * Absolute path of the child's JSONL transcript: `<config dir>/projects/<slug of the
+   * REALPATH of cwd>/<claudeSessionId>.jsonl`. The realpath is load-bearing (macOS `/tmp`
+   * is a symlink), and it is the turn oracle the pane session reads.
    */
-  claudeSessionId: string | null;
+  transcriptPath: string;
   /**
-   * Absolute path to the child's authoritative JSONL transcript, or null before
-   * `claudeSessionId` is known.
-   *
-   * Not a guess: the uuid is minted here and passed as `--session-id`, and the
-   * directory is `~/.claude/projects/<slug of the REALPATH of cwd>`. The realpath
-   * is the load-bearing half — on macOS `/tmp` is a symlink to `/private/tmp` and
-   * a git worktree can be reached through one too, so the slug of the path we
-   * SPAWNED with names a directory that does not exist. That is literally how the
-   * incident's two transcripts were "missing": they were under the session's
-   * `work_dir`, in a project directory nobody looked in.
+   * The Claude Code conversation that called create_session, PROVEN at call time
+   * (channel/parent-proof.ts). Absent when not proven — never a guess.
    */
-  transcriptPath: string | null;
+  parentClaudeSessionId?: string;
+  captureSource: "transcript" | "screen" | "none" | null;
+  turnSource: "transcript" | "screen";
+  /** normaliseTimeoutSeconds(): an integer in 1..3600 (0 for a record read from disk without it). */
+  timeoutSeconds: number;
 }
 
 export interface SessionCreateOptions {
@@ -113,55 +126,43 @@ export interface SessionCreateOptions {
   /**
    * The first turn. Its presence also selects the session's SHAPE:
    *
-   * - given  → one-shot. Sent as the opening `user` frame; stdin is closed as
-   *   soon as the child reports a terminal `result`, so the session ends at
-   *   `completed` instead of idling to the timeout.
-   * - absent → interactive. Stdin stays open indefinitely and the session sits
-   *   in `waiting_for_input` between turns, waiting for `send_input`.
+   * - given  → one-shot. Delivered once the REPL is ready; the session's verdict is
+   *   decided when that turn settles, and it ends at COMPLETED, EMPTY or FAILED.
+   * - absent → interactive. The session waits in AWAITING_INPUT once boot is ready
+   *   (STARTING before), and again after every turn.
    *
-   * A `send_input` call converts a one-shot session to interactive — the caller
-   * has taken over driving it, so we stop deciding when it is finished.
+   * A `send_input` call converts a one-shot session to interactive — the caller has
+   * taken over driving it, so we stop deciding when it is finished.
    */
   prompt?: string;
   timeoutSeconds?: number;
   claudishFlags?: string[];
   cwd?: string;
   /**
-   * Use this id instead of minting a random one. Must be unique among live
-   * sessions; a collision throws rather than silently adopting the existing
-   * session.
-   *
-   * `team` needs it: its slots are anonymised ids ("01".."05") that address
-   * everything else about the run — `response-<id>.md`, `stats/<id>.json`, the
-   * manifest, the status file. A random session id would mean two names for one
-   * slot and a mapping table to keep in step.
+   * Use this id instead of minting a random one. Must be unique among live sessions;
+   * a collision throws rather than silently adopting the existing session.
    */
   sessionId?: string;
-  /**
-   * Where this session's artifacts go. Defaults to `<sessionsDir>/<sessionId>`.
-   *
-   * `team` points every slot at a directory inside the TEAM run, so one run's
-   * evidence stays in one place rather than scattering across
-   * `~/.claudish/sessions` under ids nothing links back.
-   */
+  /** Where this session's artifacts go. Defaults to `<sessionsDir>/<sessionId>`. */
   sessionDir?: string;
-  /**
-   * Where the child's token tracker writes. Defaults to `<sessionDir>/tokens.json`.
-   *
-   * `team` points it at `stats/<slot>.json`, which is what `renderTeamStatsCompact`
-   * and the status file already read.
-   */
+  /** Where the child's token tracker writes. Defaults to `<sessionDir>/tokens.json`. */
   tokenFile?: string;
   /**
-   * Keep JSON lines that are not stream-json vocabulary. Default false.
-   * See `StreamJsonReducerOptions.keepUnrecognizedJson` for why the two
-   * consumers differ.
+   * The calling conversation, when the caller PROVED it (see
+   * `proveCallingConversation`). Recorded verbatim in `spawn.json` and
+   * `SessionInfo`; absent means not proven. Never pass an unproven id.
    */
-  keepUnrecognizedJson?: boolean;
+  parentClaudeSessionId?: string;
+  /**
+   * The environment the pane child is built from (X-M9). Defaults to the manager's
+   * `parentEnv`, then `process.env`. Tests pass a hermetic one instead of mutating
+   * `process.env`.
+   */
+  parentEnv?: Record<string, string | undefined>;
 }
 
 export interface ChannelEvent {
-  type: string;
+  type: ChannelEventType;
   model: string;
   content: string;
   elapsedSeconds: number;
@@ -174,33 +175,6 @@ export interface ChannelEvent {
   extraMeta?: Record<string, string>;
 }
 
-/** One state change out of the stream-json reducer. */
-export interface ReducerEvent {
-  previousState: ChannelEventType;
-  newState: ChannelEventType;
-  content?: string;
-  toolName?: string;
-  toolCount?: number;
-  /**
-   * Emit even when `newState === previousState`.
-   *
-   * Two callers need it: the batched-tool notification (a second
-   * `tool_executing` carrying a count) and the stall notice (a `running` that
-   * says the stream has gone quiet). Without it those are swallowed by the
-   * no-op guard, which exists so ordinary repeated frames do not spam the wire.
-   */
-  repeat?: boolean;
-  /**
-   * The stream has gone quiet in a state that should be producing frames.
-   * Surfaced on the wire as `meta.stalled` so a consumer can tell "still
-   * thinking" from "wedged" without parsing the content string.
-   */
-  stalled?: boolean;
-  timestamp: string;
-}
-
-export type ReducerCallback = (sessionId: string, event: ReducerEvent) => void;
-
 export interface SessionManagerOptions {
   maxSessions?: number;
   scrollbackCapacity?: number;
@@ -208,18 +182,22 @@ export interface SessionManagerOptions {
   /** Artifact root override. Defaults to CLAUDISH_SESSIONS_DIR, then ~/.claudish/sessions. */
   sessionsDir?: string;
   /**
-   * Seconds of total stream silence, in a state that should be producing
-   * frames, before the session reports itself stalled. 0 disables the watchdog.
-   */
-  stallSeconds?: number;
-  /**
    * How long a TERMINAL session stays in the manager's map before it is
    * evicted. Defaults to 30 minutes.
    *
    * `maxSessions` bounds only active sessions, so without eviction a long-lived
-   * MCP server retains every finished session — and its scrollback, reducer and
-   * stderr buffer — for the life of the process. The on-disk artifacts are
-   * unaffected by eviction.
+   * MCP server retains every finished session for the life of the process. The
+   * on-disk artifacts are unaffected by eviction.
    */
   terminalRetentionMs?: number;
+  /**
+   * Test override for the host pid recorded in `spawn.json`. Default:
+   * `hostPidFrom(process.env, process.ppid)` (channel/parent-proof.ts). An
+   * override records no `launcherPid`.
+   */
+  hostPid?: number;
+  /** The environment pane children are built from (X-M9). Defaults to `process.env`. */
+  parentEnv?: Record<string, string | undefined>;
+  /** @internal test-only pane timing seams (X-M7); production never passes them. */
+  paneTimings?: PaneSessionOptions["timings"];
 }

@@ -13,7 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +21,7 @@ import {
   hasResolvableAnthropicAuth,
   isProxyAuthMode,
   managedSettingsForcesClaudeAi,
+  mergeUserSettingsIfPresent,
   shouldHideIncidentalAnthropicKey,
 } from "./claude-runner.js";
 import { setConfigFileOverride } from "./profile-config.js";
@@ -80,6 +81,67 @@ describe("buildClaudishSettingsOverlay", () => {
     // Non-auth keys are still present regardless of mode.
     expect(overlay.disableClaudeAiConnectors).toBe(true);
     expect(overlay.statusLine).toBe(statusLine);
+  });
+
+  test("an MCP pane child skips the dangerous-mode prompt (D5)", () => {
+    expect(
+      buildClaudishSettingsOverlay(statusLine, true, true).skipDangerousModePermissionPrompt
+    ).toBe(true);
+    expect(
+      buildClaudishSettingsOverlay(statusLine, false, true).skipDangerousModePermissionPrompt
+    ).toBe(true);
+  });
+
+  test("no other launch carries skipDangerousModePermissionPrompt", () => {
+    expect(
+      "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true, false)
+    ).toBe(false);
+  });
+
+  test("the default reads the CLAUDISH_PANE_CHILD marker", () => {
+    const saved = process.env.CLAUDISH_PANE_CHILD;
+    try {
+      process.env.CLAUDISH_PANE_CHILD = "1";
+      expect(buildClaudishSettingsOverlay(statusLine, true).skipDangerousModePermissionPrompt).toBe(
+        true
+      );
+      delete process.env.CLAUDISH_PANE_CHILD;
+      expect(
+        "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
+      ).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = saved;
+    }
+  });
+});
+
+describe("mergeUserSettingsIfPresent", () => {
+  const merged = (userSettings: Record<string, unknown>, paneChild: boolean) => {
+    const path = join(tmpdir(), `claudish-merge-${randomUUID()}.json`);
+    writeFileSync(path, "{}");
+    try {
+      const config = baseConfig({ claudeArgs: ["--settings", JSON.stringify(userSettings)] });
+      mergeUserSettingsIfPresent(config, path, statusLine, true, paneChild);
+      expect(config.claudeArgs).toEqual([]);
+      return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    } finally {
+      rmSync(path, { force: true });
+    }
+  };
+
+  test("a pane child's merged settings carry skipDangerousModePermissionPrompt", () => {
+    expect(merged({ model: "x" }, true).skipDangerousModePermissionPrompt).toBe(true);
+  });
+
+  test("the caller's own value is kept", () => {
+    expect(
+      merged({ skipDangerousModePermissionPrompt: false }, true).skipDangerousModePermissionPrompt
+    ).toBe(false);
+  });
+
+  test("outside a pane child the key is not added", () => {
+    expect("skipDangerousModePermissionPrompt" in merged({ model: "x" }, false)).toBe(false);
   });
 });
 

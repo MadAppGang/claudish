@@ -1,0 +1,11 @@
+{
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "total_tokens": 0,
+  "total_cost": 0,
+  "context_window": "unknown",
+  "context_left_percent": -1,
+  "updated_at": 1790939318083,
+  "is_free": false,
+  "is_estimated": false
+}

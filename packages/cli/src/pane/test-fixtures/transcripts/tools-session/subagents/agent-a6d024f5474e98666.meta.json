@@ -1,0 +1,8 @@
+{
+  "agentType": "general-purpose",
+  "description": "fruit",
+  "toolUseId": "toolu_01BGdFGjjrExbHptKGKa3vAs",
+  "spawnDepth": 1,
+  "requestShape": "background",
+  "requestNonInteractive": true
+}

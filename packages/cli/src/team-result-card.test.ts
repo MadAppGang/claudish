@@ -1,12 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { formatTeamResult } from "./mcp-server.js";
-import type {
-  FailureReason,
-  ModelError,
-  ModelState,
-  ModelStatus,
-  TeamStatus,
-} from "./team-orchestrator.js";
+import { NEXT_STEP, formatTeamResult } from "./mcp-server.js";
+import { FAILURE_REASONS, type FailureReason, type SlotState } from "./pane/index.js";
+import type { ModelError, ModelStatus, TeamStatus } from "./team-orchestrator.js";
+
+type ModelState = SlotState;
 
 const SESSION_PATH = "/tmp/team-result-card";
 const STARTED_AT = "2026-07-30T00:00:00.000Z";
@@ -18,26 +15,29 @@ function modelStatus(
     id?: string;
     outputSize?: number;
     reason?: FailureReason;
-    stderrSnippet?: string;
-    stdoutSnippet?: string;
+    screenSnippet?: string;
+    answerSnippet?: string;
     withError?: boolean;
+    detail?: string;
+    anomalies?: string[];
   } = {}
 ): ModelStatus {
   const id = options.id ?? "01";
   const isCompleted = state === "COMPLETED";
-  const isFailure = state === "FAILED" || state === "TIMEOUT" || state === "EMPTY";
+  const isFailure =
+    state === "FAILED" || state === "TIMEOUT" || state === "EMPTY" || state === "CANCELLED";
   const withError = options.withError ?? isFailure;
 
   let error: ModelError | undefined;
   if (withError) {
-    const reason = options.reason ?? "nonzero_exit";
+    const reason = options.reason ?? "child_exited";
     error = {
       model: id,
       command: `claudish --model test-${id}`,
       reason,
-      detail: `diagnostic detail for ${reason}`,
-      stderrSnippet: options.stderrSnippet,
-      stdoutSnippet: options.stdoutSnippet,
+      detail: options.detail ?? `diagnostic detail for ${reason}`,
+      screenSnippet: options.screenSnippet,
+      answerSnippet: options.answerSnippet,
       errorLogPath: `${SESSION_PATH}/errors/${id}.log`,
       workDir: `${SESSION_PATH}/work/${id}`,
     };
@@ -50,6 +50,7 @@ function modelStatus(
     completedAt: COMPLETED_AT,
     outputSize: options.outputSize ?? (isCompleted ? 1024 : 0),
     error,
+    ...(options.anomalies ? { anomalies: options.anomalies } : {}),
   };
 }
 
@@ -61,30 +62,30 @@ function status(models: Record<string, ModelStatus>): TeamStatus {
 }
 
 function sixModelStatus(snippetLength: number): TeamStatus {
-  const stderrSnippet = "E".repeat(snippetLength);
-  const stdoutSnippet = "O".repeat(snippetLength);
+  const screenSnippet = "E".repeat(snippetLength);
+  const answerSnippet = "O".repeat(snippetLength);
 
   return status({
     "01": modelStatus("COMPLETED", { id: "01", outputSize: 1200 }),
     "02": modelStatus("FAILED", {
       id: "02",
-      reason: "nonzero_exit",
-      stderrSnippet,
-      stdoutSnippet,
+      reason: "child_exited",
+      screenSnippet,
+      answerSnippet,
     }),
     "03": modelStatus("COMPLETED", { id: "03", outputSize: 2300 }),
     "04": modelStatus("TIMEOUT", {
       id: "04",
       reason: "timeout",
-      stderrSnippet,
-      stdoutSnippet,
+      screenSnippet,
+      answerSnippet,
     }),
     "05": modelStatus("COMPLETED", { id: "05", outputSize: 3400 }),
     "06": modelStatus("EMPTY", {
       id: "06",
       reason: "empty_output",
-      stderrSnippet,
-      stdoutSnippet,
+      screenSnippet,
+      answerSnippet,
     }),
   });
 }
@@ -95,24 +96,24 @@ function occurrences(text: string, marker: string): number {
 
 describe("formatTeamResult", () => {
   it("never emits stderr or stdout snippets", () => {
-    const stderrMarker = "UNIQUE-STDERR-MARKER-7F3A";
-    const stdoutMarker = "UNIQUE-STDOUT-MARKER-91BC";
+    const screenMarker = "UNIQUE-SCREEN-MARKER-7F3A";
+    const answerMarker = "UNIQUE-ANSWER-MARKER-91BC";
     const output = formatTeamResult(
       status({
         "01": modelStatus("FAILED", {
           id: "01",
-          reason: "nonzero_exit",
-          stderrSnippet: `before ${stderrMarker} after`,
-          stdoutSnippet: `before ${stdoutMarker} after`,
+          reason: "child_exited",
+          screenSnippet: `before ${screenMarker} after`,
+          answerSnippet: `before ${answerMarker} after`,
         }),
       }),
       SESSION_PATH
     );
 
-    expect(occurrences(output, stderrMarker)).toBe(0);
-    expect(occurrences(output, stdoutMarker)).toBe(0);
-    expect(output).not.toContain("stderrSnippet");
-    expect(output).not.toContain("stdoutSnippet");
+    expect(occurrences(output, screenMarker)).toBe(0);
+    expect(occurrences(output, answerMarker)).toBe(0);
+    expect(output).not.toContain("screenSnippet");
+    expect(output).not.toContain("answerSnippet");
   });
 
   it("stays under 2,500 bytes for six models and three capped failures", () => {
@@ -141,55 +142,97 @@ describe("formatTeamResult", () => {
     expect(output.endsWith("<<<END_TEAM_RESULT>>>")).toBe(true);
   });
 
-  it("counts EMPTY, FAILED, and TIMEOUT as failures", () => {
+  it("counts EMPTY, FAILED, TIMEOUT and CANCELLED as failures", () => {
     const output = formatTeamResult(
       status({
         "01": modelStatus("COMPLETED", { id: "01" }),
-        "02": modelStatus("FAILED", { id: "02", reason: "nonzero_exit" }),
+        "02": modelStatus("FAILED", { id: "02", reason: "child_exited" }),
         "03": modelStatus("TIMEOUT", { id: "03", reason: "timeout" }),
         "04": modelStatus("EMPTY", { id: "04", reason: "empty_output" }),
+        "05": modelStatus("CANCELLED", { id: "05", reason: "cancelled" }),
       }),
       SESSION_PATH
     );
     const failures = output.split("failures:\n")[1]?.split("\nactions:")[0] ?? "";
 
-    expect(output).toContain("status: partial — 1/4 succeeded");
+    expect(output).toContain("status: partial — 1/5 succeeded");
     expect(failures).toContain("02  FAILED");
     expect(failures).toContain("03  TIMEOUT");
     expect(failures).toContain("04  EMPTY");
+    expect(failures).toContain("05  CANCELLED  reason=cancelled");
   });
 
-  it.each([
-    "nonzero_exit",
-    "timeout",
-    "api_error",
-    "background_task_ceiling",
-    "empty_output",
-    "shape_mismatch",
-  ] as const)("includes reason, next step, and evidence for %s", (reason) => {
+  it.each([...FAILURE_REASONS])(
+    "includes reason, next step, and evidence for %s",
+    (reason: FailureReason) => {
+      const state: ModelState =
+        reason === "timeout"
+          ? "TIMEOUT"
+          : reason === "cancelled"
+            ? "CANCELLED"
+            : ["shape_mismatch", "empty_output", "refused"].includes(reason)
+              ? "EMPTY"
+              : "FAILED";
+      const output = formatTeamResult(
+        status({ "01": modelStatus(state, { id: "01", reason }) }),
+        SESSION_PATH
+      );
+
+      expect(output).toContain(`reason=${reason}`);
+      expect(output).toContain(`next: ${NEXT_STEP[reason]}`);
+      expect(output).toContain(`evidence: ${SESSION_PATH}/errors/01.log`);
+
+      if (reason === "api_error") {
+        expect(output).toContain("or@");
+      }
+    }
+  );
+
+  it("has a deterministic next step for every reason in the closed set", () => {
+    for (const reason of FAILURE_REASONS) expect(NEXT_STEP[reason]?.length).toBeGreaterThan(10);
+    expect(Object.keys(NEXT_STEP).sort()).toEqual([...FAILURE_REASONS].sort());
+  });
+
+  it("lists a blocked slot with the question it stopped on", () => {
     const output = formatTeamResult(
       status({
-        "01": modelStatus(
-          reason === "timeout" ? "TIMEOUT" : reason === "shape_mismatch" ? "EMPTY" : "FAILED",
-          {
-            id: "01",
-            reason,
-          }
-        ),
+        "01": modelStatus("FAILED", {
+          id: "01",
+          reason: "blocked",
+          detail: "Which database should the migration target?",
+        }),
       }),
       SESSION_PATH
     );
 
-    expect(output).toContain(`reason=${reason}`);
-    expect(output).toMatch(/^\s+next:\s+\S.+$/m);
-    expect(output).toContain(`evidence: ${SESSION_PATH}/errors/01.log`);
+    expect(output).toContain("01  FAILED  reason=blocked");
+    expect(output).toContain("question: Which database should the migration target?");
+    expect(output).toContain("make the prompt self-contained or use create_session");
+  });
 
-    if (reason === "background_task_ceiling") {
-      expect(output).toContain("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS");
-    }
-    if (reason === "api_error") {
-      expect(output).toContain("or@");
-    }
+  it("names an open background shell under a succeeded slot (R3-M5)", () => {
+    const output = formatTeamResult(
+      status({
+        "01": modelStatus("COMPLETED", {
+          id: "01",
+          anomalies: ["background_shell_open: npm run dev"],
+        }),
+      }),
+      SESSION_PATH
+    );
+
+    expect(output).toContain("status: ok — 1/1 succeeded");
+    expect(output).toContain("note: background_shell_open: npm run dev");
+  });
+
+  it("reads a pre-contract state outside the closed set as FAILED", () => {
+    const legacy = {
+      ...modelStatus("FAILED", { id: "01" }),
+      state: "PENDING",
+    } as unknown as ModelStatus;
+    const output = formatTeamResult(status({ "01": legacy }), SESSION_PATH);
+
+    expect(output).toContain("01  FAILED");
   });
 
   it("warns that a shape-mismatch answer was not produced and must not become a vote", () => {
@@ -250,7 +293,7 @@ describe("formatTeamResult", () => {
   it("distinguishes all-failed from partial runs", () => {
     const allFailed = formatTeamResult(
       status({
-        "01": modelStatus("FAILED", { id: "01", reason: "nonzero_exit" }),
+        "01": modelStatus("FAILED", { id: "01", reason: "child_exited" }),
         "02": modelStatus("EMPTY", { id: "02", reason: "empty_output" }),
       }),
       SESSION_PATH
@@ -270,9 +313,9 @@ describe("formatTeamResult", () => {
   it("sorts model ids regardless of fixture insertion order", () => {
     const output = formatTeamResult(
       status({
-        "03": modelStatus("FAILED", { id: "03", reason: "nonzero_exit" }),
-        "01": modelStatus("FAILED", { id: "01", reason: "nonzero_exit" }),
-        "02": modelStatus("FAILED", { id: "02", reason: "nonzero_exit" }),
+        "03": modelStatus("FAILED", { id: "03", reason: "child_exited" }),
+        "01": modelStatus("FAILED", { id: "01", reason: "child_exited" }),
+        "02": modelStatus("FAILED", { id: "02", reason: "child_exited" }),
       }),
       SESSION_PATH
     );

@@ -17,8 +17,9 @@ function filesUnder(dir: string): string[] {
 }
 
 test("packages and scripts contain no retired terminology", () => {
-  // Mutation target: agent-availability.ts:24. Restoring its previous wording
-  // is a representative one-line rename revert and must be reported as file:line.
+  // Mutation target: packages/cli/src/model-selector.ts:336. Restoring its previous
+  // wording ("roster") is a representative one-line rename revert and must be
+  // reported as file:line.
   const findings: string[] = [];
   for (const root of [join(repositoryRoot, "packages"), join(repositoryRoot, "scripts")]) {
     for (const file of filesUnder(root)) {
