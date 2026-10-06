@@ -1,8 +1,13 @@
-> Why exit 0 proves nothing under `claude -p`, and the stream-json recovery that fixed it.
+> Why exit 0 proves nothing under `claude -p`, why `require_pattern` exists, and how a team slot's answer is now read from the transcript.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
 # The `team` success oracle — why exit 0 proves nothing
+
+Team slots are no longer print-mode children: each is an interactive Claude Code in a headless
+magmux pane, and its answer comes from the transcript ([`pane-session.md`](pane-session.md)). The
+print-mode measurement below is kept because it is why `require_pattern` exists, and why the answer
+is every assistant message of the turn rather than the last one.
 
 `claude -p` in text output mode emits **ONLY the final assistant message**. Any turn the child takes AFTER writing its answer replaces that answer on the captured surface. Isolated proof, no claudish anywhere in the path:
 
@@ -22,44 +27,31 @@ Measured on claudish's `team`, deterministic 2/2 on the first attempt:
 
 Both surviving texts referred to "the review and vote above" — a review that is not on disk. The originally reported incident (236 B from `glm-5.2`) is the same shape. **It is not model-specific and not a claudish bug**: a madbench eval reproduced it on `claude-haiku-4-5` through plain Claude Code, no claudish in the path, 3 consecutive runs. It is a property of the print-mode capture surface.
 
-The existing classifier could not see it because the epilogue passes every test it ran: exit code 0, no `[API Error: ...]` marker, non-whitespace output. `DEFAULT_MIN_OUTPUT_BYTES` is 0 (opt-in, off).
+The classifier of the time could not see it because the epilogue passes every test it ran: exit code 0, no `[API Error: ...]` marker, non-whitespace output. `DEFAULT_MIN_OUTPUT_BYTES` is 0 (opt-in, off).
 
 **A byte threshold is the wrong instrument, and this is the design point.** An earlier default of 200 produced a 2/2 false-positive rate against real short answers (measured 141 B and 96 B replies, both valid). Length is a guess. A caller that MANDATED an output shape, by contrast, knows what a complete answer looks like — so `require_pattern` is a precise oracle where length is not.
 
 Detection, then:
 
-- `FailureReason` gains `shape_mismatch`; `classifyRunOutput` gains optional `requirePattern` and `fullOutput`.
-- `runModels` gains `requirePattern` and validates the regex **BEFORE reading the manifest and before spawning anything** — a bad regex discovered later would either waste the whole run or, worse, silently enforce nothing.
+- `FailureReason` has `shape_mismatch`; `classifyRunOutput` takes the caller's `requirePattern`.
+- `startModels` validates the regex **BEFORE reading the manifest and before spawning anything** — a bad regex discovered later would either waste the whole run or, worse, silently enforce nothing.
 - The MCP `team` tool exposes `require_pattern` and `min_output_bytes`. The reporter of the original bug had no way to opt in, which is why the option existing internally was not enough.
 
 Two ordering decisions worth keeping:
 
-1. **The shape check runs LAST**, after the api_error / background-ceiling / empty checks. A run that hit one of those would fail the shape check too, and reporting "no `vote` block" for what is really an API error sends the caller after the wrong problem.
-2. **The pattern is matched against the FULL response, not `stdoutTail`**, because that tail is capped at `STDOUT_TAIL_LIMIT` (4000 B) — a contract whose marker sits near the START of a long answer would otherwise silently never match. Mutation-tested: changing `fullOutput ?? stdoutTail` to `stdoutTail` fails the suite.
+1. **The shape check runs LAST**, after `api_error`, `prompt_not_read`, `refused`, the whitespace-only `empty_output` and `min_output_bytes`. A turn that hit one of those would fail the shape check too, and reporting "no `vote` block" for what is really an API error sends the caller after the wrong problem.
+2. **The pattern is matched against the WHOLE answer**, never a bounded tail — a contract whose marker sits near the START of a long answer would otherwise silently never match. `new RegExp(pattern)`, no flags.
 
-## Recovery — the answer is no longer lost (v7.50.0+)
+## The answer is every assistant message of the turn, from the transcript
 
-Detection turned a silent wrong verdict into a loud failure, but the generated answer was still gone: the caller re-ran and paid again. Children now spawn with `--output-format stream-json` and `team-stream-capture.ts` concatenates **every** assistant text block, so a post-answer turn costs nothing.
+Detection turned a silent wrong verdict into a loud failure, but the generated answer was still gone: the caller re-ran and paid again. v7.50.0 recovered it by switching team children to `--output-format stream-json` and concatenating every assistant text block. The pane driver keeps that rule and drops the stream: a slot's answer is **every assistant text block of the turn, in order, joined with a blank line, read from Claude Code's own transcript** — scoped to the turn by the offset claudish recorded before delivering the prompt, and excluding API-error entries. A post-answer turn (a background agent's notification, a Stop-hook re-wake) is part of the same turn and costs nothing.
 
-Deterministic A/B, one real captured stream replayed through `runModels` twice:
+**Concatenate-everything was chosen over "keep the last substantial message"** because "substantial" is a byte threshold, and `DEFAULT_MIN_OUTPUT_BYTES` is 0 precisely because a 200-byte default recorded two correct short answers (141 B, 96 B) as EMPTY. Intermediate "let me read that file" chatter would land in the response file; that cost is visible and bounded, whereas a wrong "substantial" verdict discards the answer again silently.
 
-| capture | `response-NN.md` | bytes | verdict |
-|---|---|---|---|
-| `print` (pre-7.50) | `OMEGA_MARKER` | 13 | EMPTY · `shape_mismatch` |
-| `stream-json` (default) | `ALPHA_MARKER` + `OMEGA_MARKER` | 27 | COMPLETED |
+One piece of chatter is now cut deliberately, because it is not about the task: when the prompt is delivered as a task file (anything but one plain line), the answer starts AFTER the Read result that returned the last unread line of that file. Narration before the task was read never reaches `response-<slot>.md` or `require_pattern`; its size is reported as `preambleBytes`. A slot whose task file was not fully read is FAILED `prompt_not_read` instead of being judged on an answer to a task it never saw.
 
-**Concatenate-everything was chosen over "keep the last substantial message"** because "substantial" is a byte threshold, and `DEFAULT_MIN_OUTPUT_BYTES` is 0 precisely because a 200-byte default recorded two correct short answers (141 B, 96 B) as EMPTY. Intermediate "let me read that file" chatter now lands in the response file; that cost is visible and bounded, whereas a wrong "substantial" verdict discards the answer again silently. `response-NN.md` stays prose either way, so the judge phase and every downstream reader are unaffected.
+`response-<slot>.md` stays prose, written once, byte-exact, so the judge phase and every downstream reader are unaffected. `shape_mismatch` therefore means one thing: every assistant message of the turn was read, and the model did not produce the shape. The old "your answer was discarded" explanation, the `captureMode: "print"` escape hatch and `CLAUDISH_TEAM_CAPTURE` were removed with print mode.
 
-Four things that are load-bearing:
+`max_tokens` is no longer an ending a slot sees as such: Claude Code 2.1.290 auto-continues a `max_tokens` stop on its own and finally writes a synthetic `max_output_tokens` API error, which is FAILED `api_error`. A COMPLETED turn whose recorded `stop_reason` is `max_tokens` carries the note "the answer may be truncated" in its anomalies.
 
-- **Argv order.** Children get `--verbose --quiet --output-format stream-json`, and `--verbose` MUST precede `--quiet`. claudish consumes `--verbose` as its own verbosity flag *and* forwards a copy to `claude`, which hard-errors on `--print --output-format stream-json` without it (`cli.ts` ~line 645). Reversed, every child narrates itself onto stderr. Verified live end-to-end: real claudish + `gc@glm-5.2` produced stream-json on stdout with exactly one stderr line.
-- **`byteCount` and `stdoutTail` are fed the RECOVERED prose, not the raw JSON.** Every consumer — the empty check, `minOutputBytes`, the `[API Error:` match, the reported `outputSize` — is asking about the answer, and raw JSON inflates all of them (an empty answer wrapped in events is still kilobytes). `classifyRunOutput` never learns the wire format changed.
-- **Unrecognised JSON is passed through, not dropped.** Only a line that is valid JSON *and* carries a `type` in {system, assistant, user, result} is treated as an event. The rule is per-line and never latches: sniffing the format once from the first line would let a single unexpected banner silently disable recovery for a whole run and quietly restore the original bug. Worst case is raw JSON in a response file — ugly, and visibly so.
-- **Passthrough is byte-EXACT; only recovered messages get a synthesised trailing newline.** Not cosmetic: `team-timeout-repro.test.ts` pins a child that writes exactly 65536 bytes with no trailing newline to `outputSize === 65536`, and an added newline made it 65537. Two separators exist for the same reason — a blank line belongs *between messages*, while raw lines are a byte stream that already carries its own newline, and using the message separator for them inserted a blank line between every pair of prose lines.
-- **The `is_error` result event is kept.** A terminal `result` normally just repeats the final assistant message, but on a failed turn it carries the error prose print mode would have put on stdout — which is what `API_ERROR_RE` matches. Dropping it would have silently disabled `api_error` detection.
-
-`shape_mismatch` now means something different and says so: under recovery every assistant message was captured, so a missing marker means the model never produced the shape. The old "your answer was discarded" explanation survives only for `captureMode: "print"`. Escape hatch: `CLAUDISH_TEAM_CAPTURE=print` or `TeamRunOptions.captureMode`, kept for diagnosing a capture problem by comparing the two.
-
-Fixture: `test-fixtures/stream-json/haiku-post-answer-turn.jsonl`, a real capture whose `.result` is `OMEGA_MARKER` alone while the stream carries both messages. That one file is the whole bug and the whole fix.
-
-Unrelated but adjacent: `teamCommand` is exported from `team-cli.ts` and imported nowhere, so `claudish team run` is dead code that silently falls through to catalog search. The `team` surface is **MCP-only**.
+The CLI shares all of this: `claudish team …` and `--team --mode json` call `runModels`, the same code the MCP tool runs. CLI `--grid` is the exception; it still runs print-mode children in a visible magmux for a human to watch.
