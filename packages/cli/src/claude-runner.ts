@@ -25,7 +25,7 @@ import {
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
-import { isPaneChild } from "./pane/child-env.js";
+import { PANE_MARKER_VARS, isPaneChild } from "./pane/child-env.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -979,6 +979,12 @@ export function createTempSettingsFile(
  * interactive Claude Code that inherits it prints "Transcript saving is off" and
  * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
  * left as it was.
+ *
+ * Every launch loses the `CLAUDISH_PANE_*` markers (`PANE_MARKER_VARS`). They describe
+ * THIS claudish (an MCP pane child), not Claude Code; inherited, a claudish started
+ * from the slot's Bash tool would take itself for a pane child (re-apply a stale
+ * environment snapshot, refuse a prompt, lose its recovery surface). The markers stay
+ * in this process's own `process.env`, which `magmuxPaneCapability()` reads.
  */
 export function scrubChildEnv(
   env: Record<string, string | undefined>,
@@ -987,6 +993,7 @@ export function scrubChildEnv(
   if (opts.interactive) {
     for (const key of STRIPPED_CHILD_VARS) delete env[key];
   }
+  for (const key of PANE_MARKER_VARS) delete env[key];
 }
 
 /**

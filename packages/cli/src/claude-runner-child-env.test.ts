@@ -28,6 +28,19 @@ describe("scrubChildEnv", () => {
     scrubChildEnv(env, { interactive: false });
     expect(env.CLAUDE_CODE_CHILD_SESSION).toBe("1");
   });
+
+  for (const interactive of [true, false]) {
+    test(`the CLAUDISH_PANE_* markers never reach Claude Code (interactive: ${interactive})`, () => {
+      const env: Record<string, string | undefined> = {
+        CLAUDISH_PANE_CHILD: "1",
+        CLAUDISH_PANE_ENV: "{}",
+        CLAUDISH_PANE_CWD: "/w",
+        CLAUDISH_TOKEN_FILE: "/run/a.json",
+      };
+      scrubChildEnv(env, { interactive });
+      expect(env).toEqual({ CLAUDISH_TOKEN_FILE: "/run/a.json" });
+    });
+  }
 });
 
 describe("runClaudeWithProxy scrubs the environment it spawns with", () => {
