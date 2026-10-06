@@ -6,6 +6,7 @@
 
 export * from "./contract.js";
 export { toSlotRow } from "./slot-row.js";
+export { deliveryRefusal } from "./prompt-delivery.js";
 export {
   type Accounting,
   mergeAccounting,

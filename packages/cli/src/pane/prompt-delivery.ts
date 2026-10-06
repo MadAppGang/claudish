@@ -213,6 +213,16 @@ export function planDelivery(
   };
 }
 
+/**
+ * Why `text` cannot be delivered at all (§2.3 rule 4: the flags remove Read and the text
+ * is neither a plain line nor a one-line command), or null when it can. Pure; owners call
+ * it before anything is spawned, so the refusal is `invalid_args`, not a failed slot.
+ */
+export function deliveryRefusal(text: string, readAvailable: boolean): string | null {
+  const plan = planDelivery(text, "/nonexistent", 1, readAvailable);
+  return plan.mode === "refused" ? plan.reason : null;
+}
+
 /** Write a delivery's turn file: exclusive create, mode 0600. No-op for typed/control deliveries. */
 export function writeTurnFile(d: Delivery): void {
   if ((d.mode === "file" || d.mode === "command") && d.file && d.fileContent !== undefined) {

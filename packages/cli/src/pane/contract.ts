@@ -247,3 +247,20 @@ export interface ContractError {
 export function contractMeta(): ContractMeta {
   return { contract_version: CONTRACT_VERSION, capabilities: [...CAPABILITIES] };
 }
+
+/**
+ * A §8 verb's error, thrown by the owners and serialised by the MCP handler as the
+ * `ContractError` JSON with `isError: true` (§8 E).
+ */
+export class ContractErrorException extends Error {
+  constructor(
+    readonly code: ContractError["error"]["code"],
+    message: string
+  ) {
+    super(message);
+  }
+
+  toContractError(): ContractError {
+    return { error: { code: this.code, message: this.message } };
+  }
+}
