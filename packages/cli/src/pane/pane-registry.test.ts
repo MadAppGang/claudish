@@ -418,36 +418,30 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
     rmSync(fake);
     mkdirSync(fake); // … then the binary becomes unspawnable (EACCES on a directory)
     const uuid = crypto.randomUUID();
-    let s: Awaited<ReturnType<typeof startPaneSession>> | null = null;
-    try {
-      s = await startPaneSession({
-        kind: "t",
-        label: "01",
-        callerFlags: [],
-        spawnModel: "fake-answer",
-        cwd: t.cwd,
-        sessionUuid: uuid,
-        transcriptPath: t.transcriptPathFor(uuid),
-        slotEnv: {},
-        shape: "one-shot",
-        initialPrompt: "x",
-        readAvailable: true,
-        parentEnv: t.env,
-        sockRoot: t.sockRoot,
-        magmuxBinary: fake,
-        decide: () => ({ state: "COMPLETED" }),
-        onBlocked: () => "wait",
-      });
-    } catch {
-      s = null; // a synchronous spawn throw is also a refusal before anything lives
-    }
-    if (s) {
-      const snap = await s.terminal;
-      expect(snap.state).toBe("FAILED");
-      expect(snap.reason).toBe("pane_lost");
-      expect(snap.detail).toContain("magmux spawn failed");
-      await s.reaped();
-    }
+    // the watcher and the record exist BEFORE magmux is spawned (X-L4), so this is a real reap
+    const s = await startPaneSession({
+      kind: "t",
+      label: "01",
+      callerFlags: [],
+      spawnModel: "fake-answer",
+      cwd: t.cwd,
+      sessionUuid: uuid,
+      transcriptPath: t.transcriptPathFor(uuid),
+      slotEnv: {},
+      shape: "one-shot",
+      initialPrompt: "x",
+      readAvailable: true,
+      parentEnv: t.env,
+      sockRoot: t.sockRoot,
+      magmuxBinary: fake,
+      decide: () => ({ state: "COMPLETED" }),
+      onBlocked: () => "wait",
+    });
+    const snap = await s.terminal;
+    expect(snap.state).toBe("FAILED");
+    expect(snap.reason).toBe("pane_lost");
+    expect(snap.detail).toContain("magmux spawn failed");
+    await s.reaped();
     expect(livePaneCount(t.sockRoot)).toBe(0);
     expect(
       readProcessTable().some(
