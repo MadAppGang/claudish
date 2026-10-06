@@ -591,6 +591,11 @@ export function buildTeamStatusPayload(opts: {
   });
   return {
     ...status,
+    // §8 B: the legacy `models[slot].state` uses the same closed SlotState set as `run`
+    // (a pre-contract status.json can still say PENDING; it reads as FAILED, like `run`)
+    models: Object.fromEntries(
+      Object.entries(status.models ?? {}).map(([id, m]) => [id, { ...m, state: slotStateOf(m) }])
+    ),
     // Bytes of answer produced SO FAR, per slot still working. `outputSize` cannot
     // answer this.
     live_output_bytes_by_slot: liveBytes,

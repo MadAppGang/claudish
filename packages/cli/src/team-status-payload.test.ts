@@ -68,6 +68,23 @@ describe("teamStatusNote", () => {
 });
 
 describe("buildTeamStatusPayload", () => {
+  test("a pre-contract slot state reads in the closed SlotState set, as run does", () => {
+    const status = {
+      startedAt: "2026-09-09T00:00:00.000Z",
+      models: { "01": { ...slot("COMPLETED", 10), state: "PENDING" } },
+    } as unknown as TeamStatus;
+    const payload = buildTeamStatusPayload({
+      status,
+      sessionPath: PATH,
+      idle: null,
+      activity: null,
+      liveBytes: null,
+      run: {} as never,
+    }) as { models: Record<string, { state: string; outputSize: number }> };
+    expect(payload.models["01"]?.state).toBe("FAILED");
+    expect(payload.models["01"]?.outputSize).toBe(10); // every other legacy field kept
+  });
+
   test("carries live bytes without rewriting outputSize and includes a note, not a summary", () => {
     const status: TeamStatus = {
       startedAt: "2026-09-09T00:00:00.000Z",
