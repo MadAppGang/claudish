@@ -630,6 +630,19 @@ the user was never shown.
    predicate, read by `retryWatchdogEnv()`, by the wrap ternary and by the ambient-socket branch.
    Anything else that decides whether a launch may PAY for a surface reads it too.
 
+**A pane child is never eligible (D22).** An MCP `team` slot or `create_session` runs claudish
+inside a headless magmux pane (`pane-session.md`), so it inherits `MAGMUX_SOCK` and would have
+read as `ambient`: watchdog exported, recovery UI installed, an overlay drawn on the very screen the
+pane classifier reads — and nobody watching, because a headless pane has no viewer. The accepted
+~300-attempt exposure was shown to the user only for a launch a person can see. So
+`magmuxPaneCapability()` answers `{kind:"none", reason:"pane-child"}` when `CLAUDISH_PANE_CHILD=1`,
+checked BEFORE its ambient branch, and the ambient-install branch in `claude-runner.ts` reads
+`paneCapability.kind === "ambient"` instead of restating its own `MAGMUX_SOCK` test — one predicate,
+per the rule above. `applyRetryWatchdog` also deletes a claudish-owned `CLAUDE_CODE_RETRY_WATCHDOG`
+inherited from a wrapped parent. Tier 1's hold still runs, bounded by the derived deadline; an
+exhausted episode answers an inline 400, Claude Code writes an API-error entry, and the slot or
+session is FAILED `api_error`. Pinned by `recovery/settings.test.ts`.
+
 **The transport's `getRequestInit()` is re-minted per attempt.** It was hoisted once, before the
 primary fetch, and spread into every re-issue. A transport that returns a one-shot
 `AbortSignal.timeout` therefore poisoned the whole ladder the moment it fired:
