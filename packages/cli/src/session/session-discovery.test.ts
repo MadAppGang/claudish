@@ -7,8 +7,10 @@ import {
   ACTIVE_WINDOW_MS,
   type SessionRow,
   isActive,
+  projectsDir,
   sessionLabel,
   slugForPath,
+  transcriptPathFor,
 } from "./session-discovery.js";
 
 const fixtureHome = mkdtempSync(join(tmpdir(), "claudish-session-discovery-"));
@@ -31,15 +33,19 @@ function sessionFixture(cwd: string, id: string, mtimeMs: number): void {
   utimesSync(file, new Date(mtimeMs), new Date(mtimeMs));
 }
 
-function findLatestInFixture(cwd: string, sinceMs: number): string | null {
+function findLatestInFixture(
+  cwd: string,
+  sinceMs: number,
+  envOverride: Record<string, string> = { HOME: fixtureHome }
+): string | null {
   const script = `import { findLatestSessionId } from "./src/session/session-discovery.ts";
 process.stdout.write(findLatestSessionId(${JSON.stringify(cwd)}, ${sinceMs}) ?? "");`;
+  const env: Record<string, string | undefined> = { ...process.env, ...envOverride };
+  // An outer CLAUDE_CONFIG_DIR would outrank the fixture HOME.
+  if (!("CLAUDE_CONFIG_DIR" in envOverride)) delete env.CLAUDE_CONFIG_DIR;
   const result = Bun.spawnSync([process.execPath, "-e", script], {
     cwd: join(import.meta.dir, "../.."),
-    env: {
-      ...process.env,
-      HOME: fixtureHome,
-    },
+    env,
   });
   expect(result.exitCode).toBe(0);
   const id = result.stdout.toString().trim();
@@ -72,6 +78,26 @@ describe("session discovery pure helpers", () => {
       "-Users-jack-mag-claudish--claude-worktrees-claudish-mcp-magmux-ai-docs-sessions-dev-feature-mcp-magmux-panes-20261002-a7c3-research-scratch-fresh-cwd-v1"
     );
     expect(slugForPath("/tmp/a b@c+d")).toBe("-tmp-a-b-c-d");
+  });
+
+  test("projectsDir reads CLAUDE_CONFIG_DIR from the environment it is given", () => {
+    expect(projectsDir({ CLAUDE_CONFIG_DIR: "/cfg/claude", HOME: "/home/u" })).toBe(
+      "/cfg/claude/projects"
+    );
+  });
+
+  test("projectsDir falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is unset or empty", () => {
+    expect(projectsDir({ HOME: "/home/u" })).toBe("/home/u/.claude/projects");
+    expect(projectsDir({ HOME: "/home/u", CLAUDE_CONFIG_DIR: "" })).toBe(
+      "/home/u/.claude/projects"
+    );
+  });
+
+  test("transcriptPathFor joins under the projects directory it is handed", () => {
+    const root = projectsDir({ CLAUDE_CONFIG_DIR: "/cfg" });
+    expect(transcriptPathFor("/no/such/dir_x", "u-1", root)).toBe(
+      "/cfg/projects/-no-such-dir-x/u-1.jsonl"
+    );
   });
 
   test("slugForPath is the parent proof's projectDirNameFor, so the two cannot drift", () => {
@@ -123,5 +149,21 @@ describe("findLatestSessionId", () => {
     const sinceMs = createdAt + 500;
 
     expect(findLatestInFixture(cwd, sinceMs)).toBe(newerId);
+  });
+
+  test("looks under CLAUDE_CONFIG_DIR, not the home directory, when it is set", () => {
+    const cwd = "/tmp/project-under-config-dir";
+    const id = "55555555-5555-4555-8555-555555555555";
+    const createdAt = Date.now();
+    sessionFixture(cwd, id, createdAt + 1_000);
+    const emptyHome = join(fixtureHome, "empty-home");
+    mkdirSync(emptyHome, { recursive: true });
+
+    expect(
+      findLatestInFixture(cwd, createdAt, {
+        HOME: emptyHome,
+        CLAUDE_CONFIG_DIR: join(fixtureHome, ".claude"),
+      })
+    ).toBe(id);
   });
 });

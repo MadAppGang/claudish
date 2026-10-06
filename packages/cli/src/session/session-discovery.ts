@@ -21,15 +21,25 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { projectDirNameFor } from "../channel/parent-proof.js";
+import { claudeConfigDir, projectDirNameFor } from "../channel/parent-proof.js";
 
 /** Head bytes scanned for the `entrypoint` marker. See `isAgentSession`. */
 const ENTRYPOINT_BYTES = 8192;
 
-/** Where Claude Code keeps transcripts. */
-export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
+/**
+ * Where Claude Code keeps transcripts: `<config dir>/projects`, the config dir being
+ * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` (`claudeConfigDir`, `channel/parent-proof.ts`).
+ *
+ * Resolved at CALL time from the environment it is given. It used to be a module
+ * constant built from `os.homedir()`, which is wrong twice: it ignored a
+ * `CLAUDE_CONFIG_DIR` Claude Code honours, and Bun's `os.homedir()` ignores a `HOME`
+ * set by a sandbox or launcher, which Claude Code follows. An owner that spawns a child
+ * under a different environment passes that environment here.
+ */
+export function projectsDir(env: Record<string, string | undefined> = process.env): string {
+  return join(claudeConfigDir(env), "projects");
+}
 
 /**
  * Claude Code's directory name for a working directory: every character outside
@@ -70,8 +80,15 @@ export function slugForPath(absPath: string): string {
  *
  * Falls back to the path as given when it cannot be resolved — a cwd that has
  * since been deleted should still produce the best guess available, not null.
+ *
+ * `projectsRoot` is the CHILD's projects directory: `projectsDir(childEnv)` when the
+ * child runs under an environment other than this process's.
  */
-export function transcriptPathFor(cwd: string, sessionUuid: string): string {
+export function transcriptPathFor(
+  cwd: string,
+  sessionUuid: string,
+  projectsRoot: string = projectsDir()
+): string {
   let real = cwd;
   try {
     real = realpathSync(cwd);
@@ -79,7 +96,7 @@ export function transcriptPathFor(cwd: string, sessionUuid: string): string {
     // Deleted, unreadable, or never existed. The unresolved slug is still the
     // right answer whenever no symlink was involved.
   }
-  return join(PROJECTS_DIR, slugForPath(real), `${sessionUuid}.jsonl`);
+  return join(projectsRoot, slugForPath(real), `${sessionUuid}.jsonl`);
 }
 
 /** A resumable session. Fields below `sizeBytes` are absent until `hydrateSession`. */
@@ -233,10 +250,10 @@ export function getRepoContext(cwd: string = process.cwd()): RepoContext | null 
   return { root, current, liveWorktrees, branchByPath };
 }
 
-/** `~/.claude/projects` entries, or `[]` when the directory does not exist yet. */
+/** `projectsDir()` entries, or `[]` when the directory does not exist yet. */
 function projectDirs(): string[] {
   try {
-    return readdirSync(PROJECTS_DIR, { withFileTypes: true })
+    return readdirSync(projectsDir(), { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
   } catch {
@@ -246,7 +263,7 @@ function projectDirs(): string[] {
 
 /** Transcript files in one project directory, as `stat`-only rows. */
 function sessionsIn(dirName: string): SessionRow[] {
-  const dir = join(PROJECTS_DIR, dirName);
+  const dir = join(projectsDir(), dirName);
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
