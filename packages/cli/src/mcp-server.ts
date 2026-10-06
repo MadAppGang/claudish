@@ -2182,9 +2182,10 @@ function defineTools(
     group: "channel",
     handler: async (args) => {
       try {
+        const includeCompleted = optionalBoolean(args.include_completed, "include_completed");
         return contractAnswer({
           ...contractMeta(),
-          sessions: sessionManager.listSessionRows(args.include_completed === true),
+          sessions: sessionManager.listSessionRows(includeCompleted),
         });
       } catch (e) {
         return contractErrorAnswer(e);
@@ -2279,12 +2280,9 @@ function defineTools(
         const sessionId = optionalString(args.session_id, "session_id");
         if (sessionId === undefined)
           throw new ContractErrorException("invalid_args", "'session_id' is required");
-        const since = args.since_seq;
-        if (since !== undefined && (typeof since !== "number" || !Number.isInteger(since)))
-          throw new ContractErrorException("invalid_args", "'since_seq' must be an integer");
-        return contractAnswer(
-          sessionManager.captureSession(sessionId, since as number | undefined, args.spans === true)
-        );
+        const since = optionalInteger(args.since_seq, "since_seq");
+        const spans = optionalBoolean(args.spans, "spans");
+        return contractAnswer(sessionManager.captureSession(sessionId, since, spans));
       } catch (e) {
         return contractErrorAnswer(e);
       }

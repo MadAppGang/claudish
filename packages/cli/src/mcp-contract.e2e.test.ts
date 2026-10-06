@@ -350,6 +350,11 @@ describe.skipIf(!MAGMUX_AVAILABLE)("every §8 verb answers its errors as a Contr
         await server.callTool("capture_session", { session_id: "deadbeef", since_seq: "x" }),
         "invalid_args"
       );
+      // a non-boolean spans is refused before the session lookup, like a string since_seq
+      contractError(
+        await server.callTool("capture_session", { session_id: "deadbeef", spans: "yes" }),
+        "invalid_args"
+      );
       contractError(await server.callTool("capture_session", {}), "invalid_args");
       contractError(await server.callTool("cancel_session", {}), "invalid_args");
       // a refused create_session argument is the caller's error: no provider_failure hint
