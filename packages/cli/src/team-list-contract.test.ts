@@ -236,6 +236,12 @@ describe.skipIf(!MAGMUX)("team run registry (list / status / cancel / capture)",
     const slot = Object.values(r.slots)[0] as string;
     const cap = json(await teamContractVerb("capture", { path, slot }));
     expect(cap.body.error.code).toBe("unknown_run");
+    // CA-13: an evicted run_id never falls back to disk data, even data carrying that id
+    for (const mode of ["status", "cancel"] as const) {
+      const byId = json(await teamContractVerb(mode, { path, run_id: r.runId }));
+      expect(byId.isError).toBe(true);
+      expect(byId.body.error.code).toBe("unknown_run");
+    }
   }, 60_000);
 
   it(`keeps at most ${MAX_SETTLED_RUNS} settled runs, evicting the oldest first`, async () => {
