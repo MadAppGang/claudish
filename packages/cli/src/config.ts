@@ -79,6 +79,10 @@ export const ENV = {
   CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" in a pane child, nowhere else
   CLAUDISH_PANE_ENV: "CLAUDISH_PANE_ENV", // JSON snapshot of the MCP server's environment; re-applied, then deleted
   CLAUDISH_PANE_CWD: "CLAUDISH_PANE_CWD", // realpath of the cwd the pane child must run in
+  // Where pane sockets, records and launcher dirs live (default /tmp/claudish-mux-<uid>).
+  // A location, like CLAUDISH_SESSIONS_DIR: test suites that start a real MCP server point
+  // it at their own root so the startup sweep and the pane limit stay inside the test.
+  CLAUDISH_PANE_ROOT: "CLAUDISH_PANE_ROOT",
 } as const;
 
 // OpenRouter API Configuration
