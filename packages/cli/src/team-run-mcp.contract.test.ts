@@ -98,18 +98,36 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
 describe.skipIf(!MAGMUX_AVAILABLE)(
   "REQ-18/REQ-21 the record of a run that settles at once ends exactly once",
   () => {
+    // Replaced (D9): the budget was "within 1 s of the run call returning". `run` now
+    // returns once each slot's prompt is ACCEPTED, so that interval also holds the turn's
+    // own settle (the fake answers, the follower polls, 500 ms corroboration, a 250 ms
+    // tick) in a second bun process and a magmux — pane latency that stretched to
+    // 1,013–1,014 ms under machine load while the record path took milliseconds. The
+    // property REQ-21 needs is that the record ends AT the settle, from inside
+    // `startModels`, not on a later poll: so the 1 s budget is measured from the moment
+    // the run settled (its last slot's `completedAt`) to the record's `completedAt`.
     test(
-      "meta.json is written within 1 s of the run call returning, completed, with every slot ok",
+      "meta.json is written within 1 s of the run settling, completed, with every slot ok",
       async () => {
         const record = await run("answer once and exit");
-        const returnedAt = Date.now();
 
         const meta = await waitFor(() => readJson(join(layout.sessionsDir, record, "meta.json")), {
           what: "the team record's meta.json",
-          timeoutMs: 1_000,
+          timeoutMs: 10_000,
         });
 
-        expect(Date.now() - returnedAt).toBeLessThanOrEqual(1_000);
+        const slots = Object.values(
+          (readJson(join(teamDir, "status.json"))?.models ?? {}) as Record<
+            string,
+            { completedAt?: string | null }
+          >
+        );
+        const settledAt = Math.max(...slots.map((m) => Date.parse(m.completedAt ?? "")));
+        const endedAt = Date.parse(String(meta.completedAt));
+        expect(slots).toHaveLength(MODELS.length);
+        expect(Number.isFinite(settledAt)).toBe(true);
+        expect(endedAt).toBeGreaterThanOrEqual(settledAt);
+        expect(endedAt - settledAt).toBeLessThanOrEqual(1_000);
         expect(meta).toEqual({
           kind: "team",
           status: "completed",
