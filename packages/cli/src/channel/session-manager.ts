@@ -1144,11 +1144,8 @@ export class SessionManager {
       entry.waitSince = null;
     }
     try {
-      writeFileSync(
-        join(entry.sessionDir, "meta.json"),
-        JSON.stringify(toMetaRecord(entry.info, entry.cwd), null, 2),
-        "utf-8"
-      );
+      // atomic: the external monitor polls this file while we are live
+      writeJsonAtomic(join(entry.sessionDir, "meta.json"), toMetaRecord(entry.info, entry.cwd));
     } catch (err) {
       process.stderr.write(
         `[claudish] session ${entry.info.sessionId}: could not write meta.json: ` +
