@@ -89,6 +89,27 @@ describe("checkChildFlags — positionals and subcommand words", () => {
     for (const w of SUBCOMMAND_WORDS) expect(refused(["--agent", w])).toContain("subcommand");
   });
 
+  test("a token after a flag Claude Code reads as a boolean would be its first prompt: refused", () => {
+    // --verbose is claudish's own boolean, so its walker already sees a positional
+    expect(refused(["--verbose", "do X"])).toContain("positional");
+    // --brief / --ide are Claude Code booleans claudish does not know: the walker read the
+    // token as a value, Claude Code would read it as the prompt
+    expect(refused(["--brief", "do X"])).toContain("--brief takes no value in Claude Code");
+    expect(refused(["--ide", "x"])).toContain("first prompt");
+    // a flag no list knows is refused with a value rather than guessed at
+    expect(refused(["--some-future-flag", "v"])).toContain("--some-future-flag");
+    for (const ok of [
+      ["--verbose"],
+      ["--agent", "reviewer"],
+      ["--allowedTools", "Read,Bash"],
+      ["--permission-mode", "plan"],
+      ["--settings", "/s.json"],
+      ["--effort=high"],
+      ["--verbose", "--agent", "reviewer"],
+    ])
+      expect(checkChildFlags(ok)).toEqual({ ok: true });
+  });
+
   test("the walker the check uses agrees with classifyPassthroughTokens", () => {
     for (const flags of [
       ["--agent", "x"],

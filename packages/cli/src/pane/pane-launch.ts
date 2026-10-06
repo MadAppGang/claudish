@@ -19,7 +19,12 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CLAUDISH_EXITING_FLAGS, CLAUDISH_FLAG_ARITY, classifyPassthroughTokens } from "../cli.js";
+import {
+  CLAUDISH_EXITING_FLAGS,
+  CLAUDISH_FLAG_ARITY,
+  type PassthroughClassification,
+  classifyPassthroughTokens,
+} from "../cli.js";
 import { ENV } from "../config.js";
 import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
@@ -356,8 +361,78 @@ function splitFlag(token: string): [string, string | undefined] {
 }
 
 /**
+ * Claude Code flags that take a value: every option `claude --help` (2.1.291) prints with
+ * `<…>` or `[…]`, plus the `-file` variants it names in prose. Any other passthrough flag
+ * is a boolean to Claude Code, so a token after it is Claude Code's POSITIONAL PROMPT
+ * (`--verbose "do X"` boots the pane with a turn the server never typed), even though
+ * claudish's own walker reads it as the flag's value. Unknown flags are refused with a
+ * value rather than guessed at: a refusal is visible, a stray turn is not.
+ */
+export const CLAUDE_CODE_VALUE_FLAGS: readonly string[] = [
+  "--add-dir",
+  "--agent",
+  "--agents",
+  "--allowedTools",
+  "--allowed-tools",
+  "--append-system-prompt",
+  "--append-system-prompt-file",
+  "--autocompact",
+  "--betas",
+  "--cloud",
+  "-d",
+  "--debug",
+  "--debug-file",
+  "--disallowedTools",
+  "--disallowed-tools",
+  "--effort",
+  "--environment",
+  "--fallback-model",
+  "--file",
+  "--from-pr",
+  "--input-format",
+  "--json-schema",
+  "--max-budget-usd",
+  "--mcp-config",
+  "--model",
+  "-n",
+  "--name",
+  "--output-format",
+  "--permission-mode",
+  "--permission-prompt-tool",
+  "--permission-prompts",
+  "--plugin-dir",
+  "--plugin-url",
+  "--prompt-suggestions",
+  "--remote-control",
+  "--remote-control-session-name-prefix",
+  "-r",
+  "--resume",
+  "--session-id",
+  "--setting-sources",
+  "--settings",
+  "--system-prompt",
+  "--system-prompt-file",
+  "--system-prompt-snapshot",
+  "--teleport",
+  "--tools",
+  "-w",
+  "--worktree",
+];
+
+/** A value token after a passthrough flag Claude Code reads as a boolean. */
+function booleanFlagValue(c: PassthroughClassification): { flag: string; value: string } | null {
+  for (const t of c.tokens) {
+    if (t.kind !== "passthrough-value") continue;
+    const flag = splitFlag(c.tokens.find((x) => x.index === t.index - 1)?.token ?? "")[0];
+    if (!CLAUDE_CODE_VALUE_FLAGS.includes(flag)) return { flag, value: t.token };
+  }
+  return null;
+}
+
+/**
  * The server-side check of `claude_flags` (D18): reserved tokens, subcommand words, and
- * any positional token or `--` (claudish would turn a positional into a `-p` prompt).
+ * any positional token or `--` (claudish would turn a positional into a `-p` prompt),
+ * including a value after a flag Claude Code reads as a boolean.
  */
 export function checkChildFlags(flags: string[]): FlagCheck {
   for (const token of flags) {
@@ -383,6 +458,12 @@ export function checkChildFlags(flags: string[]): FlagCheck {
     return {
       ok: false,
       message: `claude_flags contains a positional token (${JSON.stringify(c.positionals[0])}); claudish takes one value per flag: write \`--allowedTools Read,Bash\``,
+    };
+  const stray = booleanFlagValue(c);
+  if (stray)
+    return {
+      ok: false,
+      message: `claude_flags: ${stray.flag} takes no value in Claude Code, so ${JSON.stringify(stray.value)} would become the session's first prompt; pass the flag alone`,
     };
   return { ok: true };
 }
