@@ -13,7 +13,8 @@
  * Record shapes are pinned by the phase-2 captures of Claude Code 2.1.290
  * (`ai-docs/reports/mcp-magmux-panes/phase2-captures.md`), notably:
  *   - the witness is a main-chain user record whose text equals the typed line
- *     (`origin.kind:"human"`), or a `<command-name>/x</command-name>` record;
+ *     (`origin.kind:"human"`; for `/compact` with no `origin`), or a
+ *     `<command-name>/x</command-name>` record;
  *   - between the last assistant record and `turn_duration` Claude Code writes
  *     `attachment/prompt_snapshot` and state records, so "directly followed" means "no
  *     `stop_hook_summary` in between";
@@ -41,7 +42,8 @@ import { join } from "node:path";
 
 export type Witness =
   | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
-  | { kind: "command"; name: string }; // slash command: its <command-name> record
+  /** slash command: its `<command-name>` record, or the plain user record of the typed `line` */
+  | { kind: "command"; name: string; line?: string };
 
 export interface TurnDelivery {
   /** absolute path of the turn file the child must Read */
@@ -243,6 +245,10 @@ function matchesWitness(r: Rec, w: Witness): boolean {
   if (!isMainUser(r) || hasToolResult(r)) return false;
   const text = userText(r);
   if (w.kind === "text") return !r.isMeta && text.trim() === w.text.trim();
+  // `/compact` writes its <command-name> record only AFTER compaction finishes, which takes
+  // minutes on a real context; the plain record of the typed line is written at submit
+  // (captured: 2.1.290 and 2.1.291, `"content":"/compact"`, no isMeta), so it is the witness.
+  if (w.line !== undefined && !r.isMeta && text.trim() === w.line.trim()) return true;
   return text.includes(`<command-name>/${w.name}</command-name>`);
 }
 

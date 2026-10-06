@@ -173,7 +173,11 @@ export function planDelivery(
     const normalised = stripControl(firstLine.trimStart().replace(/\t/g, " ")).trimEnd();
     const more = text.slice(firstLine.length).trim().length > 0;
     if (!more && normalised.length <= MAX_TYPED_LINE) {
-      return { mode: "command", line: normalised, witness: { kind: "command", name } };
+      return {
+        mode: "command",
+        line: normalised,
+        witness: { kind: "command", name, line: normalised },
+      };
     }
     if (!readAvailable)
       return {
@@ -182,10 +186,11 @@ export function planDelivery(
       };
     const file = turnFilePath(turnDir, turnIndex);
     const tf = renderTurnFile(text);
+    const line = commandPointer(name, file);
     return {
       mode: "command",
-      line: commandPointer(name, file),
-      witness: { kind: "command", name },
+      line,
+      witness: { kind: "command", name, line },
       file,
       fileContent: tf.content,
       lines: tf.lines,

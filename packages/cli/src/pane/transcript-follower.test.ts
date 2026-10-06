@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { planDelivery } from "./prompt-delivery.js";
 import { FIXTURES } from "./test-helpers/fixtures.js";
 import {
   type Rec,
@@ -655,6 +656,54 @@ describe("local commands", () => {
       { upTo: recs.findIndex((r) => textOf(r).startsWith("Reply with exactly KIWI")) }
     );
     expect(cur(v2[0]).localCommandOutput).toBe("Compacted (ctrl+o to see full summary)");
+  });
+
+  test("/compact (2.1.291) is accepted at its typed record, before the compaction it starts", () => {
+    // The <command-name>/compact record is APPENDED only after the boundary and the summary,
+    // i.e. when compaction finishes (10.4 s here, minutes on a real context); waiting for it
+    // outlived the 30 s admission bound. The plain "/compact" record is written at submit.
+    const n = "local-commands";
+    const recs = transcriptRecords(n);
+    const typed = recs.findIndex((r) => r.type === "user" && textOf(r) === "/compact");
+    const boundary = recs.findIndex((r) => r.subtype === "compact_boundary");
+    const named = recs.findIndex((r) =>
+      textOf(r).includes("<command-name>/compact</command-name>")
+    );
+    expect(typed).toBeLessThan(boundary);
+    expect(boundary).toBeLessThan(named);
+    const witness = (planDelivery("/compact", "/tmp/unused", 1, true) as { witness: Witness })
+      .witness;
+    // mid-compaction: the boundary is written, the <command-name> record is not
+    const mid = run(n, [{ at: typed, witness }], { upTo: boundary + 1 });
+    expect(cur(mid.views[0]).acceptedAt).toBe(recs[typed]!.timestamp);
+    expect(cur(mid.views[0]).localCommandOutput).toBeNull();
+    const byNameOnly = run(n, [{ at: typed, witness: { kind: "command", name: "compact" } }], {
+      upTo: boundary + 1,
+    });
+    expect(cur(byNameOnly.views[0]).acceptedAt).toBeNull();
+    // finished: the stdout settles it through path L, and the summary counts as a compaction
+    const kiwi = recs.findIndex((r) => textOf(r).startsWith("Reply with exactly KIWI"));
+    const done = cur(run(n, [{ at: typed, witness }], { upTo: kiwi }).views[0]);
+    expect(done.localCommandOutput).toBe("Compacted (ctrl+o to see full summary)");
+    expect(done.compactions).toBe(1);
+    expect(done.lastAssistant).toBeNull();
+  });
+
+  test("a typed-line witness never matches an isMeta record or another command's line", () => {
+    const n = "local-commands";
+    const recs = transcriptRecords(n);
+    const typed = recs.findIndex((r) => r.type === "user" && textOf(r) === "/compact");
+    const other = run(n, [{ at: typed, witness: { kind: "command", name: "x", line: "/x" } }], {
+      upTo: typed + 1,
+    });
+    expect(cur(other.views[0]).acceptedAt).toBeNull();
+    const caveat = recs.findIndex((r) => r.isMeta === true && textOf(r).includes("caveat"));
+    const meta = run(
+      n,
+      [{ at: caveat, witness: { kind: "command", name: "x", line: textOf(recs[caveat]!) } }],
+      { upTo: caveat + 1 }
+    );
+    expect(cur(meta.views[0]).acceptedAt).toBeNull();
   });
 
   test("/color (2.1.291): the witness and the stdout are system/local_command records", () => {

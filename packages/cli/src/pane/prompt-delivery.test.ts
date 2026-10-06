@@ -61,11 +61,11 @@ describe("plain lines are typed", () => {
 });
 
 describe("slash commands", () => {
-  test("a short single-line command is typed and witnessed by its command name", () => {
+  test("a short single-line command is typed and witnessed by its command name or its typed line", () => {
     expect(planDelivery("/pear", TURN_DIR, 1, true)).toEqual({
       mode: "command",
       line: "/pear",
-      witness: { kind: "command", name: "pear" },
+      witness: { kind: "command", name: "pear", line: "/pear" },
     });
     expect(planDelivery("/review\tthe diff", TURN_DIR, 1, true)).toMatchObject({
       mode: "command",

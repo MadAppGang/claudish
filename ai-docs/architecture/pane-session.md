@@ -72,7 +72,15 @@ offset and before turn N+1's. Evidence from an earlier turn can therefore never 
 one. The turn is ACCEPTED when its **witness** appears after the offset: a main-chain user record
 whose text equals the typed line (`origin.kind:"human"`), or a `<command-name>/x</command-name>`
 record for a slash command — a user record, or (2.1.287+, `/color yellow` captured on 2.1.291) a
-`system/local_command` record, which a user-record-only witness never accepts. Measured: the witness lands 370–470 ms after a typed send; with a
+`system/local_command` record, which a user-record-only witness never accepts. A slash command is
+also witnessed by a non-`isMeta` user record whose text equals the typed line: `/compact` writes
+one at submit (captured on 2.1.290 and 2.1.291, `"content":"/compact"`, no `origin`) but APPENDS its
+`<command-name>` record only when compaction finishes — 10.4 s for a two-turn conversation, minutes
+on a real context. Waiting for `<command-name>` outlived the 30 s admission bound: the turn was
+abandoned (`send_not_accepted`) while Claude Code compacted, and the pump typed the next queued
+prompt into a busy REPL. Accepted at the typed record, compaction is a RUNNING turn with no timer
+(D10), and the prompts queued behind it wait for path L. `/model` and `/pear` write no such record
+and are still witnessed by `<command-name>`. Measured: the witness lands 370–470 ms after a typed send; with a
 `sleep 12` UserPromptSubmit hook the box clears at once but the witness arrives 12,501 ms later.
 
 The follower polls on every frame (debounced 250 ms) and on a 1 s backstop.

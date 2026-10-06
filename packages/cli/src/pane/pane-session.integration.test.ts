@@ -463,6 +463,37 @@ describe.skipIf(!MAGMUX)(
         },
         T
       );
+
+      test(
+        "a /compact that outlasts the admission bound stays admitted; the prompt queued behind it is answered",
+        async () => {
+          // 2.1.291 writes <command-name>/compact only when compaction FINISHES; a real one
+          // takes minutes. Compaction here outlasts the admission bound by 2.5 s.
+          const r = await start("answer", {
+            shape: "interactive",
+            initialPrompt: undefined,
+            decide: () => "continue",
+            admitTimeoutMs: 1500,
+            env: { FAKE_GAP_MS_COMPACT: "4000" },
+          });
+          await r.s.ready;
+          expect(r.s.send("/compact").ok).toBe(true);
+          expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
+          await until(r, (s) => s.state === "RUNNING");
+          await Bun.sleep(2500); // past the admission bound, mid-compaction
+          expect(r.s.snapshot()).toMatchObject({ state: "RUNNING", pendingInputs: 1 });
+          await until(r, (s) => s.turnsCompleted === 2 && s.state === "AWAITING_INPUT", 20_000);
+          expect(r.turns.map((t) => t.settledBy)).toEqual(["local_command", "turn_duration"]);
+          expect(r.turns[0]?.answer).toBe("Compacted (ctrl+o to see full summary)");
+          expect(r.turns[1]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`);
+          expect(r.s.snapshot().anomalies.filter((a) => a.startsWith("send_not_accepted"))).toEqual(
+            []
+          );
+          r.s.cancel();
+          await finish(r);
+        },
+        T
+      );
     });
 
     describe.concurrent("command turns with a file", () => {
