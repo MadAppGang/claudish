@@ -63,8 +63,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The pane suites run against the SAME magmux the release ships: the tag in
-      # .github/magmux.env, which release.yml reads too. The Homebrew
+      # The pane suites run against the SAME magmux the release ships: the tag and
+      # checksums in .github/magmux.env, which release.yml reads too. The Homebrew
       # tap served whatever was current, so CI could go green against 0.15 while
       # 0.14.0 shipped untested. Installed to /usr/local/bin, a path
       # findMagmuxForTest() and the launcher both search (no Homebrew copy exists on
@@ -74,8 +74,9 @@ jobs:
           set -a; . .github/magmux.env; set +a
           ARCH=$(uname -m); case "$ARCH" in (arm64|aarch64) ARCH=arm64;; (x86_64) ARCH=amd64;; esac
           ASSET="magmux_darwin_${ARCH}.tar.gz"
-          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --pattern checksums.txt --dir /tmp
-          (cd /tmp && grep " ${ASSET}\$" checksums.txt | shasum -a 256 -c -)
+          WANT=$(eval echo "\$MAGMUX_SHA256_darwin_${ARCH}")
+          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
+          echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
           tar xzf "/tmp/${ASSET}" -C /tmp
           sudo install -m 0755 /tmp/magmux /usr/local/bin/magmux
           magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }
