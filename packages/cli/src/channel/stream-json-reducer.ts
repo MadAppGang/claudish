@@ -47,7 +47,7 @@ import {
   STREAM_JSON_EVENT_TYPES,
   createAssistantTextCapture,
 } from "../team-stream-capture.js";
-import type { ChannelEventType, ReducerCallback, ReducerEvent } from "./types.js";
+import type { ReducerCallback, ReducerEvent, SessionStatus } from "./types.js";
 
 /**
  * Frame types that exist only to prove liveness.
@@ -83,12 +83,7 @@ function reachesAnswer(
   return keepUnrecognizedJson;
 }
 
-const TERMINAL_STATES: readonly ChannelEventType[] = [
-  "completed",
-  "failed",
-  "cancelled",
-  "timeout",
-];
+const TERMINAL_STATES: readonly SessionStatus[] = ["completed", "failed", "cancelled", "timeout"];
 
 /**
  * Which states may follow which. Absent from a row ⇒ illegal.
@@ -97,7 +92,7 @@ const TERMINAL_STATES: readonly ChannelEventType[] = [
  * supervisor (timeout, cancel, exit classification) has decided how a session
  * ended, nothing may revise it.
  */
-const LEGAL_TRANSITIONS: Record<ChannelEventType, readonly ChannelEventType[]> = {
+const LEGAL_TRANSITIONS: Record<SessionStatus, readonly SessionStatus[]> = {
   starting: ["running", "tool_executing", "waiting_for_input", "finishing", ...TERMINAL_STATES],
   running: ["tool_executing", "waiting_for_input", "finishing", ...TERMINAL_STATES],
   tool_executing: ["running", "waiting_for_input", "finishing", ...TERMINAL_STATES],
@@ -261,7 +256,7 @@ export function labelForLine(line: string): string | null {
 }
 
 export class StreamJsonReducer {
-  private _state: ChannelEventType = "starting";
+  private _state: SessionStatus = "starting";
   private disposed = false;
 
   /** Incomplete trailing line held until its newline arrives. */
@@ -304,7 +299,7 @@ export class StreamJsonReducer {
     }
   }
 
-  get state(): ChannelEventType {
+  get state(): SessionStatus {
     return this._state;
   }
   get claudeSessionId(): string | null {
@@ -450,7 +445,7 @@ export class StreamJsonReducer {
    * reached, and the transition table makes those absorbing — a later caller
    * cannot revise a verdict that has already been recorded.
    */
-  settle(state: ChannelEventType, opts?: { content?: string }): void {
+  settle(state: SessionStatus, opts?: { content?: string }): void {
     if (this.disposed) return;
     this.resetToolBatch();
     this.transition(state, { content: opts?.content });
@@ -707,7 +702,7 @@ export class StreamJsonReducer {
     });
   }
 
-  private transition(newState: ChannelEventType, extra?: Partial<ReducerEvent>): void {
+  private transition(newState: SessionStatus, extra?: Partial<ReducerEvent>): void {
     const prev = this._state;
 
     if (prev === newState) {

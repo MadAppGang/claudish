@@ -24,6 +24,7 @@ import { assertAgentAvailable } from "./agent-availability.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
+import type { ChannelEventType } from "./channel/types.js";
 import { TOOL_USE_ID_META_KEY, proveParentForCall } from "./channel/parent-proof.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
@@ -2030,18 +2031,24 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
 // Migration plan: ai-docs/sessions/.../sep-1686-migration-schema.md
 type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
 
-const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>([
-  ["starting", "working"],
-  ["running", "working"],
-  ["tool_executing", "working"],
-  ["waiting_for_input", "input_required"],
+// A `Record` over `ChannelEventType`, so an event type without a projection is a
+// compile error rather than a silent `"working"` from the fall-through below.
+const TASK_STATUS_BY_EVENT: Record<ChannelEventType, TaskStatus> = {
+  starting: "working",
+  running: "working",
+  tool_executing: "working",
+  waiting_for_input: "input_required",
+  // A permission dialog is open and only the caller's `send_input` moves the
+  // session on. It had no key, so it fell through to "working": a SEP-1686
+  // consumer polled a session that was waiting on it as if it were busy.
+  awaiting_permission: "input_required",
   // Explicit although the fall-through below gives the same value: a missing
   // key is how the timeout projection hid (see the `timeout` entry). The final
   // turn ended and the child is exiting; nothing is asked of the caller.
-  ["finishing", "working"],
-  ["completed", "completed"],
-  ["failed", "failed"],
-  ["cancelled", "cancelled"],
+  finishing: "working",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "cancelled",
   // The key whose ABSENCE forced the channel wire to lie. `mapEventToTaskStatus`
   // falls through to `?? "working"`, so a session killed by its own timeout was
   // reported to a SEP-1686 consumer as still working — which is why the timeout
@@ -2049,8 +2056,10 @@ const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>([
   // `"timeout"`. With this key present `ChannelEventType` is the full
   // `SessionStatus` and the timeout emits its own event; SEP-1686 has no
   // `timeout` member, and `failed` is the only honest projection of it.
-  ["timeout", "failed"],
-]);
+  timeout: "failed",
+};
+
+const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>(Object.entries(TASK_STATUS_BY_EVENT));
 
 // Exported ONLY so the regression guard can call it instead of grepping this
 // file's source text. The behaviour worth guarding is the fall-through below: a

@@ -18,10 +18,31 @@ export type SessionStatus =
   | "timeout";
 
 /**
- * The values the channel wire's `event` field may carry. Identical to
- * `SessionStatus` — the record and the wire agree.
+ * Every value the channel wire's `event` field may carry, as a runtime list so a
+ * test can walk it (`event-task-status.test.ts` checks each one against
+ * `EVENT_TO_TASK_STATUS`). `ChannelEventType` is derived from it.
+ */
+export const CHANNEL_EVENT_TYPES = [
+  "starting",
+  "running",
+  "tool_executing",
+  "waiting_for_input",
+  /** A tool call waits on Claude Code's permission dialog; answered with `send_input`. */
+  "awaiting_permission",
+  "finishing",
+  "completed",
+  "failed",
+  "cancelled",
+  "timeout",
+] as const;
+
+/**
+ * The values the channel wire's `event` field may carry: every `SessionStatus`, plus
+ * `awaiting_permission`, which a session reports on the wire while a permission
+ * dialog is open (the interactive pane transport; `SessionStatus` is retired with the
+ * stream-json transport).
  *
- * They did not always. This alias was `Exclude<SessionStatus, "timeout">`,
+ * The record and the wire did not always agree. This alias was `Exclude<SessionStatus, "timeout">`,
  * because `EVENT_TO_TASK_STATUS` (mcp-server.ts) maps the event enum onto
  * SEP-1686's 5-value `TaskStatus` and had **no `"timeout"` key**: it fell
  * through to `?? "working"`, so emitting `"timeout"` reported a dead session as
@@ -33,7 +54,13 @@ export type SessionStatus =
  * member and `failed` is its only honest projection — so the divergence is gone
  * and `ReducerEvent` no longer carries a `sessionStatus` override.
  */
-export type ChannelEventType = SessionStatus;
+export type ChannelEventType = (typeof CHANNEL_EVENT_TYPES)[number];
+
+// Compile-time: the list holds every SessionStatus (a status missing from it would
+// be emitted on the wire without a SEP-1686 projection test).
+type _MissingStatus = Exclude<SessionStatus, ChannelEventType>;
+const _everyStatusIsAnEvent: [_MissingStatus] extends [never] ? true : never = true;
+void _everyStatusIsAnEvent;
 
 export interface SessionInfo {
   sessionId: string;
@@ -196,10 +223,14 @@ export interface ChannelEvent {
   extraMeta?: Record<string, string>;
 }
 
-/** One state change out of the stream-json reducer. */
+/**
+ * One state change out of the stream-json reducer. Its states are `SessionStatus`:
+ * print mode has no permission dialog, so the reducer never emits
+ * `awaiting_permission`.
+ */
 export interface ReducerEvent {
-  previousState: ChannelEventType;
-  newState: ChannelEventType;
+  previousState: SessionStatus;
+  newState: SessionStatus;
   content?: string;
   toolName?: string;
   toolCount?: number;
