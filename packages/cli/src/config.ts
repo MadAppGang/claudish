@@ -14,6 +14,10 @@ export const ENV = {
   // CLAUDISH_TOKEN_FILE is running against a proxied, non-Anthropic account and
   // must not render Anthropic plan/rate-limit data.
   CLAUDISH_TOKEN_FILE: "CLAUDISH_TOKEN_FILE", // Absolute path to ~/.claudish/tokens-<port>.json for this session
+  // The same path again, set ONLY by claude-runner when it publishes the session's own
+  // file to Claude Code. A claudish started from that session's Bash tool inherits both;
+  // equal values mean "a parent session's status-line file", never "your file".
+  CLAUDISH_PUBLISHED_TOKEN_FILE: "CLAUDISH_PUBLISHED_TOKEN_FILE",
   CLAUDISH_PROVIDER_NAME: "CLAUDISH_PROVIDER_NAME", // Provider display name (e.g. "Alibaba Token Plan"); UNSET when not known at spawn time
   ANTHROPIC_MODEL: "ANTHROPIC_MODEL", // Claude Code standard env var for model selection
   ANTHROPIC_SMALL_FAST_MODEL: "ANTHROPIC_SMALL_FAST_MODEL", // Claude Code standard env var for fast model

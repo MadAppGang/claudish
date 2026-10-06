@@ -8,15 +8,15 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTempSettingsFile } from "./claude-runner.js";
-import { resolveTokenFilePath } from "./session/session-stats.js";
+import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
 
 let home: string;
 const saved: Record<string, string | undefined> = {};
-const KEYS = ["HOME", "CLAUDISH_TOKEN_FILE"] as const;
+const KEYS = ["HOME", "CLAUDISH_TOKEN_FILE", "CLAUDISH_PUBLISHED_TOKEN_FILE"] as const;
 
 beforeAll(() => {
   home = mkdtempSync(join(tmpdir(), "claudish-token-file-"));
@@ -57,6 +57,17 @@ describe("resolveTokenFilePath", () => {
       join(home, ".claudish", "tokens-4000.json")
     );
   });
+
+  test("an enclosing session's PUBLISHED file is not an assignment: a nested claudish keeps its own", () => {
+    const parent = join(home, ".claudish", "tokens-3999.json");
+    const env = { HOME: home, CLAUDISH_TOKEN_FILE: parent, CLAUDISH_PUBLISHED_TOKEN_FILE: parent };
+    expect(assignedTokenFile(env)).toBeNull();
+    expect(resolveTokenFilePath(4000, env)).toBe(join(home, ".claudish", "tokens-4000.json"));
+    // a team slot / channel session sets a path of its own, which still wins
+    expect(
+      resolveTokenFilePath(4000, { ...env, CLAUDISH_TOKEN_FILE: "/run/stats/slot.json" })
+    ).toBe("/run/stats/slot.json");
+  });
 });
 
 describe("createTempSettingsFile", () => {
@@ -69,6 +80,23 @@ describe("createTempSettingsFile", () => {
     expect(settings.tokenFilePath).toBe(inherited);
     expect(settings.statusLine.command).toContain(inherited);
     expect(settings.statusLine.command).not.toContain("tokens-4321.json");
+  });
+
+  test("a nested claudish (Bash tool of a claudish session) never points at the parent's file", () => {
+    const parent = join(home, ".claudish", "tokens-3998.json");
+    const settings = withEnv(
+      { HOME: home, CLAUDISH_TOKEN_FILE: parent, CLAUDISH_PUBLISHED_TOKEN_FILE: parent },
+      () => createTempSettingsFile("m", "4323", false)
+    );
+    created.push(settings.path);
+    expect(settings.tokenFilePath).toBe(join(home, ".claudish", "tokens-4323.json"));
+    expect(settings.statusLine.command).not.toContain(parent);
+  });
+
+  test("claude-runner publishes the session's file under both names (source guard)", () => {
+    const src = readFileSync(join(import.meta.dir, "claude-runner.ts"), "utf8");
+    expect(src).toContain("[ENV.CLAUDISH_TOKEN_FILE]: tokenFilePath,");
+    expect(src).toContain("[ENV.CLAUDISH_PUBLISHED_TOKEN_FILE]: tokenFilePath,");
   });
 
   test("without one, keeps the port-keyed file", () => {

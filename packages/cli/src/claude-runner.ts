@@ -33,7 +33,7 @@ import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
-import { resolveTokenFilePath } from "./session/session-stats.js";
+import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -814,21 +814,23 @@ export function createTempSettingsFile(
   const timestamp = Date.now();
   const tempPath = join(claudishDir, `settings-${timestamp}.json`);
 
-  // The file the proxy's TokenTracker writes: an inherited CLAUDISH_TOKEN_FILE
-  // (a team slot's or channel session's own path), else `tokens-<port>.json` in
-  // .claudish. Resolved by the same function as the summary's reader, so the
-  // status line can never be pointed at a file the tracker does not write.
-  const inheritedTokenFile = Boolean(process.env[ENV.CLAUDISH_TOKEN_FILE]);
+  // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
+  // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
+  // An enclosing claudish session's PUBLISHED file (inherited by a claudish run from its
+  // Bash tool) is not an assignment — see assignedTokenFile. Resolved by the same
+  // function as the tracker and the summary, so the status line can never be pointed at
+  // a file the tracker does not write.
+  const assignedFile = assignedTokenFile(process.env) !== null;
   const tokenFilePath = resolveTokenFilePath(port);
 
   // Sweep the orphans FIRST (so this session's fresh file is never a candidate),
   // then blank the file for the port we are about to use. Without this the
   // status line can show a dead session's provider, cost and context — the file
-  // is keyed by port, and ports are recycled. An inherited file is the parent's,
-  // unique to this child and read by the parent, so it is left for the tracker
-  // to create: a blank record would read as "answered with zero tokens".
+  // is keyed by port, and ports are recycled. An assigned file is the parent's to
+  // read, unique to this child, so it is left for the tracker to create: a blank
+  // record would read as "answered with zero tokens".
   cleanupStaleTokenFiles(claudishDir);
-  if (!inheritedTokenFile) initializeTokenFile(tokenFilePath);
+  if (!assignedFile) initializeTokenFile(tokenFilePath);
 
   let statusCommand: string;
 
@@ -1685,6 +1687,9 @@ export async function runClaudeWithProxy(
     // of guessing a path, and can tell that the session is proxied (and therefore
     // that Anthropic plan/rate-limit numbers describe the wrong account).
     [ENV.CLAUDISH_TOKEN_FILE]: tokenFilePath,
+    // ...and marked as published, so a claudish started from this session's Bash tool
+    // keeps a file of its own instead of writing into ours (assignedTokenFile).
+    [ENV.CLAUDISH_PUBLISHED_TOKEN_FILE]: tokenFilePath,
     // Turn on Claude Code's experimental advisor tool under --advisor. The value
     // is `"1"` and nothing else (see resolveAdvisorToolEnv), and this spread is
     // empty when the parent environment already carries one — the `...process.env`

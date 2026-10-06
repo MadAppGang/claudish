@@ -18,9 +18,24 @@
 import { join } from "node:path";
 import { userHomeFrom } from "../channel/home-dir.js";
 
+/**
+ * The token file a PARENT assigned to this process: `CLAUDISH_TOKEN_FILE`, unless it is
+ * only the path an enclosing claudish session published for its status line
+ * (`CLAUDISH_PUBLISHED_TOKEN_FILE` carries the same value). A claudish launched from a
+ * claudish session's Bash tool inherits that published path; honouring it made the
+ * nested session's tracker overwrite the parent's file, and both status lines (and the
+ * parent's summary) showed each other's model, cost and context. Team slots and channel
+ * sessions set `CLAUDISH_TOKEN_FILE` to a path of their own, which never equals it.
+ */
+export function assignedTokenFile(env: Record<string, string | undefined>): string | null {
+  const f = env.CLAUDISH_TOKEN_FILE;
+  if (!f || f === env.CLAUDISH_PUBLISHED_TOKEN_FILE) return null;
+  return f;
+}
+
 export function resolveTokenFilePath(
   port: number | string,
   env: Record<string, string | undefined> = process.env
 ): string {
-  return env.CLAUDISH_TOKEN_FILE || join(userHomeFrom(env), ".claudish", `tokens-${port}.json`);
+  return assignedTokenFile(env) ?? join(userHomeFrom(env), ".claudish", `tokens-${port}.json`);
 }
