@@ -7,7 +7,15 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { waitForExit } from "../process-tree.js";
 import { assertMagmuxAvailable, ensureSockRoot, spawnPaneWatcher } from "./pane-launch.js";
@@ -463,6 +471,38 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
       processes: [],
       files: [],
     });
+  }, 20_000);
+
+  test("a record that cannot be written refuses the start and leaves no launch dir", async () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    chmodSync(join(root, "panes"), 0o500); // still private, but unwritable
+    try {
+      const uuid = crypto.randomUUID();
+      await expect(
+        startPaneSession({
+          kind: "t",
+          label: "01",
+          callerFlags: [],
+          spawnModel: "fake-answer",
+          cwd: t.cwd,
+          sessionUuid: uuid,
+          transcriptPath: t.transcriptPathFor(uuid),
+          slotEnv: {},
+          shape: "one-shot",
+          initialPrompt: "x",
+          readAvailable: true,
+          parentEnv: t.env,
+          sockRoot: root,
+          decide: () => ({ state: "COMPLETED" }),
+          onBlocked: () => "wait",
+        })
+      ).rejects.toThrow(/cannot write the pane record/);
+      expect(readdirSync(root).filter((n) => n.startsWith("launch-"))).toEqual([]);
+      expect(livePaneCount(root)).toBe(0);
+    } finally {
+      chmodSync(join(root, "panes"), 0o700);
+    }
   }, 20_000);
 });
 

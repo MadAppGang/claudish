@@ -384,15 +384,21 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     cwd: string;
   }): Promise<void> {
     const recordPath = recordPathOf(this.root, this.paneId);
-    this.watcher = spawnPaneWatcher({
-      paneId: this.paneId,
-      sessionUuid: this.o.sessionUuid,
-      ctlDir: this.ctlDir,
-      sockPath: this.sockPath,
-      recordPath,
-      turnDir: this.turnDir,
-      sockRoot: this.root,
-    });
+    try {
+      this.watcher = spawnPaneWatcher({
+        paneId: this.paneId,
+        sessionUuid: this.o.sessionUuid,
+        ctlDir: this.ctlDir,
+        sockPath: this.sockPath,
+        recordPath,
+        turnDir: this.turnDir,
+        sockRoot: this.root,
+      });
+    } catch (e) {
+      // a registered session must still reach a terminal state, or it stays counted
+      // (livePaneCount) with its record and dirs on disk until the owner exits
+      return this.spawnFailed(e);
+    }
     updateRecord(this.root, this.paneId, { watcherPid: this.watcher.pid ?? null });
     let proc: ChildProcess | null = null;
     try {
@@ -1779,19 +1785,30 @@ export async function startPaneSession(o: PaneSessionOptions): Promise<PaneSessi
     throw e;
   }
   const p = preparePane(o, root, parentEnv);
-  writeRecord(root, {
-    paneId: p.paneId,
-    ownerPid: process.pid,
-    ownerStart: ownerStartOfSelf(),
-    watcherPid: null,
-    magmuxPid: null,
-    panePid: null,
-    sessionUuid: o.sessionUuid,
-    sockPath: p.sockPath,
-    launcherDir: p.ctlDir,
-    turnDir: p.turnDir,
-    createdAt: new Date().toISOString(),
-  });
+  try {
+    writeRecord(root, {
+      paneId: p.paneId,
+      ownerPid: process.pid,
+      ownerStart: ownerStartOfSelf(),
+      watcherPid: null,
+      magmuxPid: null,
+      panePid: null,
+      sessionUuid: o.sessionUuid,
+      sockPath: p.sockPath,
+      launcherDir: p.ctlDir,
+      turnDir: p.turnDir,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    // nothing was spawned: remove the dirs preparePane made (validated paths only)
+    removePaneFiles(root, {
+      paneId: p.paneId,
+      sockPath: p.sockPath,
+      launcherDir: p.ctlDir,
+      turnDir: p.turnDir,
+    });
+    throw new PaneStartError("pane_lost", `cannot write the pane record: ${String(e)}`);
+  }
   const session = new PaneSessionImpl(o, {
     paneId: p.paneId,
     sockPath: p.sockPath,
