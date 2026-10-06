@@ -13,7 +13,7 @@
  * (`PaneSession`'s reconnect, §2.9).
  */
 
-import { type Socket, connect } from "node:net";
+import { Socket } from "node:net";
 
 export type MagmuxReply<T = Record<string, unknown>> =
   | { ok: true; result: T }
@@ -41,9 +41,15 @@ export class MagmuxConnectError extends Error {
   }
 }
 
+/**
+ * One dial. The listeners go on BEFORE `connect`: Bun 1.3.10 emits a missing socket's
+ * ENOENT synchronously inside `connect()`, so with `net.connect(path)` the error fired
+ * before any listener existed and `bun test` reported it as an unhandled error (Bun 1.4.0
+ * defers it).
+ */
 function dialOnce(sockPath: string): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const s = connect(sockPath);
+    const s = new Socket();
     const onError = (e: NodeJS.ErrnoException) => {
       s.destroy();
       reject(new MagmuxConnectError(e.message, e.code ?? null));
@@ -53,6 +59,7 @@ function dialOnce(sockPath: string): Promise<Socket> {
       s.off("error", onError);
       resolve(s);
     });
+    s.connect(sockPath);
   });
 }
 
