@@ -123,6 +123,18 @@ const T = {
   writeUse: lines("permission-write-esc")[19] as Rec,
   command: lines("slash-and-reads")[4] as Rec,
 };
+/** Claude Code 2.1.291 local-command records (code-review captures, cr1-commands). */
+const LOCAL = lines("local-commands");
+const L = {
+  systemCommand: LOCAL[27] as Rec, // /color: system/local_command <command-name>
+  systemStdout: LOCAL[28] as Rec, // /color: system/local_command <local-command-stdout>
+  caveat: LOCAL[30] as Rec, // user isMeta <local-command-caveat>
+  userCommand: LOCAL[31] as Rec, // /model: user <command-name>
+  userStdout: LOCAL[32] as Rec, // /model: user <local-command-stdout>
+  compactTyped: LOCAL[34] as Rec, // the plain "/compact" user record before the boundary
+  compactBoundary: LOCAL[40] as Rec,
+  compactSummary: LOCAL[41] as Rec,
+};
 const MAX_TOKENS_SLICE = lines("max-tokens-hookless").slice(18, 26);
 const REFUSAL_SLICE = lines("corpus-redacted/refusal-then-fallback").slice(30, 36);
 
@@ -171,6 +183,31 @@ const rec = {
   command(name: string, args: string) {
     return emit(T.command, (r) => {
       r.message.content = `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>${args ? `\n<command-args>${args}</command-args>` : ""}`;
+    });
+  },
+  /**
+   * A local command run in the REPL, as 2.1.291 writes it: user records (caveat,
+   * `<command-name>`, `<local-command-stdout>`), or — for `/color` — two
+   * `system/local_command` records.
+   */
+  localCommand(name: string, args: string, stdout: string, as: "user" | "system" = "user") {
+    const body = `<command-name>/${name}</command-name>\n            <command-message>${name}</command-message>\n            <command-args>${args}</command-args>`;
+    if (as === "system") {
+      emit(L.systemCommand, (r) => {
+        r.content = body;
+      });
+      emit(L.systemStdout, (r) => {
+        r.content = `<local-command-stdout>${stdout}</local-command-stdout>`;
+        r.commandRun = { command: name, args };
+      });
+      return;
+    }
+    emit(L.caveat);
+    emit(L.userCommand, (r) => {
+      r.message.content = body;
+    });
+    emit(L.userStdout, (r) => {
+      r.message.content = `<local-command-stdout>${stdout}</local-command-stdout>`;
     });
   },
   text(text: string, stop: string | null = "end_turn", id = newMsgId()) {
@@ -739,7 +776,7 @@ function onEnter(): void {
   S.menu = null;
   render();
   const t = text.trim();
-  if (t === "/exit" || t === "/quit") return void quit(0);
+  if (t === "/exit" || t === "/quit") return void exitCommand(t.slice(1));
   if (t === "/cost") {
     S.full = screenLines("usage-panel");
     swallowUntilEsc = true;
@@ -831,6 +868,21 @@ function restore(): void {
   } catch {
     // pty gone
   }
+}
+
+/**
+ * `/exit`: Claude Code 2.1.282–2.1.285 write the command's records (the caveat,
+ * `<command-name>/exit`, `<local-command-stdout>(no content)`; real 2.1.285 records in
+ * `corpus-redacted/exit-command.jsonl`) and exit a moment later; 2.1.291 writes none
+ * (`FAKE_EXIT_RECORDS=none`).
+ */
+async function exitCommand(name: string): Promise<void> {
+  if (env.FAKE_EXIT_RECORDS !== "none") {
+    rec.localCommand(name, "", "(no content)");
+    showHistory(`❯ /${name}`, "  ⎿  (no content)");
+    await sleep(gap("EXIT", 600));
+  }
+  return quit(0);
 }
 
 async function quit(code: number): Promise<void> {

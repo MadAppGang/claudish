@@ -1064,7 +1064,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private evalIdle(view: TranscriptView): void {
     const t = view.current;
-    if (!t || this.settledChatOffset === null) return;
+    // After a delivered /exit only the pane's exit can follow, never a re-wake: Claude
+    // Code 2.1.282–2.1.285 write the command's own records into the settled turn.
+    if (!t || this.settledChatOffset === null || this.exitRequested) return;
     // A background notification woke the model with no prompt of ours (D23): same turn.
     if (t.lastChatOffset !== null && t.lastChatOffset > this.settledChatOffset) {
       this.rewakeOfSettled = true;

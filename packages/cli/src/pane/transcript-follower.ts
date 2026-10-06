@@ -205,6 +205,19 @@ function isMainUser(r: Rec): boolean {
   return r.type === "user" && !r.isSidechain;
 }
 
+/**
+ * A local slash command's own records: `<local-command-caveat>`, `<command-name>` and
+ * `<local-command-stdout>`. Claude Code writes them for a command the user ran in the
+ * REPL (captured: `/exit` in 2.1.282/2.1.285, `/model`, `/compact` in 2.1.291); they
+ * never wake the model, so they are never a re-wake of a settled turn.
+ */
+const LOCAL_COMMAND_RE =
+  /^\s*<(local-command-caveat|command-name|local-command-stdout|local-command-stderr)>/;
+
+function isLocalCommandText(text: string): boolean {
+  return LOCAL_COMMAND_RE.test(text);
+}
+
 function isTaskNotification(r: Rec): boolean {
   return r.origin?.kind === "task-notification" || userText(r).includes("<task-notification>");
 }
@@ -408,6 +421,7 @@ function applyUser(t: TurnState, r: Rec, offset: number): void {
     return;
   }
   const text = userText(r);
+  if (isLocalCommandText(text)) return;
   if (text.startsWith("[Request interrupted by user")) {
     t.interrupt = { forToolUse: text.includes("for tool use") };
     t.pending.clear();

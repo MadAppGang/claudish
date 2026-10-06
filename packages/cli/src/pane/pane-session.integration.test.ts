@@ -533,6 +533,26 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
+        "/exit after a settled turn: the command's own records are no re-wake → COMPLETED via exit_clean",
+        async () => {
+          const r = await start("answer", { shape: "interactive", decide: () => "continue" });
+          await until(r, (s) => s.state === "AWAITING_INPUT" && s.turnsCompleted === 1);
+          r.s.send("/exit");
+          const snap = await finish(r);
+          expect(snap.state).toBe("COMPLETED");
+          expect(snap.reason).toBeNull();
+          expect(snap.turnsCompleted).toBe(1);
+          // no AWAITING_INPUT → RUNNING after the settle: /exit is not the model waking up
+          expect(r.transitions).toEqual([
+            ["STARTING", "RUNNING"],
+            ["RUNNING", "AWAITING_INPUT"],
+            ["AWAITING_INPUT", "COMPLETED"],
+          ]);
+        },
+        T
+      );
+
+      test(
         "idle_exit: a promptless session's /exit → COMPLETED via exit_clean",
         async () => {
           const r = await start("answer", {

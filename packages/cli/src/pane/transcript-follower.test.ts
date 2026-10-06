@@ -633,6 +633,26 @@ describe("tailing", () => {
   });
 });
 
+describe("local commands", () => {
+  test("/exit's own records after a settled turn (real 2.1.285) never wake it", async () => {
+    const { appendFileSync } = await import("node:fs");
+    const PEAR = "Reply with exactly PEAR and nothing else.";
+    const at = witnessIndex("pear-hookless", PEAR);
+    const r = run("pear-hookless", [{ at, witness: text(PEAR) }]);
+    const settled = cur(r.views[0]);
+    expect(settled.turnDurationAfterLast).not.toBeNull();
+    const exitLines = (await import("./test-helpers/transcript-fixtures.js")).transcriptLines(
+      "corpus-redacted/exit-command"
+    );
+    appendFileSync(join(r.dir, "t.jsonl"), `${exitLines.join("\n")}\n`);
+    r.follower.poll();
+    const after = cur(r.follower.view());
+    expect(after.wakingAfterLast).toBe(false);
+    expect(after.lastChatOffset).toBe(settled.lastChatOffset);
+    expect(after.turnDurationAfterLast).not.toBeNull();
+  });
+});
+
 describe("byte-safe tail", () => {
   test("a poll that splits a multi-byte character decodes the record exactly once, offsets in bytes", async () => {
     const { appendFileSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
