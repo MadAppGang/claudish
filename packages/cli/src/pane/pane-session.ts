@@ -1583,21 +1583,32 @@ function preparePane(
  * `PaneStartError` BEFORE anything is spawned; installs the shutdown hooks (idempotent).
  */
 export async function startPaneSession(o: PaneSessionOptions): Promise<PaneSession> {
-  if (SUBCOMMAND_WORDS.includes(o.spawnModel))
-    throw new PaneStartError(
-      "invalid_args",
-      `model "${o.spawnModel}" is a claudish subcommand name`
-    );
   const parentEnv = o.parentEnv ?? process.env;
-  const magmux = await assertMagmuxAvailable(o.magmuxBinary);
-  const root = ensureSockRoot(o.sockRoot ?? sockRootFor(parentEnv));
-  await ensureSwept(root);
-  if (!paneShutdownHooksInstalled()) installPaneShutdownHooks();
-  // a reservation the owner made for this run, else our own (which checks the limit); the
-  // record is written before the next await, so the pane is never uncounted
-  if (!takePaneReservation()) {
-    reservePanes(1, root);
-    takePaneReservation();
+  let took = false;
+  let magmux: { binary: string };
+  let root: string;
+  try {
+    if (SUBCOMMAND_WORDS.includes(o.spawnModel))
+      throw new PaneStartError(
+        "invalid_args",
+        `model "${o.spawnModel}" is a claudish subcommand name`
+      );
+    magmux = await assertMagmuxAvailable(o.magmuxBinary);
+    root = ensureSockRoot(o.sockRoot ?? sockRootFor(parentEnv));
+    await ensureSwept(root);
+    if (!paneShutdownHooksInstalled()) installPaneShutdownHooks();
+    // a reservation the owner made for this run, else our own (which checks the limit); the
+    // record is written before the next await, so the pane is never uncounted
+    took = takePaneReservation();
+    if (!took) {
+      reservePanes(1, root);
+      took = takePaneReservation();
+    }
+  } catch (e) {
+    // A start that fails before it took its reservation still uses up the one its owner
+    // made for it, so an owner that reserved N panes never leaks the count.
+    if (!took) takePaneReservation();
+    throw e;
   }
   const p = preparePane(o, root, parentEnv);
   writeRecord(root, {

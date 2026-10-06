@@ -21,6 +21,7 @@ import {
   reapAllPanes,
   releasePaneReservations,
   reservePanes,
+  reservedPaneCount,
   sweepOrphanPanes,
   writeRecord,
 } from "./pane-registry.js";
@@ -484,5 +485,36 @@ describe("records", () => {
     expect(
       JSON.parse(readFileSync(join(t.sockRoot, "panes", `${rec.paneId}.json`), "utf8")).paneId
     ).toBe(rec.paneId);
+  });
+});
+
+describe("reservations", () => {
+  test("a start that throws before it took its reservation still uses up the one held for it", async () => {
+    const t = env();
+    const before = reservedPaneCount();
+    reservePanes(2, t.sockRoot);
+    expect(reservedPaneCount()).toBe(before + 2);
+    // A claudish subcommand name as the model is refused before anything is spawned.
+    for (const label of ["01", "02"]) {
+      const err = await startPaneSession({
+        kind: "t",
+        label,
+        callerFlags: [],
+        spawnModel: "update",
+        cwd: t.cwd,
+        sessionUuid: crypto.randomUUID(),
+        transcriptPath: t.transcriptPathFor("x"),
+        slotEnv: {},
+        shape: "one-shot",
+        initialPrompt: "x",
+        readAvailable: true,
+        parentEnv: t.env,
+        sockRoot: t.sockRoot,
+        decide: () => ({ state: "COMPLETED" }),
+        onBlocked: () => "wait",
+      }).catch((e: unknown) => e);
+      expect((err as { code?: string }).code).toBe("invalid_args");
+    }
+    expect(reservedPaneCount()).toBe(before);
   });
 });
