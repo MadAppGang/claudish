@@ -2026,8 +2026,13 @@ function defineTools(
         const errMsg = error instanceof Error ? error.message : String(error);
         // A missing magmux or a full pane limit is the environment, not the provider:
         // `Error: <code>: …` with the code first (§4.3), and no report_error hint.
+        // A refused argument is the CALLER's error: same bare form, never a provider_failure hint.
         const code = (error as { code?: unknown } | null)?.code;
-        if (code === "magmux_unavailable" || code === "pane_limit") {
+        if (
+          code === "magmux_unavailable" ||
+          code === "pane_limit" ||
+          errMsg.startsWith("invalid_args:")
+        ) {
           return { content: [{ type: "text" as const, text: `Error: ${errMsg}` }], isError: true };
         }
         return {

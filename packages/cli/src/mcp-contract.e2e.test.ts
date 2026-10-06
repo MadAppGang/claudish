@@ -352,6 +352,14 @@ describe.skipIf(!MAGMUX_AVAILABLE)("every §8 verb answers its errors as a Contr
       );
       contractError(await server.callTool("capture_session", {}), "invalid_args");
       contractError(await server.callTool("cancel_session", {}), "invalid_args");
+      // a refused create_session argument is the caller's error: no provider_failure hint
+      const badFlags = await server.callTool("create_session", {
+        model: "contract-fake-model",
+        claude_flags: "--brief now", // a whitespace-split string; --brief takes no value
+      });
+      expect(badFlags.isError).toBe(true);
+      expect(badFlags.text).toStartWith("Error: invalid_args:");
+      expect(badFlags.text).not.toContain("report_error");
 
       // list verbs have no error for valid input, and carry the contract keys
       const teams = ok(await team({ mode: "list" }));
