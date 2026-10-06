@@ -4,7 +4,7 @@
  * (design §3.3 "Team record", §3.2 item 3; §8.1 tests 7, 15, 16b, 18, 19).
  *
  * A real claudish MCP server over stdio, every slot an interactive pane: the pane fake
- * (marker mode) via CLAUDISH_BIN, in a real headless magmux under the test's own
+ * (marker mode; serverEnv's default CLAUDISH_BIN), in a real headless magmux under the test's own
  * CLAUDISH_PANE_ROOT (ported per architecture §20.2; every assertion kept). The team
  * directory is inside the server's cwd, in case path validation requires it.
  *
@@ -20,7 +20,6 @@ import {
   MAGMUX_AVAILABLE,
   McpServer,
   NO_MAGMUX_MESSAGE,
-  PANE_FAKE_CHILD,
   findField,
   paneOrphans,
   serverEnv,
@@ -50,7 +49,7 @@ beforeEach(async () => {
   layout = makeTempLayout("teammcp");
   teamDir = join(layout.cwd, "team-run");
   server = await McpServer.start({
-    env: serverEnv(layout, { CLAUDISH_BIN: PANE_FAKE_CHILD }),
+    env: serverEnv(layout),
     cwd: layout.cwd,
   });
 });

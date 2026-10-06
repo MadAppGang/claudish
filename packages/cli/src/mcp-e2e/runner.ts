@@ -15,10 +15,9 @@
  * changed. That is not paranoia — the repo's existing e2e tests write that file
  * directly and have destroyed a real user's 1Password configuration twice.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
-  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -99,34 +98,27 @@ function md5(path: string): string {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * A `claudish` shim on PATH that runs THIS repo's source.
+ * The pane child every `create_session` / `team` slot of the server under test runs.
  *
- * The MCP server spawns its children as `spawn("claudish", …)`
- * (`channel/session-manager.ts`, `team-orchestrator.ts`) — by NAME, resolved
- * through PATH, with no seam. So while the harness starts the SERVER from
- * `packages/cli/src/index.ts`, every child it spawned was the globally INSTALLED
- * claudish. Arms asserted on dev spans from the parent while the actual model
- * run resolved credentials with whatever version happened to be installed.
- *
- * That is how a deleted code path came back to life: installed 7.34.0 still
- * contained the `op account get` probe removed from this tree, and it fired on
- * every child spawn.
- *
- * Prepending this shim makes parent AND child the same code. Mirrors the
- * fake-claudish PATH shim `session-manager.test.ts` already uses, so it is the
- * repo's existing idiom rather than a new mechanism.
+ * Children are interactive Claude Code panes now: whatever they print goes to their
+ * pane's terminal, never to the server's stderr, so the spans this harness asserts on
+ * are the PARENT's (credential prehydration happens there). The child is therefore the
+ * hermetic pane fake (`pane/test-helpers/fake-interactive-child.ts`), passed as
+ * `CLAUDISH_BIN`: no installed claudish is ever spawned (the 7.34.0 incident, see
+ * `spawn-claudish.ts`), and a `create_session` arm costs no model turn.
  */
-function writeClaudishShim(): string {
-  const binDir = join(RUN_DIR, "bin");
-  mkdirSync(binDir, { recursive: true });
-  const shim = join(binDir, "claudish");
-  writeFileSync(
-    shim,
-    `#!/bin/sh\nexec "${process.execPath}" run "${SERVER_ENTRY}" "$@"\n`,
-    "utf-8"
-  );
-  chmodSync(shim, 0o755);
-  return binDir;
+const PANE_FAKE_CHILD = resolve(
+  REPO_ROOT,
+  "packages/cli/src/pane/test-helpers/fake-interactive-child.ts"
+);
+
+/**
+ * A short pane root per replica (`/tmp/cpt-<8 hex>`, so socket paths stay < 100
+ * bytes): the server's startup sweep, its pane limit and its records stay inside it,
+ * never the user's `/tmp/claudish-mux-<uid>`.
+ */
+function newPaneRoot(): string {
+  return `/tmp/cpt-${randomBytes(4).toString("hex")}`;
 }
 
 // ── session log collection ───────────────────────────────────────────────────
@@ -157,7 +149,7 @@ function collectSessionLogs(sinceMs: number): SessionLog[] {
       } catch {
         meta = null;
       }
-      out.push({ sessionId: id, meta, stderr: read("stderr.log"), output: read("output.log") });
+      out.push({ sessionId: id, meta, screen: read("screen.txt"), output: read("output.log") });
     }
   } catch {
     // no sessions dir yet — fine
@@ -208,11 +200,11 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
   const configPath = join(armDir, "config.json");
   writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 
-  const shimDir = writeClaudishShim();
   const replicas = sc.concurrency ?? 1;
   const observations: Observation[] = [];
 
   const runReplica = async (replica: number): Promise<Observation> => {
+    const paneRoot = newPaneRoot();
     const env = buildArmEnv({
       parent: process.env,
       keepKeys: sc.keepKeys,
@@ -220,9 +212,9 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
         ...sc.env,
         // Isolation: the child reads THIS file, never ~/.claudish/config.json.
         CLAUDISH_CONFIG: configPath,
-        // Applied AFTER sc.env so an arm that narrows PATH (op-no-op-binary
-        // hides the `op` binary) still resolves `claudish` to this tree.
-        PATH: `${shimDir}:${sc.env?.PATH ?? process.env.PATH ?? ""}`,
+        // Applied AFTER sc.env so an arm cannot point children anywhere else.
+        CLAUDISH_BIN: PANE_FAKE_CHILD,
+        CLAUDISH_PANE_ROOT: paneRoot,
         // Observability: flips the trace into live-print so op spans stream out.
         CLAUDISH_STARTUP_TRACE: "1",
         CLAUDISH_OP_LOCK_TRACE: "1",
@@ -247,6 +239,8 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
       logFile: join(armDir, `stream${suffix}.log`),
       verbose,
     });
+    // The server reaped its panes on shutdown; its watchers handle a server that died.
+    rmSync(paneRoot, { recursive: true, force: true });
 
     writeFileSync(join(armDir, `stderr${suffix}.log`), res.stderr, "utf-8");
     writeFileSync(

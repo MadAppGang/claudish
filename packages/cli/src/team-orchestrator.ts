@@ -700,10 +700,7 @@ export function pruneTeamRunsForTests(now: number): void {
 
 // ─── Output Classification ────────────────────────────────────────────────────
 
-/**
- * How many trailing answer bytes the channel's stream-json path retains for diagnosis
- * (both owners use it until the channel moves onto panes).
- */
+/** How many trailing answer bytes a failed slot's error log keeps. */
 export const STDOUT_TAIL_LIMIT = 4000;
 
 /** Budget for the answer / screen snippets recorded in `status.json`. */

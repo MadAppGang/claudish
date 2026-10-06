@@ -20,7 +20,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
-import { assertAgentAvailable } from "./agent-availability.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
@@ -50,7 +49,11 @@ import {
   type SlotState,
   TERMINAL_STATES,
   type TeamRunRow,
+  assertMagmuxAvailable,
+  checkChildFlags,
   contractMeta,
+  installPaneShutdownHooks,
+  sweepOrphanPanes,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
@@ -117,31 +120,32 @@ const INSTRUCTIONS = `Claudish MCP server provides access to external AI models 
 
 ## Channel Mode — External Model Sessions
 
-When channel mode is active, you receive <channel source="claudish" ...> notifications about running external model sessions.
+When channel mode is active, you receive <channel source="claudish" ...> notifications about running external model sessions. Each session is an interactive Claude Code running the model in its own headless terminal pane.
 
 ### Events
 
-- session_started: A session began producing output. Note the session_id for future calls.
-- tool_executing: The model is using a tool (Read, Write, Bash, etc.). May include tool_count for batched events.
-- input_required: The session finished a turn and waits for send_input. Only interactive sessions do this (no prompt, or after a send_input). Call send_input with the session_id and your answer.
-- finishing: The session's last turn ended and claudish closed its input; it is exiting. Nothing to do; completed follows.
+- running: The session's turn is running (its prompt was accepted). Note the session_id for future calls.
+- tool_executing: The model is using a tool (Read, Write, Bash, etc.). Carries tool and tool_count.
+- input_required (event waiting_for_input): The session waits for send_input: an interactive session between turns, or a session stopped on a question (meta activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
+- input_required (event awaiting_permission): A permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
 - completed: The session finished successfully. Call get_output to retrieve the full output.
-- failed: The session exited with an error. Call get_diagnostics for the cause.
-- timeout: The session hit its timeout_seconds and was killed. Call get_diagnostics to see how far it got.
+- failed: The session failed (boot, prompt not accepted or not read, child exited, API error, pane lost). Call get_diagnostics for the cause.
+- timeout: The session hit its timeout_seconds; the pane was closed. Call get_diagnostics to see how far it got.
 - cancelled: The session was cancelled via cancel_session.
 
 ### Workflow
 
-1. Call create_session with a model and prompt to start an async session.
+1. Call create_session with a model and prompt to start an async session (state STARTING while Claude Code boots).
 2. Watch for <channel> notifications — they arrive automatically.
-3. On input_required (interactive sessions only: no prompt, or after a send_input): call send_input with the answer.
+3. send_input may be called at any time; it is queued until the session is idle. On input_required, call send_input with the answer.
 4. On completed: call get_output to get the full response.
 5. On failed or timeout — or on a completed session whose output is empty or
-   surprising — call get_diagnostics. It returns the child's stderr, the upstream
-   error bodies, the recent event frames, the resolved model chain and the paths
-   to the full records. It needs no re-run and no debug flag.
-6. Use list_sessions to see all active/completed sessions.
-7. Use cancel_session to stop a running session.
+   surprising — call get_diagnostics. It returns the child's final screen, the
+   upstream error bodies, the recent state records, the resolved model chain and the
+   paths to the full records. It needs no re-run and no debug flag.
+6. Use list_sessions to see sessions: each row has state, activity, idle_seconds and accounting.
+7. Use capture_session to read a session's current terminal screen.
+8. Use cancel_session to stop a running session.
 
 The session_id in the channel tag's meta attributes is the key for all tool calls.`;
 
@@ -1908,7 +1912,11 @@ function defineTools(
   tools.push({
     name: "create_session",
     description:
-      "Create a new claudish proxy session for an external model. Spawns an async session that produces channel notifications as it runs.",
+      "Create a new claudish proxy session for an external model: an interactive Claude Code running " +
+      "it in its own headless magmux pane. Returns at once with state STARTING; the session produces " +
+      "channel notifications as it runs. With a prompt it is one-shot (it ends when that turn " +
+      "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.14.0 " +
+      "(darwin and linux).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1937,9 +1945,10 @@ function defineTools(
         claude_flags: {
           type: "string",
           description:
-            "Any other Claude Code / claudish flags, space-separated. Unrecognised flags " +
-            "pass through to the child Claude Code. NOTE: split on whitespace, so a flag " +
-            "VALUE containing spaces cannot be expressed here.",
+            "Any other Claude Code / claudish flags and their values, space-separated — no " +
+            "positional text. Unrecognised flags pass through to the child Claude Code. " +
+            "Flags the pane owns or that only work in print mode are refused. NOTE: split on " +
+            "whitespace, so a flag VALUE containing spaces cannot be expressed here.",
         },
         work_dir: {
           type: "string",
@@ -1951,7 +1960,13 @@ function defineTools(
     group: "channel",
     handler: async (args, ctx) => {
       try {
-        const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags);
+        const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
+        // Refusals first, before any credential work: reserved or positional flags, then
+        // a missing magmux (its message starts with the code word). An unknown --agent is
+        // refused by the child itself, before any model request (D11).
+        const flagCheck = checkChildFlags(claudishFlags);
+        if (!flagCheck.ok) throw new Error(`invalid_args: ${flagCheck.message}`);
+        await assertMagmuxAvailable();
 
         // Resolve the model's credential AND its route in THIS process before
         // spawning the child. Several create_session calls in flight at once
@@ -1968,9 +1983,6 @@ function defineTools(
         // an option — it is process-global and races concurrent calls.
         const requestedModel = args.model as string;
         const workDir = args.work_dir as string | undefined;
-        // The agent list is cwd-dependent, so validate against the directory this
-        // session will actually run in, not the parent's.
-        await assertAgentAvailable(args.agent as string | undefined, workDir ?? process.cwd());
 
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
           pin: workDir === undefined || resolve(workDir) === process.cwd(),
@@ -1984,7 +1996,9 @@ function defineTools(
           hostPid: sessionManager.hostPid,
         });
 
-        const sessionId = sessionManager.createSession({
+        // Reserves the pane, writes prompt.md and spawn.json, then starts the pane; no
+        // boot wait.
+        const sessionId = await sessionManager.createSession({
           model: requestedModel,
           spawnModel: plan.pinned.get(requestedModel),
           prompt: args.prompt as string | undefined,
@@ -1998,12 +2012,21 @@ function defineTools(
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ session_id: sessionId, status: "starting" }),
+              text: JSON.stringify({
+                session_id: sessionId,
+                state: sessionManager.getSession(sessionId).state,
+              }),
             },
           ],
         };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
+        // A missing magmux or a full pane limit is the environment, not the provider:
+        // `Error: <code>: …` with the code first (§4.3), and no report_error hint.
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code === "magmux_unavailable" || code === "pane_limit") {
+          return { content: [{ type: "text" as const, text: `Error: ${errMsg}` }], isError: true };
+        }
         return {
           content: [
             {
@@ -2023,7 +2046,11 @@ function defineTools(
   tools.push({
     name: "send_input",
     description:
-      "Send input text to an active session's stdin. Use when a session is in 'waiting_for_input' state.",
+      "Send a prompt to a session. Accepted in every non-terminal state and queued until the " +
+      "session is idle: STARTING and RUNNING queue it; AWAITING_INPUT delivers it at once; during " +
+      "a question or a permission dialog the dialog is declined (Esc) and the text becomes the next " +
+      "prompt. Any accepted send makes a one-shot session interactive. Returns {success, queued} or " +
+      "{success:false, reason, state}.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2034,9 +2061,9 @@ function defineTools(
     },
     group: "channel",
     handler: async (args) => {
-      const success = sessionManager.sendInput(args.session_id as string, args.text as string);
+      const result = sessionManager.sendInput(args.session_id as string, args.text as string);
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ success }) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     },
   });
@@ -2044,7 +2071,8 @@ function defineTools(
   tools.push({
     name: "get_output",
     description:
-      "Get output from a session's scrollback buffer. Call after 'completed' notification to get full response.",
+      "Get a session's answer prose (each settled turn's assistant text, from its transcript). " +
+      "Call after the 'completed' notification to get the full response.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2083,7 +2111,9 @@ function defineTools(
   tools.push({
     name: "cancel_session",
     description:
-      "Cancel a running session. Sends SIGTERM, then SIGKILL after 5 seconds if still running.",
+      "Cancel a session. Returns once its state is CANCELLED ({session_id, state, changed}); the " +
+      "pane close and process-group reap finish in the background. Idempotent: a second call " +
+      "returns the same state with changed:false. Errors are a JSON ContractError.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2093,21 +2123,25 @@ function defineTools(
     },
     group: "channel",
     handler: async (args) => {
-      const success = sessionManager.cancelSession(args.session_id as string);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify({ success }) }],
-      };
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        return contractAnswer(sessionManager.cancelSession(sessionId));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
     },
   });
 
   tools.push({
     name: "list_sessions",
     description:
-      "List all active channel sessions. Optionally include completed sessions. " +
-      "Each session reports `idleSeconds`: how long since the child last emitted " +
-      "anything. Nothing kills a session for being idle — a child inside a long " +
-      "Bash call is silent and working — so this is yours to judge against the " +
-      "task you set, and `cancel_session` is yours to call if the answer is no.",
+      "List channel sessions: {contract_version, capabilities, sessions}. Optionally include " +
+      "finished ones. Each row reports `state`, `activity` and `idle_seconds`: how long since " +
+      "the session's screen or transcript last changed. Nothing kills a session for being " +
+      "idle — a child inside a long Bash call is silent and working — so this is yours to " +
+      "judge against the task you set, and `cancel_session` is yours to call if the answer is no.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2119,10 +2153,14 @@ function defineTools(
     },
     group: "channel",
     handler: async (args) => {
-      const sessions = sessionManager.listSessions(args.include_completed as boolean | undefined);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify({ sessions }) }],
-      };
+      try {
+        return contractAnswer({
+          ...contractMeta(),
+          sessions: sessionManager.listSessionRows(args.include_completed === true),
+        });
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
     },
   });
 
@@ -2141,13 +2179,13 @@ function defineTools(
   tools.push({
     name: "get_diagnostics",
     description:
-      "Explain what a channel session actually did — stderr, upstream error bodies, the " +
-      "recent event frames, the resolved model chain, accounting, and the paths to the " +
-      "full records. Call this FIRST whenever a session fails, times out, or completes " +
-      "with empty or surprising output; it needs no re-run and no debug flag. " +
-      "`idleSeconds` reports how long since the child last emitted a frame, and is " +
-      "null once the session is no longer live. It is information, never a verdict: " +
-      "claudish does not terminate a session for silence.",
+      "Explain what a channel session actually did — its final screen, upstream error bodies, " +
+      "the recent state records, anomalies, the resolved model chain, accounting, and the paths " +
+      "to the full records (transcript included). Call this FIRST whenever a session fails, times " +
+      "out, or completes with empty or surprising output; it needs no re-run and no debug flag. " +
+      "`idleSeconds` reports how long since the screen or transcript last changed, and is null " +
+      "once the session is no longer live. It is information, never a verdict: claudish does " +
+      "not terminate a session for silence.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2155,7 +2193,7 @@ function defineTools(
         event_limit: {
           type: "number",
           description:
-            "How many of the most recent semantic frames to include (default: 40, max: 200). " +
+            "How many of the most recent state records to include (default: 40, max: 200). " +
             "0 omits them; `event_log_path` always has the full record.",
         },
       },
@@ -2181,6 +2219,46 @@ function defineTools(
           ],
           isError: true,
         };
+      }
+    },
+  });
+
+  tools.push({
+    name: "capture_session",
+    description:
+      "Read a session's current terminal screen (160×50): {seq, cols, rows, cursor, lines, final, " +
+      "spans?}. A memory read, meant for polling about once per second. Pass the last `seq` as " +
+      "since_seq to get {unchanged:true, seq, final} while nothing changed. `final:true` is the " +
+      "last screen of a closed pane. Errors are a JSON ContractError.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        since_seq: {
+          type: "number",
+          description: "The seq of your previous capture; an equal seq answers {unchanged:true}",
+        },
+        spans: {
+          type: "boolean",
+          description: "Include per-row colour and attribute runs (default: false)",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "channel",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const since = args.since_seq;
+        if (since !== undefined && (typeof since !== "number" || !Number.isInteger(since)))
+          throw new ContractErrorException("invalid_args", "'since_seq' must be an integer");
+        return contractAnswer(
+          sessionManager.captureSession(sessionId, since as number | undefined, args.spans === true)
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
       }
     },
   });
@@ -2220,19 +2298,14 @@ const TASK_STATUS_BY_EVENT: Record<ChannelEventType, TaskStatus> = {
   // session on. It had no key, so it fell through to "working": a SEP-1686
   // consumer polled a session that was waiting on it as if it were busy.
   awaiting_permission: "input_required",
-  // Explicit although the fall-through below gives the same value: a missing
-  // key is how the timeout projection hid (see the `timeout` entry). The final
-  // turn ended and the child is exiting; nothing is asked of the caller.
-  finishing: "working",
   completed: "completed",
   failed: "failed",
   cancelled: "cancelled",
   // The key whose ABSENCE forced the channel wire to lie. `mapEventToTaskStatus`
   // falls through to `?? "working"`, so a session killed by its own timeout was
   // reported to a SEP-1686 consumer as still working — which is why the timeout
-  // path emitted `"failed"` on the wire while `SessionInfo.status` said
-  // `"timeout"`. With this key present `ChannelEventType` is the full
-  // `SessionStatus` and the timeout emits its own event; SEP-1686 has no
+  // path once emitted `"failed"` on the wire while the record said `"timeout"`.
+  // With this key present the timeout emits its own event; SEP-1686 has no
   // `timeout` member, and `failed` is the only honest projection of it.
   timeout: "failed",
 };
@@ -2434,15 +2507,27 @@ async function main() {
   const transport = new StdioServerTransport();
   installWireTap();
   await server.connect(transport);
+  installMcpShutdown(sessionManager);
+  // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
+  // after an identity check. Asynchronous; a failure costs nothing but the sweep.
+  void sweepOrphanPanes().catch(() => undefined);
+}
 
-  // Cleanup on shutdown. Both subsystems spawn children that outlive the call
-  // that started them — channel sessions always did, and team runs do now that
-  // `run` returns before its models finish — so both must be reached here or
-  // their process trees survive this one and keep billing.
-  process.on("SIGTERM", () => {
-    sessionManager.shutdownAll().catch(() => {});
-    shutdownAllTeamRuns().catch(() => {});
-  });
+/**
+ * Shutdown (D15 layer 3, §20.3 item 8): stdin EOF, transport close, SIGINT, SIGTERM and
+ * SIGHUP settle every team run and channel session CANCELLED — so their records end
+ * (`meta.json`, the closing wait line) — then reap every pane in parallel and exit.
+ * Installed before any pane exists, so `startPaneSession`'s own default hooks never
+ * replace these options. A SIGKILL of this process ends no record; the per-pane
+ * watchers still remove the panes.
+ */
+function installMcpShutdown(sessionManager: SessionManager): void {
+  const before = async (): Promise<void> => {
+    await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
+  };
+  // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
+  // transport-close hook too.
+  installPaneShutdownHooks({ stdin: true, before });
 }
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────

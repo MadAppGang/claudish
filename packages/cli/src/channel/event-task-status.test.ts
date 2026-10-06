@@ -18,7 +18,6 @@ const EXPECTED = {
   tool_executing: "working",
   waiting_for_input: "input_required",
   awaiting_permission: "input_required",
-  finishing: "working",
   completed: "completed",
   failed: "failed",
   cancelled: "cancelled",
@@ -34,6 +33,10 @@ describe("EVENT_TO_TASK_STATUS", () => {
 
   test("awaiting_permission asks the caller for input; it is not 'working'", () => {
     expect(mapEventToTaskStatus("awaiting_permission")).toBe("input_required");
+  });
+
+  test("finishing is no longer a channel event (RB1): it falls through like any unknown word", () => {
+    expect((CHANNEL_EVENT_TYPES as readonly string[]).includes("finishing")).toBe(false);
   });
 
   test("the list and the table name the same events", () => {

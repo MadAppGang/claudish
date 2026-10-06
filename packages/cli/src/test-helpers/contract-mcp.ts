@@ -23,9 +23,10 @@ import type { TempLayout } from "./contract-records.js";
 export const SRC_DIR = join(import.meta.dir, "..");
 export const PACKAGE_DIR = join(SRC_DIR, "..");
 export const SERVER_ENTRY = join(SRC_DIR, "index.ts");
-/** The stream-json child the channel suites still run (until the channel moves onto panes). */
-export const FAKE_CHILD = join(import.meta.dir, "contract-fake-child.ts");
-/** The pane fake: the team suites pass it explicitly as CLAUDISH_BIN (marker mode). */
+/**
+ * The child every contract suite runs: the pane fake (marker mode with FAKE_MODEL), the
+ * server's default CLAUDISH_BIN.
+ */
 export const PANE_FAKE_CHILD = join(SRC_DIR, "pane", "test-helpers", "fake-interactive-child.ts");
 /** Design §3.5 step 1: the dispatcher reads `extra._meta?.["claudecode/toolUseId"]`. */
 export const TOOL_USE_ID_META_KEY_FROM_SPEC = "claudecode/toolUseId";
@@ -69,13 +70,13 @@ export function serverEnv(
   layout: TempLayout,
   extra: Record<string, string | undefined> = {}
 ): Record<string, string> {
-  chmodSync(FAKE_CHILD, 0o755);
+  chmodSync(PANE_FAKE_CHILD, 0o755);
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "",
     HOME: layout.home,
     TMPDIR: tmpdir(),
     CLAUDISH_SESSIONS_DIR: layout.sessionsDir,
-    CLAUDISH_BIN: FAKE_CHILD,
+    CLAUDISH_BIN: PANE_FAKE_CHILD,
     CLAUDE_CONFIG_DIR: layout.configDir,
     NO_COLOR: "1",
     // The hermetic keys of makePaneTestEnv: a pane child built from this env reads no
@@ -286,7 +287,11 @@ export class McpServer {
     return { isError: Boolean(result.isError), text, json, raw: msg };
   }
 
-  async close(): Promise<void> {
+  /**
+   * Close the server's stdin, which shuts it down (records ended, panes reaped, exit 0).
+   * SIGKILL only if it has not exited within `graceMs`; the pane watchers clean up then.
+   */
+  async close(graceMs = 15_000): Promise<void> {
     if (!this.exited) {
       try {
         (this.proc.stdin as { end?(): unknown }).end?.();
@@ -295,7 +300,7 @@ export class McpServer {
       }
       const ended = await Promise.race([
         this.proc.exited.then(() => true),
-        Bun.sleep(3_000).then(() => false),
+        Bun.sleep(graceMs).then(() => false),
       ]);
       if (!ended) {
         this.proc.kill("SIGKILL");
@@ -382,16 +387,17 @@ export function sessionTool(
 /**
  * The session's status as `get_diagnostics` reports it, or undefined. The server exposes no
  * `get_session` tool (tools/list); `get_diagnostics` is the documented per-id tool, and its
- * result carries `status` for a live session and for one read back from disk.
+ * result carries the channel `event` (10.4.0's `status` key, RB7) for a live session and for
+ * one read back from disk.
  */
 export async function sessionStatus(
   server: McpServer,
   sessionId: string
 ): Promise<string | undefined> {
   const r = await sessionTool(server, "get_diagnostics", sessionId);
-  const status = findField(r.json, "status");
-  if (typeof status === "string") return status;
-  return /"status"\s*:\s*"([a-z_]+)"/.exec(r.text)?.[1];
+  const event = findField(r.json, "event");
+  if (typeof event === "string") return event;
+  return /"event"\s*:\s*"([a-z_]+)"/.exec(r.text)?.[1];
 }
 
 export async function teamCall(

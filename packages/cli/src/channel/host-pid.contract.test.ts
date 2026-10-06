@@ -4,6 +4,10 @@
  * real entry points (design §3.5 "hostPid, computed once at startup"; §8.1 tests 9a, 9b).
  * The unit cases of hostPidFrom live in parent-proof.contract.test.ts.
  *
+ * The session is an interactive pane (the pane fake, marker mode, in a real headless magmux
+ * under the test's own CLAUDISH_PANE_ROOT; ported per architecture §20.2, every assertion
+ * kept). After each test no pane process or file may remain.
+ *
  * The test process stands in for Claude Code. Three topologies:
  *   9b    test → `bun src/index.ts --mcp`                       (the compiled-binary branch)
  *   pair  test → a launcher stand-in → `bun src/index.ts --mcp`  (the launcher branch, no build)
@@ -17,10 +21,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:te
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  MAGMUX_AVAILABLE,
   McpServer,
+  NO_MAGMUX_MESSAGE,
   PACKAGE_DIR,
   SERVER_ENTRY,
   createSession,
+  paneOrphans,
   serverEnv,
 } from "../test-helpers/contract-mcp.js";
 import {
@@ -36,13 +43,17 @@ const T_TEST = 60_000;
 let layout: TempLayout;
 const servers: McpServer[] = [];
 
+if (!MAGMUX_AVAILABLE) console.warn(NO_MAGMUX_MESSAGE);
+
 beforeEach(() => {
   layout = makeTempLayout("hostpid");
 });
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
+  const report = await paneOrphans(layout);
   layout.cleanup();
-});
+  expect(report).toEqual({ processes: [], files: [] });
+}, 40_000);
 
 async function spawnRecordVia(
   command: string[] | undefined,
@@ -63,76 +74,82 @@ async function spawnRecordVia(
   return { server, rec: JSON.parse(text) as Record<string, unknown> };
 }
 
-describe("REQ-3 the compiled-binary branch (9b): claudish started directly by its host", () => {
-  test(
-    "hostPid is the test process, mcpPid is the spawned server, and there is no launcherPid",
-    async () => {
-      const { server, rec } = await spawnRecordVia(undefined);
+describe.skipIf(!MAGMUX_AVAILABLE)(
+  "REQ-3 the compiled-binary branch (9b): claudish started directly by its host",
+  () => {
+    test(
+      "hostPid is the test process, mcpPid is the spawned server, and there is no launcherPid",
+      async () => {
+        const { server, rec } = await spawnRecordVia(undefined);
 
-      expect({ hostPid: rec.hostPid, mcpPid: rec.mcpPid }).toEqual({
-        hostPid: process.pid,
-        mcpPid: server.pid,
-      });
-      expect("launcherPid" in rec).toBe(false);
-    },
-    T_TEST
-  );
+        expect({ hostPid: rec.hostPid, mcpPid: rec.mcpPid }).toEqual({
+          hostPid: process.pid,
+          mcpPid: server.pid,
+        });
+        expect("launcherPid" in rec).toBe(false);
+      },
+      T_TEST
+    );
 
-  test(
-    "a launcher pair leaked from an outer launcher is inert: same result as with no pair",
-    async () => {
-      const { server, rec } = await spawnRecordVia(undefined, {
-        // An OUTER launcher's pair: its pid is not this server's parent (the test process), so
-        // CLAUDISH_LAUNCHER_PID != ppid and the pair must be ignored (contract 3.5, hostPidFrom).
-        CLAUDISH_LAUNCHER_PID: String(process.ppid),
-        CLAUDISH_LAUNCHER_PPID: "1",
-      });
+    test(
+      "a launcher pair leaked from an outer launcher is inert: same result as with no pair",
+      async () => {
+        const { server, rec } = await spawnRecordVia(undefined, {
+          // An OUTER launcher's pair: its pid is not this server's parent (the test process), so
+          // CLAUDISH_LAUNCHER_PID != ppid and the pair must be ignored (contract 3.5, hostPidFrom).
+          CLAUDISH_LAUNCHER_PID: String(process.ppid),
+          CLAUDISH_LAUNCHER_PPID: "1",
+        });
 
-      expect({ hostPid: rec.hostPid, mcpPid: rec.mcpPid }).toEqual({
-        hostPid: process.pid,
-        mcpPid: server.pid,
-      });
-      expect("launcherPid" in rec).toBe(false);
-    },
-    T_TEST
-  );
-});
+        expect({ hostPid: rec.hostPid, mcpPid: rec.mcpPid }).toEqual({
+          hostPid: process.pid,
+          mcpPid: server.pid,
+        });
+        expect("launcherPid" in rec).toBe(false);
+      },
+      T_TEST
+    );
+  }
+);
 
-describe("REQ-3 the launcher branch: a launcher that passes its own pid pair", () => {
-  test(
-    "hostPid is the launcher's parent, launcherPid is the launcher, mcpPid is its child",
-    async () => {
-      const launcher = join(layout.root, "launcher-stand-in.ts");
-      writeFileSync(
-        launcher,
-        [
-          `const child = Bun.spawn([process.execPath, ${JSON.stringify(SERVER_ENTRY)}, "--mcp"], {`,
-          `  stdin: "inherit", stdout: "inherit", stderr: "inherit",`,
-          "  env: { ...process.env, CLAUDISH_LAUNCHER_PID: String(process.pid), CLAUDISH_LAUNCHER_PPID: String(process.ppid) },",
-          "});",
-          `process.on("SIGTERM", () => { child.kill("SIGTERM"); });`,
-          "process.exitCode = await child.exited;",
-          "",
-        ].join("\n")
-      );
+describe.skipIf(!MAGMUX_AVAILABLE)(
+  "REQ-3 the launcher branch: a launcher that passes its own pid pair",
+  () => {
+    test(
+      "hostPid is the launcher's parent, launcherPid is the launcher, mcpPid is its child",
+      async () => {
+        const launcher = join(layout.root, "launcher-stand-in.ts");
+        writeFileSync(
+          launcher,
+          [
+            `const child = Bun.spawn([process.execPath, ${JSON.stringify(SERVER_ENTRY)}, "--mcp"], {`,
+            `  stdin: "inherit", stdout: "inherit", stderr: "inherit",`,
+            "  env: { ...process.env, CLAUDISH_LAUNCHER_PID: String(process.pid), CLAUDISH_LAUNCHER_PPID: String(process.ppid) },",
+            "});",
+            `process.on("SIGTERM", () => { child.kill("SIGTERM"); });`,
+            "process.exitCode = await child.exited;",
+            "",
+          ].join("\n")
+        );
 
-      const { server, rec } = await spawnRecordVia([process.execPath, launcher]);
-      const mcpPid = rec.mcpPid as number;
+        const { server, rec } = await spawnRecordVia([process.execPath, launcher]);
+        const mcpPid = rec.mcpPid as number;
 
-      expect({ hostPid: rec.hostPid, launcherPid: rec.launcherPid }).toEqual({
-        hostPid: process.pid,
-        launcherPid: server.pid,
-      });
-      expect(mcpPid).not.toBe(process.pid);
-      expect(mcpPid).not.toBe(server.pid);
-      expect(pidAlive(mcpPid)).toBe(true);
-      expect(ppidOf(mcpPid)).toBe(server.pid);
-    },
-    T_TEST
-  );
-});
+        expect({ hostPid: rec.hostPid, launcherPid: rec.launcherPid }).toEqual({
+          hostPid: process.pid,
+          launcherPid: server.pid,
+        });
+        expect(mcpPid).not.toBe(process.pid);
+        expect(mcpPid).not.toBe(server.pid);
+        expect(pidAlive(mcpPid)).toBe(true);
+        expect(ppidOf(mcpPid)).toBe(server.pid);
+      },
+      T_TEST
+    );
+  }
+);
 
-describe("REQ-3 the installed npm path for real (9a)", () => {
+describe.skipIf(!MAGMUX_AVAILABLE)("REQ-3 the installed npm path for real (9a)", () => {
   const launcherScript = join(PACKAGE_DIR, "bin", "claudish.cjs");
   const distEntry = join(PACKAGE_DIR, "dist", "index.js");
 

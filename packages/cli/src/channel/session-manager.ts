@@ -1,33 +1,31 @@
 // ─── SessionManager ──────────────────────────────────────────────────────────
 //
-// Lifecycle owner for channel sessions. Each session is one `claudish` child
-// spawned over plain pipes, driven by BIDIRECTIONAL stream-json:
+// Lifecycle owner for channel sessions. Each session is one INTERACTIVE Claude Code,
+// launched through claudish (`claudish -i --model X -y --quiet --session-id <uuid>
+// --add-dir <turnDir> [caller flags]`) inside its own headless magmux pane and driven
+// over the pane's socket (packages/cli/src/pane/, architecture §2). There is no `-p`,
+// no `--stdin` and no stream-json: the child's own transcript is the turn oracle, and
+// the pane session's phase table is the clock of every state record this file writes.
 //
-//   parent ──{"type":"user",…}──▶ proc.stdin ─inherit─▶ claude's fd 0
-//   parent ◀── NDJSON frames ──── proc.stdout ◀─inherit─ claude's fd 1
+// The policy stays here (D8): a one-shot session's verdict is `classifyRunOutput` with
+// no byte floor and no pattern; an interactive session continues after each turn and
+// fails only on an API-error turn (D20); a question or a permission dialog waits for
+// `send_input` (D19 is team's rule, not ours). `send_input` is accepted in every
+// non-terminal state and queued (D17). `timeout_seconds` is the caller's own deadline
+// and the only post-acceptance timer (D10).
 //
-// There is no relay code in between. `claudish` is spawned WITHOUT `--stdin`, so
-// nothing in it consumes fd 0, and it spawns `claude` with `stdio: "inherit"` —
-// which means the pipe this file creates lands directly on the grandchild.
-// Verified end to end on 2026-08-22 against claude 2.1.239 (see
-// ai-docs/sessions/dev-feature-stream-json-*/probes/probe-argv.ts).
-//
-// What that buys, in order of how badly it was needed:
-//   * progress that is real — the child declares its state instead of us
-//     regex-matching TUI glyphs it never prints (see stream-json-reducer.ts)
-//   * `send_input` that works — it has never worked before; the bytes used to
-//     land in an already-satisfied stdin drain
-//   * a terminal state that has to be earned — `result.terminal_reason` plus
-//     `classifyRunOutput`, instead of "exit code 0 means success"
-//   * real tokens and cost — `CLAUDISH_TOKEN_FILE` points the child's own token
-//     tracker at this session's directory
+// The 10.4.0 session records are kept, byte for byte where the magus monitor reads
+// them (§20.1): `spawn.json` before any pane, `waits.jsonl` from the pane's transition
+// hook, `meta.json` through `toMetaRecord` with every 10.4.0 key, `events.jsonl` with
+// one `assistant` line per main-chain message id.
 
-import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  type WriteStream,
   appendFileSync,
   closeSync,
   createWriteStream,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -37,91 +35,125 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 
 import { ENV } from "../config.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "../handlers/shared/upstream-error-capture.js";
-import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "../process-tree.js";
+import {
+  type Accounting,
+  type CaptureResult,
+  type CaptureUnchanged,
+  ContractErrorException,
+  FAILURE_REASONS,
+  type FailureReason,
+  type FinalVerdict,
+  type PaneBlock,
+  type PaneSession,
+  type PaneSessionOptions,
+  type PaneSnapshot,
+  SLOT_STATES,
+  type SessionCancelResult,
+  type SessionRow,
+  type SettledTurn,
+  type SlotState,
+  assertMagmuxAvailable,
+  checkChildFlags,
+  deliveryRefusal,
+  flagsRemoveRead,
+  isTerminalState,
+  mergeAccounting,
+  readTokenFileCached,
+  releasePaneReservations,
+  reservePanes,
+  resolveProvider,
+  sockRootFor,
+  startPaneSession,
+} from "../pane/index.js";
 import { redactSecrets } from "../redact.js";
-import { transcriptPathFor } from "../session/session-discovery.js";
-import { resolveClaudishSpawn } from "../spawn-claudish.js";
-import { decodeChunk } from "../stdio-decode.js";
-import { STDOUT_TAIL_LIMIT, type TeamRunOutcome } from "../team-orchestrator.js";
+import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
+import { TRUNCATION_NOTE, type TeamRunOutcome, classifyRunOutput } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { sessionsDirFrom } from "./home-dir.js";
 import { hostPidFrom } from "./parent-proof.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
-import {
-  type ResultSummary,
-  StreamJsonReducer,
-  type TurnEnd,
-  labelForLine,
-} from "./stream-json-reducer.js";
 import type {
   ChannelEvent,
+  ChannelEventType,
   SessionCreateOptions,
   SessionInfo,
   SessionManagerOptions,
-  SessionStatus,
 } from "./types.js";
 
-/** One semantic frame, as `get_diagnostics` returns it. */
+/** One record of the session's own event log, as `get_diagnostics` returns it. */
 export interface DiagnosticEvent {
   /**
-   * When the frame was observed, ISO-8601 — or `""` for a frame recovered from
-   * `events.jsonl` after the session left memory.
-   *
-   * The log stores the frame verbatim and nothing else, so the observation time
-   * is genuinely not on disk. Empty rather than back-filled from the file's
-   * mtime or the session's `completedAt`: both would be a fabricated timestamp
-   * indistinguishable from a measured one, and every frame would carry the same
-   * one. A consumer can tell the two cases apart by testing for "".
+   * When the record was written, ISO-8601 — or `""` for a record recovered from
+   * `events.jsonl` after the session left memory whose line carries no `at`.
+   * Empty rather than back-filled from the file's mtime: a fabricated timestamp is
+   * indistinguishable from a measured one.
    */
   at: string;
-  /** `type[:subtype]` from the frame, or null for a line that carried no type. */
+  /** The record's `type` (`state`, `tool`, `anomaly`, `assistant`), or null. */
   label: string | null;
-  /** The frame, redacted and truncated to `EVENT_PREVIEW_CHARS`. */
+  /** The record, redacted and truncated to `EVENT_PREVIEW_CHARS`. */
   preview: string;
-  /** True when `preview` is a prefix rather than the whole frame. */
+  /** True when `preview` is a prefix rather than the whole record. */
   truncated: boolean;
 }
 
 /** What `get_diagnostics` returns. Every field is reachable without a filesystem read. */
 export interface SessionDiagnostics {
   sessionId: string;
-  status: SessionStatus;
+  state: SlotState;
+  /** The current channel event (10.4.0's `status` key, RB7). */
+  event: ChannelEventType;
+  reason: FailureReason | null;
+  detail: string | null;
   /** The model as the caller asked for it. */
   model: string;
   /** The pinned `provider@model` the child was spawned with, or null. */
   spawnModel: string | null;
+  provider: string | null;
+  shape: "one-shot" | "interactive";
+  /** The pane's internal phase; null when the session is not live. */
+  phase: string | null;
   exitCode: number | null;
-  terminalReason: string | null;
-  /**
-   * Seconds since the child last emitted a frame; null when the session is not
-   * live. Reported so the caller can tell working-but-quiet from wedged.
-   * Nothing in claudish acts on it.
-   */
+  /** Seconds since the last screen change or transcript append; null when not live. */
   idleSeconds: number | null;
   elapsedSeconds: number;
-  /** The session's own timeout, for reading `elapsedSeconds` against. */
+  /** The session's own timeout, for reading `elapsedSeconds` against (0 when unknown). */
   timeoutSeconds: number;
-  /** Bytes of recovered assistant PROSE. Zero on a session that produced no answer. */
+  /** Bytes of answer prose in `get_output`. Zero on a session that produced no answer. */
   outputBytes: number;
   turnsCompleted: number;
-  tokensUsed: number;
-  costUsd: number;
-  toolCallCount: number;
-  /** Redacted, bounded stderr. See `stderrForDiagnostics` for which rule produced it. */
-  stderrTail: string;
-  /** True when benign boilerplate was dropped (success path only). */
-  stderrFiltered: boolean;
-  /** True when the in-memory stderr buffer dropped a middle section. */
-  stderrTruncated: boolean;
-  /** Illegal transitions and unparseable lines the reducer recorded. */
+  tokensIn: number | null;
+  tokensOut: number | null;
+  costUsd: number | null;
+  toolCalls: number;
+  pendingInputs: number;
+  /** Whether claudish holds a live socket to the pane's magmux right now. */
+  connected: boolean;
+  /** The last non-empty rows of the child's screen, redacted (a PTY has no separate stderr). */
+  screenTail: string;
+  pane: string | null;
+  sockPath: string | null;
+  /** The head of magmux's own stderr, redacted. */
+  magmuxStderr: string;
+  captureSource: SessionInfo["captureSource"];
+  turnSource: SessionInfo["turnSource"];
+  /** Bytes of assistant text before a file-delivered turn's task file was read. */
+  preambleBytes: number;
+  readCoverage: {
+    linesTotal: number;
+    linesReturned: number;
+    complete: boolean;
+    reads: number;
+  } | null;
+  claudeCodeVersion: string | null;
+  /** Deduplicated anomaly keys with counts (`illegal_transition:…`, `socket_reconnected ×2`, …). */
   anomalies: readonly string[];
-  /** The tail of the semantic-frame ring, oldest → newest. */
+  /** The tail of the session's own event records, oldest → newest. */
   recentEvents: readonly DiagnosticEvent[];
-  /** How many frames the ring holds (it caps at `EVENT_RING_SIZE`). */
+  /** How many records the ring holds (it caps at `EVENT_RING_SIZE`). */
   eventsTotal: number;
   /** Raw JSONL records from the child proxy's upstream-error capture, newest last. */
   upstreamErrors: readonly string[];
@@ -132,110 +164,72 @@ export interface SessionDiagnostics {
   upstreamErrorLogPath: string;
 }
 
+/** What `get_output` returns. */
+export interface SessionOutput {
+  sessionId: string;
+  state: SlotState;
+  output: string;
+  totalLines: number;
+  turnsCompleted: number;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  elapsedSeconds: number;
+  /** Seconds since the last activity. Null when not live. */
+  idleSeconds: number | null;
+}
+
+/** What `send_input` returns (§4.2). */
+export type SendInputResult =
+  | { success: true; queued: number }
+  | {
+      success: false;
+      reason: "terminal" | "unknown_session" | "delivery_unavailable" | "unsupported_command";
+      state: SlotState | null;
+    };
+
 interface SessionEntry {
   info: SessionInfo;
-  process: ChildProcess;
-  /** Recovered assistant PROSE, one line per entry. What `get_output` returns. */
+  /** null before the pane started, and for a session whose pane never started */
+  session: PaneSession | null;
+  /** Answer prose, one line per entry. What `get_output` returns. */
   scrollback: ScrollbackBuffer;
-  reducer: StreamJsonReducer;
-  timeoutHandle: ReturnType<typeof setTimeout> | null;
-  killHandle: ReturnType<typeof setTimeout> | null;
-  /** Bounds how long finalisation waits for the stdio pipes after `exit`. */
-  drainHandle: ReturnType<typeof setTimeout> | null;
-  /** Removes a terminal session from the map once its retention window is up. */
-  evictHandle: ReturnType<typeof setTimeout> | null;
-  /**
-   * Head + tail of the child's stderr, bounded (see `boundStderr`).
-   *
-   * A chatty child used to grow this string without limit for the entire life
-   * of the MCP server, and the sessions holding it were never evicted.
-   */
-  stderr: string;
-  /** True once `stderr` has been truncated, so the record says so. */
-  stderrTruncated: boolean;
-  /** Statefully decodes stdout/stderr so a multi-byte char may span chunks. */
-  stdoutDecoder: StringDecoder;
-  stderrDecoder: StringDecoder;
-  outputLogStream: ReturnType<typeof createWriteStream> | null;
+  outputLogStream: WriteStream | null;
   sessionDir: string;
+  cwd: string;
+  tokenFile: string;
   eventLogPath: string;
   /** Bytes already written to `events.jsonl`; the log stops at EVENT_LOG_LIMIT. */
   eventLogBytes: number;
-  /**
-   * `<sessionDir>/upstream-errors.jsonl` — where the child proxy's own
-   * `captureUpstreamError` writes non-ok upstream bodies. See `createSession`.
-   */
   upstreamErrorLogPath: string;
-  /**
-   * The last `EVENT_RING_SIZE` semantic frames, redacted and truncated.
-   *
-   * `events.jsonl` holds all of them, but it is capped at 4 MB and lives on
-   * disk, and the whole point of Phase 3 is that a diagnosis must not require
-   * reading the filesystem by hand. This is the in-API tail.
-   */
+  /** The last `EVENT_RING_SIZE` event records, redacted and truncated. */
   eventRing: DiagnosticEvent[];
-  /** The directory the child was spawned in, before any realpath resolution. */
-  cwd: string;
-  /**
-   * The `cwd + uuid` the current `info.transcriptPath` was derived from.
-   *
-   * `transcriptPathFor` does a `realpathSync`, and the refresh runs on every
-   * `list_sessions` / `get_output` / `get_session`; this makes the syscall
-   * happen only when one of its two inputs actually changed.
-   */
-  transcriptKey: string;
-  /** The caller's timeout for this session, in seconds. Reported by getDiagnostics. */
-  timeoutSeconds: number;
-  /** Bytes and tail of recovered prose — the inputs `classifyRunOutput` measures. */
+  /** Bytes of answer prose appended (the `outputBytes` metric). */
   proseBytes: number;
-  proseTail: string;
-  /**
-   * Exit facts, recorded on `exit` and consumed by `finalize`.
-   *
-   * These are two different moments: `exit` fires BEFORE the stdout pipe
-   * closes, so the verdict cannot be reached here. See `finalize`.
-   */
-  pendingExit: { code: number | null; signal: string | null; at: string } | null;
-  openPipes: number;
-  /** Finalisation runs exactly once, from whichever path gets there first. */
-  finalized: boolean;
-  /**
-   * Close stdin on the first terminal `result`.
-   *
-   * True when `create_session` supplied a prompt (one-shot intent), false once
-   * `send_input` is called (the caller has taken over). Without this a session
-   * would never end on its own: stdin stays open by design, so the child sits
-   * idle after answering until the hard timeout fires and the run is reported
-   * as a failure it did not have.
-   */
-  autoCloseOnResult: boolean;
-  stdinClosed: boolean;
-  /** `<sessionDir>/waits.jsonl`. See `appendWait`. */
+  /** Turn indexes whose answer reached the scrollback. */
+  answeredTurns: Set<number>;
   waitLogPath: string;
-  /** Bytes already appended to `waits.jsonl`; the log stops at WAIT_LOG_LIMIT. */
   waitLogBytes: number;
-  /**
-   * The `since` of the wait that is open now, or null. Kept so the `closed`
-   * line repeats its `open` line's key exactly.
-   */
+  /** The `since` of the wait that is open now, or null. */
   waitSince: string | null;
+  /** The terminal transition was handled (records written). */
+  ended: boolean;
+  evictHandle: ReturnType<typeof setTimeout> | null;
+  /** The last channel event emitted; STARTING is the initial state, never a frame. */
+  lastEvent: ChannelEventType;
+  lastFrameTool: string | null;
+  lastFrameToolCount: number;
+  lastToolFrameAt: number;
+  lastLoggedTool: string | null;
+  assistantIdsLogged: number;
+  anomaliesLogged: Set<string>;
+  sendRejectedSeen: number;
+  /** Optional frame meta for the next frame (`prompt_not_read`, `send_rejected`). */
+  pendingMeta: Record<string, string>;
+  /** The question or permission text of the current block, for the frame content. */
+  blockText: string | null;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
-
-/**
- * How long to wait, after a child is confirmed dead, for its stdout pipe to
- * close so the session's recorded output is final.
- *
- * Bounded: the pipe can only stay open while some descendant still holds the
- * write end, and after a group SIGKILL that should be nobody. This exists so a
- * pathological case degrades into a slightly-stale read rather than a hang.
- *
- * Previously imported from `team-orchestrator`, which pointed the channel at
- * `team` for a constant that only the channel still uses — `team` no longer
- * terminates children, so it no longer drains them either.
- */
-const DRAIN_TIMEOUT_MS = 10_000;
 const DEFAULT_SCROLLBACK = 2000;
 const DEFAULT_TIMEOUT = 600;
 const MAX_TIMEOUT = 3600;
@@ -256,36 +250,19 @@ export function normaliseTimeoutSeconds(raw: unknown): number {
   if (typeof n !== "number" || !Number.isFinite(n)) return DEFAULT_TIMEOUT;
   return Math.min(MAX_TIMEOUT, Math.max(1, Math.round(n)));
 }
-const KILL_GRACE_MS = 5000;
 
 /**
  * How long a terminal session stays readable before it is dropped from the map.
- *
- * `maxSessions` bounds only ACTIVE sessions, so without this a long-lived MCP
- * server accumulates every finished session forever — each holding a 2 000-line
- * scrollback, a reducer and a stderr buffer. Long enough that an agent which
- * polls, gets `completed`, and then calls `get_output`/`get_diagnostics` always
- * finds the session; the artifacts on disk outlive it either way.
+ * Long enough that an agent which polls, sees `completed`, and then calls
+ * `get_output`/`get_diagnostics`/`capture_session` always finds the session; the
+ * artifacts on disk outlive it either way.
  */
 const TERMINAL_RETENTION_MS = 30 * 60_000;
 
 /** Hard ceiling on retained terminal sessions, whatever the retention window says. */
 const MAX_TERMINAL_SESSIONS = 50;
 
-/**
- * Cap on the in-memory stderr buffer: this many bytes of HEAD plus the same of TAIL.
- *
- * Both ends, not just a tail: the diagnostic that motivated all of this — the
- * 81-byte `[claude-code:unrecognized_model]` line — is emitted at STARTUP, so a
- * pure tail buffer is exactly the shape that would have lost it, while the
- * death rattle that explains a late failure only exists at the end.
- */
-const STDERR_SIDE_LIMIT = 32 * 1024;
-
-/**
- * Cap on `events.jsonl`. ~1.3 MB is a long real session (measured), so this is
- * roughly 3× the worst observed case and still bounded on a pathological stream.
- */
+/** Cap on `events.jsonl`. */
 const EVENT_LOG_LIMIT = 4 * 1024 * 1024;
 
 /**
@@ -295,28 +272,14 @@ const EVENT_LOG_LIMIT = 4 * 1024 * 1024;
  */
 const WAIT_LOG_LIMIT = 1024 * 1024;
 
-/**
- * How many semantic frames `get_diagnostics` can hand back, and how much of each.
- *
- * Bounded on both axes because this ring is held per session for the whole
- * retention window: 200 × 800 chars is ~160 KB at worst, ~8 MB across the
- * 50-session ceiling, and a single `tool_result` frame can be megabytes on its
- * own. A prefix is enough to identify a frame; `events.jsonl` has the whole of
- * it and `get_diagnostics` names that path.
- */
+/** How many event records `get_diagnostics` can hand back, and how much of each. */
 const EVENT_RING_SIZE = 200;
 const EVENT_PREVIEW_CHARS = 800;
 
 /** Default number of ring events returned when the caller names no limit. */
 const DEFAULT_EVENT_LIMIT = 40;
 
-/**
- * Bytes of `upstream-errors.jsonl` read back for diagnostics.
- *
- * Each record is bounded at ~2 KB by `MAX_CAPTURED_BODY_BYTES`, so this is the
- * last ~30 upstream failures — far more than any diagnosis needs, and a hard
- * bound on a file the child appends to on every failed request.
- */
+/** Bytes of `upstream-errors.jsonl` read back for diagnostics. */
 const UPSTREAM_ERROR_TAIL_BYTES = 64 * 1024;
 
 /**
@@ -324,6 +287,130 @@ const UPSTREAM_ERROR_TAIL_BYTES = 64 * 1024;
  * versions that file alone, not `waits.jsonl` or a team record's `meta.json`.
  */
 const SPAWN_RECORD_SCHEMA = 1;
+
+/** RUNNING activities that are not a tool name (§8 B). */
+const NON_TOOL_ACTIVITY = new Set(["thinking", "background", "finishing"]);
+
+/** `meta.json` `status` for each terminal state (§20.1): EMPTY is a failure to the monitor. */
+const META_STATUS: Record<SlotState, string> = {
+  STARTING: "starting",
+  RUNNING: "running",
+  AWAITING_INPUT: "waiting_for_input",
+  AWAITING_PERMISSION: "awaiting_permission",
+  COMPLETED: "completed",
+  FAILED: "failed",
+  EMPTY: "failed",
+  CANCELLED: "cancelled",
+  TIMEOUT: "timeout",
+};
+
+/** A 10.4.0 `meta.json` `status` read back as a `SlotState` (the first-generation reader). */
+const STATE_OF_10_4_STATUS: Record<string, SlotState> = {
+  completed: "COMPLETED",
+  failed: "FAILED",
+  cancelled: "CANCELLED",
+  timeout: "TIMEOUT",
+};
+
+/**
+ * The channel event for a session state (architecture §3.4). Pure; the wire, the
+ * wait log's `to` and `get_diagnostics.event` all read it.
+ */
+export function channelEventFor(snap: { state: SlotState; activity: string | null }): {
+  event: ChannelEventType;
+  tool: string | null;
+} {
+  switch (snap.state) {
+    case "STARTING":
+      return { event: "starting", tool: null };
+    case "RUNNING": {
+      const a = snap.activity;
+      return a && !NON_TOOL_ACTIVITY.has(a)
+        ? { event: "tool_executing", tool: a }
+        : { event: "running", tool: null };
+    }
+    case "AWAITING_INPUT":
+      return { event: "waiting_for_input", tool: null };
+    case "AWAITING_PERMISSION":
+      return { event: "awaiting_permission", tool: null };
+    case "COMPLETED":
+      return { event: "completed", tool: null };
+    case "CANCELLED":
+      return { event: "cancelled", tool: null };
+    case "TIMEOUT":
+      return { event: "timeout", tool: null };
+    default:
+      return { event: "failed", tool: null };
+  }
+}
+
+/** One `list_sessions` row (§8 B): exactly the SlotRow keys plus the four session keys. */
+export function sessionRowOf(info: SessionInfo): SessionRow {
+  const terminal = isTerminalState(info.state);
+  return {
+    slot: info.sessionId,
+    model: info.model,
+    provider: info.provider,
+    state: info.state,
+    reason: info.state === "COMPLETED" || !terminal ? null : info.reason,
+    tokens_in: info.tokensIn,
+    tokens_out: info.tokensOut,
+    cost_usd: info.costUsd,
+    tool_calls: info.toolCalls,
+    turns_completed: info.turnsCompleted,
+    last_activity_at: info.lastActivityAt,
+    idle_seconds: terminal ? null : info.idleSeconds,
+    activity: terminal ? null : info.activity,
+    pane: info.pane,
+    session_id: info.sessionId,
+    started_at: info.startedAt,
+    completed_at: info.completedAt,
+    elapsed_seconds: info.elapsedSeconds,
+  };
+}
+
+/**
+ * The `meta.json` record (§20.1). Every 10.4.0 key under its 10.4.0 name and meaning —
+ * the magus monitor reads `status` (an unknown value reads as `failed`),
+ * `terminalReason`, `elapsedSeconds`, `turnsCompleted`, `toolCallCount`, `costUsd` and
+ * `exitCode` — plus additive keys. A `SessionInfo` key that would repeat a pinned key
+ * (`toolCalls`, `reason`, `panePid`) is written only under the pinned name.
+ */
+export function toMetaRecord(info: SessionInfo, cwd: string): Record<string, unknown> {
+  return {
+    sessionId: info.sessionId,
+    model: info.model,
+    spawnModel: info.spawnModel,
+    status: META_STATUS[info.state],
+    pid: info.panePid,
+    startedAt: info.startedAt,
+    completedAt: info.completedAt,
+    exitCode: info.exitCode,
+    turnsCompleted: info.turnsCompleted,
+    tokensUsed: (info.tokensIn ?? 0) + (info.tokensOut ?? 0),
+    elapsedSeconds: info.elapsedSeconds,
+    idleSeconds: info.idleSeconds,
+    costUsd: info.costUsd,
+    toolCallCount: info.toolCalls,
+    terminalReason: info.reason,
+    claudeSessionId: info.claudeSessionId,
+    ...(info.parentClaudeSessionId ? { parentClaudeSessionId: info.parentClaudeSessionId } : {}),
+    transcriptPath: info.transcriptPath,
+    // additive (pane generation)
+    state: info.state,
+    detail: info.detail,
+    tokensIn: info.tokensIn,
+    tokensOut: info.tokensOut,
+    lastActivityAt: info.lastActivityAt,
+    shape: info.shape,
+    pane: info.pane,
+    provider: info.provider,
+    captureSource: info.captureSource,
+    turnSource: info.turnSource,
+    timeoutSeconds: info.timeoutSeconds,
+    cwd,
+  };
+}
 
 /**
  * Write JSON so a reader never sees half of it: `<path>.tmp`, then rename over
@@ -335,160 +422,57 @@ function writeJsonAtomic(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
-/** Marker `recordStderr` leaves where it dropped the middle of the buffer. */
-const STDERR_TRUNCATION_MARKER = "[claudish] … stderr truncated to";
-
-/*
- * The stream-json child's output checks. Team moved onto interactive panes, whose
- * transcript replaces both, and took `classifyRunOutput`'s print-mode branch and
- * `meaningfulStderr` with it; this channel path keeps private copies until it moves onto
- * panes too, when these go with the pipe readers.
- */
-
-/** Claude Code prints API failures into its stdout and still exits 0. */
-const API_ERROR_RE = /\[API Error:\s*([^\]]{0,300})\]/i;
-/** Claude Code's print-mode background-task ceiling: partial output, exit 0. */
-const BG_CEILING_RE = /Background tasks still running after (\d+)s; terminating/i;
-/** stderr lines every healthy child emits (`unrecognized_model` is normal for a proxied model). */
-const BENIGN_STDERR_PATTERNS: readonly RegExp[] = [/^\s*\[claude-code:unrecognized_model\]/];
-
-/** The part of stderr worth persisting — everything that is not known boilerplate. */
-function meaningfulStderr(stderr: string): string {
-  if (!stderr) return "";
-  return stderr
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .filter((line) => !BENIGN_STDERR_PATTERNS.some((re) => re.test(line)))
-    .join("\n")
-    .trim();
+/** The count of one anomaly key in a snapshot's `anomalies` (`key` or `key ×n`). */
+function anomalyCount(anomalies: readonly string[], key: string): number {
+  for (const a of anomalies) {
+    if (a === key) return 1;
+    if (a.startsWith(`${key} ×`)) return Number(a.slice(key.length + 2)) || 1;
+  }
+  return 0;
 }
 
-/** "Exit 0 with nothing to show for it": an API error, the bg ceiling, or no prose. */
-function classifyStreamJsonProse(
-  outputSize: number,
-  proseTail: string,
-  stderr: string
-): { reason: string; detail: string } | null {
-  const apiError = API_ERROR_RE.exec(proseTail);
-  if (apiError)
-    return {
-      reason: "api_error",
-      detail: `Child exited 0 but stdout carries an API error: ${apiError[1]?.trim() || "unknown"}`,
-    };
-  const bg = BG_CEILING_RE.exec(stderr);
-  if (bg)
-    return {
-      reason: "background_task_ceiling",
-      detail: `Claude Code terminated the turn after ${bg[1]}s waiting on background tasks, flushing only partial output.`,
-    };
-  if (outputSize === 0 || (outputSize <= STDOUT_TAIL_LIMIT && proseTail.trim().length === 0))
-    return {
-      reason: "empty_output",
-      detail: `Child exited 0 but produced no non-whitespace output (${outputSize} B).`,
-    };
-  return null;
+/** An anomaly entry without its `×n` count suffix. */
+function anomalyKey(a: string): string {
+  const at = a.lastIndexOf(" ×");
+  return at > 0 ? a.slice(0, at) : a;
 }
-
-const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "cancelled", "timeout"];
-
-/** Every `SessionStatus`, for validating one read back off disk. */
-const KNOWN_STATUSES: readonly SessionStatus[] = [
-  "starting",
-  "running",
-  "tool_executing",
-  "waiting_for_input",
-  "finishing",
-  "completed",
-  "failed",
-  "cancelled",
-  "timeout",
-];
 
 // ─── Disk fallback ───────────────────────────────────────────────────────────
 //
 // Sessions live in a Map, and two things legitimately remove them from it: the
-// 30-minute / 50-session retention policy, and the MCP server restarting. Before
-// this, either one made a finished session unreachable — `getOutput`,
-// `getSession` and `getDiagnostics` all threw `Session <id> not found` — while
-// its entire record sat complete under `<sessionsDir>/<id>/`. Measured on a real
-// session (probes/probe-gaps.ts §G-B): `meta.json` on disk with
-// `status=cancelled tokens=37076`, alongside `output.log`, `stderr.log`,
-// `events.jsonl`, `tokens.json` and `prompt.md` — and a fresh manager throwing.
-//
-// That is the same defect this whole feature exists to remove: the answer on
-// disk while the API says there is nothing. Worse here, because the point of the
-// diagnostics is that a failure which ALREADY HAPPENED can be explained without
-// re-running it — and a restart is exactly what tends to follow a crash.
-//
-// So the three READERS fall back to disk. The two MUTATORS never do; see
-// `liveEntry`.
+// 30-minute / 50-session retention policy, and the MCP server restarting. The three
+// READERS (`getSession`, `getOutput`, `getDiagnostics`) fall back to the session's
+// directory; the MUTATORS never do (`liveEntry`). The reader reads both generations of
+// `meta.json`: 10.4.0's (`status`, no `state`) and the pane one (`state` beside it).
 
 /**
- * What a session id may contain, given that it is about to become a path
- * segment.
- *
- * `createSession` mints `randomUUID().slice(0, 8)` — 8 lowercase hex — but these
- * readers take the id from an MCP caller, so on the read path it is untrusted
- * input heading for `join(sessionsDir, id)` and an `open`. The allowlist admits
- * no `/`, no `\`, no NUL and no leading dot, which is what makes `..`,
- * `../../etc/passwd` and an absolute path unrepresentable rather than merely
- * unlikely. Wider than 8 hex on purpose: an id minted by an older or future
- * build must still resolve.
+ * What a session id may contain, given that it is about to become a path segment.
+ * No `/`, no `\`, no NUL and no leading dot, which makes `..`, `../../etc/passwd` and an
+ * absolute path unrepresentable rather than merely unlikely.
  */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-/**
- * Refuse to parse a `meta.json` larger than this.
- *
- * It is a serialised `SessionInfo` — well under 1 KB — so anything at this size
- * is not the file we wrote, and `JSON.parse` of an arbitrarily large string is
- * not something the error path should be doing.
- */
+/** Refuse to parse a `meta.json` larger than this; it is not the file we wrote. */
 const META_READ_LIMIT = 1024 * 1024;
 
-/**
- * Bytes of `output.log` read back, before the same 2 000-line scrollback bound
- * the live path applies.
- *
- * The live `getOutput` answers from a `ScrollbackBuffer` that holds at most
- * `scrollbackCapacity` lines (~200 KB by default), so this is the byte window
- * that comfortably contains that many lines of prose. The recovered text is then
- * pushed through a real `ScrollbackBuffer` so the two paths cannot disagree
- * about ANSI stripping, line splitting or `tailLines`.
- */
+/** Bytes of `output.log` read back, before the same scrollback bound the live path applies. */
 const OUTPUT_TAIL_BYTES = 256 * 1024;
 
-/**
- * Bytes of `stderr.log` read back.
- *
- * `recordStderr` bounds what it writes at `STDERR_SIDE_LIMIT` per end (64 KB
- * plus a marker), so this window reads a file THIS manager wrote in full —
- * head included. That matters: the 81-byte `[claude-code:unrecognized_model]`
- * line which motivated the diagnostics is emitted at STARTUP, and a window that
- * only reached the tail is precisely the shape that would lose it.
- */
-const STDERR_READ_BYTES = 256 * 1024;
-
-/**
- * Bytes of `events.jsonl` read back.
- *
- * That file is capped at `EVENT_LOG_LIMIT` (4 MB) and a single `tool_result`
- * frame can be megabytes on its own, so it is read as a bounded TAIL and never
- * whole: a 4 MB event log must not become a 4 MB read, let alone a 4 MB MCP
- * response. At the 200-frame ceiling this window still averages 2.6 KB a frame.
- * `eventLogPath` is returned so the full record stays one `cat` away.
- */
+/** Bytes of `events.jsonl` read back: a bounded TAIL, never the whole file. */
 const EVENT_TAIL_BYTES = 512 * 1024;
 
+/** Bytes of `screen.txt` read back. */
+const SCREEN_READ_BYTES = 64 * 1024;
+
 /**
- * `terminalReason` for a session whose directory exists but whose `meta.json`
- * does not, or will not parse.
- *
- * `meta.json` is written by `writeArtifacts`, at the very end of `finalize`, so
- * its absence means the process died before reaching a verdict — SIGKILL, a
- * panic, a full disk, or a write caught half-way. Distinctive enough to grep.
+ * The detail of a session whose directory exists but whose `meta.json` does not, or
+ * will not parse: the process died before reaching a verdict (SIGKILL, a panic, a full
+ * disk). Distinctive enough to grep.
  */
 const NO_TERMINAL_RECORD = "claudish_no_terminal_record";
+
+/** How every annotation of OUR OWN in `output.log` begins (kept out of `outputBytes`). */
+const CLAUDISH_NOTE_PREFIX = "[claudish] ";
 
 /** A session reconstructed from `<sessionsDir>/<id>/`. There is no process behind it. */
 interface DiskRecord {
@@ -499,154 +483,8 @@ interface DiskRecord {
 }
 
 /**
- * The argv a channel child is spawned with.
- *
- * ORDER IS LOAD-BEARING, in two independent ways.
- *
- * 1. `--verbose` BEFORE `--quiet`. claudish consumes `--verbose`/`-v` as its OWN
- *    log-verbosity flag (cli.ts:344, it sets quiet=false) and SEPARATELY forwards
- *    a copy to the child `claude` (cli.ts:674), which hard-errors on
- *    `--print --output-format stream-json` without it. Putting `--verbose` first
- *    gets the forward while letting `--quiet` win claudish's own verbosity.
- *    Reversed, every child narrates itself onto stderr. Same rule, same reason,
- *    as team-orchestrator.ts:818-825.
- *
- * 2. `-p` must be followed by another FLAG. Unknown flags pass through to
- *    `claude` with their value, and the value rule is "the next token, if it does
- *    not start with `-`" (cli.ts:647). `-p` takes no value, so a non-flag after
- *    it would be swallowed. It also must be present at all: without it and
- *    without `--stdin`, cli.ts:667 sees no positional prompt and launches the
- *    interactive picker.
- *
- * `--session-id <uuid>` is last of the base args on purpose: it consumes exactly
- * one token, so whatever the caller appends afterwards is parsed fresh.
- */
-export function buildChannelSpawnArgs(opts: {
-  model: string;
-  claudeSessionId: string;
-  claudishFlags?: readonly string[];
-}): string[] {
-  return [
-    "--model",
-    opts.model,
-    "-y",
-    "--verbose",
-    "--quiet",
-    "-p",
-    "--output-format",
-    "stream-json",
-    "--input-format",
-    "stream-json",
-    "--include-partial-messages",
-    "--include-hook-events",
-    "--replay-user-messages",
-    "--session-id",
-    opts.claudeSessionId,
-    ...(opts.claudishFlags ?? []),
-  ];
-}
-
-/**
- * Every other SPELLING claudish's own parser accepts for a flag the transport
- * sets. Sourced from `cli.ts`'s arg loop, not guessed:
- *
- *   `--model` / `-m`           cli.ts:263
- *   `--auto-approve` / `-y`    cli.ts:310
- *   `--quiet` / `-q`           cli.ts:338
- *   `--verbose` / `-v`         cli.ts:340
- *
- * `-v` is the one that mattered. The guard was built to stop a caller's
- * `--verbose` landing after our `--quiet` and flipping claudish's own log
- * verbosity (every child then narrates onto stderr) — and `-v` walked straight
- * past it into exactly that regression. `-p` is `claude`'s short `--print`; it
- * is not a claudish flag, so it is listed the other way round.
- */
-const RESERVED_FLAG_ALIASES: Record<string, readonly string[]> = {
-  "--model": ["-m"],
-  "-y": ["--auto-approve"],
-  "--quiet": ["-q"],
-  "--verbose": ["-v"],
-  "-p": ["--print"],
-};
-
-/**
- * Flags the transport does not pass but cannot survive.
- *
- * `--stdin` makes claudish consume fd 0 and wait for EOF, while this manager
- * holds stdin open waiting for a `result` — a circular wait that ends only at
- * the timeout.
- */
-const TRANSPORT_BREAKING_FLAGS: readonly string[] = ["--stdin"];
-
-/**
- * Flags the transport owns. A caller-supplied duplicate is REJECTED, not merged.
- *
- * DERIVED from `buildChannelSpawnArgs` rather than hand-listed, because the
- * hand-listed version drifted the moment it existed: it had `--verbose` but not
- * `-v`, and no `--model` at all, so the two most consequential collisions were
- * both accepted. Anything added to the spawn argv is now reserved automatically.
- *
- * `create_session`'s `claude_flags` are appended verbatim after the base args,
- * and the shared builder that produces them dedupes `--agent` against itself and
- * nothing else — it knows nothing about any one spawn site's base args. Claude
- * Code's precedence for a duplicate is UNMEASURED.
- *
- * Deliberately local rather than in the shared builder: the reserved set is a
- * property of THIS transport (team reserves fewer), and a shared denylist would
- * be wrong for both.
- */
-const RESERVED_CHILD_FLAGS: readonly string[] = (() => {
-  const reserved = new Set<string>(TRANSPORT_BREAKING_FLAGS);
-  for (const token of buildChannelSpawnArgs({ model: "MODEL", claudeSessionId: "SESSION-ID" })) {
-    if (!token.startsWith("-")) continue;
-    reserved.add(token);
-    for (const alias of RESERVED_FLAG_ALIASES[token] ?? []) reserved.add(alias);
-  }
-  return [...reserved];
-})();
-
-/**
- * Reject caller flags that collide with the transport's own.
- *
- * Loud on purpose. Silently appending the duplicate is the failure mode this
- * codebase keeps paying for — the effect shows up three layers away as garbled
- * output or a dropped answer, with nothing pointing back at the flag.
- *
- * The match is EXACT-TOKEN, never a prefix. `--print-argv`, `--model-opus`,
- * `--model-sonnet`, `--agents` (custom agent DEFINITIONS, unrelated to
- * `--agent`) are all real flags that a `startsWith` guard would eat. The
- * neighbouring `buildChildClaudeFlags` shipped both halves of that mistake at
- * once — too narrow on `--agent=value`, too wide on `--agents`.
- */
-export function assertNoReservedFlags(flags: readonly string[] | undefined): void {
-  if (!flags?.length) return;
-  for (const flag of flags) {
-    // Tolerate `--flag=value`; the collision is on the flag, not the spelling.
-    // Long form only — `-v=x` is not a spelling claudish's parser accepts.
-    const name =
-      flag.startsWith("--") && flag.includes("=") ? flag.slice(0, flag.indexOf("=")) : flag;
-    if (RESERVED_CHILD_FLAGS.includes(name)) {
-      throw new Error(
-        `flag "${name}" is set by the channel transport and cannot be overridden. ` +
-          "Channel sessions run the child over bidirectional stream-json; " +
-          `${RESERVED_CHILD_FLAGS.join(", ")} are all part of that wire contract.`
-      );
-    }
-  }
-}
-
-/* `decodeChunk` moved to ../stdio-decode.ts — `team` supervises a claudish child
-   over a pipe too, and was reading its children with `chunk.toString()`. */
-
-/**
- * The last `maxBytes` of a file, as text, plus whether the read began mid-file.
- *
- * A positioned tail read, never a whole-file read: every caller reads a log
- * whose size is not ours to bound — `upstream-errors.jsonl` is written by the
- * CHILD on every failed request, and `events.jsonl` is capped at 4 MB.
- *
- * Returns null for a file that does not exist, which is the ordinary case for
- * all of them. Never throws: this is the error path.
+ * The last `maxBytes` of a file, as text, plus whether the read began mid-file. A
+ * positioned tail read, never a whole-file read. Null for an absent file. Never throws.
  */
 function readTailText(path: string, maxBytes: number): { text: string; truncated: boolean } | null {
   let fd: number | null = null;
@@ -660,7 +498,6 @@ function readTailText(path: string, maxBytes: number): { text: string; truncated
     readSync(fd, buf, 0, length, start);
     return { text: buf.toString("utf-8"), truncated: start > 0 };
   } catch {
-    // Absent, unreadable, or racing a write. Diagnostics are never load-bearing.
     return null;
   } finally {
     if (fd !== null) {
@@ -673,17 +510,11 @@ function readTailText(path: string, maxBytes: number): { text: string; truncated
   }
 }
 
-/**
- * The last `maxBytes` of a JSONL file, split into whole lines.
- *
- * A first partial line is dropped rather than returned mangled. `[]` for a file
- * that does not exist.
- */
+/** The last `maxBytes` of a JSONL file, split into whole lines; a first partial line is dropped. */
 function readTailLines(path: string, maxBytes: number): string[] {
   const tail = readTailText(path, maxBytes);
   if (!tail) return [];
   const lines = tail.text.split("\n");
-  // A read that began mid-file almost certainly began mid-line.
   if (tail.truncated) lines.shift();
   return lines.filter((line) => line.trim().length > 0);
 }
@@ -697,14 +528,7 @@ function fileSize(path: string): number {
   }
 }
 
-/**
- * Parse a small JSON object off disk, or null.
- *
- * Every failure mode of the file is a null: absent, too large to be the file we
- * wrote, unreadable, invalid JSON, or valid JSON that is not an object. A
- * `meta.json` caught half-written by a SIGKILL is the case this exists for, and
- * it must degrade to a partial record rather than take the reader down.
- */
+/** Parse a small JSON object off disk, or null for every failure mode of the file. */
 function readJsonObject(path: string, maxBytes: number): Record<string, unknown> | null {
   try {
     if (fileSize(path) > maxBytes) return null;
@@ -728,86 +552,54 @@ const optionalParent = (id: string | null | undefined): { parentClaudeSessionId?
 const metaNumber = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
-/** A `status` field that must name a real `SessionStatus`, or null. */
-const metaStatus = (v: unknown): SessionStatus | null =>
-  typeof v === "string" && (KNOWN_STATUSES as readonly string[]).includes(v)
-    ? (v as SessionStatus)
+const metaReason = (v: unknown): FailureReason | null =>
+  typeof v === "string" && (FAILURE_REASONS as readonly string[]).includes(v)
+    ? (v as FailureReason)
     : null;
 
-/**
- * How every annotation `recordNote` writes into `output.log` begins.
- *
- * Coupled to the three `recordNote` call sites by convention, not by
- * construction — they format the string themselves. Only `diskProseBytes` reads
- * it, and only to keep our own explanations out of a metric that measures what
- * the CHILD produced; a note that stopped matching costs a slightly generous
- * byte count, nothing else.
- */
-const CLAUDISH_NOTE_PREFIX = "[claudish] ";
+/** The record's `type`, or null — the label of one `events.jsonl` line. */
+function labelForLine(line: string): string | null {
+  try {
+    const v = JSON.parse(line) as { type?: unknown; subtype?: unknown };
+    if (typeof v?.type !== "string") return null;
+    return typeof v.subtype === "string" ? `${v.type}:${v.subtype}` : v.type;
+  } catch {
+    return null;
+  }
+}
 
-/**
- * A tail window with its first, partial line removed.
- *
- * A read that began mid-file began mid-line. The exception is a window with no
- * newline at all: that is one enormous line, and dropping it would return
- * nothing at all rather than the end of the answer.
- */
+/** A tail window with its first, partial line removed (unless it is one enormous line). */
 function dropLeadingFragment(tail: { text: string; truncated: boolean }): string {
   if (!tail.truncated) return tail.text;
   const firstBreak = tail.text.indexOf("\n");
   return firstBreak === -1 ? tail.text : tail.text.slice(firstBreak + 1);
 }
 
-/**
- * Tokens, cost and tool calls straight from a recovered session's `tokens.json`.
- *
- * The proxy's own file, and the fallback for the case `meta.json` cannot cover:
- * a run killed before `writeArtifacts` never got a `meta.json`, but the CHILD
- * wrote this one as it went, so every token it spent is still recorded. Same
- * authority as the live `refreshAccounting` — the proxy, never the child's own
- * `result.total_cost_usd`, which prices every model at Anthropic's rates.
- */
+/** Tokens, cost and tool calls from a recovered session's `tokens.json` (the proxy's own file). */
 function diskAccounting(sessionDir: string): {
-  tokensUsed: number;
-  costUsd: number;
-  toolCallCount: number;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  costUsd: number | null;
+  toolCalls: number;
 } {
   const stats = readTokenStatsAt(join(sessionDir, "tokens.json"));
   return {
-    tokensUsed:
-      (stats?.total_tokens ?? 0) || (stats?.input_tokens ?? 0) + (stats?.output_tokens ?? 0),
-    costUsd: stats?.total_cost ?? 0,
-    toolCallCount: Array.isArray(stats?.tool_calls)
+    tokensIn: stats?.billed_input_tokens ?? null,
+    tokensOut: stats?.output_tokens ?? null,
+    costUsd: typeof stats?.total_cost === "number" ? stats.total_cost : null,
+    toolCalls: Array.isArray(stats?.tool_calls)
       ? stats.tool_calls.reduce((sum, t) => sum + (typeof t.count === "number" ? t.count : 0), 0)
       : 0,
   };
 }
 
-/**
- * Whole seconds between an ISO start and an epoch-ms end, never negative and
- * never `NaN` — an unparseable timestamp in a half-written `meta.json` degrades
- * to 0 rather than putting `null` on the wire.
- */
+/** Whole seconds between an ISO start and an epoch-ms end, never negative and never NaN. */
 function elapsedSecondsBetween(startedAt: string, endedAtMs: number): number {
   const seconds = Math.round((endedAtMs - Date.parse(startedAt)) / 1000);
   return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
 }
 
-/**
- * `outputBytes` for a recovered session: prose only, not the whole log.
- *
- * `outputBytes` exists to answer "did this session actually say anything?", and
- * the file it would naively be measured from also holds the `[claudish] …`
- * notes `finalize` writes to EXPLAIN a failure. Counting those makes a session
- * that answered with nothing report ~200 bytes — the diagnostic falsifying the
- * exact metric it exists to explain, which is a mistake `recordNote` already
- * documents having made once on the live path.
- *
- * So the notes are subtracted, whenever the whole log was read. When it was not
- * (a log past `OUTPUT_TAIL_BYTES`) the file size is returned instead: at that
- * size the notes are rounding error, and "did it answer at all" is already
- * settled. The subtraction is line-accurate to within newline accounting.
- */
+/** `outputBytes` for a recovered session: prose only, without our own `[claudish] …` notes. */
 function diskProseBytes(
   tail: { text: string; truncated: boolean } | null,
   fileBytes: number
@@ -820,12 +612,23 @@ function diskProseBytes(
   return Buffer.byteLength(prose, "utf-8");
 }
 
-/** One turn, in the shape `--input-format stream-json` accepts. Measured, not guessed. */
-export function userFrame(text: string): string {
-  return `${JSON.stringify({
-    type: "user",
-    message: { role: "user", content: [{ type: "text", text }] },
-  })}\n`;
+/** The screen of a session whose pane never spawned (§8 D, amended r2). */
+function blankFinalCapture(): CaptureResult {
+  return {
+    seq: 0,
+    cols: 160,
+    rows: 50,
+    cursor: { x: 0, y: 0 },
+    lines: Array.from({ length: 50 }, () => ""),
+    final: true,
+  };
+}
+
+function unknownSession(sessionId: string): ContractErrorException {
+  return new ContractErrorException(
+    "unknown_session",
+    `no session ${JSON.stringify(sessionId)} is held by this server`
+  );
 }
 
 export class SessionManager {
@@ -833,10 +636,14 @@ export class SessionManager {
   private maxSessions: number;
   private scrollbackCapacity: number;
   private sessionsDir: string;
-  private stallSeconds: number | undefined;
   private terminalRetentionMs: number;
   private onStateChange?: (sessionId: string, event: ChannelEvent) => void;
-  private sigintHandler: (() => void) | null = null;
+  private readonly parentEnv: Record<string, string | undefined>;
+  private readonly paneTimings: SessionManagerOptions["paneTimings"];
+  /** createSession calls past their checks whose entry is not in the map yet. */
+  private starting = 0;
+  /** Pane starts in flight; `shutdownAll` waits for them so no pane starts unsettled. */
+  private readonly pendingStarts = new Set<Promise<void>>();
   private readonly _hostPid: number;
   private readonly _launcherPid: number | undefined;
   /** Team run record id → its `startedAt`, until `finishTeamRun` writes its end. */
@@ -859,8 +666,9 @@ export class SessionManager {
     // `$HOME` before `os.homedir()`, by the rule the plugin monitor shares —
     // see home-dir.ts. Diverging here makes every run invisible to it.
     this.sessionsDir = options?.sessionsDir ?? sessionsDirFrom(process.env);
-    this.stallSeconds = options?.stallSeconds;
     this.onStateChange = options?.onStateChange;
+    this.parentEnv = options?.parentEnv ?? process.env;
+    this.paneTimings = options?.paneTimings;
   }
 
   /** The Claude Code process that launched this MCP server (`spawn.json` `hostPid`). */
@@ -968,7 +776,7 @@ export class SessionManager {
    * one key per line.
    *
    * Deliberately NOT wrapped in a `try`: a run that cannot be recorded must not
-   * run unrecorded, so a failure here fails the tool call before any child
+   * run unrecorded, so a failure here fails the tool call before any pane
    * exists. `hostPid`, `launcherPid` (only when the launcher branch produced
    * `hostPid`) and `mcpPid` — this process, the one that writes `meta.json` —
    * are filled in here; the caller supplies the rest.
@@ -1002,39 +810,82 @@ export class SessionManager {
     writeJsonAtomic(join(dir, "spawn.json"), body);
   }
 
-  /** Create and start a new session. Returns the session ID. */
-  createSession(opts: SessionCreateOptions): string {
-    if (this.activeSessions >= this.maxSessions) {
+  /**
+   * Create a session and start its pane. Resolves with the session id once the pane
+   * exists (no boot wait): the session is STARTING then.
+   *
+   * Order (§4.2, §20.1): the checks; the magmux check; the pane reservation (a refused
+   * session leaves no record); `prompt.md`; `spawn.json` (a failure releases the
+   * reservation and fails the call); then the pane. A pane that fails to start leaves a
+   * FAILED `pane_lost` session with a `meta.json`, and the call throws.
+   */
+  async createSession(opts: SessionCreateOptions): Promise<string> {
+    if (this.activeSessions + this.starting >= this.maxSessions) {
       throw new Error(`Max sessions (${this.maxSessions}) reached`);
     }
-    assertNoReservedFlags(opts.claudishFlags);
-
-    // A caller-supplied id must not be able to adopt or overwrite a live
-    // session: `sessions.set` would replace the entry and orphan the running
-    // child, which then bills on with nothing tracking it.
+    // A caller-supplied id must not be able to adopt or overwrite a live session.
     if (opts.sessionId !== undefined && this.sessions.has(opts.sessionId)) {
       throw new Error(`Session id already in use: ${opts.sessionId}`);
     }
+    const flags = opts.claudishFlags ?? [];
+    const flagCheck = checkChildFlags(flags);
+    if (!flagCheck.ok) throw new Error(`invalid_args: ${flagCheck.message}`);
+    const readAvailable = !flagsRemoveRead(flags);
+    if (opts.prompt) {
+      const refusal = deliveryRefusal(opts.prompt, readAvailable);
+      if (refusal) throw new Error(`invalid_args: ${refusal}`);
+    }
+    const parentEnv = opts.parentEnv ?? this.parentEnv;
+
+    // Counted from here, so concurrent creates cannot overshoot maxSessions while they
+    // await the magmux check; from `sessions.set` on, the entry itself counts.
+    this.starting++;
+    let counted = true;
+    const uncount = () => {
+      if (counted) this.starting--;
+      counted = false;
+    };
+    try {
+      await assertMagmuxAvailable();
+      reservePanes(1, sockRootFor(parentEnv));
+      let entry: SessionEntry;
+      try {
+        entry = this.recordSession(opts);
+      } catch (err) {
+        releasePaneReservations(1);
+        throw err;
+      }
+      this.sessions.set(entry.info.sessionId, entry);
+      uncount();
+      const started = this.startPane(entry, opts, { flags, readAvailable, parentEnv });
+      const tracked = started.catch(() => undefined);
+      this.pendingStarts.add(tracked);
+      try {
+        await started;
+      } finally {
+        this.pendingStarts.delete(tracked);
+      }
+      return entry.info.sessionId;
+    } finally {
+      uncount();
+    }
+  }
+
+  /** `prompt.md`, `spawn.json` and the in-memory entry (STARTING). Throws before any pane. */
+  private recordSession(opts: SessionCreateOptions): SessionEntry {
     const sessionId = opts.sessionId ?? randomUUID().slice(0, 8);
-    // Minted here rather than discovered later: it is the child's transcript
-    // filename under ~/.claude/projects/<slug>/, so knowing it BEFORE spawn
-    // removes the cwd+mtime guessing a post-hoc search would need.
+    // Minted here: it is the child's transcript basename, known BEFORE the pane starts.
     const claudeSessionId = randomUUID();
-    // Normalised once, here, so `spawn.json` and the timer agree on one value
-    // the plugin monitor accepts (an integer in 1..MAX_TIMEOUT).
+    // Normalised once, here, so `spawn.json`, `SessionInfo` and the pane's timer agree
+    // on one value the plugin monitor accepts (an integer in 1..MAX_TIMEOUT).
     const timeout = normaliseTimeoutSeconds(opts.timeoutSeconds);
     const startedAt = new Date().toISOString();
-
     const sessionDir = opts.sessionDir ?? join(this.sessionsDir, sessionId);
     mkdirSync(sessionDir, { recursive: true });
-    if (opts.prompt) {
-      writeFileSync(join(sessionDir, "prompt.md"), opts.prompt, "utf-8");
-    }
+    if (opts.prompt) writeFileSync(join(sessionDir, "prompt.md"), opts.prompt, "utf-8");
 
-    // The start-time record, BEFORE spawn and before every runtime file, so a
-    // session never runs unrecorded and an observer of the sessions directory
-    // can attribute it from its first moment (`hostPid`, and the calling
-    // conversation when the caller proved it). Throws rather than continue.
+    // The start-time record, BEFORE the pane and before every runtime file, so a
+    // session never runs unrecorded. Throws rather than continue.
     this.writeSpawnRecord(sessionDir, {
       kind: "session",
       sessionId,
@@ -1045,576 +896,616 @@ export class SessionManager {
       claudeSessionId,
     });
 
-    // `spawnModel` is the parent-resolved explicit "provider@model" spec when
-    // routing was pinned; absent means spawn the caller's string. `info.model`
-    // below deliberately keeps `opts.model` — the pin is argv-only.
-    const args = buildChannelSpawnArgs({
-      model: opts.spawnModel ?? opts.model,
-      claudeSessionId,
-      claudishFlags: opts.claudishFlags,
-    });
-
-    const tokenFile = opts.tokenFile ?? join(sessionDir, "tokens.json");
-    const eventLogPath = join(sessionDir, "events.jsonl");
-    const upstreamErrorLogPath = join(sessionDir, "upstream-errors.jsonl");
     const cwd = opts.cwd ?? process.cwd();
-
-    // Resolved rather than hardcoded so a test harness can point child spawns at
-    // the tree under test — without it the suite exercises whatever claudish is
-    // INSTALLED. Unset in production, where the result is exactly "claudish".
-    const spawnTarget = resolveClaudishSpawn();
-    const proc = spawn(spawnTarget.command, [...spawnTarget.prefixArgs, ...args], {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: false,
-      // Own process group, so cancel/timeout can signal the whole subtree.
-      // `claudish` is a launcher → Bun CLI → `claude` → tools chain, and
-      // signalling the pid we hold reaches only the launcher; the rest is
-      // orphaned and keeps running (and billing). See process-tree.ts for the
-      // measurement. This is what made `cancel_session`'s documented
-      // "SIGTERM, then SIGKILL after 5 seconds" not actually stop the work.
-      detached: KILL_PROCESS_GROUP,
-      env: {
-        ...process.env,
-        // Point this child's token tracker at a path WE own. claudish IS the
-        // proxy, so it sees every request and response: tokens, cost and tool
-        // counts come from here rather than from parsing anything the child
-        // prints. Without this line the child wrote to tokens-<its-own-port>.json
-        // and nothing linked the two — which is why `tokensUsed` was hardcoded 0.
-        [ENV.CLAUDISH_TOKEN_FILE]: tokenFile,
-        // Un-no-op `captureUpstreamError` (handlers/composed-handler.ts).
-        //
-        // That capture is opt-in and this env var was never set for a channel
-        // child, so it was a guaranteed no-op for every session here. Its own
-        // comment says what that costs: `log()` only persists under `--debug`,
-        // so the upstream body that distinguishes a retryable rate limit from a
-        // hard quota wall is gone the moment it has been classified — and a
-        // failure that already happened cannot be re-run with a flag. On the
-        // two 900-second silent successes this is very likely the file that
-        // would have ended the investigation.
-        //
-        // Set UNCONDITIONALLY, overriding any inherited value: the records carry
-        // no session id, so a shared path interleaves up to 20 concurrent
-        // sessions into one unattributable file — and `get_diagnostics`
-        // publishes this exact path as the session's own.
-        [UPSTREAM_ERROR_LOG_ENV]: upstreamErrorLogPath,
-      },
-    });
-
-    const scrollback = new ScrollbackBuffer(this.scrollbackCapacity);
-    const outputLogStream = createWriteStream(join(sessionDir, "output.log"));
-
-    const entry: SessionEntry = {
+    const parentEnv = opts.parentEnv ?? this.parentEnv;
+    const spawnModel = opts.spawnModel ?? null;
+    const tokenFile = opts.tokenFile ?? join(sessionDir, "tokens.json");
+    return {
       info: {
         sessionId,
         model: opts.model,
-        spawnModel: opts.spawnModel ?? null,
-        status: "starting",
-        pid: proc.pid ?? null,
+        spawnModel,
+        provider: resolveProvider({ model: opts.model, spawnModel, tokenFile: null }),
+        state: "STARTING",
+        shape: opts.prompt ? "one-shot" : "interactive",
+        pane: null,
+        panePid: null,
         startedAt,
-        // Refreshed from the reducer at every read point, like elapsedSeconds.
-        idleSeconds: 0,
         completedAt: null,
         exitCode: null,
         turnsCompleted: 0,
-        tokensUsed: 0,
+        tokensIn: null,
+        tokensOut: null,
+        costUsd: null,
+        toolCalls: 0,
+        lastActivityAt: null,
         elapsedSeconds: 0,
-        costUsd: 0,
-        toolCallCount: 0,
-        terminalReason: null,
+        idleSeconds: null,
+        activity: null,
+        reason: null,
+        detail: null,
+        pendingInputs: opts.prompt ? 1 : 0,
         claudeSessionId,
+        transcriptPath: transcriptPathFor(cwd, claudeSessionId, projectsDir(parentEnv)),
         // Present only when proven, so `meta.json` carries the key exactly when
         // `spawn.json` does, with the same value.
         ...optionalParent(opts.parentClaudeSessionId),
-        // Derived from the spawn cwd now, and re-derived from the child's own
-        // `system:init.cwd` if that turns out to differ. See refreshTranscriptPath.
-        transcriptPath: transcriptPathFor(cwd, claudeSessionId),
+        captureSource: null,
+        turnSource: "transcript",
+        timeoutSeconds: timeout,
       },
-      process: proc,
-      scrollback,
-      // Assigned immediately below; the reducer's callback needs `entry`.
-      reducer: undefined as unknown as StreamJsonReducer,
-      timeoutHandle: null,
-      killHandle: null,
-      drainHandle: null,
-      evictHandle: null,
-      stderr: "",
-      stderrTruncated: false,
-      stdoutDecoder: new StringDecoder("utf8"),
-      stderrDecoder: new StringDecoder("utf8"),
-      outputLogStream,
+      session: null,
+      scrollback: new ScrollbackBuffer(this.scrollbackCapacity),
+      outputLogStream: createWriteStream(join(sessionDir, "output.log")),
       sessionDir,
-      eventLogPath,
-      eventLogBytes: 0,
-      upstreamErrorLogPath,
-      eventRing: [],
       cwd,
-      transcriptKey: `${cwd} ${claudeSessionId}`,
-      timeoutSeconds: timeout,
+      tokenFile,
+      eventLogPath: join(sessionDir, "events.jsonl"),
+      eventLogBytes: 0,
+      upstreamErrorLogPath: join(sessionDir, "upstream-errors.jsonl"),
+      eventRing: [],
       proseBytes: 0,
-      proseTail: "",
-      pendingExit: null,
-      // stdout + stderr. Decremented on each pipe's `close`; finalisation waits
-      // for zero (bounded) rather than trusting `exit`.
-      openPipes: (proc.stdout ? 1 : 0) + (proc.stderr ? 1 : 0),
-      finalized: false,
-      autoCloseOnResult: Boolean(opts.prompt),
-      stdinClosed: false,
+      answeredTurns: new Set(),
       waitLogPath: join(sessionDir, "waits.jsonl"),
       waitLogBytes: 0,
       waitSince: null,
+      ended: false,
+      evictHandle: null,
+      lastEvent: "starting",
+      lastFrameTool: null,
+      lastFrameToolCount: 0,
+      lastToolFrameAt: 0,
+      lastLoggedTool: null,
+      assistantIdsLogged: 0,
+      anomaliesLogged: new Set(),
+      sendRejectedSeen: 0,
+      pendingMeta: {},
+      blockText: null,
     };
+  }
 
-    entry.reducer = new StreamJsonReducer({
-      sessionId,
-      stallSeconds: this.stallSeconds,
-      keepUnrecognizedJson: opts.keepUnrecognizedJson,
-      callback: (sid, data) => {
-        const current = this.sessions.get(sid);
-        if (!current) return;
-
-        // One value, for the record and the wire alike. These used to diverge:
-        // the timeout recorded `"timeout"` and emitted `"failed"`, because
-        // EVENT_TO_TASK_STATUS had no `"timeout"` key and fell through to
-        // `?? "working"` — reporting a dead session as alive. That key exists
-        // now, so `ChannelEventType === SessionStatus` and the override is gone.
-        current.info.status = data.newState;
-        current.info.elapsedSeconds = this.getElapsed(current.info.startedAt);
-
-        // Before the notification, so the wait line is on disk by the time
-        // anyone hears of the transition.
-        this.recordWaitTransition(current, data);
-
-        this.onStateChange?.(sid, {
-          type: data.newState,
-          model: current.info.model,
-          content: data.content ?? "",
-          elapsedSeconds: current.info.elapsedSeconds,
-          createdAt: current.info.startedAt,
-          extraMeta: {
-            ...(data.toolName ? { tool: data.toolName } : {}),
-            ...(data.toolCount ? { tool_count: String(data.toolCount) } : {}),
-            ...(data.stalled ? { stalled: "true" } : {}),
-          },
-        });
+  /** Start the entry's pane. A throw ends the record FAILED `pane_lost` and is rethrown. */
+  private async startPane(
+    entry: SessionEntry,
+    opts: SessionCreateOptions,
+    p: { flags: string[]; readAvailable: boolean; parentEnv: Record<string, string | undefined> }
+  ): Promise<void> {
+    const info = entry.info;
+    const paneOpts: PaneSessionOptions = {
+      kind: "s",
+      label: info.sessionId,
+      callerFlags: p.flags,
+      spawnModel: info.spawnModel ?? info.model,
+      cwd: entry.cwd,
+      sessionUuid: info.claudeSessionId,
+      transcriptPath: info.transcriptPath,
+      slotEnv: {
+        // The child's token tracker writes to a path WE own: tokens, cost and tool
+        // counts come from the proxy, never from anything the child prints.
+        [ENV.CLAUDISH_TOKEN_FILE]: entry.tokenFile,
+        // Per session, unconditionally: the records carry no session id, so a shared
+        // path would interleave concurrent sessions into one unattributable file.
+        [UPSTREAM_ERROR_LOG_ENV]: entry.upstreamErrorLogPath,
       },
-      onResult: (summary) => this.handleResult(sessionId, summary),
-      onSemanticLine: (line, label) => this.recordEvent(entry, line, label),
+      shape: info.shape,
+      ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
+      readAvailable: p.readAvailable,
+      decide: (turn) => this.decide(entry, turn),
+      onBlocked: (b) => this.onBlocked(entry, b),
+      timeoutMs: info.timeoutSeconds * 1000,
+      onChange: (snap) => this.onPaneChange(entry, snap),
+      onTransition: (t) => this.onPaneTransition(entry, t),
+      parentEnv: p.parentEnv,
+      ...(this.paneTimings ? { timings: this.paneTimings } : {}),
+    };
+    try {
+      entry.session = await startPaneSession(paneOpts);
+    } catch (err) {
+      this.failNeverSpawned(entry, err);
+      throw err;
+    }
+    if (!entry.ended) this.applySnapshot(entry, entry.session.snapshot());
+  }
+
+  /** A session whose pane never started: FAILED `pane_lost`, its records ended. */
+  private failNeverSpawned(entry: SessionEntry, err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    const at = new Date().toISOString();
+    const info = entry.info;
+    info.state = "FAILED";
+    info.reason = "pane_lost";
+    info.detail = `the pane never started: ${msg}`;
+    info.completedAt = at;
+    info.pendingInputs = 0;
+    info.elapsedSeconds = elapsedSecondsBetween(info.startedAt, Date.parse(at));
+    this.appendEvent(entry, { type: "state", from: "STARTING", to: "FAILED", at });
+    this.endRecords(entry, null);
+    this.emitFrame(entry, { state: "FAILED", activity: null, toolCalls: 0 });
+  }
+
+  // ─── Pane policy (D8) ──────────────────────────────────────────────────
+
+  /** The verdict of a settled turn: one-shot → classified; interactive → continue (D20). */
+  private decide(entry: SessionEntry, turn: SettledTurn): FinalVerdict | "continue" {
+    this.appendAnswer(entry, turn.index, turn.answer);
+    if (entry.info.shape === "one-shot") {
+      const v = classifyRunOutput({
+        answer: turn.answer,
+        apiError: turn.apiError,
+        stopReason: turn.stopReason,
+        promptRead: turn.delivery,
+        minOutputBytes: 0,
+      });
+      if (v) return { state: v.state, reason: v.reason, detail: v.detail };
+      return turn.stopReason === "max_tokens"
+        ? { state: "COMPLETED", detail: TRUNCATION_NOTE }
+        : { state: "COMPLETED" };
+    }
+    if (turn.apiError) {
+      const v = classifyRunOutput({ answer: turn.answer, apiError: turn.apiError });
+      return { state: "FAILED", reason: "api_error", detail: v?.detail ?? "API error" };
+    }
+    // An interactive turn whose task file was not fully read continues; the caller is
+    // told on the next frame (r2, X-M4).
+    if (turn.delivery.complete === false) {
+      entry.pendingMeta.prompt_not_read = "true";
+      this.appendEvent(entry, {
+        type: "anomaly",
+        key: "prompt_not_read",
+        turn: turn.index,
+        linesRead: turn.delivery.linesRead,
+        linesTotal: turn.delivery.linesTotal,
+        at: new Date().toISOString(),
+      });
+    }
+    return "continue";
+  }
+
+  /** A question or a permission dialog waits for `send_input` (the channel can answer). */
+  private onBlocked(entry: SessionEntry, b: PaneBlock): "wait" {
+    entry.blockText = b.text;
+    return "wait";
+  }
+
+  // ─── Pane callbacks ────────────────────────────────────────────────────
+
+  /** `onTransition`: every wire-state change, synchronously, before any frame. */
+  private onPaneTransition(
+    entry: SessionEntry,
+    t: { from: SlotState; to: SlotState; at: string; snap: PaneSnapshot }
+  ): void {
+    if (entry.ended) return;
+    const { snap } = t;
+    this.applySnapshot(entry, snap);
+    // Before the frame, so the wait line is on disk by the time anyone hears of it.
+    this.recordWaitTransition(entry, t.from, t.to, t.at, snap);
+    this.appendEvent(entry, { type: "state", from: t.from, to: t.to, at: t.at });
+    this.logPaneFacts(entry, snap);
+    if (!isWaiting(t.to)) entry.blockText = null;
+    if (isTerminalState(t.to)) this.onTerminal(entry, snap);
+    this.emitFrame(entry, snap);
+  }
+
+  /** `onChange` (coalesced): activity and accounting changes within a state. */
+  private onPaneChange(entry: SessionEntry, snap: PaneSnapshot): void {
+    if (entry.ended) return;
+    this.applySnapshot(entry, snap);
+    this.logPaneFacts(entry, snap);
+    this.emitFrame(entry, snap);
+  }
+
+  /** The terminal transition: answer, records and eviction, before the reap starts. */
+  private onTerminal(entry: SessionEntry, snap: PaneSnapshot): void {
+    const session = entry.session;
+    // A turn that ended without a settle (cancel, timeout, child exit) still shows the
+    // answer it had produced.
+    const index = snap.turnsCompleted + 1;
+    if (session && !entry.answeredTurns.has(index)) {
+      const partial = session.turnAnswer(index);
+      if (partial) this.appendAnswer(entry, index, partial);
+    }
+    if (snap.state !== "COMPLETED") {
+      const why = snap.reason ?? snap.state.toLowerCase();
+      this.recordNote(
+        entry,
+        `\n[claudish] ${snap.state} ${why}${snap.detail ? `: ${snap.detail}` : ""}\n`
+      );
+    }
+    const screen = session ? (session.capture() as CaptureResult).lines : null;
+    this.endRecords(entry, screen);
+  }
+
+  /** Close `output.log`, write `screen.txt` and `meta.json`, schedule eviction. Once. */
+  private endRecords(entry: SessionEntry, screenLines: string[] | null): void {
+    if (entry.ended) return;
+    entry.ended = true;
+    entry.outputLogStream?.end();
+    entry.outputLogStream = null;
+    if (screenLines) {
+      try {
+        const text = screenLines.join("\n").replace(/\s+$/, "");
+        writeFileSync(join(entry.sessionDir, "screen.txt"), `${redactSecrets(text)}\n`, "utf-8");
+      } catch {
+        /* diagnostics are never load-bearing */
+      }
+    }
+    // A wait can only be open here when the session ended in a step that also left the
+    // waiting state; recordWaitTransition closed it. Belt and braces for the never-
+    // spawned path, which has no transition.
+    if (entry.waitSince !== null) {
+      this.appendWait(entry, {
+        wait: "closed",
+        since: entry.waitSince,
+        at: entry.info.completedAt ?? new Date().toISOString(),
+        to: channelEventFor(entry.info).event,
+      });
+      entry.waitSince = null;
+    }
+    try {
+      writeFileSync(
+        join(entry.sessionDir, "meta.json"),
+        JSON.stringify(toMetaRecord(entry.info, entry.cwd), null, 2),
+        "utf-8"
+      );
+    } catch (err) {
+      process.stderr.write(
+        `[claudish] session ${entry.info.sessionId}: could not write meta.json: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
+    this.scheduleEviction(entry);
+  }
+
+  /** Copy a pane snapshot (and the proxy's token file) into the session's info. */
+  private applySnapshot(entry: SessionEntry, snap: PaneSnapshot): void {
+    const info = entry.info;
+    const acct: Accounting = mergeAccounting(snap, readTokenFileCached(entry.tokenFile), {
+      model: info.model,
+      spawnModel: info.spawnModel,
     });
+    info.state = snap.state;
+    info.shape = snap.shape;
+    info.pane = snap.paneId || null;
+    info.panePid = snap.panePid;
+    info.completedAt = snap.endedAt;
+    info.exitCode = snap.exitCode;
+    info.turnsCompleted = snap.turnsCompleted;
+    info.tokensIn = acct.tokensIn;
+    info.tokensOut = acct.tokensOut;
+    info.costUsd = acct.costUsd;
+    info.toolCalls = acct.toolCalls;
+    info.provider = acct.provider ?? info.provider;
+    info.lastActivityAt = snap.lastActivityAt;
+    info.idleSeconds = snap.idleSeconds;
+    info.activity = snap.activity;
+    info.reason = snap.reason;
+    info.detail = snap.detail;
+    info.pendingInputs = snap.pendingInputs;
+    info.captureSource = snap.captureSource;
+    info.turnSource = snap.turnSource;
+    info.elapsedSeconds = elapsedSecondsBetween(
+      info.startedAt,
+      snap.endedAt ? Date.parse(snap.endedAt) : Date.now()
+    );
+  }
 
-    this.sessions.set(sessionId, entry);
-
-    // stdout → reducer → prose → scrollback + output.log.
-    //
-    // The RAW NDJSON deliberately does not reach either: `get_output` returns
-    // prose (that is a wire-compatibility requirement), and the delta frames
-    // would evict all 2 000 scrollback lines within seconds. The structured
-    // record lives in events.jsonl.
-    //
-    // Decoded through a StringDecoder, NOT `chunk.toString()`: a `data` chunk
-    // ends wherever the pipe's read boundary fell, which can be mid-codepoint.
-    // `toString` turns those dangling bytes into U+FFFD before the reducer's
-    // line reassembly ever sees them, so any CJK character or emoji straddling
-    // a read boundary was permanently mangled in the answer an agent reads.
-    // The decoder holds the partial sequence until the rest of it arrives.
-    proc.stdout?.on("data", (chunk: Buffer | string) => {
-      const prose = entry.reducer.feed(decodeChunk(entry.stdoutDecoder, chunk));
-      if (!prose) return;
-      this.recordProse(entry, prose);
-    });
-
-    proc.stderr?.on("data", (chunk: Buffer | string) => {
-      this.recordStderr(entry, decodeChunk(entry.stderrDecoder, chunk));
-    });
-
-    // `close` on each pipe is what finalisation actually waits for — see
-    // `finalize`. Registered before the exit handler so the ordering is
-    // explicit: whichever fires last does the work.
-    proc.stdout?.on("close", () => this.onPipeClosed(sessionId));
-    proc.stderr?.on("close", () => this.onPipeClosed(sessionId));
-
-    // Without this, the first write to a child that has already exited raises an
-    // unhandled 'error' on the stream and takes the whole MCP server with it —
-    // and stdin now stays open across the session's entire life, so the window
-    // is no longer a single write at startup.
-    proc.stdin?.on("error", () => {
-      entry.stdinClosed = true;
-    });
-
-    // The prompt is the opening frame, not a positional argument. stdin stays
-    // OPEN: that is what makes `send_input` real, and closing it here is what
-    // used to make a promptless session hang until the timeout.
-    this.openFirstTurn(entry, opts.prompt);
-
-    proc.on("exit", (code, signal) => this.handleExit(sessionId, code, signal));
-
-    // A spawn that never happened. This used to settle the reducer and stop —
-    // leaking the output.log fd and both timers, and (because `exit` does not
-    // follow a spawn `error`) writing no meta.json at all, so a session that
-    // failed to start left NO on-disk record. Route it through the same
-    // finalisation as every other ending.
-    proc.on("error", (err) => {
-      const current = this.sessions.get(sessionId);
-      if (!current) return;
-      current.pendingExit = { code: null, signal: null, at: new Date().toISOString() };
-      current.info.completedAt = current.pendingExit.at;
-      current.reducer.settle("failed", { content: `Spawn error: ${err.message}` });
-      this.recordNote(current, `\n[claudish] spawn error: ${err.message}\n`);
-      // Nothing to drain: the pipes of a process that never ran are already done.
-      this.finalize(sessionId);
-    });
-
-    entry.timeoutHandle = setTimeout(() => {
-      // `proc.killed` only means "a signal was SENT", so it is not a liveness
-      // test — a child that ignored SIGTERM reads as killed while still
-      // running. The exit/signal codes are the ones that mean "it is gone".
-      if (proc.exitCode !== null || proc.signalCode !== null) return;
-      signalProcessTree(proc, "SIGTERM");
-      entry.killHandle = setTimeout(() => {
-        try {
-          signalProcessTree(proc, "SIGKILL");
-        } catch {
-          // Process may already be gone
-        }
-      }, KILL_GRACE_MS);
-      entry.killHandle.unref?.();
-
-      entry.info.completedAt = new Date().toISOString();
-      // `"timeout"` in the record AND on the wire. It used to be laundered into
-      // `"failed"` because EVENT_TO_TASK_STATUS could not project it; now it can
-      // (→ `failed`, SEP-1686's nearest member), so a consumer watching only the
-      // channel can finally tell "ran out of time" from "errored".
-      entry.reducer.settle("timeout", { content: `Timeout after ${timeout}s` });
-    }, timeout * 1000);
-    entry.timeoutHandle.unref?.();
-
-    this.setupSigint();
-
-    return sessionId;
+  /** `events.jsonl`: new assistant message ids, tool changes, new anomalies. */
+  private logPaneFacts(entry: SessionEntry, snap: PaneSnapshot): void {
+    const at = new Date().toISOString();
+    const ids = entry.session?.assistantMessageIds() ?? [];
+    for (; entry.assistantIdsLogged < ids.length; entry.assistantIdsLogged++) {
+      this.appendEvent(entry, {
+        type: "assistant",
+        message: { id: ids[entry.assistantIdsLogged] },
+        at,
+      });
+    }
+    const { tool } = channelEventFor(snap);
+    if (tool && tool !== entry.lastLoggedTool)
+      this.appendEvent(entry, { type: "tool", name: tool, at });
+    entry.lastLoggedTool = tool;
+    for (const a of snap.anomalies) {
+      const key = anomalyKey(a);
+      if (entry.anomaliesLogged.has(key)) continue;
+      entry.anomaliesLogged.add(key);
+      this.appendEvent(entry, { type: "anomaly", key, at });
+    }
+    const rejected = anomalyCount(snap.anomalies, "send_not_accepted");
+    if (rejected > entry.sendRejectedSeen) {
+      entry.sendRejectedSeen = rejected;
+      entry.pendingMeta.send_rejected = "true";
+    }
   }
 
   /**
-   * Send a turn to a running session.
-   *
-   * Writes a stream-json `user` frame — the same shape `create_session`'s prompt
-   * takes. Under the old `--stdin` topology this wrote raw text into a drain the
-   * child had already finished reading, so it silently did nothing; this is the
-   * first version that reaches the model.
+   * One channel frame when the derived event changes, plus a coalesced `tool_executing`
+   * repeat (≤ 1 frame/s) when the tool or the tool count changes.
    */
-  sendInput(sessionId: string, text: string): boolean {
+  private emitFrame(
+    entry: SessionEntry,
+    snap: Pick<PaneSnapshot, "state" | "activity" | "toolCalls">
+  ): void {
+    const { event, tool } = channelEventFor(snap);
+    const now = Date.now();
+    const changed = event !== entry.lastEvent;
+    const toolRepeat =
+      !changed &&
+      event === "tool_executing" &&
+      (tool !== entry.lastFrameTool || snap.toolCalls !== entry.lastFrameToolCount) &&
+      now - entry.lastToolFrameAt >= 1000;
+    if (!changed && !toolRepeat) return;
+    entry.lastEvent = event;
+    if (event === "tool_executing") {
+      entry.lastFrameTool = tool;
+      entry.lastFrameToolCount = snap.toolCalls;
+      entry.lastToolFrameAt = now;
+    }
+    const extraMeta: Record<string, string> = {
+      ...(tool ? { tool, tool_count: String(snap.toolCalls) } : {}),
+      ...(snap.activity ? { activity: snap.activity } : {}),
+      ...entry.pendingMeta,
+    };
+    entry.pendingMeta = {};
+    try {
+      this.onStateChange?.(entry.info.sessionId, {
+        type: event,
+        model: entry.info.model,
+        content: this.frameContent(entry, event, tool),
+        elapsedSeconds: entry.info.elapsedSeconds,
+        createdAt: entry.info.startedAt,
+        extraMeta,
+      });
+    } catch {
+      // a notification consumer must never break the session
+    }
+  }
+
+  private frameContent(entry: SessionEntry, event: ChannelEventType, tool: string | null): string {
+    const info = entry.info;
+    switch (event) {
+      case "running":
+        return "The turn is running.";
+      case "tool_executing":
+        return `Using ${tool}.`;
+      case "waiting_for_input":
+        return entry.blockText
+          ? `The model asked a question; send_input declines it and becomes the next prompt.\n${entry.blockText}`
+          : "The turn finished; waiting for send_input.";
+      case "awaiting_permission":
+        return `A permission dialog is open for ${info.activity ?? "a tool"}; send_input declines it and becomes the next prompt.${entry.blockText ? `\n${entry.blockText}` : ""}`;
+      case "completed":
+        return `Session completed (${info.turnsCompleted} turn(s)). Call get_output for the answer.`;
+      case "cancelled":
+        return "Session cancelled.";
+      case "timeout":
+        return `Timeout after ${info.timeoutSeconds}s; the pane was closed.`;
+      case "failed":
+        return `${info.state} ${info.reason ?? ""}${info.detail ? `: ${info.detail}` : ""}`.trim();
+      default:
+        return "";
+    }
+  }
+
+  // ─── Public verbs ──────────────────────────────────────────────────────
+
+  /**
+   * Send a turn (D17): accepted in every non-terminal state and queued until the session
+   * is idle; during a question or a permission dialog the dialog is declined with Esc and
+   * the text becomes the next prompt. Any accepted send converts a one-shot session to
+   * interactive. A disk-recovered or unknown session answers `unknown_session`.
+   */
+  sendInput(sessionId: string, text: string): SendInputResult {
     const entry = this.liveEntry(sessionId);
-    if (!entry) return false;
-    if (TERMINAL_STATUSES.includes(entry.info.status)) return false;
-    if (entry.stdinClosed) return false;
-
-    // The caller is driving now, so stop deciding when the session is finished.
-    entry.autoCloseOnResult = false;
-    return this.writeFrame(entry, text);
+    if (!entry) return { success: false, reason: "unknown_session", state: null };
+    if (!entry.session) return { success: false, reason: "terminal", state: entry.info.state };
+    const r = entry.session.send(text);
+    if (!r.ok) return { success: false, reason: r.reason, state: entry.session.snapshot().state };
+    entry.info.shape = "interactive";
+    this.applySnapshot(entry, entry.session.snapshot());
+    return { success: true, queued: r.queued };
   }
 
-  /**
-   * Get a session's recovered prose.
-   *
-   * Falls back to `<sessionsDir>/<id>/output.log` for a session that has left
-   * the map — evicted, or lost to a restart. See the "Disk fallback" note above.
-   */
-  getOutput(
-    sessionId: string,
-    tailLines?: number
-  ): {
-    sessionId: string;
-    status: SessionStatus;
-    output: string;
-    totalLines: number;
-    turnsCompleted: number;
-    tokensUsed: number;
-    elapsedSeconds: number;
-    /** Seconds since the child last emitted a frame. Null when not live. */
-    idleSeconds: number | null;
-  } {
+  /** Answer prose. Falls back to `<sessionsDir>/<id>/output.log` for a session not in memory. */
+  getOutput(sessionId: string, tailLines?: number): SessionOutput {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.diskOutput(this.requireDiskRecord(sessionId), tailLines);
-
-    entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
-    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
-    this.refreshAccounting(entry);
-
-    const lines = entry.scrollback.getLines(tailLines);
+    this.refresh(entry);
+    const info = entry.info;
     return {
       sessionId,
-      status: entry.info.status,
-      output: lines.join("\n"),
+      state: info.state,
+      output: entry.scrollback.getLines(tailLines).join("\n"),
       totalLines: entry.scrollback.totalLines,
-      turnsCompleted: entry.info.turnsCompleted,
-      tokensUsed: entry.info.tokensUsed,
-      elapsedSeconds: entry.info.elapsedSeconds,
-      idleSeconds: entry.info.idleSeconds,
+      turnsCompleted: info.turnsCompleted,
+      tokensIn: info.tokensIn,
+      tokensOut: info.tokensOut,
+      elapsedSeconds: info.elapsedSeconds,
+      idleSeconds: isTerminalState(info.state) ? null : info.idleSeconds,
     };
   }
 
   /**
-   * Everything a post-mortem needs, from the API rather than the filesystem.
-   *
-   * This method is the whole point of Phase 3. The two 15-minute silent
-   * successes produced exactly one diagnostic between them — an 81-byte
-   * `[claude-code:unrecognized_model]` line in `stderr.log` — and NO MCP tool
-   * returned it. Diagnosing them meant reading `~/.claudish/sessions/<id>/` by
-   * hand, which an agent consuming the MCP interface has no reason to know
-   * exists. A failure that has already happened cannot be re-run with `--debug`,
-   * so everything here is captured unconditionally, during the run.
+   * Everything a post-mortem needs, from the API rather than the filesystem. Falls back
+   * to the session directory for a session not in memory — the restart case is the one
+   * this exists for.
    */
   getDiagnostics(sessionId: string, eventLimit = DEFAULT_EVENT_LIMIT): SessionDiagnostics {
     const limit = Math.max(0, Math.min(Math.trunc(eventLimit) || 0, EVENT_RING_SIZE));
-
     const entry = this.sessions.get(sessionId);
-    // The restart case is the one this method exists for: a crash is followed by
-    // a restart, and the crash is what you wanted explained.
     if (!entry) return this.diskDiagnostics(this.requireDiskRecord(sessionId), limit);
-
-    this.refreshAccounting(entry);
-    entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
-    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
-
+    this.refresh(entry);
+    const info = entry.info;
     return {
       sessionId,
-      status: entry.info.status,
-      // The resolved chain, both halves. `model` is what the caller asked for
-      // and is never rewritten; `spawnModel` is the pinned `provider@model` the
-      // child was actually spawned with. Which provider served the request was
-      // invisible from every tool before this, and it is the first thing a
-      // routing failure needs.
-      model: entry.info.model,
-      spawnModel: entry.info.spawnModel,
-      exitCode: entry.info.exitCode,
-      terminalReason: entry.info.terminalReason,
-      elapsedSeconds: entry.info.elapsedSeconds,
-      // Silence, reported not judged. A long `Bash` emits nothing and is
-      // working; only the caller knows if that is expected for the task it set.
-      idleSeconds: entry.info.idleSeconds,
-      timeoutSeconds: entry.timeoutSeconds,
-      /** Recovered assistant PROSE, not raw stream bytes — see `recordProse`. */
+      state: info.state,
+      event: channelEventFor(info).event,
+      reason: isTerminalState(info.state) && info.state !== "COMPLETED" ? info.reason : null,
+      detail: info.detail,
+      // The resolved chain, both halves: what the caller asked for, and the pinned
+      // `provider@model` the child was actually spawned with.
+      model: info.model,
+      spawnModel: info.spawnModel,
+      provider: info.provider,
+      shape: info.shape,
+      exitCode: info.exitCode,
+      // Silence, reported not judged.
+      idleSeconds: isTerminalState(info.state) ? null : info.idleSeconds,
+      elapsedSeconds: info.elapsedSeconds,
+      timeoutSeconds: info.timeoutSeconds,
       outputBytes: entry.proseBytes,
-      turnsCompleted: entry.info.turnsCompleted,
-      tokensUsed: entry.info.tokensUsed,
-      costUsd: entry.info.costUsd,
-      toolCallCount: entry.info.toolCallCount,
-      ...this.stderrForDiagnostics(entry),
-      anomalies: entry.reducer.anomalies,
+      turnsCompleted: info.turnsCompleted,
+      tokensIn: info.tokensIn,
+      tokensOut: info.tokensOut,
+      costUsd: info.costUsd,
+      toolCalls: info.toolCalls,
+      pendingInputs: info.pendingInputs,
+      pane: info.pane,
+      captureSource: info.captureSource,
+      turnSource: info.turnSource,
+      ...this.paneFacts(entry),
       recentEvents: limit === 0 ? [] : entry.eventRing.slice(-limit),
       eventsTotal: entry.eventRing.length,
       upstreamErrors: readTailLines(entry.upstreamErrorLogPath, UPSTREAM_ERROR_TAIL_BYTES),
-      claudeSessionId: entry.info.claudeSessionId,
-      transcriptPath: entry.info.transcriptPath,
+      claudeSessionId: info.claudeSessionId,
+      transcriptPath: info.transcriptPath,
       sessionDir: entry.sessionDir,
       eventLogPath: entry.eventLogPath,
       upstreamErrorLogPath: entry.upstreamErrorLogPath,
     };
   }
 
-  /**
-   * The stderr an agent should see, and an honest flag saying which rule made it.
-   *
-   * `meaningfulStderr` deliberately DROPS `[claude-code:unrecognized_model]` as
-   * benign boilerplate — normal for any proxied model, and noise on a healthy
-   * run. But that single line was the ENTIRE content of the incident this tool
-   * exists to explain, so filtering a failure would return an empty string for
-   * the one case that motivated the work.
-   *
-   * team already draws this distinction and states it at
-   * `team-orchestrator.ts:447-455`: the filter decides whether to write a
-   * SUCCESS-path log, while a genuine failure persists the RAW stderr, because
-   * there the boilerplate IS the context. Same rule here — filtered only for a
-   * clean `completed`, raw for everything else.
-   *
-   * Redacted either way. `entry.stderr` is the unredacted in-memory buffer (only
-   * the on-disk `stderr.log` was redacted before), so returning it verbatim
-   * would hand provider key material straight into an agent's context.
-   */
-  private stderrForDiagnostics(entry: SessionEntry): {
-    stderrTail: string;
-    stderrFiltered: boolean;
-    stderrTruncated: boolean;
-  } {
-    const filtered = entry.info.status === "completed";
-    const source = filtered ? meaningfulStderr(entry.stderr) : entry.stderr;
+  /** The `get_diagnostics` fields only a pane can answer; their "no pane" values otherwise. */
+  private paneFacts(
+    entry: SessionEntry
+  ): Pick<
+    SessionDiagnostics,
+    | "phase"
+    | "connected"
+    | "screenTail"
+    | "sockPath"
+    | "magmuxStderr"
+    | "preambleBytes"
+    | "readCoverage"
+    | "claudeCodeVersion"
+    | "anomalies"
+  > {
+    const session = entry.session;
+    if (!session)
+      return {
+        phase: null,
+        connected: false,
+        screenTail: "",
+        sockPath: null,
+        magmuxStderr: "",
+        preambleBytes: 0,
+        readCoverage: null,
+        claudeCodeVersion: null,
+        anomalies: entry.info.detail ? [entry.info.detail] : [],
+      };
+    const snap = session.snapshot();
+    const pane = session.diagnostics();
     return {
-      stderrTail: redactSecrets(source).slice(-STDOUT_TAIL_LIMIT),
-      stderrFiltered: filtered,
-      stderrTruncated: entry.stderrTruncated,
+      phase: snap.phase,
+      connected: snap.connected,
+      screenTail: redactSecrets(snap.screenTail),
+      sockPath: session.sockPath,
+      magmuxStderr: redactSecrets(pane.magmuxStderr),
+      preambleBytes: pane.preambleBytes,
+      readCoverage: pane.readCoverage,
+      claudeCodeVersion: snap.claudeCodeVersion,
+      anomalies: snap.anomalies,
     };
   }
 
-  /** Cancel a session. */
-  cancelSession(sessionId: string): boolean {
+  /**
+   * Stop a session (§8 C): synchronous transition, asynchronous reap. Idempotent: a
+   * second call returns the same state with `changed:false`. Throws
+   * `ContractErrorException("unknown_session")` for a session this server does not hold.
+   */
+  cancelSession(sessionId: string): SessionCancelResult {
     const entry = this.liveEntry(sessionId);
-    if (!entry) return false;
-    if (TERMINAL_STATUSES.includes(entry.info.status)) return false;
-
-    if (entry.timeoutHandle) clearTimeout(entry.timeoutHandle);
-    if (entry.killHandle) clearTimeout(entry.killHandle);
-
-    entry.info.completedAt = new Date().toISOString();
-    entry.reducer.settle("cancelled", { content: "Session cancelled" });
-
-    // `killed` is "a signal was sent", not "it is gone" — see the timeout path.
-    if (entry.process.exitCode === null && entry.process.signalCode === null) {
-      signalProcessTree(entry.process, "SIGTERM");
-      entry.killHandle = setTimeout(() => {
-        try {
-          signalProcessTree(entry.process, "SIGKILL");
-        } catch {
-          // Process may already be gone
-        }
-      }, KILL_GRACE_MS);
-      entry.killHandle.unref?.();
-    }
-
-    return true;
+    if (!entry) throw unknownSession(sessionId);
+    if (!entry.session) return { session_id: sessionId, state: entry.info.state, changed: false };
+    const r = entry.session.cancel();
+    return { session_id: sessionId, state: r.state, changed: r.changed };
   }
 
   /**
-   * List sessions. IN-MEMORY ONLY — deliberately, and this one was measured.
-   *
-   * The three id-addressed readers fall back to `<sessionsDir>/<id>/`, so the
-   * obvious symmetry would be for this to enumerate that directory. It does not,
-   * for two reasons found by measuring the real one (9 946 session directories
-   * on this machine; nothing prunes them, so it only grows):
-   *
-   * 1. COST. Session ids carry no ordering, so "the newest N" requires a `stat`
-   *    of every entry: 40 ms warm, 144 ms cold, synchronously, on the same
-   *    thread that pumps every live session's stdout — per call, on a tool an
-   *    agent POLLS.
-   * 2. A BOUNDED scan does not fix that, it makes the answer wrong. `readdir`
-   *    order on APFS is uncorrelated with recency: the last 2 000 of those 9 946
-   *    dirents contained 9 of the 50 genuinely-newest sessions. A capped
-   *    enumeration would present an arbitrary 18 % sample as "the session list",
-   *    and a caller cannot tell a sampled-out session from one that never
-   *    existed. Returning a list that is honestly "what this process is holding"
-   *    beats returning a lottery.
-   *
-   * Nothing is lost that matters: recovery is id-addressed and O(1) — one open
-   * of a known path — and the id is always in the caller's hand, because both
-   * `create_session` and every channel notification carry it. Discovery by
-   * browsing is a directory listing, not a diagnostic.
+   * The session's screen (§8 D): a memory read. `CaptureUnchanged` when `sinceSeq`
+   * equals the current seq. A session whose pane never started answers a blank final
+   * screen. Throws `ContractErrorException("unknown_session")` once it is not retained.
+   */
+  captureSession(
+    sessionId: string,
+    sinceSeq?: number,
+    spans?: boolean
+  ): CaptureResult | CaptureUnchanged {
+    const entry = this.liveEntry(sessionId);
+    if (!entry) throw unknownSession(sessionId);
+    if (!entry.session)
+      return sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : blankFinalCapture();
+    return entry.session.capture(sinceSeq, { spans: spans === true });
+  }
+
+  /**
+   * Sessions this process holds. IN-MEMORY ONLY, deliberately: session ids carry no
+   * ordering, and the sessions directory only grows (≈ 10 000 entries measured), so a
+   * directory scan is either slow or a sample. Recovery is id-addressed and O(1).
    */
   listSessions(includeCompleted = false): SessionInfo[] {
     const sessions: SessionInfo[] = [];
     for (const entry of this.sessions.values()) {
-      const isTerminal = TERMINAL_STATUSES.includes(entry.info.status);
-      if (!includeCompleted && isTerminal) continue;
-      if (!isTerminal) {
-        entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
-        entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
-        this.refreshAccounting(entry);
-      }
+      this.refresh(entry);
+      if (!includeCompleted && isTerminalState(entry.info.state)) continue;
       sessions.push({ ...entry.info });
     }
     return sessions;
   }
 
-  /**
-   * Get a single session's info.
-   *
-   * Falls back to `<sessionsDir>/<id>/meta.json` for a session that has left the
-   * map. See the "Disk fallback" note above.
-   */
+  /** `list_sessions` rows (§8 B). */
+  listSessionRows(includeCompleted = false): SessionRow[] {
+    return this.listSessions(includeCompleted).map(sessionRowOf);
+  }
+
+  /** A single session's info; falls back to `<sessionsDir>/<id>/meta.json`. */
   getSession(sessionId: string): SessionInfo {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.requireDiskRecord(sessionId).info;
-    entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
-    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
-    this.refreshAccounting(entry);
+    this.refresh(entry);
     return { ...entry.info };
   }
 
   /**
-   * Shut down all active sessions.
-   *
-   * Two things here were wrong in a way that orphaned billed work.
-   *
-   * 1. Liveness was `!proc.killed`. `signalProcessTree` sets `killed` the moment
-   *    a signal is SENT, so a child that ignored SIGTERM — the only kind that
-   *    needs escalating — read as already dead and was skipped entirely.
-   * 2. The old code then cleared `entry.killHandle`, which is the pending
-   *    SIGKILL a `cancelSession` five seconds earlier had scheduled. Cancelling
-   *    the only escalation and skipping the kill left the detached process
-   *    GROUP running: it keeps working, keeps billing, and nothing is left
-   *    holding a handle to it.
-   *
-   * `terminateChildTree` is the escalation that replaces both: SIGTERM to the
-   * group, wait, SIGKILL to the group, wait. The pending `killHandle` is only
-   * cleared once that has actually run.
+   * Settle every live session CANCELLED (process shutdown): each closes its open wait
+   * (`to:"cancelled"`) and writes its `meta.json` on that transition, before this
+   * resolves. The pane registry's `reapAllPanes` does the killing; a test that wants the
+   * panes gone awaits its own no-orphan check.
    */
   async shutdownAll(): Promise<void> {
-    const promises: Promise<void>[] = [];
-    for (const [sessionId, entry] of this.sessions) {
-      // Every session's timers, whether or not its process is still alive.
-      // Before this there were ZERO dispose() call sites and every session
-      // leaked its timers for the life of the server.
-      if (entry.timeoutHandle) clearTimeout(entry.timeoutHandle);
-      entry.timeoutHandle = null;
-      if (entry.drainHandle) clearTimeout(entry.drainHandle);
-      entry.drainHandle = null;
-      if (entry.evictHandle) clearTimeout(entry.evictHandle);
-      entry.evictHandle = null;
-
-      const alive = entry.process.exitCode === null && entry.process.signalCode === null;
-      if (alive) {
-        // Record the verdict BEFORE disposing, or the exit that follows finds a
-        // disposed reducer, settles nothing, and writes a meta.json still
-        // claiming the session was running.
-        entry.info.completedAt ??= new Date().toISOString();
-        entry.reducer.settle("cancelled", { content: "Server shut down" });
-        promises.push(
-          terminateChildTree(entry.process, KILL_GRACE_MS).then(() => {
-            if (entry.killHandle) clearTimeout(entry.killHandle);
-            entry.killHandle = null;
-            // Writes meta.json and disposes. Idempotent: the child's own exit
-            // may have raced us here.
-            this.finalize(sessionId);
-          })
-        );
-        continue;
-      }
-
-      if (entry.killHandle) {
-        clearTimeout(entry.killHandle);
-        entry.killHandle = null;
-      }
-      entry.reducer.dispose();
+    // A pane still starting would otherwise be skipped here and run on unsettled.
+    await Promise.all([...this.pendingStarts]);
+    const pending: Promise<unknown>[] = [];
+    for (const entry of this.sessions.values()) {
+      const session = entry.session;
+      if (!session) continue;
+      if (!isTerminalState(session.snapshot().state)) session.cancel();
+      pending.push(session.terminal.catch(() => undefined));
     }
-    await Promise.all(promises);
-    this.cleanupSigint();
+    await Promise.all(pending);
   }
 
   // ─── Internal: the read-only disk fallback ───────────────────────────────
 
   /**
-   * The LIVE entry for a session, or undefined. Never consults the disk.
-   *
-   * This exists to make the read-only boundary a STRUCTURAL fact rather than an
-   * incidental one. `sendInput` and `cancelSession` go through here and the
-   * three readers do not, so "a disk-recovered session can never be driven" is
-   * enforced by which accessor a method calls — visible at the call site, and
-   * impossible to lose by someone later "unifying the lookup".
-   *
-   * A recovered record describes a process that is GONE. `sendInput` on it would
-   * have no stdin to write to, and `cancelSession` no pid to signal — worse than
-   * no-ops, they would have to invent a liveness that is not there. Both keep
-   * returning `false`, which is exactly what they already returned for an
-   * unknown id, so the contract does not change.
+   * The LIVE entry for a session, or undefined. Never consults the disk: a recovered
+   * record describes a process that is GONE, so `sendInput`, `cancelSession` and
+   * `captureSession` go through here and the three readers do not.
    */
   private liveEntry(sessionId: string): SessionEntry | undefined {
     return this.sessions.get(sessionId);
   }
 
-  /**
-   * A disk record for `sessionId`, or the same `not found` the callers used to
-   * throw unconditionally.
-   *
-   * The error is unchanged on purpose: a genuinely unknown id must still look
-   * unknown, and only an id whose directory exists gets an answer.
-   */
+  /** A disk record for `sessionId`, or the same `not found` an unknown id always got. */
   private requireDiskRecord(sessionId: string): DiskRecord {
     const record = this.loadDiskRecord(sessionId);
     if (!record) throw new Error(`Session ${sessionId} not found`);
@@ -1622,14 +1513,8 @@ export class SessionManager {
   }
 
   /**
-   * `<sessionsDir>/<id>`, or null when the id is not something we will join onto
-   * a path.
-   *
-   * Two independent gates, because this is the one place untrusted input reaches
-   * the filesystem. `SESSION_ID_RE` is the allowlist; the containment check
-   * afterwards is the same belt-and-braces `validateSessionPath`
-   * (team-orchestrator.ts) applies — it does not trust the regex to be the last
-   * word on what `resolve` will do with a string.
+   * `<sessionsDir>/<id>`, or null when the id is not something we will join onto a
+   * path: the allowlist, then a containment check.
    */
   private diskSessionDir(sessionId: string): string | null {
     if (!SESSION_ID_RE.test(sessionId)) return null;
@@ -1641,12 +1526,8 @@ export class SessionManager {
   }
 
   /**
-   * Rebuild a `SessionInfo` from `<sessionsDir>/<id>/`.
-   *
-   * Every field is validated, never coerced: a `meta.json` truncated mid-write
-   * by the SIGKILL that ended the session is the case this is FOR, so a missing
-   * or wrong-typed field falls back to a documented default and the record comes
-   * back `partial`. Nothing here throws.
+   * Rebuild a `SessionInfo` from `<sessionsDir>/<id>/`, reading both `meta.json`
+   * generations. Every field is validated, never coerced; nothing here throws.
    */
   private loadDiskRecord(sessionId: string): DiskRecord | null {
     const sessionDir = this.diskSessionDir(sessionId);
@@ -1658,15 +1539,12 @@ export class SessionManager {
       if (!stat.isDirectory()) return null;
       dirMtimeMs = stat.mtimeMs;
     } catch {
-      // No directory: this id was never a session here. Same answer as before.
       return null;
     }
 
-    // A team run's record lives in the same directory (`team-<8 hex>/`, written
-    // for the plugin monitor) and its id passes SESSION_ID_RE, but it is not a
-    // session: read as one it would come back a confident `model: "unknown"`
-    // record. `spawn.json` exists from creation, so it is checked first; an
-    // id-addressed tool then answers a team id exactly like an unknown id.
+    // A team run's record lives in the same directory (`team-<8 hex>/`) and its id
+    // passes SESSION_ID_RE, but it is not a session; an id-addressed tool answers a
+    // team id exactly like an unknown id.
     const spawnRecord = readJsonObject(join(sessionDir, "spawn.json"), META_READ_LIMIT);
     if (spawnRecord?.kind === "team") return null;
     const meta = readJsonObject(join(sessionDir, "meta.json"), META_READ_LIMIT);
@@ -1674,176 +1552,117 @@ export class SessionManager {
     const partial = meta === null;
     const measured = diskAccounting(sessionDir);
 
-    const startedAt = metaString(meta?.startedAt) ?? new Date(dirMtimeMs).toISOString();
-    const completedAt = metaString(meta?.completedAt);
-
+    const transcriptPath = this.diskTranscriptPath(
+      meta,
+      metaString(meta?.claudeSessionId) ?? metaString(spawnRecord?.claudeSessionId) ?? ""
+    );
     return {
       sessionDir,
       partial,
-      info: {
-        // The id we were ASKED for, never the one in the file: the directory
-        // name is what addresses this record, and a mismatched `sessionId` in a
-        // hand-edited meta.json must not be able to rename someone else's run.
-        sessionId,
-        model: metaString(meta?.model) ?? "unknown",
-        spawnModel: metaString(meta?.spawnModel),
-        status: metaStatus(meta?.status) ?? "failed",
-        // A record restored from disk has no live reducer, so there is no
-        // "since the last frame" to report. Null says unknown, not zero —
-        // zero would read as "spoke just now" for a session that ended days ago.
-        idleSeconds: null,
-        // NEVER the pid from the file. It belonged to a process that is gone,
-        // and pids are reused — a stale one names some unrelated live process,
-        // which is a genuinely dangerous thing to hand back from a tool whose
-        // neighbours send signals. Null says what is true: no process.
-        pid: null,
-        startedAt,
-        completedAt,
-        exitCode: metaNumber(meta?.exitCode),
-        turnsCompleted: metaNumber(meta?.turnsCompleted) ?? 0,
-        tokensUsed: metaNumber(meta?.tokensUsed) || measured.tokensUsed,
-        // Wall time as it ENDED, not as it looks now. A live session reports
-        // `now - startedAt`; doing that here would make a run that finished last
-        // week report a week of elapsed time. `completedAt` when the session
-        // reached a verdict, the directory's own mtime — the last write anything
-        // made into it — when it did not.
-        elapsedSeconds: elapsedSecondsBetween(
-          startedAt,
-          completedAt ? Date.parse(completedAt) : dirMtimeMs
-        ),
-        costUsd: metaNumber(meta?.costUsd) || measured.costUsd,
-        toolCallCount: metaNumber(meta?.toolCallCount) || measured.toolCallCount,
-        // A directory with no readable `meta.json` means the process died before
-        // `writeArtifacts`, so there is no verdict to report — `failed` above
-        // plus this marker say "ended without a record", not "ended in error".
-        terminalReason: metaString(meta?.terminalReason) ?? (partial ? NO_TERMINAL_RECORD : null),
-        claudeSessionId: metaString(meta?.claudeSessionId),
-        // Absent unless the file carries a non-empty value: `""` is "not proven".
-        ...optionalParent(metaString(meta?.parentClaudeSessionId)),
-        transcriptPath: metaString(meta?.transcriptPath),
-      },
+      info: diskInfo({ sessionId, meta, spawnRecord, measured, dirMtimeMs, transcriptPath }),
     };
   }
 
   /**
-   * `getOutput` for a recovered session, from `output.log`.
-   *
-   * Replayed through a real `ScrollbackBuffer` at the manager's own capacity
-   * rather than split by hand, so the disk path cannot drift from the live one
-   * on ANSI stripping, line splitting or `tailLines` — they are the same code.
-   *
-   * `totalLines` is the count within the recovered window, which is a LOWER
-   * BOUND when the log exceeded `OUTPUT_TAIL_BYTES`. The live counter is "lines
-   * ever written" and recovering that would mean reading a whole unbounded file
-   * to produce one integer.
-   *
-   * One difference from the live path is not recoverable and is not a bug here.
-   * `ScrollbackBuffer` is CHUNK-BOUNDARY SENSITIVE: `append("x\n")` records one
-   * line, while `append("x")` then `append("\n")` records two — the second an
-   * empty one. Live, the boundaries are wherever the reducer happened to emit
-   * prose, so a one-line answer typically ends up with a phantom trailing empty
-   * line and `output` gains a trailing "\n". Replaying the file in one append
-   * does not reproduce that, because the boundaries were pipe read positions and
-   * nothing records them. Measured: live `"turn1:DELTA\n"` / totalLines 2,
-   * recovered `"turn1:DELTA"` / totalLines 1 — same answer, and the recovered
-   * one is the cleaner of the two.
+   * The recorded transcript path, re-derived from `claudeSessionId` + the recorded cwd
+   * when the stored one does not exist (F1 window, §3.3). A 10.4.0 record carries no
+   * cwd, so its stored path is returned as is.
    */
-  private diskOutput(
-    record: DiskRecord,
-    tailLines?: number
-  ): {
-    sessionId: string;
-    status: SessionStatus;
-    output: string;
-    totalLines: number;
-    turnsCompleted: number;
-    tokensUsed: number;
-    elapsedSeconds: number;
-    idleSeconds: number | null;
-  } {
+  private diskTranscriptPath(meta: Record<string, unknown> | null, uuid: string): string {
+    const stored = metaString(meta?.transcriptPath) ?? "";
+    const cwd = metaString(meta?.cwd);
+    if (stored && existsSync(stored)) return stored;
+    if (cwd && uuid) return transcriptPathFor(cwd, uuid, projectsDir(this.parentEnv));
+    return stored;
+  }
+
+  /** `getOutput` for a recovered session, replayed through a real `ScrollbackBuffer`. */
+  private diskOutput(record: DiskRecord, tailLines?: number): SessionOutput {
     const tail = readTailText(join(record.sessionDir, "output.log"), OUTPUT_TAIL_BYTES);
     const buffer = new ScrollbackBuffer(this.scrollbackCapacity);
     if (tail?.text) buffer.append(dropLeadingFragment(tail));
-
-    const lines = buffer.getLines(tailLines);
+    const info = record.info;
     return {
-      sessionId: record.info.sessionId,
-      status: record.info.status,
-      output: lines.join("\n"),
+      sessionId: info.sessionId,
+      state: info.state,
+      output: buffer.getLines(tailLines).join("\n"),
       totalLines: buffer.totalLines,
-      turnsCompleted: record.info.turnsCompleted,
-      tokensUsed: record.info.tokensUsed,
-      elapsedSeconds: record.info.elapsedSeconds,
-      // Read from disk: the process is gone, so "since the last frame" is not a
-      // question this record can answer. Null, never 0.
+      turnsCompleted: info.turnsCompleted,
+      tokensIn: info.tokensIn,
+      tokensOut: info.tokensOut,
+      elapsedSeconds: info.elapsedSeconds,
       idleSeconds: null,
     };
   }
 
   /**
-   * `getDiagnostics` for a recovered session, from the four logs in its
-   * directory.
-   *
-   * Three fields cannot be recovered and say so rather than guessing:
-   *
-   *   `timeoutSeconds` — 0. The caller's timeout is not part of `SessionInfo`
-   *     and so was never written; `elapsedSeconds` still stands on its own.
-   *   `anomalies`      — the reducer's tally of illegal transitions and
-   *     unparseable lines was running state and died with the process, so it
-   *     cannot be recovered. The one anomaly that CAN be observed from disk is
-   *     reported: a record with no readable `meta.json`. Reporting nothing at
-   *     all would let a reconstructed record pass for a complete one, which is
-   *     the more expensive mistake. `events.jsonl` still holds every frame the
-   *     reducer was judging.
-   *   `at` on each event — "". See `DiagnosticEvent`.
+   * `getDiagnostics` for a recovered session. What died with the process says so rather
+   * than guessing: no phase, no live connection, `at:""` on an event line without one,
+   * and the one anomaly that CAN be observed from disk — a record with no `meta.json`.
    */
   private diskDiagnostics(record: DiskRecord, limit: number): SessionDiagnostics {
     const { sessionDir, info } = record;
     const eventLogPath = join(sessionDir, "events.jsonl");
     const upstreamErrorLogPath = join(sessionDir, "upstream-errors.jsonl");
     const outputLogPath = join(sessionDir, "output.log");
-
     const events = readTailLines(eventLogPath, EVENT_TAIL_BYTES);
     const outputTail = readTailText(outputLogPath, OUTPUT_TAIL_BYTES);
-
+    const screen = readTailText(join(sessionDir, "screen.txt"), SCREEN_READ_BYTES);
     return {
       sessionId: info.sessionId,
-      status: info.status,
+      state: info.state,
+      event: channelEventFor(info).event,
+      reason: info.reason,
+      detail: info.detail,
       model: info.model,
       spawnModel: info.spawnModel,
+      provider: info.provider,
+      shape: info.shape,
+      phase: null,
       exitCode: info.exitCode,
-      terminalReason: info.terminalReason,
-      elapsedSeconds: info.elapsedSeconds,
-      // Recovered from disk — no live process to be idle. Null, never 0.
       idleSeconds: null,
-      timeoutSeconds: 0,
+      elapsedSeconds: info.elapsedSeconds,
+      timeoutSeconds: info.timeoutSeconds,
       outputBytes: diskProseBytes(outputTail, fileSize(outputLogPath)),
       turnsCompleted: info.turnsCompleted,
-      tokensUsed: info.tokensUsed,
+      tokensIn: info.tokensIn,
+      tokensOut: info.tokensOut,
       costUsd: info.costUsd,
-      toolCallCount: info.toolCallCount,
-      ...this.diskStderrForDiagnostics(record),
+      toolCalls: info.toolCalls,
+      pendingInputs: 0,
+      connected: false,
+      screenTail: redactSecrets(screen?.text ?? "").trimEnd(),
+      pane: info.pane,
+      sockPath: null,
+      magmuxStderr: "",
+      captureSource: info.captureSource,
+      turnSource: info.turnSource,
+      preambleBytes: 0,
+      readCoverage: null,
+      claudeCodeVersion: null,
       anomalies: record.partial
         ? [
             `no readable meta.json in ${sessionDir} — this record was reconstructed from ` +
-              "the remaining artifacts, so status, exit code and timings are unknown. The " +
+              "the remaining artifacts, so state, exit code and timings are unknown. The " +
               "session's process died before it could write a verdict.",
           ]
         : [],
-      // Bounded twice over: `limit` caps at EVENT_RING_SIZE the same as the live
-      // path, and each preview at EVENT_PREVIEW_CHARS. A 4 MB event log cannot
-      // become a 4 MB response, and did not even become a 4 MB read.
       recentEvents:
         limit === 0
           ? []
           : events.slice(-limit).map((line) => {
-              // Redacted on the READ path too. `events.jsonl` was redacted when
-              // written, but a log from an older build was not, and this is
-              // about to enter an agent's context either way.
+              // Redacted on the READ path too: a log from an older build was not.
               const redacted = redactSecrets(line);
               const truncated = redacted.length > EVENT_PREVIEW_CHARS;
+              let at = "";
+              try {
+                const parsed = JSON.parse(line) as { at?: unknown };
+                if (typeof parsed?.at === "string") at = parsed.at;
+              } catch {
+                /* not ours */
+              }
               return {
-                at: "",
+                at,
                 label: labelForLine(line),
                 preview: truncated ? redacted.slice(0, EVENT_PREVIEW_CHARS) : redacted,
                 truncated,
@@ -1851,62 +1670,36 @@ export class SessionManager {
             }),
       eventsTotal: events.length,
       upstreamErrors: readTailLines(upstreamErrorLogPath, UPSTREAM_ERROR_TAIL_BYTES),
-      claudeSessionId: info.claudeSessionId,
-      transcriptPath: info.transcriptPath,
+      claudeSessionId: info.claudeSessionId || null,
+      transcriptPath: info.transcriptPath || null,
       sessionDir,
       eventLogPath,
       upstreamErrorLogPath,
     };
   }
 
-  /**
-   * The disk twin of `stderrForDiagnostics`, and the same rule: filtered only
-   * for a clean `completed`, raw for everything else, redacted either way.
-   *
-   * `STDERR_READ_BYTES` exceeds what `recordStderr` will ever write, so a
-   * `stderr.log` this manager produced is read WHOLE — head included. The head
-   * is the half that matters: `[claude-code:unrecognized_model]` is a startup
-   * line, and it was the entire content of the incident these diagnostics exist
-   * to explain.
-   */
-  private diskStderrForDiagnostics(record: DiskRecord): {
-    stderrTail: string;
-    stderrFiltered: boolean;
-    stderrTruncated: boolean;
-  } {
-    const tail = readTailText(join(record.sessionDir, "stderr.log"), STDERR_READ_BYTES);
-    const raw = tail?.text ?? "";
-    const filtered = record.info.status === "completed";
-    const source = filtered ? meaningfulStderr(raw) : raw;
-    return {
-      stderrTail: redactSecrets(source).slice(-STDOUT_TAIL_LIMIT),
-      stderrFiltered: filtered,
-      // Either end can have lost bytes: the in-memory buffer may have dropped
-      // its middle before the file was written (the marker says so), or our own
-      // window may not have reached the start of the file.
-      stderrTruncated: (tail?.truncated ?? false) || raw.includes(STDERR_TRUNCATION_MARKER),
-    };
-  }
-
   // ─── Internal ────────────────────────────────────────────────────────
 
-  /** Append recovered prose to the scrollback, the tail, and output.log. */
-  private recordProse(entry: SessionEntry, prose: string): void {
-    entry.proseBytes += Buffer.byteLength(prose, "utf-8");
-    entry.proseTail = (entry.proseTail + prose).slice(-STDOUT_TAIL_LIMIT);
-    this.appendToOutput(entry, prose);
+  /** Refresh a live entry's info from its pane (a memory read plus a cached token file). */
+  private refresh(entry: SessionEntry): void {
+    if (entry.session && !entry.ended) this.applySnapshot(entry, entry.session.snapshot());
+    else if (!isTerminalState(entry.info.state))
+      entry.info.elapsedSeconds = elapsedSecondsBetween(entry.info.startedAt, Date.now());
+  }
+
+  /** A settled turn's answer → scrollback, `output.log` and `outputBytes`. Once per turn. */
+  private appendAnswer(entry: SessionEntry, index: number, answer: string): void {
+    if (entry.answeredTurns.has(index)) return;
+    entry.answeredTurns.add(index);
+    if (!answer) return;
+    const text = answer.endsWith("\n") ? answer : `${answer}\n`;
+    entry.proseBytes += Buffer.byteLength(answer, "utf-8");
+    this.appendToOutput(entry, text);
   }
 
   /**
-   * Append a `[claudish] …` annotation of OUR OWN to the output.
-   *
-   * Deliberately not `recordProse`: `proseBytes` and `proseTail` are the measured
-   * facts about what the CHILD produced. `classifyRunOutput` reads them to decide
-   * whether a run had anything to show for itself, and `get_diagnostics` reports
-   * `outputBytes` so a reader can see that a "completed" session answered with
-   * nothing. Counting our own explanation of a failure as model output makes a
-   * 0-byte session report 312 bytes — the diagnostic quietly falsifying the
-   * metric it exists to explain. Measured; this is not hypothetical.
+   * Append a `[claudish] …` annotation of OUR OWN to the output. Not counted in
+   * `outputBytes`: that metric is what the CHILD produced.
    */
   private recordNote(entry: SessionEntry, note: string): void {
     this.appendToOutput(entry, note);
@@ -1917,60 +1710,23 @@ export class SessionManager {
     entry.outputLogStream?.write(text);
   }
 
-  private writeFrame(entry: SessionEntry, text: string): boolean {
-    if (entry.stdinClosed) return false;
-    try {
-      entry.process.stdin?.write(userFrame(text));
-      // A turn is now outstanding, so the PREVIOUS turn's `result` stops
-      // counting as evidence that this session finished. See beginTurn().
-      entry.reducer.beginTurn();
-      return true;
-    } catch {
-      entry.stdinClosed = true;
-      return false;
-    }
-  }
-
-  /**
-   * One semantic frame: into the in-memory ring AND onto `events.jsonl`.
-   *
-   * Redacted ONCE, here, and the same redacted string is used for both — these
-   * frames carry `user` turns and `tool_result` blocks (`.env` contents, command
-   * output, provider errors that echo key material), and both destinations are
-   * handed to an agent by `get_diagnostics`. Same rule and same reason as team's
-   * error log (team-orchestrator.ts:1070).
-   */
-  private recordEvent(entry: SessionEntry, line: string, label: string | null): void {
+  /** One event record: into the in-memory ring AND onto `events.jsonl`, redacted once. */
+  private appendEvent(entry: SessionEntry, record: Record<string, unknown>): void {
+    const line = JSON.stringify(record);
     const redacted = redactSecrets(line);
     const truncated = redacted.length > EVENT_PREVIEW_CHARS;
-
-    // The ring is filled even after `events.jsonl` has hit its cap: the last
-    // frames before a session died are exactly the ones a post-mortem wants,
-    // and a capped FILE must not also blind the API.
     entry.eventRing.push({
-      at: new Date().toISOString(),
-      label,
+      at: typeof record.at === "string" ? record.at : new Date().toISOString(),
+      label: typeof record.type === "string" ? record.type : null,
       preview: truncated ? redacted.slice(0, EVENT_PREVIEW_CHARS) : redacted,
       truncated,
     });
     if (entry.eventRing.length > EVENT_RING_SIZE) entry.eventRing.shift();
-
-    this.appendEventLog(entry, redacted);
-  }
-
-  /**
-   * Append one already-redacted frame to `events.jsonl`.
-   *
-   * Bounded because a long interactive session or one large tool result would
-   * otherwise grow the file without limit.
-   */
-  private appendEventLog(entry: SessionEntry, redactedLine: string): void {
     if (entry.eventLogBytes >= EVENT_LOG_LIMIT) return;
-    const payload = `${redactedLine}\n`;
+    const payload = `${redacted}\n`;
     entry.eventLogBytes += Buffer.byteLength(payload, "utf-8");
     const capped = entry.eventLogBytes >= EVENT_LOG_LIMIT;
     try {
-      // Best-effort: a full disk must not take the session down with it.
       appendFileSync(
         entry.eventLogPath,
         capped
@@ -1983,130 +1739,47 @@ export class SessionManager {
   }
 
   /**
-   * Accumulate the child's stderr, keeping the HEAD and the TAIL.
-   *
-   * Unbounded before: `entry.stderr += chunk` for the whole life of a session
-   * that was itself never evicted. Keeping both ends rather than a tail is
-   * deliberate — startup diagnostics (`[claude-code:unrecognized_model]`) are
-   * at the head and the failure that killed a long run is at the end.
-   */
-  private recordStderr(entry: SessionEntry, chunk: string): void {
-    if (!chunk) return;
-    const combined = entry.stderr + chunk;
-    if (combined.length <= STDERR_SIDE_LIMIT * 2) {
-      entry.stderr = combined;
-      return;
-    }
-    entry.stderrTruncated = true;
-    entry.stderr =
-      combined.slice(0, STDERR_SIDE_LIMIT) +
-      `\n${STDERR_TRUNCATION_MARKER} ${STDERR_SIDE_LIMIT} bytes per end …\n` +
-      combined.slice(-STDERR_SIDE_LIMIT);
-  }
-
-  /**
-   * A turn ended; answer the reducer's question "does stdin stay open?".
-   *
-   * Called BEFORE the reducer changes state, so the answer decides it:
-   *
-   * - one-shot (`autoCloseOnResult`): close stdin now and answer
-   *   `"stdin-closed"`. The session moves to `finishing` and the child exits 0
-   *   on its own (measured — see §3.2 of the channel design).
-   * - stdin already closed (the child broke the pipe, or exit raced us):
-   *   `"stdin-closed"` too — nothing can send it input any more.
-   * - otherwise `"stdin-open"`: an interactive session now waits for
-   *   `send_input` in `waiting_for_input`.
-   *
-   * The bookkeeping runs first in every case, so a wait opened by this turn end
-   * logs the turn count that includes it.
-   */
-  private handleResult(sessionId: string, summary: ResultSummary): TurnEnd {
-    const entry = this.sessions.get(sessionId);
-    // No entry means no stdin held open for anyone, so nothing can wait.
-    if (!entry) return "stdin-closed";
-
-    entry.info.turnsCompleted = summary.numTurns || entry.info.turnsCompleted;
-    entry.info.terminalReason = summary.terminalReason;
-
-    if (entry.stdinClosed) return "stdin-closed";
-    if (!entry.autoCloseOnResult) return "stdin-open";
-    entry.stdinClosed = true;
-    try {
-      entry.process.stdin?.end();
-    } catch {
-      /* the child may already be gone */
-    }
-    return "stdin-closed";
-  }
-
-  /**
-   * Hand the child its opening turn, or record that the session waits for one.
-   *
-   * A promptless session waits for its first `send_input` from the moment it
-   * exists, and says so (`starting → waiting_for_input`). Called after
-   * `sessions.set`, so the reducer callback finds the entry and the wait is
-   * logged.
-   */
-  private openFirstTurn(entry: SessionEntry, prompt: string | undefined): void {
-    if (prompt) {
-      this.writeFrame(entry, prompt);
-      return;
-    }
-    entry.reducer.awaitInput();
-  }
-
-  /**
-   * The wait log's two hooks: one `open` line on every transition INTO
-   * `waiting_for_input`, one `closed` line on every transition OUT of it,
-   * including into a terminal state.
-   *
-   * Runs in the same callback that changes the state, so a wait cannot happen
-   * unrecorded while this process lives. `settle()` goes through `transition()`,
-   * so cancel and timeout close an open wait, and `finalize` settles before
-   * `writeArtifacts` — no `meta.json` ever sits beside an unclosed wait written
-   * by a live process. Self-transitions never reach the callback unless
-   * `repeat`, and no `repeat` caller targets `waiting_for_input`.
+   * The wait log's two hooks (§20.1): one `open` line when the wire state enters
+   * AWAITING_INPUT or AWAITING_PERMISSION, one `closed` line when it leaves both. Driven
+   * by the pane's `onTransition`, which reports the NET change of one step, so a turn
+   * that settles with a send queued (RUNNING → IDLE → ADMITTING) opens no wait. The
+   * phase table has no wait-to-wait edge, so `to` is never `waiting_for_input`.
    */
   private recordWaitTransition(
     entry: SessionEntry,
-    data: { previousState: SessionStatus; newState: SessionStatus; timestamp: string }
+    from: SlotState,
+    to: SlotState,
+    at: string,
+    snap: PaneSnapshot
   ): void {
-    const wasWaiting = data.previousState === "waiting_for_input";
-    const isWaiting = data.newState === "waiting_for_input";
-    if (!wasWaiting && isWaiting) {
-      entry.waitSince = data.timestamp;
-      this.appendWait(entry, {
-        wait: "open",
-        since: data.timestamp,
-        turns: entry.info.turnsCompleted,
-      });
+    const was = isWaiting(from);
+    const is = isWaiting(to);
+    if (!was && is) {
+      entry.waitSince = at;
+      this.appendWait(entry, { wait: "open", since: at, turns: snap.turnsCompleted });
       return;
     }
-    if (wasWaiting && !isWaiting) {
+    if (was && !is) {
       this.appendWait(entry, {
         wait: "closed",
-        since: entry.waitSince ?? data.timestamp,
-        at: data.timestamp,
-        to: data.newState,
+        since: entry.waitSince ?? at,
+        at,
+        to: channelEventFor(snap).event,
       });
       entry.waitSince = null;
     }
   }
 
   /**
-   * Append one line to `waits.jsonl`.
-   *
-   * Durable on purpose: a wait can open and close between two reads of any
-   * observer, and an append-only line survives that where a marker file that
-   * exists only during the wait would not. One `appendFileSync` of under 200
-   * bytes per line. A write failure is reported on stderr and changes nothing
-   * else — only that line is lost. The log stops at WAIT_LOG_LIMIT.
+   * Append one line to `waits.jsonl`. Durable on purpose: a wait can open and close
+   * between two reads of any observer. One `appendFileSync` of under 200 bytes per line;
+   * a write failure loses only that line. The log stops at WAIT_LOG_LIMIT.
    */
   private appendWait(
     entry: SessionEntry,
     line:
       | { wait: "open"; since: string; turns: number }
-      | { wait: "closed"; since: string; at: string; to: SessionStatus }
+      | { wait: "closed"; since: string; at: string; to: ChannelEventType }
   ): void {
     if (entry.waitLogBytes >= WAIT_LOG_LIMIT) return;
     const payload = `${JSON.stringify(line)}\n`;
@@ -2121,170 +1794,7 @@ export class SessionManager {
     }
   }
 
-  /**
-   * The child is gone. Record the FACTS; do not reach a verdict here.
-   *
-   * `exit` fires BEFORE the stdout pipe closes, and the terminal `result` frame
-   * is by construction the LAST line the child writes — so it is precisely the
-   * frame still in flight at this moment. Classifying here read `sawResult ===
-   * false` on a session that had answered perfectly well and filed it as
-   * "exited 0 without ever emitting a terminal `result` frame": a complete,
-   * billed run reported as a failure, nondeterministically.
-   *
-   * `team` already paid for this exact lesson and encoded the fix — see the
-   * comment above its own exit handler (team-orchestrator.ts ~1050): "exit
-   * fires BEFORE the stdout pipe closes, and an answer flushed during shutdown
-   * is still in flight at this moment — resolving here marked the run finished
-   * with the byte count from KILL time … which is how a complete answer was
-   * reported as 0 B". Same discipline here: `close` on the stdio pipes drives
-   * finalisation, bounded by the same `DRAIN_TIMEOUT_MS` so a pipe some
-   * descendant still holds degrades into a slightly-late verdict, not a hang.
-   */
-  private handleExit(sessionId: string, code: number | null, signal: string | null): void {
-    const entry = this.sessions.get(sessionId);
-    if (!entry || entry.pendingExit) return;
-
-    entry.pendingExit = { code, signal, at: new Date().toISOString() };
-    entry.stdinClosed = true;
-
-    if (entry.timeoutHandle) clearTimeout(entry.timeoutHandle);
-    entry.timeoutHandle = null;
-    if (entry.killHandle) clearTimeout(entry.killHandle);
-    entry.killHandle = null;
-
-    if (entry.openPipes <= 0) {
-      this.finalize(sessionId);
-      return;
-    }
-    entry.drainHandle = setTimeout(() => this.finalize(sessionId), DRAIN_TIMEOUT_MS);
-    entry.drainHandle.unref?.();
-  }
-
-  /** One stdio pipe reached EOF. Finalise once both have, and the child is gone. */
-  private onPipeClosed(sessionId: string): void {
-    const entry = this.sessions.get(sessionId);
-    if (!entry) return;
-    entry.openPipes--;
-    if (entry.openPipes > 0) return;
-    // A pipe can close before `exit` fires; the verdict still needs the code.
-    if (!entry.pendingExit) return;
-    this.finalize(sessionId);
-  }
-
-  /**
-   * Reach the verdict, write the artifacts, release the session's resources.
-   *
-   * Runs exactly once, from whichever of the three paths gets here first: both
-   * pipes drained after `exit`, the bounded drain timer, or a spawn `error`.
-   */
-  private finalize(sessionId: string): void {
-    const entry = this.sessions.get(sessionId);
-    if (!entry || entry.finalized) return;
-    entry.finalized = true;
-
-    this.clearTimers(entry);
-
-    const { code, signal, at } = entry.pendingExit ?? {
-      code: null,
-      signal: null,
-      at: new Date().toISOString(),
-    };
-    entry.info.exitCode = code;
-    entry.info.completedAt = at;
-    entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
-    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
-    entry.stdinClosed = true;
-
-    this.flushDecoders(entry);
-
-    // A timeout or a cancel has ALREADY decided how this session ended. The exit
-    // that follows is a consequence of that decision, not a new verdict — and
-    // letting it be one is exactly what turned a killed session into a
-    // "completed" one. Report the exit; do not re-judge on it.
-    const priorVerdict = TERMINAL_STATUSES.includes(entry.info.status) ? entry.info.status : null;
-    const verdict = this.classifyExit(entry, code, signal);
-
-    if (priorVerdict) {
-      this.recordNote(
-        entry,
-        `\n[claudish] child exited (code=${code ?? "null"}, signal=${signal ?? "none"}) ` +
-          `after the session was already recorded as ${priorVerdict}.\n`
-      );
-    } else if (verdict.state === "failed") {
-      // The explanation goes into the SCROLLBACK, which is the field
-      // `get_output` returns. A failed session whose only diagnostic sat in a
-      // file nobody could reach is the exact shape of the bug this replaces.
-      this.recordNote(entry, `\n[claudish] ${verdict.content}\n`);
-    }
-    // Absorbing terminal states mean this cannot upgrade a timeout or a cancel
-    // that already ran — which is precisely what manufactured the false success.
-    entry.reducer.settle(verdict.state, { content: verdict.content });
-
-    this.writeArtifacts(entry);
-
-    entry.reducer.dispose();
-    this.scheduleEviction(entry);
-    this.cleanupSigint();
-  }
-
-  /** Stop every timer a session owns. Safe to call more than once. */
-  private clearTimers(entry: SessionEntry): void {
-    if (entry.drainHandle) clearTimeout(entry.drainHandle);
-    entry.drainHandle = null;
-    if (entry.timeoutHandle) clearTimeout(entry.timeoutHandle);
-    entry.timeoutHandle = null;
-    if (entry.killHandle) clearTimeout(entry.killHandle);
-    entry.killHandle = null;
-  }
-
-  /**
-   * Flush whatever the stateful decoders and the reducer are still holding.
-   *
-   * A chunk that ended mid-codepoint leaves those bytes inside the decoder, and
-   * a child killed mid-frame leaves an incomplete line inside the reducer. Both
-   * are real answer text.
-   */
-  private flushDecoders(entry: SessionEntry): void {
-    const decodedTail = entry.stdoutDecoder.end();
-    if (decodedTail) {
-      const prose = entry.reducer.feed(decodedTail);
-      if (prose) this.recordProse(entry, prose);
-    }
-    this.recordStderr(entry, entry.stderrDecoder.end());
-
-    const tail = entry.reducer.end();
-    if (tail) this.recordProse(entry, tail);
-  }
-
-  /** Close output.log and write the two post-mortem files. */
-  private writeArtifacts(entry: SessionEntry): void {
-    entry.outputLogStream?.end();
-    entry.outputLogStream = null;
-
-    if (entry.stderr) {
-      // Redacted before the bytes hit disk: provider stderr routinely echoes
-      // key material and `get_diagnostics` hands this file's tail to an agent.
-      writeFileSync(join(entry.sessionDir, "stderr.log"), redactSecrets(entry.stderr), "utf-8");
-    }
-
-    this.refreshAccounting(entry);
-    entry.info.claudeSessionId = entry.reducer.claudeSessionId ?? entry.info.claudeSessionId;
-    writeFileSync(
-      join(entry.sessionDir, "meta.json"),
-      JSON.stringify(entry.info, null, 2),
-      "utf-8"
-    );
-  }
-
-  /**
-   * Drop a terminal session from the map after its retention window.
-   *
-   * `maxSessions` only counts ACTIVE sessions, so nothing used to remove a
-   * finished one — there was not a single `sessions.delete` in this file, and a
-   * long-lived MCP server grew a scrollback, a reducer and a stderr buffer per
-   * session forever. The on-disk artifacts under `sessionDir` are unaffected;
-   * this only bounds memory.
-   */
+  /** Drop a terminal session from the map after its retention window (memory only). */
   private scheduleEviction(entry: SessionEntry): void {
     if (entry.evictHandle) return;
     entry.evictHandle = setTimeout(() => {
@@ -2297,11 +1807,8 @@ export class SessionManager {
 
   /** Enforce the hard ceiling, oldest terminal session first. */
   private evictOldestTerminal(): void {
-    const terminal = [...this.sessions.values()].filter(
-      (candidate) => candidate.finalized && TERMINAL_STATUSES.includes(candidate.info.status)
-    );
+    const terminal = [...this.sessions.values()].filter((c) => c.ended);
     if (terminal.length <= MAX_TERMINAL_SESSIONS) return;
-
     terminal.sort((a, b) => (a.info.completedAt ?? "").localeCompare(b.info.completedAt ?? ""));
     for (const victim of terminal.slice(0, terminal.length - MAX_TERMINAL_SESSIONS)) {
       if (victim.evictHandle) clearTimeout(victim.evictHandle);
@@ -2309,144 +1816,104 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Decide how the session ended. Exit 0 has to EARN `completed`.
-   *
-   * Three independent witnesses, in order of authority:
-   *   1. the exit code / signal
-   *   2. the child's own `result` frame — `is_error`, `api_error_status`,
-   *      `terminal_reason`; and its ABSENCE, which means the child died before
-   *      finishing a turn no matter what it exited with
-   *   3. `classifyRunOutput`, the same "exit 0 with nothing to show for it"
-   *      test `team` applies (empty output, API error text, background-task
-   *      ceiling)
-   */
-  private classifyExit(
-    entry: SessionEntry,
-    code: number | null,
-    signal: string | null
-  ): { state: "completed" | "failed"; content: string } {
-    const stderrNote = meaningfulStderr(entry.stderr) || entry.stderr.trim();
-    const withStderr = (text: string): string =>
-      stderrNote ? `${text} stderr: ${stderrNote.slice(-500)}` : text;
-
-    if (signal) {
-      return { state: "failed", content: withStderr(`Child terminated by ${signal}.`) };
-    }
-    if (code !== 0) {
-      return {
-        state: "failed",
-        content: withStderr(`Child exited with code ${code ?? "unknown"}.`),
-      };
-    }
-
-    if (!entry.reducer.sawResult) {
-      return {
-        state: "failed",
-        content: withStderr(
-          "Child exited 0 without ever emitting a terminal `result` frame — it died " +
-            "before finishing a turn. This is the signature of a startup failure " +
-            "(unroutable model, missing credential) rather than a completed run."
-        ),
-      };
-    }
-    if (entry.reducer.resultIsError || entry.reducer.apiErrorStatus !== null) {
-      const status = entry.reducer.apiErrorStatus;
-      return {
-        state: "failed",
-        content: withStderr(
-          `Child reported an error turn (terminal_reason=${entry.reducer.terminalReason ?? "unknown"}` +
-            `${status !== null ? `, api_error_status=${status}` : ""}).`
-        ),
-      };
-    }
-
-    const reason = classifyStreamJsonProse(entry.proseBytes, entry.proseTail, entry.stderr);
-    if (reason) {
-      return { state: "failed", content: withStderr(`${reason.reason}: ${reason.detail}`) };
-    }
-
-    return { state: "completed", content: "" };
-  }
-
-  /**
-   * Refresh tokens / cost / tool counts from the proxy's own token file.
-   *
-   * The proxy is the authority here, not the child. `result.total_cost_usd`
-   * prices every model at Anthropic's rates, so for a proxied model it is
-   * fiction and for a subscription provider it invents spend that will never be
-   * billed. The child's `result.usage` is a sound fallback for TOKENS only —
-   * used when the token file does not exist yet, or when the run died before its
-   * first response.
-   */
-  private refreshAccounting(entry: SessionEntry): void {
-    const stats = readTokenStatsAt(join(entry.sessionDir, "tokens.json"));
-
-    const fileTokens =
-      (stats?.total_tokens ?? 0) || (stats?.input_tokens ?? 0) + (stats?.output_tokens ?? 0);
-    entry.info.tokensUsed = fileTokens || entry.reducer.tokens;
-    entry.info.costUsd = stats?.total_cost ?? 0;
-
-    const fileToolCalls = Array.isArray(stats?.tool_calls)
-      ? stats.tool_calls.reduce((sum, t) => sum + (typeof t.count === "number" ? t.count : 0), 0)
-      : 0;
-    entry.info.toolCallCount = fileToolCalls || entry.reducer.toolUseCount;
-
-    if (entry.reducer.turns > 0) entry.info.turnsCompleted = entry.reducer.turns;
-    entry.info.terminalReason = entry.reducer.terminalReason ?? entry.info.terminalReason;
-    entry.info.claudeSessionId = entry.reducer.claudeSessionId ?? entry.info.claudeSessionId;
-    this.refreshTranscriptPath(entry);
-  }
-
-  /**
-   * Re-derive the transcript path when the child reports a cwd we did not spawn
-   * with, and only then.
-   *
-   * `system:init.cwd` is the child's own answer and outranks ours: claudish may
-   * resolve, normalise or be handed a `work_dir` that is not the directory
-   * `claude` ends up in, and the transcript lands under the one `claude` used.
-   * Guarded on a CHANGE because `transcriptPathFor` does a `realpathSync`, and
-   * this runs on every `list_sessions` / `get_output` / `get_session` call.
-   */
-  private refreshTranscriptPath(entry: SessionEntry): void {
-    const uuid = entry.info.claudeSessionId;
-    if (!uuid) {
-      entry.info.transcriptPath = null;
-      return;
-    }
-    const cwd = entry.reducer.cwd ?? entry.cwd;
-    const key = `${cwd}\0${uuid}`;
-    if (key === entry.transcriptKey) return;
-    entry.transcriptKey = key;
-    entry.info.transcriptPath = transcriptPathFor(cwd, uuid);
-  }
-
   private get activeSessions(): number {
     let count = 0;
-    for (const entry of this.sessions.values()) {
-      if (!TERMINAL_STATUSES.includes(entry.info.status)) count++;
-    }
+    for (const entry of this.sessions.values()) if (!entry.ended) count++;
     return count;
   }
+}
 
-  private getElapsed(startedAt: string): number {
-    return Math.round((Date.now() - new Date(startedAt).getTime()) / 1000);
-  }
+function isWaiting(s: SlotState): boolean {
+  return s === "AWAITING_INPUT" || s === "AWAITING_PERMISSION";
+}
 
-  private setupSigint(): void {
-    if (this.sigintHandler) return;
-    this.sigintHandler = () => {
-      this.shutdownAll().catch(() => {});
-      process.exit(1);
-    };
-    process.on("SIGINT", this.sigintHandler);
+/**
+ * The state and reason of a disk record, from either `meta.json` generation: the pane
+ * generation's `state` (a closed-set value) and `terminalReason` (a `FailureReason`), or
+ * 10.4.0's `status`. A non-terminal or unknown value — and a missing record — reads
+ * FAILED with reason null (§8 B).
+ */
+function diskState(meta: Record<string, unknown> | null): {
+  state: SlotState;
+  reason: FailureReason | null;
+} {
+  const raw = meta?.state;
+  if (typeof raw === "string" && (SLOT_STATES as readonly string[]).includes(raw)) {
+    const state = raw as SlotState;
+    if (!isTerminalState(state)) return { state: "FAILED", reason: null };
+    return { state, reason: state === "COMPLETED" ? null : metaReason(meta?.terminalReason) };
   }
+  // 10.4.0: its terminalReason was Claude Code's text, not a FailureReason, so only the
+  // two reasons a state implies are known.
+  const status = typeof meta?.status === "string" ? STATE_OF_10_4_STATUS[meta.status] : undefined;
+  const state = status ?? "FAILED";
+  if (state === "CANCELLED") return { state, reason: "cancelled" };
+  if (state === "TIMEOUT") return { state, reason: "timeout" };
+  return { state, reason: null };
+}
 
-  private cleanupSigint(): void {
-    if (this.activeSessions > 0) return;
-    if (this.sigintHandler) {
-      process.off("SIGINT", this.sigintHandler);
-      this.sigintHandler = null;
-    }
-  }
+/**
+ * A `SessionInfo` from a session directory's files. Every field is validated, never
+ * coerced: a `meta.json` truncated mid-write by a SIGKILL is the case this is FOR.
+ */
+function diskInfo(d: {
+  sessionId: string;
+  meta: Record<string, unknown> | null;
+  spawnRecord: Record<string, unknown> | null;
+  measured: ReturnType<typeof diskAccounting>;
+  dirMtimeMs: number;
+  transcriptPath: string;
+}): SessionInfo {
+  const { meta, spawnRecord, measured } = d;
+  const startedAt =
+    metaString(meta?.startedAt) ??
+    metaString(spawnRecord?.startedAt) ??
+    new Date(d.dirMtimeMs).toISOString();
+  const completedAt = metaString(meta?.completedAt);
+  const { state, reason } = diskState(meta);
+  return {
+    // The id we were ASKED for, never the one in the file.
+    sessionId: d.sessionId,
+    model: metaString(meta?.model) ?? metaString(spawnRecord?.model) ?? "unknown",
+    spawnModel: metaString(meta?.spawnModel),
+    provider: metaString(meta?.provider),
+    state,
+    shape: meta?.shape === "interactive" ? "interactive" : "one-shot",
+    pane: metaString(meta?.pane),
+    // NEVER the pid from the file: it belonged to a process that is gone, and pids are
+    // reused.
+    panePid: null,
+    startedAt,
+    completedAt,
+    exitCode: metaNumber(meta?.exitCode),
+    turnsCompleted: metaNumber(meta?.turnsCompleted) ?? 0,
+    tokensIn: metaNumber(meta?.tokensIn) ?? measured.tokensIn,
+    tokensOut: metaNumber(meta?.tokensOut) ?? measured.tokensOut,
+    costUsd: metaNumber(meta?.costUsd) ?? measured.costUsd,
+    toolCalls: metaNumber(meta?.toolCallCount) ?? measured.toolCalls,
+    lastActivityAt: metaString(meta?.lastActivityAt),
+    // Wall time as it ENDED, not as it looks now.
+    elapsedSeconds: elapsedSecondsBetween(
+      startedAt,
+      completedAt ? Date.parse(completedAt) : d.dirMtimeMs
+    ),
+    // Read from disk: no live process to be idle. Null, never 0.
+    idleSeconds: null,
+    activity: null,
+    reason,
+    detail: meta === null ? NO_TERMINAL_RECORD : metaString(meta.detail),
+    pendingInputs: 0,
+    claudeSessionId:
+      metaString(meta?.claudeSessionId) ?? metaString(spawnRecord?.claudeSessionId) ?? "",
+    ...optionalParent(metaString(meta?.parentClaudeSessionId)),
+    transcriptPath: d.transcriptPath,
+    captureSource: diskCaptureSource(meta?.captureSource),
+    turnSource: meta?.turnSource === "screen" ? "screen" : "transcript",
+    timeoutSeconds:
+      metaNumber(meta?.timeoutSeconds) ?? metaNumber(spawnRecord?.timeoutSeconds) ?? 0,
+  };
+}
+
+function diskCaptureSource(v: unknown): SessionInfo["captureSource"] {
+  return v === "transcript" || v === "screen" || v === "none" ? v : null;
 }

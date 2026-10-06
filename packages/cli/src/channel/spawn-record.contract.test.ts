@@ -4,6 +4,10 @@
  * conversation, end to end through a real claudish MCP server over stdio
  * (design §3.3 "spawn.json", §3.4, §3.5; §8.1 tests 10b, 11-14b, 19; amendments 1 and 2).
  *
+ * Every session is an interactive pane: the pane fake (marker mode) via CLAUDISH_BIN, in a
+ * real headless magmux under the test's own CLAUDISH_PANE_ROOT (ported per architecture
+ * §20.2; every assertion kept). After each test no pane process or file may remain.
+ *
  * The test process stands in for Claude Code: it spawns `bun src/index.ts --mcp`, so the
  * correct `hostPid` is `process.pid` and the host's live session record lives at
  * `<CLAUDE_CONFIG_DIR>/sessions/<process.pid>.json`. The tool-use id travels in
@@ -20,8 +24,11 @@ import { join } from "node:path";
 import { newSessionManager } from "../test-helpers/contract-adapters.js";
 import {
   FAKE_MODEL,
+  MAGMUX_AVAILABLE,
   McpServer,
+  NO_MAGMUX_MESSAGE,
   createSession,
+  paneOrphans,
   serverEnv,
   sessionTool,
 } from "../test-helpers/contract-mcp.js";
@@ -43,13 +50,17 @@ const T_TEST = 30_000;
 let layout: TempLayout;
 const servers: McpServer[] = [];
 
+if (!MAGMUX_AVAILABLE) console.warn(NO_MAGMUX_MESSAGE);
+
 beforeEach(() => {
   layout = makeTempLayout("spawn");
 });
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
+  const report = await paneOrphans(layout);
   layout.cleanup();
-});
+  expect(report).toEqual({ processes: [], files: [] });
+}, 40_000);
 
 async function startServer(extraEnv: Record<string, string | undefined> = {}): Promise<McpServer> {
   const server = await McpServer.start({ env: serverEnv(layout, extraEnv), cwd: layout.cwd });
@@ -107,7 +118,7 @@ async function createdId(
   return sessionId as string;
 }
 
-describe("REQ-7 spawn.json: the start-time record of a session", () => {
+describe.skipIf(!MAGMUX_AVAILABLE)("REQ-7 spawn.json: the start-time record of a session", () => {
   test(
     "exists when create_session returns, satisfies every schema rule, and names this host and this server",
     async () => {
@@ -182,50 +193,55 @@ describe("REQ-7 spawn.json: the start-time record of a session", () => {
   );
 });
 
-describe("REQ-8 timeoutSeconds is the effective timeout, an integer in 1..3600 (amendment 2)", () => {
-  test(
-    "a request above 3600 seconds is recorded as 3600",
-    async () => {
-      const server = await startServer();
+describe.skipIf(!MAGMUX_AVAILABLE)(
+  "REQ-8 timeoutSeconds is the effective timeout, an integer in 1..3600 (amendment 2)",
+  () => {
+    test(
+      "a request above 3600 seconds is recorded as 3600",
+      async () => {
+        const server = await startServer();
 
-      const id = await createdId(server, { prompt: "hello", timeout_seconds: 99_999 });
+        const id = await createdId(server, { prompt: "hello", timeout_seconds: 99_999 });
 
-      expect(spawnRecord(layout.sessionsDir, id).timeoutSeconds).toBe(3600);
-    },
-    T_TEST
-  );
+        expect(spawnRecord(layout.sessionsDir, id).timeoutSeconds).toBe(3600);
+      },
+      T_TEST
+    );
 
-  test.each([
-    [0, 1],
-    [-5, 1],
-    [1.4, 1],
-    [2.6, 3],
-    [3600.4, 3600],
-  ])(
-    "timeout_seconds %p is either refused by the tool or recorded as %p",
-    async (requested, effective) => {
-      const server = await startServer();
+    test.each([
+      [0, 1],
+      [-5, 1],
+      [1.4, 1],
+      [2.6, 3],
+      [3600.4, 3600],
+    ])(
+      "timeout_seconds %p is either refused by the tool or recorded as %p",
+      async (requested, effective) => {
+        const server = await startServer();
 
-      const { sessionId, result } = await createSession(server, {
-        prompt: "hello",
-        timeout_seconds: requested,
-      });
+        const { sessionId, result } = await createSession(server, {
+          prompt: "hello",
+          timeout_seconds: requested,
+        });
 
-      if (result.isError) {
-        expect(
-          entries(layout.sessionsDir).filter((d) =>
-            existsSync(join(layout.sessionsDir, d, "spawn.json"))
-          )
-        ).toEqual([]);
-      } else {
-        expect(spawnRecord(layout.sessionsDir, sessionId as string).timeoutSeconds).toBe(effective);
-      }
-    },
-    T_TEST
-  );
-});
+        if (result.isError) {
+          expect(
+            entries(layout.sessionsDir).filter((d) =>
+              existsSync(join(layout.sessionsDir, d, "spawn.json"))
+            )
+          ).toEqual([]);
+        } else {
+          expect(spawnRecord(layout.sessionsDir, sessionId as string).timeoutSeconds).toBe(
+            effective
+          );
+        }
+      },
+      T_TEST
+    );
+  }
+);
 
-describe("REQ-1 the parent conversation is recorded when proven", () => {
+describe.skipIf(!MAGMUX_AVAILABLE)("REQ-1 the parent conversation is recorded when proven", () => {
   test(
     "env candidate: the tool-use id in E's transcript → spawn.json and meta.json carry parentClaudeSessionId E",
     async () => {
@@ -307,86 +323,94 @@ describe("REQ-1 the parent conversation is recorded when proven", () => {
   );
 });
 
-describe("REQ-2 the parent field is absent, never wrong, when nothing is proven", () => {
-  async function expectNoParentAnywhere(
-    server: McpServer,
-    tuid: string | undefined
-  ): Promise<void> {
-    const id = await createdId(server, { prompt: "hello" }, tuid);
-    const spawn = spawnRecord(layout.sessionsDir, id);
-    const meta = await terminalMeta(layout.sessionsDir, id);
-    expect("parentClaudeSessionId" in spawn).toBe(false);
-    expect("parentClaudeSessionId" in meta).toBe(false);
+describe.skipIf(!MAGMUX_AVAILABLE)(
+  "REQ-2 the parent field is absent, never wrong, when nothing is proven",
+  () => {
+    async function expectNoParentAnywhere(
+      server: McpServer,
+      tuid: string | undefined
+    ): Promise<void> {
+      const id = await createdId(server, { prompt: "hello" }, tuid);
+      const spawn = spawnRecord(layout.sessionsDir, id);
+      const meta = await terminalMeta(layout.sessionsDir, id);
+      expect("parentClaudeSessionId" in spawn).toBe(false);
+      expect("parentClaudeSessionId" in meta).toBe(false);
+    }
+
+    test(
+      "the tool-use id is in no transcript",
+      async () => {
+        const E = claudeId("env");
+        writeTranscript(layout.configDir, "P", E, fillerLine(1));
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+
+        await expectNoParentAnywhere(server, toolUseId());
+      },
+      T_TEST
+    );
+
+    test(
+      "the call carries no _meta tool-use id",
+      async () => {
+        const E = claudeId("env");
+        writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(toolUseId()));
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+
+        await expectNoParentAnywhere(server, undefined);
+      },
+      T_TEST
+    );
+
+    test(
+      "the _meta tool-use id is malformed, even though the transcript holds it",
+      async () => {
+        const E = claudeId("env");
+        const bad = "bad id!";
+        writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(bad));
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+
+        await expectNoParentAnywhere(server, bad);
+      },
+      T_TEST
+    );
+
+    test(
+      "the env id is ignored under CLAUDE_CODE_CHILD_SESSION, even though its transcript holds the id",
+      async () => {
+        const E = claudeId("env");
+        const T = toolUseId();
+        writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(T));
+        const server = await startServer({
+          CLAUDE_CODE_SESSION_ID: E,
+          CLAUDE_CODE_CHILD_SESSION: "1",
+        });
+
+        await expectNoParentAnywhere(server, T);
+      },
+      T_TEST
+    );
+
+    test(
+      "a host record whose pid is not hostPid is ignored, even though its transcript holds the id",
+      async () => {
+        const R = claudeId("host");
+        const T = toolUseId();
+        const cwd = join(layout.root, "proj");
+        writeHostRecord(layout.configDir, { pid: process.pid + 1, sessionId: R, cwd });
+        writeTranscript(
+          layout.configDir,
+          sanitisedProjectName(cwd),
+          R,
+          transcriptLineWithToolUse(T)
+        );
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: undefined });
+
+        await expectNoParentAnywhere(server, T);
+      },
+      T_TEST
+    );
   }
-
-  test(
-    "the tool-use id is in no transcript",
-    async () => {
-      const E = claudeId("env");
-      writeTranscript(layout.configDir, "P", E, fillerLine(1));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
-
-      await expectNoParentAnywhere(server, toolUseId());
-    },
-    T_TEST
-  );
-
-  test(
-    "the call carries no _meta tool-use id",
-    async () => {
-      const E = claudeId("env");
-      writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(toolUseId()));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
-
-      await expectNoParentAnywhere(server, undefined);
-    },
-    T_TEST
-  );
-
-  test(
-    "the _meta tool-use id is malformed, even though the transcript holds it",
-    async () => {
-      const E = claudeId("env");
-      const bad = "bad id!";
-      writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(bad));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
-
-      await expectNoParentAnywhere(server, bad);
-    },
-    T_TEST
-  );
-
-  test(
-    "the env id is ignored under CLAUDE_CODE_CHILD_SESSION, even though its transcript holds the id",
-    async () => {
-      const E = claudeId("env");
-      const T = toolUseId();
-      writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(T));
-      const server = await startServer({
-        CLAUDE_CODE_SESSION_ID: E,
-        CLAUDE_CODE_CHILD_SESSION: "1",
-      });
-
-      await expectNoParentAnywhere(server, T);
-    },
-    T_TEST
-  );
-
-  test(
-    "a host record whose pid is not hostPid is ignored, even though its transcript holds the id",
-    async () => {
-      const R = claudeId("host");
-      const T = toolUseId();
-      const cwd = join(layout.root, "proj");
-      writeHostRecord(layout.configDir, { pid: process.pid + 1, sessionId: R, cwd });
-      writeTranscript(layout.configDir, sanitisedProjectName(cwd), R, transcriptLineWithToolUse(T));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: undefined });
-
-      await expectNoParentAnywhere(server, T);
-    },
-    T_TEST
-  );
-});
+);
 
 describe("REQ-15 a session read back from disk carries parentClaudeSessionId only when meta.json has a real one", () => {
   function writeDiskSession(id: string, parent: string | undefined): void {
