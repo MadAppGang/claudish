@@ -190,8 +190,10 @@ export function magmuxPaneCapability(
   // `O_EXCL` lock in `magmux-ui.ts` is what keeps the grid to ONE banner rather
   // than N.
   //
-  // Checked BEFORE the TTY gate on purpose, to match `claude-runner.ts`'s
-  // ambient branch, which asks only for `interactive && MAGMUX_SOCK`.
+  // Checked BEFORE the TTY gate on purpose: the ambient recovery UI has always
+  // installed against an ambient socket without asking for a TTY.
+  // `claude-runner.ts`'s ambient branch reads this result (`kind === "ambient"`)
+  // rather than restating the rule.
   const ambient = parentEnv.MAGMUX_SOCK;
   if (ambient) return { kind: "ambient", sock: ambient };
   if (!input.stdoutIsTty) return { kind: "none", reason: "no-tty" };

@@ -349,7 +349,9 @@ describe("claude-runner asks that gate, and not the UI switch alone", () => {
   });
 
   test("the ambient-magmux branch consults it too", () => {
-    const branch = code.split("\n").find((l) => l.includes("MAGMUX_SOCK") && l.includes("else if"));
+    const branch = code
+      .split("\n")
+      .find((l) => l.includes("else if") && /ambient|MAGMUX_SOCK/.test(l));
     expect(branch, "could not find the ambient branch in claude-runner.ts").toBeTruthy();
     expect(branch).toContain("recoverySurfaceAllowed()");
     expect(
@@ -357,5 +359,18 @@ describe("claude-runner asks that gate, and not the UI switch alone", () => {
         ? "the ambient branch asks resolveRecoveryUi() — --no-recovery still installs the recovery UI in a grid pane"
         : null
     ).toBeNull();
+  });
+
+  test("the ambient branch reads magmuxPaneCapability(), not its own MAGMUX_SOCK test (F8)", () => {
+    // `network-recovery.md`: one predicate decides the surface. The ambient branch
+    // used to restate it as `config.interactive && process.env.MAGMUX_SOCK`, so a
+    // case added to `magmuxPaneCapability()` (the pane child, D22) would still
+    // install the recovery UI here.
+    const branch = code
+      .split("\n")
+      .find((l) => l.includes("else if") && /ambient|MAGMUX_SOCK/.test(l));
+    expect(branch, "could not find the ambient branch in claude-runner.ts").toBeTruthy();
+    expect(branch).toContain('paneCapability.kind === "ambient"');
+    expect(branch).not.toContain("MAGMUX_SOCK");
   });
 });

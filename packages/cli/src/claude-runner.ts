@@ -2051,7 +2051,7 @@ export async function runClaudeWithProxy(
       // after the user had already quit.
       void shutdownRecoveryUi();
     });
-  } else if (recoverySurfaceAllowed() && config.interactive && process.env.MAGMUX_SOCK) {
+  } else if (recoverySurfaceAllowed() && paneCapability.kind === "ambient") {
     // Already inside someone else's magmux — `team --grid --mode interactive`,
     // or a user who launched claudish in a pane by hand. There is nothing to
     // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI
@@ -2060,6 +2060,11 @@ export async function runClaudeWithProxy(
     // serves the banner, and the losers still retry and still recover — they
     // simply hold no lease and answer inline at exhaustion, which is exactly
     // what "a retryable status only while the reason is legible" requires.
+    //
+    // The predicate is `magmuxPaneCapability()`'s, the same one the watchdog
+    // and the wrap above read. It used to be restated here as
+    // `config.interactive && process.env.MAGMUX_SOCK` — two statements of one
+    // rule, which `network-recovery.md` forbids because they drift.
     installRecoveryUi(null);
   }
 
