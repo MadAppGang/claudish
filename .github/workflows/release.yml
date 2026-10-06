@@ -47,14 +47,24 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Download magmux from latest release
+      - name: Download the pinned magmux release
         run: |
-          # Fetch latest magmux release from MadAppGang/magmux
-          MAGMUX_TAG=$(gh release view --repo MadAppGang/magmux --json tagName -q .tagName)
-          echo "Using magmux ${MAGMUX_TAG}"
+          # PINNED, never "latest": MCP team slots and create_session run in magmux panes
+          # and need magmux >= MIN_MAGMUX_VERSION (packages/cli/src/pane/pane-launch.ts),
+          # and a new magmux release must not change what an existing claudish tag ships.
+          # Bump MAGMUX_TAG deliberately, after the pane suites pass against it.
+          MAGMUX_TAG="v0.14.0"
+          MIN=$(sed -n 's/^export const MIN_MAGMUX_VERSION = "\(.*\)";$/\1/p' packages/cli/src/pane/pane-launch.ts)
+          if [ -z "$MIN" ]; then echo "MIN_MAGMUX_VERSION not found in pane-launch.ts"; exit 1; fi
+          if [ "$(printf '%s\n%s\n' "$MIN" "${MAGMUX_TAG#v}" | sort -V | head -n 1)" != "$MIN" ]; then
+            echo "pinned magmux ${MAGMUX_TAG} is older than MIN_MAGMUX_VERSION ${MIN}"; exit 1
+          fi
+          echo "Using magmux ${MAGMUX_TAG} (panes need >= ${MIN})"
           ASSET="magmux_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz"
-          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
+          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --pattern checksums.txt --dir /tmp
+          (cd /tmp && grep " ${ASSET}\$" checksums.txt | shasum -a 256 -c -)
           tar xzf "/tmp/${ASSET}" -C /tmp
+          /tmp/magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "downloaded magmux is not ${MAGMUX_TAG}"; /tmp/magmux --version; exit 1; }
           # Rename to Node.js platform-arch convention (amd64 → x64)
           NODE_ARCH="${{ matrix.goarch }}"
           if [ "$NODE_ARCH" = "amd64" ]; then NODE_ARCH="x64"; fi
