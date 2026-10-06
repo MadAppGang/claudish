@@ -82,7 +82,7 @@ describe.skipIf(!MAGMUX)(
       c.close();
     });
 
-    test("EOF resolves every pending request client_closed and emits disconnected; it is not a death", async () => {
+    test("EOF resolves every pending request client_lost and emits disconnected; it is not a death", async () => {
       const m = startMagmux("sleep 30");
       const c = await MagmuxClient.connect(m.sock);
       const disc = new Promise<{ sawShutdown: boolean }>((r) => c.on("disconnected", r));
@@ -90,7 +90,7 @@ describe.skipIf(!MAGMUX)(
       const pending = c.request({ type: "capabilities" }, 5000);
       m.proc.kill("SIGKILL");
       const [r, d] = await Promise.all([pending, disc]);
-      expect(r.ok === true || (r.ok === false && r.code === "client_closed")).toBe(true);
+      expect(r.ok === true || (r.ok === false && r.code === "client_lost")).toBe(true);
       expect(d.sawShutdown).toBe(false);
       expect(await c.request({ type: "list" })).toMatchObject({ ok: false, code: "client_closed" });
     });

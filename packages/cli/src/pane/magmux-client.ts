@@ -206,7 +206,8 @@ export class MagmuxClient {
     this.closed = true;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
-      p.resolve({ ok: false, code: "client_closed", error: "connection closed" });
+      // the request WAS written: magmux may have acted on it, only the reply is lost
+      p.resolve({ ok: false, code: "client_lost", error: "connection closed before the reply" });
       this.pending.delete(id);
     }
     this.emit("disconnected", { sawShutdown: this.sawShutdown });

@@ -870,6 +870,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     adm.deliveredAt = Date.now();
   }
 
+  /**
+   * §2.9 step 4: retry only a send magmux refused (`busy`, `pane_*`) or one never
+   * written (`client_closed`). A send whose REPLY was lost (`client_timeout`,
+   * `client_lost`) may already have been typed, so the screen decides: retyping it
+   * blindly put the line in the box twice and no witness could ever match.
+   */
   private async typeLine(text: string, enter: boolean): Promise<boolean> {
     let why = "disconnected";
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -878,11 +884,32 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         const r = await c.request({ type: "send", pane: 0, text, typed: true, enter }, 10_000);
         if (r.ok) return true;
         why = r.code;
+        if (r.code === "client_timeout" || r.code === "client_lost") {
+          if (await this.landedAfterLostReply(text, enter)) return true;
+        }
       }
       await Bun.sleep(500);
     }
     this.anomaly(`delivery_failed:${why}`);
     return false;
+  }
+
+  /** After a lost reply: the line is in the box (typed), or already submitted (echo, witness). */
+  private async landedAfterLostReply(text: string, enter: boolean): Promise<boolean> {
+    await this.nextFrame(1000);
+    const head = text.slice(0, 40);
+    const box = inputBox(this.screen);
+    let landed = !!box && box.text.startsWith(head);
+    if (landed && enter) await this.key("enter");
+    if (!landed && enter) {
+      this.follower.poll();
+      const cur = this.follower.view().current;
+      landed =
+        (!!cur && cur.index === this.turnIndex && cur.acceptedAt !== null) ||
+        this.screen.lines.some((l) => l.startsWith(`❯ ${head}`));
+    }
+    if (landed) this.anomaly("send_reply_lost");
+    return landed;
   }
 
   private async key(k: string): Promise<boolean> {

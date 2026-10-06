@@ -860,6 +860,39 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
+        "a send whose reply is lost after magmux typed it is not typed twice (§2.9 step 4)",
+        async () => {
+          const r = await start("answer", {
+            shape: "interactive",
+            initialPrompt: undefined,
+            decide: () => "continue",
+          });
+          await r.s.ready;
+          type Req = (m: Record<string, unknown>, ms?: number) => Promise<unknown>;
+          const client = (r.s as unknown as { client: { request: Req } }).client;
+          const real = client.request.bind(client);
+          let lost = 0;
+          client.request = async (m, ms) => {
+            const reply = await real(m, ms);
+            if (m.type === "send" && typeof m.text === "string" && lost++ === 0)
+              return {
+                ok: false,
+                code: "client_lost",
+                error: "connection closed before the reply",
+              };
+            return reply;
+          };
+          r.s.send("/model haiku");
+          await until(r, (s) => s.turnsCompleted === 1 && s.state === "AWAITING_INPUT");
+          expect(r.turns[0]?.answer).toBe("Set model to `haiku`"); // once, not "haiku/model haiku"
+          expect(r.s.snapshot().anomalies).toContain("send_reply_lost");
+          r.s.cancel();
+          await finish(r);
+        },
+        T
+      );
+
+      test(
         "send validation: /clear and /resume are unsupported; a terminal session refuses",
         async () => {
           const r = await start("answer");
