@@ -1234,9 +1234,18 @@ async function startModelsIn(
     );
 
   /** `response-<id>.md` in one write, byte-exact; remembered so it is written once. */
+  /**
+   * The slot's response file. A failed write (disk full, the directory removed mid-run)
+   * must not throw out of the verdict or the terminal patch: the slot's terminal row is
+   * still written, and the failure goes to the slot's error log instead.
+   */
   function writeResponse(e: SlotEntry, text: string): string {
-    writeFileSync(join(path, `response-${e.id}.md`), text, "utf-8");
     e.answer = text;
+    try {
+      writeFileSync(join(path, `response-${e.id}.md`), text, "utf-8");
+    } catch (err) {
+      persistErrorLog(errorLogPathOf(e.id), `response file not written: ${String(err)}`, []);
+    }
     return text;
   }
 
