@@ -72,6 +72,13 @@ export const ENV = {
   // is READ, never written, because it is the hard ceiling any in-request hold
   // must land inside. See recovery/settings.ts's resolveTier1DeadlineMs.
   API_TIMEOUT_MS: "API_TIMEOUT_MS",
+  // Internal markers of an MCP pane child: the claudish an MCP `team` slot or
+  // `create_session` starts inside a headless magmux pane. Set by the pane
+  // launcher, consumed by `pane/child-env.ts`, deleted from Claude Code's
+  // environment by claude-runner. Never set by a user.
+  CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" in a pane child, nowhere else
+  CLAUDISH_PANE_ENV: "CLAUDISH_PANE_ENV", // JSON snapshot of the MCP server's environment; re-applied, then deleted
+  CLAUDISH_PANE_CWD: "CLAUDISH_PANE_CWD", // realpath of the cwd the pane child must run in
 } as const;
 
 // OpenRouter API Configuration
