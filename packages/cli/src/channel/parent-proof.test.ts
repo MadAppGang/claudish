@@ -11,7 +11,13 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { type ProjectDirCache, type ProofFs, proveCallingConversation } from "./parent-proof.js";
+import {
+  PROOF_DEADLINE_MS,
+  PROOF_POLL_INTERVAL_MS,
+  type ProjectDirCache,
+  type ProofFs,
+  proveCallingConversation,
+} from "./parent-proof.js";
 
 const CONFIG = "/cfg";
 const PROJECTS = join(CONFIG, "projects");
@@ -135,5 +141,96 @@ describe("parent proof project-directory cache", () => {
 
     expect(await prove(fs, cache)).toBe(SESSION);
     expect([...cache.values()]).toEqual([join(PROJECTS, "-new")]);
+  });
+});
+
+/**
+ * Claude Code appends the tool_use record asynchronously. Measured in a live
+ * 2.1.290 session, the `create_session` record reached disk 377 ms after its
+ * own timestamp, after a single 250 ms retry had already given up.
+ */
+describe("parent proof waits for a late transcript append", () => {
+  test("a tool-use id that reaches disk 400 ms late is proven", async () => {
+    const path = join(PROJECTS, "-p", `${SESSION}.jsonl`);
+    const nodes = new Map<string, Node>([[path, { kind: "file", content: "", mtimeMs: 0 }]]);
+    let clock = 0;
+    const parent = await proveCallingConversation({
+      toolUseId: TOOL_USE,
+      candidates: [{ sessionId: SESSION }],
+      configDir: CONFIG,
+      fs: memoryFs(nodes),
+      cache: new Map(),
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+        if (clock >= 400) nodes.set(path, transcript());
+      },
+    });
+    expect(parent).toBe(SESSION);
+  });
+
+  test("a hit on the first look sleeps not at all", async () => {
+    const sleeps: number[] = [];
+    const nodes = new Map<string, Node>([[join(PROJECTS, "-p", `${SESSION}.jsonl`), transcript()]]);
+    const parent = await proveCallingConversation({
+      toolUseId: TOOL_USE,
+      candidates: [{ sessionId: SESSION }],
+      configDir: CONFIG,
+      fs: memoryFs(nodes),
+      cache: new Map(),
+      now: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(parent).toBe(SESSION);
+    expect(sleeps).toEqual([]);
+  });
+
+  test("an id that never arrives is unproven after the deadline, even on a frozen clock", async () => {
+    const sleeps: number[] = [];
+    const nodes = new Map<string, Node>([
+      [join(PROJECTS, "-p", `${SESSION}.jsonl`), { kind: "file", content: "", mtimeMs: 0 }],
+    ]);
+    const parent = await proveCallingConversation({
+      toolUseId: TOOL_USE,
+      candidates: [{ sessionId: SESSION }],
+      configDir: CONFIG,
+      fs: memoryFs(nodes),
+      cache: new Map(),
+      now: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(parent).toBeUndefined();
+    expect(sleeps.every((ms) => ms === PROOF_POLL_INTERVAL_MS)).toBe(true);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(PROOF_DEADLINE_MS);
+  });
+
+  test("time spent looking counts toward the deadline", async () => {
+    const sleeps: number[] = [];
+    let clock = 0;
+    const nodes = new Map<string, Node>([
+      [join(PROJECTS, "-p", `${SESSION}.jsonl`), { kind: "file", content: "", mtimeMs: 0 }],
+    ]);
+    const parent = await proveCallingConversation({
+      toolUseId: TOOL_USE,
+      candidates: [{ sessionId: SESSION }],
+      configDir: CONFIG,
+      fs: memoryFs(nodes),
+      cache: new Map(),
+      // Every clock read costs 500 ms of wall time: a slow disk.
+      now: () => {
+        clock += 500;
+        return clock;
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    });
+    expect(parent).toBeUndefined();
+    expect(sleeps.length).toBeLessThan(PROOF_DEADLINE_MS / PROOF_POLL_INTERVAL_MS);
   });
 });

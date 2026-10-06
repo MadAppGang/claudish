@@ -3,8 +3,8 @@
  * Black-box contract tests for channel/parent-proof.ts (design §3.5, §8.1 tests 9-10;
  * amendments 1 and 5). Written from the specification only.
  *
- * Every proof runs over a synthetic Claude config dir in a temp directory. The retry wait is
- * injected (`sleep`), so no test waits 250 ms for real. INFERRED: a `ProofCandidate` carries
+ * Every proof runs over a synthetic Claude config dir in a temp directory. The poll wait is
+ * injected (`sleep`), so no test waits for real. INFERRED: a `ProofCandidate` carries
  * `{ sessionId, cwd? }` — the only place the host record's `cwd` can reach the proof, since
  * `proveCallingConversation` takes no host-record argument. Built in `candidate()` only.
  */
@@ -24,7 +24,8 @@ import {
 import {
   CLAUDE_ID_RE,
   MAX_SUBAGENT_FILES,
-  PROOF_RETRY_DELAY_MS,
+  PROOF_DEADLINE_MS,
+  PROOF_POLL_INTERVAL_MS,
   SUBAGENT_WINDOW_MS,
   TOOL_USE_ID_META_KEY,
   TRANSCRIPT_TAIL_BYTES,
@@ -102,13 +103,14 @@ describe("REQ-4 constants named by the contract carry the spec's values", () => 
     expect(TOOL_USE_ID_META_KEY).toBe("claudecode/toolUseId");
   });
 
-  test("tail, subagent window, subagent cap and retry delay match §3.5", () => {
+  test("tail, subagent window, subagent cap and proof polling match §3.5", () => {
     expect({
       tail: TRANSCRIPT_TAIL_BYTES,
       window: SUBAGENT_WINDOW_MS,
       cap: MAX_SUBAGENT_FILES,
-      retry: PROOF_RETRY_DELAY_MS,
-    }).toEqual({ tail: 256 * 1024, window: 10 * 60 * 1000, cap: 32, retry: 250 });
+      poll: PROOF_POLL_INTERVAL_MS,
+      deadline: PROOF_DEADLINE_MS,
+    }).toEqual({ tail: 256 * 1024, window: 10 * 60 * 1000, cap: 32, poll: 100, deadline: 2000 });
   });
 
   test.each([
@@ -328,7 +330,7 @@ describe("REQ-1/REQ-2/REQ-4 proveCallingConversation (§8.1 test 10)", () => {
     expect(parent).toBe(E);
   });
 
-  test("returns undefined after exactly one 250 ms wait when no transcript holds the id", async () => {
+  test("returns undefined after polling every 100 ms for 2000 ms when no transcript holds the id", async () => {
     const E = claudeId("env");
     writeMainTranscript("P", E, fillerLine(1));
 
@@ -340,10 +342,10 @@ describe("REQ-1/REQ-2/REQ-4 proveCallingConversation (§8.1 test 10)", () => {
     });
 
     expect(parent).toBeUndefined();
-    expect(sleeps).toEqual([250]);
+    expect(sleeps).toEqual(Array(20).fill(100));
   });
 
-  test("finds an id appended to the transcript during the retry wait", async () => {
+  test("finds an id appended to the transcript during the first poll wait", async () => {
     const E = claudeId("env");
     const T = toolUseId();
     const path = writeMainTranscript("P", E, fillerLine(1));
@@ -360,7 +362,7 @@ describe("REQ-1/REQ-2/REQ-4 proveCallingConversation (§8.1 test 10)", () => {
     });
 
     expect(parent).toBe(E);
-    expect(sleeps).toEqual([250]);
+    expect(sleeps).toEqual([100]);
   });
 
   test("ignores an id that occurs only before the last 256 KB of the main transcript", async () => {

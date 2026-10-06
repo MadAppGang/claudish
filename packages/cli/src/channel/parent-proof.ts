@@ -39,8 +39,15 @@ export const SUBAGENT_WINDOW_MS = 10 * 60_000;
 /** At most this many subagent transcripts are searched, newest first. */
 export const MAX_SUBAGENT_FILES = 32;
 
-/** The single wait before the second look: the transcript append may be in flight. */
-export const PROOF_RETRY_DELAY_MS = 250;
+/**
+ * Wait between looks while the transcript append may still be in flight.
+ * Claude Code writes the tool_use record asynchronously: in a live 2.1.290
+ * session it reached disk 377 ms after its own timestamp.
+ */
+export const PROOF_POLL_INTERVAL_MS = 100;
+
+/** Total time the proof keeps looking before it answers "not proven". */
+export const PROOF_DEADLINE_MS = 2000;
 
 // ─── hostPid ─────────────────────────────────────────────────────────────────
 
@@ -353,11 +360,11 @@ export interface ProveCallingConversationOptions {
   candidates: readonly (ProofCandidate | string)[];
   /** Claude Code's config directory (`claudeConfigDir(env)`). */
   configDir: string;
-  /** Clock for the subagent recency window. Default `Date.now`. */
+  /** Clock for the subagent recency window and the deadline. Default `Date.now`. */
   now?: () => number;
   /** Injected filesystem. Default `node:fs/promises`. */
   fs?: ProofFs;
-  /** The single 250 ms wait. Default a real timer. */
+  /** The wait between looks. Default a real timer. */
   sleep?: (ms: number) => Promise<void>;
   /** Project directories the listing found. Default: one cache for the server's life. */
   cache?: ProjectDirCache;
@@ -371,8 +378,12 @@ export interface ProveCallingConversationOptions {
  * For each candidate: find its project directory (fast path from `cwd`, else
  * one listing), then search the last 256 KB of `<C>.jsonl`, then up to 32
  * subagent transcripts modified in the last 10 minutes, newest first, for the
- * exact quoted substring `"<toolUseId>"`. The first hit decides. With no hit,
- * wait 250 ms once and look again; then `undefined`.
+ * exact quoted substring `"<toolUseId>"`. The first hit decides and returns at
+ * once, so a call whose record is already on disk waits for nothing. With no
+ * hit, look again every `PROOF_POLL_INTERVAL_MS` until `PROOF_DEADLINE_MS`
+ * has passed, then `undefined`. Elapsed time is the larger of the clock's
+ * advance and the total slept, so the loop ends even under a clock that never
+ * moves.
  */
 export async function proveCallingConversation(
   opts: ProveCallingConversationOptions
@@ -398,10 +409,17 @@ export async function proveCallingConversation(
   };
 
   try {
-    const first = await look();
-    if (first !== undefined) return first;
-    await sleep(PROOF_RETRY_DELAY_MS);
-    return await look();
+    const startedAt = now();
+    let slept = 0;
+    for (;;) {
+      const found = await look();
+      if (found !== undefined) return found;
+      const remaining = PROOF_DEADLINE_MS - Math.max(now() - startedAt, slept);
+      if (remaining <= 0) return undefined;
+      const wait = Math.min(PROOF_POLL_INTERVAL_MS, remaining);
+      await sleep(wait);
+      slept += wait;
+    }
   } catch {
     // Every failure is "not proven".
     return undefined;

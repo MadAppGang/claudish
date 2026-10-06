@@ -1798,7 +1798,7 @@ function defineTools(
         });
 
         // Which conversation called, PROVEN from its transcript or left absent.
-        // Asynchronous throughout (fs/promises, one 250 ms timer at most), so
+        // Asynchronous throughout (fs/promises, 100 ms polls for 2 s at most), so
         // this process keeps pumping every live session while it looks.
         const parentClaudeSessionId = await proveParentForCall({
           toolUseId: ctx.toolUseId,

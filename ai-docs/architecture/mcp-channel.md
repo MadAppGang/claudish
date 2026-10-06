@@ -204,14 +204,17 @@ inert. `launcherPid` is recorded exactly when that branch ran. No `ps`, no tree 
 environment's `CLAUDE_CODE_SESSION_ID` goes stale on `/clear`, on a resume, and whenever two
 windows share a conversation, so it is never stored as such. Claude Code puts the calling
 tool-use id in the request `_meta["claudecode/toolUseId"]` (the dispatcher passes it as
-`ctx.toolUseId`), and the tool_use block is on disk in the caller's transcript before the tool
-runs. For at most two candidates — the env id (only when `CLAUDE_CODE_CHILD_SESSION` is empty)
+`ctx.toolUseId`), and the tool_use block lands in the caller's transcript — but ASYNCHRONOUSLY:
+in a live Claude Code 2.1.290 session (2026-10-06, 10 ms poller) the `create_session` record
+reached disk 377 ms after its own timestamp, after the tool had already started. For at most two candidates — the env id (only when `CLAUDE_CODE_CHILD_SESSION` is empty)
 and the `sessionId` of the host's live record `<configDir>/sessions/<hostPid>.json` (only when
 its `pid` matches) — the proof finds the candidate's project directory (fast path: the host
 record's `cwd` with every non-alphanumeric character replaced by `-`; else one listing of
 `projects/`, cached per candidate), then searches the last 256 KB of `<C>.jsonl` and up to 32
-subagent transcripts modified in the last 10 minutes for the quoted id. No hit → wait 250 ms
-once, look again, then absent. A tool-use id is unique and lives only in the transcript of the
+subagent transcripts modified in the last 10 minutes for the quoted id. No hit → look again
+every 100 ms (`PROOF_POLL_INTERVAL_MS`) until 2000 ms (`PROOF_DEADLINE_MS`) have passed, then
+absent; a hit returns at once, so a call whose record is already on disk waits for nothing. The
+single 250 ms retry this replaced lost that race in 2 of 3 calls in one session. A tool-use id is unique and lives only in the transcript of the
 conversation that issued it, so a hit is proof and every failure degrades to "absent". It is
 `await`ed with `fs/promises` before `createSession`, so the server keeps pumping live sessions
 while it looks. `meta.json` (`SessionInfo.parentClaudeSessionId`) carries the same key with the
