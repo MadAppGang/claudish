@@ -99,7 +99,11 @@ describe.skipIf(!MAGMUX)(
       const m = startMagmux("sleep 30");
       const c = await MagmuxClient.connect(m.sock);
       const disc = new Promise<{ sawShutdown: boolean }>((r) => c.on("disconnected", r));
-      expect((await c.request({ type: "close_pane", pane: 0, force: true })).ok).toBe(true);
+      // magmux exits once its last pane is closed, and under load its EOF can beat the
+      // reply (seen once in a full bun 1.4.0 run): a lost reply is client_lost, never an
+      // error reply. The shutdown, exit and socket checks below prove the close.
+      const r = await c.request({ type: "close_pane", pane: 0, force: true });
+      expect(r.ok || r.code === "client_lost").toBe(true);
       expect((await disc).sawShutdown).toBe(true);
       expect(await waitForExit(m.proc, 5000)).toBe(true);
       expect(existsSync(m.sock)).toBe(false);
