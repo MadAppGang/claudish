@@ -1632,6 +1632,7 @@ function defineTools(
               slots: models.length,
               claudeFlags: childFlags,
               input: promptText(),
+              requirePattern,
             });
             setupSession(resolved, models, input);
 
@@ -1726,6 +1727,7 @@ function defineTools(
               slots: models.length,
               claudeFlags: childFlags,
               input: promptText(),
+              requirePattern,
             });
             setupSession(resolved, models, input);
             const handle = await startModels(resolved, runOpts);

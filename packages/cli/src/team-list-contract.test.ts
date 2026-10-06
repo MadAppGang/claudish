@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { teamContractVerb, teamStatusAnswer } from "./mcp-server.js";
 import { CAPABILITIES, type CaptureResult, type TeamRunRow } from "./pane/index.js";
@@ -164,6 +164,14 @@ describe.skipIf(!MAGMUX)("team run registry (list / status / cancel / capture)",
     await expect(preflightTeamRun({ path, slots: 1 })).rejects.toThrow(message);
     await expect(startModels(path, paneRunOptions(t))).rejects.toThrow(message);
   }, 60_000);
+
+  it("refuses an invalid require_pattern in preflight, before any session dir or record", async () => {
+    const path = join(base, "bad-pattern");
+    await expect(preflightTeamRun({ path, slots: 1, requirePattern: "(" })).rejects.toThrow(
+      /^invalid_args: Invalid requirePattern \/\(\//
+    );
+    expect(existsSync(path)).toBe(false);
+  });
 
   it("answers unknown runs and slots with ContractError JSON", async () => {
     const path = join(base, "nothing-here");

@@ -1083,8 +1083,15 @@ export async function preflightTeamRun(opts: {
   slots: number;
   claudeFlags?: string[];
   input?: string;
+  requirePattern?: string;
   parentEnv?: Record<string, string | undefined>;
 }): Promise<void> {
+  // before setupSession and the run record, so a refused run leaves no record (§4.1)
+  try {
+    assertValidRequirePattern(opts.requirePattern);
+  } catch (err) {
+    throw new Error(`invalid_args: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const flags = opts.claudeFlags ?? [];
   const check = checkChildFlags(flags);
   if (!check.ok) throw new Error(`invalid_args: ${check.message}`);
