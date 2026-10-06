@@ -411,13 +411,14 @@ export function versionAtLeast(v: string, min: string): boolean {
   return true;
 }
 
-let magmuxCache: { binary: string; version: string } | null = null;
+const magmuxCache = new Map<string, { binary: string; version: string }>();
 
 /** The magmux binary and its version (≥ 0.14.0), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(
   binary?: string
 ): Promise<{ binary: string; version: string }> {
-  if (!binary && magmuxCache) return magmuxCache;
+  const cached = magmuxCache.get(binary ?? "");
+  if (cached) return cached;
   const found = binary ?? findMagmuxBinaryOrNull();
   if (!found)
     throw new MagmuxUnavailableError(
@@ -437,7 +438,7 @@ export async function assertMagmuxAvailable(
       `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION}`
     );
   const result = { binary: found, version };
-  if (!binary) magmuxCache = result;
+  magmuxCache.set(binary ?? "", result);
   return result;
 }
 
