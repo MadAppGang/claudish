@@ -521,7 +521,21 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       rec.text(answerFor(c));
       showHistory(`⏺ ${answerFor(c)}`, finishedRow());
       return;
-    case "quiet_no_summary":
+    case "finishing_then_wake":
+      // an ending answer with no end-of-turn record (finishing, static screen), then a
+      // background task notification wakes the model and the turn ends normally
+      rec.text("first part");
+      showHistory("⏺ first part");
+      await sleep(gap("WAKE", 2500));
+      emit(T.bgNotify);
+      {
+        const id = rec.toolUse("Bash", { command: "sleep 2", description: "Sleep" });
+        showHistory("⏺ Sleeping", "  ⎿  $ sleep 2");
+        await sleep(gap("WAKE_TOOL", 2000));
+        rec.toolResult(id, "", { stdout: "", stderr: "", interrupted: false, isImage: false });
+      }
+      return answerTurn(c);
+
       rec.text(answerFor(c));
       showHistory(`⏺ ${answerFor(c)}`, finishedRow());
       return;

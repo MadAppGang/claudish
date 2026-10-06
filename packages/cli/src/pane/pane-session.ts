@@ -316,6 +316,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private endedAtMs: number | null = null;
   private claudeCodeVersion: string | null = null;
   private anomalies = new Map<string, number>();
+  private turnEndMissing = false;
   private exitScrollback = "";
   private exitLastLine = "";
 
@@ -1101,12 +1102,22 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.escapeSentAt = null;
   }
 
-  /** R3-M4: `finishing` with a static screen and no Stop-hook UI for N secondary windows. */
+  /**
+   * R3-M4: `finishing` with a static screen and no Stop-hook UI for N secondary windows.
+   * The condition is live (it clears the moment work resumes); the anomaly counts how often
+   * it began.
+   */
   private checkTurnEndMissing(): void {
-    if (this.activity !== "finishing" || !this.client) return;
+    if (this.activity !== "finishing") {
+      this.turnEndMissing = false;
+      return;
+    }
+    if (!this.client) return;
     const quiet = Date.now() - this.screen.aboveBoxChangedAt;
-    if (quiet >= TURN_END_MISSING_FACTOR * this.secondaryQuietMs && !stopHookRunning(this.screen))
-      if (!this.anomalies.has("turn_end_record_missing")) this.anomaly("turn_end_record_missing");
+    const missing =
+      quiet >= TURN_END_MISSING_FACTOR * this.secondaryQuietMs && !stopHookRunning(this.screen);
+    if (missing && !this.turnEndMissing) this.anomaly("turn_end_record_missing");
+    this.turnEndMissing = missing;
   }
 
   /** Blocked detection (H7): AskUserQuestion from the transcript; permission needs the dialog too. */
@@ -1186,6 +1197,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   private finishTurn(turn: SettledTurn, chatOffset: number | null, exitCode: number | null): void {
+    this.turnEndMissing = false;
     this.answers.set(turn.index, turn.answer);
     // owners ask for the current or the last settled turn: keep a few, not the session's all
     for (const k of this.answers.keys()) if (k <= turn.index - KEPT_ANSWERS) this.answers.delete(k);
@@ -1406,6 +1418,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       anomalies: [...this.anomalies].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)),
       claudeCodeVersion: this.claudeCodeVersion,
       shape: this.shape,
+      turnEndRecordMissing:
+        !terminal &&
+        this.phase === "RUNNING" &&
+        this.activity === "finishing" &&
+        this.turnEndMissing,
     };
   }
 

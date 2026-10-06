@@ -33,7 +33,12 @@ export function toSlotRow(
     turns_completed: snap.turnsCompleted,
     last_activity_at: snap.lastActivityAt,
     idle_seconds: idle,
-    activity: terminal ? null : snap.activity,
+    // R3-M4: the row says so too (§8: an unknown activity value reads as busy)
+    activity: terminal
+      ? null
+      : snap.turnEndRecordMissing && snap.activity
+        ? `${snap.activity}: turn_end_record_missing`
+        : snap.activity,
     pane: snap.paneId || null,
   };
 }

@@ -52,6 +52,7 @@ function snap(over: Partial<PaneSnapshot> = {}): PaneSnapshot {
     anomalies: [],
     claudeCodeVersion: null,
     shape: "one-shot",
+    turnEndRecordMissing: false,
     ...over,
   };
 }
@@ -220,6 +221,24 @@ describe("toSlotRow (§8 B)", () => {
     );
     expect(failed.reason).toBe("api_error");
     expect(failed.idle_seconds).toBeNull();
+  });
+
+  test("R3-M4: the row's activity carries turn_end_record_missing only while the condition holds", () => {
+    const acct = mergeAccounting(snap(), null);
+    const id = { slot: "05", model: "m", spawnModel: null };
+    const live = toSlotRow(id, snap({ activity: "finishing", turnEndRecordMissing: true }), acct);
+    expect(live.activity).toBe("finishing: turn_end_record_missing");
+    // the anomaly is history; a slot that resumed work reads plainly
+    const resumed = toSlotRow(
+      id,
+      snap({
+        activity: "Bash",
+        turnEndRecordMissing: false,
+        anomalies: ["turn_end_record_missing"],
+      }),
+      acct
+    );
+    expect(resumed.activity).toBe("Bash");
   });
 
   test("a pane that never spawned has pane null", () => {

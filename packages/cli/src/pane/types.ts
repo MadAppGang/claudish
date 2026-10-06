@@ -66,4 +66,10 @@ export interface PaneSnapshot {
   claudeCodeVersion: string | null;
   /** the session's shape now: a send to a one-shot session converts it to interactive */
   shape: "one-shot" | "interactive";
+  /**
+   * R3-M4, LIVE: the turn is `finishing` with a static screen and no Stop-hook UI for 3
+   * secondary windows. False again as soon as activity leaves `finishing`; the anomaly of
+   * the same name stays in `anomalies` as history.
+   */
+  turnEndRecordMissing: boolean;
 }

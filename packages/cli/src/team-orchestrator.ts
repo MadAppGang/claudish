@@ -662,10 +662,9 @@ export function teamLiveMaps(
     const row = toSlotRow({ slot: e.id, model: e.model, spawnModel: e.spawnModel }, snap, e.acct);
     if (row.idle_seconds !== null) idle[e.id] = row.idle_seconds;
     liveBytes[e.id] = snap.liveAnswerBytes;
-    const missing = snap.anomalies.includes("turn_end_record_missing");
-    if (missing) endRecordMissing.push(e.id);
-    if (row.activity !== null)
-      activity[e.id] = missing ? `${row.activity}: turn_end_record_missing` : row.activity;
+    // the live condition, never the anomaly history: a slot that resumed work is not wedged
+    if (snap.turnEndRecordMissing) endRecordMissing.push(e.id);
+    if (row.activity !== null) activity[e.id] = row.activity;
   }
   return { idle, activity, liveBytes, endRecordMissing };
 }

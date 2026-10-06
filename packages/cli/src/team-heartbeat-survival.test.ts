@@ -8,7 +8,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { runModels, setupSession, startModels, teamLiveMaps } from "./team-orchestrator.js";
+import {
+  runModels,
+  setupSession,
+  startModels,
+  teamLiveMaps,
+  teamRunRow,
+} from "./team-orchestrator.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
@@ -64,6 +70,41 @@ describe.skipIf(!MAGMUX)("team slot heartbeat survival", () => {
     expect(model?.error).toBeUndefined();
     expect(response).toStartWith("ANSWER fake-tool_slow ");
     expect(response.split("ANSWER")).toHaveLength(2);
+  }, 30_000);
+
+  it("R3-M4: turn_end_record_missing shows in the row and the map while it holds, and clears when work resumes", async () => {
+    const sessionPath = teamDirOf(t);
+    setupSession(sessionPath, ["fake-finishing_then_wake"], "Answer in two parts.");
+    const handle = await startModels(
+      sessionPath,
+      paneRunOptions(
+        t,
+        { paneTimings: { replStableMs: 200, secondaryQuietMs: 300 } },
+        { FAKE_GAP_MS_WAKE: "3000" }
+      )
+    );
+    const slotId = handle.slots["fake-finishing_then_wake"] as string;
+    const rowActivity = () =>
+      teamRunRow(sessionPath)?.slots.find((s) => s.slot === slotId)?.activity ?? null;
+    await waitUntil(
+      () => teamLiveMaps(sessionPath)?.endRecordMissing.includes(slotId) === true,
+      "endRecordMissing",
+      10_000
+    );
+    expect(teamLiveMaps(sessionPath)?.activity[slotId]).toBe("finishing: turn_end_record_missing");
+    expect(rowActivity()).toBe("finishing: turn_end_record_missing");
+    // the notification wakes the model and it runs a tool: working again, not wedged
+    await waitUntil(
+      () => teamLiveMaps(sessionPath)?.activity[slotId] === "Bash",
+      "activity Bash, plain",
+      10_000
+    );
+    expect(teamLiveMaps(sessionPath)?.endRecordMissing ?? []).not.toContain(slotId);
+    expect(rowActivity()).toBe("Bash");
+    const status = await handle.done;
+    expect(status.models[slotId]?.state).toBe("COMPLETED");
+    // the anomaly stays as history in the slot's record (L6: nothing else pinned it)
+    expect(status.models[slotId]?.anomalies ?? []).toContain("turn_end_record_missing");
   }, 30_000);
 
   it("waits out a slow Stop hook after the answer, reading finishing meanwhile", async () => {
