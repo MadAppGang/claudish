@@ -1,4 +1,4 @@
-> The SSE-replay format-translation harness and how to add a regression test.
+> The SSE-replay format-translation harness, the shared resources a test must never reach, hermetic pane tests against a real magmux, and the opt-in live pane tests.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -111,7 +111,9 @@ which names a symbol, not a missing file — the real cause is two frames up the
 
 Fixed by copying both captures VERBATIM into `packages/cli/src/channel/test-helpers/captures/`
 and pointing `PROBE_DIR` at `resolve(import.meta.dir, "captures")`. Byte-identical: fixtures
-come from real logs and must never be regenerated or reformatted in a move.
+come from real logs and must never be regenerated or reformatted in a move. (That helper and its
+captures were later deleted with the stream-json child transport; the rule stands, and the pane
+fixtures under `pane/test-fixtures/` follow it.)
 
 **The rule, stated generally:** a fixture is BY DEFINITION something meant to outlive the
 session that produced it, so a session directory is never its home — however convenient that
@@ -166,3 +168,80 @@ budgeted at 17 — is 576, almost all `U+1160..U+11FF`, conjoining Hangul Jamo t
 
 When the pin is bumped, RE-BASELINE the budgets against the new oracle. Never
 widen them to clear a red run: the budget is the entire assertion.
+
+## Pane tests: a real magmux, a fake child, nothing left behind
+
+MCP `team` slots and `create_session` run as interactive Claude Code in headless magmux panes
+(`pane-session.md`), so every suite that starts one — `pane/*.integration.test.ts`,
+`pane/pane-registry.test.ts`, the channel and team suites, `mcp-contract.e2e.test.ts`,
+`mcp-shutdown.e2e.test.ts` — runs a REAL `magmux --headless`. The transport's behaviour (frames,
+`exit` events, `close_pane`, slow-subscriber drops, socket paths) is magmux's, and a simulated
+magmux would test our model of it instead.
+
+**The child is the fake, never Claude Code.** `pane/test-helpers/fake-interactive-child.ts` is
+started through `CLAUDISH_BIN` (a `*.ts` value becomes `bun run <file>`). It draws the REPL with
+lines copied from the phase-2 screen fixtures, reads raw keystrokes with the key semantics measured
+from the real REPL, and writes its transcript by TEMPLATING real records — never hand-written ones.
+A scenario is chosen by `--model fake-<scenario>`, or, in the contract suites' marker mode
+(`contract-fake-model`), by markers in the prompt: `@@TOOL@@`, `@@HANG@@` (accepted, never
+answered), `@@LINGER@@` (answers, holds the end-of-turn record), `@@LATE@@` (a re-wake after the
+answer). A file-delivered prompt is answered `ANSWER <model> <sha1 prefix of the reconstructed
+file>`, so a test can prove nothing was lost in delivery. `pane-child-real-claudish.integration.test.ts`
+is the one place the REAL child claudish runs: this tree's `src/index.ts` launches the fake in
+"claude" mode as Claude Code (via `CLAUDE_PATH`) with a native model, so no proxy request is made,
+and the fake dumps the argv, env, cwd and `--settings` it was given.
+
+**The environment is built by ALLOWLIST** (`makePaneTestEnv()`, and `serverEnv(layout)` for a
+real MCP server), never by deleting from `process.env`: no `ANTHROPIC_*` or provider key survives
+because none is listed, and `HOME`, `CLAUDE_CONFIG_DIR`, `ZDOTDIR` and `XDG_CONFIG_HOME` all point
+into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout:
+short, so socket paths stay under magmux's 100-byte limit, and never the user's
+`/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
+sessions.
+
+**Every test asserts that nothing outlived it** (`assertNoOrphans`, `paneOrphans(layout)`): no
+process whose argv contains the test's root or a session uuid, no process left in any pane
+process group, and no socket, pane record or launcher directory in the root. That assertion is
+what proves the reap; a green suite without it would hide a REPL left billing.
+
+**A missing magmux is "not checked", never a cause.** Without magmux these suites skip with
+`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs it
+(`brew install MadAppGang/tap/magmux` in `test.yml`), so the pane suites run there on macOS.
+
+**Time is a seam, and a budget measures a code path, not wall-clock under contention.**
+`PaneSessionOptions.timings` scales the quiet windows, the degraded-mode entry and the resend delay
+for tests (production never passes it), and the integration suite runs its groups with
+`describe.concurrent` (43 tests in ~50 s instead of ~250 s), each test owning its env and root. Two
+measured traps:
+
+- At a load average of 85–88 from another session, one full run produced 14 timing failures across
+  the pane, registry and session-manager suites — and also exposed a real defect (`shutdownAll`
+  skipped starts still in flight), so a red run under load still needs reading before it is
+  dismissed.
+- REQ-18 asserted the team record's `meta.json` within 1 s of `team(mode:"run")` returning. With
+  panes, `run` returns once each prompt is accepted, so that interval also held the fake's turn and
+  the 500 ms settle corroboration, and it failed at 1,013–1,014 ms under load while the record path
+  took milliseconds. It now measures from the run's settle (the last slot's `completedAt`) to the
+  record's `completedAt`, and still fails (1,505 ms) when the end is delayed onto a later poll.
+  Measure the thing the requirement is about; never just raise the number.
+
+**Fixtures are real captures, and a test greps them.** `pane/test-fixtures/` holds screens,
+transcripts, frames, token files and a `ps` table from Claude Code 2.1.290 in a headless pane
+(`reports/mcp-magmux-panes/phase2-captures.md`); the two corpus slices were redacted with
+`scripts/redact-transcript-fixture.ts`. `fixtures-redaction.test.ts` fails on a home path, a
+credential or an e-mail address in any of them.
+
+**Live pane tests are opt-in.** `pane-live-claude.integration.test.ts` drives the REAL Claude Code
+(native haiku) through `PaneSession` and spends money, so it runs only when asked:
+
+```bash
+CLAUDISH_PANE_LIVE=1 CLAUDE_CODE_OAUTH_TOKEN=<token> \
+  bun test packages/cli/src/pane/pane-live-claude.integration.test.ts
+```
+
+The config directory is hermetic, and a hermetic config directory is "Not logged in": Claude Code
+keys its keychain item by config directory, so redirecting `HOME` or `CLAUDE_CONFIG_DIR` loses the
+login. The token therefore comes from the operator's environment; the test never reads the
+keychain or `~/.claude`. Likewise `bun run test:mcp` (`mcp-e2e/`) needs live 1Password and the real
+config and is not part of `test:safe`. To drive one session by hand, use `scripts/pane-drive.ts`
+(`--fake <scenario>` for the hermetic fake).
