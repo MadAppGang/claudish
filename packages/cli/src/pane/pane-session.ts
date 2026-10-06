@@ -127,6 +127,8 @@ const POLL_BACKSTOP_MS = 1_000;
 /** R3-M4: a `finishing` turn with a static screen for this many secondary windows. */
 const TURN_END_MISSING_FACTOR = 3;
 const MAX_ANOMALY_KEYS = 64;
+/** Settled answers kept for `turnAnswer` (owners read the current or the last one). */
+const KEPT_ANSWERS = 4;
 
 export interface PaneBlock {
   kind: "question" | "permission";
@@ -1157,6 +1159,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private finishTurn(turn: SettledTurn, chatOffset: number | null, exitCode: number | null): void {
     this.answers.set(turn.index, turn.answer);
+    // owners ask for the current or the last settled turn: keep a few, not the session's all
+    for (const k of this.answers.keys()) if (k <= turn.index - KEPT_ANSWERS) this.answers.delete(k);
     this.lastCaptureSource = turn.captureSource;
     this.activity = null;
     let verdict: FinalVerdict | "continue";

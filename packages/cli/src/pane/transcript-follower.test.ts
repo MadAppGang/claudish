@@ -699,6 +699,22 @@ describe("local commands", () => {
   });
 });
 
+describe("bounded state", () => {
+  test("opening a turn drops the previous turn's state, task file included", async () => {
+    const { initialFollowerState, openTurnState } = await import("./transcript-follower.js");
+    const state = initialFollowerState((p) => p);
+    for (let i = 1; i <= 50; i++)
+      openTurnState(state, {
+        index: i,
+        offset: i * 100,
+        witness: text(`turn ${i}`),
+        delivery: { file: `/t/turn-${i}.md`, text: "x".repeat(100_000) },
+      });
+    expect(state.turns).toHaveLength(1);
+    expect(state.turns[0]?.index).toBe(50);
+  });
+});
+
 describe("byte-safe tail", () => {
   test("a poll that splits a multi-byte character decodes the record exactly once, offsets in bytes", async () => {
     const { appendFileSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");

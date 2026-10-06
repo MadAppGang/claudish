@@ -545,10 +545,16 @@ export function applySubagentRecord(
   return state;
 }
 
+/**
+ * Open turn `t`. Only the newest turn can ever receive a record (offsets only grow and the
+ * new turn's offset is taken after a poll), so the previous turn's state, which can hold a
+ * whole task file and every text block, is dropped here rather than kept for the session.
+ */
 export function openTurnState(
   state: FollowerState,
   t: { index: number; offset: number; witness: Witness; delivery?: TurnDelivery | null }
 ): FollowerState {
+  state.turns.length = 0;
   state.turns.push({
     index: t.index,
     offset: t.offset,
