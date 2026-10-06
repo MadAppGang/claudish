@@ -18,7 +18,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { CLAUDISH_EXITING_FLAGS, CLAUDISH_FLAG_ARITY, classifyPassthroughTokens } from "../cli.js";
 import { ENV } from "../config.js";
 import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
@@ -39,7 +39,9 @@ function uid(): number {
  */
 export function sockRootFor(env: Record<string, string | undefined> = process.env): string {
   const override = env[ENV.CLAUDISH_PANE_ROOT]?.trim();
-  return override ? override : `/tmp/claudish-mux-${uid()}`;
+  // resolved once: every path check compares against this exact spelling, and the
+  // watcher's shell globs ("$ROOT"/launch-??????) never match `/x/` or `./x`
+  return override ? resolve(override) : `/tmp/claudish-mux-${uid()}`;
 }
 
 /** The default socket root of this process. */
@@ -62,7 +64,8 @@ function assertPrivateDir(p: string): void {
 }
 
 /** Create (0700) and verify the socket root and its `panes/` record dir. Returns `root`. */
-export function ensureSockRoot(root: string = sockRootFor()): string {
+export function ensureSockRoot(given: string = sockRootFor()): string {
+  const root = resolve(given);
   try {
     mkdirSync(root, { mode: 0o700 });
   } catch (e) {

@@ -11,6 +11,7 @@ import {
   SHELL_SHIM,
   buildClaudishPaneArgv,
   buildPaneEnv,
+  createLaunchDirs,
   ensureSockRoot,
   isValidPaneId,
   launcherScript,
@@ -20,7 +21,7 @@ import {
   sockRootFor,
   versionAtLeast,
 } from "./pane-launch.js";
-import { WATCHER_ARGV0, WATCHER_SCRIPT, watcherArgv } from "./process-identity.js";
+import { WATCHER_ARGV0, WATCHER_SCRIPT, isLaunchDirPath, watcherArgv } from "./process-identity.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -217,6 +218,16 @@ describe("ids, socket paths and the socket root", () => {
   test("CLAUDISH_PANE_ROOT overrides the default root", () => {
     expect(sockRootFor({ CLAUDISH_PANE_ROOT: "/tmp/cpt-1" })).toBe("/tmp/cpt-1");
     expect(sockRootFor({})).toMatch(/^\/tmp\/claudish-mux-\d+$/);
+  });
+
+  test("a trailing-slash or relative root is resolved once, so the launch-dir check still matches", () => {
+    expect(sockRootFor({ CLAUDISH_PANE_ROOT: "/tmp/cpt-1/" })).toBe("/tmp/cpt-1");
+    expect(sockRootFor({ CLAUDISH_PANE_ROOT: "rel/root" })).toBe(join(process.cwd(), "rel/root"));
+    const base = tmp();
+    const root = ensureSockRoot(`${join(base, "r")}/`);
+    expect(root).toBe(join(base, "r"));
+    const dirs = createLaunchDirs(root);
+    expect(isLaunchDirPath(root, dirs.ctlDir)).toBe(true);
   });
 
   test("ensureSockRoot creates 0700 dirs and refuses a symlink or a group/world-readable dir", () => {
