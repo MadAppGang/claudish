@@ -632,3 +632,46 @@ describe("tailing", () => {
     expect(whole.turnDurationAfterLast).not.toBeNull();
   });
 });
+
+describe("byte-safe tail", () => {
+  test("a poll that splits a multi-byte character decodes the record exactly once, offsets in bytes", async () => {
+    const { appendFileSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { Tail, TranscriptFollower } = await import("./transcript-follower.js");
+    const dir = mkdtempSync(join(tmpdir(), "pane-tail-utf8-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, "t.jsonl");
+    writeFileSync(path, "");
+    const w = "Reply with exactly PEAR and nothing else.";
+    const answer = "PEAR — 東京 ✓ 🍐";
+    // the real capture, with the answer text templated to carry multi-byte characters
+    const lines = transcriptRecords("pear-hookless").map((r) => {
+      if (r.type !== "assistant") return JSON.stringify(r);
+      const c = structuredClone(r) as Rec;
+      for (const b of c.message.content) if (b.type === "text") b.text = answer;
+      return JSON.stringify(c);
+    });
+    const bytes = Buffer.from(`${lines.join("\n")}\n`, "utf8");
+    const at = bytes.indexOf(Buffer.from("東", "utf8"));
+    expect(at).toBeGreaterThan(0);
+    const f = new TranscriptFollower(path, join(dir, "subagents"));
+    const tail = new Tail(path);
+    f.openTurn({ index: 1, offset: f.size(), witness: text(w) });
+    appendFileSync(path, bytes.subarray(0, at + 1)); // inside the 3-byte 東
+    f.poll();
+    const first = tail.read();
+    appendFileSync(path, bytes.subarray(at + 1));
+    f.poll();
+    const second = tail.read();
+    expect(cur(f.view()).assistantText).toEqual([answer]);
+    expect(cur(f.view()).turnDurationAfterLast).not.toBeNull();
+    // every line comes back intact, at the byte offset it starts at
+    const got = [...first, ...second];
+    expect(got.map((l) => l.line)).toEqual(lines);
+    let pos = 0;
+    for (const [i, l] of got.entries()) {
+      expect(l.offset).toBe(pos);
+      pos += Buffer.byteLength(lines[i] as string) + 1;
+    }
+  });
+});

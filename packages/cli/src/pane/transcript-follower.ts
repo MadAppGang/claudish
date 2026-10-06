@@ -580,9 +580,14 @@ export function turnView(t: TurnState): TurnView {
 
 /* ───────────────────────────── file tailing ───────────────────────────── */
 
-class Tail {
+/**
+ * Partial-line-safe tail. The remainder after the last newline is kept as BYTES and a
+ * line is decoded only once it is complete, so a poll that lands inside a multi-byte
+ * character can never decode either half as U+FFFD; offsets are byte positions.
+ */
+export class Tail {
   offset = 0;
-  private buf = "";
+  private rest: Buffer = Buffer.alloc(0);
   constructor(readonly path: string) {}
 
   /** Read appended bytes; return complete lines with the byte offset each starts at. */
@@ -595,22 +600,23 @@ class Tail {
     }
     try {
       const size = fstatSync(fd).size;
-      const startOfBuf = this.offset - Buffer.byteLength(this.buf);
       if (size <= this.offset) return [];
       const chunk = Buffer.alloc(size - this.offset);
-      readSync(fd, chunk, 0, chunk.length, this.offset);
-      this.offset = size;
-      this.buf += chunk.toString("utf8");
+      const got = readSync(fd, chunk, 0, chunk.length, this.offset);
+      this.offset += got;
+      const fresh = chunk.subarray(0, got);
+      const buf = this.rest.length ? Buffer.concat([this.rest, fresh]) : fresh;
+      let pos = this.offset - buf.length;
       const out: Array<{ offset: number; line: string }> = [];
-      let pos = startOfBuf;
-      let nl = this.buf.indexOf("\n");
+      let start = 0;
+      let nl = buf.indexOf(0x0a, start);
       while (nl >= 0) {
-        const line = this.buf.slice(0, nl);
-        out.push({ offset: pos, line });
-        pos += Buffer.byteLength(line) + 1;
-        this.buf = this.buf.slice(nl + 1);
-        nl = this.buf.indexOf("\n");
+        out.push({ offset: pos, line: buf.toString("utf8", start, nl) });
+        pos += nl + 1 - start;
+        start = nl + 1;
+        nl = buf.indexOf(0x0a, start);
       }
+      this.rest = Buffer.from(buf.subarray(start));
       return out;
     } finally {
       closeSync(fd);
