@@ -59,14 +59,20 @@ Acceptance, settle, the answer and the accounting therefore come from the transc
 writes for the `--session-id <uuid>` claudish minted. Its path is derived, never searched for:
 `<CLAUDE_CONFIG_DIR or $HOME/.claude>/projects/<every non-alphanumeric character of realpath(cwd)
 replaced by ->/<uuid>.jsonl`, plus `<uuid>/subagents/agent-<id>.jsonl`. The launcher `cd`s to the
-realpath before `exec`, so the slug does not depend on the path the owner spawned with.
+realpath before `exec`, so the slug does not depend on the path the owner spawned with. **A slug
+longer than 200 characters is cut to 200 and suffixed `-<base36 |hash(realpath)|>`**, the 32-bit
+`(h << 5) - h + charCode` hash over the whole path (Claude Code 2.1.291's `eI`/`Le`). Measured: a
+259-character cwd got `<200 slug chars>-g32rlu`, which `projectDirNameFor` reproduces; without it a
+deep worktree path names a transcript that is never written and every turn silently degrades to
+the screen.
 
 **Turns are segmented by claudish's own deliveries, never by user records.** Before delivering a
 prompt the follower polls and records the transcript size; turn N owns every record past that
 offset and before turn N+1's. Evidence from an earlier turn can therefore never satisfy a later
 one. The turn is ACCEPTED when its **witness** appears after the offset: a main-chain user record
 whose text equals the typed line (`origin.kind:"human"`), or a `<command-name>/x</command-name>`
-record for a slash command. Measured: the witness lands 370–470 ms after a typed send; with a
+record for a slash command — a user record, or (2.1.287+, `/color yellow` captured on 2.1.291) a
+`system/local_command` record, which a user-record-only witness never accepts. Measured: the witness lands 370–470 ms after a typed send; with a
 `sleep 12` UserPromptSubmit hook the box clears at once but the witness arrives 12,501 ms later.
 
 The follower polls on every frame (debounced 250 ms) and on a 1 s backstop.
@@ -114,10 +120,19 @@ least one assistant message after it, and nothing waking the model after that me
 | **I** | `[Request interrupted by user…]` after the last assistant message; `turn_duration` optional | yes |
 | **S** | no `turn_duration`: an ending `stop_reason`, Stop hooks KNOWN finished, and no transcript append and no change above the box for `secondaryQuietMs` | yes; records `settled_without_turn_duration` |
 | **X** | the pane has exited: an ending `stop_reason` and nothing waking after it | none (the pane is gone) |
+| **L** | a LOCAL slash command: its `<local-command-stdout>` after the witness and no assistant message; the answer is that stdout | yes (none once the pane exited) |
 
 Corroboration is: no further main-chain chat record for 500 ms, and the screen shows an empty input
 box, no choice dialog and no working row. While the socket is disconnected the screen is stale, so
 P and I settle with the anomaly `screen_unverified` and S waits for the reconnect.
+
+**Local commands (path L).** A local command writes no assistant record and no `turn_duration`
+(captured on 2.1.291: `/compact` → `compact_boundary`, the summary, the caveat, `<command-name>`,
+`<local-command-stdout>Compacted…`; `/model haiku` → caveat, `<command-name>`, stdout; `/color` →
+two `system/local_command` records). Without L such a turn stayed RUNNING "thinking" for good and
+every later `send_input` queued behind it. A command that prompts the model (`/pear`) writes no
+stdout and settles through P. Local-command records (`<local-command-caveat>`, `<command-name>`,
+`<local-command-stdout>`) are never waking records.
 
 **Why `turn_duration`.** In the interactive REPL Claude Code writes it only after the Stop hooks
 finish: captured 30,077 ms after the answer with a `sleep 30` Stop hook, `stop_hook_summary`
@@ -167,12 +182,20 @@ after it, which was never observed.
   `background_shell_open: <command>` names it — in the team slot's `detail` and the result card too
   (R3-M5). A dev server, watcher or `tail -f` never finishes, so awaiting it would hold `judge`,
   `run-and-judge` and the review gate forever. For team and one-shot sessions the reap ends the
-  shell.
+  shell. **A background shell is its own process group** (measured on 2.1.291: shell pid 58621,
+  pgid 58621, parent the `claude` process, pane group 58218), so a group signal never reaches it.
+  The normal reap ends it anyway — `close_pane` lets Claude Code end its own shells (measured) —
+  but the group backstop, the owner-EOF watcher and the startup sweep record such descendants as
+  `escaped` (pid, start) pairs after `--` in the group file and signal each by pid while its pair
+  still matches.
 
 **A turn that never gets its record.** When the activity is `finishing` (the model's message ended,
 Claude Code's end-of-turn record has not arrived) and the screen has been static with no Stop-hook
 row for 3 × `secondaryQuietMs`, the anomaly `turn_end_record_missing` is added (R3-M4) and the team
-note tells the caller to cancel. No timer ends the turn (D10).
+note tells the caller to cancel. The CONDITION is live (`turnEndRecordMissing` on the snapshot): it
+clears the moment activity leaves `finishing`, and only while it holds do `activity_by_slot` and the
+row's `activity` read `finishing: turn_end_record_missing`; the anomaly stays as history. A sticky
+read presented a slot the model had woken again as wedged. No timer ends the turn (D10).
 
 **Blocked.** A pending `AskUserQuestion` comes from the transcript. A permission or plan-approval
 dialog also needs the screen: `hasChoiceDialog` is a CLOSED list (R3-H1) — a named header
@@ -237,14 +260,27 @@ read that file") never reaches `response-<slot>.md` or the pattern, and its size
 answer. Every assistant message of the turn was read from the transcript, so a mismatch means the
 model did not produce the shape, not that the capture lost it (`team-capture.md`).
 
-**Delivery mechanics.** `send {typed:true}` types the line as keystrokes. With no witness 10 s after
-delivery, a line still in the box gets one more Enter (`resent_enter`); a panel command (`/cost`
-opens a full-screen panel, writes no record and swallows input until Esc) gets an Esc
-(`panel_dismissed`). The prompt a session was CREATED with must be accepted within 30 s, else FAILED
-`prompt_not_accepted`; a later `send_input` that is never accepted returns the session to idle with
-the anomaly `send_not_accepted`. `/exit` and `/quit` are control lines, not turns.
+**Delivery mechanics.** `send {typed:true}` types the line as keystrokes. A send is retried only when
+magmux refused it (`busy`, `pane_*`) or it was never written; when the REPLY was lost
+(`client_timeout`, `client_lost`) magmux may already have typed it, so the next frame decides: the
+line in the box (or, for an Enter send, its witness or echo) means it landed (`send_reply_lost`), and
+only an empty box is typed again — a blind retry put the line in the box twice and no witness could
+match. With no witness 10 s after delivery, a line still in the box gets one more Enter
+(`resent_enter`). A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
+input swallowed until Esc) gets an Esc 500 ms after delivery (`panel_dismissed`), and once the empty
+box is back its admission ends without a turn (`panel_command`); it used to wait the 30 s bound and
+was then taken as a degraded acceptance. The prompt a session was CREATED with must be accepted
+within 30 s, else FAILED `prompt_not_accepted`; a later `send_input` that is never accepted returns
+the session to idle with the anomaly `send_not_accepted`. `/exit` and `/quit` are control lines, not
+turns: 2.1.282–2.1.285 still write the command's caveat, `<command-name>/exit` and
+`<local-command-stdout>(no content)` records into the SETTLED turn (real records in
+`corpus-redacted/exit-command.jsonl`), 2.1.291 writes none; after a delivered `/exit` an IDLE session
+never re-wakes, so the exit ends COMPLETED via `exit_clean`.
 
-**`send_input` is queued (D17).** It is accepted in every non-terminal state. A serial pump delivers
+**`send_input` is queued (D17).** It is accepted in every non-terminal state. `send` reads the
+transcript before it evaluates, so a turn whose end record already landed settles INSIDE the send;
+`SettledTurn.shape` carries the shape at that moment (the send has converted a one-shot session to
+interactive), and a send whose own step ended the session answers `terminal`, never a queued count. A serial pump delivers
 one prompt at a time when the session is idle, marking the offset before delivery. During a question
 or permission dialog a queued send presses Esc, which declines the dialog AND interrupts the turn;
 the interrupted turn settles through path I and the text becomes the next prompt.
