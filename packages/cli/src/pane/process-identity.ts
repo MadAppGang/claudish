@@ -45,6 +45,13 @@ export interface GroupMember {
 export interface GroupSnapshot {
   pgid: number;
   members: GroupMember[];
+  /**
+   * Descendants of group members that run in a process group of their OWN. Measured
+   * (code-review iteration 1, Claude Code 2.1.291): a `run_in_background` Bash shell is
+   * its own group leader (pgid = its pid), so a group signal never reaches it. Each is
+   * signalled by pid, only while its (pid, start time) pair still matches.
+   */
+  escaped?: GroupMember[];
 }
 
 /** What identifies one pane's processes. */
@@ -167,7 +174,40 @@ export function verifiedGroupSnapshot(
   if (!Number.isInteger(pgid) || pgid <= 1) return null;
   const members = table.filter((r) => r.pgid === pgid);
   if (!members.some((r) => paneIdentityMatches(r.command, pane))) return null;
-  return { pgid, members: members.map((r) => ({ pid: r.pid, lstart: r.lstart })) };
+  return withEscaped(
+    pgid,
+    members.map((r) => ({ pid: r.pid, lstart: r.lstart })),
+    escapedDescendants(table, pgid, new Set(members.map((r) => r.pid)))
+  );
+}
+
+function withEscaped(pgid: number, members: GroupMember[], escaped: GroupMember[]): GroupSnapshot {
+  return escaped.length ? { pgid, members, escaped } : { pgid, members };
+}
+
+/** Processes outside group `pgid` whose parent chain reaches one of its members. */
+function escapedDescendants(table: PsRow[], pgid: number, inGroup: Set<number>): GroupMember[] {
+  const parentOf = new Map(table.map((r) => [r.pid, r.ppid]));
+  const out: GroupMember[] = [];
+  for (const r of table) {
+    if (r.pgid === pgid) continue;
+    let p = r.ppid;
+    for (let hops = 0; hops < 64 && p > 1; hops++) {
+      if (inGroup.has(p)) {
+        out.push({ pid: r.pid, lstart: r.lstart });
+        break;
+      }
+      p = parentOf.get(p) ?? 0;
+    }
+  }
+  return out;
+}
+
+/** The recorded escaped descendants still alive: same pid AND same start time. */
+export function liveEscaped(table: PsRow[], snap: GroupSnapshot | null): number[] {
+  if (!snap?.escaped?.length) return [];
+  const keys = new Set(snap.escaped.map((m) => `${m.pid} ${collapse(m.lstart)}`));
+  return table.filter((r) => keys.has(`${r.pid} ${r.lstart}`)).map((r) => r.pid);
 }
 
 /**
@@ -184,15 +224,19 @@ export function mergeSnapshots(
 ): GroupSnapshot | null {
   if (!a) return b;
   if (!b || b.pgid !== a.pgid || b.members.length === 0) return a;
-  return { pgid: a.pgid, members: [...b.members] };
+  return withEscaped(a.pgid, [...b.members], [...(b.escaped ?? [])]);
 }
 
 /** Same pgid and the same (pid, start) members, in any order. */
 export function sameSnapshot(a: GroupSnapshot | null, b: GroupSnapshot | null): boolean {
   if (!a || !b) return a === b;
-  if (a.pgid !== b.pgid || a.members.length !== b.members.length) return false;
-  const keys = new Set(a.members.map((m) => `${m.pid} ${collapse(m.lstart)}`));
-  return b.members.every((m) => keys.has(`${m.pid} ${collapse(m.lstart)}`));
+  if (a.pgid !== b.pgid) return false;
+  const same = (x: GroupMember[], y: GroupMember[]) => {
+    if (x.length !== y.length) return false;
+    const keys = new Set(x.map((m) => `${m.pid} ${collapse(m.lstart)}`));
+    return y.every((m) => keys.has(`${m.pid} ${collapse(m.lstart)}`));
+  };
+  return same(a.members, b.members) && same(a.escaped ?? [], b.escaped ?? []);
 }
 
 /**
@@ -205,9 +249,15 @@ export function groupCheck(table: PsRow[], snap: GroupSnapshot | null): boolean 
   return table.some((r) => r.pgid === snap.pgid && keys.has(`${r.pid} ${r.lstart}`));
 }
 
-/** Serialise a snapshot as the `group` file: the pgid, then one `pid lstart` line per member. */
+/**
+ * Serialise a snapshot as the `group` file: the pgid, one `pid lstart` line per member,
+ * then `--` and one line per escaped descendant. \`member_in_pg\` reads only the lines
+ * before `--`, so an escaped line never widens the group check.
+ */
 export function formatGroupFile(snap: GroupSnapshot): string {
-  return `${snap.pgid}\n${snap.members.map((m) => `${m.pid} ${collapse(m.lstart)}`).join("\n")}\n`;
+  const line = (m: GroupMember) => `${m.pid} ${collapse(m.lstart)}`;
+  const esc = snap.escaped?.length ? `--\n${snap.escaped.map(line).join("\n")}\n` : "";
+  return `${snap.pgid}\n${snap.members.map(line).join("\n")}\n${esc}`;
 }
 
 export function parseGroupFile(text: string): GroupSnapshot | null {
@@ -215,11 +265,17 @@ export function parseGroupFile(text: string): GroupSnapshot | null {
   const pgid = Number(lines[0]);
   if (!Number.isInteger(pgid) || pgid <= 1) return null;
   const members: GroupMember[] = [];
+  const escaped: GroupMember[] = [];
+  let into = members;
   for (const l of lines.slice(1)) {
+    if (l.trim() === "--") {
+      into = escaped;
+      continue;
+    }
     const m = l.match(/^(\d+) (.+)$/);
-    if (m) members.push({ pid: Number(m[1]), lstart: collapse(m[2] ?? "") });
+    if (m) into.push({ pid: Number(m[1]), lstart: collapse(m[2] ?? "") });
   }
-  return { pgid, members };
+  return withEscaped(pgid, members, escaped);
 }
 
 /* ───────────────────────────── paths (R3-M2) ───────────────────────────── */
@@ -297,7 +353,7 @@ ident_in_pg() {
 }
 member_in_pg() {
   [ -f "$CTL/group" ] || return 1
-  pstable | P="$pg" awk '$2 == ENVIRON["P"] { print $1 " " $3 " " $4 " " $5 " " $6 " " $7 }' | grep -Fxq -f "$CTL/group"
+  pstable | P="$pg" G="$CTL/group" awk 'BEGIN { g = ENVIRON["G"]; while ((getline l < g) > 0) { if (++n == 1) continue; if (l == "--") break; k[l] = 1 } } $2 == ENVIRON["P"] && (($1 " " $3 " " $4 " " $5 " " $6 " " $7) in k) { f = 1 } END { exit !f }'
 }
 group_ok() {
   case "$pg" in (''|*[!0-9]*|0|1) return 1;; esac
@@ -313,7 +369,11 @@ find_pg() {
   fi
   group_ok
 }
-alive() { group_ok || mag_ok; }
+escaped_live() {
+  [ -f "$CTL/group" ] || return 0
+  pstable | G="$CTL/group" awk 'BEGIN { g = ENVIRON["G"]; while ((getline l < g) > 0) { if (l == "--") f = 1; else if (f) k[l] = 1 } } { if (($1 " " $3 " " $4 " " $5 " " $6 " " $7) in k) print $1 }'
+}
+alive() { group_ok || mag_ok || [ -n "$(escaped_live)" ]; }
 settle_wait() { i=0; while [ "$i" -lt "$1" ] && alive; do sleep 0.2; i=$((i + 1)); done; }
 launch_dir_ok() {
   case "$1" in ("$ROOT"/launch-??????) ;; (*) return 1;; esac
@@ -332,6 +392,7 @@ find_pg
 for s in TERM KILL; do
   alive || break
   group_ok && kill -"$s" -"$pg" 2>/dev/null
+  for e in $(escaped_live); do kill -"$s" "$e" 2>/dev/null; done
   mag_ok && kill -"$s" "$mag" 2>/dev/null
   if [ "$s" = TERM ]; then settle_wait 10; else settle_wait 5; fi
 done

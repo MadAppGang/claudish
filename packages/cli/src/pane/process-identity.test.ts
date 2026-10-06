@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  type GroupSnapshot,
   type PaneIdentity,
   type PsRow,
   WATCHER_FUNCTIONS,
@@ -12,6 +13,7 @@ import {
   isLaunchDirPath,
   isPaneMagmuxCommand,
   isPaneWatcherCommand,
+  liveEscaped,
   mergeSnapshots,
   paneIdentityMatches,
   parseGroupFile,
@@ -140,11 +142,13 @@ describe("TS predicates", () => {
 });
 
 /** Run the watcher's shell functions against the same real table through a fake `ps`. */
-function shell(script: string, opts: { ctl?: string; root?: string } = {}): string {
+function shell(script: string, opts: { ctl?: string; root?: string; rows?: PsRow[] } = {}): string {
   const bin = join(scratch, "bin");
   mkdirSync(bin, { recursive: true });
   // the watcher's own ps format: pid=,pgid=,lstart=,command= (the TS table minus ppid)
-  const shellTable = table.map((r) => `${r.pid} ${r.pgid} ${r.lstart} ${r.command}`).join("\n");
+  const shellTable = (opts.rows ?? table)
+    .map((r) => `${r.pid} ${r.pgid} ${r.lstart} ${r.command}`)
+    .join("\n");
   writeFileSync(join(scratch, "table.txt"), `${shellTable}\n`);
   // honours `-p <pid>` with `-o command=` (mag_ok) and prints the whole table otherwise
   writeFileSync(
@@ -176,6 +180,36 @@ describe("the generated watcher shell agrees with the TS predicates on the same 
     expect(spawnSync("/bin/sh", ["-n", "-c", WATCHER_SCRIPT]).status).toBe(0);
     const dash = spawnSync("dash", ["-n", "-c", WATCHER_SCRIPT]);
     if (!dash.error) expect(dash.status).toBe(0);
+  });
+
+  test("escaped_live ≡ liveEscaped: an own-group descendant, listed only while its (pid, start) matches", () => {
+    // Claude Code 2.1.291 runs a run_in_background Bash as its own group leader (measured)
+    const bg: PsRow = {
+      pid: leader.pid + 7001,
+      ppid: leader.pid,
+      pgid: leader.pid + 7001,
+      lstart: leader.lstart,
+      command: "/bin/zsh -c eval 'sleep 317'",
+    };
+    const withBg = [...table, bg];
+    const snap = verifiedGroupSnapshot(withBg, fx.panePid, pane) as GroupSnapshot;
+    expect(snap.escaped).toEqual([{ pid: bg.pid, lstart: bg.lstart }]);
+    expect(parseGroupFile(formatGroupFile(snap))).toEqual(snap);
+    expect(groupCheck(withBg, snap)).toBe(true);
+    expect(liveEscaped(withBg, snap)).toEqual([bg.pid]);
+    const reused = withBg.map((r) =>
+      r.pid === bg.pid ? { ...r, lstart: "Thu Jan 1 00:00:00 2099" } : r
+    );
+    expect(liveEscaped(reused, snap)).toEqual([]);
+    const ctl = join(scratch, "launch-EsC123");
+    mkdirSync(ctl, { recursive: true });
+    writeFileSync(join(ctl, "group"), formatGroupFile(snap));
+    expect(shell("escaped_live", { ctl, rows: withBg })).toBe(String(bg.pid));
+    expect(shell("escaped_live", { ctl, rows: reused })).toBe("");
+    // a member line never matches an escaped row: group_ok still needs the recorded pgid
+    expect(shell(`pg=${bg.pgid}; member_in_pg && echo Y || echo N`, { ctl, rows: withBg })).toBe(
+      "N"
+    );
   });
 
   test("mag_ok / find_mag", () => {

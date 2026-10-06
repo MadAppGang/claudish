@@ -6,8 +6,9 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SlotState } from "./contract.js";
 import {
@@ -333,6 +334,41 @@ describe.skipIf(!MAGMUX)(
           expect(Date.now() - at).toBeGreaterThan(2000);
           expect(snap.state).toBe("COMPLETED");
           expect(r.turns[0]?.settledBy).toBe("turn_duration");
+        },
+        T
+      );
+
+      test(
+        "bg_detached: a background shell in its own process group is ended by the reap",
+        async () => {
+          const pidFile = join("/tmp", `pane-bg-${process.pid}-${Date.now()}`);
+          const r = await start("bg_detached", { env: { FAKE_BG_PID_FILE: pidFile } });
+          await until(r, () => existsSync(pidFile));
+          const pid = Number(readFileSync(pidFile, "utf8"));
+          rmSync(pidFile, { force: true });
+          try {
+            const pgid = Number(
+              execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" })
+            );
+            expect(pgid).toBe(pid); // its own group: a group signal to the pane never reaches it
+            expect((await finish(r)).state).toBe("COMPLETED");
+            let alive = true;
+            for (let i = 0; i < 20 && alive; i++) {
+              try {
+                process.kill(pid, 0);
+                await Bun.sleep(100);
+              } catch {
+                alive = false;
+              }
+            }
+            expect(alive).toBe(false);
+          } finally {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {
+              // already ended by the reap
+            }
+          }
         },
         T
       );

@@ -41,6 +41,7 @@ import {
   isPaneSockPath,
   isPaneWatcherCommand,
   isValidPaneId,
+  liveEscaped,
   mergeSnapshots,
   parseGroupFile,
   readProcessTable,
@@ -445,6 +446,7 @@ async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets
   for (const sig of ["SIGTERM", "SIGKILL"] as const) {
     const table = readProcessTable();
     if (t.group && groupCheck(table, t.group)) signal(-t.group.pgid, sig);
+    for (const pid of liveEscaped(table, t.group)) signal(pid, sig);
     if (t.mag && isPaneMagmux(t.mag, rec.paneId, table)) signal(t.mag, sig);
     await Bun.sleep(sig === "SIGTERM" ? 2000 : 300);
   }
@@ -465,6 +467,7 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   const after = readProcessTable();
   const stillAlive =
     (t0.group && groupCheck(after, t0.group)) ||
+    liveEscaped(after, t0.group).length > 0 ||
     (t0.mag !== null && isPaneMagmux(t0.mag, rec.paneId, after));
   if (stillAlive) {
     out.kept.push(rec.paneId);

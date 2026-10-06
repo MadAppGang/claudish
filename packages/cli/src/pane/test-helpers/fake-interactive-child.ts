@@ -551,6 +551,8 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       return bgRewake(c);
     case "bg_server":
       return bgServer(c);
+    case "bg_detached":
+      return bgDetached(c);
     case "ask_user":
     case "ask_user_send":
     case "interrupt_td":
@@ -664,6 +666,18 @@ async function bgServer(c: string): Promise<void> {
   );
   // a real process in the pane group, so the reap can be seen ending "the shell"
   spawn("sleep", ["300"], { stdio: "ignore" }).unref();
+  return answerTurn(c);
+}
+
+/**
+ * A background shell in a process group of its OWN, as Claude Code 2.1.291 runs a
+ * `run_in_background` Bash (measured: pgid = the shell's pid). Unlike real Claude Code
+ * the fake never ends it on exit, so only claudish's reap can.
+ */
+async function bgDetached(c: string): Promise<void> {
+  const child = spawn("sleep", ["300"], { stdio: "ignore", detached: true });
+  child.unref();
+  if (env.FAKE_BG_PID_FILE && child.pid) writeFileSync(env.FAKE_BG_PID_FILE, String(child.pid));
   return answerTurn(c);
 }
 

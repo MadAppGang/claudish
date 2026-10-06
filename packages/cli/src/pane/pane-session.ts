@@ -63,6 +63,7 @@ import {
   type PaneIdentity,
   groupCheck,
   isLaunchDirPath,
+  liveEscaped,
   readProcessTableAsync,
   recordPathOf,
   verifiedGroupSnapshot,
@@ -1577,18 +1578,28 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     refreshGroupOf(this, table);
   }
 
+  /** The verified group, or a recorded escaped descendant (own process group), is alive. */
   private async groupAlive(): Promise<boolean> {
-    return !!this.group && groupCheck(await readProcessTableAsync(), this.group);
+    if (!this.group) return false;
+    const table = await readProcessTableAsync();
+    return groupCheck(table, this.group) || liveEscaped(table, this.group).length > 0;
+  }
+
+  /** The verified group (`-pgid`) and each live escaped descendant (its pid), re-read now. */
+  private async backstopTargets(): Promise<number[]> {
+    if (!this.group) return [];
+    const table = await readProcessTableAsync();
+    return [
+      ...(groupCheck(table, this.group) ? [-this.group.pgid] : []),
+      ...liveEscaped(table, this.group),
+    ];
   }
 
   private async groupBackstop(): Promise<void> {
     for (const sig of ["SIGTERM", "SIGKILL"] as const) {
-      if (!this.group || !(await this.groupAlive())) return;
-      try {
-        process.kill(-this.group.pgid, sig);
-      } catch {
-        return;
-      }
+      const targets = await this.backstopTargets();
+      if (targets.length === 0) return;
+      for (const target of targets) signalQuietly(target, sig);
       const end = Date.now() + (sig === "SIGTERM" ? this.ms(2000, 500) : 1000);
       while (Date.now() < end && (await this.groupAlive())) await Bun.sleep(150);
     }
@@ -1640,6 +1651,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   killMagmuxSync(): void {
     if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
+  }
+}
+
+function signalQuietly(target: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(target, sig);
+  } catch {
+    // gone between the read and the signal
   }
 }
 
