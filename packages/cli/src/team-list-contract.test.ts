@@ -178,6 +178,29 @@ describe.skipIf(!MAGMUX)("team run registry (list / status / cancel / capture)",
     expect(existsSync(path)).toBe(false);
   });
 
+  it("checks every argument's type before the run lookup, for status, cancel and capture", async () => {
+    const path = join(base, "nothing-here");
+    const bad: Array<[string, Record<string, unknown>]> = [
+      ["spans", { spans: "yes" }],
+      ["spans", { spans: 1 }],
+      ["since_seq", { since_seq: "3" }],
+      ["since_seq", { since_seq: 1.5 }],
+      ["run_id", { run_id: 7 }],
+      ["slot", { slot: 1 }],
+    ];
+    for (const mode of ["status", "cancel", "capture"] as const)
+      for (const [name, extra] of bad) {
+        const r = json(await teamContractVerb(mode, { path, slot: "01", ...extra }));
+        expect(r.body.error.code).toBe("invalid_args");
+        expect(r.body.error.message).toContain(`'${name}'`);
+      }
+    // well-typed arguments reach the lookup: the run does not exist
+    const ok = json(
+      await teamContractVerb("capture", { path, slot: "01", spans: false, since_seq: 0 })
+    );
+    expect(ok.body.error.code).toBe("unknown_run");
+  });
+
   it("answers unknown runs and slots with ContractError JSON", async () => {
     const path = join(base, "nothing-here");
     const unknownStatus = json(await teamContractVerb("status", { path }));

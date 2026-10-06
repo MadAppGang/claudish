@@ -706,6 +706,22 @@ function optionalString(raw: unknown, name: string): string | undefined {
   return raw;
 }
 
+/** A boolean argument: absent → false; anything but a JSON boolean is the caller's error. */
+function optionalBoolean(raw: unknown, name: string): boolean {
+  if (raw === undefined || raw === null) return false;
+  if (typeof raw !== "boolean")
+    throw new ContractErrorException("invalid_args", `'${name}' must be a boolean`);
+  return raw;
+}
+
+/** An integer argument such as `since_seq`; absent → undefined. */
+function optionalInteger(raw: unknown, name: string): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw))
+    throw new ContractErrorException("invalid_args", `'${name}' must be an integer`);
+  return raw;
+}
+
 /**
  * `team(mode="status")` (§8 B): the legacy payload of the newest run at `path` plus
  * `contract_version`, `capabilities` and `run`. Given a `run_id` that a newer run at the
@@ -754,9 +770,13 @@ export async function teamContractVerb(
 ): Promise<ToolAnswer> {
   try {
     if (mode === "list") return contractAnswer(listTeamRuns());
+    // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
+    // is the caller's error whether or not the run exists (§8 E).
     const path = contractPath(args.path, mode);
     const runId = optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
+    const since = optionalInteger(args.since_seq, "since_seq");
+    const spans = optionalBoolean(args.spans, "spans");
     switch (mode) {
       case "status":
         return contractAnswer(teamStatusAnswer(path, runId));
@@ -765,12 +785,7 @@ export async function teamContractVerb(
       case "capture": {
         if (slot === undefined)
           throw new ContractErrorException("invalid_args", "'slot' is required for mode 'capture'");
-        const since = args.since_seq;
-        if (since !== undefined && (typeof since !== "number" || !Number.isInteger(since)))
-          throw new ContractErrorException("invalid_args", "'since_seq' must be an integer");
-        return contractAnswer(
-          captureTeamSlot(path, slot, since as number | undefined, args.spans === true, runId)
-        );
+        return contractAnswer(captureTeamSlot(path, slot, since, spans, runId));
       }
     }
   } catch (e) {
