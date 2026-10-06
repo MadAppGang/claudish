@@ -314,7 +314,18 @@ interface LiveTeamRun {
   /** the in-memory object `updateModelStatus` serialises to status.json */
   status: TeamStatus;
   slots: Map<string, SlotEntry>;
+  /** resolves once `done` has ended the run's record (`onSettled`), whatever ended it */
+  settled: Promise<void>;
 }
+
+/** A `startModels` still before its registry entry (credentials, the staggered spawn loop). */
+interface StartFlight {
+  /** set by shutdown: the loop starts no further pane and unwinds through its `catch` */
+  aborted: boolean;
+}
+
+/** Every `startModels` in progress, to the promise it returns (§20.3 item 8). */
+const startsInFlight = new Map<StartFlight, Promise<unknown>>();
 
 /**
  * Runs this process started, keyed by run_id (CA-13). An ACTIVE run stays until it
@@ -669,21 +680,29 @@ export function teamLiveMaps(
   return { idle, activity, liveBytes, endRecordMissing };
 }
 
+function cancelEverySlot(): void {
+  for (const run of teamRuns.values()) for (const e of run.slots.values()) e.session?.cancel();
+}
+
 /**
- * Settle every live team run CANCELLED. Process shutdown only: the records end
- * `cancelled` because each run's `done` resolves on these transitions; the pane registry's
- * `reapAllPanes` does the killing.
+ * Settle every team run CANCELLED and wait until each one's record has ENDED (§20.3
+ * item 8). Process shutdown only; the pane registry's `reapAllPanes` does the killing.
+ *
+ * A run still in its spawn loop is not in `teamRuns` yet: it is told to stop spawning,
+ * unwinds through its own `catch` (its handler writes `start-failed`), and is awaited. A
+ * run whose loop finished meanwhile registers, so the cancel pass repeats until no start
+ * is in flight. Then every run's `settled` — the end of `done`, after `onSettled` — is
+ * awaited, so no record is left without its end on a clean shutdown.
  */
 export async function shutdownAllTeamRuns(): Promise<void> {
-  const pending: Promise<unknown>[] = [];
-  for (const run of teamRuns.values()) {
-    for (const e of run.slots.values()) {
-      if (!e.session) continue;
-      e.session.cancel();
-      pending.push(e.session.terminal.catch(() => undefined));
-    }
+  for (const f of startsInFlight.keys()) f.aborted = true;
+  for (;;) {
+    cancelEverySlot();
+    if (startsInFlight.size === 0) break;
+    await Promise.allSettled([...startsInFlight.values()]);
   }
-  await Promise.all(pending);
+  cancelEverySlot();
+  await Promise.allSettled([...teamRuns.values()].map((r) => r.settled));
 }
 
 /** @internal tests: forget every retained run. */
@@ -1107,9 +1126,27 @@ const CANCELLED_DETAIL =
  * Each slot receives input.md (typed when it is one plain line, else as a task file it
  * is told to Read) and its answer is written to response-{ID}.md.
  */
-export async function startModels(
+export function startModels(sessionPath: string, opts: TeamRunOptions = {}): Promise<TeamHandle> {
+  const flight: StartFlight = { aborted: false };
+  const p = startModelsIn(flight, sessionPath, opts);
+  startsInFlight.set(flight, p);
+  const forget = () => {
+    startsInFlight.delete(flight);
+  };
+  p.then(forget, forget);
+  return p;
+}
+
+/** The stagger before slot `i` (X-L8), then the shutdown check: no pane starts after it. */
+async function beforeSpawn(i: number, flight: StartFlight): Promise<void> {
+  if (i > 0) await new Promise((r) => setTimeout(r, BOOT_STAGGER_MS));
+  if (flight.aborted) throw new Error("cancelled: the server is shutting down");
+}
+
+async function startModelsIn(
+  flight: StartFlight,
   sessionPath: string,
-  opts: TeamRunOptions = {}
+  opts: TeamRunOptions
 ): Promise<TeamHandle> {
   assertValidRequirePattern(opts.requirePattern);
   const claudeFlags = opts.claudeFlags ?? [];
@@ -1391,7 +1428,7 @@ export async function startModels(
   try {
     let i = 0;
     for (const [id, entry] of Object.entries(manifest.models)) {
-      if (i++ > 0) await new Promise((r) => setTimeout(r, BOOT_STAGGER_MS));
+      await beforeSpawn(i++, flight);
       // Spawn with the parent-resolved explicit spec when there is one, so the child
       // skips routing entirely and finds its key in the inherited env. ABSENT from the
       // map means "spawn it bare". The manifest keeps `entry.model` (the user's string)
@@ -1531,6 +1568,10 @@ export async function startModels(
 
   // The registry entry exists from here, before the D9 `ready` await, so a run is
   // listable and cancellable once all of its panes exist (§3.2, §20.3).
+  let resolveSettled: () => void = () => {};
+  const settled = new Promise<void>((r) => {
+    resolveSettled = r;
+  });
   run = {
     runId,
     path,
@@ -1539,6 +1580,7 @@ export async function startModels(
     finishedAt: null,
     status: statusCache,
     slots: entries,
+    settled,
   };
   teamRuns.set(runId, run);
   newestRunByPath.set(path, runId);
@@ -1581,6 +1623,7 @@ export async function startModels(
       } catch {
         // A settle consumer must never be able to fail the run.
       }
+      resolveSettled();
     }
     return statusCache;
   })();
