@@ -1686,6 +1686,13 @@ export async function judgeResponses(
   sessionPath: string,
   opts: TeamJudgeOptions = {}
 ): Promise<TeamVerdict> {
+  // Response files are written only at a slot's terminal transition: judging a run that
+  // is still ACTIVE would silently vote on the subset that happens to have finished.
+  const active = activeRunAt(resolve(sessionPath));
+  if (active)
+    throw new Error(
+      `invalid_args: the team run at ${resolve(sessionPath)} is still ACTIVE (run_id ${active.runId}); judge it once it has settled`
+    );
   // Collect all response files in sorted order
   const responseFiles = readdirSync(sessionPath)
     .filter((f) => f.startsWith("response-") && f.endsWith(".md"))

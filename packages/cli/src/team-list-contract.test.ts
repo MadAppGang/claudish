@@ -18,6 +18,7 @@ import {
   MAX_SETTLED_RUNS,
   type TeamHandle,
   cancelTeamRun,
+  judgeResponses,
   listTeamRuns,
   preflightTeamRun,
   pruneTeamRunsForTests,
@@ -163,6 +164,10 @@ describe.skipIf(!MAGMUX)("team run registry (list / status / cancel / capture)",
 
     await expect(preflightTeamRun({ path, slots: 1 })).rejects.toThrow(message);
     await expect(startModels(path, paneRunOptions(t))).rejects.toThrow(message);
+    // judging it now would vote on whichever slots happen to have finished
+    await expect(judgeResponses(path)).rejects.toThrow(
+      `invalid_args: the team run at ${path} is still ACTIVE (run_id ${active.runId})`
+    );
   }, 60_000);
 
   it("refuses an invalid require_pattern in preflight, before any session dir or record", async () => {
