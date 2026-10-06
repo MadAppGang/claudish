@@ -158,7 +158,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `require_pattern` - Regex (no flags) each slot's answer must match, or the slot is EMPTY `shape_mismatch`. Recommended whenever your prompt mandates an output shape, e.g. ```` ```vote ````
 - `min_output_bytes` - Report a slot EMPTY when its answer is shorter than this (default 0 = off)
 - `agent` - Claude Code subagent every slot runs as (e.g. `dev:reviewer`); an unknown agent fails the slot `agent_rejected`
-- `claude_flags` - Other Claude Code flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`). Flags that would break the interactive pane (`-p`, `--output-format`, `--resume`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
+- `claude_flags` - Other Claude Code flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags that would break the interactive pane (`-p`, `--output-format`, `--resume`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
 - `slot` - For `capture` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
 - `run_id` - For `status`, `capture` and `cancel`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
 - `since_seq`, `spans` - For `capture`: see `capture_session`
@@ -293,7 +293,7 @@ is interactive and waits for `send_input`.
 - `prompt` (optional) - Initial prompt. If omitted, send later via `send_input`.
 - `timeout_seconds` (optional) - Session timeout in whole seconds, 1-3600 (default: 600). A fractional value is rounded and an out-of-range one clamped, so `spawn.json` always carries an integer in that range
 - `agent` (optional) - Claude Code subagent the session runs as, e.g. `dev:reviewer`
-- `claude_flags` (optional) - Other Claude Code / claudish flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`). Flags the pane owns (`-p`, `--resume`, `--model`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
+- `claude_flags` (optional) - Other Claude Code / claudish flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags the pane owns (`-p`, `--resume`, `--model`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
 - `work_dir` (optional) - Working directory for the session (default: current directory)
 
 **Returns:** `{ session_id: "...", state: "STARTING" }` as soon as the pane exists; Claude Code then boots in it.
