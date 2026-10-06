@@ -176,12 +176,13 @@ the content is. Same lesson as `require_pattern` in `team-capture.md`, one layer
 
 ### A working implementation
 
-`scripts/magmux-drive-session.ts` implements the sequence above and is the thing to read (or
-copy) rather than reconstructing it:
+`packages/cli/src/pane/` (`PaneSession`) implements the sequence above for MCP `team` slots and
+`create_session`, and `scripts/pane-drive.ts` drives one session through it from the command
+line (it replaced the polling reference driver `magmux-drive-session.ts`, whose measurements
+follow):
 
-    bun scripts/magmux-drive-session.ts <id> "Reply with exactly OK and nothing else."
-    -> {"ok":true,"answer":"OK","costSeen":true,
-        "states":["boot=awaiting_input","started=running","settled=awaiting_input"]}
+    bun scripts/pane-drive.ts "Reply with exactly OK and nothing else."
+    bun scripts/pane-drive.ts --fake answer "hello"      # the test fake, hermetic, no cost
 
 Measured: 8/8 deterministic runs, 14-25s each; distinct prompts return their real answers
 (`BANANA`, `51` for 17x3, `PEAR`), so it reports model output rather than a fixed string; a
