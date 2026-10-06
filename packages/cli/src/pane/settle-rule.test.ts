@@ -350,3 +350,34 @@ describe("refusal (redacted corpus)", () => {
     });
   });
 });
+
+describe("path L — a local command's stdout", () => {
+  function compactView(): TranscriptView {
+    const n = "local-commands";
+    const recs = transcriptRecords(n);
+    const at = recs.findIndex((r) => r.type === "user" && textOf(r) === "/compact");
+    const upTo = recs.findIndex((r) => textOf(r).startsWith("Reply with exactly KIWI"));
+    const r = replay(n, [{ at, witness: { kind: "command", name: "compact" } }], { upTo });
+    cleanups.push(r.cleanup);
+    return r.views[0]!;
+  }
+
+  test("settles /compact (no assistant record, no turn_duration) once corroborated", () => {
+    const v = compactView();
+    expect(v.current?.turnDurationAfterLast).toBeNull();
+    expect(decideSettle(input(v))).toEqual({
+      settled: true,
+      by: "local_command",
+      stopReason: null,
+      anomalies: [],
+    });
+    expect(decideSettle(input(v, { chatQuietMs: 0 })).settled).toBe(false);
+    expect(decideSettle(input(v, { screen: { ...IDLE_SCREEN, working: true } })).settled).toBe(
+      false
+    );
+    expect(decideSettle(input(v, { screen: null, paneExited: true }))).toMatchObject({
+      settled: true,
+      by: "local_command",
+    });
+  });
+});

@@ -83,6 +83,8 @@ export interface TurnView {
   preambleBytes: number;
   /** offset of the last main-chain chat record (user or assistant) of this turn */
   lastChatOffset: number | null;
+  /** a local command's `<local-command-stdout>` after its witness (ANSI removed); null otherwise */
+  localCommandOutput: string | null;
 }
 
 export interface SessionFacts {
@@ -140,6 +142,7 @@ interface TurnState {
   compactions: number;
   read: ReadState | null;
   lastChatOffset: number | null;
+  localOutput: { text: string; offset: number } | null;
 }
 
 export interface FollowerState {
@@ -403,6 +406,24 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
   }
 }
 
+const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences in local-command output
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+/**
+ * A command turn's settle evidence (§2.7): the `<local-command-stdout>` record a LOCAL
+ * command writes after its `<command-name>` witness, with no assistant message (captured:
+ * `/compact`, `/model x` in 2.1.291). A command that prompts the model (`/pear`) writes
+ * none and settles like any other turn.
+ */
+function applyLocalCommandRecord(t: TurnState, text: string, offset: number): void {
+  if (t.witness.kind !== "command" || t.lastAssistant || t.localOutput) return;
+  const m = text.match(STDOUT_RE);
+  if (!m) return;
+  t.localOutput = { text: (m[2] ?? "").replace(ANSI_RE, "").trim(), offset };
+  t.lastChatOffset = offset;
+}
+
 function applyNotification(t: TurnState, text: string): void {
   const id = taskIdOf(text);
   if (!id) return;
@@ -421,7 +442,10 @@ function applyUser(t: TurnState, r: Rec, offset: number): void {
     return;
   }
   const text = userText(r);
-  if (isLocalCommandText(text)) return;
+  if (isLocalCommandText(text)) {
+    applyLocalCommandRecord(t, text, offset);
+    return;
+  }
   if (text.startsWith("[Request interrupted by user")) {
     t.interrupt = { forToolUse: text.includes("for tool use") };
     t.pending.clear();
@@ -537,6 +561,7 @@ export function openTurnState(
     compactions: 0,
     read: t.delivery ? newReadState(t.delivery) : null,
     lastChatOffset: null,
+    localOutput: null,
   });
   return state;
 }
@@ -589,6 +614,7 @@ export function turnView(t: TurnState): TurnView {
       : { linesReturned: 0, complete: true, reads: 0, completedAtOffset: null },
     preambleBytes,
     lastChatOffset: t.lastChatOffset,
+    localCommandOutput: t.localOutput?.text ?? null,
   };
 }
 

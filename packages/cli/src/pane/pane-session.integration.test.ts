@@ -396,6 +396,36 @@ describe.skipIf(!MAGMUX)(
       );
     });
 
+    describe.concurrent("slash commands", () => {
+      test(
+        "local commands settle on their stdout (path L) and the prompt queued behind them is answered",
+        async () => {
+          const r = await start("answer", {
+            shape: "interactive",
+            initialPrompt: undefined,
+            decide: () => "continue",
+          });
+          await r.s.ready;
+          expect(r.s.send("/compact").ok).toBe(true);
+          expect(r.s.send("/model haiku").ok).toBe(true);
+          expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
+          await until(r, (s) => s.turnsCompleted === 3 && s.state === "AWAITING_INPUT");
+          expect(r.turns.map((t) => t.settledBy)).toEqual([
+            "local_command",
+            "local_command",
+            "turn_duration",
+          ]);
+          expect(r.turns[0]?.answer).toBe("Compacted (ctrl+o to see full summary)");
+          expect(r.turns[0]?.delivery.mode).toBe("command");
+          expect(r.turns[1]?.answer).toBe("Set model to `haiku`");
+          expect(r.turns[2]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`);
+          r.s.cancel();
+          await finish(r);
+        },
+        T
+      );
+    });
+
     describe.concurrent("blocked, interrupts and permission", () => {
       test(
         "ask_user (team): FAILED blocked with the question text, in one net transition",
@@ -538,7 +568,7 @@ describe.skipIf(!MAGMUX)(
           const r = await start("answer", { shape: "interactive", decide: () => "continue" });
           await until(r, (s) => s.state === "AWAITING_INPUT" && s.turnsCompleted === 1);
           r.s.send("/exit");
-          const snap = await finish(r);
+          const snap = await finish(r, 8000);
           expect(snap.state).toBe("COMPLETED");
           expect(snap.reason).toBeNull();
           expect(snap.turnsCompleted).toBe(1);

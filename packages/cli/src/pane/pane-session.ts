@@ -1081,7 +1081,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const d = this.currentDelivery;
     return {
       index: t.index,
-      answer: t.assistantText.join("\n\n"),
+      // a local command's answer is its own stdout: it has no assistant message (path L)
+      answer:
+        decision.by === "local_command"
+          ? (t.localCommandOutput ?? "")
+          : t.assistantText.join("\n\n"),
       apiError: t.apiError,
       stopReason: decision.stopReason,
       captureSource: "transcript",

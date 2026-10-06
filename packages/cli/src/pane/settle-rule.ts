@@ -15,6 +15,9 @@
  *      satisfy S: until its summary is written there is none, and the screen's working
  *      row is rewritten every second while it runs.
  *   X  only when the pane has exited: an ending `stop_reason` and nothing waking after it.
+ *   L  a LOCAL slash command (`/compact`, `/model x`): its `<local-command-stdout>` after
+ *      the witness and no assistant message. Claude Code writes neither an assistant record
+ *      nor `turn_duration` for one (captured, 2.1.290 and 2.1.291).
  *
  * Nothing here is a timer that ends work (D10): S's window only confirms an ending that
  * has already happened, and an unsettled turn just reports its `activity`.
@@ -60,7 +63,7 @@ export interface SettleInput {
   corroborationMs?: number;
 }
 
-export type SettledBy = "turn_duration" | "interrupt" | "quiet" | "exit";
+export type SettledBy = "turn_duration" | "interrupt" | "quiet" | "exit" | "local_command";
 
 export type SettleDecision =
   | { settled: true; by: SettledBy; stopReason: string | null; anomalies: string[] }
@@ -127,6 +130,13 @@ function pathInterrupt(input: SettleInput): Path {
   return c.ok ? settledAs("interrupt", "interrupted", c) : null;
 }
 
+/** L — a local command's stdout (corroborated like P; no screen once the pane exited). */
+function pathLocalCommand(input: SettleInput): Path {
+  if (input.paneExited) return settledAs("local_command", null, {});
+  const c = corroborated(input);
+  return c.ok ? settledAs("local_command", null, c) : null;
+}
+
 /** P — turn_duration with no background agent pending. */
 function pathPrimary(t: TurnView, input: SettleInput): Path {
   const td = t.turnDurationAfterLast;
@@ -152,6 +162,8 @@ function pathSecondary(t: TurnView, input: SettleInput): Path {
 export function decideSettle(input: SettleInput): SettleDecision {
   const t = input.turn;
   const notYet: SettleDecision = { settled: false, activity: activityOf(t) };
+  if (t && t.acceptedAt !== null && !t.lastAssistant && t.localCommandOutput !== null)
+    return pathLocalCommand(input) ?? notYet;
   // 1. accepted, with an assistant message after the witness; 2. nothing waking after it
   if (!t || t.acceptedAt === null || !t.lastAssistant || t.wakingAfterLast) return notYet;
   if (t.interruptAfterLast) return pathInterrupt(input) ?? notYet;

@@ -713,6 +713,28 @@ async function screenOnlyTurn(line: string): Promise<void> {
   else showHistory(`⏺ ${answerFor(line)}`, finishedRow());
 }
 
+/** Local commands the fake runs the way 2.1.291 does: their own records, no model turn. */
+const LOCAL_COMMANDS = new Set(["compact", "model"]);
+
+async function localCommandTurn(name: string, args: string): Promise<void> {
+  S.history.push(`❯ /${name}${args ? ` ${args}` : ""}`);
+  let stdout = `Set model to \`${args}\``;
+  if (name === "compact") {
+    // file order as captured: the typed line, the boundary and summary, then the
+    // command's caveat / <command-name> / <local-command-stdout>
+    rec.slice([L.compactTyped]);
+    S.working = "✶ Compacting conversation…";
+    render();
+    await sleep(gap("COMPACT", 300));
+    rec.slice([L.compactBoundary, L.compactSummary]);
+    stdout = "\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m";
+  }
+  S.working = null;
+  rec.localCommand(name, args, stdout);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the ANSI the stdout carries
+  showHistory(`  ⎿  ${stdout.replace(/\x1b\[[0-9;]*m/g, "")}`);
+}
+
 async function submit(line: string): Promise<void> {
   turn++;
   busy = true;
@@ -737,6 +759,8 @@ async function submit(line: string): Promise<void> {
     } else {
       if (scenario !== "immediate_write") await sleep(gap("WITNESS", 50));
       const slash = line.match(/^\/([A-Za-z0-9][A-Za-z0-9:_-]*)\s*(.*)$/);
+      if (slash && LOCAL_COMMANDS.has(slash[1] as string))
+        return await localCommandTurn(slash[1] as string, slash[2] ?? "");
       if (slash) rec.command(slash[1] as string, slash[2] ?? "");
       else rec.user(line);
       S.history.push(`❯ ${line.split("\n")[0]}`);

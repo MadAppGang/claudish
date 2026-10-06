@@ -634,6 +634,40 @@ describe("tailing", () => {
 });
 
 describe("local commands", () => {
+  test("a local command turn carries its stdout (2.1.291 /model, /compact), ANSI removed", () => {
+    const n = "local-commands";
+    const recs = transcriptRecords(n);
+    const model = recs.findIndex((r) => textOf(r).includes("<command-name>/model</command-name>"));
+    const compactTyped = recs.findIndex((r) => r.type === "user" && textOf(r) === "/compact");
+    const { views } = run(n, [
+      { at: model - 2, witness: { kind: "command", name: "model" } },
+      { at: compactTyped, witness: { kind: "command", name: "compact" } },
+    ]);
+    const m = cur(views[0]);
+    expect(m.acceptedAt).not.toBeNull();
+    expect(m.lastAssistant).toBeNull();
+    expect(m.localCommandOutput?.startsWith("Set model to `Haiku 4.5`")).toBe(true);
+    expect(m.localCommandOutput).not.toContain("\u001b");
+    // the second turn ran on to the KIWI turn, so view the compact turn before it
+    const { views: v2 } = run(
+      n,
+      [{ at: compactTyped, witness: { kind: "command", name: "compact" } }],
+      { upTo: recs.findIndex((r) => textOf(r).startsWith("Reply with exactly KIWI")) }
+    );
+    expect(cur(v2[0]).localCommandOutput).toBe("Compacted (ctrl+o to see full summary)");
+  });
+
+  test("a prompt command (/pear) carries no local output: it settles on its assistant turn", () => {
+    const n = "slash-and-reads";
+    const at = transcriptRecords(n).findIndex((r) => textOf(r).includes("<command-name>/pear"));
+    const td = indexOf(n, (r) => r.subtype === "turn_duration", at);
+    const { views } = run(n, [{ at, witness: { kind: "command", name: "pear" } }], {
+      upTo: td + 1,
+    });
+    expect(cur(views[0]).localCommandOutput).toBeNull();
+    expect(cur(views[0]).assistantText).toEqual(["PEAR"]);
+  });
+
   test("/exit's own records after a settled turn (real 2.1.285) never wake it", async () => {
     const { appendFileSync } = await import("node:fs");
     const PEAR = "Reply with exactly PEAR and nothing else.";
