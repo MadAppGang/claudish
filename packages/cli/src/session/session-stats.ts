@@ -9,8 +9,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { userHomeFrom } from "../channel/home-dir.js";
 import { type Baseline, baselineCost, getBaselines } from "./baseline-pricing.js";
 
 /** One tool's share of the session. */
@@ -74,9 +74,24 @@ export interface SessionStats {
   billedInputTokens: number;
 }
 
-/** The path `TokenTracker.writeFile` wrote to, resolved the same way it resolves it. */
-export function tokenFilePath(port: number): string {
-  return process.env.CLAUDISH_TOKEN_FILE || join(homedir(), ".claudish", `tokens-${port}.json`);
+/**
+ * This session's token file: the path `TokenTracker.writeFile` writes to, the path the
+ * status line reads, and the path the end-of-session summary reads. ONE resolver for
+ * all three readers of the writer's rule.
+ *
+ * An inherited `CLAUDISH_TOKEN_FILE` wins: a parent (team, the MCP channel, a pane)
+ * names the file the child's proxy writes, and the tracker honours it. Otherwise it is
+ * `<home>/.claudish/tokens-<port>.json`, `<home>` by the `$HOME`-first rule.
+ *
+ * `createTempSettingsFile` used to build the default path itself and ignore the
+ * override, so a child with an inherited `CLAUDISH_TOKEN_FILE` drew its status line
+ * from a port-keyed file nobody wrote.
+ */
+export function resolveTokenFilePath(
+  port: number | string,
+  env: Record<string, string | undefined> = process.env
+): string {
+  return env.CLAUDISH_TOKEN_FILE || join(userHomeFrom(env), ".claudish", `tokens-${port}.json`);
 }
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -93,7 +108,7 @@ export function readSessionStats(
 ): SessionStats | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(tokenFilePath(port), "utf-8"));
+    raw = JSON.parse(readFileSync(resolveTokenFilePath(port), "utf-8"));
   } catch {
     return null;
   }

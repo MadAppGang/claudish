@@ -28,6 +28,7 @@ import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
+import { resolveTokenFilePath } from "./session/session-stats.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -808,15 +809,21 @@ export function createTempSettingsFile(
   const timestamp = Date.now();
   const tempPath = join(claudishDir, `settings-${timestamp}.json`);
 
-  // Token file path - also in .claudish directory
-  const tokenFilePath = join(claudishDir, `tokens-${port}.json`);
+  // The file the proxy's TokenTracker writes: an inherited CLAUDISH_TOKEN_FILE
+  // (a team slot's or channel session's own path), else `tokens-<port>.json` in
+  // .claudish. Resolved by the same function as the summary's reader, so the
+  // status line can never be pointed at a file the tracker does not write.
+  const inheritedTokenFile = Boolean(process.env[ENV.CLAUDISH_TOKEN_FILE]);
+  const tokenFilePath = resolveTokenFilePath(port);
 
   // Sweep the orphans FIRST (so this session's fresh file is never a candidate),
   // then blank the file for the port we are about to use. Without this the
   // status line can show a dead session's provider, cost and context — the file
-  // is keyed by port, and ports are recycled.
+  // is keyed by port, and ports are recycled. An inherited file is the parent's,
+  // unique to this child and read by the parent, so it is left for the tracker
+  // to create: a blank record would read as "answered with zero tokens".
   cleanupStaleTokenFiles(claudishDir);
-  initializeTokenFile(tokenFilePath);
+  if (!inheritedTokenFile) initializeTokenFile(tokenFilePath);
 
   let statusCommand: string;
 
