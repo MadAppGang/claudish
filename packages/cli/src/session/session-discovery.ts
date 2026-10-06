@@ -22,14 +22,15 @@
 import { execFile, execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { claudeConfigDir, projectDirNameFor } from "../channel/parent-proof.js";
+import { projectDirNameFor } from "../channel/home-dir.js";
+import { claudeConfigDir } from "../channel/parent-session.js";
 
 /** Head bytes scanned for the `entrypoint` marker. See `isAgentSession`. */
 const ENTRYPOINT_BYTES = 8192;
 
 /**
  * Where Claude Code keeps transcripts: `<config dir>/projects`, the config dir being
- * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` (`claudeConfigDir`, `channel/parent-proof.ts`).
+ * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` (`claudeConfigDir`, `channel/parent-session.ts`).
  *
  * Resolved at CALL time from the environment it is given. It used to be a module
  * constant built from `os.homedir()`, which is wrong twice: it ignored a
@@ -50,10 +51,10 @@ export function projectsDir(env: Record<string, string | undefined> = process.en
  * created `…-fresh-cwd-v1`: the `_` is replaced too. This used to replace only `/` and
  * `.`, so a cwd with `_`, a space or `@` produced a transcript path that did not exist.
  *
- * ONE rule: this is `projectDirNameFor` (`channel/parent-proof.ts`), the function the
- * parent-conversation proof searches with, so the path claudish derives for a child's
- * transcript and the directory the proof looks in cannot drift apart. Callers pass a
- * realpath (`transcriptPathFor` resolves one; git hands out real paths).
+ * ONE rule: this is `projectDirNameFor` (`channel/home-dir.ts`), which also cuts a slug
+ * over 200 characters and appends Claude Code's hash. `session-events`' `slugFromCwd`
+ * calls the same function, so no two transcript paths claudish derives can drift apart.
+ * Callers pass a realpath (`transcriptPathFor` resolves one; git hands out real paths).
  *
  * The mapping is deliberately NOT inverted anywhere in this file. It is lossy — a `-`
  * in the slug could have been any non-alphanumeric character — so un-slugging a path

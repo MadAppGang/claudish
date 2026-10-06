@@ -114,7 +114,7 @@ Learn more: https://bun.sh`);
       // The pid pair tells the Bun child who launched it: this launcher, and the
       // launcher's own parent (Claude Code, for an MCP server). The child
       // believes the pair only when CLAUDISH_LAUNCHER_PID is its real parent
-      // (channel/parent-proof.ts `hostPidFrom`), so a value leaked into a
+      // (channel/parent-session.ts `hostPidFrom`), so a value leaked into a
       // nested claudish is inert.
       env: {
         ...process.env,

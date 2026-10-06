@@ -2,7 +2,7 @@
 /**
  * Black-box contract tests for `hostPid`, `launcherPid` and `mcpPid` in spawn.json, against
  * real entry points (design §3.5 "hostPid, computed once at startup"; §8.1 tests 9a, 9b).
- * The unit cases of hostPidFrom live in parent-proof.contract.test.ts.
+ * The unit cases of hostPidFrom live in parent-session.contract.test.ts.
  *
  * The session is an interactive pane (the pane fake, marker mode, in a real headless magmux
  * under the test's own CLAUDISH_PANE_ROOT; ported per architecture §20.2, every assertion

@@ -239,7 +239,7 @@ export function ppidOf(pid: number): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-/** §3.5 fast path: the project directory name is the cwd with every char outside [A-Za-z0-9] replaced by "-". */
+/** Claude Code's project directory name for a cwd: every char outside [A-Za-z0-9] replaced by "-". */
 export function sanitisedProjectName(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, "-");
 }

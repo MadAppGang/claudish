@@ -1,6 +1,6 @@
 // packages/cli/src/channel/spawn-record.contract.test.ts
 /**
- * Black-box contract tests for the start-time record `spawn.json` and the proven parent
+ * Black-box contract tests for the start-time record `spawn.json` and its parent
  * conversation, end to end through a real claudish MCP server over stdio
  * (design §3.3 "spawn.json", §3.4, §3.5; §8.1 tests 10b, 11-14b, 19; amendments 1 and 2).
  *
@@ -10,8 +10,10 @@
  *
  * The test process stands in for Claude Code: it spawns `bun src/index.ts --mcp`, so the
  * correct `hostPid` is `process.pid` and the host's live session record lives at
- * `<CLAUDE_CONFIG_DIR>/sessions/<process.pid>.json`. The tool-use id travels in
- * `params._meta["claudecode/toolUseId"]`, exactly as Claude Code sends it.
+ * `<CLAUDE_CONFIG_DIR>/sessions/<process.pid>.json`. The regression case also sends the
+ * tool-use id in `params._meta["claudecode/toolUseId"]` and writes the transcript's
+ * `tool_use` record only after the call returns, the order Claude Code 2.1.290 was measured
+ * to use; claudish reads neither.
  *
  * INFERRED (adapters in test-helpers/contract-mcp.ts): create_session returns the id as
  * `session_id`. The server exposes no `get_session` MCP tool, so a session read back from disk
@@ -241,96 +243,114 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
   }
 );
 
-describe.skipIf(!MAGMUX_AVAILABLE)("REQ-1 the parent conversation is recorded when proven", () => {
-  test(
-    "env candidate: the tool-use id in E's transcript → spawn.json and meta.json carry parentClaudeSessionId E",
-    async () => {
-      const E = claudeId("env");
-      const T = toolUseId();
-      writeTranscript(layout.configDir, "P", E, fillerLine(1) + transcriptLineWithToolUse(T));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+describe.skipIf(!MAGMUX_AVAILABLE)(
+  "REQ-1 the parent conversation is the host session record's, read at call time",
+  () => {
+    test(
+      "host record present: spawn.json and meta.json carry its id, not the stale env id",
+      async () => {
+        const R = claudeId("host");
+        const E = claudeId("env-stale");
+        writeHostRecord(layout.configDir, { pid: process.pid, sessionId: R });
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
 
-      const id = await createdId(server, { prompt: "hello" }, T);
-      const spawn = spawnRecord(layout.sessionsDir, id);
-      const meta = await terminalMeta(layout.sessionsDir, id);
+        const id = await createdId(server, { prompt: "hello" });
+        const spawn = spawnRecord(layout.sessionsDir, id);
+        const meta = await terminalMeta(layout.sessionsDir, id);
 
-      expect(spawn.parentClaudeSessionId).toBe(E);
-      expect(spawn.hostPid).toBe(process.pid);
-      expect(meta.parentClaudeSessionId).toBe(E);
-    },
-    T_TEST
-  );
+        expect(spawn.parentClaudeSessionId).toBe(R);
+        expect(spawn.hostPid).toBe(process.pid);
+        expect(meta.parentClaudeSessionId).toBe(R);
+      },
+      T_TEST
+    );
 
-  test(
-    "host-record candidate: with no env id, the host's live record (pid = hostPid) and its cwd lead to R",
-    async () => {
-      const R = claudeId("host");
-      const T = toolUseId();
-      const cwd = join(layout.root, "the project");
-      writeHostRecord(layout.configDir, { pid: process.pid, sessionId: R, cwd });
-      writeTranscript(layout.configDir, sanitisedProjectName(cwd), R, transcriptLineWithToolUse(T));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: undefined });
+    test(
+      "no host record: the env id E is recorded",
+      async () => {
+        const E = claudeId("env");
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
 
-      const id = await createdId(server, { prompt: "hello" }, T);
+        const id = await createdId(server, { prompt: "hello" });
 
-      expect(spawnRecord(layout.sessionsDir, id).parentClaudeSessionId).toBe(R);
-      expect((await terminalMeta(layout.sessionsDir, id)).parentClaudeSessionId).toBe(R);
-    },
-    T_TEST
-  );
+        expect(spawnRecord(layout.sessionsDir, id).parentClaudeSessionId).toBe(E);
+        expect((await terminalMeta(layout.sessionsDir, id)).parentClaudeSessionId).toBe(E);
+      },
+      T_TEST
+    );
 
-  test(
-    "REQ-6 without CLAUDE_CONFIG_DIR the proof reads $HOME/.claude",
-    async () => {
-      const E = claudeId("env");
-      const T = toolUseId();
-      writeTranscript(join(layout.home, ".claude"), "P", E, transcriptLineWithToolUse(T));
-      const server = await startServer({ CLAUDE_CONFIG_DIR: undefined, CLAUDE_CODE_SESSION_ID: E });
+    test(
+      "REQ-6 without CLAUDE_CONFIG_DIR the host record is read from $HOME/.claude",
+      async () => {
+        const R = claudeId("host");
+        writeHostRecord(join(layout.home, ".claude"), { pid: process.pid, sessionId: R });
+        const server = await startServer({ CLAUDE_CONFIG_DIR: undefined });
 
-      const id = await createdId(server, { prompt: "hello" }, T);
+        const id = await createdId(server, { prompt: "hello" });
 
-      expect(spawnRecord(layout.sessionsDir, id).parentClaudeSessionId).toBe(E);
-    },
-    T_TEST
-  );
+        expect(spawnRecord(layout.sessionsDir, id).parentClaudeSessionId).toBe(R);
+      },
+      T_TEST
+    );
 
-  test(
-    "the server stays responsive while a proof waits: list_sessions sent later returns first, and the late-written id is still proven",
-    async () => {
-      const E = claudeId("env");
-      const T = toolUseId();
-      const transcript = writeTranscript(layout.configDir, "P", E, fillerLine(1));
-      const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
-      const order: string[] = [];
+    test(
+      "the record's id changes between two calls (/clear): each session gets the id current at its call",
+      async () => {
+        const before = claudeId("before-clear");
+        const after = claudeId("after-clear");
+        writeHostRecord(layout.configDir, { pid: process.pid, sessionId: before });
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: before });
 
-      const creating = createSession(server, { prompt: "hello" }, T).then((r) => {
-        order.push("create_session");
-        return r;
-      });
-      await Bun.sleep(50);
-      const listing = server.callTool("list_sessions", {}).then((r) => {
-        order.push("list_sessions");
-        return r;
-      });
-      await Bun.sleep(100);
-      appendFileSync(transcript, transcriptLineWithToolUse(T));
-      const [{ sessionId }] = await Promise.all([creating, listing]);
+        const first = await createdId(server, { prompt: "hello" });
+        writeHostRecord(layout.configDir, { pid: process.pid, sessionId: after });
+        const second = await createdId(server, { prompt: "hello" });
 
-      expect(order).toEqual(["list_sessions", "create_session"]);
-      expect(spawnRecord(layout.sessionsDir, sessionId as string).parentClaudeSessionId).toBe(E);
-    },
-    T_TEST
-  );
-});
+        expect([
+          spawnRecord(layout.sessionsDir, first).parentClaudeSessionId,
+          spawnRecord(layout.sessionsDir, second).parentClaudeSessionId,
+        ]).toEqual([before, after]);
+      },
+      T_TEST
+    );
+  }
+);
 
 describe.skipIf(!MAGMUX_AVAILABLE)(
-  "REQ-2 the parent field is absent, never wrong, when nothing is proven",
+  "regression: the transcript does not hold the call while the tool runs",
   () => {
-    async function expectNoParentAnywhere(
-      server: McpServer,
-      tuid: string | undefined
-    ): Promise<void> {
-      const id = await createdId(server, { prompt: "hello" }, tuid);
+    test(
+      "Claude Code 2.1.290 writes the tool_use record only after the call returns, yet the parent is recorded",
+      async () => {
+        const R = claudeId("host");
+        const E = claudeId("env-stale");
+        const T = toolUseId();
+        const cwd = join(layout.root, "project");
+        writeHostRecord(layout.configDir, { pid: process.pid, sessionId: R, cwd });
+        const transcript = writeTranscript(
+          layout.configDir,
+          sanitisedProjectName(cwd),
+          R,
+          fillerLine(1)
+        );
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+
+        const id = await createdId(server, { prompt: "hello" }, T);
+        // Measured order: the record reaches disk ~140 ms after the call returned.
+        appendFileSync(transcript, transcriptLineWithToolUse(T));
+
+        expect(spawnRecord(layout.sessionsDir, id).parentClaudeSessionId).toBe(R);
+        expect((await terminalMeta(layout.sessionsDir, id)).parentClaudeSessionId).toBe(R);
+      },
+      T_TEST
+    );
+  }
+);
+
+describe.skipIf(!MAGMUX_AVAILABLE)(
+  "REQ-2 the parent field is absent when neither source has a well-formed id",
+  () => {
+    async function expectNoParentAnywhere(server: McpServer): Promise<void> {
+      const id = await createdId(server, { prompt: "hello" });
       const spawn = spawnRecord(layout.sessionsDir, id);
       const meta = await terminalMeta(layout.sessionsDir, id);
       expect("parentClaudeSessionId" in spawn).toBe(false);
@@ -338,74 +358,45 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
     }
 
     test(
-      "the tool-use id is in no transcript",
+      "no host record and no env id",
       async () => {
-        const E = claudeId("env");
-        writeTranscript(layout.configDir, "P", E, fillerLine(1));
-        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: undefined });
 
-        await expectNoParentAnywhere(server, toolUseId());
+        await expectNoParentAnywhere(server);
       },
       T_TEST
     );
 
     test(
-      "the call carries no _meta tool-use id",
+      "no host record and a malformed env id",
       async () => {
-        const E = claudeId("env");
-        writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(toolUseId()));
-        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
+        const server = await startServer({ CLAUDE_CODE_SESSION_ID: "bad id!" });
 
-        await expectNoParentAnywhere(server, undefined);
+        await expectNoParentAnywhere(server);
       },
       T_TEST
     );
 
     test(
-      "the _meta tool-use id is malformed, even though the transcript holds it",
+      "no host record, and the env id is ignored under CLAUDE_CODE_CHILD_SESSION",
       async () => {
-        const E = claudeId("env");
-        const bad = "bad id!";
-        writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(bad));
-        const server = await startServer({ CLAUDE_CODE_SESSION_ID: E });
-
-        await expectNoParentAnywhere(server, bad);
-      },
-      T_TEST
-    );
-
-    test(
-      "the env id is ignored under CLAUDE_CODE_CHILD_SESSION, even though its transcript holds the id",
-      async () => {
-        const E = claudeId("env");
-        const T = toolUseId();
-        writeTranscript(layout.configDir, "P", E, transcriptLineWithToolUse(T));
         const server = await startServer({
-          CLAUDE_CODE_SESSION_ID: E,
+          CLAUDE_CODE_SESSION_ID: claudeId("env"),
           CLAUDE_CODE_CHILD_SESSION: "1",
         });
 
-        await expectNoParentAnywhere(server, T);
+        await expectNoParentAnywhere(server);
       },
       T_TEST
     );
 
     test(
-      "a host record whose pid is not hostPid is ignored, even though its transcript holds the id",
+      "a host record whose pid is not hostPid is ignored, and there is no env id",
       async () => {
-        const R = claudeId("host");
-        const T = toolUseId();
-        const cwd = join(layout.root, "proj");
-        writeHostRecord(layout.configDir, { pid: process.pid + 1, sessionId: R, cwd });
-        writeTranscript(
-          layout.configDir,
-          sanitisedProjectName(cwd),
-          R,
-          transcriptLineWithToolUse(T)
-        );
+        writeHostRecord(layout.configDir, { pid: process.pid + 1, sessionId: claudeId("host") });
         const server = await startServer({ CLAUDE_CODE_SESSION_ID: undefined });
 
-        await expectNoParentAnywhere(server, T);
+        await expectNoParentAnywhere(server);
       },
       T_TEST
     );

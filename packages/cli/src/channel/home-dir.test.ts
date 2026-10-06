@@ -11,8 +11,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { sessionsDirFrom, userHomeFrom } from "./home-dir.js";
-import { claudeConfigDir } from "./parent-proof.js";
+import { projectDirNameFor, sessionsDirFrom, userHomeFrom } from "./home-dir.js";
+import { claudeConfigDir } from "./parent-session.js";
 import { SessionManager } from "./session-manager.js";
 
 const SANDBOX_HOME = "/sandbox/home-dir-test";
@@ -69,11 +69,20 @@ describe("claudish follows a runtime HOME", () => {
     }
   });
 
-  test("the parent proof reads Claude Code's config under $HOME", () => {
+  test("the host session record is read from Claude Code's config under $HOME", () => {
     expect(claudeConfigDir({ HOME: SANDBOX_HOME })).toBe(join(SANDBOX_HOME, ".claude"));
   });
 
   test("CLAUDE_CONFIG_DIR still wins over HOME", () => {
     expect(claudeConfigDir({ HOME: SANDBOX_HOME, CLAUDE_CONFIG_DIR: "/cfg" })).toBe("/cfg");
+  });
+});
+
+describe("REQ-4 projectDirNameFor: every character outside [A-Za-z0-9] becomes '-'", () => {
+  test.each([
+    ["/Users/someone/.claude/worktrees/x", "-Users-someone--claude-worktrees-x"],
+    ["/srv/my_app v2.1", "-srv-my-app-v2-1"],
+  ])("%s → %s", (cwd, expected) => {
+    expect(projectDirNameFor(cwd)).toBe(expected);
   });
 });

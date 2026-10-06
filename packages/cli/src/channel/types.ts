@@ -99,8 +99,10 @@ export interface SessionInfo {
    */
   transcriptPath: string;
   /**
-   * The Claude Code conversation that called create_session, PROVEN at call time
-   * (channel/parent-proof.ts). Absent when not proven — never a guess.
+   * The Claude Code conversation live in the calling window when
+   * create_session ran: the host session record's `sessionId`, else
+   * `CLAUDE_CODE_SESSION_ID` (channel/parent-session.ts). Absent when neither
+   * is a well-formed id.
    */
   parentClaudeSessionId?: string;
   captureSource: "transcript" | "screen" | "none" | null;
@@ -148,9 +150,9 @@ export interface SessionCreateOptions {
   /** Where the child's token tracker writes. Defaults to `<sessionDir>/tokens.json`. */
   tokenFile?: string;
   /**
-   * The calling conversation, when the caller PROVED it (see
-   * `proveCallingConversation`). Recorded verbatim in `spawn.json` and
-   * `SessionInfo`; absent means not proven. Never pass an unproven id.
+   * The calling conversation, as `parentSessionForCall` read it at call time.
+   * Recorded verbatim in `spawn.json` and `SessionInfo`; absent means no id
+   * could be read.
    */
   parentClaudeSessionId?: string;
   /**
@@ -192,7 +194,7 @@ export interface SessionManagerOptions {
   terminalRetentionMs?: number;
   /**
    * Test override for the host pid recorded in `spawn.json`. Default:
-   * `hostPidFrom(process.env, process.ppid)` (channel/parent-proof.ts). An
+   * `hostPidFrom(process.env, process.ppid)` (channel/parent-session.ts). An
    * override records no `launcherPid`.
    */
   hostPid?: number;

@@ -14,7 +14,7 @@
  * design §5.6). `run-and-judge` and `judge` are not exercised: they need a judge model.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   MAGMUX_AVAILABLE,
@@ -28,6 +28,7 @@ import {
 import {
   TEAM_RECORD_ID_PATTERN,
   type TempLayout,
+  claudeId,
   entries,
   makeTempLayout,
   readJson,
@@ -89,6 +90,25 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
           mcpPid: server.pid,
         });
         expect(teamRecordDirs(layout.sessionsDir)).toEqual([record]);
+      },
+      T_TEST
+    );
+
+    test(
+      "the record carries the host session record's id, read when the run call arrives",
+      async () => {
+        const R = claudeId("host");
+        mkdirSync(join(layout.configDir, "sessions"), { recursive: true });
+        writeFileSync(
+          join(layout.configDir, "sessions", `${process.pid}.json`),
+          JSON.stringify({ pid: process.pid, sessionId: R })
+        );
+
+        const record = await run("answer once and exit");
+
+        expect(readJson(join(layout.sessionsDir, record, "spawn.json"))).toMatchObject({
+          parentClaudeSessionId: R,
+        });
       },
       T_TEST
     );
