@@ -408,9 +408,11 @@ describe.skipIf(!MAGMUX)(
           await r.s.ready;
           expect(r.s.send("/compact").ok).toBe(true);
           expect(r.s.send("/model haiku").ok).toBe(true);
+          expect(r.s.send("/color yellow").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
-          await until(r, (s) => s.turnsCompleted === 3 && s.state === "AWAITING_INPUT");
+          await until(r, (s) => s.turnsCompleted === 4 && s.state === "AWAITING_INPUT");
           expect(r.turns.map((t) => t.settledBy)).toEqual([
+            "local_command",
             "local_command",
             "local_command",
             "turn_duration",
@@ -418,7 +420,8 @@ describe.skipIf(!MAGMUX)(
           expect(r.turns[0]?.answer).toBe("Compacted (ctrl+o to see full summary)");
           expect(r.turns[0]?.delivery.mode).toBe("command");
           expect(r.turns[1]?.answer).toBe("Set model to `haiku`");
-          expect(r.turns[2]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`);
+          expect(r.turns[2]?.answer).toBe("Session color set to: yellow");
+          expect(r.turns[3]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`);
           r.s.cancel();
           await finish(r);
         },

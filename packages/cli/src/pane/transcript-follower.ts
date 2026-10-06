@@ -230,7 +230,16 @@ function taskIdOf(text: string): string | null {
   return m ? (m[1] ?? "").trim() : null;
 }
 
+/** A `system/local_command` record (2.1.287+ `/color`): the command line or its stdout. */
+function isLocalCommandSystem(r: Rec): boolean {
+  return r.type === "system" && r.subtype === "local_command" && !r.isSidechain;
+}
+
 function matchesWitness(r: Rec, w: Witness): boolean {
+  // Some local commands are written as system records, not user records (captured:
+  // 2.1.291 `/color yellow` → two `system/local_command` records).
+  if (w.kind === "command" && isLocalCommandSystem(r))
+    return String(r.content ?? "").includes(`<command-name>/${w.name}</command-name>`);
   if (!isMainUser(r) || hasToolResult(r)) return false;
   const text = userText(r);
   if (w.kind === "text") return !r.isMeta && text.trim() === w.text.trim();
@@ -500,6 +509,7 @@ export function applyRecord(
 
   if (r.type === "assistant") applyAssistant(state, t, r, offset);
   else if (r.type === "user") applyUser(t, r, offset);
+  else if (isLocalCommandSystem(r)) applyLocalCommandRecord(t, String(r.content ?? ""), offset);
   else if (r.type === "system" && r.subtype === "stop_hook_summary") {
     if (t.lastAssistant) t.stopHookAfterLast = true;
   } else if (r.type === "system" && r.subtype === "turn_duration") applyTurnDuration(state, t, r);

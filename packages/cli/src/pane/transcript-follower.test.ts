@@ -657,6 +657,18 @@ describe("local commands", () => {
     expect(cur(v2[0]).localCommandOutput).toBe("Compacted (ctrl+o to see full summary)");
   });
 
+  test("/color (2.1.291): the witness and the stdout are system/local_command records", () => {
+    const n = "local-commands";
+    const recs = transcriptRecords(n);
+    const at = recs.findIndex((r) => r.subtype === "local_command");
+    expect(recs[at]?.type).toBe("system");
+    const { views } = run(n, [{ at, witness: { kind: "command", name: "color" } }], {
+      upTo: at + 2,
+    });
+    expect(cur(views[0]).acceptedAt).toBe(recs[at]!.timestamp);
+    expect(cur(views[0]).localCommandOutput).toBe("Session color set to: yellow");
+  });
+
   test("a prompt command (/pear) carries no local output: it settles on its assistant turn", () => {
     const n = "slash-and-reads";
     const at = transcriptRecords(n).findIndex((r) => textOf(r).includes("<command-name>/pear"));

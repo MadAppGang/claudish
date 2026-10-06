@@ -714,7 +714,7 @@ async function screenOnlyTurn(line: string): Promise<void> {
 }
 
 /** Local commands the fake runs the way 2.1.291 does: their own records, no model turn. */
-const LOCAL_COMMANDS = new Set(["compact", "model"]);
+const LOCAL_COMMANDS = new Set(["compact", "model", "color"]);
 
 async function localCommandTurn(name: string, args: string): Promise<void> {
   S.history.push(`❯ /${name}${args ? ` ${args}` : ""}`);
@@ -730,7 +730,8 @@ async function localCommandTurn(name: string, args: string): Promise<void> {
     stdout = "\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m";
   }
   S.working = null;
-  rec.localCommand(name, args, stdout);
+  if (name === "color") stdout = `Session color set to: ${args}`;
+  rec.localCommand(name, args, stdout, name === "color" ? "system" : "user");
   // biome-ignore lint/suspicious/noControlCharactersInRegex: the ANSI the stdout carries
   showHistory(`  ⎿  ${stdout.replace(/\x1b\[[0-9;]*m/g, "")}`);
 }
