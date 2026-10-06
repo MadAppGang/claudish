@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectDirNameFor } from "../../channel/parent-proof.js";
 import { findMagmuxBinaryOrNull } from "../../launcher/magmux-binary.js";
 import { readProcessTable } from "../process-identity.js";
 
@@ -82,7 +83,7 @@ export function makePaneTestEnv(extra: Record<string, string> = {}): PaneTestEnv
     sockRoot,
     env,
     transcriptPathFor: (uuid) =>
-      join(configDir, "projects", realCwd.replace(/[^a-zA-Z0-9]/g, "-"), `${uuid}.jsonl`),
+      join(configDir, "projects", projectDirNameFor(realCwd), `${uuid}.jsonl`),
     cleanup() {
       rmSync(tmp, { recursive: true, force: true });
       rmSync(sockRoot, { recursive: true, force: true });

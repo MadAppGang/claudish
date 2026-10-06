@@ -106,6 +106,27 @@ describe("session discovery pure helpers", () => {
     }
   });
 
+  test("a slug over 200 characters is cut and hashed exactly as Claude Code 2.1.291 named it", () => {
+    // A live 2.1.291 run (code-review iteration 1, phase2/runs/cr1-longcwd) in this
+    // 259-character cwd wrote its transcript under the directory named below.
+    const cwd = `/private/tmp/cc2/cr1-longcwd/cwd/${[
+      "a".repeat(60),
+      "b-b.b_b".repeat(9),
+      "c".repeat(60),
+      "dé ü".repeat(10),
+    ].join("/")}`;
+    const measured =
+      "-private-tmp-cc2-cr1-longcwd-cwd-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-b-b-b-bb-b-b-bb-b-b-bb-b-b-bb-b-b-bb-b-b-bb-b-b-bb-b-b-bb-b-b-b-cccccccccccccccccccccccccccccccccccccccccc-g32rlu";
+    expect(slugForPath(cwd)).toBe(measured);
+    expect(transcriptPathFor(cwd, "u-1", "/cfg/projects")).toBe(
+      `/cfg/projects/${measured}/u-1.jsonl`
+    );
+    // exactly 200 slug characters stay as they are
+    const at200 = `/${"x".repeat(199)}`;
+    expect(slugForPath(at200)).toBe(`-${"x".repeat(199)}`);
+    expect(slugForPath(`${at200}y`)).toMatch(/^-x{199}-[0-9a-z]+$/);
+  });
+
   test("isActive respects the explicit recency-window boundary", () => {
     const now = 1_000_000;
 

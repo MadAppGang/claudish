@@ -220,14 +220,31 @@ export async function gatherProofCandidates(opts: {
 
 // ─── The proof ───────────────────────────────────────────────────────────────
 
+/** Claude Code keeps a project directory name to this many slug characters. */
+export const PROJECT_DIR_SLUG_MAX = 200;
+
+/** Claude Code's 32-bit string hash (`(h << 5) - h + charCode`, per UTF-16 unit). */
+function claudeCodeStringHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
 /**
  * Claude Code's project directory name for a cwd: every character outside
- * `[A-Za-z0-9]` becomes `-` (so `/.claude/` becomes `--claude-`). Observed
- * naming, used ONLY as the fast path: a future rule change degrades to the
- * directory listing, never to a wrong answer.
+ * `[A-Za-z0-9]` becomes `-` (so `/.claude/` becomes `--claude-`). A slug longer than
+ * 200 characters is cut to 200 and suffixed `-<base36 |hash(cwd)|>`, the hash taken
+ * over the WHOLE path, not the slug. Read from Claude Code 2.1.291's own bundle
+ * (`k(e)=e.replace(/[^a-zA-Z0-9]/g,"-")`, `eI(e)` truncates at `Rle=200` and appends
+ * `Le(e)=Math.abs(hash(e)).toString(36)`) and MEASURED: a live 2.1.291 run in a
+ * 259-character cwd wrote `<200 slug chars>-g32rlu`, which this function reproduces.
+ * Used as the fast path of the proof (a future rule change degrades to the directory
+ * listing) and, through `slugForPath`, for every transcript path claudish derives.
  */
 export function projectDirNameFor(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+  const slug = cwd.replace(/[^A-Za-z0-9]/g, "-");
+  if (slug.length <= PROJECT_DIR_SLUG_MAX) return slug;
+  return `${slug.slice(0, PROJECT_DIR_SLUG_MAX)}-${Math.abs(claudeCodeStringHash(cwd)).toString(36)}`;
 }
 
 /**

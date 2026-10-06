@@ -34,6 +34,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { projectDirNameFor } from "../../channel/parent-proof.js";
 
 /* ───────────────────────────── argv and env ───────────────────────────── */
 
@@ -128,12 +129,7 @@ const REFUSAL_SLICE = lines("corpus-redacted/refusal-then-fallback").slice(30, 3
 /* ───────────────────────────── transcript writer ───────────────────────────── */
 
 const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME ?? "/tmp", ".claude");
-const transcript = join(
-  configDir,
-  "projects",
-  cwd.replace(/[^a-zA-Z0-9]/g, "-"),
-  `${sessionId}.jsonl`
-);
+const transcript = join(configDir, "projects", projectDirNameFor(cwd), `${sessionId}.jsonl`);
 let parent: string | null = null;
 let msgCounter = 0;
 const writeTranscript = ![
