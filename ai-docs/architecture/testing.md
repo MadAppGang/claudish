@@ -150,6 +150,14 @@ that compares against a runtime-provided oracle is only as stable as the runtime
 Distinct from the credential-gated live tests, which skip in CI and are documented as
 non-blocking; this one is hermetic and still environmental.
 
+**The reverse holds too: a GREEN local suite on a newer bun can hide a red CI.** Measured
+2026-10-06: the pane suites passed 4964/36/0 on bun 1.4.0 and failed 118 tests under the pinned
+1.3.10. On 1.3.10, `net.connect(path)` to a unix socket that does not exist yet emits ENOENT
+synchronously inside `connect()`, before any listener can be attached, and `bun test` reports it as
+an unhandled error; 1.4.0 defers the event. `MagmuxClient`'s dial now attaches its listeners to a
+`new Socket()` before calling `connect`. Run `bunx bun@<pinned> test` before calling a change that
+touches sockets, timers or child processes green.
+
 **Since 2026-09-15 the two budgeted sweeps enforce this themselves.** They read
 `bun-version` out of `test.yml` at test time and `test.skipIf` when `Bun.version`
 differs, naming both versions in the skip. Three details are load-bearing:
