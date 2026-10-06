@@ -17,7 +17,11 @@ import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
-import { magmuxPaneCapability, planMagmuxWrap } from "./launcher/magmux-wrapper.js";
+import {
+  STRIPPED_CHILD_VARS,
+  magmuxPaneCapability,
+  planMagmuxWrap,
+} from "./launcher/magmux-wrapper.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
@@ -965,6 +969,26 @@ export function createTempSettingsFile(
 }
 
 /**
+ * Delete, from the environment built for Claude Code, the inherited variables that
+ * must not reach it. Called right after that environment is assembled.
+ *
+ * Interactive launches lose every `STRIPPED_CHILD_VARS` key. `CLAUDE_CODE_CHILD_SESSION`
+ * is set by Claude Code for its Bash-tool children; a claudish started from one (a
+ * user in a tool shell, a `team --grid` pane, an MCP pane) passed it on, and an
+ * interactive Claude Code that inherits it prints "Transcript saving is off" and
+ * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
+ * left as it was.
+ */
+export function scrubChildEnv(
+  env: Record<string, string | undefined>,
+  opts: { interactive: boolean }
+): void {
+  if (opts.interactive) {
+    for (const key of STRIPPED_CHILD_VARS) delete env[key];
+  }
+}
+
+/**
  * Build the claudish `--settings` overlay object. This loads at the CLI-args precedence
  * tier, above the user/project/local settings files, so keys here override those three.
  *
@@ -1643,6 +1667,7 @@ export async function runClaudeWithProxy(
     // above then forwards the user's value untouched.
     ...advisorToolEnv.vars,
   };
+  scrubChildEnv(env, { interactive: Boolean(config.interactive) });
 
   // Can this launch put a recovery banner on screen at all? Asked HERE, before
   // the child environment is finalised, because the answer gates the watchdog
