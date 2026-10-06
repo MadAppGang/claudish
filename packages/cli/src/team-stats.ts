@@ -20,6 +20,11 @@ export interface ModelTokenStats {
   output_tokens?: number;
   total_tokens?: number;
   total_cost?: number;
+  /**
+   * Cumulative input tokens billed across the session — the figure to pair with
+   * `total_cost`. Never `input_tokens`, which is the CURRENT context size.
+   */
+  billed_input_tokens?: number;
   context_window?: number | string;
   context_left_percent?: number;
   provider_name?: string;
