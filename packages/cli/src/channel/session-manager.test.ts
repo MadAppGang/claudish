@@ -697,6 +697,33 @@ describe.skipIf(!MAGMUX)(
     );
 
     test(
+      "a credential on the child's final screen reaches no record: meta.json, output.log, frame, diagnostics",
+      async () => {
+        const secret = "redaction-probe-not-a-real-credential"; // what the fake's exit_secret prints
+        const frames: string[] = [];
+        const manager = makeManager({
+          onStateChange: (_sid, e) => frames.push(JSON.stringify(e)),
+        });
+        const id = await create(manager, { model: "fake-exit_secret", prompt: "go" });
+        await waitForState(manager, id, ["FAILED"]);
+        const meta = await waitForMeta(id);
+        expect(meta.terminalReason).toBe("child_exited");
+        expect(String(meta.detail)).toContain("MY_SERVICE_TOKEN=***REDACTED***");
+        await waitUntil(() => frames.some((f) => f.includes('"failed"')));
+        const outputLog = readFileSync(join(sessionsDir, id, "output.log"), "utf-8");
+        for (const text of [
+          JSON.stringify(meta),
+          outputLog,
+          frames.join("\n"),
+          JSON.stringify(manager.getDiagnostics(id)),
+          JSON.stringify(manager.getSession(id)),
+        ])
+          expect(text).not.toContain(secret);
+      },
+      T_PANE
+    );
+
+    test(
       "getOutput returns the answer prose, never raw records; tail_lines returns the last N",
       async () => {
         const manager = makeManager();

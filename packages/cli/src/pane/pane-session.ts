@@ -21,6 +21,7 @@ import type { ChildProcess } from "node:child_process";
 import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { waitForExit } from "../process-tree.js";
+import { redactSecrets } from "../redact.js";
 import type { CaptureResult, CaptureUnchanged, FailureReason, SlotState } from "./contract.js";
 import { MagmuxClient, type MagmuxConnectError } from "./magmux-client.js";
 import {
@@ -658,11 +659,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
     this.phase = next;
     const reason = info.reason ?? EVENT_REASON[ev];
+    // `detail` often carries the final screen rows: redacted HERE, once, so no owner can
+    // persist or forward a credential the child printed (meta.json, output.log, frames)
+    const detail = info.detail === undefined ? undefined : redactSecrets(info.detail);
     if (isTerminalPhase(next)) {
       this.reason = next === "COMPLETED" ? null : (reason ?? this.reason);
-      if (info.detail !== undefined) this.detail = info.detail;
+      if (detail !== undefined) this.detail = detail;
       this.onTerminal();
-    } else if (info.detail !== undefined) this.detail = info.detail;
+    } else if (detail !== undefined) this.detail = detail;
     return true;
   }
 

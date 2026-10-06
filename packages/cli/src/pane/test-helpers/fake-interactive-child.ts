@@ -76,6 +76,8 @@ function gap(name: string, dflt: number): number {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** The value `exit_secret` prints; a redaction test greps every record for it. */
+const SECRET_ON_SCREEN = "redaction-probe-not-a-real-credential";
 
 /* ───────────────────────────── fixtures ───────────────────────────── */
 
@@ -613,6 +615,11 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       );
       return;
     case "exit_mid_turn":
+      await sleep(300);
+      return quit(3);
+    case "exit_secret":
+      // a credential the child itself echoed is on screen when it dies mid-turn
+      showHistory("⏺ Bash(env | grep TOKEN)", `  ⎿  MY_SERVICE_TOKEN=${SECRET_ON_SCREEN}`);
       await sleep(300);
       return quit(3);
     case "exit_after_settle":
