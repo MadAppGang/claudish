@@ -15,10 +15,11 @@
  * the parent's or a sibling's transcript (research-magmux §3).
  */
 
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import {
   CLAUDISH_EXITING_FLAGS,
   CLAUDISH_FLAG_ARITY,
@@ -492,6 +493,7 @@ export function versionAtLeast(v: string, min: string): boolean {
 }
 
 const magmuxCache = new Map<string, { binary: string; version: string }>();
+const execFileAsync = promisify(execFile);
 
 /** The magmux binary and its version (≥ 0.14.0), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(
@@ -506,7 +508,9 @@ export async function assertMagmuxAvailable(
     );
   let out = "";
   try {
-    out = execFileSync(found, ["--version"], { encoding: "utf8", timeout: 5000 });
+    // async: the first create_session or team run must not stall the MCP server's event
+    // loop for up to 5 s (every other session's frames and socket share it)
+    out = (await execFileAsync(found, ["--version"], { encoding: "utf8", timeout: 5000 })).stdout;
   } catch (e) {
     throw new MagmuxUnavailableError(
       `magmux_unavailable: ${found} --version failed: ${e instanceof Error ? e.message : String(e)}`

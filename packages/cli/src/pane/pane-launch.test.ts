@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   PaneEnvTooLargeError,
   PaneRootError,
   SHELL_SHIM,
+  assertMagmuxAvailable,
   buildClaudishPaneArgv,
   buildPaneEnv,
   createLaunchDirs,
@@ -268,6 +269,25 @@ describe("watcher argv and version gate", () => {
       "/r",
     ]);
     expect(WATCHER_SCRIPT).not.toContain("u'; rm -rf /");
+  });
+
+  test("the magmux version probe never blocks the event loop; an old version is refused", async () => {
+    const dir = tmp();
+    const slow = join(dir, "magmux-slow");
+    writeFileSync(slow, "#!/bin/sh\nsleep 0.6\necho 'magmux 0.14.0 (fake)'\n");
+    chmodSync(slow, 0o755);
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 50);
+    try {
+      expect(await assertMagmuxAvailable(slow)).toEqual({ binary: slow, version: "0.14.0" });
+    } finally {
+      clearInterval(timer);
+    }
+    expect(ticks).toBeGreaterThanOrEqual(5); // a synchronous probe would let none run
+    const old = join(dir, "magmux-old");
+    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.13.9'\n");
+    chmodSync(old, 0o755);
+    await expect(assertMagmuxAvailable(old)).rejects.toThrow(/panes need >= 0.14.0/);
   });
 
   test("versionAtLeast", () => {
