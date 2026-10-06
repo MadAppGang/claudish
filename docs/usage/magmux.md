@@ -50,9 +50,47 @@ Measurements and the upstream status are in `ai-docs/architecture/headless-vs-in
 
 ---
 
-## With claudish
+## Headless panes: MCP `team` and channel sessions
 
-The `--grid` flag on `claudish team run` launches magmux with one pane per model. Each pane streams output in real time while a status bar tracks progress.
+This is what claudish uses magmux for most. Every slot of an MCP `team` run, every CLI
+`claudish team` / `--team --mode json` slot, and every `create_session` session runs as an
+interactive Claude Code inside its own `magmux --headless` pane. Nothing is drawn on your terminal;
+claudish drives each pane over its socket, follows Claude Code's own transcript to know when a turn
+has finished, and closes the pane when the slot or session ends.
+
+**Requirements:**
+
+- **magmux 0.14.0 or newer.** The npm package bundles it on macOS and Linux; otherwise
+  `brew install MadAppGang/tap/magmux`. With an older magmux, or none, `team(mode:"run")`,
+  `create_session` and `claudish team` / `--team` refuse with `magmux_unavailable`; claudish
+  never substitutes print mode.
+- **macOS or Linux.** Windows is not supported for MCP `team`, `create_session`, or CLI
+  `claudish team` / `--team`.
+
+**Watching a headless pane.** You cannot attach to these panes, but you can read their screens:
+
+| Tool | What it returns |
+|---|---|
+| `team(mode:"list")` | every run the MCP server holds, with one row per slot: state, activity, idle seconds, tokens |
+| `team(mode:"status", path)` | one run's rows under `run.slots` |
+| `team(mode:"capture", path, slot)` | that slot's current 160×50 screen |
+| `capture_session(session_id)` | a channel session's current 160×50 screen |
+| `list_sessions` | every channel session, same row shape |
+
+A capture carries a `seq` that grows with every visible change; pass it back as `since_seq` and an
+unchanged screen answers `{unchanged: true}`, so polling about once a second is cheap. See
+[MCP server](mcp-server.md).
+
+**What you might notice on disk.** Each pane has a socket and two small directories under
+`/tmp/claudish-mux-<uid>/` (mode 0700), and one `claudish-pane-watcher` shell process. They are
+removed when the pane closes. If the MCP server is killed, the watcher stops the pane and removes
+its files; anything left after a machine crash is cleaned by the next claudish that starts a pane.
+
+---
+
+## With claudish: the visible grid
+
+The `--grid` flag on `claudish team run` launches a visible magmux with one pane per model, for you to watch. Each pane streams output in real time while a status bar tracks progress. (Without `--grid`, CLI team slots run in headless panes, as above.)
 
 ```bash
 claudish team run --grid \
