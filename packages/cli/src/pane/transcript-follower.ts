@@ -71,7 +71,8 @@ export interface TurnView {
   /** a main-chain user record that wakes the model (task notification, Stop-hook feedback, an isMeta
    * continuation) arrived after the last assistant record, and no assistant record followed it yet */
   wakingAfterLast: boolean;
-  pendingTool: { id: string; name: string } | null;
+  /** the latest unresolved tool_use; `input` is the tool's raw input (the question text of an AskUserQuestion) */
+  pendingTool: { id: string; name: string; input?: unknown } | null;
   agentsLaunched: number;
   agentsCompleted: number;
   backgroundShellsOpen: string[];
@@ -130,6 +131,7 @@ interface TurnState {
   interrupt: { forToolUse: boolean } | null;
   waking: boolean;
   pending: Map<string, string>; // tool_use id → name
+  pendingInput: Map<string, unknown>; // tool_use id → input
   agents: Set<string>;
   agentsDone: Set<string>;
   shells: Map<string, string>; // backgroundTaskId → command
@@ -363,6 +365,7 @@ function applyAssistantBlock(state: FollowerState, t: TurnState, b: Rec, offset:
   }
   if (b?.type !== "tool_use" || typeof b.id !== "string") return;
   t.pending.set(b.id, String(b.name ?? ""));
+  t.pendingInput.set(b.id, b.input);
   if (b.name === "Bash" && b.input?.run_in_background)
     t.shellToolIds.set(b.id, String(b.input?.command ?? ""));
   applyReadUse(state, t, b);
@@ -373,6 +376,7 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
   for (const b of blocks) {
     if (b?.type !== "tool_result") continue;
     t.pending.delete(b.tool_use_id);
+    t.pendingInput.delete(b.tool_use_id);
     // A background agent is recognised by its result, not by run_in_background in its input.
     if (tur?.isAsync === true && typeof tur.agentId === "string") t.agents.add(tur.agentId);
     if (typeof tur?.backgroundTaskId === "string")
@@ -402,6 +406,7 @@ function applyUser(t: TurnState, r: Rec, offset: number): void {
   if (text.startsWith("[Request interrupted by user")) {
     t.interrupt = { forToolUse: text.includes("for tool use") };
     t.pending.clear();
+    t.pendingInput.clear();
     return;
   }
   if (isTaskNotification(r)) applyNotification(t, text);
@@ -494,6 +499,7 @@ export function openTurnState(
     interrupt: null,
     waking: false,
     pending: new Map(),
+    pendingInput: new Map(),
     agents: new Set(),
     agentsDone: new Set(),
     shells: new Map(),
@@ -535,7 +541,9 @@ export function turnView(t: TurnState): TurnView {
     stopHookSummaryAfterLast: t.stopHookAfterLast,
     interruptAfterLast: t.interrupt,
     wakingAfterLast: t.waking,
-    pendingTool: pendingEntry ? { id: pendingEntry[0], name: pendingEntry[1] } : null,
+    pendingTool: pendingEntry
+      ? { id: pendingEntry[0], name: pendingEntry[1], input: t.pendingInput.get(pendingEntry[0]) }
+      : null,
     agentsLaunched: t.agents.size,
     agentsCompleted: [...t.agents].filter((a) => t.agentsDone.has(a)).length,
     backgroundShellsOpen: [...t.shells.values()],

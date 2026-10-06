@@ -50,6 +50,8 @@ function snap(over: Partial<PaneSnapshot> = {}): PaneSnapshot {
     panePid: 1,
     screenTail: "",
     anomalies: [],
+    claudeCodeVersion: null,
+    shape: "one-shot",
     ...over,
   };
 }

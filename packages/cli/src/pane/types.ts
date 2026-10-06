@@ -59,4 +59,8 @@ export interface PaneSnapshot {
   panePid: number | null;
   screenTail: string;
   anomalies: string[];
+  /** the child's Claude Code version, read from its boot banner (R3-M4); null until seen */
+  claudeCodeVersion: string | null;
+  /** the session's shape now: a send to a one-shot session converts it to interactive */
+  shape: "one-shot" | "interactive";
 }
