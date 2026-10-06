@@ -429,6 +429,34 @@ describe.skipIf(!MAGMUX)(
       );
     });
 
+    describe.concurrent("panel commands", () => {
+      test(
+        "/cost opens a panel that writes no record: Esc at once, no turn, the next prompt is not held",
+        async () => {
+          const r = await start("answer", {
+            shape: "interactive",
+            initialPrompt: undefined,
+            decide: () => "continue",
+          });
+          await r.s.ready;
+          const at = Date.now();
+          expect(r.s.send("/cost").ok).toBe(true);
+          expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
+          const s = await until(r, (x) => x.turnsCompleted === 1 && x.state === "AWAITING_INPUT");
+          expect(Date.now() - at).toBeLessThan(10_000); // well inside the 30 s admission bound
+          expect(s.anomalies).toContain("panel_dismissed");
+          expect(s.anomalies).toContain("panel_command");
+          expect(s.anomalies).not.toContain("send_not_accepted");
+          expect(r.turns.map((t) => t.answer)).toEqual([
+            `ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`,
+          ]);
+          r.s.cancel();
+          await finish(r);
+        },
+        T
+      );
+    });
+
     describe.concurrent("blocked, interrupts and permission", () => {
       test(
         "ask_user (team): FAILED blocked with the question text, in one net transition",

@@ -114,6 +114,8 @@ export const RESEND_AFTER_MS = 10_000;
 export const DEGRADED_ENTRY_MS = 10_000;
 /** Degraded settle: no change above the box for 2 × this. */
 export const SCREEN_SETTLE_QUIET_MS = 3_000;
+/** A panel command's screen must have been up this long after delivery before Esc. */
+const PANEL_SETTLE_MS = 500;
 /** The REPL box must read empty this long before boot is ready. */
 const REPL_STABLE_MS = 500;
 /** A dialog or choice screen static this long blocks boot. */
@@ -910,6 +912,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
     const now = Date.now();
     const since = adm.deliveredAt ? now - adm.deliveredAt : 0;
+    if (adm.deliveredAt && adm.plan.mode === "command" && this.panelCommand(adm, since)) return;
     if (adm.deliveredAt && since >= this.t("resendAfterMs", RESEND_AFTER_MS)) this.nudge(adm);
     if (
       adm.deliveredAt &&
@@ -918,6 +921,42 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.maybeDegradedAccept(adm, view);
     if (this.phase !== "ADMITTING") return;
     if (now - adm.startedAt >= (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS)) this.admitExpired(adm);
+  }
+
+  /** A full-screen panel: no input box, no choice dialog, and its `Esc to cancel` footer. */
+  private panelOpen(): boolean {
+    return (
+      !inputBox(this.screen) &&
+      !hasChoiceDialog(this.screen) &&
+      /Esc to cancel/.test(screenText(this.screen))
+    );
+  }
+
+  /**
+   * A delivered panel command (`/cost`, `/usage`, `/config`, …) writes no transcript record
+   * and swallows input until Esc (phase2-captures §3, §10), so it can never be witnessed.
+   * Once it is on screen it is dismissed at once, and when the empty box is back the
+   * admission ends without a turn: a later prompt is not held for the 30 s admission bound.
+   * True when this step handled the admission.
+   */
+  private panelCommand(adm: Admission, since: number): boolean {
+    if (!adm.panelEscaped) {
+      if (since < PANEL_SETTLE_MS || !this.panelOpen()) return false;
+      adm.panelEscaped = true;
+      this.anomaly("panel_dismissed");
+      void this.key("escape");
+      return true;
+    }
+    const box = inputBox(this.screen);
+    if (!box || box.text !== "" || this.panelOpen()) return false;
+    this.admission = null;
+    this.anomaly("panel_command");
+    if (adm.initial)
+      this.fire("admit_deadline", {
+        detail: `${adm.text.trim()} opened a panel and wrote no transcript record`,
+      });
+    else this.fire("admit_abandoned");
+    return true;
   }
 
   /** +10 s without a witness: the line still in the box → Enter again; a panel → Esc. */
