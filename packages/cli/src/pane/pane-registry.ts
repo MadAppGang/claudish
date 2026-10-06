@@ -24,6 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { claimSignalExit } from "../signal-owner.js";
 import { MagmuxClient } from "./magmux-client.js";
 import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
@@ -357,6 +358,8 @@ export function installPaneShutdownHooks(opts?: ShutdownHookOptions): void {
   if (opts) hookOpts = { exitAfter: true, ...opts };
   if (!hooksInstalled) {
     hooksInstalled = true;
+    // stats-buffer's module-load listeners must not exit before our records are settled
+    claimSignalExit();
     for (const [sig, n] of SIGNALS) process.on(sig, () => void shutdown("signal", 128 + n));
     // A synchronous exit can only SIGKILL magmux handles; groups and files are the watchers' job.
     process.on("exit", () => {

@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { signalExitClaimed } from "./signal-owner.js";
 import type { StatsEvent } from "./stats-otlp.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -248,6 +249,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     } catch {
       // Silently ignore
     }
-    process.exit(SIGNAL_EXIT_CODE[signal]);
+    // A pane owner exits with the same code itself, after settling its records.
+    if (!signalExitClaimed()) process.exit(SIGNAL_EXIT_CODE[signal]);
   });
 }
