@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { magmuxPaneCapability } from "../launcher/magmux-wrapper.js";
 import { readRecoveryEnabled, readRecoveryUi } from "../profile-config.js";
 import {
   CLIENT_CEILING_CLAMP_MS,
@@ -26,6 +27,7 @@ import {
   DEFAULT_API_TIMEOUT_MS,
   DEFAULT_TIER1_DEADLINE_MS,
   TIER1_DEADLINE_FLOOR_MS,
+  applyRetryWatchdog,
   logDeadlineIfShortened,
   recoverySurfaceAllowed,
   resetDeadlineNotice,
@@ -318,6 +320,61 @@ describe("recoverySurfaceAllowed — BOTH switches, because a wrap nothing can u
     expect(retryWatchdogEnv({ paneEligible: true })).toEqual({});
     resetRecoveryFlagOverrides();
     expect(retryWatchdogEnv({ paneEligible: true })).toEqual({ CLAUDE_CODE_RETRY_WATCHDOG: "1" });
+  });
+});
+
+describe("an MCP pane child is never eligible for a recovery surface (D22)", () => {
+  // The pane is a headless magmux: it exports MAGMUX_SOCK, so without the
+  // pane-child case the child would read as `ambient`, export the ~300-attempt
+  // watchdog and install a banner nobody can see, over the screen the MCP
+  // server classifies.
+  const paneChildEnv = {
+    CLAUDISH_PANE_CHILD: "1",
+    MAGMUX_SOCK: "/tmp/claudish-mux-501/magmux-c1-t1.sock",
+  };
+
+  test("magmuxPaneCapability answers none/pane-child before the ambient branch", () => {
+    expect(
+      magmuxPaneCapability({
+        interactive: true,
+        stdoutIsTty: true,
+        parentEnv: paneChildEnv,
+        magmuxBinary: "/opt/magmux",
+      })
+    ).toEqual({ kind: "none", reason: "pane-child" });
+  });
+
+  test("the same environment without the marker is still ambient", () => {
+    expect(
+      magmuxPaneCapability({
+        interactive: true,
+        stdoutIsTty: false,
+        parentEnv: { MAGMUX_SOCK: paneChildEnv.MAGMUX_SOCK },
+        magmuxBinary: null,
+      })
+    ).toEqual({ kind: "ambient", sock: paneChildEnv.MAGMUX_SOCK });
+  });
+
+  test("a pane child exports no watchdog and drops a claudish-marked inherited one", () => {
+    const capability = magmuxPaneCapability({
+      interactive: true,
+      stdoutIsTty: false,
+      parentEnv: paneChildEnv,
+    });
+    // What an MCP server started by a wrapped claudish session passes down.
+    const env: Record<string, string | undefined> = {
+      CLAUDE_CODE_RETRY_WATCHDOG: "1",
+      CLAUDISH_SET_RETRY_WATCHDOG: "1",
+    };
+    applyRetryWatchdog(env, { paneEligible: capability.kind !== "none" });
+    expect(env.CLAUDE_CODE_RETRY_WATCHDOG).toBeUndefined();
+    expect(env.CLAUDISH_SET_RETRY_WATCHDOG).toBeUndefined();
+  });
+
+  test("a user's own unmarked watchdog survives in a pane child", () => {
+    const env: Record<string, string | undefined> = { CLAUDE_CODE_RETRY_WATCHDOG: "1" };
+    applyRetryWatchdog(env, { paneEligible: false });
+    expect(env.CLAUDE_CODE_RETRY_WATCHDOG).toBe("1");
   });
 });
 

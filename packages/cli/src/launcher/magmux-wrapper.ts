@@ -47,6 +47,7 @@ import {
 } from "node:fs";
 import { type Socket, connect as netConnect } from "node:net";
 import { join } from "node:path";
+import { isPaneChild } from "../pane/child-env.js";
 import { findMagmuxBinaryOrNull } from "./magmux-binary.js";
 
 /**
@@ -165,17 +166,26 @@ export function buildLauncherScript(
  * `ambient` — already inside someone else's magmux (`team --grid`, or a user
  *             who launched claudish in a pane): nothing to wrap, but there IS a
  *             multiplexer to ask for a pane.
- * `none`    — no surface is reachable from this launch.
+ * `none`    — no surface is reachable from this launch, or none may be used.
  */
 export type MagmuxPaneCapability =
   | { kind: "wrap"; magmux: string }
   | { kind: "ambient"; sock: string }
-  | { kind: "none"; reason: "not-interactive" | "no-tty" | "no-magmux" };
+  | { kind: "none"; reason: "pane-child" | "not-interactive" | "no-tty" | "no-magmux" };
 
 export function magmuxPaneCapability(
   input: Pick<MagmuxWrapInput, "interactive" | "stdoutIsTty" | "parentEnv" | "magmuxBinary">
 ): MagmuxPaneCapability {
   const parentEnv = input.parentEnv ?? process.env;
+  // AN MCP PANE CHILD IS NEVER ELIGIBLE (D22), checked FIRST — above all before
+  // the ambient branch, because its pane IS a magmux and exports `MAGMUX_SOCK`.
+  // That magmux is headless: nobody sees a banner drawn there, so the reason
+  // for holding a request would be legible nowhere, which is the one condition
+  // under which `network-recovery.md` accepts the watchdog's ~300 client
+  // re-POSTs. The recovery overlay would also paint over the screen the MCP
+  // server reads to classify the pane. What remains is tier 1's bounded hold
+  // (`TIER1_DEADLINE_MS`) and, with no lease, an inline 400 at exhaustion.
+  if (isPaneChild(parentEnv)) return { kind: "none", reason: "pane-child" };
   if (!input.interactive) return { kind: "none", reason: "not-interactive" };
   // ALREADY INSIDE A MULTIPLEXER — do not nest one.
   //
