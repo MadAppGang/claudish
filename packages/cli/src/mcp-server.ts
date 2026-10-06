@@ -2370,7 +2370,7 @@ async function main() {
       // explainable without a re-run via get_diagnostics.
       const notificationContent =
         event.type === "failed" || event.type === "timeout"
-          ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the stderr, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
+          ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the final screen, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
           : event.content;
       const result = server.notification({
         method: "notifications/claude/channel",
