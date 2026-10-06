@@ -1370,9 +1370,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.firePaneExit(code);
   }
 
-  /** §2.2 rule 2: interactive, IDLE, exit 0, after /exit or ≥ 1 settled turn, nothing admitted. */
+  /**
+   * §2.2 rule 2: interactive, IDLE, exit 0, after /exit or ≥ 1 settled turn, nothing
+   * admitted. An exit seen only as ESRCH while the socket is lost has no code: after a
+   * delivered /exit that is still the clean exit it asked for.
+   */
   private cleanIdleExit(code: number | null): boolean {
-    if (this.phase !== "IDLE" || code !== 0 || this.shape !== "interactive") return false;
+    if (this.phase !== "IDLE" || this.shape !== "interactive") return false;
+    if (code !== 0 && !(code === null && this.exitRequested)) return false;
     return (this.exitRequested || this.turnsCompleted >= 1) && this.admission === null;
   }
 
