@@ -24,6 +24,7 @@ export {
   sockRootFor,
 } from "./pane-launch.js";
 export {
+  ensureSwept,
   installPaneShutdownHooks,
   livePaneCount,
   MAX_LIVE_PANES,

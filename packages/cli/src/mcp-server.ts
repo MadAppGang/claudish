@@ -52,8 +52,9 @@ import {
   assertMagmuxAvailable,
   checkChildFlags,
   contractMeta,
+  ensureSwept,
   installPaneShutdownHooks,
-  sweepOrphanPanes,
+  sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
@@ -2509,8 +2510,9 @@ async function main() {
   await server.connect(transport);
   installMcpShutdown(sessionManager);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
-  // after an identity check. Asynchronous; a failure costs nothing but the sweep.
-  void sweepOrphanPanes().catch(() => undefined);
+  // after an identity check. Asynchronous, and once per root per process — the first
+  // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
+  void ensureSwept(sockRootFor()).catch(() => undefined);
 }
 
 /**
