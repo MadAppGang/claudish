@@ -126,12 +126,18 @@ describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
       const requiredShapeSession = join(tempRoot, "required-shape");
       const controlSession = join(tempRoot, "control");
       const containedSession = join(tempRoot, "contained");
+      const minBytesSession = join(tempRoot, "min-bytes");
       const configPath = join(tempRoot, "config.json");
       let server: ChildProcessWithoutNullStreams | undefined;
       let serverClosed: Promise<void> | undefined;
 
       try {
-        for (const dir of [requiredShapeSession, controlSession, containedSession]) {
+        for (const dir of [
+          requiredShapeSession,
+          controlSession,
+          containedSession,
+          minBytesSession,
+        ]) {
           mkdirSync(dir);
           // Two lines: delivered as a task file, so the answer starts after the Read.
           writeFileSync(join(dir, "input.md"), "Review the implementation.\n");
@@ -315,7 +321,8 @@ describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
           sessionPath: string,
           model: string,
           label: string,
-          requirePattern?: string
+          requirePattern?: string,
+          extra: Record<string, unknown> = {}
         ) => {
           const result = (await request("tools/call", {
             name: "team",
@@ -324,6 +331,7 @@ describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
               path: sessionPath,
               models: [model],
               ...(requirePattern === undefined ? {} : { require_pattern: requirePattern }),
+              ...extra,
             },
           })) as ToolCallResult;
           expect(result.isError).not.toBe(true);
@@ -362,6 +370,18 @@ describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
           "ANSWER fake-answer [0-9a-f]{8}"
         );
         expect(contained?.state).toBe("COMPLETED");
+
+        // min_output_bytes through the handler's snake_case key: the same healthy answer
+        // (COMPLETED just above) is EMPTY when the caller requires more bytes than it has.
+        const tooShort = await runAndSettle(
+          minBytesSession,
+          "fake-answer",
+          "min-bytes run",
+          undefined,
+          { min_output_bytes: 10_000 }
+        );
+        expect(tooShort?.state).toBe("EMPTY");
+        expect(tooShort?.error?.reason).toBe("empty_output");
       } finally {
         if (server && serverClosed) await terminateServer(server, serverClosed);
         rmSync(tempRoot, { recursive: true, force: true });
