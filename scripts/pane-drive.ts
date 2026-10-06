@@ -24,6 +24,7 @@ import { resolve } from "node:path";
 import {
   checkChildFlags,
   flagsRemoveRead,
+  installPaneShutdownHooks,
   startPaneSession,
 } from "../packages/cli/src/pane/index.ts";
 import type { SettledTurn } from "../packages/cli/src/pane/types.ts";
@@ -75,6 +76,20 @@ async function main(): Promise<number> {
     model = `fake-${o.fake}`;
     cleanup = () => t.cleanup();
   }
+  // Ctrl-C / SIGTERM reap the pane here (≈ 3 s), instead of leaving it to the watcher
+  installPaneShutdownHooks({ exitAfter: true });
+  try {
+    return await drive(o, { parentEnv, cwd, model });
+  } finally {
+    cleanup(); // the --fake temp environment, also after a throw
+  }
+}
+
+async function drive(
+  o: ReturnType<typeof parse>,
+  p: { parentEnv: Record<string, string | undefined>; cwd: string; model: string }
+): Promise<number> {
+  const { parentEnv, cwd, model } = p;
   const uuid = crypto.randomUUID();
   const interactive = o.prompts.length > 1;
   const turns: SettledTurn[] = [];
@@ -109,7 +124,6 @@ async function main(): Promise<number> {
   for (const p of o.prompts.slice(1)) s.send(p);
   const snap = await s.terminal;
   await s.reaped();
-  cleanup();
   console.log(
     JSON.stringify({
       ok: snap.state === "COMPLETED",
