@@ -25,7 +25,7 @@ import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { isPaneShellManagedKey } from "./child-env.js";
-import { type WatcherArgs, sockPathOf, watcherArgv } from "./process-identity.js";
+import { type WatcherArgs, isValidPaneId, sockPathOf, watcherArgv } from "./process-identity.js";
 
 /* ───────────────────────────── socket root ───────────────────────────── */
 
@@ -89,11 +89,7 @@ export function ensureSockRoot(given: string = sockRootFor()): string {
 /** This process's start time in ms, base 36: with the pid it makes a reused owner pid detectable. */
 export const OWNER_START36 = Math.round(Date.now() - process.uptime() * 1000).toString(36);
 
-const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-
-export function isValidPaneId(id: string): boolean {
-  return ID_RE.test(id) && !/^\d+$/.test(id);
-}
+export { isValidPaneId };
 
 /** `c<pid>-<ownerStart36>-<kind><label>-<6 hex>`, at most 40 characters. */
 export function mintPaneId(kind: "t" | "s", label: string): string {

@@ -40,6 +40,7 @@ import {
   isPaneRecordPath,
   isPaneSockPath,
   isPaneWatcherCommand,
+  isValidPaneId,
   mergeSnapshots,
   parseGroupFile,
   readProcessTable,
@@ -107,8 +108,9 @@ export function writeRecord(root: string, rec: PaneRecord): void {
 }
 
 export function readRecord(root: string, paneId: string): PaneRecord | null {
+  if (!isValidPaneId(paneId)) return null;
   try {
-    return validRecord(JSON.parse(readFileSync(recordPathOf(root, paneId), "utf8")));
+    return validRecord(JSON.parse(readFileSync(recordPathOf(root, paneId), "utf8")), paneId);
   } catch {
     return null;
   }
@@ -127,10 +129,12 @@ export function deleteRecord(root: string, paneId: string): void {
   }
 }
 
-function validRecord(v: unknown): PaneRecord | null {
+/** A record is trusted only when its pane id is a valid id AND the file it was read from (R3-M2). */
+function validRecord(v: unknown, stem: string): PaneRecord | null {
   if (!v || typeof v !== "object") return null;
   const r = v as Record<string, unknown>;
   if (typeof r.paneId !== "string" || typeof r.ownerPid !== "number") return null;
+  if (!isValidPaneId(r.paneId) || r.paneId !== stem) return null;
   if (typeof r.sockPath !== "string" || typeof r.launcherDir !== "string") return null;
   return {
     paneId: r.paneId,

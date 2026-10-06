@@ -18,15 +18,25 @@ import {
   livePaneCount,
   ownerStartOfSelf,
   readRecord,
+  readRecords,
   reapAllPanes,
   releasePaneReservations,
+  removePaneFiles,
   reservePanes,
   reservedPaneCount,
   sweepOrphanPanes,
   writeRecord,
 } from "./pane-registry.js";
 import { startPaneSession } from "./pane-session.js";
-import { formatGroupFile, isPaneWatcherCommand, readProcessTable } from "./process-identity.js";
+import {
+  formatGroupFile,
+  isPaneRecordPath,
+  isPaneSockPath,
+  isPaneWatcherCommand,
+  readProcessTable,
+  recordPathOf,
+  sockPathOf,
+} from "./process-identity.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
@@ -485,6 +495,45 @@ describe("records", () => {
     expect(
       JSON.parse(readFileSync(join(t.sockRoot, "panes", `${rec.paneId}.json`), "utf8")).paneId
     ).toBe(rec.paneId);
+  });
+  test("R3-M2: a record is trusted only when its paneId is valid and names its own file", () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const victim = join(t.tmp, "victim.json");
+    writeFileSync(victim, "{}");
+    const base = {
+      ownerPid: 1,
+      ownerStart: "x",
+      watcherPid: null,
+      magmuxPid: null,
+      panePid: null,
+      sessionUuid: "u",
+      sockPath: "/s",
+      launcherDir: "/l",
+      turnDir: "/t",
+      createdAt: "now",
+    };
+    // a planted record whose paneId climbs out of the root, and one naming another file
+    const hostile = `../../${t.tmp.split("/").pop()}/victim`;
+    writeFileSync(
+      join(root, "panes", "c1-zz-tbad-000001.json"),
+      JSON.stringify({ ...base, paneId: hostile })
+    );
+    writeFileSync(
+      join(root, "panes", "c1-zz-tbad-000002.json"),
+      JSON.stringify({ ...base, paneId: "c1-zz-tother-000003" })
+    );
+    expect(readRecord(root, "c1-zz-tbad-000001")).toBeNull();
+    expect(readRecord(root, "c1-zz-tbad-000002")).toBeNull();
+    expect(readRecords(root)).toEqual([]);
+    // the path predicates compare against the root, never a path against itself
+    expect(isPaneRecordPath(root, recordPathOf(root, hostile), hostile)).toBe(false);
+    expect(isPaneSockPath(root, sockPathOf(root, "../x"), "../x")).toBe(false);
+    expect(isPaneRecordPath(root, recordPathOf(root, "c1-ok-t-000004"), "c1-ok-t-000004")).toBe(
+      true
+    );
+    removePaneFiles(root, { paneId: hostile, sockPath: "/s", launcherDir: "", turnDir: "" });
+    expect(existsSync(victim)).toBe(true);
   });
 });
 

@@ -225,6 +225,13 @@ export function isLaunchDirPath(root: string, p: string): boolean {
   }
 }
 
+const PANE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** A pane id is one path component: `[A-Za-z0-9_-]`, at most 64, never all digits. */
+export function isValidPaneId(id: string): boolean {
+  return PANE_ID_RE.test(id) && !/^\d+$/.test(id);
+}
+
 export function sockPathOf(root: string, paneId: string): string {
   return join(root, `magmux-${paneId}.sock`);
 }
@@ -233,12 +240,19 @@ export function recordPathOf(root: string, paneId: string): string {
   return join(root, "panes", `${paneId}.json`);
 }
 
+/**
+ * The checks below compare a path against the ROOT and a validated pane id, never a
+ * path against itself: a pane id read from a record is data, and `join` would turn a
+ * `../` in it into a path outside the root.
+ */
 export function isPaneSockPath(root: string, p: string, paneId: string): boolean {
-  return p === sockPathOf(root, paneId);
+  return isValidPaneId(paneId) && dirname(p) === root && basename(p) === `magmux-${paneId}.sock`;
 }
 
 export function isPaneRecordPath(root: string, p: string, paneId: string): boolean {
-  return p === recordPathOf(root, paneId);
+  return (
+    isValidPaneId(paneId) && dirname(p) === join(root, "panes") && basename(p) === `${paneId}.json`
+  );
 }
 
 /* ───────────────────────────── the watcher, as shell ───────────────────────────── */
