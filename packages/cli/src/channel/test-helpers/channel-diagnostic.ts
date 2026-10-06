@@ -172,9 +172,7 @@ proc.on("exit", (code) => {
   // Diagnostic verdict
   if (observedTraceLines === 0) {
     writeBoth("\n❌ VERDICT: onStateChange callback never fired.\n");
-    writeBoth(
-      "   Producer side broken — StreamJsonReducer or SessionManager not driving events.\n"
-    );
+    writeBoth("   Producer side broken — PaneSession or SessionManager not driving events.\n");
   } else if (observedWireFrames === 0) {
     writeBoth("\n❌ VERDICT: onStateChange fired but no JSON-RPC frame reached stdout.\n");
     writeBoth("   server.notification() is being called but transport is silently dropping.\n");

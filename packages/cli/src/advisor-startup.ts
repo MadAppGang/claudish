@@ -234,7 +234,7 @@ export interface ToolSchemaConverter {
  * `[]`), so an advisor tool can never reach the model.
  *
  * Fails OPEN on a throw: a probe that breaks must not block every launch on
- * that path — the same trade `agent-availability.ts` makes.
+ * that path.
  */
 export function formatCarriesTools(format: ToolSchemaConverter): boolean {
   try {
