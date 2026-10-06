@@ -52,8 +52,9 @@ jobs:
           # PINNED, never "latest": MCP team slots and create_session run in magmux panes
           # and need magmux >= MIN_MAGMUX_VERSION (packages/cli/src/pane/pane-launch.ts),
           # and a new magmux release must not change what an existing claudish tag ships.
-          # Bump MAGMUX_TAG deliberately, after the pane suites pass against it.
-          MAGMUX_TAG="v0.14.0"
+          # The tag lives in .github/magmux.env, which test.yml installs from too:
+          # what ships is what the pane suites ran against.
+          set -a; . .github/magmux.env; set +a
           MIN=$(sed -n 's/^export const MIN_MAGMUX_VERSION = "\(.*\)";$/\1/p' packages/cli/src/pane/pane-launch.ts)
           if [ -z "$MIN" ]; then echo "MIN_MAGMUX_VERSION not found in pane-launch.ts"; exit 1; fi
           if [ "$(printf '%s\n%s\n' "$MIN" "${MAGMUX_TAG#v}" | sort -V | head -n 1)" != "$MIN" ]; then
