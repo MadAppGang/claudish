@@ -25,6 +25,7 @@ import {
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
+import { isPaneChild } from "./pane/child-env.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -997,16 +998,25 @@ export function scrubChildEnv(
  *   via the placeholder ANTHROPIC_API_KEY, and a user/project/local
  *   `forceLoginMethod: "claudeai"` would block that at startup. In native-Anthropic /
  *   --monitor mode we leave it out so the user's real claude.ai subscription keeps working.
+ * - `skipDangerousModePermissionPrompt: true` is added ONLY in an MCP pane child
+ *   (`CLAUDISH_PANE_CHILD=1`). The pane runs `--dangerously-skip-permissions`, and its
+ *   one-time confirmation dialog defaults to "No, exit": nobody is at a headless pane to
+ *   answer it, so every slot would fail at boot. Verified to suppress the dialog at this
+ *   tier. Gated on the marker so no other launch changes.
  *
  * (The OS *managed* tier can't be overridden — that case aborts before we get here.)
  */
 export function buildClaudishSettingsOverlay(
   statusLine: { type: string; command: string; padding: number },
-  proxyAuthMode: boolean
+  proxyAuthMode: boolean,
+  paneChild: boolean = isPaneChild()
 ): Record<string, unknown> {
   const settings: Record<string, unknown> = { statusLine, disableClaudeAiConnectors: true };
   if (proxyAuthMode) {
     settings.forceLoginMethod = "console";
+  }
+  if (paneChild) {
+    settings.skipDangerousModePermissionPrompt = true;
   }
   return settings;
 }
@@ -1023,11 +1033,12 @@ export function buildClaudishSettingsOverlay(
  * Mutates: config.claudeArgs (removes --settings and path if found)
  * Mutates: tempSettingsPath file content (replaces with merged JSON)
  */
-function mergeUserSettingsIfPresent(
+export function mergeUserSettingsIfPresent(
   config: ClaudishConfig,
   tempSettingsPath: string,
   statusLine: { type: string; command: string; padding: number },
-  proxyAuthMode: boolean
+  proxyAuthMode: boolean,
+  paneChild: boolean = isPaneChild()
 ): void {
   const idx = config.claudeArgs.indexOf("--settings");
   if (idx === -1 || !config.claudeArgs[idx + 1]) {
@@ -1059,6 +1070,12 @@ function mergeUserSettingsIfPresent(
     // own --settings explicitly sets forceLoginMethod, in which case respect their choice.
     if (proxyAuthMode && !("forceLoginMethod" in userSettings)) {
       userSettings.forceLoginMethod = "console";
+    }
+
+    // In an MCP pane child, suppress the dangerous-mode confirmation (see
+    // buildClaudishSettingsOverlay) unless the caller's --settings decides it.
+    if (paneChild && !("skipDangerousModePermissionPrompt" in userSettings)) {
+      userSettings.skipDangerousModePermissionPrompt = true;
     }
 
     // Overwrite the temp settings file with the merged result
