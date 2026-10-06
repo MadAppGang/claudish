@@ -1,0 +1,23 @@
+{
+  "input_tokens": 39594,
+  "output_tokens": 21435,
+  "total_tokens": 61029,
+  "total_cost": 0.30754699999999996,
+  "context_window": 500000,
+  "context_left_percent": 92,
+  "provider_name": "X-ai",
+  "updated_at": 1790842065623,
+  "is_free": false,
+  "is_estimated": true,
+  "started_at": 1790840941942,
+  "tool_calls": [
+    { "name": "WebFetch", "count": 59 },
+    { "name": "web_search", "count": 26 },
+    { "name": "WebSearch", "count": 14 },
+    { "name": "Bash", "count": 10 }
+  ],
+  "billed_input_tokens": 221807,
+  "input_per_m": 1,
+  "output_per_m": 4,
+  "model_name": "grok-4.7"
+}
