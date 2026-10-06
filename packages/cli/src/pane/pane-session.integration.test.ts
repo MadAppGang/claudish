@@ -429,6 +429,20 @@ describe.skipIf(!MAGMUX)(
       );
     });
 
+    describe.concurrent("command turns with a file", () => {
+      test(
+        "R3-M3: a command whose expansion never Reads the file → complete null + read_coverage_unverified, not prompt_not_read",
+        async () => {
+          const r = await start("answer", { initialPrompt: "/pear\nsecond line\nthird line" });
+          const snap = await finish(r);
+          expect(snap.state).toBe("COMPLETED");
+          expect(r.turns[0]?.delivery).toMatchObject({ mode: "command", complete: null });
+          expect(snap.anomalies).toContain("read_coverage_unverified");
+        },
+        T
+      );
+    });
+
     describe.concurrent("panel commands", () => {
       test(
         "/cost opens a panel that writes no record: Esc at once, no turn, the next prompt is not held",

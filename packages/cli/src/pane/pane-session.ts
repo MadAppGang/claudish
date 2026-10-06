@@ -1118,6 +1118,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private settledTurnOf(t: TurnView, decision: SettleDecision & { settled: true }): SettledTurn {
     const d = this.currentDelivery;
+    // R3-M3: a file-carrying COMMAND turn hands its text to the command's own expansion,
+    // which may never Read the pointer file (directly or through a subagent). Zero Reads is
+    // then unverified coverage, not a failed read: complete null, never prompt_not_read.
+    const unverified = d?.mode === "command" && !!t.delivery && t.readCoverage.reads === 0;
+    if (unverified) this.anomaly("read_coverage_unverified");
     return {
       index: t.index,
       // a local command's answer is its own stdout: it has no assistant message (path L)
@@ -1134,7 +1139,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         mode: d && d.mode !== "refused" ? d.mode : "typed",
         linesTotal: t.delivery ? t.delivery.lines : null,
         linesRead: t.delivery ? t.readCoverage.linesReturned : null,
-        complete: t.delivery ? t.readCoverage.complete : null,
+        complete: t.delivery && !unverified ? t.readCoverage.complete : null,
         preambleBytes: t.preambleBytes,
       },
     };
