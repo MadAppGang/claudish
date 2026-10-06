@@ -537,7 +537,7 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
         rec.toolResult(id, "", { stdout: "", stderr: "", interrupted: false, isImage: false });
       }
       return answerTurn(c);
-
+    case "quiet_no_summary":
       rec.text(answerFor(c));
       showHistory(`⏺ ${answerFor(c)}`, finishedRow());
       return;
