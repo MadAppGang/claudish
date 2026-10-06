@@ -450,7 +450,13 @@ function markerScenario(content: string): string {
 }
 
 /** Blocking scenarios block turn 1 only; the prompt sent after the decline is answered. */
-const FIRST_TURN_ONLY = new Set(["ask_user", "ask_user_send", "interrupt_td", "permission"]);
+const FIRST_TURN_ONLY = new Set([
+  "ask_user",
+  "ask_user_send",
+  "interrupt_td",
+  "permission",
+  "td_withheld",
+]);
 
 function effectiveScenario(content: string): string {
   if (scenario === "marker") return markerScenario(content);
@@ -508,6 +514,11 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
     case "quiet":
       rec.text(answerFor(c));
       rec.stopSummary();
+      showHistory(`⏺ ${answerFor(c)}`, finishedRow());
+      return;
+    case "td_withheld":
+      // the answer, but no turn_duration: the test appends it itself, at the moment it chooses
+      rec.text(answerFor(c));
       showHistory(`⏺ ${answerFor(c)}`, finishedRow());
       return;
     case "quiet_no_summary":

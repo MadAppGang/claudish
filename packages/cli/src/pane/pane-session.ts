@@ -1129,6 +1129,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       stopReason: decision.stopReason,
       captureSource: "transcript",
       settledBy: decision.by,
+      shape: this.shape,
       delivery: {
         mode: d && d.mode !== "refused" ? d.mode : "typed",
         linesTotal: t.delivery ? t.delivery.lines : null,
@@ -1228,6 +1229,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         stopReason: null,
         captureSource: "screen",
         settledBy: "screen",
+        shape: this.shape,
         delivery: {
           mode: d && d.mode !== "refused" ? d.mode : "typed",
           linesTotal: null,
@@ -1408,7 +1410,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (this.shape === "one-shot") this.shape = "interactive";
     this.queue.push(text);
     this.escapeArmed = true;
-    this.step(() => this.evaluate());
+    // Read the transcript first: a turn whose end record already landed settles HERE, and
+    // its owner must see the converted shape (SettledTurn.shape) and the queued text.
+    this.step(() => {
+      this.pollFollower(true);
+      this.evaluate();
+    });
+    // Never report a queued prompt for a session this very step ended.
+    if (isTerminalPhase(this.phase)) return { ok: false, reason: "terminal" };
     return { ok: true, queued: this.queue.length };
   }
 

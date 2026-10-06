@@ -12,7 +12,16 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +36,7 @@ import {
   makePaneTestEnv,
   waitNoOrphans,
 } from "../pane/test-helpers/hermetic-env.js";
+import { transcriptRecords } from "../pane/test-helpers/transcript-fixtures.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
 import {
   SessionManager,
@@ -654,6 +664,34 @@ describe.skipIf(!MAGMUX)(
           state: "COMPLETED",
         });
         expect(manager.cancelSession(id).changed).toBe(false);
+      },
+      T_PANE
+    );
+
+    test(
+      "send_input whose own step settles the one-shot turn: the session goes interactive and the text is turn 2",
+      async () => {
+        const manager = makeManager();
+        const id = await create(manager, { model: "fake-td_withheld", prompt: "first" });
+        // the answer is in, its turn_duration is not: the turn waits ("finishing")
+        await waitUntil(() => manager.getSession(id).activity === "finishing", 15_000);
+        await Bun.sleep(800); // past the 500 ms corroboration window of that answer
+        // Claude Code writes the end-of-turn record; the send arrives before any poll of ours
+        const td = transcriptRecords("tools-session")[29] as Record<string, unknown>;
+        expect(td.subtype).toBe("turn_duration");
+        appendFileSync(manager.getSession(id).transcriptPath, `${JSON.stringify(td)}\n`);
+        expect(manager.sendInput(id, "second")).toEqual({ success: true, queued: 0 });
+        await waitUntil(
+          () =>
+            manager.getSession(id).turnsCompleted === 2 &&
+            manager.getSession(id).state === "AWAITING_INPUT",
+          15_000
+        );
+        const info = manager.getSession(id);
+        expect(info.shape).toBe("interactive");
+        expect(manager.getOutput(id).output).toContain(
+          `ANSWER fake-td_withheld ${createHash("sha1").update("second").digest("hex").slice(0, 8)}`
+        );
       },
       T_PANE
     );

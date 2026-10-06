@@ -17,6 +17,9 @@ export interface SettledTurn {
   stopReason: string | null;
   captureSource: "transcript" | "screen" | "none";
   settledBy: SettledBy | "screen";
+  /** the session's shape at the moment of the settle: a send converts one-shot to interactive
+   * before its own evaluation, so an owner reads this, never a copy it holds */
+  shape: "one-shot" | "interactive";
   /** owners map `complete === false` → prompt_not_read */
   delivery: {
     mode: Delivery["mode"];

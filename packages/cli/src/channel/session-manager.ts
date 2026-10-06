@@ -1028,7 +1028,9 @@ export class SessionManager {
   /** The verdict of a settled turn: one-shot → classified; interactive → continue (D20). */
   private decide(entry: SessionEntry, turn: SettledTurn): FinalVerdict | "continue" {
     this.appendAnswer(entry, turn.index, turn.answer);
-    if (entry.info.shape === "one-shot") {
+    // The pane's shape at the settle, not entry.info's copy: a send_input whose own step
+    // settles the turn has converted the session before sendInput could update the copy.
+    if (turn.shape === "one-shot") {
       const v = classifyRunOutput({
         answer: turn.answer,
         apiError: turn.apiError,
