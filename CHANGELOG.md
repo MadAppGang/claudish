@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.4.1] - 2026-10-07
+
+### Bug Fixes
+
+- read parentClaudeSessionId from the host session record *(mcp)* ([`f4952d1`](https://github.com/MadAppGang/claudish/commit/f4952d145e695dc6cc4cc73ef2a0841785cd692d))
+
+### Documentation
+
+- park the pane migration's deferred follow-ups *(roadmap)* ([`461b8d4`](https://github.com/MadAppGang/claudish/commit/461b8d4c0c43c0cc81034c49d744a80e11b6ec44))
+- keep the pane migration's design and build record *(mcp)* ([`0f13790`](https://github.com/MadAppGang/claudish/commit/0f1379026a7043accadcb37b4d6948380b5958d1))
+- update CHANGELOG.md for v10.4.0([`8bfa82b`](https://github.com/MadAppGang/claudish/commit/8bfa82b7867666f99fda10d7744f2cda6ee9cdf3))
+
+### Other Changes
+
+- v10.4.1 *(release)* ([`bd7894d`](https://github.com/MadAppGang/claudish/commit/bd7894da4c9b53f71ac2a714d5c34769d6cc2cdd))
+
 ## [10.4.0] - 2026-10-06
 
 ### ⚠ BREAKING CHANGES
