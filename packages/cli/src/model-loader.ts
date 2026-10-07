@@ -5,6 +5,7 @@ import { readAllModelsCache } from "./providers/all-models-cache.js";
 import { PROVIDER_TO_PREFIX } from "./providers/auto-route.js";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
 import { ensureCatalogReady } from "./providers/catalog-client.js";
+import { modelsBaseUrl } from "./providers/catalog-endpoints.js";
 import { providerForCatalogRoute } from "./providers/catalog-route-bindings.js";
 import {
   CATALOG_V3_ACCEPT,
@@ -276,8 +277,16 @@ let _cachedRecommendedModels: RecommendedModelsDoc | null = null;
 
 // ─── Firebase config ─────────────────────────────────────────────────────────
 
-const FIREBASE_BASE_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels";
-const FIREBASE_RECOMMENDED_URL = `${FIREBASE_BASE_URL}?catalog=recommended`;
+/**
+ * The views this module asks the catalog service for.
+ *
+ * Each is built from `modelsBaseUrl()`, read once at the top of the operation
+ * that uses it, so the fetches of one operation name one service even if the
+ * setting moves underneath a later one. The endpoint itself lives in
+ * `providers/catalog-endpoints.ts`, which is what makes `CLAUDISH_CATALOG_URL`
+ * reach these requests as well as the slim catalog's.
+ */
+const RECOMMENDED_VIEW = "?catalog=recommended";
 
 export const RECOMMENDED_MODELS_CACHE_PATH = join(
   homedir(),
@@ -752,16 +761,19 @@ export async function getRecommendedModels(
     await ensureCatalogReady(20000);
     const generationId = readAllModelsCache()?.catalogGenerationId;
     if (!generationId) throw new Error("No complete v3 model and plan snapshot");
+    // One service for the whole operation: the recommendations and the top100
+    // they are projected onto have to describe the same catalog.
+    const base = modelsBaseUrl();
     const response = await fetchCatalogData<{
       mode: "recommended";
       recommendations: Parameters<typeof recommendationProjection>[0];
-    }>(FIREBASE_RECOMMENDED_URL, RECOMMENDED_FETCH_TIMEOUT_MS, generationId);
+    }>(`${base}${RECOMMENDED_VIEW}`, RECOMMENDED_FETCH_TIMEOUT_MS, generationId);
     if (response.mode !== "recommended") throw new Error("Unexpected recommendation mode");
     if (response.recommendations.generationId !== generationId) {
       throw new Error("Recommendation and model catalog generations differ");
     }
     const top100 = await fetchCatalogData<{ mode: "top100"; models: ModelDoc[] }>(
-      `${FIREBASE_BASE_URL}?catalog=top100`,
+      `${base}?catalog=top100`,
       RECOMMENDED_FETCH_TIMEOUT_MS,
       generationId
     );
@@ -852,9 +864,7 @@ function isFreshEnough(doc: RecommendedModelsDoc): boolean {
  * Network-only — no local caching. Callers handle error UX.
  */
 export async function searchModels(query: string, limit = 50): Promise<ModelDoc[]> {
-  const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(
-    query
-  )}&limit=${limit}&status=active`;
+  const url = `${modelsBaseUrl()}?search=${encodeURIComponent(query)}&limit=${limit}&status=active`;
   const data = await fetchCatalogData<{ models?: ModelDoc[]; total?: number }>(
     url,
     SEARCH_FETCH_TIMEOUT_MS
@@ -871,7 +881,7 @@ export async function searchModelsByProvider(
   query: string,
   limit = 50
 ): Promise<ModelDoc[]> {
-  const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
+  const url = `${modelsBaseUrl()}?provider=${encodeURIComponent(
     provider
   )}&search=${encodeURIComponent(query)}&limit=${limit}&status=active`;
   const data = await fetchCatalogData<{ models?: ModelDoc[]; total?: number }>(
@@ -886,7 +896,7 @@ export async function searchModelsByProvider(
  * Returns null if not found, throws on network error.
  */
 export async function getModelByIdFromFirebase(modelId: string): Promise<ModelDoc | null> {
-  const url = `${FIREBASE_BASE_URL}?modelId=${encodeURIComponent(modelId)}`;
+  const url = `${modelsBaseUrl()}?modelId=${encodeURIComponent(modelId)}`;
   const data = await fetchCatalogData<{ mode: "exact"; model: ModelDoc | null }>(
     url,
     SEARCH_FETCH_TIMEOUT_MS
@@ -943,7 +953,7 @@ export interface Top100Response {
  * cache is maintained.
  */
 export async function getTop100Models(): Promise<Top100Response> {
-  const url = `${FIREBASE_BASE_URL}?catalog=top100`;
+  const url = `${modelsBaseUrl()}?catalog=top100`;
   const data = await fetchCatalogData<Top100Response>(url, SEARCH_FETCH_TIMEOUT_MS);
   return data;
 }
@@ -963,7 +973,7 @@ export interface ProviderListEntry {
  * Powers the CLI `--providers` command.
  */
 export async function getProviderList(): Promise<ProviderListEntry[]> {
-  const url = `${FIREBASE_BASE_URL}?catalog=providers`;
+  const url = `${modelsBaseUrl()}?catalog=providers`;
   const data = await fetchCatalogData<{ providers?: ProviderListEntry[] }>(
     url,
     SEARCH_FETCH_TIMEOUT_MS
@@ -973,7 +983,7 @@ export async function getProviderList(): Promise<ProviderListEntry[]> {
 
 /** Fetch every active model for a provider from one pinned generation. */
 export async function getModelsByProvider(provider: string, pageSize = 200): Promise<ModelDoc[]> {
-  const base = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(provider)}&status=active&limit=${pageSize}`;
+  const base = `${modelsBaseUrl()}?provider=${encodeURIComponent(provider)}&status=active&limit=${pageSize}`;
   return fetchPinnedModelDocs(base, "provider catalog");
 }
 
@@ -1045,7 +1055,7 @@ async function fetchPinnedModelDocs(base: string, label: string): Promise<ModelD
  * shared TTL, so this runs at most once a day and never blocks a first paint.
  */
 export async function getAllModelDocs(pageSize = 200): Promise<ModelDoc[]> {
-  const base = `${FIREBASE_BASE_URL}?status=active&limit=${pageSize}`;
+  const base = `${modelsBaseUrl()}?status=active&limit=${pageSize}`;
   return fetchPinnedModelDocs(base, "model catalog");
 }
 
