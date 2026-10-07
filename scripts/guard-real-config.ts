@@ -218,6 +218,20 @@ for (const g of GUARDED) {
 // unreadable". Measured 2026-09-18: 25 tests failed on that alone, and CI,
 // whose home directory never holds the file, stayed green. A fresh directory
 // per run means no run can read a sentinel an earlier run wrote either.
+// `CLAUDISH_TOKEN_FILE` is the fifth, and it redirects for the same reason.
+// `~/.claudish/tokens-<port>.json` is keyed by PORT rather than by session, and
+// the proxy's tracker, the status line and the summary all resolve it through
+// `resolveTokenFilePath` (`session/token-file.ts`), which takes this variable
+// as a parent's assignment. Unset, every proxy a test builds writes to the real
+// path for whatever port it binds.
+//
+// That port space is shared with any claudish the developer has running. A run
+// that binds the live session's port overwrites the file its status line reads,
+// and the session then renders the test's fixture (measured as
+// `Corp Proxy grok-4`, a provider and model that exist only in the e2e
+// configuration) in place of its own provider, model and cost, until a later
+// response writes over it. A file of its own per run keeps the suite off the
+// real one at no cost: no assertion reads the real file.
 const sentinelDir = mkdtempSync(join(tmpdir(), "claudish-guard-sentinel-"));
 const child = spawn(cmd[0], cmd.slice(1), {
   stdio: "inherit",
@@ -227,6 +241,7 @@ const child = spawn(cmd[0], cmd.slice(1), {
     CLAUDISH_DISABLE_OP: "1",
     CLAUDISH_DISABLE_CATALOG_WARM: "1",
     CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
+    CLAUDISH_TOKEN_FILE: join(sentinelDir, "tokens.json"),
   },
 });
 
