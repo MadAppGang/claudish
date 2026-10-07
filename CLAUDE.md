@@ -25,6 +25,7 @@ lives in `ROADMAP.md`.
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, the frozen mod contract v1. Read before editing
   `pane/`, team spawn or channel spawn
+- `first-party.md` — what Claude Code gates on trusting its base URL, why a `--monitor` session can be given that trust, and what the proxy then owes each request; read before editing native forwarding
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
