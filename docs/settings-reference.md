@@ -668,9 +668,16 @@ For OpenAI- or Anthropic-compatible servers:
 | `apiKey` | string | yes, unless `authScheme: "none"` | API key; supports `${VAR}` env expansion. Must be **omitted** under `authScheme: "none"` |
 | `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`) |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
-| `models` | string[] | no | Restrict to listed models; omit to allow any |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`, which is what the nested Claude Code's `/model` command lists. Not an allowlist — an unlisted name still reaches the endpoint — and not the model picker's list, which comes from the endpoint itself (see below) |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
+
+**The picker lists what an `openai` endpoint serves.** `format: "openai"` means the host speaks
+the OpenAI API, so claudish asks it — `GET /models` beside the `/chat/completions` it already
+uses — when you scope to that provider in the interactive picker. Nothing is fetched at startup.
+A host that does not serve the path reports the URL and the status instead of showing an empty
+list. `format: "anthropic"` endpoints are not asked; enter the model name directly, or launch
+with `--model my-endpoint@some-model`.
 
 **No-credential endpoints**: for a local router or a server on a trusted network, set
 `authScheme: "none"` and omit `apiKey`. claudish then sends no auth header at all:
@@ -728,7 +735,10 @@ Full control over transport, auth, headers, and stream format:
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
-| `models` | string[] | no | Restrict to listed models |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models` (see the simple table above) |
+
+With `transport: "openai"`, the picker asks this endpoint for its models at the `/models` path
+beside the `apiPath` it declares — `/api/v2/chat/completions` above is asked at `/api/v2/models`.
 
 ### Environment variable expansion
 
