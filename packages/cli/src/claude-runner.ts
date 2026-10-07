@@ -34,6 +34,8 @@ import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
 import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
+import { signalExitCode } from "./signal-exit-code.js";
+import { claimSignalExit } from "./signal-owner.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -2169,12 +2171,7 @@ export async function runClaudeWithProxy(
       // right for the case where magmux itself died first.
       const paneExit = wrap?.paneExitCode() ?? null;
       resolve({
-        exitCode:
-          paneExit !== null
-            ? paneExit
-            : signal
-              ? 128 + (SIGNAL_EXIT_NUMBERS[signal] ?? 0)
-              : (code ?? 1),
+        exitCode: paneExit !== null ? paneExit : signal ? signalExitCode(signal) : (code ?? 1),
         exitSignal: signal,
       });
     });
@@ -2210,20 +2207,6 @@ export async function runClaudeWithProxy(
 }
 
 /**
- * Signal numbers, for the `128 + signum` exit convention.
- *
- * Hardcoded because Node exposes `os.constants.signals` but not a portable
- * reverse map, and these four are POSIX-fixed. `packages/cli/bin/claudish.cjs`
- * carries the same table for the case where the CHILD dies from a signal.
- */
-const SIGNAL_EXIT_NUMBERS: Partial<Record<NodeJS.Signals, number>> = {
-  SIGHUP: 1,
-  SIGINT: 2,
-  SIGQUIT: 3,
-  SIGTERM: 15,
-};
-
-/**
  * Setup signal handlers to gracefully shutdown
  */
 function setupSignalHandlers(
@@ -2238,6 +2221,11 @@ function setupSignalHandlers(
     ? ["SIGINT", "SIGTERM"]
     : ["SIGINT", "SIGTERM", "SIGHUP"];
 
+  // stats-buffer's SIGINT and SIGTERM handlers run before any added later and exit
+  // the process unless the exit is claimed, which would leave Claude Code running
+  // and the settings file behind. Claimed, they only flush, and the handlers below
+  // stop both and exit with the same code.
+  claimSignalExit();
   for (const signal of signals) {
     process.on(signal, () => {
       // Lift the firewall first — the child is going away, and the shutdown
@@ -2274,7 +2262,7 @@ function setupSignalHandlers(
       // meta.json for a session that had been killed. A graceful shutdown is
       // still a shutdown: the process did not finish its work, and its exit
       // code is the only place that can say so.
-      process.exit(128 + (SIGNAL_EXIT_NUMBERS[signal] ?? 0));
+      process.exit(signalExitCode(signal));
     });
   }
 }

@@ -225,10 +225,11 @@ process.on("exit", syncFlushOnExit);
 /**
  * `128 + signum`, the shell convention for "died from signal N".
  *
- * These two handlers are registered at MODULE LOAD, i.e. before
- * `claude-runner.ts`'s `setupSignalHandlers` ever runs, and they call
- * `process.exit` unconditionally — so they, not that one, are what a SIGTERM
- * actually reaches first. While they exited 0, a claudish process that a
+ * These two handlers are registered at MODULE LOAD, before any command's own,
+ * so a SIGTERM reaches them first. They flush and then exit, unless a command
+ * that must finish its own shutdown first has claimed the exit
+ * (`signal-owner.ts`): a pane owner does, and so does the runner once Claude
+ * Code is running. While they exited 0, a claudish process that a
  * supervisor had KILLED reported a clean success to everything above it:
  * measured 2026-08-22, a group SIGTERM against a running channel session still
  * produced `code=0, signal=null` with `claude-runner.ts` already fixed.
@@ -249,7 +250,8 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     } catch {
       // Silently ignore
     }
-    // A pane owner exits with the same code itself, after settling its records.
+    // An owner that claimed the exit (a pane owner, the runner) exits with the same
+    // code itself, once its own shutdown is done.
     if (!signalExitClaimed()) process.exit(SIGNAL_EXIT_CODE[signal]);
   });
 }
