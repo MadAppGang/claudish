@@ -14,7 +14,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../channel/parent-proof.js";
+import { projectDirNameFor } from "../channel/home-dir.js";
 import { log } from "../logger.js";
 import { translateLine } from "./event-translator.js";
 import { initialState, reduceEvent } from "./session-state.js";

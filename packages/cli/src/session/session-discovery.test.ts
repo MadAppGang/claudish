@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../channel/parent-proof.js";
+import { projectDirNameFor } from "../channel/home-dir.js";
 import {
   ACTIVE_WINDOW_MS,
   type SessionRow,
@@ -100,7 +100,7 @@ describe("session discovery pure helpers", () => {
     );
   });
 
-  test("slugForPath is the parent proof's projectDirNameFor, so the two cannot drift", () => {
+  test("slugForPath is home-dir's projectDirNameFor, so the two cannot drift", () => {
     for (const p of ["/a/b_c.d", "/x y/@z", "/Users/x/.claude/worktrees/y"]) {
       expect(slugForPath(p)).toBe(projectDirNameFor(p));
     }

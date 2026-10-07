@@ -46,7 +46,7 @@ argument becomes `--agent <name>`; an unknown name is refused by the child itsel
 `agent_rejected`), so claudish runs no agent probe of its own.
 
 **A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.14.0,
-else `Error: magmux_unavailable: …`), credential pre-hydration, the parent proof, a pane
+else `Error: magmux_unavailable: …`), credential pre-hydration, the parent session read, a pane
 reservation (`Error: pane_limit: …` past 48 live panes per user), `prompt.md`, `spawn.json`, then the
 pane. `create_session` returns `{session_id, state}` once the pane exists, without waiting for boot.
 A pane that fails to start leaves a FAILED `pane_lost` session with its `meta.json`, and the call
@@ -170,7 +170,7 @@ every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, 
   "schema": 1,                       // versions spawn.json only
   "kind": "session",                 // "session" | "team"
   "sessionId": "1a2b3c4d",
-  "parentClaudeSessionId": "<uuid>", // OPTIONAL — present only when proven
+  "parentClaudeSessionId": "<uuid>", // OPTIONAL — absent when no well-formed id could be read
   "hostPid": 12345,                  // the Claude Code process that launched this server
   "launcherPid": 12398,              // OPTIONAL — present only on the npm launcher path
   "mcpPid": 12399,                   // this process: the one that writes meta.json
@@ -187,7 +187,7 @@ sessions directory and reports progress to the Claude Code window that started a
 `mcpPid` is also the pane record's owner, and the watchers make the monitor's liveness inference
 sound: when the writer dies, its panes die with it.
 
-**`hostPid` is structural, computed once at startup** (`hostPidFrom`, `channel/parent-proof.ts`).
+**`hostPid` is structural, computed once at startup** (`hostPidFrom`, `channel/parent-session.ts`).
 A compiled binary or `bun src/index.ts` is the direct child of Claude Code, so `hostPid` is
 `process.ppid`. An npm/bun global install runs Claude Code → `node bin/claudish.cjs` → `bun
 dist/index.js`, so the launcher puts `CLAUDISH_LAUNCHER_PID` (itself) and
@@ -197,25 +197,36 @@ inert. `launcherPid` is recorded exactly when that branch ran. No `ps`, no tree 
 environment strips the pair and `CLAUDE_CODE_SESSION_ID`, so a claudish MCP server nested inside a
 pane cannot inherit the host's identity either.
 
-**`parentClaudeSessionId` is proven per call, or absent** (`proveCallingConversation`). The
-environment's `CLAUDE_CODE_SESSION_ID` goes stale on `/clear`, on a resume, and whenever two
-windows share a conversation, so it is never stored as such. Claude Code puts the calling
-tool-use id in the request `_meta["claudecode/toolUseId"]` (the dispatcher passes it as
-`ctx.toolUseId`), and the tool_use block lands in the caller's transcript — but ASYNCHRONOUSLY:
-in a live Claude Code 2.1.290 session (2026-10-06, 10 ms poller) the `create_session` record
-reached disk 377 ms after its own timestamp, after the tool had already started. For at most two candidates — the env id (only when `CLAUDE_CODE_CHILD_SESSION` is empty)
-and the `sessionId` of the host's live record `<configDir>/sessions/<hostPid>.json` (only when
-its `pid` matches) — the proof finds the candidate's project directory (fast path: the host
-record's `cwd` with every non-alphanumeric character replaced by `-`; else one listing of
-`projects/`, cached per candidate), then searches the last 256 KB of `<C>.jsonl` and up to 32
-subagent transcripts modified in the last 10 minutes for the quoted id. No hit → look again
-every 100 ms (`PROOF_POLL_INTERVAL_MS`) until 2000 ms (`PROOF_DEADLINE_MS`) have passed, then
-absent; a hit returns at once, so a call whose record is already on disk waits for nothing. The
-single 250 ms retry this replaced lost that race in 2 of 3 calls in one session. A tool-use id is unique and lives only in the transcript of the
-conversation that issued it, so a hit is proof and every failure degrades to "absent". It is
-`await`ed with `fs/promises` before `createSession`, so the server keeps pumping live sessions
-while it looks. `meta.json` carries the same key with the same value exactly when `spawn.json`
-does.
+**`parentClaudeSessionId` is the host session record's id, read once per call**
+(`parentSessionForCall`, `channel/parent-session.ts`). At `create_session` and
+`team(mode:"run")` time claudish reads `<configDir>/sessions/<hostPid>.json` (`configDir` is
+`CLAUDE_CONFIG_DIR`, else `$HOME/.claude`) and records its `sessionId` when the file parses,
+its `pid` equals `hostPid` and the id is well formed. Only when no record can be read does it
+fall back to `CLAUDE_CODE_SESSION_ID` (ignored under `CLAUDE_CODE_CHILD_SESSION`); with
+neither, the key is absent. One file read: no transcript search, no polling, no delay.
+`meta.json` carries the same key with the same value exactly when `spawn.json` does.
+
+Why the host record, measured on Claude Code 2.1.290 in live interactive sessions
+(`madbench --manual`, 2026-10-06):
+
+- The host record carries the window's LIVE conversation, `{"pid":…,"sessionId":…,"cwd":…}`:
+  its `sessionId` went `6f9e3d06…` → `d5b9974e…` after `/clear` and back to `6f9e3d06…`
+  after `/resume`. The MCP server's `CLAUDE_CODE_SESSION_ID` equals it at server start and
+  goes stale after the first `/clear`, which is why the env id is only the fallback.
+- The transcript cannot attribute the call. Claude Code writes a call's `tool_use` record
+  only AFTER the MCP tool call returns. With a 10 ms poller: record timestamp `00:41:39.899`,
+  claudish gave up a 2 s transcript poll and spawned at `00:41:41.909`, the record reached
+  disk at `00:41:42.052`; an earlier call, `34.785` / spawn `35.040` / on disk `35.162`. The
+  previous mechanism searched the calling conversation's transcript for the `_meta`
+  tool-use id, polling up to 2 s; it could never find the call it was proving, so every
+  `create_session` came out unattributed and 2 s slower. It is deleted, and claudish no
+  longer reads `_meta["claudecode/toolUseId"]`.
+  `spawn-record.contract.test.ts` "regression: the transcript does not hold the call while
+  the tool runs" replays that order and fails against the transcript search.
+
+Accepted race: a `/clear` typed in the very moment a call runs may attribute that run to the
+new conversation. It is never attributed to another window — the record is keyed by this
+server's own `hostPid`.
 
 ### `meta.json` — the final record, and `events.jsonl`'s assistant lines
 

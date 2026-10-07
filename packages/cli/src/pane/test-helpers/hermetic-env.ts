@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../../channel/parent-proof.js";
+import { projectDirNameFor } from "../../channel/home-dir.js";
 import { findMagmuxBinaryOrNull } from "../../launcher/magmux-binary.js";
 import { readProcessTable } from "../process-identity.js";
 

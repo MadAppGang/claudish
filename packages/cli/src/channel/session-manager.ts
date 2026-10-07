@@ -73,7 +73,7 @@ import { projectsDir, transcriptPathFor } from "../session/session-discovery.js"
 import { TRUNCATION_NOTE, type TeamRunOutcome, classifyRunOutput } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { sessionsDirFrom } from "./home-dir.js";
-import { hostPidFrom } from "./parent-proof.js";
+import { hostPidFrom } from "./parent-session.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import type {
   ChannelEvent,
@@ -653,7 +653,7 @@ export class SessionManager {
 
   constructor(options?: SessionManagerOptions) {
     // Computed once: the Claude Code process that launched this MCP server
-    // does not change for the life of the process. See parent-proof.ts.
+    // does not change for the life of the process. See parent-session.ts.
     const host =
       options?.hostPid !== undefined
         ? { hostPid: options.hostPid }
@@ -927,7 +927,7 @@ export class SessionManager {
         pendingInputs: opts.prompt ? 1 : 0,
         claudeSessionId,
         transcriptPath: transcriptPathFor(cwd, claudeSessionId, projectsDir(parentEnv)),
-        // Present only when proven, so `meta.json` carries the key exactly when
+        // Present only when there is one, so `meta.json` carries the key exactly when
         // `spawn.json` does, with the same value.
         ...optionalParent(opts.parentClaudeSessionId),
         captureSource: null,

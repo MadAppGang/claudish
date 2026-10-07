@@ -28,8 +28,8 @@ export const SERVER_ENTRY = join(SRC_DIR, "index.ts");
  * server's default CLAUDISH_BIN.
  */
 export const PANE_FAKE_CHILD = join(SRC_DIR, "pane", "test-helpers", "fake-interactive-child.ts");
-/** Design §3.5 step 1: the dispatcher reads `extra._meta?.["claudecode/toolUseId"]`. */
-export const TOOL_USE_ID_META_KEY_FROM_SPEC = "claudecode/toolUseId";
+/** The `_meta` key Claude Code sends the calling tool-use id under. claudish does not read it. */
+export const CLAUDE_CODE_TOOL_USE_META_KEY = "claudecode/toolUseId";
 export const FAKE_MODEL = "contract-fake-model";
 
 /** Suites that start panes skip with this message when magmux is absent (testing.md). */
@@ -350,8 +350,7 @@ export async function createSession(
   const callArgs: Record<string, unknown> = { model: args.model ?? FAKE_MODEL };
   if (args.prompt !== undefined) callArgs.prompt = args.prompt;
   if (args.timeout_seconds !== undefined) callArgs.timeout_seconds = args.timeout_seconds;
-  const meta =
-    toolUseId === undefined ? undefined : { [TOOL_USE_ID_META_KEY_FROM_SPEC]: toolUseId };
+  const meta = toolUseId === undefined ? undefined : { [CLAUDE_CODE_TOOL_USE_META_KEY]: toolUseId };
   const result = await server.callTool("create_session", callArgs, meta);
   const fromJson = findField(result.json, "session_id") ?? findField(result.json, "sessionId");
   const fromText = /"?session_?[iI]d"?\s*[:=]\s*"?([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(

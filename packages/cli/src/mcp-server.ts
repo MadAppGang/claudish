@@ -23,7 +23,7 @@ import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
-import { TOOL_USE_ID_META_KEY, proveParentForCall } from "./channel/parent-proof.js";
+import { parentSessionForCall } from "./channel/parent-session.js";
 import type { ChannelEventType } from "./channel/types.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
@@ -171,13 +171,6 @@ interface ToolCallContext {
    * heartbeat has been stopped. Never throws.
    */
   reportProgress: (message?: string) => void;
-  /**
-   * The calling tool-use id, from the request `_meta["claudecode/toolUseId"]`
-   * Claude Code attaches to every MCP tool call. Undefined when the client sent
-   * none. Untrusted input: `proveCallingConversation` validates it before any
-   * use, and it is only ever used to PROVE which conversation called.
-   */
-  toolUseId?: string;
 }
 
 interface ToolDefinition {
@@ -1662,8 +1655,7 @@ function defineTools(
             // completion push is a channel frame Claude Code drops without
             // `--channels`. Written BEFORE any pane exists; a throw here fails
             // the call with nothing started.
-            const parentClaudeSessionId = await proveParentForCall({
-              toolUseId: ctx.toolUseId,
+            const parentClaudeSessionId = await parentSessionForCall({
               hostPid: sessionManager.hostPid,
             });
             const monitorRecord = sessionManager.recordTeamRun({
@@ -1981,7 +1973,7 @@ function defineTools(
       required: ["model"],
     },
     group: "channel",
-    handler: async (args, ctx) => {
+    handler: async (args) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         // Refusals first, before any credential work: reserved or positional flags, then
@@ -2011,11 +2003,9 @@ function defineTools(
           pin: workDir === undefined || resolve(workDir) === process.cwd(),
         });
 
-        // Which conversation called, PROVEN from its transcript or left absent.
-        // Asynchronous throughout (fs/promises, 100 ms polls for 2 s at most), so
-        // this process keeps pumping every live session while it looks.
-        const parentClaudeSessionId = await proveParentForCall({
-          toolUseId: ctx.toolUseId,
+        // The conversation live in the calling window, from the host's session
+        // record: one read at call time, no wait. See channel/parent-session.ts.
+        const parentClaudeSessionId = await parentSessionForCall({
           hostPid: sessionManager.hostPid,
         });
 
@@ -2504,10 +2494,8 @@ async function main() {
             extra.sendNotification({ method: "notifications/progress", params: frame }),
         })
       : NOOP_HEARTBEAT;
-    const rawToolUseId = extra._meta?.[TOOL_USE_ID_META_KEY];
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
-      ...(typeof rawToolUseId === "string" ? { toolUseId: rawToolUseId } : {}),
     };
 
     try {
