@@ -3,7 +3,9 @@
  *
  * Handles communication with providers that speak native Anthropic API format
  * (MiniMax, Kimi, Kimi Coding, Z.AI). Auth uses x-api-key header with
- * anthropic-version, plus Kimi OAuth fallback for kimi-coding.
+ * anthropic-version, plus Kimi OAuth fallback for kimi-coding. For an endpoint
+ * that reads `cache_control` only at the request level (Kimi), the client's
+ * cache breakpoints are lifted there.
  */
 
 import { credentials } from "../../auth/credentials/authority.js";
@@ -94,6 +96,31 @@ export class AnthropicProviderTransport implements ProviderTransport {
     }
 
     return headers;
+  }
+
+  /**
+   * Lift the client's prompt-cache breakpoints to the request-level
+   * `cache_control` for an endpoint that reads only that field
+   * (`cacheControlPlacement: "top-level"`); every other endpoint's payload is
+   * returned untouched.
+   *
+   * Only a request that asked for caching gets it: with no breakpoint and no
+   * request-level field from the client, nothing is added, so a client running
+   * with caching disabled stays uncached. The endpoint writes the prefix at a
+   * single TTL, so the longest one any breakpoint asked for wins, and a system
+   * prompt the client wanted kept for an hour is kept for an hour. Only `type`
+   * and `ttl` are sent, the two fields the endpoint defines:
+   * https://platform.kimi.ai/docs/api/messages
+   *
+   * An explicit `cache_control` already on the payload wins: `--model-params`
+   * is the user's last word on it.
+   */
+  transformPayload(payload: any, claudeRequest?: any): any {
+    if (this.provider.cacheControlPlacement !== "top-level") return payload;
+    if (payload?.cache_control !== undefined) return payload;
+    const ttl = longestCacheTtl(payload, claudeRequest);
+    if (ttl === undefined) return payload;
+    return { ...payload, cache_control: { type: "ephemeral", ttl } };
   }
 
   /**
@@ -209,6 +236,36 @@ export class AnthropicProviderTransport implements ProviderTransport {
       name.charAt(0).toUpperCase() + name.slice(1)
     );
   }
+}
+
+/**
+ * The longest TTL among a request's cache breakpoints, or undefined when it
+ * carries none. A breakpoint without a `ttl` is Anthropic's `5m` default.
+ *
+ * Reads every position Anthropic accepts a breakpoint in: system blocks, tool
+ * definitions, message content blocks, the blocks inside a tool result, and the
+ * request itself. The request-level field comes from the client's request,
+ * because the Anthropic format rebuilds the payload without it.
+ */
+function longestCacheTtl(payload: any, claudeRequest: any): "5m" | "1h" | undefined {
+  const blocks = (value: unknown): any[] => (Array.isArray(value) ? value : []);
+  const markers: unknown[] = [claudeRequest?.cache_control];
+  for (const block of blocks(payload?.system)) markers.push(block?.cache_control);
+  for (const tool of blocks(payload?.tools)) markers.push(tool?.cache_control);
+  for (const message of blocks(payload?.messages)) {
+    for (const block of blocks(message?.content)) {
+      markers.push(block?.cache_control);
+      for (const inner of blocks(block?.content)) markers.push(inner?.cache_control);
+    }
+  }
+
+  let longest: "5m" | "1h" | undefined;
+  for (const marker of markers) {
+    if (!marker || typeof marker !== "object") continue;
+    if ((marker as { ttl?: unknown }).ttl === "1h") return "1h";
+    longest = "5m";
+  }
+  return longest;
 }
 
 // Backward-compatible alias
