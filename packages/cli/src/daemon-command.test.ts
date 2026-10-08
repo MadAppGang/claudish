@@ -168,12 +168,22 @@ describe.skipIf(onWindows)("npmReinstallInProgress", () => {
  * signals it receives. Waiting ends 300 ms after the first signal, so a second
  * signal close behind it is recorded too; with `healthOnStop` it first asks the
  * proxy for /health, as a supervisor still shutting down may still need it.
+ * Run as `daemon stop`, it records its argv to stops.jsonl and sends the last
+ * supervisor started SIGTERM, as `claude daemon stop` shuts it down, or with a
+ * stop-fails file in the case directory exits 1 and sends nothing.
  */
 const STAND_IN = `#!/usr/bin/env bun
-import { appendFileSync, readFileSync, renameSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 const dir = process.env.DAEMON_TEST_DIR;
 const startsPath = join(dir, "starts.jsonl");
+if (process.argv[2] === "daemon" && process.argv[3] === "stop") {
+  appendFileSync(join(dir, "stops.jsonl"), JSON.stringify(process.argv.slice(2)) + "\\n");
+  if (existsSync(join(dir, "stop-fails"))) process.exit(1);
+  const lines = readFileSync(startsPath, "utf8").split("\\n").filter(Boolean);
+  try { process.kill(JSON.parse(lines[lines.length - 1]).pid, "SIGTERM"); } catch {}
+  process.exit(0);
+}
 let n = 0;
 try { n = readFileSync(startsPath, "utf8").split("\\n").filter(Boolean).length; } catch {}
 const step = JSON.parse(readFileSync(join(dir, "plan.json"), "utf8"))[n] ?? {};
@@ -228,6 +238,15 @@ function starts(): Start[] {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Start);
+}
+
+function stops(): string[][] {
+  const path = join(caseDir, "stops.jsonl");
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
 }
 
 function signals(): string[] {
@@ -377,13 +396,38 @@ describe.skipIf(onWindows)("superviseClaudeDaemon", () => {
     expect(starts()).toHaveLength(1);
   });
 
-  test("stop sends one SIGTERM and ends with the stop signal's code", async () => {
+  test("stop runs claude daemon stop --any and ends with the stop signal's code", async () => {
     const supervision = supervise([{}]);
     await waitFor("the supervisor to start", () => starts().length === 1);
     supervision.stop("SIGINT");
     expect(await supervision.exitCode).toBe(130);
+    expect(stops()).toEqual([["daemon", "stop", "--any"]]);
+    // The supervisor's one SIGTERM came from the stop command, not from claudish.
     expect(signals()).toEqual(["SIGTERM"]);
+    expect(starts()).toHaveLength(1);
     expect(logs).toContain("claude daemon run exited with code 0");
+  });
+
+  test("a stop command that fails falls back to one SIGTERM", async () => {
+    const supervision = supervise([{}]);
+    writeFileSync(join(caseDir, "stop-fails"), "");
+    await waitFor("the supervisor to start", () => starts().length === 1);
+    supervision.stop("SIGTERM");
+    expect(await supervision.exitCode).toBe(143);
+    expect(stops()).toHaveLength(1);
+    expect(signals()).toEqual(["SIGTERM"]);
+    expect(logs).toContain("claude daemon stop --any exited with code 1");
+  });
+
+  test("a second stop sends the supervisor SIGTERM, its forced shutdown", async () => {
+    const supervision = supervise([{}]);
+    writeFileSync(join(caseDir, "stop-fails"), "");
+    await waitFor("the supervisor to start", () => starts().length === 1);
+    supervision.stop("SIGTERM");
+    supervision.stop("SIGTERM");
+    expect(await supervision.exitCode).toBe(143);
+    expect(stops()).toHaveLength(1);
+    expect(signals()).toEqual(["SIGTERM", "SIGTERM"]);
   });
 
   test("a restart waits for an upgraded binary that is not in place yet", async () => {

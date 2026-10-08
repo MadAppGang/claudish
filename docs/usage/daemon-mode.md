@@ -44,7 +44,7 @@ Claude Code treats a base URL as Anthropic's own API only when told to. To give 
 
 - **Keeps it up.** It runs with `--origin service`. A supervisor Claude Code starts on demand exits once nothing is attached to it; this one does not, and whenever it exits on its own, claudish starts it again one second later, the policy of the unit `claude daemon install` writes for it (`Restart=always`, `RestartSec=1`). The proxy stays up throughout. A supervisor that lost its lock to one a client started into the gap of a restart comes back, finds that one holding the lock, and takes over its sessions.
 - **Restarts it on upgrade.** When the supervisor finds its binary replaced, it exits with code 70; the next start waits for the new binary if an npm install is still finishing.
-- **Stops it with you.** Ctrl-C, SIGTERM or SIGHUP sends the supervisor one SIGTERM, and claudish exits with 128 plus the signal's number once it has shut down.
+- **Stops it with you, sessions included.** Ctrl-C, SIGTERM or SIGHUP runs `claude daemon stop --any`, which shuts the supervisor down and terminates its background sessions, and claudish exits with 128 plus the signal's number once both are done. If that command cannot run or fails, claudish sends the supervisor one SIGTERM instead, which stops the supervisor and leaves its sessions running.
 - **Gives up as the unit would.** A supervisor started more than ten times within a minute (`StartLimitBurst=10`, `StartLimitIntervalSec=60`) is not started again, and `claudish daemon` ends with its last code. The supervisor writes why it exits to its own log, which `claude daemon logs` shows.
 
 ---

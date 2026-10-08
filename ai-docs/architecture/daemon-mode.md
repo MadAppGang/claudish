@@ -66,6 +66,27 @@ SIGTERM, and gets 0 instead of 200 without the claim.
 Detaching also means nothing takes the supervisor down with claudish by default, so claudish
 stops it from its `exit` handler whenever it ends without having done so.
 
+## Stopping the sessions with the supervisor
+
+A signal stops the supervisor alone. Its shutdown records `cause=signal` and only closes its
+handles on the workers, the processes that host each background session: they detach and keep
+running so that the next supervisor can adopt them, which is what makes an upgrade restart
+seamless (Claude Code 2.1.292; the workers are killed on shutdown only for a service recall).
+When claudish is ending, though, nothing adopts them. In a container they are killed outright
+when it stops, and each leaves its session's liveness record (`sessions/<pid>.json`, stamped with
+the machine id and pid namespace). The next container is a different pid namespace, so Claude
+Code reads every such record as a session alive on another machine and turns a resume of it
+into a copy under a new id.
+
+So the first stop runs `claude daemon stop --any`, which shuts the supervisor down and
+terminates its background sessions; `--any` reaches a supervisor no installed service unit
+owns, which this one is. The command ends only once that stop has returned, since it is still
+terminating sessions after the supervisor has exited. If the stop cannot run or fails, claudish
+falls back to the one SIGTERM, and a second stop sends SIGTERM, the supervisor's forced
+shutdown. Measured on a throwaway config directory with one background session, SIGTERM to
+claudish: with the stop, no record and no session process remained; with the SIGTERM alone the
+record stayed and the session's process outlived both claudish and the supervisor.
+
 ## How sessions reach the proxy
 
 The supervisor builds each session's environment from its own, then deletes every base URL
