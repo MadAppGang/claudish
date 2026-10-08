@@ -23,8 +23,13 @@
  *     its sessions over, Claude Code's own path for a service start, so the
  *     proxy, which every session depends on, never follows a race the
  *     supervisor settles by itself.
- *   - Ctrl-C, SIGTERM or SIGHUP stops the supervisor with one SIGTERM and ends
- *     this command with 128 plus the signal's number.
+ *   - Ctrl-C, SIGTERM or SIGHUP stops the supervisor and its background
+ *     sessions with `claude daemon stop --any` (a SIGTERM to the supervisor when
+ *     that cannot run) and ends this command with 128 plus the signal's number.
+ *     A signal of its own would stop the supervisor alone: its sessions detach
+ *     for the next supervisor to adopt, and a session that outlives its machine
+ *     leaves a liveness record that Claude Code, finding it from another pid
+ *     namespace, takes for a live session.
  *
  * The origins, the exit code and the reinstall wait below are read from the
  * `claude daemon` code of Claude Code 2.1.281; its help documents `run` and the
@@ -250,6 +255,15 @@ export function supervisorArgv(supervisorArgs: string[]): string[] {
 }
 
 /**
+ * The command that ends the supervisor together with its background sessions.
+ * A signal shuts a supervisor down without its workers: they detach and keep
+ * running, so that the next supervisor can adopt them, and each keeps its
+ * session's liveness record. `claude daemon stop` terminates them as well, and
+ * `--any` reaches a supervisor no installed service unit owns, which this one is.
+ */
+export const SUPERVISOR_STOP_ARGV = ["daemon", "stop", "--any"];
+
+/**
  * The supervisor's environment: claudish's own, with the proxy as the base URL.
  * First-party trust (`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`) is the
  * launcher's to grant and passes through as it arrived, as for a `--monitor`
@@ -272,15 +286,19 @@ export interface SupervisorOptions {
   reinstallWait?: ReinstallWait;
   /** Overrides `CLAUDE_CODE_RESTART_POLICY`. */
   restartPolicy?: RestartPolicy;
+  /** Overrides `SUPERVISOR_STOP_ARGV`. */
+  stopArgv?: string[];
 }
 
 export interface Supervision {
   /** Settles with the code this command exits with. */
   exitCode: Promise<number>;
   /**
-   * Stop the supervisor and end the command with `128 + signum` of the first
-   * signal. Each call sends the supervisor SIGTERM; `claude daemon run` shuts
-   * down gracefully on the first and treats a second as a forced shutdown.
+   * Stop the supervisor and its sessions, and end the command with
+   * `128 + signum` of the first signal. The first call runs `claude daemon
+   * stop`, falling back to a SIGTERM when that command cannot run or fails;
+   * each later call sends the supervisor SIGTERM, which it takes as a forced
+   * shutdown.
    */
   stop(signal: NodeJS.Signals): void;
 }
@@ -301,7 +319,12 @@ function exitLine(code: number | null, signal: NodeJS.Signals | null, stopped: b
 
 export function superviseClaudeDaemon(options: SupervisorOptions): Supervision {
   let child: ChildProcess | null = null;
+  // The binary the last supervisor was started from, which also runs the stop.
+  let binaryPath: string | null = null;
   let stopSignal: NodeJS.Signals | null = null;
+  // The stop command in flight; the command ends only after it has, since it
+  // is still terminating sessions after the supervisor has exited.
+  let stopping: Promise<void> = Promise.resolve();
   // The restart delay in flight, so a stop during it ends the command at once
   // rather than when the delay is over.
   let delay: AbortController | null = null;
@@ -315,8 +338,33 @@ export function superviseClaudeDaemon(options: SupervisorOptions): Supervision {
 
   const finish = (code: number) => {
     child = null;
-    settle(stopSignal ? signalExitCode(stopSignal) : code);
+    void stopping.then(() => settle(stopSignal ? signalExitCode(stopSignal) : code));
   };
+
+  // Runs `claude daemon stop`; resolves whether it exited 0.
+  const runStop = (binary: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      const argv = options.stopArgv ?? SUPERVISOR_STOP_ARGV;
+      options.log(`stopping the supervisor and its sessions: claude ${argv.join(" ")}`);
+      const needsShell = process.platform === "win32" && binary.endsWith(".cmd");
+      const proc = spawn(needsShell ? `"${binary}"` : binary, argv, {
+        env: options.env,
+        stdio: ["ignore", "inherit", "inherit"],
+        windowsHide: true,
+        shell: needsShell,
+      });
+      proc.once("error", (err) => {
+        options.log(`could not run claude ${argv.join(" ")}: ${err.message}`);
+        resolve(false);
+      });
+      proc.once("exit", (code, signal) => {
+        if (code !== 0)
+          options.log(
+            `claude ${argv.join(" ")} ${signal ? `was killed by ${signal}` : `exited with code ${code}`}`
+          );
+        resolve(code === 0);
+      });
+    });
 
   // Every exit the supervisor takes on its own is followed by a start attempt
   // the unit's RestartSec later. The attempt is refused, and the command ends
@@ -377,6 +425,7 @@ export function superviseClaudeDaemon(options: SupervisorOptions): Supervision {
       shell: needsShell,
     });
     child = proc;
+    binaryPath = binary;
     startTimes.push(Date.now());
     options.log(`started claude daemon run (pid ${proc.pid ?? "unknown"})`);
 
@@ -409,9 +458,17 @@ export function superviseClaudeDaemon(options: SupervisorOptions): Supervision {
   return {
     exitCode,
     stop(signal) {
+      const first = stopSignal === null;
       stopSignal ??= signal;
       delay?.abort();
-      child?.kill("SIGTERM");
+      if (!first || binaryPath === null) {
+        child?.kill("SIGTERM");
+        return;
+      }
+      const binary = binaryPath;
+      stopping = runStop(binary).then((ok) => {
+        if (!ok) child?.kill("SIGTERM");
+      });
     },
   };
 }
@@ -424,8 +481,8 @@ can go through claudish. The supervisor is kept alive the way the unit
 \`claude daemon install\` writes for it would: started again one second after
 any exit, the upgrade exit included, and given up on, ending this command with
 its code, after ten starts within a minute. Ctrl-C, SIGTERM or SIGHUP stops the
-supervisor with one SIGTERM and ends this command with 128 plus the signal's
-number.
+supervisor and its background sessions with \`claude daemon stop --any\` and
+ends this command with 128 plus the signal's number.
 
 Sessions reach the proxy only through a settings file's env block:
   "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:<n>" }
