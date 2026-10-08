@@ -66,9 +66,13 @@ export function emptyScreen(cols: number, rows: number): ScreenState {
   };
 }
 
-/** A full-width box rule: only `─`, at least 20 of them and at least cols−1 wide. */
+/**
+ * A full-width box rule: `─`, at least 20 cells and at least cols−1 wide. Under `--agent`,
+ * Claude Code writes the agent's name into the top rule's right end (`──── dev:reviewer ─`),
+ * so one ` label ─` tail is part of the rule.
+ */
 export function isBoxRule(line: string | undefined, cols: number): boolean {
-  if (!line || !/^─+$/.test(line)) return false;
+  if (!line || !/^─+(?: [^─]+ ─+)?$/.test(line)) return false;
   return line.length >= Math.max(20, Math.min(cols, 160) - 1);
 }
 

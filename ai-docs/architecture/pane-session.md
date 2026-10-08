@@ -89,7 +89,10 @@ The follower polls on every frame (debounced 250 ms) and on a 1 s backstop.
 
 Boot is ready when the screen shows the REPL input box — a full-width `─` rule, a row starting
 `❯` + U+00A0, a second rule — with nothing typed, for 500 ms. Placeholder text in the box carries
-magmux attribute 2 (faint) and does not count as typed. Measured spawn → empty box: 0.67–1.97 s
+magmux attribute 2 (faint) and does not count as typed. Under `--agent` the top rule carries the
+agent's name at its right end (`──── dev:reviewer ─`); `isBoxRule` accepts that one label, and
+until 10.4.2 it did not, so every slot given an `agent` failed `boot_timeout` at 90 s with a ready
+box on screen (fixture `repl-boot-agent`). Measured spawn → empty box: 0.67–1.97 s
 with catalog warm-up off; the ≈11 s of earlier research included claudish's 4–7 s catalog warm-up.
 
 What blocks boot is decided by **"no input box"**, and named by a closed list:

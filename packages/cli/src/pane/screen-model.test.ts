@@ -5,6 +5,7 @@ import {
   applyFrame,
   boxTopRow,
   emptyScreen,
+  isBoxRule,
 } from "./screen-model.js";
 import { loadFrames, loadScreen } from "./test-helpers/fixtures.js";
 
@@ -80,6 +81,40 @@ describe("screen-model over real magmux frames (phase-2 s01)", () => {
       3
     );
     expect(flipped.seq).toBe(base.seq + 1);
+  });
+});
+
+describe("isBoxRule", () => {
+  test("accepts the agent-labelled top rule from the live capture", () => {
+    const s = loadScreen("repl-boot-agent");
+    expect(isBoxRule(s.lines[45], s.cols)).toBe(true);
+  });
+
+  test("rejects a labelled rule shorter than cols minus one", () => {
+    const { cols } = loadScreen("repl-boot-agent");
+    const tail = " Explore ─";
+    const line = "─".repeat(cols - 2 - tail.length) + tail;
+    expect(line.length).toBe(cols - 2);
+    expect(isBoxRule(line, cols)).toBe(false);
+  });
+
+  test("rejects text without a trailing rule", () => {
+    expect(isBoxRule("─".repeat(152) + " Explore", 160)).toBe(false);
+  });
+
+  test("rejects a line starting with text", () => {
+    expect(isBoxRule("Explore " + "─".repeat(155), 160)).toBe(false);
+  });
+
+  test("rejects a rule with two labels", () => {
+    expect(isBoxRule("─".repeat(150) + " Explore ─ Plan ─", 160)).toBe(false);
+  });
+});
+
+describe("boxTopRow", () => {
+  test("finds row 45 under --agent in the live capture", () => {
+    const s = loadScreen("repl-boot-agent");
+    expect(boxTopRow(s.lines, s.cols)).toBe(45);
   });
 });
 

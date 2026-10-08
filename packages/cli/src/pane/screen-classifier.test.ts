@@ -13,10 +13,11 @@ import {
 } from "./screen-classifier.js";
 import { loadScreen } from "./test-helpers/fixtures.js";
 
-/** Every fixture screen, all real 2.1.290 captures (phase2-captures.md §3). */
+/** Real 2.1.290 captures (phase2-captures.md §3), plus the 2.1.293 agent boot capture. */
 const REPL_SCREENS = [
   "repl-boot-empty",
   "repl-boot-placeholder",
+  "repl-boot-agent",
   "repl-typed",
   "repl-typed-multiline",
   "menu-at-open",
@@ -56,6 +57,12 @@ describe("readBoot", () => {
     expect(s.lines.some((l) => l.startsWith('❯\u00a0Try "how does <filepath> work?"'))).toBe(true);
     expect(inputBox(s)?.text).toBe("");
     expect(readBoot(s)).toEqual({ kind: "repl" });
+  });
+
+  test("the agent-labelled boot box reads repl with no typed text", () => {
+    const s = loadScreen("repl-boot-agent");
+    expect(readBoot(s)).toEqual({ kind: "repl" });
+    expect(inputBox(s)?.text).toBe("");
   });
 
   test("typed text is not an empty box", () => {
