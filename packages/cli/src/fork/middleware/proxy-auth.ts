@@ -15,6 +15,7 @@
 import type { MiddlewareHandler } from "hono";
 import { wrapAnthropicError } from "../../handlers/shared/anthropic-error.js";
 import { matchesProxyKey } from "../../handlers/shared/proxy-keys.js";
+import { noteProxyKeyAuthentication } from "../../handlers/shared/proxy-key-rotation.js";
 import {
   acquireInboundSlot,
   inboundInFlight,
@@ -167,6 +168,22 @@ export function createProxyAuthMiddleware(
         if (!matchesProxyKey(provided, proxyKeys)) {
           markKeylessExempt(c.req.raw);
         }
+        // #439 — the exemption branch AUTHENTICATES as much as the enforce
+        // branch does: the matchesProxyKey call above just decided the
+        // keyless mark on this very key. A bare `claude-*` that modelMap or
+        // wall resolution then remaps onto a remote lane never reaches any
+        // native swap site, so this is the only site that can count it —
+        // the dominant fleet shape (review of 91311241). The raw-request
+        // mark makes the two native swap sites skip their own count for
+        // this same request.
+        noteProxyKeyAuthentication(
+          provided,
+          {
+            "x-claudish-machine": c.req.header("x-claudish-machine"),
+            "user-agent": c.req.header("user-agent"),
+          },
+          c.req.raw
+        );
         return await next();
       }
     }
@@ -175,6 +192,19 @@ export function createProxyAuthMiddleware(
     if (!matchesProxyKey(provided, proxyKeys)) {
       return c.json(wrapAnthropicError(401, "invalid proxy authentication"), 401);
     }
+    // #439 — the request is authenticated and this middleware is the site
+    // that accepted the key: count it when it is the retiring one. Marked
+    // here (c.req.raw) so a later native swap for the same request — a
+    // non-native name that ROLE_MODELS/modelMap resolves onto the Anthropic
+    // lane — does not count it a second time.
+    noteProxyKeyAuthentication(
+      provided,
+      {
+        "x-claudish-machine": c.req.header("x-claudish-machine"),
+        "user-agent": c.req.header("user-agent"),
+      },
+      c.req.raw
+    );
     await next();
   };
 }

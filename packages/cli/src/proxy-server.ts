@@ -40,6 +40,11 @@ import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { isKeylessExempt, keylessRefusalMessage } from "./handlers/shared/keyless-exempt.js";
 import { resolveProxyKeys, matchesProxyKey } from "./handlers/shared/proxy-keys.js";
+import {
+  initProxyKeyRotationTracking,
+  noteProxyKeyAuthentication,
+  previousKeyHitsSnapshot,
+} from "./handlers/shared/proxy-key-rotation.js";
 import { admissionFreezeState } from "./handlers/shared/admission-freeze.js";
 import {
   loadRoutingRules,
@@ -484,10 +489,15 @@ export async function createProxyServer(
   // CLAUDISH_PROXY_KEY_PREVIOUS keeps the retiring key accepted during a
   // rotation window (see handlers/shared/proxy-keys.ts); unset = single key.
   const loadedConfig = loadConfig();
+  const previousProxyKey = process.env.CLAUDISH_PROXY_KEY_PREVIOUS || loadedConfig.proxyKeyPrevious;
   const proxyKeys = resolveProxyKeys(
     process.env.CLAUDISH_PROXY_KEY || loadedConfig.proxyKey,
-    process.env.CLAUDISH_PROXY_KEY_PREVIOUS || loadedConfig.proxyKeyPrevious
+    previousProxyKey
   );
+  // #439 — while a rotation window is open, count per-bucket hits of the
+  // retiring key so the window can be closed by measurement, not by cutting
+  // blind (init with an empty previous leaves the tracker inert).
+  initProxyKeyRotationTracking(previousProxyKey);
 
   // #400 — scoped inbound keys (external consumers): same ingress as the proxy
   // key but gated to an allowlist of models, so subscriptions stay
@@ -1950,6 +1960,10 @@ export async function createProxyServer(
         // skew can expire a fresh flag). The reason, never the flag content.
         admissionFreeze: admissionFreezeState().reason,
         ...(options.relay ? { selfLoop: options.relay.selfLoop } : {}),
+        // #439 — previous-key hits per bucket during a rotation window.
+        // Omitted entirely when no window is open (that absence IS the
+        // signal). Appended last: nothing renamed, older parsers unaffected.
+        ...(previousKeyHitsSnapshot() ?? {}),
       },
       stalled ? 503 : 200
     );
@@ -2023,6 +2037,11 @@ export async function createProxyServer(
           const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
           const clientAuthToken = c.req.header("x-api-key") || bearerToken;
           if (matchesProxyKey(clientAuthToken, proxyKeys)) {
+            // #439 — this swap is one of the sites that ACCEPT a proxy key:
+            // count it when it is the retiring one (no-op outside a window).
+            // The middleware's mark on c.req.raw (exemption branch, which
+            // count_tokens crosses — /v1/*) keeps one request = one count.
+            noteProxyKeyAuthentication(clientAuthToken, c.req.header(), c.req.raw);
             delete reqHeaders["x-api-key"];
             delete reqHeaders["authorization"];
             if (anthropicApiKey) {

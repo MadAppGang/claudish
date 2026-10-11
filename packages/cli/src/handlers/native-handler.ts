@@ -6,6 +6,7 @@ import { createResponseCapture, appendUpstreamError } from "./shared/response-ca
 import { requestNumberFor } from "../fork/middleware/request-logger.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import { matchesProxyKey } from "./shared/proxy-keys.js";
+import { noteProxyKeyAuthentication } from "./shared/proxy-key-rotation.js";
 import {
   nativeAuthHeaderNames,
   nativeCredentialRefusalResponse,
@@ -231,6 +232,12 @@ export class NativeHandler implements ModelHandler {
         : originalHeaders["authorization"];
       const clientAuthToken = originalHeaders["x-api-key"] || bearerToken;
       if (matchesProxyKey(clientAuthToken, this.proxyKeys)) {
+        // #439 — this swap is one of the sites that ACCEPT a proxy key:
+        // count it when it is the retiring one (no-op outside a window).
+        // The raw request carries the middleware's mark when the fork
+        // middleware already counted this authentication (exemption
+        // branch) — then this site skips, keeping one request = one count.
+        noteProxyKeyAuthentication(clientAuthToken, originalHeaders, c.req.raw);
         // Strip proxy key from forwarded headers
         delete headers["x-api-key"];
         delete headers["authorization"];
