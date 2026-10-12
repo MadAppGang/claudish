@@ -5,10 +5,16 @@ import {
   isCachedSubscriptionPlan,
   isSlimModelEntry,
   readAllModelsCache,
+  wiresMatchRegistry,
   writeAllModelsCache,
 } from "./all-models-cache.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
+import {
+  type CachedRouteRegistry,
+  type RouteRegistry,
+  isRouteRegistry,
+} from "./connection-wire.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
 const DEFAULT_CATALOG_URL =
@@ -33,6 +39,15 @@ function derivePlansUrl(modelsUrl: string): string {
 
 function plansUrl(): string {
   return process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(catalogUrl());
+}
+
+/** `queryModels?catalog=routes&generationId=<id>` on the same host as the model list. */
+export function buildRoutesUrl(modelsUrl: string, generationId: string): string {
+  const url = new URL(modelsUrl);
+  url.search = "";
+  url.searchParams.set("catalog", "routes");
+  url.searchParams.set("generationId", generationId);
+  return url.toString();
 }
 
 export type DiskCache = DiskCacheV3;
@@ -335,7 +350,19 @@ export async function refreshCatalog(
   options: RefreshCatalogOptions = {}
 ): Promise<RefreshOutcome> {
   if (catalogWarmDisabled()) return { kind: "fetch_failed", reason: "disabled" };
+  // A generation can activate between the model pages and the registry read.
+  // Never mix two: start over once, then report the mismatch.
+  const first = await refreshCatalogOnce(timeoutMs, options);
+  if (first.kind === "fetch_failed" && first.reason === "generation_mismatch") {
+    return refreshCatalogOnce(timeoutMs, options);
+  }
+  return first;
+}
 
+async function refreshCatalogOnce(
+  timeoutMs: number,
+  options: RefreshCatalogOptions
+): Promise<RefreshOutcome> {
   const entries: SlimModelEntry[] = [];
   let generationId: string | undefined;
   let generatedAt: string | undefined;
@@ -407,6 +434,18 @@ export async function refreshCatalog(
     return { kind: "fetch_failed", reason: planResult.reason };
   }
 
+  const registryResult = await fetchRouteRegistry(timeoutMs, generationId);
+  if (!registryResult.ok) {
+    if (registryResult.reason === "incompatible") {
+      return { kind: "incompatible", serverContractVersion: registryResult.serverContractVersion };
+    }
+    return { kind: "fetch_failed", reason: registryResult.reason };
+  }
+  const routeRegistry: CachedRouteRegistry = { generationId, registry: registryResult.registry };
+  if (!wiresMatchRegistry(entries, routeRegistry, generationId)) {
+    return { kind: "fetch_failed", reason: "incomplete" };
+  }
+
   const models = entries.flatMap((entry) => {
     const id = externalIdFor(entry, "openrouter");
     return id ? [{ id }] : [];
@@ -418,6 +457,7 @@ export async function refreshCatalog(
     models,
     plans: planResult.plans,
     catalogGenerationId: generationId,
+    routeRegistry,
   };
 
   writeAllModelsCache(cache, options.cachePath);
@@ -495,6 +535,29 @@ async function fetchSubscriptionPlans(
   return { ok: true, plans };
 }
 
+async function fetchRouteRegistry(
+  timeoutMs: number,
+  generationId: string
+): Promise<
+  | { ok: true; registry: RouteRegistry }
+  | FetchFailure
+  | { ok: false; reason: "empty" | "generation_mismatch" }
+> {
+  const result = await fetchEnvelope<{ mode?: string; registry?: unknown }>(
+    buildRoutesUrl(catalogUrl(), generationId),
+    timeoutMs
+  );
+  if (!result.ok) return result;
+  if (result.envelope.generationId !== generationId) {
+    return { ok: false, reason: "generation_mismatch" };
+  }
+  const { registry } = result.envelope.data;
+  if (result.envelope.data.mode !== "routes" || !isRouteRegistry(registry)) {
+    return { ok: false, reason: "empty" };
+  }
+  return { ok: true, registry };
+}
+
 function startCatalogWarm(): Promise<void> {
   if (_warmPromise) return _warmPromise;
   const promise = refreshCatalog(8000).then((result) => {
@@ -510,6 +573,20 @@ export async function warmCatalog(): Promise<void> {
 
 export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
   if (isCatalogWarm() || (readAllModelsCache()?.entries.length ?? 0) > 0) return;
+  await waitForCatalogWarm(timeoutMs);
+}
+
+/**
+ * Like {@link ensureCatalogReady}, for the request path: a cache written before
+ * claudish read wires has models but no route registry, and no request may be
+ * built from it. Such a cache is refreshed rather than accepted.
+ */
+export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> {
+  if (readAllModelsCache()?.routeRegistry) return;
+  await waitForCatalogWarm(timeoutMs);
+}
+
+async function waitForCatalogWarm(timeoutMs: number): Promise<void> {
   await Promise.race([
     startCatalogWarm(),
     new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),

@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type DiskCacheV3,
   type SlimModelEntry,
+  _clearAllModelsCacheMemo,
   readAllModelsCache,
   reasoningStatusOf,
   writeAllModelsCache,
@@ -93,5 +94,121 @@ describe("reasoningStatusOf", () => {
         supportsThinking: true,
       })
     ).toBe("unknown");
+  });
+});
+
+const wireFixture: DiskCacheV3 = JSON.parse(
+  readFileSync(
+    new URL("../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json", import.meta.url),
+    "utf8"
+  )
+);
+beforeEach(() => _clearAllModelsCacheMemo());
+
+function knownConnection(cache: DiskCacheV3) {
+  return cache.entries
+    .flatMap((entry) => entry.aggregators ?? [])
+    .find(
+      (connection) => connection.routeStatus === "mapped" && connection.wire?.status === "known"
+    )!;
+}
+
+describe("wire registry cache validation", () => {
+  test("loads the whole production fixture", () => {
+    const path = cachePath();
+    writeAllModelsCache(wireFixture, path);
+    expect(readAllModelsCache(path)).toEqual(wireFixture);
+  });
+  const invalidCases: Array<[string, (cache: DiskCacheV3) => void]> = [
+    [
+      "mapped connection without wire",
+      (cache) => {
+        delete knownConnection(cache).wire;
+      },
+    ],
+    [
+      "malformed connection wire",
+      (cache) => {
+        Object.assign(knownConnection(cache).wire!, { api: "realtime" });
+      },
+    ],
+    [
+      "known API absent from its profile",
+      (cache) => {
+        const connection = knownConnection(cache);
+        if (connection.wire?.status !== "known") throw new Error("Expected known fixture wire");
+        delete cache.routeRegistry!.registry.routes[connection.route!.routeId]!.profiles[
+          connection.route!.routeProfileId
+        ]!.apis[connection.wire.api];
+      },
+    ],
+    [
+      "missing route profile",
+      (cache) => {
+        const route = knownConnection(cache).route!;
+        delete cache.routeRegistry!.registry.routes[route.routeId]!.profiles[route.routeProfileId];
+      },
+    ],
+    [
+      "different registry generation",
+      (cache) => {
+        cache.routeRegistry!.generationId = "other-generation";
+      },
+    ],
+    [
+      "malformed registry",
+      (cache) => {
+        Reflect.deleteProperty(cache.routeRegistry!.registry, "routes");
+      },
+    ],
+  ];
+  for (const [name, mutate] of invalidCases) {
+    test(`rejects ${name}`, () => {
+      const path = cachePath();
+      const cache = structuredClone(wireFixture);
+      writeAllModelsCache(cache, path);
+      expect(readAllModelsCache(path)).toEqual(cache);
+      mutate(cache);
+      writeFileSync(path, JSON.stringify(cache));
+      expect(readAllModelsCache(path)).toBeNull();
+    });
+  }
+  test("accepts a cache written before route registries", () => {
+    const cache = structuredClone(wireFixture);
+    delete cache.routeRegistry;
+    const path = cachePath();
+    writeAllModelsCache(cache, path);
+    expect(readAllModelsCache(path)).toEqual(cache);
+  });
+  test("accepts a missing wire under registry 3.6.0", () => {
+    const cache = structuredClone(wireFixture);
+    cache.routeRegistry!.registry.registryVersion = "3.6.0";
+    delete knownConnection(cache).wire;
+    const path = cachePath();
+    writeAllModelsCache(cache, path);
+    expect(readAllModelsCache(path)).toEqual(cache);
+  });
+  test("memo observes writer updates, direct size-changing writes and deletion", () => {
+    const path = cachePath();
+    const cache = structuredClone(wireFixture);
+    writeAllModelsCache(cache, path);
+    const timestamp = new Date("2026-10-12T00:00:00Z");
+    utimesSync(path, timestamp, timestamp);
+    const firstRead = readAllModelsCache(path);
+    expect(firstRead).toEqual(cache);
+    expect(readAllModelsCache(path)).toBe(firstRead);
+    // Same size and mtime: only writeAllModelsCache's invalidation sees this.
+    cache.lastUpdated = "2026-10-13T00:00:00.000Z";
+    expect(cache.lastUpdated.length).toBe(wireFixture.lastUpdated.length);
+    writeAllModelsCache(cache, path);
+    utimesSync(path, timestamp, timestamp);
+    expect(readAllModelsCache(path)).toEqual(cache);
+    // Same mtime, different size: out-of-band writes must also invalidate.
+    cache.entries[0]!.displayName = "A different and longer value written directly to disk";
+    writeFileSync(path, JSON.stringify(cache));
+    utimesSync(path, timestamp, timestamp);
+    expect(readAllModelsCache(path)).toEqual(cache);
+    rmSync(path);
+    expect(readAllModelsCache(path)).toBeNull();
   });
 });
