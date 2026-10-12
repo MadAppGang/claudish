@@ -11,6 +11,7 @@
  * user's; and every provider without a route binding (local, LiteLLM, custom
  * endpoints).
  */
+import type { Context } from "hono";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
@@ -205,6 +206,47 @@ export class RefusingHandler implements ModelHandler {
   async shutdown(): Promise<void> {}
 }
 
+/**
+ * How long building a catalog handler waits for a refresh that writes the
+ * route registry. A full refresh (model pages, plans, registry) measured 9.3s
+ * on 2026-10-12; the old 5s wait refused the first requests after an upgrade.
+ */
+const CATALOG_WAIT_MS = 30_000;
+
+/**
+ * The handler for a catalog provider while no route registry is readable:
+ * each request waits for the refresh again and builds the real handler once
+ * it can, answering with the refusal only for the requests that still find
+ * no catalog. Never a cached refusal.
+ */
+export class CatalogPendingHandler implements ModelHandler {
+  private built?: ModelHandler;
+
+  constructor(
+    private readonly ctx: ProfileContext,
+    private readonly definitionName: string,
+    private readonly message: string
+  ) {}
+
+  async handle(c: Context, payload: any): Promise<Response> {
+    if (!this.built) {
+      const outcome = await buildWireHandler(this.ctx, this.definitionName);
+      if (outcome.kind === "handler" && !(outcome.handler instanceof CatalogPendingHandler)) {
+        this.built = outcome.handler;
+      } else {
+        return new RefusingHandler(
+          outcome.kind === "refused" ? outcome.message : this.message
+        ).handle();
+      }
+    }
+    return this.built.handle(c, payload);
+  }
+
+  async shutdown(): Promise<void> {
+    await this.built?.shutdown();
+  }
+}
+
 export type WireHandlerOutcome =
   /** Built from the wire, or a {@link TryInTurnHandler} when the wire is unknown. */
   | { kind: "handler"; handler: ModelHandler }
@@ -229,17 +271,19 @@ export async function buildWireHandler(
     // A cache path is the test seam: a fixture is never refreshed from the network.
     !ctx.catalogCachePath
   ) {
-    await ensureRouteRegistryReady();
+    await ensureRouteRegistryReady(CATALOG_WAIT_MS);
     resolution = resolveConnection(definitionName, ctx.modelName, ctx.catalogCachePath);
   }
   if (resolution.ok === false) {
     if (resolution.reason === "no-catalog" || resolution.reason === "no-registry") {
-      return {
-        kind: "refused",
-        message:
-          `the cloud models catalog (with its route registry) is not available, so ${definitionName}@${ctx.modelName} ` +
-          "cannot be called: claudish sends catalog providers nothing it was not told. Run `claudish --models-refresh`; local models still work.",
-      };
+      const message =
+        `the cloud models catalog (with its route registry) is not available, so ${definitionName}@${ctx.modelName} ` +
+        "cannot be called: claudish sends catalog providers nothing it was not told. Run `claudish --models-refresh`; local models still work.";
+      // A fixture says what it says. In production the refresh may simply
+      // not have finished: the proxy caches handlers per model, so a refusal
+      // returned here would outlive the refresh for the whole session.
+      if (ctx.catalogCachePath) return { kind: "refused", message };
+      return { kind: "handler", handler: new CatalogPendingHandler(ctx, definitionName, message) };
     }
     // The catalog does not publish this model on this provider (a model newer
     // than the generation, or one only the account knows). The route profile
