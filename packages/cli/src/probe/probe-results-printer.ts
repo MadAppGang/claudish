@@ -384,6 +384,12 @@ export interface WiringInfo {
   supportsVision: boolean;
   transportOverride: string | null;
   effectiveStreamFormat: string;
+  /**
+   * How the catalog connection is called, from its `wire` (API + URL, limit
+   * field, reasoning encoding, modes, speeds). Absent for a provider the
+   * catalog does not route.
+   */
+  wireSummary?: string;
 }
 
 /**
@@ -785,7 +791,7 @@ function buildKeyLine(activeEntry?: ChainEntry, directKeyVar?: string): string {
 function buildWireLine(wiring: WiringInfo, activeProvider: string | undefined): string {
   const ctx = formatContextWindow(wiring.contextWindow);
   const head = activeProvider ? `${activeProvider} → ` : "";
-  return `${pc.bold}Wire${pc.reset} ${head}${wiring.effectiveStreamFormat} · ${wiring.modelTranslator} · ${ctx}`;
+  return `${pc.bold}Wire${pc.reset} ${head}${wiring.wireSummary ?? `${wiring.effectiveStreamFormat} · ${wiring.modelTranslator}`} · ${ctx}`;
 }
 
 /**

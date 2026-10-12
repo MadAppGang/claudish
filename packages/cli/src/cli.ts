@@ -1637,6 +1637,8 @@ async function probeModelRouting(
     supportsVision: boolean;
     transportOverride: string | null;
     effectiveStreamFormat: string;
+    /** How the catalog connection is called, from its wire; absent off-catalog. */
+    wireSummary?: string;
   };
 
   /** One model in `--probe --json`: the routing decision, as `explainRoute` made it. */
@@ -1787,36 +1789,48 @@ async function probeModelRouting(
     const resolvedSpec = resolveRemoteProvider(firstReadyRoute.modelSpec);
     const modelName = resolvedSpec?.modelName || parsedModel;
 
+    // A catalog connection is described by its WIRE: the same resolution the
+    // request uses (`buildWireHandler`), so --probe cannot show a composition
+    // the request does not have. This used to be a hand-written provider table
+    // plus a model-name check, i.e. a second guess beside the request's own.
+    const { resolveConnection } = await import("./providers/connection-resolver.js");
+    const { describeConnectionWire } = await import("./providers/wire-handler.js");
+    const { lookupModelForProvider } = await import("./adapters/model-catalog.js");
+    const definitionName = providerName === "gemini" ? "google" : providerName;
+    const resolution = resolveConnection(definitionName, modelName);
+    if (resolution.ok) {
+      const { wire } = resolution.connection;
+      const byApi: Record<string, [string, string]> = {
+        "chat-completions": [
+          definitionName === "openrouter" ? "OpenRouterAPIFormat" : "OpenAIAPIFormat",
+          "openai-sse",
+        ],
+        responses: ["CodexAPIFormat", "openai-responses-sse"],
+        "anthropic-messages": ["AnthropicAPIFormat", "anthropic-sse"],
+        gemini: ["GeminiAPIFormat", "gemini-sse"],
+      };
+      const [adapter, stream] =
+        wire.status === "known" ? byApi[wire.api] : ["(tried in turn)", "(per API)"];
+      return {
+        formatAdapter: adapter,
+        declaredStreamFormat: stream,
+        modelTranslator: "wire",
+        contextWindow: lookupModelForProvider(modelName, definitionName) ?? 0,
+        supportsVision: false,
+        transportOverride: null,
+        effectiveStreamFormat: stream,
+        wireSummary: describeConnectionWire(resolution.connection),
+      };
+    }
+
+    // Not a catalog connection (dynamic subscription, local, LiteLLM, custom
+    // endpoint): each has one fixed composition per provider.
     let formatAdapterName = "OpenAIAPIFormat";
     let declaredStreamFormat = "openai-sse";
 
-    const anthropicCompatProviders = [
-      "minimax",
-      "minimax-coding",
-      "kimi",
-      "kimi-coding",
-      "qwen-token-plan",
-      "qwen-coding",
-      "qwen-payg",
-      "z-ai",
-    ];
-    const isMinimaxModel = modelName.toLowerCase().includes("minimax");
-
-    if (anthropicCompatProviders.includes(providerName)) {
-      formatAdapterName = "AnthropicAPIFormat";
-      declaredStreamFormat = "anthropic-sse";
-    } else if (
-      (providerName === "opencode-zen" || providerName === "opencode-zen-go") &&
-      isMinimaxModel
-    ) {
-      formatAdapterName = "AnthropicAPIFormat";
-      declaredStreamFormat = "anthropic-sse";
-    } else if (providerName === "gemini" || providerName === "antigravity") {
+    if (providerName === "antigravity") {
       formatAdapterName = "GeminiAPIFormat";
       declaredStreamFormat = "gemini-sse";
-    } else if (providerName === "ollamacloud") {
-      formatAdapterName = "OllamaAPIFormat";
-      declaredStreamFormat = "openai-sse";
     } else if (providerName === "litellm") {
       formatAdapterName = "LiteLLMAPIFormat";
       declaredStreamFormat = "openai-sse";
