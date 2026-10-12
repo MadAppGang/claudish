@@ -165,6 +165,8 @@ async function postMessage(
     model?: string;
     session?: string;
     content?: string;
+    /** K13 (#442 CR): raw Anthropic content blocks (e.g. a base64 image). */
+    contentBlocks?: unknown[];
     stream?: boolean;
     maxTokens?: number;
   } = {}
@@ -177,7 +179,7 @@ async function postMessage(
       max_tokens: opts.maxTokens ?? 64,
       stream: opts.stream ?? false,
       ...(opts.session ? { metadata: { user_id: opts.session } } : {}),
-      messages: [{ role: "user", content: opts.content ?? "say hi" }],
+      messages: [{ role: "user", content: opts.contentBlocks ?? opts.content ?? "say hi" }],
     }),
   });
 }
@@ -247,6 +249,9 @@ beforeEach(() => {
         // so their limiters are built with maxConcurrency from the first use.
         "b0-ep": ep("b0", { maxConcurrency: 1 }),
         "b1-ep": ep("b1"),
+        // K12 (#441): the dynamic contextLimit endpoints.
+        "ctx-ep": ep("ctx", { contextLimit: 262144 }),
+        "ctx-both-ep": ep("ctxb", { contextLimit: 262144, maxOutputTokens: 8000 }),
       },
     }),
     "utf-8"
@@ -520,6 +525,97 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     // And an endpoint WITHOUT the field keeps the verbatim passthrough.
     await postMessage({ model: "s0-ep@fake-s0", maxTokens: 32000 }); // body inspected, answer unused
     expect(upstreamBodies.s0[0].max_tokens).toBe(32000);
+  }, 30_000);
+
+  test("K12 (#441): contextLimit clamps max_tokens to the window remainder — dynamic, composed, inert when absent", async () => {
+    await spin();
+    resetFailoverForTests({}); // direct endpoints, no cascade
+    setRoleNominalResolver(() => undefined);
+
+    // The RX95 compaction shape: ~249 850 prompt tokens (999 400 chars / 4,
+    // the house estimator's convention) against a 262 144 Swift window —
+    // vLLM refuses any prompt + max_tokens over the window without trimming
+    // (vllm#110). Fleet-standard compact ask: max_tokens 16384.
+    const rx95Prompt = "y".repeat(999_400);
+
+    // 1. THE DoD PIN: the shipped max_tokens fits the remainder.
+    //    262144 − est(~249 880) − max(2048, est/64 ≈ 3 905) ≈ 8 360 — the
+    //    margin is PROPORTIONAL (pre-review #442): a fixed 2048 would ship
+    //    ~10 246 and turn this assert red. Bounds [7 500, 8 400] absorb the
+    //    envelope-JSON drift of the /4 estimate without touching either class.
+    await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 16384, content: rx95Prompt });
+    expect(upstreamBodies.ctx?.length).toBe(1);
+    const shipped = upstreamBodies.ctx[0].max_tokens;
+    expect(shipped).toBeLessThanOrEqual(8_400);
+    expect(shipped).toBeGreaterThan(7_500);
+    expect(shipped).toBeLessThan(16_384); // actually clamped
+
+    // 2. Byte-identical when the field is absent: same oversized prompt on a
+    //    plain endpoint ships max_tokens verbatim (pre-#441 behavior).
+    await postMessage({ model: "s0-ep@fake-s0", maxTokens: 16384, content: rx95Prompt });
+    expect(upstreamBodies.s0[0].max_tokens).toBe(16_384);
+
+    // 3. Composition with the #431 static cap: smallest wins (8000 < ~10246).
+    await postMessage({ model: "ctx-both-ep@fake-ctxb", maxTokens: 16384, content: rx95Prompt });
+    expect(upstreamBodies.ctxb[0].max_tokens).toBe(8_000);
+
+    // 4. Never clamps down a small ask: 100 < remainder → verbatim.
+    await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 100, content: "say hi" });
+    expect(upstreamBodies.ctx[1].max_tokens).toBe(100);
+
+    // 5. Stand-down when the prompt ALONE overflows: estimate past the window
+    //    leaves no output budget — the clamp must not fire (max_tokens
+    //    verbatim); the upstream refusal + context-overflow recovery own it.
+    await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 16384, content: "z".repeat(1_200_000) });
+    expect(upstreamBodies.ctx[2].max_tokens).toBe(16_384);
+  }, 30_000);
+
+  test("K13 (#442 CR): a base64 image does not eat the window — the clamp estimate allocates 1600/block, not base64/4", async () => {
+    await spin();
+    resetFailoverForTests({}); // direct endpoints, no cascade
+    setRoleNominalResolver(() => undefined);
+
+    // The review's measured shape (c.6114982206): "describe this screenshot"
+    // + a ~1 MB base64 PNG — the /4 estimate charges ~250k for a block whose
+    // real cost is ~1.5k (vision lane) or ~0 (described/stripped by the
+    // vision fallback). With the fixed 1600-allocation the estimate stays
+    // ~2k → the ask ships VERBATIM (no clamp), the turn is not truncated.
+    //
+    // Calibration note: the image is 1.00 MB (not the review's 1.03) so the
+    // MUTATION stays visible — with the useful-floor guard in force, a
+    // base64/4 estimate of ~258k yields dynamicCap ~113 < 4096 and the
+    // stand-down would mask the bug (verbatim in BOTH worlds). At 1.00 MB
+    // the mutated dynamicCap lands at ~8 200 ≥ 4 096: fix = verbatim 16384,
+    // mutation = clamped ~8 200. The pin bites.
+    const oneMbPng = "A".repeat(1_000_000);
+    await postMessage({
+      model: "ctx-ep@fake-ctx",
+      maxTokens: 16384,
+      contentBlocks: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: oneMbPng } },
+        { type: "text", text: "describe this screenshot" },
+      ],
+    });
+    expect(upstreamBodies.ctx?.length).toBe(1);
+    // THE PIN: not clamped — an image block is worth MEDIA_BLOCK_TOKENS, not
+    // its base64 length / 4.
+    expect(upstreamBodies.ctx[0].max_tokens).toBe(16_384);
+  }, 30_000);
+
+  test("K14 (#442 CR): below a useful floor the clamp stands down — the refusal stays skippable", async () => {
+    await spin();
+    resetFailoverForTests({});
+    setRoleNominalResolver(() => undefined);
+
+    // est = 1_024_000/4 = 256_000 → margin = max(2048, 4000) = 4_000 →
+    // dynamicCap = 262_144 − 256_000 − 4_000 = 2_144 ∈ [1, 4_096). The old
+    // guard (dynamicCap ≥ 1) clamped 16384 → 2144: a truncated 200 standing
+    // in for a recoverable refusal — the exact shape #431 closed (SKIP
+    // reason=context must stay reachable on a non-last step; on /compact a
+    // truncated "summary"). The floor min(asked, 4096) stands the clamp down.
+    await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 16384, content: "w".repeat(1_024_000) });
+    expect(upstreamBodies.ctx?.length).toBe(1);
+    expect(upstreamBodies.ctx[0].max_tokens).toBe(16_384); // verbatim — floor stands down
   }, 30_000);
 
   test("K8 (AC3): saturated limiter on a non-last step → bounded wait, skip to the successor, no failure mark", async () => {

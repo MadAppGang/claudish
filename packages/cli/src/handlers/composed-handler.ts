@@ -47,6 +47,9 @@ import { appendUpstreamError } from "./shared/response-capture.js";
 import {
   classifyContextOverflow,
   estimatePayloadTokens,
+  estimateClampTokens,
+  CONTEXT_LIMIT_SAFETY_MARGIN_TOKENS,
+  contextLimitMarginTokens,
   rememberOverflowCap,
   getOverflowCap,
   overflowReportFloor,
@@ -276,6 +279,23 @@ export interface ComposedHandlerOptions {
    * a refusal, and the same prompt with the cap at 8192 is served.
    */
   maxOutputTokens?: number;
+  /**
+   * #441 — per-endpoint TOTAL window (prompt + output counted together, as
+   * vLLM's `--max-model-len` does). When set, `max_tokens` is clamped to
+   * `contextLimit − clampEstimate(request) − max(2048, est/64)` per request —
+   * the dynamic complement of the #431 static cap, so a compaction turn at
+   * the RX95 window (~250k prompt) fits a 262 144 Swift window instead of
+   * hitting vLLM's refusal-without-trim (vllm#110). The clamp estimate
+   * replaces each image/document base64 block with a fixed 1600-token
+   * allocation (`estimateClampTokens`) — a 1 MB screenshot scores ~1.6k
+   * tokens, not ~750k (#442 review). If the remainder falls below a useful
+   * floor of `min(max_tokens asked, 4096)`, the clamp stands down (max_tokens
+   * unchanged): no useful output budget remains, and the upstream refusal +
+   * context-overflow recovery path (#431 K1–K5, SKIP stays reachable) own
+   * that case. Composes with `maxOutputTokens` — the smaller cap wins. Unset
+   * = verbatim passthrough.
+   */
+  contextLimit?: number;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -534,29 +554,60 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 4. Build request payload
-    // #431 AC2 — clamp BEFORE the conversion: every wire derives its output
-    // field from `claudeRequest.max_tokens` (openai-api-format.ts L101/103,
-    // anthropic passthrough), so one Claude-level seam covers all formats.
-    // `claudeRequest` is this handler's transform copy — the route's `body`
-    // and the client's retry semantics are untouched.
+    // #431 AC2 / #441 — clamp BEFORE the conversion: every wire derives its
+    // output field from `claudeRequest.max_tokens` (openai-api-format.ts
+    // L101/103, anthropic passthrough), so one Claude-level seam covers all
+    // formats. `claudeRequest` is this handler's transform copy — the route's
+    // `body` and the client's retry semantics are untouched.
+    //
+    // Two caps, smallest wins: the #431 static `maxOutputTokens`, and the #441
+    // dynamic remainder `contextLimit − promptEstimate − margin` (vLLM counts
+    // prompt + output against --max-model-len and REFUSES rather than trims).
+    let outputCap: number | undefined;
+    let capSource = "";
+    if (this.options.maxOutputTokens !== undefined && this.options.maxOutputTokens > 0) {
+      outputCap = this.options.maxOutputTokens;
+      capSource = "endpoint maxOutputTokens cap, #431";
+    }
+    if (this.options.contextLimit !== undefined && this.options.contextLimit > 0) {
+      const est = estimateClampTokens(claudeRequest);
+      // Proportional margin (pre-review #442, ai-01 2026-10-11): the /4
+      // estimate drifts toward /3.5 on code-dense prompts — a fixed margin
+      // covers none of that at 250k.
+      const margin = contextLimitMarginTokens(est);
+      const dynamicCap = this.options.contextLimit - est - margin;
+      // Useful-floor guard (#442 review c.6114982206): below min(asked, 4096)
+      // the clamp would turn a recoverable upstream refusal into a truncated
+      // 200 — the exact shape #431 closed (SKIP reason=context must stay
+      // reachable on a non-last step; on /compact a truncated "summary").
+      const asked =
+        typeof claudeRequest.max_tokens === "number" ? claudeRequest.max_tokens : 4096;
+      const floor = Math.min(asked, 4096);
+      if (dynamicCap >= floor && (outputCap === undefined || dynamicCap < outputCap)) {
+        outputCap = dynamicCap;
+        capSource = `contextLimit ${this.options.contextLimit} − est ${est} − ${margin}, #441`;
+      }
+      // dynamicCap < floor: no useful output budget remains in the window —
+      // stand down and let the request leave unclamped; the upstream refusal
+      // + context-overflow recovery (#431 K1–K5) own the turn.
+    }
     if (
-      this.options.maxOutputTokens !== undefined &&
-      this.options.maxOutputTokens > 0 &&
+      outputCap !== undefined &&
       typeof claudeRequest.max_tokens === "number" &&
-      claudeRequest.max_tokens > this.options.maxOutputTokens
+      claudeRequest.max_tokens > outputCap
     ) {
       log(
-        `[${this.provider.displayName}] max_tokens ${claudeRequest.max_tokens} → ${this.options.maxOutputTokens} (endpoint maxOutputTokens cap, #431)`
+        `[${this.provider.displayName}] max_tokens ${claudeRequest.max_tokens} → ${outputCap} (${capSource})`
       );
-      claudeRequest.max_tokens = this.options.maxOutputTokens;
+      claudeRequest.max_tokens = outputCap;
       // CR minor: a thinking budget ABOVE the clamped max is invalid on the
       // Anthropic wire (budget_tokens must stay < max_tokens — CC sends
       // 31999 against 32000), and a pass-through converter copies both fields
       // verbatim. Pull the budget down to cap-1 so the clamp does not
       // manufacture a 400 the endpoint would otherwise never see.
       const budget = claudeRequest.thinking?.budget_tokens;
-      if (typeof budget === "number" && budget >= this.options.maxOutputTokens) {
-        claudeRequest.thinking!.budget_tokens = this.options.maxOutputTokens - 1;
+      if (typeof budget === "number" && budget >= outputCap) {
+        claudeRequest.thinking!.budget_tokens = outputCap - 1;
       }
     }
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
