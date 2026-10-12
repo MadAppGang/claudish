@@ -37,6 +37,15 @@ const BUDGETS: Budget[] = [
     maxBytes: 16 * 1024,
     detail: ".claude/skills/claudish-coordinate/reference.md (section of the same name)",
   },
+  {
+    // Injected into every /worker cycle on the four worker seats. 13 975 B
+    // before #445 (A4); the verbatim original lives in reference.md.
+    // 6.5 KiB: raised from 6 KiB by the #445 lead after the CR #447 corrections
+    // (total kind→tag partition) did not fit in 6144 B — see c.6123115622.
+    path: ".claude/skills/worker/SKILL.md",
+    maxBytes: 6.5 * 1024,
+    detail: ".claude/skills/worker/reference.md (section of the same name)",
+  },
 ];
 
 describe("harness byte budgets (#445)", () => {
