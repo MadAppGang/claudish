@@ -7,7 +7,12 @@ import type { DiskCacheV3 } from "./all-models-cache.js";
 import { connectionRequestUrl, resolveConnection } from "./connection-resolver.js";
 import { getProviderByName, toRemoteProvider } from "./provider-definitions.js";
 import type { ProfileContext } from "./provider-profiles.js";
-import { RefusingHandler, buildWireHandler, effectiveBaseUrl } from "./wire-handler.js";
+import {
+  RefusingHandler,
+  buildWireHandler,
+  describeConnectionWire,
+  effectiveBaseUrl,
+} from "./wire-handler.js";
 import { TryInTurnHandler } from "./wire-try-in-turn.js";
 const cachePath = new URL(
   "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
@@ -418,4 +423,14 @@ test("RefusingHandler returns 400 and supplied message", async () => {
     type: "error",
     error: { type: "invalid_request_error", message: "claudish: unsupported protocol" },
   });
+});
+
+test("wire summary describes the exact connection API, URL, token field and effort path", () => {
+  const result = resolveConnection("openai", "gpt-6.1-sol", cachePath);
+  if (!result.ok) throw new Error("missing fixture connection");
+  const summary = describeConnectionWire(result.connection);
+  expect(summary).toContain("openai/direct-api · gpt-6.1-sol");
+  expect(summary).toContain("responses https://api.openai.com/v1/responses");
+  expect(summary).toContain("limit max_output_tokens");
+  expect(summary).toContain("effort /reasoning/effort");
 });

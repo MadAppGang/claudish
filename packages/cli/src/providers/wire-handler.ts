@@ -16,6 +16,7 @@ import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
+import { OpenRouterAPIFormat } from "../adapters/openrouter-api-format.js";
 import { ComposedHandler } from "../handlers/composed-handler.js";
 import { wrapAnthropicError } from "../handlers/shared/anthropic-error.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
@@ -74,6 +75,43 @@ export function effectiveBaseUrl(
   return { baseUrl: resolvedBaseUrl.replace(/\/+$/, ""), overridden: true };
 }
 
+/**
+ * One line saying how a connection is called, for `--probe`: the API and URL,
+ * the output-limit field, the reasoning encoding, and the modes and speeds it
+ * offers. Every part is the wire's own value or its status, never derived.
+ */
+export function describeConnectionWire(connection: ResolvedConnection): string {
+  const where = `${connection.route.routeId}/${connection.route.routeProfileId} · ${connection.externalModelId}`;
+  const { wire } = connection;
+  if (wire.status === "unsupported") return `${where}: unsupported (${wire.protocol})`;
+  if (wire.status === "unknown") {
+    const apis = Object.keys(connection.profile.apis).join(", ") || "none";
+    return `${where}: wire unknown — tries ${apis} in turn`;
+  }
+  const base = connectionBaseUrl(connection, wire.api);
+  const url = base ? wireRequestUrl(base, wire.api, connection.externalModelId) : "no base URL";
+  const status = (value: string | { status: string }) =>
+    typeof value === "string" ? value : value.status;
+  const parts = [`${wire.api} ${url}`, `limit ${status(wire.tokenParam)}`];
+  const reasoning = wire.reasoning;
+  if (reasoning.status === "supported") {
+    const effort = reasoning.effort;
+    parts.push(
+      "path" in effort
+        ? `effort ${effort.path} [${Object.keys(effort.values).join(",")}]`
+        : `effort ${effort.status}`
+    );
+    if (reasoning.mode.status === "supported") {
+      parts.push(`modes ${Object.keys(reasoning.mode.values).join(",")}`);
+    }
+  } else {
+    parts.push(`reasoning ${reasoning.status}`);
+  }
+  if (wire.speed.status === "supported")
+    parts.push(`speeds ${Object.keys(wire.speed.values).join(",")}`);
+  return `${where}: ${parts.join(" · ")}`;
+}
+
 /** Pin a transport's endpoint to `url`, delegating everything else to it. */
 function withEndpoint(inner: ProviderTransport, url: string): ProviderTransport {
   return new Proxy(inner, {
@@ -89,11 +127,14 @@ function adapterFor(
   api: WireApi,
   modelName: string,
   providerName: string,
-  definitionName: string
+  definitionName: string,
+  vendor: string | undefined
 ): BaseAPIFormat {
   switch (api) {
     case "chat-completions":
-      return new OpenAIAPIFormat(modelName);
+      return definitionName === "openrouter"
+        ? new OpenRouterAPIFormat(modelName, { vendor: vendor ?? "" })
+        : new OpenAIAPIFormat(modelName);
     case "responses":
       return new CodexAPIFormat(modelName, undefined, {
         codexExtras: definitionName === "openai-codex",
@@ -275,7 +316,13 @@ export function buildKnownWireHandler(
   if (overridden) log(`[Wire] ${definitionName}: base URL overridden by user config → ${baseUrl}`);
 
   const transport = transportFor(definitionName, wire.api, ctx, url);
-  const adapter = adapterFor(wire.api, ctx.modelName, ctx.provider.name, definitionName);
+  const adapter = adapterFor(
+    wire.api,
+    ctx.modelName,
+    ctx.provider.name,
+    definitionName,
+    connection.vendor
+  );
   const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
     adapter,
     ...(wire.api === "chat-completions" || wire.api === "responses"

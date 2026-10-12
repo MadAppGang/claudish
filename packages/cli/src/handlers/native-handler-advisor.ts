@@ -35,12 +35,12 @@ import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings
  */
 
 import { appendFileSync } from "node:fs";
-import { lookupModelTokenParam } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
 import { getCatalogEntries, latestAnthropicTierModelId } from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
+import { resolveConnection } from "../providers/connection-resolver.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
 
@@ -1877,20 +1877,11 @@ const ADVISOR_MAX_OUTPUT_TOKENS = 2048;
  *
  * - `openrouter` and `google` keep `max_tokens`. Both normalise it for every
  *   model they serve, and run D proves it live (deepseek-v4-pro, HTTP 200).
- * - `openai` (api.openai.com) asks the LIVE catalog, via the same
- *   `tokenParam` field claudish's OpenAI chat-completions converter reads first
- *   (`OpenAIApiFormat.tokenParamName` → `lookupModelTokenParam`). That converter
- *   is the existing per-format rule; its catalog lookup is the part that is
- *   right, and it is reused here rather than restated. Its private name-based
- *   fallback (`gpt-5`/`o1`/`o3`/`o4` → `max_completion_tokens`) is NOT copied —
- *   a second copy of a guess is exactly what CLAUDE.md's "never hardcode a
- *   provider's models" rule is about, and this endpoint has a better default (below).
- *
- * ONE endpoint-level correction on the catalog's answer: `max_output_tokens` is
- * the RESPONSES-API spelling. The catalog says exactly that for gpt-5.6-sol
- * (`endpoints.openai.api === "responses"`), but the advisor always POSTs
- * `/v1/chat/completions`, which does not accept it. On this route it becomes
- * `max_completion_tokens` — the spelling OpenAI's own 400 asked for:
+ * - `openai` (api.openai.com) reads the `openai/direct-api` connection's
+ *   `wire.tokenParam`, when that wire is Chat Completions. A Responses wire's
+ *   field (`max_output_tokens`) is never a chat field: the advisor always POSTs
+ *   `/v1/chat/completions`, so there it becomes `max_completion_tokens` — the
+ *   spelling OpenAI's own 400 asked for:
  *   "Unsupported parameter: 'max_tokens' is not supported with this model.
  *    Use 'max_completion_tokens' instead."
  * (observed twice for gpt-5.6-sol, runs phase7b-B and phase7b-C).
@@ -1901,14 +1892,17 @@ const ADVISOR_MAX_OUTPUT_TOKENS = 2048;
  */
 function advisorTokenParamFor(route: AdvisorRoute): string {
   if (route.kind !== "openai") return "max_tokens";
-  let fromCatalog: string | undefined;
-  try {
-    fromCatalog = lookupModelTokenParam(route.wireModel);
-  } catch {
-    // The lookup rejects a `provider@model` string outright; a wire id it will
-    // not read is simply no information, like a cold cache.
+  // The connection's own wire, and only when that wire is Chat Completions —
+  // the API this request uses. Since catalog 3.7.0 the model-level
+  // `tokenParam` describes the owner's direct connection, which for a
+  // Responses model is `max_output_tokens`: not a chat field at all.
+  const resolution = resolveConnection("openai", route.wireModel);
+  const wire = resolution.ok ? resolution.connection.wire : undefined;
+  if (wire?.status === "known" && wire.api === "chat-completions") {
+    if (wire.tokenParam === "max_tokens" || wire.tokenParam === "max_completion_tokens") {
+      return wire.tokenParam;
+    }
   }
-  if (fromCatalog === "max_tokens" || fromCatalog === "max_completion_tokens") return fromCatalog;
   return "max_completion_tokens";
 }
 

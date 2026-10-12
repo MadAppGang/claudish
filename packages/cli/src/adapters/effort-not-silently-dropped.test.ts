@@ -4,9 +4,10 @@
  */
 
 import { beforeEach, expect, test } from "bun:test";
-import { readAllModelsCache } from "../providers/all-models-cache.js";
+import { readFileSync } from "node:fs";
+import type { DiskCacheV3 } from "../providers/all-models-cache.js";
+import { shapeRequestFromWire } from "../providers/wire-request.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
-import { resolveModelDialect } from "./dialect-manager.js";
 import { resetReasoningEffortMemo } from "./grok-effort-support.js";
 import { GrokModelDialect } from "./grok-model-dialect.js";
 
@@ -14,74 +15,40 @@ beforeEach(() => {
   resetReasoningEffortMemo();
 });
 
-const hostedCatalog = readAllModelsCache();
-const hostedEntries = hostedCatalog?.entries ?? [];
+const fixture: DiskCacheV3 = JSON.parse(
+  readFileSync(
+    new URL("../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json", import.meta.url),
+    "utf8"
+  )
+);
 
-interface EffortBearingRequest {
-  reasoning_effort?: unknown;
-  thinking?: unknown;
-  enable_thinking?: unknown;
-  thinking_budget?: unknown;
-  effort?: unknown;
-  reasoning?: { effort?: unknown };
-  generationConfig?: {
-    thinkingConfig?: {
-      thinkingLevel?: unknown;
-      thinkingBudget?: unknown;
-    };
-  };
-}
-
-function emitsNativeEffortSignal(result: EffortBearingRequest | null | undefined): boolean {
-  return (
-    result?.reasoning_effort !== undefined ||
-    result?.thinking !== undefined ||
-    result?.enable_thinking !== undefined ||
-    result?.thinking_budget !== undefined ||
-    result?.effort !== undefined ||
-    result?.reasoning?.effort !== undefined ||
-    result?.generationConfig?.thinkingConfig?.thinkingLevel !== undefined ||
-    result?.generationConfig?.thinkingConfig?.thinkingBudget !== undefined
-  );
-}
-
-if (hostedEntries.length === 0) {
-  test.skip("hosted catalog effort guard — skipped because readAllModelsCache() returned no entries; warm the hosted model cache to run it", () => {});
-} else {
-  test("every effort-controlled catalog model's dialect emits an effort signal on the native wire", () => {
-    const failures: string[] = [];
-    const effortControlled = hostedEntries.filter(
-      (entry) => entry.reasoning?.supported === true && entry.reasoning.control === "effort"
-    );
-
-    for (const entry of effortControlled) {
-      const dialect = resolveModelDialect(entry.modelId);
-      const dialectName = dialect.getName();
-
-      // Layer-1 format converters own effort for models with no Layer-2 dialect.
-      if (dialectName === "DefaultAPIFormat") continue;
-
-      // Gemini and Codex emit their native knobs while building the payload;
-      // model dialects emit theirs while preparing it. Exercise both stages and
-      // inspect the final native-wire request so neither can mask the other.
-      const originalRequest = { messages: [], output_config: { effort: "low" } };
-      const nativeRequest = dialect.buildPayload(originalRequest, [], []);
-      const result = dialect.prepareRequest(nativeRequest, originalRequest);
-
-      if (!emitsNativeEffortSignal(result)) {
-        failures.push(
-          `Model "${entry.modelId}" resolves to dialect "${dialectName}" and advertises efforts ${JSON.stringify(
-            entry.reasoning?.efforts ?? []
-          )}, but the dialect is silently dropping the user's effort setting on the default (native) wire.`
-        );
-      }
+test("every published effort-controlled connection emits its wire effort field", () => {
+  let checked = 0;
+  for (const entry of fixture.entries) {
+    for (const connection of entry.aggregators ?? []) {
+      const wire = connection.wire;
+      if (
+        wire?.status !== "known" ||
+        wire.reasoning.status !== "supported" ||
+        !("path" in wire.reasoning.effort)
+      )
+        continue;
+      const body: Record<string, unknown> = {};
+      const shaped = shapeRequestFromWire(body, wire, { effort: "high", hasTools: false });
+      const label = `${entry.modelId} ${connection.route?.routeId}/${connection.route?.routeProfileId}`;
+      expect(shaped.sentEffort, label).toBeDefined();
+      const path = wire.reasoning.effort.path
+        .split("/")
+        .slice(1)
+        .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+      let emitted: unknown = body;
+      for (const part of path) emitted = (emitted as Record<string, unknown> | undefined)?.[part];
+      expect(emitted, label).toBeDefined();
+      checked++;
     }
-
-    if (failures.length > 0) {
-      throw new Error(`Catalog effort regression guard failed:\n${failures.join("\n")}`);
-    }
-  });
-}
+  }
+  expect(checked).toBeGreaterThan(0);
+});
 
 test("future Grok and DeepSeek model-name fallbacks are rules, not version pins", () => {
   const highEffort = { output_config: { effort: "high" } };

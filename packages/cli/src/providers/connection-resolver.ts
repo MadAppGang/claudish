@@ -30,6 +30,12 @@ export interface ResolvedConnection {
   provider: string;
   /** The catalog record's canonical model id. */
   modelId: string;
+  /**
+   * The model's vendor (the catalog's `provider` field), when published. Data,
+   * not a name match: what a gateway needs to know about the upstream family
+   * (Gemini thought signatures, Grok tool-call format) is read from here.
+   */
+  vendor?: string;
   route: CatalogRouteBinding;
   /** The exact id sent to the provider. */
   externalModelId: string;
@@ -135,6 +141,7 @@ export function resolveConnection(
     connection: {
       provider,
       modelId: found.entry.modelId,
+      ...(found.entry.provider ? { vendor: found.entry.provider } : {}),
       route,
       externalModelId: found.connection.externalModelId as string,
       wire: found.connection.wire,

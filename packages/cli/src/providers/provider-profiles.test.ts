@@ -1,162 +1,112 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
+import { ComposedHandler } from "../handlers/composed-handler.js";
 import { getProviderByName, toRemoteProvider } from "./provider-definitions.js";
-import { createHandlerForProvider } from "./provider-profiles.js";
+import {
+  type ProfileContext,
+  openCodeZenProfile,
+  openaiCodexProfile,
+  openaiProfile,
+  vertexProfile,
+} from "./provider-profiles.js";
+import { buildWireHandler } from "./wire-handler.js";
 
-// The composition table must not read the ambient ~/.claudish/all-models.json.
-const fixtureDir = mkdtempSync(join(tmpdir(), "provider-profiles-"));
-const catalogCachePath = join(fixtureDir, "all-models.json");
-
-afterAll(() => {
-  rmSync(fixtureDir, { recursive: true, force: true });
-});
-
-writeFileSync(
-  catalogCachePath,
-  JSON.stringify({
-    catalogGenerationId: "test-generation",
-    plans: [],
-    version: 3,
-    lastUpdated: new Date().toISOString(),
-    entries: [
-      {
-        modelId: "acme-responses-x1.0",
-        aliases: [],
-
-        endpoints: {
-          openai: { api: "responses", toolsWithReasoning: "requires-responses" },
-        },
-        tokenParam: "max_output_tokens",
-      },
-    ],
-    models: [],
-  })
-);
-
-interface Composition {
-  transport: string;
-  streamFormat: string;
-  endpoint: string;
-}
-
-async function describeHandler(providerName: string, modelName: string): Promise<Composition> {
-  const def = getProviderByName(providerName)!;
-  const handler: any = await createHandlerForProvider({
-    provider: toRemoteProvider(def),
+const catalogCachePath = new URL(
+  "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
+  import.meta.url
+).pathname;
+function context(provider: string, modelName: string): ProfileContext {
+  return {
+    provider: toRemoteProvider(getProviderByName(provider)!),
     modelName,
+    targetModel: `${provider}@${modelName}`,
     apiKey: "test-key",
-    targetModel: modelName,
-    port: 1234,
+    port: 0,
     sharedOpts: {},
     catalogCachePath,
-  } as any);
-
-  return handler.describeComposition();
+  };
+}
+async function describeHandler(provider: string, model: string) {
+  const handler = await vertexProfile.createHandler(context(provider, model));
+  expect(handler).toBeInstanceOf(ComposedHandler);
+  try {
+    return (handler as ComposedHandler).describeComposition();
+  } finally {
+    await handler?.shutdown();
+  }
 }
 
-const expectedCompositions = [
-  {
-    provider: "opencode-zen-go",
-    model: "grok-4.7",
-    streamFormat: "openai-responses-sse",
-    endpoint: "https://opencode.ai/zen/go/v1/responses",
-  },
-  {
-    provider: "opencode-zen-go",
-    model: "minimax-m2.5",
-    streamFormat: "anthropic-sse",
-    endpoint: "https://opencode.ai/zen/go/v1/messages",
-  },
-  {
-    provider: "opencode-zen-go",
-    model: "glm-5",
-    streamFormat: "openai-sse",
-    endpoint: "https://opencode.ai/zen/go/v1/chat/completions",
-  },
-  {
-    provider: "opencode-zen-go",
-    model: "gpt-5.6-luna",
-    streamFormat: "openai-responses-sse",
-    endpoint: "https://opencode.ai/zen/go/v1/responses",
-  },
-  {
-    provider: "opencode-zen",
-    model: "minimax-m2.5",
-    streamFormat: "openai-sse",
-    endpoint: "https://opencode.ai/zen/v1/chat/completions",
-  },
-  {
-    provider: "opencode-zen",
-    model: "glm-5",
-    streamFormat: "openai-sse",
-    endpoint: "https://opencode.ai/zen/v1/chat/completions",
-  },
-  {
-    provider: "opencode-zen",
-    model: "gpt-5.6-luna",
-    streamFormat: "openai-responses-sse",
-    endpoint: "https://opencode.ai/zen/v1/responses",
-  },
-  {
-    provider: "opencode-zen-go",
-    model: "qwen3.7-plus",
-    streamFormat: "anthropic-sse",
-    endpoint: "https://opencode.ai/zen/go/v1/messages",
-  },
-  {
-    provider: "opencode-zen",
-    model: "qwen3.7-max",
-    streamFormat: "anthropic-sse",
-    endpoint: "https://opencode.ai/zen/v1/messages",
-  },
-  {
-    provider: "opencode-zen",
-    model: "claude-fable-5",
-    streamFormat: "anthropic-sse",
-    endpoint: "https://opencode.ai/zen/v1/messages",
-  },
-  {
-    provider: "opencode-zen",
-    model: "grok-4.5",
-    streamFormat: "openai-responses-sse",
-    endpoint: "https://opencode.ai/zen/v1/responses",
-  },
-] as const;
-
-describe("OpenCode Zen provider composition", () => {
-  for (const row of expectedCompositions) {
-    test(`${row.provider} ${row.model} uses ${row.streamFormat} at ${row.endpoint}`, async () => {
-      expect(await describeHandler(row.provider, row.model)).toEqual({
-        transport: row.provider,
-        streamFormat: row.streamFormat,
-        endpoint: row.endpoint,
-      });
+for (const provider of ["openai", "opencode-zen", "opencode-zen-go"]) {
+  for (const model of [
+    "qwen3.7-plus",
+    "claude-opus-5",
+    "minimax-m3",
+    "gpt-6.1-sol",
+    "grok-4.7",
+    "codex-mini-latest",
+  ]) {
+    test(`${provider}@${model} off catalog uses OpenAIAPIFormat and the configured chat endpoint`, async () => {
+      const ctx = context(provider, model);
+      const factory = provider === "openai" ? openaiProfile : openCodeZenProfile;
+      const handler = factory.createHandler(ctx);
+      expect(handler).toBeInstanceOf(ComposedHandler);
+      try {
+        expect((handler as any).explicitAdapter).toBeInstanceOf(OpenAIAPIFormat);
+        expect((handler as ComposedHandler).describeComposition()).toEqual({
+          transport: provider,
+          streamFormat: "openai-sse",
+          endpoint: ctx.provider.baseUrl + ctx.provider.apiPath,
+        });
+      } finally {
+        await handler?.shutdown();
+      }
     });
   }
+}
 
-  test("Go MiniMax and metered Zen MiniMax use their documented distinct APIs", async () => {
-    expect(
-      (await describeHandler("opencode-zen-go", "minimax-m3")).endpoint.endsWith("/v1/messages")
-    ).toBe(true);
-    expect(
-      (await describeHandler("opencode-zen", "minimax-m3")).endpoint.endsWith(
-        "/v1/chat/completions"
-      )
-    ).toBe(true);
+for (const [provider, model, streamFormat, endpoint] of [
+  [
+    "opencode-zen-go",
+    "grok-4.7",
+    "openai-responses-sse",
+    "https://opencode.ai/zen/go/v1/responses",
+  ],
+  ["opencode-zen-go", "minimax-m3", "anthropic-sse", "https://opencode.ai/zen/go/v1/messages"],
+  ["opencode-zen", "minimax-m3", "openai-sse", "https://opencode.ai/zen/v1/chat/completions"],
+  ["openai", "gpt-6.1-sol", "openai-responses-sse", "https://api.openai.com/v1/responses"],
+  ["poe", "grok-4.7", "openai-sse", "https://api.poe.com/v1/chat/completions"],
+]) {
+  test(`${provider}@${model} composition comes from its published wire`, async () => {
+    const result = await buildWireHandler(context(provider!, model!), provider!);
+    if (result.kind !== "handler") throw new Error(JSON.stringify(result));
+    try {
+      expect(result.handler).toBeInstanceOf(ComposedHandler);
+      expect((result.handler as ComposedHandler).describeComposition()).toEqual({
+        transport: provider,
+        streamFormat,
+        endpoint,
+      });
+    } finally {
+      await result.handler.shutdown();
+    }
   });
-});
+}
 
-describe("Poe gateway composition", () => {
-  test("builds a callable OpenAI-compatible handler", async () => {
-    expect(await describeHandler("poe", "GPT-4o")).toEqual({
-      transport: "poe",
-      streamFormat: "openai-sse",
-      endpoint: "https://api.poe.com/v1/chat/completions",
-    });
-  });
-});
+test.each(["gpt-5.3-codex", "gpt-4o"])(
+  "Codex off-catalog profile uses Responses for %s",
+  async (model) => {
+    const handler = openaiCodexProfile.createHandler(context("openai-codex", model));
+    try {
+      expect((handler as ComposedHandler).describeComposition()).toEqual({
+        transport: "openai-codex",
+        streamFormat: "openai-responses-sse",
+        endpoint: "https://api.openai.com/v1/responses",
+      });
+    } finally {
+      await handler?.shutdown();
+    }
+  }
+);
 
 describe("Vertex project-aware composition", () => {
   test("a selected project constructs its regional OAuth endpoint even with an Express key", async () => {
@@ -187,69 +137,5 @@ describe("Vertex project-aware composition", () => {
       if (prior.location === undefined) delete process.env.VERTEX_LOCATION;
       else process.env.VERTEX_LOCATION = prior.location;
     }
-  });
-});
-
-describe("OpenAI Responses-API gate", () => {
-  const responsesComposition = {
-    transport: "openai",
-    streamFormat: "openai-responses-sse",
-    endpoint: "https://api.openai.com/v1/responses",
-  } as const;
-  const chatCompletionsComposition = {
-    transport: "openai",
-    streamFormat: "openai-sse",
-    endpoint: "https://api.openai.com/v1/chat/completions",
-  } as const;
-  const openAICompositionCases = [
-    { model: "acme-responses-x1.0", expected: responsesComposition },
-    { model: "gpt-5.3-codex", expected: responsesComposition },
-    { model: "gpt-5-codex", expected: responsesComposition },
-    { model: "gpt-5.1-codex-max", expected: responsesComposition },
-    { model: "gpt-5.1-codex-mini", expected: responsesComposition },
-    { model: "GPT-5.1-CODEX-MINI", expected: responsesComposition },
-    { model: "gpt-5.6-luna", expected: responsesComposition },
-    { model: "gpt-5.6-sol", expected: responsesComposition },
-    { model: "gpt-5.4", expected: chatCompletionsComposition },
-    { model: "gpt-5.5", expected: chatCompletionsComposition },
-    { model: "gpt-4o", expected: chatCompletionsComposition },
-    { model: "gpt-5", expected: chatCompletionsComposition },
-    { model: "gpt-5-mini", expected: chatCompletionsComposition },
-  ] as const;
-
-  for (const row of openAICompositionCases) {
-    test(`openai ${row.model} uses ${row.expected.streamFormat} at ${row.expected.endpoint}`, async () => {
-      expect(await describeHandler("openai", row.model)).toEqual(row.expected);
-    });
-  }
-
-  test("a codex id routes to Responses regardless of where 'codex' appears in the name", async () => {
-    expect(await describeHandler("openai", "codex-mini-latest")).toEqual(responsesComposition);
-  });
-
-  test("a codex id gets a Responses body AND a Responses endpoint (the two layers must agree)", async () => {
-    for (const model of ["gpt-5.4-codex", "gpt-5.3-codex", "codex-mini-latest"]) {
-      const composition = await describeHandler("openai", model);
-
-      // The endpoint already follows the codex rule in transport/openai.ts:31,37;
-      // streamFormat is what catches drift in the profile adapter choice.
-      expect(composition.streamFormat).toBe("openai-responses-sse");
-      expect(composition.endpoint.endsWith("/v1/responses")).toBe(true);
-    }
-  });
-
-  test("a non-codex model keeps both layers on Chat Completions", async () => {
-    const composition = await describeHandler("openai", "gpt-5.4");
-
-    expect(composition.streamFormat).toBe("openai-sse");
-    expect(composition.endpoint.endsWith("/v1/chat/completions")).toBe(true);
-  });
-
-  test("openai-codex remains Responses-only for codex and non-codex ids", async () => {
-    const expected = { ...responsesComposition, transport: "openai-codex" };
-
-    // This provider composes to Responses by construction, so the `openai` gate is not what decides it.
-    expect(await describeHandler("openai-codex", "gpt-5.3-codex")).toEqual(expected);
-    expect(await describeHandler("openai-codex", "gpt-4o")).toEqual(expected);
   });
 });

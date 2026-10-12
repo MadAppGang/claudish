@@ -379,11 +379,8 @@ export function stripBillingHeader(text: string): string {
 export function transformOpenAIToClaude(claudeRequestInput: any): {
   claudeRequest: any;
   droppedParams: string[];
-  isO3Model?: boolean;
 } {
   const req = JSON.parse(JSON.stringify(claudeRequestInput));
-  const isO3Model =
-    typeof req.model === "string" && (req.model.includes("o3") || req.model.includes("o1"));
 
   if (Array.isArray(req.system)) {
     // Extract text content from each system message item
@@ -438,6 +435,5 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
   return {
     claudeRequest: req,
     droppedParams: dropped,
-    isO3Model,
   };
 }

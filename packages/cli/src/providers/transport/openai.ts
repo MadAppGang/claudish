@@ -29,16 +29,11 @@ export class OpenAIProviderTransport implements ProviderTransport {
     this.name = provider.name;
     this.displayName = OpenAIProviderTransport.formatDisplayName(provider.name);
 
-    // Codex models use the Responses API which has a different streaming format
-    this.streamFormat = modelName.toLowerCase().includes("codex")
-      ? "openai-responses-sse"
-      : "openai-sse";
+    // Declarative only: the parser is the adapter's (`wire.api` chooses it).
+    this.streamFormat = "openai-sse";
   }
 
   getEndpoint(): string {
-    if (this.modelName.toLowerCase().includes("codex")) {
-      return `${this.provider.baseUrl}/v1/responses`;
-    }
     return `${this.provider.baseUrl}${this.provider.apiPath}`;
   }
 

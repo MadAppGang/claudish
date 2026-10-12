@@ -378,7 +378,10 @@ export async function createProxyServer(
       // the transport's getHeaders() (single source of truth) — the legacy
       // openrouterApiKey param is no longer the signing source.
       const orProvider = new OpenRouterProviderTransport("", modelId);
-      const orAdapter = new OpenRouterAPIFormat(modelId);
+      const orAdapter = new OpenRouterAPIFormat(
+        modelId,
+        wired.connection ? { vendor: wired.connection.vendor ?? "" } : {}
+      );
       openRouterHandlers.set(
         modelId,
         new ComposedHandler(orProvider, modelId, modelId, port, {

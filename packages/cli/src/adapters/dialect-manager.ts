@@ -10,20 +10,20 @@
 
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type BaseAPIFormat, DefaultAPIFormat } from "./base-api-format.js";
-import { CodexAPIFormat } from "./codex-api-format.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
 import { GeminiAPIFormat } from "./gemini-api-format.js";
 import { GLMModelDialect } from "./glm-model-dialect.js";
 import { GrokModelDialect } from "./grok-model-dialect.js";
 import { MiniMaxModelDialect } from "./minimax-model-dialect.js";
-import { OpenAIAPIFormat } from "./openai-api-format.js";
 import { QwenModelDialect } from "./qwen-model-dialect.js";
 import { XiaomiModelDialect } from "./xiaomi-model-dialect.js";
 
 /**
- * Candidate dialects, in match order. ORDER IS LOAD-BEARING: Codex must be
- * tried before OpenAI, because a codex model id also satisfies OpenAI's test
- * and whichever runs first wins.
+ * Candidate dialects, in match order, for a handler WITHOUT a catalog
+ * connection only (a dynamic subscription, a custom or local endpoint). A
+ * catalog connection never gets a name-picked dialect: its `wire` decides
+ * (`ComposedHandler`). The OpenAI and Codex formats are not here at all: the
+ * API is chosen by `wire.api`, never by a model name.
  *
  * These are factories rather than instances because `shouldHandle` is an
  * instance method, so asking "does this dialect want the model" requires
@@ -33,8 +33,6 @@ import { XiaomiModelDialect } from "./xiaomi-model-dialect.js";
 const DIALECT_FACTORIES: ReadonlyArray<(modelId: string, wire?: StreamFormat) => BaseAPIFormat> = [
   (m, w) => new GrokModelDialect(m, w),
   (m, w) => new GeminiAPIFormat(m, w),
-  (m, w) => new CodexAPIFormat(m, w),
-  (m, w) => new OpenAIAPIFormat(m, w),
   (m, w) => new QwenModelDialect(m, w),
   (m, w) => new MiniMaxModelDialect(m, w),
   (m, w) => new DeepSeekModelDialect(m, w),

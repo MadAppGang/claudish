@@ -14,7 +14,13 @@ export function convertMessagesToOpenAI(
   req: any,
   modelId: string,
   filterIdentityFn?: (s: string) => string,
-  simpleFormat = false
+  simpleFormat = false,
+  /**
+   * The upstream model's vendor from its catalog connection (`""` when the
+   * catalog names none). When given, it alone decides the Grok tool-format
+   * instruction; the model-name check below applies only without a connection.
+   */
+  upstreamVendor?: string
 ): any[] {
   const messages: any[] = [];
 
@@ -27,7 +33,11 @@ export function convertMessagesToOpenAI(
   }
 
   // Add instruction for Grok models to use proper tool format
-  if (modelId.includes("grok") || modelId.includes("x-ai")) {
+  const isGrokUpstream =
+    upstreamVendor !== undefined
+      ? upstreamVendor === "x-ai"
+      : modelId.includes("grok") || modelId.includes("x-ai");
+  if (isGrokUpstream) {
     const msg =
       "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
     if (messages.length > 0 && messages[0].role === "system") {

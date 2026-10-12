@@ -24,7 +24,6 @@ import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { DevinAPIFormat } from "../adapters/devin-api-format.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
-import { lookupModelEndpoint } from "../adapters/model-catalog.js";
 import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import {
@@ -47,7 +46,7 @@ import { LiteLLMProviderTransport } from "./transport/litellm.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
-import { OpenCodeZenMessagesTransport, OpenCodeZenTransport } from "./transport/opencode-zen.js";
+import { OpenCodeZenTransport } from "./transport/opencode-zen.js";
 import { PoeProvider } from "./transport/poe.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 import { RefusingHandler, buildWireHandler } from "./wire-handler.js";
@@ -74,7 +73,7 @@ export interface ProfileContext {
   /**
    * Catalog cache path override — a TEST SEAM, unset in production.
    *
-   * `requiresResponsesApi` reads the model catalog, which made the composition
+   * `buildWireHandler` reads the model catalog, which made the composition
    * table in `provider-profiles.test.ts` depend on whichever
    * `~/.claudish/cloud-models-catalog-v3.json` the machine happened to have. That is the
    * v7.43.0 trap: green on every dev box, and a different answer on a cold CI
@@ -190,98 +189,6 @@ export const devinProfile: ProviderProfile = {
 };
 
 /**
- * Models OpenAI will not serve over /v1/chat/completions.
- *
- * Two different reasons, one remedy. `gpt-5.6` rejects function tools together
- * with reasoning_effort ("use /v1/responses or set reasoning_effort to 'none'").
- * A `*codex*` model rejects the endpoint outright, and says so in as many words
- * — measured 2026-08-10 straight against api.openai.com with `gpt-5.3-codex`:
- *
- *   POST /v1/chat/completions → 404 "This model is not supported in the
- *                                    v1/chat/completions endpoint. Use the
- *                                    v1/responses endpoint instead."
- *   POST /v1/responses        → 200
- *
- * So this is not the tools-plus-reasoning constraint wearing a second face; it
- * is a flatly Responses-only model. Claude Code sends tools on essentially every
- * request, which made every codex id unusable through `oai@` rather than merely
- * degraded.
- *
- * THE SUBSTRING TEST IS LOAD-BEARING, and it is not a style choice.
- * `OpenAIProviderTransport` has carried the same rule since long before this —
- * `modelName.toLowerCase().includes("codex")` decides both its stream format
- * (openai.ts:31) and its endpoint (openai.ts:37) — so Layer 3 was ALREADY
- * sending every codex id to /v1/responses. Only Layer 1 disagreed: this gate
- * matched `gpt-5.6` alone, so `openaiProfile` built an OpenAIAPIFormat and put
- * a Chat Completions body on a Responses endpoint. That mismatch is the whole
- * failure, and it is exactly what OpenAI reported back:
- *
- *   400 unsupported_parameter — "Unsupported parameter: 'messages'. In the
- *   Responses API, this parameter has moved to 'input'."
- *
- * Right endpoint, wrong body. Any narrowing of this test (a `/^gpt-.*codex/`
- * prefix, an explicit id list) silently re-opens the split, because the
- * transport will keep routing ids this function no longer claims. The two tests
- * must stay identical; a test pins their agreement.
- *
- * THE GATE IS HOST-BLIND, and the comment here used to say otherwise ("only
- * OpenAI-served ids reach this gate"). `openaiProfile` is many-to-one — it also
- * serves x-ai, qwen, deepseek and mistralai (`provider-definitions.ts:228`) — so
- * every one of those hosts reaches this function. `endpoints.openai` is keyed by
- * TRANSPORT FAMILY, not by host, so the catalog cannot say "responses on OpenAI,
- * chat completions on x-ai" about one model id.
- *
- * Measured 2026-09-09 against the live catalog, nothing is mis-served by that:
- * all 8 Responses-only ids are `gpt-*`, which no other host under this profile
- * carries. The exposure is a future id served by two hosts on different APIs.
- *
- * `cx@` really is untouched, for a different reason than the old comment gave:
- * `openaiCodexProfile` builds `CodexAPIFormat` unconditionally and never calls
- * this function at all.
- *
- * Pick the verification model carefully. /v1/models is a dynamic models catalog,
- * NOT an entitlement: of those six ids, only `gpt-5.3-codex` actually answers 200 on
- * /v1/responses for the developer's account — the rest return 404 "Model not
- * found" there, and `gpt-5-codex` is additionally reported DEPRECATED on
- * /v1/chat/completions. Testing against any of them looks exactly like "the
- * routing fix did not work" when the model is simply not being served. It is the
- * same dynamic-models-catalog-vs-entitlement trap the Antigravity and Devin
- * providers document.
- *
- * THE CATALOG MAY ONLY WIDEN THIS GATE, NEVER NARROW IT. The name rule stays an
- * unconditional `||` below for the reason above: the transport routes every
- * `*codex*` id to /v1/responses on its own, so a catalog record that said "chat
- * completions" for one would restore the split in the other direction —
- * OpenAIAPIFormat's body on a Responses endpoint.
- *
- * The name rule alone could not stay correct, which is what this comment
- * predicted and what then happened. `gpt-6-astra` shipped 2026-09-03, matches
- * neither pattern, and is Responses-only. Its Chat Completions body carried the
- * catalog's own `tokenParam` and was rejected:
- *
- *   400 unknown_parameter — "Unknown parameter: 'max_output_tokens'."
- *
- * `max_output_tokens` is the Responses spelling. claudish was already reading
- * half of the catalog's endpoint contract — `tokenParam`, via
- * `OpenAIAPIFormat.tokenParamName` — while ignoring the sibling field that says
- * which wire API that spelling belongs to. Reading both is the fix. The name
- * rule survives only as the cold-cache fallback, where the catalog has no
- * opinion to read.
- *
- * @param cachePath Test seam. Points the catalog lookup at a fixture, so a test
- *   never depends on a warm `~/.claudish/cloud-models-catalog-v3.json`.
- */
-export function requiresResponsesApi(modelName: string, cachePath?: string): boolean {
-  const endpoint = lookupModelEndpoint(modelName, "openai", cachePath);
-  if (endpoint?.api === "responses" || endpoint?.toolsWithReasoning === "requires-responses") {
-    return true;
-  }
-
-  const name = modelName.toLowerCase();
-  return /^gpt-5\.6/.test(name) || name.includes("codex");
-}
-
-/**
  * Grok Build subscription.
  *
  * Ordinary OpenAI Chat Completions on the wire, so this is the standard
@@ -306,24 +213,14 @@ export const grokSubscriptionProfile: ProviderProfile = {
   },
 };
 
+/**
+ * OpenAI-compatible Chat Completions, for a provider the catalog does not route.
+ * A catalog connection never reaches this profile: `buildWireHandler` builds it
+ * from `wire.api` and the registry (Responses included), so no model name here
+ * decides an API.
+ */
 export const openaiProfile: ProviderProfile = {
   createHandler(ctx) {
-    // Claude Code always sends tools, so requires-responses models must get the
-    // whole Responses-API slice (endpoint + CodexAPIFormat payload + responses
-    // SSE) swapped together — same composition the Zen profile uses for gpt-*.
-    if (requiresResponsesApi(ctx.modelName, ctx.catalogCachePath)) {
-      const responsesProvider = { ...ctx.provider, apiPath: "/v1/responses" };
-      const transport = new OpenAIProviderTransport(responsesProvider, ctx.modelName, ctx.apiKey);
-      const adapter = new CodexAPIFormat(ctx.modelName);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        tokenStrategy: "delta-aware",
-        ...ctx.sharedOpts,
-      });
-      log(`[Proxy] Created OpenAI handler (Responses API composed): ${ctx.modelName}`);
-      return handler;
-    }
-
     const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
     const adapter = new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
@@ -395,64 +292,22 @@ export const glmProfile: ProviderProfile = {
 };
 
 /**
- * OpenCode Zen and Go use model-specific wire APIs. The official endpoint tables
- * assign Qwen to Messages on both products, MiniMax to Messages on Go, GPT to
- * Responses, and most other listed families to Chat Completions. All paths
- * carry a stable per-conversation session header and the resolved product key.
+ * OpenCode Zen and Go. Each model's API (Chat, Responses or Messages) is its
+ * catalog connection's `wire.api`, built by `buildWireHandler`; this profile
+ * runs only when the catalog does not route the provider, and then speaks
+ * Chat Completions. The model-family list that used to choose the API here
+ * (qwen3/claude-/minimax- → Messages, gpt-/grok- → Responses) is gone.
  */
 export const openCodeZenProfile: ProviderProfile = {
   createHandler(ctx) {
-    const zenApiKey = ctx.apiKey;
-    const isGoProvider = ctx.provider.name === "opencode-zen-go";
-    const model = ctx.modelName.toLowerCase();
-
-    // OpenCode serves these model families over its Anthropic Messages endpoint.
-    // The Go MiniMax route differs from the metered Zen route.
-    if (
-      model.startsWith("qwen3") ||
-      (!isGoProvider && model.startsWith("claude-")) ||
-      (isGoProvider && model.startsWith("minimax-"))
-    ) {
-      const messagesProvider = {
-        ...ctx.provider,
-        apiPath: "/v1/messages",
-        authScheme: "x-api-key" as const,
-      };
-      const transport = new OpenCodeZenMessagesTransport(messagesProvider, zenApiKey);
-      const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
-      return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-    }
-
-    // GPT and Grok models are served via the OpenAI Responses API (/v1/responses),
-    // not /v1/chat/completions — on Go as well as Zen. Go's grok-4.7 answers chat
-    // completions with 400 ModelProtocolUnsupported "Model does not support this
-    // protocol." and /v1/responses with 200 (measured 2026-09-26).
-    if (model.startsWith("gpt-") || model.startsWith("grok-")) {
-      const responsesProvider = { ...ctx.provider, apiPath: "/v1/responses" };
-      const transport = new OpenCodeZenTransport(responsesProvider, ctx.modelName, zenApiKey);
-      const adapter = new CodexAPIFormat(ctx.modelName);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        tokenStrategy: "delta-aware",
-        ...ctx.sharedOpts,
-      });
-      log(
-        `[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (Responses API composed): ${ctx.modelName}`
-      );
-      return handler;
-    }
-
-    const transport = new OpenCodeZenTransport(ctx.provider, ctx.modelName, zenApiKey);
+    const transport = new OpenCodeZenTransport(ctx.provider, ctx.modelName, ctx.apiKey);
     const adapter = new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
       tokenStrategy: "delta-aware",
       ...ctx.sharedOpts,
     });
-    log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (composed): ${ctx.modelName}`);
+    log(`[Proxy] Created ${ctx.provider.name} handler (composed): ${ctx.modelName}`);
     return handler;
   },
 };

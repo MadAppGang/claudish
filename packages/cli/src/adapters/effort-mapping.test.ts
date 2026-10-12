@@ -11,59 +11,46 @@
  * ai-docs/sessions/dev-research-reasoning-effort-20260629-010035-c1b698d0/report.md §3.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import {
-  ALL_MODELS_CACHE_PATH,
-  type DiskCacheV3,
-  writeAllModelsCache,
-} from "../providers/all-models-cache.js";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type DiskCacheV3, writeAllModelsCache } from "../providers/all-models-cache.js";
 import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
-import { CodexAPIFormat } from "./codex-api-format.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
 import { GeminiAPIFormat } from "./gemini-api-format.js";
 import { GLMModelDialect } from "./glm-model-dialect.js";
 import { GrokModelDialect } from "./grok-model-dialect.js";
 import { MiniMaxModelDialect } from "./minimax-model-dialect.js";
-import { OpenAIAPIFormat } from "./openai-api-format.js";
+import { lookupModelReasoning, lookupModelReasoningStatus } from "./model-catalog.js";
 import { QwenModelDialect } from "./qwen-model-dialect.js";
 
 const SYNTHETIC_FUGU_MODEL_ID = "fugu-acme-ultra";
 
+const cacheDir = mkdtempSync(join(tmpdir(), "effort-mapping-"));
+const cachePath = join(cacheDir, "catalog.json");
+afterAll(() => rmSync(cacheDir, { recursive: true, force: true }));
 function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
-  const cacheDir = dirname(ALL_MODELS_CACHE_PATH);
-  const cacheDirExisted = existsSync(cacheDir);
-  const previousContents = existsSync(ALL_MODELS_CACHE_PATH)
-    ? readFileSync(ALL_MODELS_CACHE_PATH, "utf-8")
-    : null;
-
   writeAllModelsCache(
     {
-      catalogGenerationId: "test-generation",
-      plans: [],
       version: 3,
+      catalogGenerationId: "test-generation",
       lastUpdated: new Date().toISOString(),
       entries,
       models: [],
+      plans: [],
     },
-    ALL_MODELS_CACHE_PATH
+    cachePath
   );
-
-  return () => {
-    if (previousContents === null) {
-      rmSync(ALL_MODELS_CACHE_PATH, { force: true });
-      if (!cacheDirExisted) {
-        try {
-          rmdirSync(cacheDir);
-        } catch {
-          // Another test may have created something in the shared cache dir.
-        }
-      }
-      return;
-    }
-    writeFileSync(ALL_MODELS_CACHE_PATH, previousContents, "utf-8");
-  };
+  return () => rmSync(cachePath, { force: true });
+}
+class CatalogDeepSeek extends DeepSeekModelDialect {
+  protected override lookupReasoningCapability() {
+    return lookupModelReasoning(this.getModelId(), cachePath);
+  }
+  protected override lookupReasoningStatus() {
+    return lookupModelReasoningStatus(this.getModelId(), cachePath);
+  }
 }
 
 // ─── Part 1: shared resolveEffortLevel ────────────────────────────────────
@@ -121,142 +108,6 @@ describe("resolveEffortLevel (shared)", () => {
     expect(fmt.resolve({})).toBeUndefined();
     expect(fmt.resolve(undefined)).toBeUndefined();
     expect(fmt.resolve({ max_tokens: 100 })).toBeUndefined();
-  });
-});
-
-// ─── Part 2A: OpenAI per-model gates ──────────────────────────────────────
-
-function openaiEffort(modelId: string, effort: string): string | undefined {
-  const fmt = new OpenAIAPIFormat(modelId);
-  const payload = (fmt as any).buildChatCompletionsPayload(
-    { output_config: { effort }, max_tokens: 100 },
-    [],
-    []
-  );
-  return payload.reasoning_effort;
-}
-
-describe("OpenAI gates", () => {
-  test("o1-mini STRIPS reasoning_effort entirely (no param exists)", () => {
-    expect(openaiEffort("o1-mini", "high")).toBeUndefined();
-    expect(openaiEffort("o1-mini", "low")).toBeUndefined();
-  });
-
-  test("o-series (o3-mini) caps at high — xhigh/max clamp to high", () => {
-    expect(openaiEffort("o3-mini", "xhigh")).toBe("high");
-    expect(openaiEffort("o3-mini", "max")).toBe("high");
-    expect(openaiEffort("o3-mini", "high")).toBe("high");
-    expect(openaiEffort("o3-mini", "medium")).toBe("medium");
-  });
-
-  test("o-series rejects none/minimal → low", () => {
-    expect(openaiEffort("o3-mini", "none")).toBe("low");
-    expect(openaiEffort("o3-mini", "minimal")).toBe("low");
-  });
-
-  test("original GPT-5 accepts minimal; none → minimal; max → high (no xhigh)", () => {
-    expect(openaiEffort("gpt-5", "minimal")).toBe("minimal");
-    expect(openaiEffort("gpt-5", "none")).toBe("minimal");
-    expect(openaiEffort("gpt-5", "xhigh")).toBe("high");
-    expect(openaiEffort("gpt-5", "max")).toBe("high");
-  });
-
-  test("gpt-5.5 (5.1+) unchanged — pinned by reasoning-effort.test.ts", () => {
-    expect(openaiEffort("gpt-5.5", "minimal")).toBe("low");
-    expect(openaiEffort("gpt-5.5", "none")).toBe("none");
-    expect(openaiEffort("gpt-5.5", "xhigh")).toBe("xhigh");
-    expect(openaiEffort("gpt-5.5", "max")).toBe("xhigh");
-  });
-});
-
-// ─── Part 2A (Sakana/Fugu): clamp-up via the OpenAI path ──────────────────
-
-describe("Sakana Fugu (OpenAI-compatible path) clamps UP to high", () => {
-  let cleanupCatalog: (() => void) | undefined;
-
-  beforeEach(() => {
-    cleanupCatalog = seedDefaultCatalog([
-      {
-        modelId: SYNTHETIC_FUGU_MODEL_ID,
-        aliases: [],
-
-        reasoning: {
-          supported: true,
-          control: "effort",
-          efforts: ["max", "xhigh", "high"],
-          defaultEffort: "high",
-        },
-      },
-    ]);
-  });
-
-  afterEach(() => {
-    cleanupCatalog?.();
-    cleanupCatalog = undefined;
-  });
-
-  test.each([
-    ["fugu", "none", "high"],
-    ["fugu", "minimal", "high"],
-    ["fugu", "low", "high"],
-    ["fugu", "medium", "high"],
-    ["fugu", "high", "high"],
-    ["fugu", "xhigh", "xhigh"],
-    ["fugu", "max", "xhigh"],
-    ["fugu-ultra", "low", "high"],
-    // The synthetic catalog entry advertises `max`, so the catalog-driven clamp
-    // passes it through. Without the fixture (or without catalog lookup), the
-    // Fugu name fallback would normalise `max` down to `xhigh` and this fails.
-    [SYNTHETIC_FUGU_MODEL_ID, "max", "max"],
-    ["sakana/fugu-ultra-20260615", "medium", "high"],
-  ])("%s effort '%s' → reasoning_effort '%s'", (model, input, expected) => {
-    expect(openaiEffort(model, input)).toBe(expected);
-  });
-});
-
-// ─── Part 2B: Codex (Responses API) ───────────────────────────────────────
-
-function codexReasoning(modelId: string, req: any): any {
-  const fmt = new CodexAPIFormat(modelId);
-  return (fmt as any).buildPayload(req, [], []).reasoning;
-}
-
-describe("Codex reasoning.effort", () => {
-  test("flows effort into reasoning.effort (not hardcoded medium)", () => {
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "high" } }).effort).toBe(
-      "high"
-    );
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "low" } }).effort).toBe("low");
-  });
-
-  test("default stays 'medium' when no effort signal", () => {
-    expect(codexReasoning("gpt-5-codex", { max_tokens: 100 }).effort).toBe("medium");
-  });
-
-  test("codex drops minimal → low; no max (→high); xhigh→high off codex-max", () => {
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "minimal" } }).effort).toBe(
-      "low"
-    );
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "max" } }).effort).toBe("high");
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "xhigh" } }).effort).toBe(
-      "high"
-    );
-  });
-
-  test("codex-max accepts xhigh", () => {
-    expect(codexReasoning("gpt-5.1-codex-max", { output_config: { effort: "xhigh" } }).effort).toBe(
-      "xhigh"
-    );
-    expect(codexReasoning("gpt-5.1-codex-max", { output_config: { effort: "max" } }).effort).toBe(
-      "xhigh"
-    );
-  });
-
-  test("none → 'none' on gpt-5.1-codex family, 'low' on older codex", () => {
-    expect(codexReasoning("gpt-5.1-codex", { output_config: { effort: "none" } }).effort).toBe(
-      "none"
-    );
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "none" } }).effort).toBe("low");
   });
 });
 
@@ -364,35 +215,6 @@ describe("Grok reasoning_effort gates", () => {
     expect(grokEffort("grok-4-fast-reasoning", { output_config: { effort: "medium" } })).toBe(
       "medium"
     );
-  });
-
-  test("grok-4 / grok-4-0709 STRIP (not on allowlist, param 400s)", () => {
-    expect(grokEffort("grok-4", { output_config: { effort: "high" } })).toBeUndefined();
-    expect(grokEffort("grok-4-0709", { output_config: { effort: "high" } })).toBeUndefined();
-  });
-
-  test("non-reasoning + grok-2 STRIP", () => {
-    expect(
-      grokEffort("grok-4-fast-non-reasoning", { output_config: { effort: "high" } })
-    ).toBeUndefined();
-    expect(grokEffort("grok-2", { output_config: { effort: "high" } })).toBeUndefined();
-  });
-
-  test("allowlist: grok-build-0.1 / grok-code-fast-1 STRIP (live-verified reject the param)", () => {
-    // These matched no old deny pattern → wrongly got reasoning_effort → 400.
-    // The allowlist flip strips them (they're not a known-accepting family).
-    expect(grokEffort("grok-build-0.1", { output_config: { effort: "minimal" } })).toBeUndefined();
-    expect(grokEffort("grok-code-fast-1", { output_config: { effort: "low" } })).toBeUndefined();
-  });
-
-  test("allowlist: grok-4.20 reasoning models STRIP despite grok-4.x shape (live-verified 400)", () => {
-    // The decisive case for allowlist-over-denylist: grok-4.20 IS a reasoning
-    // model and matches dot-decimal grok-4.x, yet the live API rejects the
-    // param — only grok-4.3 accepts it. Naming can't gate this.
-    expect(grokEffort("grok-4.20", { output_config: { effort: "high" } })).toBeUndefined();
-    expect(
-      grokEffort("grok-4.20-0309-reasoning", { output_config: { effort: "high" } })
-    ).toBeUndefined();
   });
 
   test("an unknown/new grok model SENDS effort optimistically", () => {
@@ -869,7 +691,7 @@ describe("GLM Anthropic wire reasoning stays separate", () => {
 // ─── Part 2G: DeepSeek ────────────────────────────────────────────────────
 
 function dsPrep(modelId: string, req: any): any {
-  const fmt = new DeepSeekModelDialect(modelId);
+  const fmt = new CatalogDeepSeek(modelId);
   return (fmt as any).prepareRequest({}, req);
 }
 

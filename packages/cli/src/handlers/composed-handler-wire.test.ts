@@ -155,3 +155,177 @@ test("request marker context sends priority on OpenAI", async () => {
   expect(calls[0]!.body.service_tier).toBe("priority");
   expect(wireMarkerContext.getStore()).toBeUndefined();
 });
+
+test.each(["google/gemini-3.8-flash", "opaque-model"])(
+  "Google vendor on a chat wire preserves thought signatures for %s",
+  async (model) => {
+    const connection = resolved("openrouter", "gemini-3.8-flash");
+    expect(connection.vendor).toBe("google");
+    expect(connection.wire.api).toBe("chat-completions");
+    // Rename only the fixture connection's ids: the vendor and wire remain real.
+    connection.externalModelId = model;
+    connection.modelId = model;
+    const handler = buildKnownWireHandler(
+      context("openrouter", model),
+      "openrouter",
+      connection,
+      connection.wire
+    )!;
+    handlers.push(handler);
+    const details = [{ type: "reasoning.encrypted", id: "call_signature", data: "test-signature" }];
+    const bodies: any[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      if (bodies.length > 1) return new Response("captured", { status: 599 });
+      const frames = [
+        {
+          choices: [
+            {
+              delta: {
+                role: "assistant",
+                reasoning_details: details,
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_signature",
+                    type: "function",
+                    function: { name: "Read", arguments: '{"path":"README.md"}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+      ];
+      return new Response(
+        frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } }
+      );
+    }) as typeof fetch;
+    const app = new Hono();
+    app.post("/", async (c) => handler.handle(c, await c.req.json()));
+    const base = {
+      model,
+      stream: true,
+      max_tokens: 100,
+      tools: [
+        {
+          name: "Read",
+          description: "Read",
+          input_schema: { type: "object", properties: { path: { type: "string" } } },
+        },
+      ],
+    };
+    const messages: any[] = [{ role: "user", content: "Read README.md" }];
+    const first = await app.request("/", {
+      method: "POST",
+      body: JSON.stringify({ ...base, messages }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("call_signature");
+    messages.push(
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_signature", name: "Read", input: { path: "README.md" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_signature", content: "file contents" }],
+      }
+    );
+    await app.request("/", {
+      method: "POST",
+      body: JSON.stringify({ ...base, messages }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(bodies).toHaveLength(2);
+    const assistant = bodies[1].messages.find((message: any) => message.role === "assistant");
+    expect(assistant.reasoning_details).toEqual(details);
+  }
+);
+
+test.each([
+  ["openai", "grok-vendor-regression", false],
+  ["", "grok-vendor-regression", false],
+  ["x-ai", "opaque-model", true],
+] as const)(
+  "chat wire vendor %s controls the xAI instruction for %s",
+  async (vendor, model, expectsInstruction) => {
+    const connection = resolved("fireworks", "deepseek-v4.1-flash");
+    expect(connection.wire.api).toBe("chat-completions");
+    // Keep the fixture's chat wire and route binding, but make vendor and id
+    // disagree. Fireworks uses a plain OpenAIAPIFormat, with no vendor hint
+    // supplied by its constructor: ComposedHandler must pass the connection's.
+    connection.vendor = vendor;
+    connection.externalModelId = model;
+    connection.modelId = model;
+    const handler = buildKnownWireHandler(
+      context("fireworks", model),
+      "fireworks",
+      connection,
+      connection.wire
+    )!;
+    expect(handler).toBeInstanceOf(ComposedHandler);
+    handlers.push(handler);
+    const calls = capture("invalid value");
+    const app = new Hono();
+    app.post("/", (c) =>
+      handler.handle(c, {
+        model,
+        system: "You help with code.",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 100,
+        stream: true,
+      })
+    );
+    await app.request("/", { method: "POST" });
+    expect(calls).toHaveLength(1);
+    const system = calls[0]!.body.messages.find(
+      (message: { role: string }) => message.role === "system"
+    );
+    expect(system?.content).toContain("You help with code.");
+    const instruction = "NEVER use XML format like <xai:function_call>";
+    if (expectsInstruction) expect(system.content).toContain(instruction);
+    else expect(system.content).not.toContain(instruction);
+  }
+);
+
+test("a catalog connection bypasses the MiniMax name-picked temperature dialect", async () => {
+  const connection = resolved("opencode-zen", "minimax-m3");
+  const ctx = context("opencode-zen", "minimax-m3");
+  const connected = buildKnownWireHandler(ctx, "opencode-zen", connection, connection.wire)!;
+  const offCatalog = new ComposedHandler(
+    new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey),
+    ctx.targetModel,
+    ctx.modelName,
+    0,
+    { adapter: new OpenAIAPIFormat(ctx.modelName) }
+  );
+  handlers.push(connected, offCatalog);
+  const bodies: any[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response("captured", { status: 599 });
+  }) as typeof fetch;
+  for (const handler of [connected, offCatalog]) {
+    const app = new Hono();
+    app.post("/", (c) =>
+      handler.handle(c, {
+        model: "minimax-m3",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 100,
+        temperature: 0,
+        stream: true,
+      })
+    );
+    await app.request("/", { method: "POST" });
+  }
+  expect(bodies).toHaveLength(2);
+  expect(bodies[0].temperature).toBe(0);
+  expect(bodies[1].temperature).toBe(0.01);
+});

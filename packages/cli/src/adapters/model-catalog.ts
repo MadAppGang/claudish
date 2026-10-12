@@ -13,7 +13,6 @@
 import type { ReasoningModeCapabilities } from "../model-loader.js";
 import {
   type CachedSubscriptionPlan,
-  type ModelEndpoint,
   type ReasoningCapability,
   type RouteVariant,
   type SlimModelEntry,
@@ -141,22 +140,6 @@ export function lookupModelMaxOutputTokens(
 }
 
 /**
- * The output-token parameter name this model's API expects.
- *
- * Returns `max_tokens` / `max_completion_tokens` / `max_output_tokens`, or
- * undefined for a cold cache or a model the catalog has no opinion on — in
- * which case the caller keeps whatever it did before.
- *
- * Callers must PREFER this over any name-based guess. Measured against the live
- * catalog, guessing from the name sends the wrong parameter to the whole
- * gpt-5.6-* family (they take `max_output_tokens`, the guess says
- * `max_completion_tokens`).
- */
-export function lookupModelTokenParam(modelId: string, cachePath?: string): string | undefined {
-  return findCacheEntry(modelId, cachePath)?.tokenParam;
-}
-
-/**
  * Preset-variant metadata — which family this model belongs to, and whether it
  * is that family's default on its provider.
  *
@@ -274,18 +257,6 @@ export function lookupModelCapabilities(
   const entry = findCacheEntry(modelId, cachePath);
   if (!entry) return undefined;
   return { supportsTools: entry.supportsTools, supportsThinking: entry.supportsThinking };
-}
-
-/**
- * The wire API this model is reachable on for a transport family
- * (`openai` / `anthropic` / `gemini`).
- */
-export function lookupModelEndpoint(
-  modelId: string,
-  transport: string,
-  cachePath?: string
-): ModelEndpoint | undefined {
-  return findCacheEntry(modelId, cachePath)?.endpoints?.[transport];
 }
 
 /**

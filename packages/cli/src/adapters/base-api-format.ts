@@ -922,6 +922,18 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    */
   protected pinnedEffort?: EffortLevel;
 
+  /**
+   * The upstream model's vendor from its catalog connection (`""` when the
+   * catalog names none); undefined without a connection. Set by the handler
+   * that owns a connection, so upstream-family behaviour reads data, not the
+   * model name.
+   */
+  protected upstreamVendor?: string;
+
+  setUpstreamVendor(vendor: string): void {
+    this.upstreamVendor = vendor;
+  }
+
   /** Install the `--effort` override for this handler. undefined clears it. */
   setEffortOverride(level: EffortLevel | undefined): void {
     this.pinnedEffort = level;
@@ -984,7 +996,13 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * Override for non-OpenAI formats (e.g., Gemini parts-based format).
    */
   convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
-    return convertMessagesToOpenAI(claudeRequest, this.modelId, filterIdentityFn);
+    return convertMessagesToOpenAI(
+      claudeRequest,
+      this.modelId,
+      filterIdentityFn,
+      false,
+      this.upstreamVendor
+    );
   }
 
   /**

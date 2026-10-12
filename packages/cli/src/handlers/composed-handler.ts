@@ -21,7 +21,11 @@
  */
 
 import type { Context } from "hono";
-import type { BaseAPIFormat, EffortLevel } from "../adapters/base-api-format.js";
+import {
+  type BaseAPIFormat,
+  DefaultAPIFormat,
+  type EffortLevel,
+} from "../adapters/base-api-format.js";
 import type { ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
@@ -289,14 +293,24 @@ export class ComposedHandler implements ModelHandler {
     // provider.overrideStreamFormat(), which only re-labels the RESPONSE for
     // aggregators. Undefined when no explicit converter was passed (the dialect
     // is then also the converter) → dialects fall back to the OpenAI default.
-    this.resolvedDialect = resolveModelDialect(
-      this.bareModelName,
-      this.explicitAdapter?.getStreamFormat()
-    );
+    //
+    // A CATALOG CONNECTION gets no name-picked dialect at all: its `wire`
+    // decides every reasoning and limit field (step 5w), and a dialect chosen
+    // by model name is exactly the guess the wire replaces. Only a handler
+    // without a connection (dynamic subscription, custom or local endpoint)
+    // still resolves one.
+    this.resolvedDialect = options.connection
+      ? new DefaultAPIFormat(this.bareModelName, this.explicitAdapter?.getStreamFormat())
+      : resolveModelDialect(this.bareModelName, this.explicitAdapter?.getStreamFormat());
 
     // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
     // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
     const resolvedModelAdapter = this.resolvedDialect;
+    if (options.connection) {
+      for (const adapter of [this.explicitAdapter, this.resolvedDialect]) {
+        adapter?.setUpstreamVendor(options.connection.vendor ?? "");
+      }
+    }
     if (resolvedModelAdapter.getName() !== "DefaultAPIFormat") {
       this.modelAdapter = resolvedModelAdapter;
     }
@@ -327,8 +341,20 @@ export class ComposedHandler implements ModelHandler {
     // Use bareModelName for the middleware gate — .includes() works identically for
     // "google@gemini-2.5-flash" and "gemini-2.5-flash", and bare form is the invariant.
     this.middlewareManager = new MiddlewareManager();
-    if (this.bareModelName.includes("gemini") || this.bareModelName.includes("google/")) {
-      this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
+    // With a connection, from data: a Gemini-API wire, or a Google model behind
+    // a gateway (OpenRouter carries its thought signatures in reasoning_details).
+    const connectionWire = options.connection?.wire;
+    if (
+      options.connection
+        ? (connectionWire?.status === "known" && connectionWire.api === "gemini") ||
+          options.connection.vendor === "google"
+        : this.bareModelName.includes("gemini") || this.bareModelName.includes("google/")
+    ) {
+      // Selected from data when there is a connection: the middleware's own
+      // name gate must not re-filter an opaque gateway id out again.
+      this.middlewareManager.register(
+        new GeminiThoughtSignatureMiddleware({ alwaysHandle: !!options.connection })
+      );
     }
     this.middlewareManager
       .initialize()

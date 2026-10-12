@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DiskCacheV3 } from "../providers/all-models-cache.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "../providers/catalog-client.js";
 import {
   ADVISOR_STUB_PATHS,
@@ -9,7 +13,6 @@ import {
   markAdvisorCallConsumed,
   recordAdvisorEventsFromResponseBody,
   rewriteAdvisorToolResults,
-  runAdvisorCall,
 } from "./native-handler-advisor.js";
 
 const cfg = { enabled: true, logPath: undefined };
@@ -245,48 +248,110 @@ describe("OpenRouter advisor wire-model resolution", () => {
 });
 
 describe("advisor request token parameter routing", () => {
-  const messages = [{ role: "user", content: "Review this fixture." }];
-  const apiKeys = {
-    openai: "test-openai-key",
-    openrouter: "test-openrouter-key",
-    google: "test-google-key",
-  };
-
+  // resolveConnection inside the advisor has no cache-path argument. Import it
+  // in an isolated child so its default path cannot reach the user's cache.
   async function captureRequest(
-    model: string
+    model: string,
+    cache?: DiskCacheV3
   ): Promise<{ url: URL; body: Record<string, unknown> }> {
-    let capturedInput: RequestInfo | URL | undefined;
-    let capturedInit: RequestInit | undefined;
-    const fetchImpl = Object.assign(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        capturedInput = input;
-        capturedInit = init;
-        return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      },
-      { preconnect(_url: string | URL): void {} }
-    ) as typeof fetch;
-
-    await runAdvisorCall({
-      toolUseId: `advisor-token-param-${model}`,
-      messages,
-      models: [model],
-      collector: null,
-      apiKeys,
-      fetchImpl,
-      warn: () => {},
-    });
-
-    if (capturedInput === undefined || capturedInit?.body === undefined) {
-      throw new Error(`Expected ${model} to issue an advisor request`);
+    const dir = mkdtempSync(join(tmpdir(), "advisor-wire-"));
+    try {
+      if (cache) {
+        mkdirSync(join(dir, ".claudish"));
+        writeFileSync(
+          join(dir, ".claudish", "cloud-models-catalog-v3.json"),
+          JSON.stringify(cache)
+        );
+      }
+      const script = `
+        const { runAdvisorCall } = await import(${JSON.stringify(new URL("./native-handler-advisor.ts", import.meta.url).pathname)});
+        let captured;
+        globalThis.fetch = async (input, init) => {
+          captured = { url: String(input), body: JSON.parse(String(init.body)) };
+          return Response.json({ choices: [{ message: { content: "ok" } }] });
+        };
+        await runAdvisorCall({ toolUseId: "advisor-wire-test", messages: [{role: "user", content: "Review this fixture."}],
+          models: [${JSON.stringify(model)}], collector: null,
+          apiKeys: {openai: "test-key", google: "test-key", openrouter: "test-key"},
+          fetchImpl: globalThis.fetch, warn: () => {} });
+        if (!captured) throw new Error("Advisor issued no request");
+        console.log(JSON.stringify(captured));
+      `;
+      const child = Bun.spawnSync([process.execPath, "--eval", script], {
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          CLAUDISH_DISABLE_KEYCHAIN: "1",
+          CLAUDISH_DISABLE_OP: "1",
+          CLAUDISH_DISABLE_CATALOG_WARM: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      const captured = JSON.parse(child.stdout.toString());
+      return { url: new URL(captured.url), body: captured.body };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    return {
-      url: new URL(String(capturedInput)),
-      body: JSON.parse(String(capturedInit.body)) as Record<string, unknown>,
-    };
   }
+
+  const fixture: DiskCacheV3 = JSON.parse(
+    readFileSync(
+      new URL(
+        "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  it.each(["max_tokens", "max_completion_tokens"] as const)(
+    "reads %s from the OpenAI chat connection",
+    async (tokenParam) => {
+      const cache = structuredClone(fixture);
+      const entry = cache.entries.find((entry) => entry.modelId === "gpt-6.1-sol")!;
+      const connection = entry.aggregators!.find(
+        (connection) =>
+          connection.route?.routeId === "openai" && connection.route.routeProfileId === "direct-api"
+      )!;
+      if (connection.wire?.status !== "known") throw new Error("missing fixture wire");
+      // Change only the API and limit field of a real connection to exercise a
+      // chat wire; this fixture's OpenAI connections currently all use Responses.
+      connection.wire.api = "chat-completions";
+      connection.wire.tokenParam = tokenParam;
+      const request = await captureRequest("openai@gpt-6.1-sol", cache);
+      expect(request.body).toHaveProperty(tokenParam);
+      expect(request.body).not.toHaveProperty(
+        tokenParam === "max_tokens" ? "max_completion_tokens" : "max_tokens"
+      );
+      expect(request.body).not.toHaveProperty("max_output_tokens");
+    }
+  );
+
+  it("does not copy the Responses token field into advisor Chat Completions", async () => {
+    const request = await captureRequest("openai@gpt-6.1-sol", fixture);
+    expect(request.body).toHaveProperty("max_completion_tokens");
+    expect(request.body).not.toHaveProperty("max_output_tokens");
+  });
+
+  it.each(["max_output_tokens", { status: "unknown" }, { status: "not_applicable" }] as const)(
+    "uses the chat default for token field %j",
+    async (tokenParam) => {
+      const cache = structuredClone(fixture);
+      const entry = cache.entries.find((entry) => entry.modelId === "gpt-6.1-sol")!;
+      const connection = entry.aggregators!.find(
+        (connection) =>
+          connection.route?.routeId === "openai" && connection.route.routeProfileId === "direct-api"
+      )!;
+      if (connection.wire?.status !== "known") throw new Error("missing fixture wire");
+      connection.wire.api = "chat-completions";
+      connection.wire.tokenParam = tokenParam;
+      const request = await captureRequest("openai@gpt-6.1-sol", cache);
+      expect(request.body).toHaveProperty("max_completion_tokens");
+      expect(request.body).not.toHaveProperty("max_tokens");
+      expect(request.body).not.toHaveProperty("max_output_tokens");
+    }
+  );
 
   it("uses max_completion_tokens on the direct OpenAI route", async () => {
     const request = await captureRequest("openai@some-model");

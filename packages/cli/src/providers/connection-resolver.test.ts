@@ -229,6 +229,7 @@ describe("production connection resolution", () => {
         ok: true,
         connection: {
           provider,
+          vendor: record.provider,
           modelId,
           route: { routeId, routeProfileId },
           externalModelId,
