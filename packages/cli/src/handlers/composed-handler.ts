@@ -43,8 +43,20 @@ import {
 } from "../logger.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { deepMergeParams } from "../model-params.js";
+import type { ResolvedConnection } from "../providers/connection-resolver.js";
+import type { WireHeader } from "../providers/connection-wire.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
+import { wireMarkerContext } from "../providers/wire-markers.js";
+import {
+  type WireChoices,
+  type WireMode,
+  type WireSpeed,
+  mergeWireHeaders,
+  recoverBorrowedWireFields,
+  shapeRequestFromWire,
+  wireChoicesFromClaudeRequest,
+} from "../providers/wire-request.js";
 import { recoveryClock } from "../recovery/clock.js";
 import {
   type RecoveryOutcome,
@@ -59,7 +71,7 @@ import {
   describeImages,
 } from "../services/vision-proxy.js";
 import { type SessionEventRegistry, extractSessionId } from "../session-events/index.js";
-import { applyProInjection } from "../session-events/pro-injection.js";
+import { applyProInjection, isUltracodeMainTurn } from "../session-events/pro-injection.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
 import { classifyError, reportError } from "../telemetry.js";
@@ -199,6 +211,16 @@ export interface ComposedHandlerOptions {
    * Defaults to ~/.claudish/cloud-models-catalog-v3.json. Only tests should pass this.
    */
   catalogCachePath?: string;
+  /**
+   * The catalog connection this handler calls, with its `wire` (catalog 3.7.0).
+   * When its wire is known, step 5w shapes the output limit, reasoning, mode and
+   * speed from it alone, after every adapter and dialect has run.
+   */
+  connection?: ResolvedConnection;
+  /** `+pro` on the model spec: request mode pro, refused where the wire does not publish it. */
+  wireMode?: WireMode;
+  /** `#<speed>` on the model spec, refused where the wire does not publish it. */
+  wireSpeed?: WireSpeed;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -1102,7 +1124,72 @@ export class ComposedHandler implements ModelHandler {
     // (transformPayload) on purpose: after, so they beat every adapter default;
     // before, so they write into the payload itself rather than into a
     // provider envelope that 5c may wrap around it.
-    if (this.options.proOnUltracode) {
+    // 5w. A known catalog wire decides the output limit, reasoning, mode and
+    // speed — nothing else does. It runs after every adapter and dialect (it
+    // removes whatever they emitted for those decisions) and before
+    // --model-params, which stays the user's last word.
+    let wireHeaders: WireHeader[] = [];
+    let wireBorrowed: string[] = [];
+    const wire = this.options.connection?.wire;
+    if (wire?.status === "known") {
+      const choices: WireChoices = {
+        ...wireChoicesFromClaudeRequest(claudeRequest, this.options.effortOverride),
+      };
+      const markers = wireMarkerContext.getStore();
+      const wireMode = this.options.wireMode ?? markers?.mode;
+      const wireSpeed = this.options.wireSpeed ?? markers?.speed;
+      if (wireMode) {
+        choices.mode = { value: wireMode, explicit: true };
+      } else if (
+        this.options.proOnUltracode &&
+        isUltracodeMainTurn({
+          enabled: true,
+          sessionId: extractSessionId(claudeRequest?.metadata),
+          outputConfig: claudeRequest?.output_config,
+          registry: this.options.sessionEventRegistry,
+        })
+      ) {
+        choices.mode = { value: "pro", explicit: false };
+      }
+      if (wireSpeed) choices.speed = { value: wireSpeed, explicit: true };
+
+      const shaped = shapeRequestFromWire(
+        requestPayload,
+        wire,
+        choices,
+        this.options.connection?.ownerWire
+      );
+      wireBorrowed = shaped.borrowed;
+      const where = `${this.options.connection?.route.routeId}/${this.options.connection?.route.routeProfileId} · ${this.options.connection?.externalModelId}`;
+      for (const note of shaped.notes) log(`[Wire] ${where}: ${note}`);
+      if (shaped.refusal) {
+        return c.json(
+          wrapAnthropicError(
+            400,
+            `claudish: ${shaped.refusal} (${where})`,
+            "invalid_request_error"
+          ),
+          400 as any
+        );
+      }
+      wireHeaders = shaped.headers;
+    } else if (
+      this.options.wireMode ||
+      this.options.wireSpeed ||
+      wireMarkerContext.getStore()?.mode ||
+      wireMarkerContext.getStore()?.speed
+    ) {
+      // A marker asks for something only a connection's wire can grant; without
+      // one there is nothing that says how, or whether, to send it.
+      return c.json(
+        wrapAnthropicError(
+          400,
+          `claudish: ${this.targetModel} has no catalog wire, so a +mode or #speed marker cannot be applied`,
+          "invalid_request_error"
+        ),
+        400 as any
+      );
+    } else if (this.options.proOnUltracode) {
       applyProInjection(requestPayload, {
         enabled: true,
         sessionId: extractSessionId(claudeRequest?.metadata),
@@ -1256,9 +1343,16 @@ export class ComposedHandler implements ModelHandler {
     // no FallbackHandler exists — `proxy-server.ts`'s bare 500.
     //
     // The touch is refresh-conditional, which makes this rare, not safe.
+    // Every header fetch below goes through this, so a header the wire requires
+    // (a beta token next to the field it wrote) survives the auth retries too.
+    const fetchHeaders = async (): Promise<Record<string, string>> => {
+      const fetched = await this.provider.getHeaders(payload);
+      mergeWireHeaders(fetched, wireHeaders);
+      return fetched;
+    };
     let headers: Record<string, string>;
     try {
-      headers = await this.provider.getHeaders(payload);
+      headers = await fetchHeaders();
     } catch (err: any) {
       const conn = classifyConnectionError(err);
       if (!conn) {
@@ -1270,7 +1364,7 @@ export class ComposedHandler implements ModelHandler {
         err,
         conn,
         this.connectionEndpointFor(err, endpoint),
-        () => this.provider.getHeaders(),
+        fetchHeaders,
         {
           startTime,
           // An auth site with the unclamped primary fetch still ahead of it —
@@ -1474,9 +1568,18 @@ export class ComposedHandler implements ModelHandler {
         const candidates = [this.modelAdapter, this.getAdapter()].filter(
           (a, i, all): a is BaseModelAdapter => !!a?.recoverFromRejection && all.indexOf(a) === i
         );
-        const errorText = candidates.length > 0 ? await response.clone().text() : "";
-        let recovery: { payload: any; note: string } | null = null;
-        for (const candidate of candidates) {
+        const errorText =
+          candidates.length > 0 || wireBorrowed.length > 0 ? await response.clone().text() : "";
+        // Fields borrowed from the owner's connection (this connection's own
+        // value is unknown) are the first suspects: tried in turn, dropped on the
+        // 400 that names them. Only those fields — never one the wire published.
+        let recovery: { payload: any; note: string } | null = recoverBorrowedWireFields(
+          requestPayload,
+          wireBorrowed,
+          errorText
+        );
+        if (recovery) wireBorrowed = [];
+        for (const candidate of recovery ? [] : candidates) {
           recovery = candidate.recoverFromRejection(requestPayload, errorText);
           if (recovery) break;
         }
@@ -1499,7 +1602,7 @@ export class ComposedHandler implements ModelHandler {
           // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
           // out of here is untouched.
           const doParamRetry = async (sig?: AbortSignal): Promise<Response> => {
-            const retryHeaders = await this.provider.getHeaders(payload);
+            const retryHeaders = await fetchHeaders();
             retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
             return fetch(
               endpoint,
@@ -1565,7 +1668,7 @@ export class ComposedHandler implements ModelHandler {
         // leave the other exactly as exposed as it was.
         const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
           await this.provider.forceRefreshAuth!();
-          const retryHeaders = await this.provider.getHeaders(payload);
+          const retryHeaders = await fetchHeaders();
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.

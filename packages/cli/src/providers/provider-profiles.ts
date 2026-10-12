@@ -50,6 +50,7 @@ import { OpenAIProviderTransport } from "./transport/openai.js";
 import { OpenCodeZenMessagesTransport, OpenCodeZenTransport } from "./transport/opencode-zen.js";
 import { PoeProvider } from "./transport/poe.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
+import { RefusingHandler, buildWireHandler } from "./wire-handler.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,7 +92,13 @@ export interface ProfileContext {
    */
   sharedOpts: Pick<
     ComposedHandlerOptions,
-    "isInteractive" | "invocationMode" | "effortOverride" | "modelParams" | "proOnUltracode"
+    | "isInteractive"
+    | "invocationMode"
+    | "effortOverride"
+    | "modelParams"
+    | "proOnUltracode"
+    | "wireMode"
+    | "wireSpeed"
   >;
 }
 
@@ -592,6 +599,18 @@ export async function createHandlerForProvider(ctx: ProfileContext): Promise<Mod
     log(`[Proxy] Credential: ${formatProvenanceLog(provenance)}`);
   }
   log(`[Proxy] Handler: provider=${ctx.provider.name}, model=${ctx.modelName}`);
+
+  // A catalog connection is built from its wire and the route registry; the
+  // provider's own profile only for providers the catalog does not route.
+  const wired = await buildWireHandler(ctx, definitionName);
+  switch (wired.kind) {
+    case "handler":
+      return wired.handler;
+    case "refused":
+      return new RefusingHandler(wired.message);
+    case "not-wire-routed":
+      break;
+  }
 
   return factory(ctx);
 }

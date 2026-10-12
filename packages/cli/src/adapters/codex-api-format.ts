@@ -46,6 +46,21 @@ export function normalizeCodexModel(modelId: string | undefined): string {
 }
 
 export class CodexAPIFormat extends BaseAPIFormat {
+  /**
+   * `false` builds the GENERIC Responses body every Responses connection
+   * accepts (catalog 3.7.0 R8): no `store`, no `include`. Those two are ChatGPT
+   * Codex behaviour and stay on the Codex subscription only. The output limit,
+   * reasoning and verbosity are not this body's business on a catalog
+   * connection either: the wire shaper (`ComposedHandler` step 5w) removes what
+   * is written here and writes what the connection publishes.
+   */
+  private readonly codexExtras: boolean;
+
+  constructor(modelId: string, wireFormat?: StreamFormat, options: { codexExtras?: boolean } = {}) {
+    super(modelId, wireFormat);
+    this.codexExtras = options.codexExtras ?? true;
+  }
+
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
@@ -98,8 +113,7 @@ export class CodexAPIFormat extends BaseAPIFormat {
       model: normalizedModel,
       input: strippedMessages,
       stream: true,
-      store: false,
-      include: ["reasoning.encrypted_content"],
+      ...(this.codexExtras ? { store: false, include: ["reasoning.encrypted_content"] } : {}),
       reasoning: {
         effort,
         summary: "auto",
