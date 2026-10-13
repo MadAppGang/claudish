@@ -54,8 +54,6 @@ let importLabel: string | null = null;
 /** True in `mcp` mode once stdout is isolated: unscoped stdout writes go to the debug log. */
 let stdoutDiverted = false;
 
-let installed = false;
-
 /** Where captured text goes. Replaceable for tests. */
 let sink: (line: string) => void = (line) => log(line);
 
@@ -89,31 +87,43 @@ function formatConsole(method: ConsoleMethod, args: unknown[]): string {
   return format(...args);
 }
 
+/** The wrappers this module installed, so `install()` can tell when one was replaced. */
+const wrappers = new Map<string, unknown>();
+
 /**
- * Patch `console.*` and both stream writers once per process. Each replacement
- * checks the scope at call time, so outside a hook (and outside `mcp`
- * diversion) the original runs with the original arguments.
+ * Patch `console.*` and both stream writers. Each replacement checks the scope
+ * at call time, so outside a hook (and outside `mcp` diversion) the original
+ * runs with the original arguments.
+ *
+ * Idempotent, and self-healing: code that later assigns its own
+ * `process.stderr.write` (a test spy restoring a writer it saved earlier, a
+ * TUI muting stderr) would otherwise drop the capture for the rest of the
+ * process, and hook output would reach the terminal. Each call re-wraps any
+ * writer that is no longer this module's; a wrapper around a wrapper is
+ * harmless, because the outer one consumes every scoped write.
  */
 function install(): void {
-  if (installed) return;
-  installed = true;
-
   const con = console as unknown as Record<ConsoleMethod, (...a: unknown[]) => void>;
   for (const method of [...STDOUT_CONSOLE, ...STDERR_CONSOLE]) {
+    const key = `console.${method}`;
+    if (con[method] === wrappers.get(key)) continue;
     const original = con[method].bind(console);
     const stdoutBound = (STDOUT_CONSOLE as readonly string[]).includes(method);
-    con[method] = (...args: unknown[]) => {
+    const wrapper = (...args: unknown[]) => {
       const label = currentHookLabel();
       if (label !== null) return emit(`hook ${label}`, formatConsole(method, args));
       if (stdoutDiverted && stdoutBound) return emit("stdout", formatConsole(method, args));
       return original(...args);
     };
+    con[method] = wrapper;
+    wrappers.set(key, wrapper);
   }
 
   const patchWrite = (stream: NodeJS.WriteStream, isStdout: boolean) => {
+    const key = isStdout ? "stdout.write" : "stderr.write";
+    if (stream.write === wrappers.get(key)) return;
     const original = stream.write.bind(stream) as (...a: unknown[]) => boolean;
-    // biome-ignore lint/suspicious/noExplicitAny: Node's overloaded write signature
-    (stream as any).write = (chunk: unknown, encoding?: unknown, callback?: unknown): boolean => {
+    const wrapper = (chunk: unknown, encoding?: unknown, callback?: unknown): boolean => {
       const label = currentHookLabel();
       const diverted = isStdout && stdoutDiverted;
       if (label === null && !diverted) return original(chunk, encoding, callback);
@@ -122,6 +132,9 @@ function install(): void {
       if (typeof cb === "function") queueMicrotask(() => (cb as () => void)());
       return true;
     };
+    // biome-ignore lint/suspicious/noExplicitAny: Node's overloaded write signature
+    (stream as any).write = wrapper;
+    wrappers.set(key, wrapper);
   };
   patchWrite(process.stdout, true);
   patchWrite(process.stderr, false);

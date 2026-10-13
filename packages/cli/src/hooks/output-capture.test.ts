@@ -46,6 +46,28 @@ describe("runInHookScope (in process)", () => {
       setCaptureSinkForTests(previous);
     }
   });
+
+  it("captures again after other code replaced process.stderr.write", () => {
+    const lines: string[] = [];
+    const previous = setCaptureSinkForTests((l) => lines.push(l));
+    const saved = process.stderr.write;
+    let leaked = "";
+    try {
+      runInHookScope("hook:m/x", () => {});
+      // A writer installed after the capture, e.g. a spy restoring one it saved earlier.
+      process.stderr.write = ((chunk: unknown) => {
+        leaked += String(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+      runInHookScope("hook:m/x", () => process.stderr.write("scoped\n"));
+      process.stderr.write("unscoped\n");
+      expect(lines).toEqual(["[hook hook:m/x] scoped"]);
+      expect(leaked).toBe("unscoped\n");
+    } finally {
+      process.stderr.write = saved;
+      setCaptureSinkForTests(previous);
+    }
+  });
 });
 
 describe("isolateProtocolStdout (spawned process)", () => {
