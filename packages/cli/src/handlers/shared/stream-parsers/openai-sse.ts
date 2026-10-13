@@ -18,6 +18,7 @@ import {
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
 import { type BlockRef, createBlockWriter } from "./block-writer.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import { sseDataPayload } from "./sse-line.js";
 import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
 import { splitPromptTokens } from "./usage-cache-split.js";
 
@@ -839,8 +840,8 @@ export function createStreamingResponseHandler(
             buffer = lines.pop() || "";
 
             for (const line of lines) {
-              if (!line.trim() || !line.startsWith("data: ")) continue;
-              const dataStr = line.slice(6);
+              const dataStr = line.trim() ? sseDataPayload(line) : null;
+              if (dataStr === null) continue;
               // Verbatim: this line IS the fixture source (see SSE_LOG_MAX_CHARS).
               log(`[SSE:openai] ${formatRawSseLogPayload(dataStr)}`);
               if (dataStr === "[DONE]") {

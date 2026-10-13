@@ -1,0 +1,115 @@
+id:1
+event:response.created
+:HTTP_STATUS/200
+data:{"sequence_number":0,"type":"response.created","response":{"top_logprobs":0,"metadata":{},"presence_penalty":0.0,"reasoning":{"effort":"xhigh"},"created_at":1791930142,"store":true,"tools":[],"output":[],"top_p":1.0,"completed_at":1791930142,"frequency_penalty":0.0,"parallel_tool_calls":true,"background":false,"temperature":1.0,"tool_choice":"auto","model":"qwen3.8-max-0902","service_tier":"default","id":"resp_21693846-998e-909f-935e-8f974213f603","max_output_tokens":300,"object":"response","status":"queued"}}
+
+id:2
+event:response.in_progress
+:HTTP_STATUS/200
+data:{"sequence_number":1,"type":"response.in_progress","response":{"top_logprobs":0,"metadata":{},"presence_penalty":0.0,"reasoning":{"effort":"xhigh"},"created_at":1791930142,"store":true,"tools":[],"output":[],"top_p":1.0,"completed_at":1791930142,"frequency_penalty":0.0,"parallel_tool_calls":true,"background":false,"temperature":1.0,"tool_choice":"auto","model":"qwen3.8-max-0902","service_tier":"default","id":"resp_21693846-998e-909f-935e-8f974213f603","max_output_tokens":300,"object":"response","status":"in_progress"}}
+
+id:3
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"sequence_number":2,"item":{"summary":[],"id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7","type":"reasoning","content":[]},"output_index":0,"type":"response.output_item.added"}
+
+id:4
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":"We","sequence_number":3,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:5
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":" need answer","sequence_number":4,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:6
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":" to","sequence_number":5,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:7
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":" user: \"Say","sequence_number":6,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:8
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":" hi in one word","sequence_number":7,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:9
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":".\" Need final one","sequence_number":8,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:10
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":" word likely \"Hi","sequence_number":9,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:11
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":"\". Ensure","sequence_number":10,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:12
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":" one word.\n","sequence_number":11,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:13
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"delta":"","sequence_number":12,"output_index":0,"type":"response.reasoning_text.delta","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:14
+event:response.reasoning_text.done
+:HTTP_STATUS/200
+data:{"sequence_number":13,"text":"We need answer to user: \"Say hi in one word.\" Need final one word likely \"Hi\". Ensure one word.\n","output_index":0,"type":"response.reasoning_text.done","content_index":0,"item_id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7"}
+
+id:15
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"sequence_number":14,"item":{"summary":[],"id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7","type":"reasoning","content":[{"type":"reasoning_text","text":"We need answer to user: \"Say hi in one word.\" Need final one word likely \"Hi\". Ensure one word.\n"}]},"output_index":0,"type":"response.output_item.done"}
+
+id:16
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"sequence_number":15,"item":{"id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","role":"assistant","type":"message","content":[],"status":"in_progress"},"output_index":1,"type":"response.output_item.added"}
+
+id:17
+event:response.content_part.added
+:HTTP_STATUS/200
+data:{"sequence_number":16,"output_index":1,"type":"response.content_part.added","content_index":0,"item_id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","part":{"type":"output_text","annotations":[],"text":""}}
+
+id:18
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"sequence_number":17,"content_index":0,"item_id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","delta":"Hi","output_index":1,"type":"response.output_text.delta","logprobs":[]}
+
+id:19
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"sequence_number":18,"content_index":0,"item_id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","delta":"","output_index":1,"type":"response.output_text.delta","logprobs":[]}
+
+id:20
+event:response.output_text.done
+:HTTP_STATUS/200
+data:{"sequence_number":19,"content_index":0,"item_id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","text":"Hi","output_index":1,"type":"response.output_text.done","logprobs":[]}
+
+id:21
+event:response.content_part.done
+:HTTP_STATUS/200
+data:{"sequence_number":20,"output_index":1,"type":"response.content_part.done","content_index":0,"item_id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","part":{"type":"output_text","annotations":[],"text":"Hi"}}
+
+id:22
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"sequence_number":21,"item":{"id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","role":"assistant","type":"message","content":[{"type":"output_text","annotations":[],"text":"Hi"}],"status":"completed"},"output_index":1,"type":"response.output_item.done"}
+
+id:23
+event:response.completed
+:HTTP_STATUS/200
+data:{"sequence_number":22,"type":"response.completed","response":{"top_logprobs":0,"metadata":{},"presence_penalty":0.0,"reasoning":{"effort":"xhigh"},"usage":{"total_tokens":119,"input_tokens_details":{"cached_tokens":0},"output_tokens":29,"input_tokens":90,"output_tokens_details":{"reasoning_tokens":25},"x_details":[{"total_tokens":119,"x_billing_type":"response_api","output_tokens":29,"input_tokens":90,"output_tokens_details":{"reasoning_tokens":25},"prompt_tokens_details":{"cached_tokens":0}}]},"created_at":1791930142,"store":true,"tools":[],"output":[{"summary":[],"id":"msg_77365fc7-cc13-4bb4-a175-d0cb605e7fd7","type":"reasoning","content":[{"type":"reasoning_text","text":"We need answer to user: \"Say hi in one word.\" Need final one word likely \"Hi\". Ensure one word.\n"}]},{"id":"msg_fe417aea-6c08-48df-826b-1daea37853cb","role":"assistant","type":"message","content":[{"type":"output_text","annotations":[],"text":"Hi"}],"status":"completed"}],"top_p":1.0,"completed_at":1791930142,"frequency_penalty":0.0,"parallel_tool_calls":true,"background":false,"temperature":1.0,"tool_choice":"auto","model":"qwen3.8-max-0902","service_tier":"default","id":"resp_21693846-998e-909f-935e-8f974213f603","max_output_tokens":300,"object":"response","status":"completed"}}
+
