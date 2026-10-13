@@ -1,5 +1,5 @@
 /**
- * Parser goldens — the format shared by the capture script and every test that
+ * Parser goldens — the format shared by every test that
  * replays them.
  *
  * A golden is a snapshot of what the stream parsers emitted BEFORE the hook
@@ -10,7 +10,8 @@
  * repair rule as data, and the Claude SSE that reached the client.
  *
  * Never re-capture to make a parity test pass. A golden captured from the new
- * code proves the new code equals itself. `capture.ts` refuses to overwrite.
+ * code proves the new code equals itself. The capture script was deleted with
+ * the pre-hook parser API it drove (P4); the files are now read-only fixtures.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -164,14 +165,12 @@ export function inputResponse(input: GoldenInput): Response {
 
 /**
  * Replace the only clock- and random-derived values the parsers emit, so a
- * capture is reproducible:
+ * replay is comparable:
  *
  * - message ids: `msg_<ms>` and `msg_<ms>_<random>`
  * - synthesized tool ids: `tool_<ms>_<n>`, `toolu_<ms>_<n>`, `tool_repaired_<ms>_<n>`
  *
  * Everything else, keep-alive `ping` events included, is kept byte for byte.
- * The capture script runs every case twice, apart in time, and refuses to write
- * a golden whose two normalized captures differ.
  */
 export function normalizeWire(wire: string): string {
   return wire

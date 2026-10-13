@@ -35,6 +35,7 @@ import {
 } from "./actions.js";
 import { type HookEngine, type JournalMeta, PENDING_NOTE_ID } from "./engine.js";
 import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "./harness.js";
+import { type InjectionSink, sinkFromEnv } from "./injection/sinks.js";
 import type {
   ClaudeMessage,
   ClaudeTool,
@@ -162,7 +163,9 @@ export class RequestHooks {
   constructor(
     readonly engine: HookEngine,
     /** Which session this process's proxy events belong to; `CLAUDISH_HOOK_SESSION` by default. */
-    readonly session: ProxySessionRef | null = proxySessionFromEnv()
+    readonly session: ProxySessionRef | null = proxySessionFromEnv(),
+    /** Where `responseEnd` injections, annotations and the inbox `stop`/`end` lines go. */
+    readonly sink: InjectionSink = sinkFromEnv()
   ) {}
 
   /**
@@ -179,18 +182,46 @@ export class RequestHooks {
 
 type ScopeState = "open" | "committed" | "abandoned";
 
+/** A `toolCall` hook armed for one request, with the tool names it sees. */
+export interface ArmedToolHook {
+  applicable: ApplicableHook;
+  /** The names it listed; `"*"` matches every tool. */
+  tools: ReadonlySet<string>;
+}
+
+/** True when an armed hook's tool list covers `name`. */
+export function armedFor(hook: ArmedToolHook, name: string): boolean {
+  return hook.tools.has("*") || hook.tools.has(name);
+}
+
+/** What `begin` decided about the response, before it starts. */
+interface ResponsePlan {
+  /** Fix-severity, non-observe `toolCall` hooks whose `armed` was true: they hold blocks. */
+  interceptHooks: ArmedToolHook[];
+  /** Observe-mode or warn-severity `toolCall` hooks whose `armed` was true: they run at the tap. */
+  observeToolHooks: ArmedToolHook[];
+  /** Fix-severity `responseRewrite` hooks whose `claims` was true: they buffer the response. */
+  rewriteHooks: ApplicableHook[];
+  /** Warn-severity `responseRewrite` hooks whose `claims` was true: evaluated at the tap. */
+  observeRewriteHooks: ApplicableHook[];
+  /** Applicable `responseEnd` hooks. */
+  endHooks: ApplicableHook[];
+}
+
 /** One upstream attempt's hook state. */
 export class HookRequestScope {
   /** Tool names a fix-severity `toolCall` hook armed for this request. Consumed by the response seam. */
   readonly armedTools: ReadonlySet<string>;
   /** Ids of fix-severity `responseRewrite` hooks whose `claims` was true. Consumed by the response seam. */
   readonly rewriteClaimants: ReadonlyArray<string>;
+  /** The response-side hooks this request armed (§5.3). */
+  readonly response: Readonly<ResponsePlan>;
 
   private held: PlannedAction<RequestAction>[];
   private state: ScopeState = "open";
 
   private constructor(
-    private readonly engine: HookEngine,
+    readonly engine: HookEngine,
     readonly route: RouteInfo,
     readonly harness: HarnessFacts,
     readonly sessionId: string | undefined,
@@ -198,12 +229,31 @@ export class HookRequestScope {
     held: PlannedAction<RequestAction>[],
     private readonly removedTools: ReadonlySet<string>,
     private readonly pendingSeqs: ReadonlyArray<number>,
-    armedTools: ReadonlySet<string>,
-    rewriteClaimants: ReadonlyArray<string>
+    /** The request as the response-side hooks see it (post stage A). */
+    readonly facts: RequestFacts,
+    readonly session: ProxySessionRef | null,
+    response: ResponsePlan
   ) {
     this.held = held;
-    this.armedTools = armedTools;
-    this.rewriteClaimants = rewriteClaimants;
+    this.response = response;
+    const armed = new Set<string>();
+    for (const h of response.interceptHooks) for (const t of h.tools) armed.add(t);
+    this.armedTools = armed;
+    this.rewriteClaimants = response.rewriteHooks.map((a) => a.hook.id);
+  }
+
+  /** A proxy-event context for a response-side hook (the request facts are post stage A). */
+  proxyContext<T extends object>(base: object, event: string, extra: T): object {
+    return {
+      ...base,
+      event,
+      host: { mode: this.engine.hostMode },
+      route: this.route,
+      request: this.facts,
+      harness: this.harness,
+      session: this.session,
+      ...extra,
+    };
   }
 
   /** Steps 1–7 of §5.1, in order. */
@@ -272,24 +322,44 @@ export class HookRequestScope {
     if (stageA.results.length > 0) engine.recordResults("request", stageA.results, meta);
 
     // 6. Armed tools and rewrite claims, evaluated once, before any response.
-    const armedTools = new Set<string>();
+    //    The request facts the response-side hooks see are the post-stage-A
+    //    request: what the provider actually received.
+    const postFacts: RequestFacts = {
+      ...facts,
+      systemText: systemTextOf(claudeRequest.system),
+      messages: (claudeRequest.messages ?? []) as ReadonlyArray<ClaudeMessage>,
+      tools: (claudeRequest.tools ?? []) as ReadonlyArray<ClaudeTool>,
+    };
+    const predicateContext = (applicable: ApplicableHook): RequestContext =>
+      ({
+        ...requestContext(predicateBase(applicable)),
+        request: postFacts,
+      }) as RequestContext;
+    const plan: ResponsePlan = {
+      interceptHooks: [],
+      observeToolHooks: [],
+      rewriteHooks: [],
+      observeRewriteHooks: [],
+      endHooks: engine.select("responseEnd", { route }),
+    };
     for (const applicable of toolCallHooks) {
-      if (applicable.severity !== "fix") continue;
       const tc = applicable.hook.def.on?.toolCall;
-      if (!tc || tc.observe === true) continue;
-      const ctx = requestContext(predicateBase(applicable));
+      if (!tc) continue;
+      const ctx = predicateContext(applicable);
       if (!engine.callPredicate(applicable.hook.id, tc.armed, tc, ctx, true)) continue;
-      for (const tool of tc.tools) armedTools.add(tool);
+      const armed: ArmedToolHook = { applicable, tools: new Set(tc.tools) };
+      // A warn-severity or observe-mode hook never holds the stream: it sees the
+      // call as delivered, at the tap.
+      if (applicable.severity === "fix" && tc.observe !== true) plan.interceptHooks.push(armed);
+      else plan.observeToolHooks.push(armed);
     }
-    const rewriteClaimants: string[] = [];
     for (const applicable of rewriteHooks) {
-      if (applicable.severity !== "fix") continue;
       const rr = applicable.hook.def.on?.responseRewrite;
       if (!rr) continue;
-      const ctx = requestContext(predicateBase(applicable));
-      if (engine.callPredicate(applicable.hook.id, rr.claims, rr, ctx, true)) {
-        rewriteClaimants.push(applicable.hook.id);
-      }
+      const ctx = predicateContext(applicable);
+      if (!engine.callPredicate(applicable.hook.id, rr.claims, rr, ctx, true)) continue;
+      if (applicable.severity === "fix") plan.rewriteHooks.push(applicable);
+      else plan.observeRewriteHooks.push(applicable);
     }
 
     const applied = stageA.results.filter((r) => r.decision === "matched").length;
@@ -310,8 +380,9 @@ export class HookRequestScope {
       [...stageA.held],
       stageA.removedTools,
       notes.map((n) => n.seq),
-      armedTools,
-      rewriteClaimants
+      postFacts,
+      session,
+      plan
     );
   }
 

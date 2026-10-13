@@ -1,13 +1,13 @@
 /**
- * P0 — the current parsers reproduce the parser goldens.
+ * Parser parity: the parsers plus the hook response seam reproduce the goldens
+ * captured from the pre-hook parsers (P0, base 2e4ac246).
  *
- * The goldens are the pre-hook contract that the response seam (P4) and the
- * Gemini built-in (P5) must keep. This file proves they were captured from, and
- * still describe, the code at the capture base: every golden replays to its
- * recorded output through the CURRENT parser API (`drive-current.ts`).
- *
- * When P4/P5 delete that API, the replay half moves to a driver over the new
- * parser + seam; the coverage, drift and meaning checks stay as they are.
+ * Tool-argument repair moved out of five parsers into one seam above them.
+ * Every parser golden replays through the new parser + seam (`drive-seam.ts`)
+ * to its recorded output, byte for byte after normalization, except the one
+ * golden that recorded a defect of the old code, which is compared by its data
+ * payloads. The Gemini middleware golden still replays through `middleware/`
+ * (`drive-gemini-middleware.ts`) until the raw tier replaces it.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -23,7 +23,8 @@ import {
   REPAIRED_ARGS,
   REPAIRED_VALUE,
 } from "./cases.js";
-import { runGeminiCapture, runParserCase } from "./drive-current.js";
+import { runGeminiCapture } from "./drive-gemini-middleware.js";
+import { runParserCase } from "./drive-seam.js";
 import {
   type GeminiMiddlewareGolden,
   type ParserGolden,
@@ -69,11 +70,22 @@ describe("parser goldens: coverage and drift", () => {
   });
 });
 
-describe("parser goldens: the current parsers reproduce them", () => {
+describe("parser goldens: parser + response seam reproduce them", () => {
   for (const c of PARSER_CASES) {
     it(c.id, async () => {
       const golden = parserGolden(c.id);
-      expect(await runParserCase(golden)).toBe(golden.output);
+      const replay = await runParserCase(golden);
+      if (golden.defect) {
+        // The old wire framed the repaired delta and the stop wrongly; the seam
+        // must send the same payloads, in order, each under its own event name.
+        expect(dataPayloads(replay)).toEqual(dataPayloads(golden.output));
+        expect(replay).not.toContain("event: content_block_stop\nevent: content_block_delta\n");
+        expect(replay).toContain(
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}'
+        );
+      } else {
+        expect(replay).toBe(golden.output);
+      }
     });
   }
 

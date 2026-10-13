@@ -15,12 +15,12 @@ export { BehaviorEngine, BehaviorSession } from "./engine.js";
 export { parseBehaviorConfig, resolveSeverity } from "./config.js";
 export { detectHarnessFacts } from "../hooks/harness.js";
 export { loadHookRules } from "./hooks.js";
-export { buildDigest } from "./observer/digest.js";
-export type { ObserverDigest } from "./observer/digest.js";
-export { observe, resetObserverModelCache } from "./observer/client.js";
-export type { ObserverVerdict } from "./observer/client.js";
-export { buildCorpus, replayTranscript } from "./observer/corpus.js";
-export type { CorpusResult, Divergence } from "./observer/corpus.js";
+export { buildDigest } from "../hooks/observer/digest.js";
+export type { ObserverDigest } from "../hooks/observer/digest.js";
+export { observe, resetObserverModelCache } from "../hooks/observer/client.js";
+export type { ObserverVerdict } from "../hooks/observer/client.js";
+export { buildCorpus, replayTranscript } from "../hooks/observer/corpus.js";
+export type { CorpusResult, Divergence } from "../hooks/observer/corpus.js";
 export {
   TELEMETRY_SCHEMA_VERSION,
   contextFillPct,

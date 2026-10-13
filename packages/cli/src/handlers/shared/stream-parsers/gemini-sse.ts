@@ -21,22 +21,11 @@ export interface GeminiSseOptions {
   /** Store tool call info (id, name, thoughtSignature) for future request context */
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
   /**
-   * Behavior layer (Layer 4) tool-call repair. Deliberately NOT merged into
-   * `onToolCall` above, which is an unrelated pre-existing hook for recording
-   * thought signatures.
-   *
-   * No buffering is needed on this path: Gemini delivers each `functionCall`
-   * with its complete `args` object in one part, so the full arguments are
-   * always in hand at emit time.
+   * Called once per `tool_use` block, for the token tracker's tool count.
+   * Tool-argument interception is not this parser's job: it happens at the hook
+   * response seam, above every parser.
    */
-  repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
-  /**
-   * Behavior-layer observation (Layer 4). Called with normalized text so rules
-   * never have to understand this parser's event shape.
-   */
-  onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
   onToolCallObserved?: (name: string) => void;
-  onTurnEnd?: () => void;
 
   /** Last request's context size — seeds message_start.usage (see message-start-usage.ts) */
   priorInputTokens?: number;
@@ -177,7 +166,6 @@ export function createGeminiSseStream(
                 output_tokens: outputTokens,
               },
             });
-            opts.onTurnEnd?.();
             send("message_stop", { type: "message_stop" });
           }
         } finally {
@@ -313,21 +301,7 @@ export function createGeminiSseStream(
                     const toolId = `toolu_${Date.now()}_${toolIdx}`;
                     const blockIndex = curIdx++;
                     opts.onToolCallObserved?.(part.functionCall.name);
-                    let args = JSON.stringify(part.functionCall.args || {});
-                    if (opts.repairToolArgs) {
-                      try {
-                        const repaired = opts.repairToolArgs(part.functionCall.name, args);
-                        if (typeof repaired === "string" && repaired !== args) {
-                          log(`[GeminiSSE] tool call repaired: ${part.functionCall.name}`);
-                          args = repaired;
-                        }
-                      } catch (err) {
-                        // A failing rule must never corrupt the stream.
-                        log(
-                          `[GeminiSSE] repairToolArgs threw for ${part.functionCall.name}: ${err}`
-                        );
-                      }
-                    }
+                    const args = JSON.stringify(part.functionCall.args || {});
 
                     const t = {
                       id: toolId,

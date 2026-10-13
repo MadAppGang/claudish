@@ -1,11 +1,11 @@
 /**
  * The cases captured into the parser goldens.
  *
- * Every case of `handlers/shared/stream-parsers/behavior-repair.test.ts`, with
+ * Every case of the (deleted) parser repair test `behavior-repair.test.ts`, with
  * its exact input frames and repair rule, plus the Devin parser (which carried
  * the same plumbing but had no repair test) and the Gemini thought-signature
- * middleware. Only `capture.ts` and the drift check in `parser-goldens.test.ts`
- * read this file; replays read the self-contained golden files.
+ * middleware. Only the drift check in `parser-goldens.test.ts` reads this file;
+ * replays read the self-contained golden files.
  */
 
 import { readFileSync } from "node:fs";

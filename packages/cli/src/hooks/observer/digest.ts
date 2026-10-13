@@ -15,7 +15,7 @@
  * model). Everything else is reduced to key names.
  */
 
-import type { HarnessFacts } from "../types.js";
+import type { HarnessFacts } from "../public.js";
 
 export interface ObserverDigest {
   model: string;

@@ -42,6 +42,6 @@ export async function recordLiveDivergence(
     await appendFile(path, `${JSON.stringify(entry)}\n`);
   } catch (err) {
     // Directory missing, disk full, read-only home — all non-events here.
-    log(`[behavior:observer] could not append divergence: ${err}`);
+    log(`[hooks:observer] could not append divergence: ${err}`);
   }
 }

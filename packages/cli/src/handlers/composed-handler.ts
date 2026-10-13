@@ -2751,9 +2751,9 @@ export class ComposedHandler implements ModelHandler {
      * end-of-session summary, which must work for every model on every wire, so
      * every parser below gets it unconditionally.
      *
-     * The parsers' behavior plumbing (tool buffering, argument repair, output
-     * observation) is no longer passed: tool interception moves to the hook
-     * response seam, above every parser.
+     * The parsers carry no tool buffering, argument repair or output
+     * observation: tool interception is the hook response seam's job, above
+     * every parser (`hooks/response-seam.ts`).
      */
     const observeToolCall = (name: string): void => {
       this.tokenTracker.recordToolUse(name);

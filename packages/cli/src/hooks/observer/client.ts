@@ -1,5 +1,5 @@
 /**
- * The behavior observer: a small LOCAL model that flags harness divergences the
+ * The hook observer: a small LOCAL model that flags harness divergences the
  * declarative rules do not yet encode.
  *
  * Built on the services/vision-proxy.ts contract — hard timeout, `null` on any
@@ -15,10 +15,13 @@
 
 import { log } from "../../logger.js";
 import { fetchOllamaModels, ollamaBaseUrl } from "../../providers/ollama-discovery.js";
-import type { BehaviorConfig } from "../types.js";
+import type { HooksConfig } from "../config.js";
 import type { ObserverDigest } from "./digest.js";
 
 const DEFAULT_TIMEOUT_MS = 1_500;
+
+/** The slice of the config the observer reads (`hooks.observer`). */
+export type ObserverConfig = Pick<HooksConfig, "observer">;
 
 export interface ObserverVerdict {
   /** A rule id from the digest's vocabulary, or null for "nothing to report". */
@@ -56,7 +59,7 @@ function isGenuinelyLocal(model: { name: string; size?: number }): boolean {
 /** Resolved once per process — discovery costs an HTTP round trip. */
 let cachedModel: string | null | undefined;
 
-async function resolveObserverModel(config: BehaviorConfig): Promise<string | null> {
+async function resolveObserverModel(config: ObserverConfig): Promise<string | null> {
   if (config.observer?.model) return config.observer.model;
   if (cachedModel !== undefined) return cachedModel;
 
@@ -64,7 +67,7 @@ async function resolveObserverModel(config: BehaviorConfig): Promise<string | nu
     const models = await fetchOllamaModels({ enrichCapabilities: false });
     const usable = models.filter((m) => !m.isEmbeddingModel && isGenuinelyLocal(m));
     if (usable.length === 0) {
-      log("[behavior:observer] No local Ollama models found — observer disabled for this run");
+      log("[hooks:observer] No local Ollama models found — observer disabled for this run");
       cachedModel = null;
       return null;
     }
@@ -74,10 +77,10 @@ async function resolveObserverModel(config: BehaviorConfig): Promise<string | nu
       (a, b) => (a.size ?? Number.MAX_SAFE_INTEGER) - (b.size ?? Number.MAX_SAFE_INTEGER)
     );
     cachedModel = usable[0].name;
-    log(`[behavior:observer] Using discovered local model: ${cachedModel}`);
+    log(`[hooks:observer] Using discovered local model: ${cachedModel}`);
     return cachedModel;
   } catch (err) {
-    log(`[behavior:observer] Model discovery failed, observer disabled: ${err}`);
+    log(`[hooks:observer] Model discovery failed, observer disabled: ${err}`);
     cachedModel = null;
     return null;
   }
@@ -95,7 +98,7 @@ export function resetObserverModelCache(): void {
  */
 export async function observe(
   digest: ObserverDigest,
-  config: BehaviorConfig
+  config: ObserverConfig
 ): Promise<ObserverVerdict | null> {
   const mode = config.observer?.mode ?? "suggest";
   if (config.observer?.enabled !== true || mode === "off") return null;
@@ -122,7 +125,7 @@ export async function observe(
       }),
     });
     if (!response.ok) {
-      log(`[behavior:observer] HTTP ${response.status} — skipping`);
+      log(`[hooks:observer] HTTP ${response.status} — skipping`);
       return null;
     }
 
@@ -136,7 +139,7 @@ export async function observe(
     // An id outside the vocabulary is a hallucination. Drop it rather than let
     // an invented rule name reach the engine or the divergence log.
     if (ruleId && !digest.ruleVocabulary.includes(ruleId)) {
-      log(`[behavior:observer] Discarding unknown ruleId "${ruleId}"`);
+      log(`[hooks:observer] Discarding unknown ruleId "${ruleId}"`);
       return null;
     }
 
@@ -147,7 +150,7 @@ export async function observe(
     };
   } catch (err) {
     // Timeouts are the expected failure here, not an exceptional one.
-    log(`[behavior:observer] Skipped: ${err instanceof Error ? err.message : err}`);
+    log(`[hooks:observer] Skipped: ${err instanceof Error ? err.message : err}`);
     return null;
   }
 }

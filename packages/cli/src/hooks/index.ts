@@ -16,7 +16,7 @@
 
 import { log } from "../logger.js";
 import { loadConfig } from "../profile-config.js";
-import { BUILTIN_HOOKS } from "./builtins/index.js";
+import { builtinHooks } from "./builtins/index.js";
 import {
   type HooksConfig,
   hooksConfigDir,
@@ -85,13 +85,14 @@ async function buildEngine(hostMode: HostMode): Promise<HookEngine> {
     log(`[hooks] user hook loading failed, built-in hooks only: ${errorText(err)}`);
   }
 
+  const builtins = builtinHooks(config);
   const engine = new HookEngine({
-    registry: new HookRegistry(BUILTIN_HOOKS, users, config.severity),
+    registry: new HookRegistry(builtins, users, config.severity),
     config,
     hostMode,
   });
   log(
-    `[hooks] engine ready (host ${hostMode}): ${BUILTIN_HOOKS.length} built-in, ${users.length} user hook(s)`
+    `[hooks] engine ready (host ${hostMode}): ${builtins.length} built-in, ${users.length} user hook(s)`
   );
   return engine;
 }

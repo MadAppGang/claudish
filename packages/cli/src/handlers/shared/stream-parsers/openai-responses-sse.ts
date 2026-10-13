@@ -55,30 +55,11 @@ export function createResponsesStreamHandler(
      */
     middlewareManager?: any;
     /**
-     * Behavior-layer tool-call interception. Called once per completed tool call
-     * with the fully accumulated argument JSON; return replacement JSON to repair
-     * the call, or null/undefined to leave it untouched.
-     *
-     * Only consulted for tools that `shouldBufferTool` opted in — see below.
+     * Called once per `tool_use` block start, for the token tracker's tool
+     * count. Tool-argument interception is not this parser's job: it happens at
+     * the hook response seam, above every parser.
      */
-    onToolCall?: (name: string, argsJson: string) => string | null | undefined;
-    /**
-     * Whether a tool's arguments must be withheld until the call completes.
-     *
-     * Repair is only possible for buffered calls: this parser streams
-     * `input_json_delta` the instant each fragment arrives, so by the time a call
-     * is complete its arguments are already on the wire to the client. Buffering
-     * is therefore opt-in PER TOOL — a tool no rule cares about keeps streaming
-     * incrementally, so the default path keeps its current latency profile.
-     */
-    shouldBufferTool?: (name: string) => boolean;
-    /**
-     * Behavior-layer observation (Layer 4). Called with normalized text so rules
-     * never have to understand this parser's event shape.
-     */
-    onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
     onToolCallObserved?: (name: string) => void;
-    onTurnEnd?: () => void;
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -123,8 +104,6 @@ export function createResponsesStreamHandler(
     arguments: string;
     index: number;
     claudeId?: string;
-    /** Withhold input_json_delta until the call completes so it can be repaired. */
-    buffered?: boolean;
   };
 
   /** Shared across every chunk hook in this stream; handed to afterStreamComplete. */
@@ -182,20 +161,11 @@ export function createResponsesStreamHandler(
       };
       const closeTools = () => {
         for (const fnCall of openToolBlocks) {
-          // A buffered call that never reached output_item.done (truncated or
-          // failed stream) still has to emit what it accumulated. Withholding it
-          // would turn "partial arguments" into "no arguments", which is strictly
-          // worse — the non-buffered path would already have streamed the same
-          // fragments. What the client then DOES with malformed JSON is decided
-          // by how the turn ends, not here: only an `error` event reliably stops
-          // Claude Code executing the fragment (see the catch block below).
-          if (fnCall.buffered && fnCall.arguments) {
-            send("content_block_delta", {
-              type: "content_block_delta",
-              index: fnCall.index,
-              delta: { type: "input_json_delta", partial_json: fnCall.arguments },
-            });
-          }
+          // A call that never reached output_item.done (truncated or failed
+          // stream) has already streamed its fragments. What the client then
+          // DOES with malformed JSON is decided by how the turn ends, not here:
+          // only an `error` event reliably stops Claude Code executing the
+          // fragment (see the catch block below).
           send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
         }
         openToolBlocks.clear();
@@ -289,7 +259,6 @@ export function createResponsesStreamHandler(
               }
 
               if (event.type === "response.output_text.delta") {
-                opts.onAssistantText?.(event.delta ?? "", "text");
                 closeReasoning();
                 if (textIdx < 0) {
                   textIdx = curIdx++;
@@ -322,7 +291,6 @@ export function createResponsesStreamHandler(
                     arguments: "",
                     index: curIdx++,
                     claudeId: callId,
-                    buffered: opts.shouldBufferTool?.(fnName) === true,
                   };
 
                   functionCalls.set(openaiCallId, fnCallData);
@@ -352,7 +320,6 @@ export function createResponsesStreamHandler(
                 // than a summary of it; a thinking block all the same.
                 event.type === "response.reasoning_text.delta"
               ) {
-                opts.onAssistantText?.(event.delta ?? "", "reasoning");
                 // Reasoning is the model's chain of thought, not its answer — it
                 // belongs in a thinking block, or Claude Code renders it as the reply.
                 const summaryIndex =
@@ -390,15 +357,11 @@ export function createResponsesStreamHandler(
                 const fnCall = functionCalls.get(callId);
                 if (fnCall) {
                   fnCall.arguments += event.delta || "";
-                  // Buffered calls emit nothing here — the whole argument object
-                  // goes out in one delta at output_item.done, after any repair.
-                  if (!fnCall.buffered) {
-                    send("content_block_delta", {
-                      type: "content_block_delta",
-                      index: fnCall.index,
-                      delta: { type: "input_json_delta", partial_json: event.delta || "" },
-                    });
-                  }
+                  send("content_block_delta", {
+                    type: "content_block_delta",
+                    index: fnCall.index,
+                    delta: { type: "input_json_delta", partial_json: event.delta || "" },
+                  });
                 }
               } else if (event.type === "response.output_item.done") {
                 if (event.item?.type === "reasoning" && event.item.encrypted_content) {
@@ -415,27 +378,6 @@ export function createResponsesStreamHandler(
                   const callId = event.item.call_id || event.item.id;
                   const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                   if (fnCall && openToolBlocks.has(fnCall)) {
-                    if (fnCall.buffered) {
-                      // Give the behavior layer its one chance to rewrite the call,
-                      // then emit the complete argument object as a single delta.
-                      let finalArgs = fnCall.arguments;
-                      try {
-                        const repaired = opts.onToolCall?.(fnCall.name, finalArgs);
-                        if (typeof repaired === "string" && repaired !== finalArgs) {
-                          log(`[ResponsesSSE] tool call repaired: ${fnCall.name}`);
-                          finalArgs = repaired;
-                        }
-                      } catch (err) {
-                        // A failing rule must never corrupt the stream — emit the
-                        // model's original arguments and carry on.
-                        log(`[ResponsesSSE] onToolCall threw for ${fnCall.name}: ${err}`);
-                      }
-                      send("content_block_delta", {
-                        type: "content_block_delta",
-                        index: fnCall.index,
-                        delta: { type: "input_json_delta", partial_json: finalArgs },
-                      });
-                    }
                     send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
                     openToolBlocks.delete(fnCall);
                   }
@@ -558,7 +500,6 @@ export function createResponsesStreamHandler(
         if (opts.middlewareManager) {
           await opts.middlewareManager.afterStreamComplete(opts.modelName, streamMetadata);
         }
-        opts.onTurnEnd?.();
         safeClose();
       } catch (error) {
         if (pingInterval) {

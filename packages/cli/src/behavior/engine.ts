@@ -452,9 +452,9 @@ export class BehaviorSession {
   /** Advisory only. Never awaited, never throws into the request path. */
   private async consultObserver(toolName: string, args: Record<string, any>): Promise<void> {
     try {
-      const { buildDigest } = await import("./observer/digest.js");
-      const { observe } = await import("./observer/client.js");
-      const { recordLiveDivergence } = await import("./observer/live-log.js");
+      const { buildDigest } = await import("../hooks/observer/digest.js");
+      const { observe } = await import("../hooks/observer/client.js");
+      const { recordLiveDivergence } = await import("../hooks/observer/live-log.js");
 
       const digest = buildDigest({
         model: this.modelId,
