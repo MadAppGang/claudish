@@ -138,6 +138,8 @@ export interface SessionDiagnostics {
   sockPath: string | null;
   /** The head of magmux's own stderr, redacted. */
   magmuxStderr: string;
+  /** The child's Claude Code session-registry record as last read (telemetry); null when none. */
+  registry: { status: string | null; waitingFor: string | null; version: string | null } | null;
   captureSource: SessionInfo["captureSource"];
   turnSource: SessionInfo["turnSource"];
   /** Bytes of assistant text before a file-delivered turn's task file was read. */
@@ -1387,6 +1389,7 @@ export class SessionManager {
     | "screenTail"
     | "sockPath"
     | "magmuxStderr"
+    | "registry"
     | "preambleBytes"
     | "readCoverage"
     | "claudeCodeVersion"
@@ -1400,6 +1403,7 @@ export class SessionManager {
         screenTail: "",
         sockPath: null,
         magmuxStderr: "",
+        registry: null,
         preambleBytes: 0,
         readCoverage: null,
         claudeCodeVersion: null,
@@ -1413,6 +1417,7 @@ export class SessionManager {
       screenTail: redactSecrets(snap.screenTail),
       sockPath: session.sockPath,
       magmuxStderr: redactSecrets(pane.magmuxStderr),
+      registry: pane.registry,
       preambleBytes: pane.preambleBytes,
       readCoverage: pane.readCoverage,
       claudeCodeVersion: snap.claudeCodeVersion,
@@ -1638,6 +1643,7 @@ export class SessionManager {
       pane: info.pane,
       sockPath: null,
       magmuxStderr: "",
+      registry: null,
       captureSource: info.captureSource,
       turnSource: info.turnSource,
       preambleBytes: 0,
