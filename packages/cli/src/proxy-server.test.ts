@@ -242,7 +242,10 @@ describe('proxy handler routing for authScheme "none"', () => {
   test("does not reject a keyless custom endpoint at the anti-poison credential gate", async () => {
     const envVar = "CUSTOM_KEYLESS_PROXY_REGRESSION_KEY";
     const saved = process.env[envVar];
+    const savedCatalogWarm = process.env.CLAUDISH_DISABLE_CATALOG_WARM;
     delete process.env[envVar];
+    // The catalog wait equals the test timeout on a cold runner.
+    process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
 
     try {
       const { status, body } = await requestTokenCount(
@@ -265,6 +268,8 @@ describe('proxy handler routing for authScheme "none"', () => {
     } finally {
       if (saved === undefined) delete process.env[envVar];
       else process.env[envVar] = saved;
+      if (savedCatalogWarm === undefined) delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+      else process.env.CLAUDISH_DISABLE_CATALOG_WARM = savedCatalogWarm;
     }
   });
 });
