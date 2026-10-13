@@ -59,7 +59,11 @@ export class OpenCodeZenTransport extends OpenAIProviderTransport {
   }
 }
 
-/** OpenCode's Messages endpoint uses Bearer authentication and a session header. */
+/**
+ * OpenCode's Messages endpoint: `x-api-key` (+ `anthropic-version`) and the
+ * session header. Bearer answers 401 "Missing API key." there (live probe
+ * 2026-10-06, Models Index R3); the wire handler sets `authScheme: "x-api-key"`.
+ */
 export class OpenCodeZenMessagesTransport extends AnthropicProviderTransport {
   override async getHeaders(claudeRequest?: unknown): Promise<Record<string, string>> {
     return {
