@@ -35,6 +35,7 @@ function config(overrides: Partial<ClaudishConfig> = {}): ClaudishConfig {
 
 const openAiRoute: AdvisorRoute = {
   kind: "openai",
+  api: "chat-completions",
   host: "api.openai.com",
   url: "https://api.openai.com/v1/chat/completions",
   credential: "openai",
@@ -43,6 +44,7 @@ const openAiRoute: AdvisorRoute = {
 
 const googleRoute: AdvisorRoute = {
   kind: "google",
+  api: "chat-completions",
   host: "generativelanguage.googleapis.com",
   url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
   credential: "google",
@@ -51,6 +53,7 @@ const googleRoute: AdvisorRoute = {
 
 const anthropicRoute: AdvisorRoute = {
   kind: "anthropic",
+  api: "anthropic-messages",
   host: "api.anthropic.com",
   url: "https://api.anthropic.com/v1/messages",
   credential: "anthropic",
