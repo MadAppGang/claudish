@@ -140,6 +140,117 @@ const L = {
 const MAX_TOKENS_SLICE = lines("max-tokens-hookless").slice(18, 26);
 const REFUSAL_SLICE = lines("corpus-redacted/refusal-then-fallback").slice(30, 36);
 
+/** Background-Bash rewake records copied from cibashfix1, transcript
+ * 9e55054b-7c70-4730-b450-0778cfe546cc.jsonl, lines 33, 34 and 36.
+ * Embedded here so this fake does not depend on gitignored session artifacts.
+ */
+const BG_BASH_REWAKE = {
+  notify: {
+    parentUuid: "aea1dacf-329d-477e-a01e-c30a0f470f66",
+    isSidechain: false,
+    promptId: "23543b14-c4e2-4edb-9556-38acaab5fd15",
+    type: "user",
+    message: {
+      role: "user",
+      content:
+        '<task-notification>\n<task-id>bqbb17qlh</task-id>\n<tool-use-id>call_1791895264997</tool-use-id>\n<output-file>/fake/tasks/bqbb17qlh.output</output-file>\n<status>completed</status>\n<summary>Background command "bg sleep" completed (exit code 0)</summary>\n</task-notification>',
+    },
+    uuid: "1404bc3e-6333-4ade-b38d-a5344c216e08",
+    timestamp: "2026-10-13T12:41:21.522Z",
+    permissionMode: "bypassPermissions",
+    origin: {
+      kind: "task-notification",
+      producer: "session-task",
+      runId: "0mv6o6cgv-3c792776",
+    },
+    promptSource: "system",
+    turnOrigin: "task_notification",
+    turnPosition: {
+      promptIndex: 1,
+      turnIndex: 2,
+    },
+    queueSkipAttachments: true,
+    userType: "external",
+    entrypoint: "cli",
+    cwd: "/fake/work",
+    sessionId: "9e55054b-7c70-4730-b450-0778cfe546cc",
+    version: "2.1.296",
+    gitBranch: "fake-branch",
+  },
+  text: {
+    parentUuid: "1404bc3e-6333-4ade-b38d-a5344c216e08",
+    isSidechain: false,
+    message: {
+      id: "msg_1791895281539_a7o8nmutgri",
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "FINAL-ANSWER-AFTER-BG: background work reported done.",
+        },
+      ],
+      model: "fake-model",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 10,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 1,
+        output_tokens_details: {
+          thinking_tokens: 0,
+        },
+        server_tool_use: {
+          web_search_requests: 0,
+          web_fetch_requests: 0,
+        },
+        service_tier: "standard",
+        cache_creation: {
+          ephemeral_1h_input_tokens: 0,
+          ephemeral_5m_input_tokens: 0,
+        },
+        inference_geo: "",
+        iterations: [],
+        speed: "standard",
+        fallback_credit: null,
+      },
+      stop_details: null,
+    },
+    apiBlockIndex: 0,
+    requestedModel: "vllm@fake-model",
+    type: "assistant",
+    uuid: "0e35a338-d91e-49b0-bbe7-2f44777673f0",
+    timestamp: "2026-10-13T12:41:21.543Z",
+    effort: "xhigh",
+    perTurnEffort: null,
+    session_id: "9e55054b-7c70-4730-b450-0778cfe546cc",
+    userType: "external",
+    entrypoint: "cli",
+    cwd: "/fake/work",
+    sessionId: "9e55054b-7c70-4730-b450-0778cfe546cc",
+    version: "2.1.296",
+    gitBranch: "fake-branch",
+  },
+  td: {
+    parentUuid: "d5c27bc6-9056-4322-b158-2c16a93d5408",
+    isSidechain: false,
+    type: "system",
+    subtype: "turn_duration",
+    durationMs: 38,
+    messageCount: 21,
+    timestamp: "2026-10-13T12:41:21.556Z",
+    uuid: "3df0ad6a-f00f-488d-8b8b-b02672b298a7",
+    isMeta: false,
+    userType: "external",
+    entrypoint: "cli",
+    cwd: "/fake/work",
+    sessionId: "9e55054b-7c70-4730-b450-0778cfe546cc",
+    version: "2.1.296",
+    gitBranch: "fake-branch",
+  },
+};
+
 /* ───────────────────────────── transcript writer ───────────────────────────── */
 
 const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME ?? "/tmp", ".claude");
@@ -563,6 +674,8 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       rec.td();
       showHistory(finishedRow());
       return;
+    case "bg_bash_rewake":
+      return bgBashRewake(c);
     case "bg_rewake":
       return bgRewake(c);
     case "bg_server":
@@ -643,6 +756,34 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
     default:
       return answerTurn(c);
   }
+}
+
+async function bgBashRewake(c: string): Promise<void> {
+  const id = rec.toolUse(
+    "Bash",
+    { command: "sleep 1", description: "bg sleep", run_in_background: true },
+    { template: T.bgBashUse }
+  );
+  rec.toolResult(
+    id,
+    T.bgBashResult.message.content[0].content,
+    { ...T.bgBashResult.toolUseResult, backgroundTaskId: "bqbb17qlh" },
+    { template: T.bgBashResult }
+  );
+  await answerTurn(c);
+  // D23 settles despite the background Bash. Leave time for the first settle.
+  await sleep(1500);
+  emit(BG_BASH_REWAKE.notify, (r) => {
+    r.promptId = randomUUID();
+    r.message.content = r.message.content.replace("call_1791895264997", id);
+  });
+  const answer = `REWAKE ${createHash("sha1").update(c).digest("hex").slice(0, 8)}`;
+  emit(BG_BASH_REWAKE.text, (r) => {
+    r.message.id = newMsgId();
+    r.message.content[0].text = answer;
+  });
+  emit(BG_BASH_REWAKE.td);
+  showHistory(`⏺ ${answer}`, finishedRow());
 }
 
 async function bgRewake(c: string): Promise<void> {

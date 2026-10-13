@@ -23,8 +23,9 @@ lives in `ROADMAP.md`.
 - `pane-session.md` — MCP and CLI `team` slots and `create_session` as interactive Claude Code in
   headless magmux panes: transcript turn oracle, settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
-  watcher and identity-checked reap, socket traps, the frozen mod contract v1. Read before editing
-  `pane/`, team spawn or channel spawn
+  watcher and identity-checked reap, socket traps, the frozen mod contract v1, the session registry
+  read as telemetry (and why no in-child mod or argv prompt). Read before editing `pane/`, team spawn
+  or channel spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete

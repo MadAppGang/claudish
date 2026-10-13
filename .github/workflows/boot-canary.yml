@@ -1,0 +1,94 @@
+name: Claude Code boot canary
+
+# Boots Claude Code once per spawn shape claudish uses (plain, valid --agent, unknown --agent,
+# each boot dialog) in a headless magmux pane, and asserts what claudish's screen classifier and
+# session-registry reader read (scripts/boot-canary.expect.json). No credentials, no model call,
+# no prompt. Why: ai-docs/reports/pane-ui-independent-signals.md — the --agent label in the input
+# box's top rule failed every agent slot, and no fixture had ever booted a valid agent.
+#
+# `pinned` is the version claudish was last verified on (.github/claude-code.version) and blocks;
+# `latest` is npm's current release and only warns, so a new Claude Code release is caught within
+# 6 hours without turning unrelated PRs red.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packages/cli/src/pane/**"
+      - "packages/cli/src/claude-runner.ts"
+      - "scripts/boot-canary.*"
+      - ".github/claude-code.version"
+      - ".github/magmux.env"
+      - ".github/workflows/boot-canary.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        cc: [pinned, latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.cc == 'latest' }}
+    timeout-minutes: 15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned for the same reason as test.yml: a newer bun rewrites package.json on install.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install the pinned magmux
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -a; . .github/magmux.env; set +a
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            (Linux-X64) A=linux_amd64 ;; (Linux-ARM64) A=linux_arm64 ;;
+            (macOS-ARM64) A=darwin_arm64 ;; (macOS-X64) A=darwin_amd64 ;;
+            (*) echo "unsupported runner $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+          ASSET="magmux_${A}.tar.gz"
+          WANT=$(eval echo "\$MAGMUX_SHA256_${A}")
+          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir "$RUNNER_TEMP"
+          echo "${WANT}  $RUNNER_TEMP/${ASSET}" | shasum -a 256 -c -
+          tar xzf "$RUNNER_TEMP/${ASSET}" -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/magmux" /usr/local/bin/magmux
+          magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }
+
+      # The per-platform package only: the binary, never logged in, never the installer.
+      - name: Install Claude Code (${{ matrix.cc }})
+        run: |
+          if [ "${{ matrix.cc }}" = pinned ]; then V=$(cat .github/claude-code.version); else V=$(npm view @anthropic-ai/claude-code version); fi
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            (Linux-X64) P=linux-x64 ;; (Linux-ARM64) P=linux-arm64 ;;
+            (macOS-ARM64) P=darwin-arm64 ;; (macOS-X64) P=darwin-x64 ;;
+          esac
+          D="$RUNNER_TEMP/cc"; mkdir -p "$D"; cd "$D"
+          npm pack "@anthropic-ai/claude-code-$P@$V" --silent
+          tar xzf ./*.tgz
+          BIN=$(find package -maxdepth 2 -type f -name claude | head -1)
+          [ -n "$BIN" ] || { echo "no claude binary in @anthropic-ai/claude-code-$P@$V"; find package -maxdepth 2; exit 1; }
+          install -m 0755 "$BIN" "$D/claude"
+          "$D/claude" --version
+          echo "CANARY_CLAUDE=$D/claude" >> "$GITHUB_ENV"
+
+      - name: Boot every spawn shape
+        run: bun scripts/boot-canary.ts --bin "$CANARY_CLAUDE" --out canary-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-${{ matrix.os }}-${{ matrix.cc }}
+          path: canary-out/

@@ -20,6 +20,7 @@
 import type { ChildProcess } from "node:child_process";
 import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { claudeConfigDir } from "../channel/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
 import type { CaptureResult, CaptureUnchanged, FailureReason, SlotState } from "./contract.js";
@@ -90,6 +91,7 @@ import {
   applyFrame,
   emptyScreen,
 } from "./screen-model.js";
+import { KNOWN_STATUSES, type RegistryRecord, SessionRegistry } from "./session-registry.js";
 import {
   CORROBORATION_MS,
   SECONDARY_QUIET_MS,
@@ -128,6 +130,12 @@ const WATCH_FPS = 4;
 const POLL_BACKSTOP_MS = 1_000;
 /** R3-M4: a `finishing` turn with a static screen for this many secondary windows. */
 const TURN_END_MISSING_FACTOR = 3;
+/** The session registry is re-read at most this often (telemetry only). */
+const REGISTRY_READ_MS = 250;
+/** A registry/screen disagreement must hold this long before it is counted. */
+const REGISTRY_DISAGREE_MS = 2_000;
+/** No live registry record this long after boot was ready: `registry_record_missing`. */
+const REGISTRY_MISSING_MS = 5_000;
 const MAX_ANOMALY_KEYS = 64;
 /** Settled answers kept for `turnAnswer` (owners read the current or the last one). */
 const KEPT_ANSWERS = 4;
@@ -189,6 +197,8 @@ export type SendResult =
 export interface PaneDiagnostics {
   /** the head of magmux's own stderr (≤ 8 KB) */
   magmuxStderr: string;
+  /** the child's session-registry record as last read (telemetry); null when none matched */
+  registry: { status: string | null; waitingFor: string | null; version: string | null } | null;
   /** assistant text before a file-delivered turn's task file was read (X-H4) */
   preambleBytes: number;
   /** read coverage of the current turn's task file; null for a typed turn or no turn */
@@ -318,6 +328,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private claudeCodeVersion: string | null = null;
   private anomalies = new Map<string, number>();
   private turnEndMissing = false;
+  private readonly registry: SessionRegistry;
+  private registryRec: RegistryRecord | null = null;
+  private registryEverSeen = false;
+  private lastRegistryReadAt = 0;
+  private bootReadyAtMs: number | null = null;
+  /** registry/screen disagreements now holding, with when each began; counted once at onset */
+  private disagreeSince = new Map<string, number>();
+  private disagreeCounted = new Set<string>();
   private exitScrollback = "";
   private exitLastLine = "";
 
@@ -367,6 +385,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       o.transcriptPath,
       join(o.transcriptPath.replace(/\.jsonl$/, ""), "subagents")
     );
+    // the same environment the transcript path is derived from
+    this.registry = new SessionRegistry({
+      configDir: claudeConfigDir(o.parentEnv ?? process.env),
+      sessionUuid: o.sessionUuid,
+    });
     this.ready = new Promise((r) => {
       this.resolveReady = r;
     });
@@ -723,7 +746,65 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.evalIdle(view);
         break;
     }
+    this.checkRegistry();
     this.pump();
+  }
+
+  /**
+   * Telemetry only (pane-session.md, "The session registry"): compare Claude Code's own
+   * session record with what the screen says, and count each disagreement once at its onset.
+   * No decision reads the registry.
+   */
+  private checkRegistry(): void {
+    const now = Date.now();
+    if (now - this.lastRegistryReadAt < REGISTRY_READ_MS) return;
+    this.lastRegistryReadAt = now;
+    const rec = this.registry.read();
+    this.registryRec = rec;
+    if (rec) this.registryEverSeen = true;
+    if (
+      !this.registryEverSeen &&
+      this.bootReadyAtMs !== null &&
+      now - this.bootReadyAtMs >= REGISTRY_MISSING_MS
+    ) {
+      this.disagree("registry_record_missing", true, now, 0);
+    }
+    const status = rec?.status ?? null;
+    if (status !== null && !KNOWN_STATUSES.has(status))
+      this.disagree(`registry_status_unknown:${status.slice(0, 32)}`, true, now, 0);
+    if (!this.client) return; // a stale screen proves nothing
+    const idle = status === "idle";
+    const dialog = hasChoiceDialog(this.screen);
+    this.disagree(
+      "registry_idle_screen_booting",
+      this.phase === "BOOTING" && idle && readBoot(this.screen).kind !== "repl",
+      now
+    );
+    this.disagree(
+      "registry_idle_screen_working",
+      this.phase === "RUNNING" && idle && isWorking(this.screen),
+      now
+    );
+    this.disagree("registry_waiting_no_dialog", status === "waiting" && !dialog, now);
+    this.disagree(
+      "screen_dialog_registry_not_waiting",
+      dialog && (status === "idle" || status === "busy"),
+      now
+    );
+  }
+
+  private disagree(key: string, holds: boolean, now: number, forMs = REGISTRY_DISAGREE_MS): void {
+    if (!holds) {
+      this.disagreeSince.delete(key);
+      this.disagreeCounted.delete(key);
+      return;
+    }
+    const since = this.disagreeSince.get(key) ?? now;
+    this.disagreeSince.set(key, since);
+    if (now - since >= forMs && !this.disagreeCounted.has(key)) {
+      this.disagreeCounted.add(key);
+      this.anomaly(key);
+    }
   }
 
   /** While disconnected, the pane's liveness is `kill(panePid, 0)` every second (X-M12). */
@@ -777,6 +858,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   private bootReady(): void {
+    this.bootReadyAtMs = Date.now();
     if (this.queue.length === 0) {
       this.fire("boot_ready_idle");
       return;
@@ -1503,8 +1585,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   diagnostics(): PaneDiagnostics {
     const cur = this.follower.view().current;
+    const rec = this.registryRec;
     return {
       magmuxStderr: this.stderrHead,
+      registry: rec
+        ? { status: rec.status, waitingFor: rec.waitingFor, version: rec.version }
+        : null,
       preambleBytes: cur?.preambleBytes ?? 0,
       readCoverage: cur?.delivery
         ? {

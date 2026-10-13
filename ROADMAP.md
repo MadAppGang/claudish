@@ -633,3 +633,25 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
 - **`proxy-server.test.ts` "keyless custom endpoint" timed out at 5 s in CI** (once, on PR #288; it
   passes 3/3 locally; main's own CI also failed once on 2026-09-26, cause not checked). Trigger: a second
   CI failure of that test.
+
+---
+
+## Pane children: an in-child mod as a state channel
+
+Status: parked. Decided 2026-10-13 from the UI-independent-signals research
+(`ai-docs/reports/pane-ui-independent-signals.md`, Layer 4).
+
+A Claude Code mod loaded with `--plugin-dir` runs inside the pane child and reports busy (`PromptHint`
+`isWorking`), dialog open (`classic.PermissionRequest`) and prompt submit directly, measured 11/11 in real
+claudish panes. It is not used because it is the least stable surface measured: the engine's own types say
+EARLY ACCESS, Anthropic can serve it off remotely with no local override (#99130 served it off on
+2.1.288/289), it stays off until a folder's trust prompt is answered, and loading it delays SessionStart by
+about 250 ms. Its `$.prompt.submit` is also not an input path for claudish: prompts are always typed or
+pasted as a user would.
+
+**Trigger condition** (all must hold): the mod API types drop "EARLY ACCESS"; #99130 is closed with the
+remote switch removed or overridable; and the session registry reader (`pane/session-registry.ts`) has
+shown a state it cannot express that a mod can.
+
+**Effort**: medium — a mod bundle shipped with claudish, a per-pane socket in the control dir, and a
+"no mod heartbeat → registry/screen" fallback.

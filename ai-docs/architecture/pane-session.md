@@ -85,11 +85,41 @@ and are still witnessed by `<command-name>`. Measured: the witness lands 370–4
 
 The follower polls on every frame (debounced 250 ms) and on a 1 s backstop.
 
+## The session registry: a second reader, telemetry only
+
+Every interactive Claude Code writes `<CLAUDE_CONFIG_DIR or $HOME/.claude>/sessions/<pid>.json` and
+rewrites it on each state change: `status` is `idle`, `busy`, `waiting` (with `waitingFor`:
+`permission prompt`, `input needed`) or `shell` (a background Bash still running after the turn); the
+first record has no `status` for 100–440 ms. Its `sessionId` is the `--session-id` claudish mints, so
+`pane/session-registry.ts` finds the pane's record by that uuid (11/11 measured), never by a bare
+pid, and drops a record whose pid is dead. It reads the raw file because `claude agents --json`, the
+documented reader, refuses under a user's `disableAgentView` and omits fields; the file itself is
+undocumented, and a torn write can leave a trailing `}` (#96438), which the parser tolerates.
+
+It is TELEMETRY: no decision reads it. Each evaluation compares it with what the screen says and
+counts the onset of a disagreement as an anomaly — `registry_record_missing` (no live record 5 s after
+boot was ready), `registry_idle_screen_booting` (registry idle for 2 s, `readBoot` not `repl`: the
+signature of the `--agent` border bug, measured at 2.3 s instead of the 90 s `boot_timeout`),
+`registry_idle_screen_working`, `registry_waiting_no_dialog`, `screen_dialog_registry_not_waiting`,
+and `registry_status_unknown:<status>`. The research that measured it — readiness 20/20 idle and
+19/20 under load, dialog open 34–36 ms ahead of the screen, correct through `/compact`, auto-compaction
+and background work where the screen is not — is `ai-docs/reports/pane-ui-independent-signals.md`.
+When the field counts show it agreeing, it can replace the screen reads it shadows, one at a time.
+
+**Not used: an in-child mod.** A Claude Code mod loaded with `--plugin-dir` reports busy, dialogs and
+submits from inside the child, but it is early access, Anthropic can serve it off remotely with no
+local override (#99130), and it delays SessionStart by about 250 ms. Parked in `ROADMAP.md` with its
+trigger. Nor is any of its prompt paths, the messaging socket or an argv first prompt a delivery
+route: a pane child receives every prompt the way a user gives it — typed, pasted, or an image paste.
+
 ## Boot: read from screen content, and never accept a dialog
 
 Boot is ready when the screen shows the REPL input box — a full-width `─` rule, a row starting
 `❯` + U+00A0, a second rule — with nothing typed, for 500 ms. Placeholder text in the box carries
-magmux attribute 2 (faint) and does not count as typed. Measured spawn → empty box: 0.67–1.97 s
+magmux attribute 2 (faint) and does not count as typed. Under `--agent` the top rule carries the
+agent's name at its right end (`──── dev:reviewer ─`); `isBoxRule` accepts that one label, and
+until 10.4.2 it did not, so every slot given an `agent` failed `boot_timeout` at 90 s with a ready
+box on screen (fixture `repl-boot-agent`). Measured spawn → empty box: 0.67–1.97 s
 with catalog warm-up off; the ≈11 s of earlier research included claudish's 4–7 s catalog warm-up.
 
 What blocks boot is decided by **"no input box"**, and named by a closed list:
@@ -190,7 +220,10 @@ after it, which was never observed.
   `background_shell_open: <command>` names it — in the team slot's `detail` and the result card too
   (R3-M5). A dev server, watcher or `tail -f` never finishes, so awaiting it would hold `judge`,
   `run-and-judge` and the review gate forever. For team and one-shot sessions the reap ends the
-  shell. **A background shell is its own process group** (measured on 2.1.291: shell pid 58621,
+  shell. In an INTERACTIVE session the shell lives on; when it finishes, its notification re-wakes
+  the settled turn and the turn settles again with a longer answer under the SAME index.
+  `SessionManager.appendAnswer` appends only the new tail. Until 10.4.2 it kept a set of answered
+  indexes and dropped the re-settle, so the follow-up answer never reached `get_output` (3/3). **A background shell is its own process group** (measured on 2.1.291: shell pid 58621,
   pgid 58621, parent the `claude` process, pane group 58218), so a group signal never reaches it.
   The normal reap ends it anyway — `close_pane` lets Claude Code end its own shells (measured) —
   but the group backstop, the owner-EOF watcher and the startup sweep record such descendants as
@@ -501,4 +534,6 @@ type and new fields may only be added.
 | `pane/pane-registry.ts` | records, the cross-process limit, shutdown hooks, the sweep |
 | `pane/child-env.ts` | the pane child: snapshot, cwd, refusal |
 | `pane/contract.ts` | the frozen mod contract v1 |
+| `pane/session-registry.ts` | the child's session-registry record, by session id (telemetry) |
+| `scripts/boot-canary.ts` | boot every spawn shape against one Claude Code binary; `.github/workflows/boot-canary.yml` runs it per release on macOS and Linux |
 | `scripts/pane-drive.ts` | drive one session from the command line (`--fake <scenario>` for the hermetic fake) |

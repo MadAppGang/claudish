@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { setConfigFileOverride } from "./config-override.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { log, logStderr } from "./logger.js";
+import { _resetCatalogClient } from "./providers/catalog-client.js";
 import { __resetEndpointDiagnosticsForTests } from "./providers/endpoint-diagnostics.js";
 import { invalidateEndpointRegistration } from "./providers/endpoint-registration.js";
 import { __resetPredefinedStateForTests } from "./providers/predefined-endpoints.js";
@@ -242,7 +243,12 @@ describe('proxy handler routing for authScheme "none"', () => {
   test("does not reject a keyless custom endpoint at the anti-poison credential gate", async () => {
     const envVar = "CUSTOM_KEYLESS_PROXY_REGRESSION_KEY";
     const saved = process.env[envVar];
+    const savedCatalogWarm = process.env.CLAUDISH_DISABLE_CATALOG_WARM;
     delete process.env[envVar];
+    // An earlier proxy's pending warm is shared through _warmPromise;
+    // disabled warming only takes effect once that promise is cleared.
+    process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
+    _resetCatalogClient();
 
     try {
       const { status, body } = await requestTokenCount(
@@ -265,6 +271,9 @@ describe('proxy handler routing for authScheme "none"', () => {
     } finally {
       if (saved === undefined) delete process.env[envVar];
       else process.env[envVar] = saved;
+      if (savedCatalogWarm === undefined) delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+      else process.env.CLAUDISH_DISABLE_CATALOG_WARM = savedCatalogWarm;
+      _resetCatalogClient();
     }
   });
 });

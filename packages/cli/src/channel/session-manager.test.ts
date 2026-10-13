@@ -669,6 +669,34 @@ describe.skipIf(!MAGMUX)(
     );
 
     test(
+      "get_output includes the first answer and background Bash rewake exactly once in the same turn",
+      async () => {
+        const manager = makeManager();
+        const id = await create(manager, { model: "fake-bg_bash_rewake" });
+        await waitForState(manager, id, ["AWAITING_INPUT"]);
+        const prompt = "report the background Bash result";
+        const hash = createHash("sha1").update(prompt).digest("hex").slice(0, 8);
+        const first = `ANSWER fake-bg_bash_rewake ${hash}`;
+        const rewake = `REWAKE ${hash}`;
+        expect(manager.sendInput(id, prompt).success).toBe(true);
+        await waitUntil(() => manager.getOutput(id).output.includes(first));
+        // Prove that the original turn settled before the notification arrived.
+        expect(manager.getSession(id).state).toBe("AWAITING_INPUT");
+        expect(manager.getSession(id).turnsCompleted).toBe(1);
+        expect(manager.getOutput(id).output).not.toContain(rewake);
+        await waitUntil(() => manager.getOutput(id).output.includes(rewake));
+        await waitForState(manager, id, ["AWAITING_INPUT"]);
+        const output = manager.getOutput(id).output;
+        expect(output.split(first)).toHaveLength(2);
+        expect(output.split(rewake)).toHaveLength(2);
+        expect(output.indexOf(first)).toBeLessThan(output.indexOf(rewake));
+        expect(output).toContain(`${first}\n${rewake}`);
+        expect(manager.getSession(id).turnsCompleted).toBe(1);
+      },
+      T_PANE
+    );
+
+    test(
       "send_input whose own step settles the one-shot turn: the session goes interactive and the text is turn 2",
       async () => {
         const manager = makeManager();

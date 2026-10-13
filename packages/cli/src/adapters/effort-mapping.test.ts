@@ -323,6 +323,29 @@ function grokEffort(modelId: string, req: any): string | undefined {
 }
 
 describe("Grok reasoning_effort gates", () => {
+  let cleanupCatalog: (() => void) | undefined;
+
+  beforeEach(() => {
+    cleanupCatalog = seedDefaultCatalog([
+      {
+        modelId: "grok-4.3",
+        aliases: [],
+        reasoning: {
+          supported: true,
+          mandatory: false,
+          control: "effort",
+          efforts: ["none", "low", "medium", "high", "xhigh"],
+          defaultEffort: "low",
+        },
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    cleanupCatalog?.();
+    cleanupCatalog = undefined;
+  });
+
   test("grok-3-mini: low|high only (no none/medium)", () => {
     expect(grokEffort("grok-3-mini", { output_config: { effort: "none" } })).toBe("low");
     expect(grokEffort("grok-3-mini", { output_config: { effort: "medium" } })).toBe("low");
@@ -331,10 +354,10 @@ describe("Grok reasoning_effort gates", () => {
     expect(grokEffort("grok-3-mini", { output_config: { effort: "xhigh" } })).toBe("high");
   });
 
-  test("grok-4.3: none|low|medium|high", () => {
+  test("grok-4.3: clamps into the catalog's none..xhigh ladder", () => {
     expect(grokEffort("grok-4.3", { output_config: { effort: "none" } })).toBe("none");
     expect(grokEffort("grok-4.3", { output_config: { effort: "medium" } })).toBe("medium");
-    expect(grokEffort("grok-4.3", { output_config: { effort: "max" } })).toBe("high");
+    expect(grokEffort("grok-4.3", { output_config: { effort: "max" } })).toBe("xhigh");
   });
 
   test("grok-4-fast-reasoning is reasoning-capable", () => {
