@@ -1,7 +1,15 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AggregatorEntry } from "../model-loader.js";
+import {
+  type CachedRouteRegistry,
+  WIRE_REGISTRY_VERSION,
+  isConnectionWire,
+  isRouteRegistry,
+  registryVersionAtLeast,
+  routeProfile,
+} from "./connection-wire.js";
 
 export type ReasoningControl = "toggle" | "effort" | "adaptive" | "budget" | "none";
 
@@ -91,6 +99,12 @@ export interface DiskCacheV3 {
   models: Array<{ id: string }>;
   plans: CachedSubscriptionPlan[];
   catalogGenerationId: string;
+  /**
+   * The route registry of the SAME generation (`catalog=routes&generationId=`).
+   * Absent in a cache written before claudish read wires; the request path then
+   * refreshes the catalog instead of building a request without one.
+   */
+  routeRegistry?: CachedRouteRegistry;
 }
 
 /**
@@ -153,16 +167,33 @@ export function isCachedSubscriptionPlan(value: unknown): value is CachedSubscri
   );
 }
 
-export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCacheV3 | null {
-  if (!existsSync(path)) return null;
+/**
+ * A cached registry must belong to the model list's generation, and from 3.7.0
+ * every mapped connection must carry a `wire` whose route profile exists and,
+ * when known, publishes a base URL for its `api`. One bad connection rejects the
+ * whole cache: a partial wire table would send some requests from data and the
+ * rest from nothing.
+ */
+export function wiresMatchRegistry(
+  entries: SlimModelEntry[],
+  routeRegistry: CachedRouteRegistry,
+  catalogGenerationId: string
+): boolean {
+  if (routeRegistry.generationId !== catalogGenerationId) return false;
+  const { registry } = routeRegistry;
+  if (!registryVersionAtLeast(registry.registryVersion, WIRE_REGISTRY_VERSION)) return true;
+  return entries.every((entry) =>
+    (entry.aggregators ?? []).every((connection) => {
+      if (connection.routeStatus !== "mapped") return true;
+      if (!connection.route || !isConnectionWire(connection.wire)) return false;
+      const profile = routeProfile(registry, connection.route);
+      if (!profile) return false;
+      return connection.wire.status !== "known" || !!profile.apis[connection.wire.api]?.baseUrl;
+    })
+  );
+}
 
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf-8"));
-  } catch {
-    return null;
-  }
-
+function parseAllModelsCache(raw: unknown): DiskCacheV3 | null {
   if (!raw || typeof raw !== "object") return null;
   const data = raw as Record<string, unknown>;
   if (
@@ -178,11 +209,112 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
   ) {
     return null;
   }
-
+  if (data.routeRegistry !== undefined) {
+    const cached = data.routeRegistry as Record<string, unknown> | null;
+    if (
+      !cached ||
+      typeof cached.generationId !== "string" ||
+      !isRouteRegistry(cached.registry) ||
+      !wiresMatchRegistry(
+        data.entries as SlimModelEntry[],
+        cached as unknown as CachedRouteRegistry,
+        data.catalogGenerationId
+      )
+    ) {
+      return null;
+    }
+  }
   return data as unknown as DiskCacheV3;
+}
+
+/**
+ * Where the route registry for the cache at `path` is kept: a SIDECAR file
+ * next to it (`cloud-models-catalog-v3.routes.json`).
+ *
+ * Its own file because claudish releases before 10.5.0 rewrite the models
+ * cache on every refresh and know nothing of the registry: measured
+ * 2026-10-14, an installed 10.4.1 in another session replaced the cache with
+ * a newer generation and no `routeRegistry`, so the new reader refreshed
+ * everything (9.3 s) and the old one erased it again. A sidecar survives them;
+ * when its generation no longer matches, only the routes of the cache's
+ * generation are fetched (`ensureRouteRegistryReady`).
+ */
+export function routeRegistryPathFor(path: string): string {
+  return path.endsWith(".json") ? `${path.slice(0, -5)}.routes.json` : `${path}.routes.json`;
+}
+
+function readSidecarRegistry(path: string): CachedRouteRegistry | null {
+  try {
+    const raw = JSON.parse(readFileSync(routeRegistryPathFor(path), "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    return typeof raw.generationId === "string" && isRouteRegistry(raw.registry)
+      ? (raw as unknown as CachedRouteRegistry)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function statOrNull(path: string): { mtimeMs: number; size: number } | null {
+  try {
+    const { mtimeMs, size } = statSync(path);
+    return { mtimeMs, size };
+  } catch {
+    return null;
+  }
+}
+
+// The request path reads the cache on every request, and the file is several
+// MB. Parsed results are memoized per path, keyed by the mtime and size of the
+// cache AND its registry sidecar, so a write to either is seen on the next read.
+const _readMemo = new Map<string, { key: string; cache: DiskCacheV3 | null }>();
+
+export function _clearAllModelsCacheMemo(): void {
+  _readMemo.clear();
+}
+
+export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCacheV3 | null {
+  if (!existsSync(path)) return null;
+  const main = statOrNull(path);
+  if (!main) return null;
+  const side = statOrNull(routeRegistryPathFor(path));
+  const key = `${main.mtimeMs}:${main.size}|${side ? `${side.mtimeMs}:${side.size}` : "-"}`;
+  const memo = _readMemo.get(path);
+  if (memo && memo.key === key) return memo.cache;
+
+  let cache: DiskCacheV3 | null;
+  try {
+    cache = parseAllModelsCache(JSON.parse(readFileSync(path, "utf-8")));
+  } catch {
+    cache = null;
+  }
+  if (cache && !cache.routeRegistry && side) {
+    const registry = readSidecarRegistry(path);
+    if (registry && wiresMatchRegistry(cache.entries, registry, cache.catalogGenerationId)) {
+      cache = { ...cache, routeRegistry: registry };
+    }
+  }
+  _readMemo.set(path, { key, cache });
+  return cache;
+}
+
+/** Write the registry sidecar for the cache at `path`. */
+export function writeRouteRegistry(
+  routeRegistry: CachedRouteRegistry,
+  path: string = ALL_MODELS_CACHE_PATH
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(routeRegistryPathFor(path), JSON.stringify(routeRegistry), "utf-8");
+  _readMemo.delete(path);
 }
 
 export function writeAllModelsCache(data: DiskCacheV3, path: string = ALL_MODELS_CACHE_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(data), "utf-8");
+  if (data.routeRegistry) {
+    writeFileSync(routeRegistryPathFor(path), JSON.stringify(data.routeRegistry), "utf-8");
+  }
+  _readMemo.delete(path);
 }

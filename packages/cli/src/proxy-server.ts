@@ -34,6 +34,8 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
+import { type ResolvedConnection, resolveConnection } from "./providers/connection-resolver.js";
+import { declaredConnection, declaredWire } from "./providers/declared-wire.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -62,6 +64,13 @@ import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
+import { RefusingHandler } from "./providers/wire-handler.js";
+import {
+  WireMarkerError,
+  WireMarkerHandler,
+  type WireMarkers,
+  splitWireMarkers,
+} from "./providers/wire-markers.js";
 import { closeAllEpisodes } from "./recovery/coordinator.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import type { ProxyServer } from "./types.js";
@@ -321,6 +330,33 @@ export async function createProxyServer(
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
   const poeHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Poe Handler
 
+  // The catalog connection behind a gateway handler built here rather than by
+  // a profile (OpenRouter, the legacy `poe:` prefix). Both speak Chat
+  // Completions only, so a known wire on another API — or an unsupported one —
+  // is refused rather than sent a chat body; an unknown wire keeps the
+  // gateway's own handler.
+  const chatWireConnection = (
+    provider: string,
+    modelId: string
+  ): { connection?: ResolvedConnection; refusal?: string } => {
+    const resolution = resolveConnection(provider, modelId);
+    if (!resolution.ok) return {};
+    const { connection } = resolution;
+    const where = `${connection.route.routeId}/${connection.route.routeProfileId} · ${connection.externalModelId}`;
+    if (connection.wire.status === "unsupported") {
+      return {
+        refusal: `${where} speaks ${connection.wire.protocol}, which claudish does not implement`,
+      };
+    }
+    if (connection.wire.status !== "known") return {};
+    if (connection.wire.api !== "chat-completions") {
+      return {
+        refusal: `${where} is published on ${connection.wire.api}, which this gateway handler does not speak`,
+      };
+    }
+    return { connection };
+  };
+
   // Helper to get or create OpenRouter handler for a target model
   const getOpenRouterHandler = (
     targetModel: string,
@@ -334,11 +370,27 @@ export async function createProxyServer(
     const modelId = targetModel.includes("@") ? parsed.model : targetModel;
 
     if (!openRouterHandlers.has(modelId)) {
+      const wired = chatWireConnection("openrouter", modelId);
+      if (wired.refusal) {
+        openRouterHandlers.set(modelId, new RefusingHandler(wired.refusal));
+        return openRouterHandlers.get(modelId)!;
+      }
       // The OpenRouter key is resolved through the credential authority inside
       // the transport's getHeaders() (single source of truth) — the legacy
       // openrouterApiKey param is no longer the signing source.
       const orProvider = new OpenRouterProviderTransport("", modelId);
-      const orAdapter = new OpenRouterAPIFormat(modelId);
+      // A model the catalog does not publish on OpenRouter still gets a wire:
+      // the documented default (chat, max_tokens, no reasoning field), never
+      // the name-picked dialect.
+      const connection =
+        wired.connection ??
+        declaredConnection(
+          "openrouter",
+          modelId,
+          "https://openrouter.ai/api/v1",
+          declaredWire("chat-completions", undefined)
+        );
+      const orAdapter = new OpenRouterAPIFormat(modelId, { vendor: connection.vendor ?? "" });
       openRouterHandlers.set(
         modelId,
         new ComposedHandler(orProvider, modelId, modelId, port, {
@@ -346,6 +398,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
           invocationMode,
           ...requestShapingOpts,
+          connection,
         })
       );
     }
@@ -365,6 +418,19 @@ export async function createProxyServer(
     // Strip "poe:" prefix to get the actual model name for the API
     const modelId = targetModel.replace(/^poe:/, "");
     if (!poeHandlers.has(modelId)) {
+      const wired = chatWireConnection("poe", modelId);
+      if (wired.refusal) {
+        poeHandlers.set(modelId, new RefusingHandler(wired.refusal));
+        return poeHandlers.get(modelId)!;
+      }
+      const connection =
+        wired.connection ??
+        declaredConnection(
+          "poe",
+          modelId,
+          "https://api.poe.com/v1",
+          declaredWire("chat-completions", undefined)
+        );
       // The transport resolves its key through the authority in getHeaders().
       const poeTransport = new PoeProvider();
       poeHandlers.set(
@@ -373,6 +439,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
           invocationMode,
           ...requestShapingOpts,
+          connection,
         })
       );
     }
@@ -628,7 +695,23 @@ export async function createProxyServer(
     return "auto-route";
   };
 
+  // `+mode` / `#speed` markers ride on the model spec (`oai@gpt-6-sol+pro#fast`).
+  // They are split off the resolved target once, here: everything below sees
+  // the model alone, and the markers travel with the REQUEST
+  // (`wireMarkerContext`), never with a cached handler or in a body.
   const getHandlerForRequest = async (requestedModel: string): Promise<ModelHandler> => {
+    const out: { markers?: WireMarkers; refusal?: string } = {};
+    const handler = await resolveHandlerForRequest(requestedModel, out);
+    if (out.refusal) return new RefusingHandler(out.refusal);
+    return out.markers && (out.markers.mode || out.markers.speed)
+      ? new WireMarkerHandler(handler, out.markers)
+      : handler;
+  };
+
+  const resolveHandlerForRequest = async (
+    requestedModel: string,
+    out: { markers?: WireMarkers; refusal?: string }
+  ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
 
@@ -679,6 +762,20 @@ export async function createProxyServer(
     } else if (model) {
       // No role mappings at all - use default model
       target = model;
+    }
+
+    try {
+      const markers = splitWireMarkers(target);
+      if (markers.mode || markers.speed) {
+        out.markers = markers;
+        target = markers.spec;
+      }
+    } catch (err) {
+      if (err instanceof WireMarkerError) {
+        out.refusal = err.message;
+        return nativeHandler;
+      }
+      throw err;
     }
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);

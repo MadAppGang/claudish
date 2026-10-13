@@ -23,6 +23,8 @@
 
 import { z } from "zod";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
+import type { BaseAPIFormat } from "../adapters/base-api-format.js";
+import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { credentials } from "../auth/credentials/authority.js";
@@ -37,6 +39,8 @@ import { ComposedHandler } from "../handlers/composed-handler.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import type { ModelHandler } from "../handlers/types.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
+import type { WireApi } from "./connection-wire.js";
+import { declaredConnection, declaredWire } from "./declared-wire.js";
 import { clearEndpointUnavailable, recordEndpointUnavailable } from "./endpoint-diagnostics.js";
 import {
   type RouteTier,
@@ -464,23 +468,30 @@ function buildSimpleHandler(
   baseUrl: string
 ): ModelHandler | null {
   const finalModel = ep.modelPrefix ? `${ep.modelPrefix}${ctx.modelName}` : ctx.modelName;
+  // The request is shaped from what the endpoint DECLARES (its `wire` block,
+  // or the documented defaults), never from the model name.
+  const wire = declaredWire(
+    ep.format === "openai" ? "chat-completions" : "anthropic-messages",
+    ep.wire
+  );
+  const connection = declaredConnection(ctx.provider.name, finalModel, baseUrl, wire);
 
   if (ep.format === "openai") {
     const remoteProvider: RemoteProvider = {
       name: ctx.provider.name,
       baseUrl,
-      apiPath: "/chat/completions",
+      apiPath: wire.api === "responses" ? "/responses" : "/chat/completions",
       apiKeyEnvVar: ctx.provider.apiKeyEnvVar,
       prefixes: ctx.provider.prefixes ?? [],
       headers: ctx.provider.headers,
       authScheme: "bearer",
     };
     const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey);
-    const adapter = new OpenAIAPIFormat(finalModel);
     return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
-      adapter,
+      adapter: openAiFamilyAdapter(wire.api, finalModel),
       tokenStrategy: "delta-aware",
       ...ctx.sharedOpts,
+      connection,
     });
   }
 
@@ -499,7 +510,15 @@ function buildSimpleHandler(
   return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
     adapter,
     ...ctx.sharedOpts,
+    connection,
   });
+}
+
+/** Chat Completions or the generic Responses body, as the declared wire says. */
+function openAiFamilyAdapter(api: WireApi, model: string): BaseAPIFormat {
+  return api === "responses"
+    ? new CodexAPIFormat(model, undefined, { codexExtras: false })
+    : new OpenAIAPIFormat(model);
 }
 
 function buildComplexHandler(
@@ -509,7 +528,13 @@ function buildComplexHandler(
   baseUrl: string
 ): ModelHandler | null {
   const finalModel = ep.modelPrefix ? `${ep.modelPrefix}${ctx.modelName}` : ctx.modelName;
-  const apiPath = ep.apiPath ?? "/v1/chat/completions";
+  const wire = declaredWire(
+    ep.transport === "anthropic" ? "anthropic-messages" : "chat-completions",
+    ep.wire
+  );
+  const connection = declaredConnection(ctx.provider.name, finalModel, baseUrl, wire);
+  const apiPath =
+    ep.apiPath ?? (wire.api === "responses" ? "/v1/responses" : "/v1/chat/completions");
 
   switch (ep.transport) {
     case "litellm": {
@@ -518,6 +543,7 @@ function buildComplexHandler(
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
         ...ctx.sharedOpts,
+        connection,
       });
     }
     case "openai": {
@@ -532,11 +558,11 @@ function buildComplexHandler(
         streamFormatOverride: ep.streamFormat,
       };
       const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey);
-      const adapter = new OpenAIAPIFormat(finalModel);
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
-        adapter,
+        adapter: openAiFamilyAdapter(wire.api, finalModel),
         tokenStrategy: "delta-aware",
         ...ctx.sharedOpts,
+        connection,
       });
     }
     case "anthropic": {
@@ -555,6 +581,7 @@ function buildComplexHandler(
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
         ...ctx.sharedOpts,
+        connection,
       });
     }
     case "gemini":

@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { Context } from "hono";
+import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { FallbackHandler } from "./fallback-handler.js";
@@ -430,8 +431,8 @@ describe("site 2: forceRefreshAuth", () => {
 // ---------------------------------------------------------------------------
 
 describe("site 3: parameter-recovery re-fetch", () => {
-  // A grok-* name resolves to GrokModelDialect, the one dialect with
-  // `recoverFromRejection`. The id is unique to this file on purpose: the
+  // Explicitly supply GrokModelDialect to exercise `recoverFromRejection`.
+  // The id is unique to this file on purpose: the
   // dialect memoises "this model rejected reasoning_effort" at module scope,
   // and Bun shares that module across test files in a run.
   const MODEL = "grok-9-connfail-probe";
@@ -455,7 +456,9 @@ describe("site 3: parameter-recovery re-fetch", () => {
       throw CONNECT_FAILURE;
     }) as unknown as typeof fetch;
 
-    const handler = makeHandler(makeTransport(), MODEL);
+    const handler = new ComposedHandler(makeTransport(), MODEL, MODEL, 8080, {
+      dialect: new GrokModelDialect(MODEL),
+    });
     const { c, captured } = makeContext();
 
     const response = await handler.handle(c, GROK_PAYLOAD);

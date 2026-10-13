@@ -6,7 +6,7 @@
  *   response.output_text.delta → content text
  *   response.output_item.added → new item (function_call, reasoning)
  *   response.function_call_arguments.delta → tool argument streaming
- *   response.reasoning_summary_text.delta → thinking output
+ *   response.reasoning_summary_text.delta / reasoning_text.delta → thinking output
  *   response.output_item.done → close tool_use block
  *   response.completed / response.done → final usage
  */
@@ -20,6 +20,7 @@ import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { formatRawSseLogPayload } from "./openai-sse.js";
+import { sseDataPayload } from "./sse-line.js";
 
 export function createResponsesStreamHandler(
   c: Context,
@@ -258,9 +259,8 @@ export function createResponsesStreamHandler(
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (line.startsWith("event: ")) continue;
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6);
+            const data = sseDataPayload(line);
+            if (data === null) continue;
             if (data === "[DONE]") continue;
 
             // Raw capture, greppable into test fixtures — same contract as
@@ -346,12 +346,21 @@ export function createResponsesStreamHandler(
                   });
                   hasToolUse = true;
                 }
-              } else if (event.type === "response.reasoning_summary_text.delta") {
+              } else if (
+                event.type === "response.reasoning_summary_text.delta" ||
+                // The RAW reasoning text (DashScope, open-weight models) rather
+                // than a summary of it; a thinking block all the same.
+                event.type === "response.reasoning_text.delta"
+              ) {
                 opts.onAssistantText?.(event.delta ?? "", "reasoning");
                 // Reasoning is the model's chain of thought, not its answer — it
                 // belongs in a thinking block, or Claude Code renders it as the reply.
                 const summaryIndex =
-                  typeof event.summary_index === "number" ? event.summary_index : 0;
+                  typeof event.summary_index === "number"
+                    ? event.summary_index
+                    : typeof event.content_index === "number"
+                      ? event.content_index
+                      : 0;
                 if (reasoningIdx < 0) {
                   closeText();
                   reasoningIdx = curIdx++;

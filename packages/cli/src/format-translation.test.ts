@@ -1237,18 +1237,6 @@ describe("Model Adapter Quirks", () => {
     expect(request.temperature).toBe(0.7);
   });
 
-  test("OpenAIAdapter: thinking → reasoning_effort for o3", async () => {
-    const { OpenAIAPIFormat } = await import("./adapters/openai-api-format.js");
-    const adapter = new OpenAIAPIFormat("o3-mini");
-
-    const request: any = { model: "o3-mini", messages: [] };
-    const original = { thinking: { budget_tokens: 32000 } };
-
-    adapter.prepareRequest(request, original);
-    expect(request.reasoning_effort).toBe("high");
-    expect(request.thinking).toBeUndefined();
-  });
-
   test("GLMAdapter: glm-5 converts Anthropic budget thinking to GLM's toggle", async () => {
     const { GLMModelDialect } = await import("./adapters/glm-model-dialect.js");
     const adapter = new GLMModelDialect("glm-5");
@@ -2910,7 +2898,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
 
   async function getOpenRouterAdapter() {
     const mod = await import("./adapters/openrouter-api-format.js");
-    return new mod.OpenRouterAPIFormat("google/gemini-3.1-pro-preview");
+    return new mod.OpenRouterAPIFormat("google/gemini-3.1-pro-preview", { vendor: "google" });
   }
 
   async function getGeminiParser() {

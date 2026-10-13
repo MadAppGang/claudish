@@ -74,6 +74,15 @@ const GUARDED = [
       "catalog-client.ts's _setCatalogEntriesForTest does, instead of writing the real cache",
   },
   {
+    // The route registry sidecar (`routeRegistryPathFor`): a test that writes it
+    // hands the real request path another generation's base URLs.
+    path: join(homedir(), ".claudish", "cloud-models-catalog-v3.routes.json"),
+    label: "REAL ROUTE REGISTRY SIDECAR",
+    remedy:
+      "pass a temp cache path to writeAllModelsCache/writeRouteRegistry, or run the refresh in a " +
+      "child process with its own HOME, instead of writing the real sidecar",
+  },
+  {
     // The pre-v3 cache file. This build no longer writes it, but older builds on the
     // same machine still read it, so a test that touches it breaks them.
     path: join(homedir(), ".claudish", "all-models.json"),

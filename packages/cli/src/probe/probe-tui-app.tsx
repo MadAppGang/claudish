@@ -123,6 +123,7 @@ export interface ProbeModelResult {
     supportsVision: boolean;
     transportOverride: string | null;
     effectiveStreamFormat: string;
+    wireSummary?: string;
   };
 }
 
@@ -1039,7 +1040,7 @@ function DetailModel({
   const wiring = result.wiring;
   const wireLine =
     winner && wiring
-      ? `wire (${winner.displayName}): ${wiring.effectiveStreamFormat} · ${wiring.modelTranslator} · ${formatContextWindow(wiring.contextWindow)} ctx`
+      ? `wire (${winner.displayName}): ${wiring.wireSummary ?? `${wiring.effectiveStreamFormat} · ${wiring.modelTranslator}`} · ${formatContextWindow(wiring.contextWindow)} ctx`
       : "wire: —";
 
   // ── Routing advisor ────────────────────────────────────────────────

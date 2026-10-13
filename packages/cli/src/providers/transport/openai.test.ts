@@ -182,3 +182,18 @@ describe("isTerminal429", () => {
     expect(isTerminal429(transient)).toBe(false);
   });
 });
+
+test.each(["codex-mini-latest", "gpt-5-codex", "plain-model"])(
+  "transport uses baseUrl + apiPath and declares Chat Completions for %s",
+  (model) => {
+    const transport = new OpenAIProviderTransport(mockProvider, model, "test-key");
+    expect(transport.getEndpoint()).toBe(mockProvider.baseUrl + mockProvider.apiPath);
+    expect(transport.streamFormat).toBe("openai-sse");
+    const custom = new OpenAIProviderTransport(
+      { ...mockProvider, baseUrl: "https://fixture.invalid/custom", apiPath: "/endpoint" },
+      model,
+      "test-key"
+    );
+    expect(custom.getEndpoint()).toBe("https://fixture.invalid/custom/endpoint");
+  }
+);

@@ -142,7 +142,7 @@ describe("OpenCodeZenMessagesTransport", () => {
 describe("openCodeZenProfile", () => {
   for (const providerName of ["opencode-zen-go", "opencode-zen"] as const) {
     for (const modelName of ["minimax-m3", "gpt-5.4", "qwen3.7-plus"] as const) {
-      test(`${providerName} ${modelName} uses the matching transport`, () => {
+      test(`${providerName} ${modelName} uses Chat Completions off catalog`, async () => {
         const provider = remoteProvider(providerName);
         const handler = openCodeZenProfile.createHandler({
           provider,
@@ -153,12 +153,8 @@ describe("openCodeZenProfile", () => {
           sharedOpts: {},
         } as any);
 
-        const messages =
-          modelName.startsWith("qwen") ||
-          (providerName === "opencode-zen-go" && modelName.startsWith("minimax"));
-        expect((handler as any).provider).toBeInstanceOf(
-          messages ? OpenCodeZenMessagesTransport : OpenCodeZenTransport
-        );
+        expect((handler as any).provider).toBeInstanceOf(OpenCodeZenTransport);
+        await handler?.shutdown();
       });
     }
   }

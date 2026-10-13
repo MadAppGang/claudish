@@ -11,6 +11,7 @@ import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
 import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import { sseDataPayload } from "./sse-line.js";
 
 export interface GeminiSseOptions {
   modelName: string;
@@ -196,8 +197,8 @@ export function createGeminiSseStream(
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (!line.trim() || !line.startsWith("data: ")) continue;
-            const dataStr = line.slice(6);
+            const dataStr = line.trim() ? sseDataPayload(line) : null;
+            if (dataStr === null) continue;
             if (dataStr === "[DONE]") {
               await finalize("done");
               return;

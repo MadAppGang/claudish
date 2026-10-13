@@ -438,6 +438,11 @@ The exclusion rested on "a 503 cannot silently switch the user off a pinned mode
 
 ## The catalog's endpoint contract has two halves (v9.0.7)
 
+> **Superseded (10.5.0).** The gate, the name rule and the model-level `tokenParam` read
+> described here are deleted. Every request is now built from its connection's `wire`
+> ([`wire.md`](wire.md)). Kept for the history of why reading half a contract is worse
+> than reading none.
+
 `gpt-6-astra` was in the catalog and could not run. The child exited 1 on
 
 ```

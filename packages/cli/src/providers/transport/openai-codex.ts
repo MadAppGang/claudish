@@ -121,6 +121,14 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
         prompt_cache_key:
           normalizedPayload.prompt_cache_key ?? this.resolvePromptCacheKey(claudeRequest),
       };
+      // The reasoning summary is what Claude Code shows as thinking. The
+      // catalog wire does not publish it, so the wire shaper drops it with the
+      // rest of `reasoning`; it is a Codex display field, restored here only
+      // where reasoning was actually sent.
+      const reasoning = normalizedPayload.reasoning;
+      if (reasoning && typeof reasoning === "object" && reasoning.summary === undefined) {
+        normalizedPayload = { ...normalizedPayload, reasoning: { ...reasoning, summary: "auto" } };
+      }
     }
     // Auth-derived store:false / include reasoning bits, only under OAuth.
     return this.cachedAuth?.transformPayload?.(normalizedPayload) ?? normalizedPayload;

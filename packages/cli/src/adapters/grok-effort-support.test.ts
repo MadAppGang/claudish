@@ -5,6 +5,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   acceptsReasoningEffort,
   acceptsReasoningEffortValue,
@@ -43,12 +46,17 @@ describe("live xAI reasoning_effort support", () => {
 
   test("normalises the x-ai/ vendor prefix", () => {
     expect(grokEffort("x-ai/grok-4.6", "high")).toBe("high");
+    rememberReasoningEffortRejected("grok-build-0.1");
     expect(grokEffort("x-ai/grok-build-0.1", "high")).toBeUndefined();
   });
 
   test.each(["grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1"])(
     "%s strips reasoning_effort after its live parameter rejection",
     (modelId) => {
+      // The cloud models catalog may already reject effort for these ids.
+      // Only the post-rejection verdict is independent of the local cache.
+      rememberReasoningEffortRejected(modelId);
+      expect(learnedReasoningEffortRejects()).toContain(modelId);
       expect(grokEffort(modelId, "high")).toBeUndefined();
     }
   );
@@ -153,4 +161,42 @@ describe("GrokModelDialect.recoverFromRejection", () => {
       expect(grokEffort(modelId, "none")).toBe("low");
     }
   );
+});
+
+test("cold grok-2-unknown accepts effort until a learned 400", () => {
+  // The exported support API has no cache-path seam. A fresh child import and
+  // empty home prove this is cold, independently of the caller's catalog.
+  const dir = mkdtempSync(join(tmpdir(), "grok-cold-"));
+  try {
+    const script = `
+      const { acceptsReasoningEffort } = await import(${JSON.stringify(new URL("./grok-effort-support.ts", import.meta.url).pathname)});
+      const { GrokModelDialect } = await import(${JSON.stringify(new URL("./grok-model-dialect.ts", import.meta.url).pathname)});
+      const id = "grok-2-unknown";
+      const before = acceptsReasoningEffort(id);
+      const recovery = new GrokModelDialect(id).recoverFromRejection(
+        {reasoning_effort: "high"},
+        "Model grok-2-unknown does not support parameter reasoningEffort."
+      );
+      console.log(JSON.stringify({before, after: acceptsReasoningEffort(id), payload: recovery?.payload}));
+    `;
+    const child = Bun.spawnSync([process.execPath, "--eval", script], {
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      before: true,
+      after: false,
+      payload: {},
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

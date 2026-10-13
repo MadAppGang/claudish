@@ -13,6 +13,8 @@ import { OpenAIAPIFormat } from "../../cli/src/adapters/openai-api-format.js";
 import { OpenRouterAPIFormat } from "../../cli/src/adapters/openrouter-api-format.js";
 // Import from CLI package's internal modules (same monorepo)
 import { ComposedHandler } from "../../cli/src/handlers/composed-handler.js";
+import type { RemoteProvider } from "../../cli/src/handlers/shared/remote-provider-types.js";
+import { resolveConnection } from "../../cli/src/providers/connection-resolver.js";
 import { resolveProvider } from "../../cli/src/providers/provider-registry.js";
 import { getRegisteredRemoteProviders } from "../../cli/src/providers/remote-provider-registry.js";
 import { AnthropicCompatProvider } from "../../cli/src/providers/transport/anthropic-compat.js";
@@ -20,6 +22,7 @@ import { GeminiApiKeyProvider } from "../../cli/src/providers/transport/gemini-a
 import { LocalTransport } from "../../cli/src/providers/transport/local.js";
 import { OpenAIProvider } from "../../cli/src/providers/transport/openai.js";
 import { OpenRouterProvider } from "../../cli/src/providers/transport/openrouter.js";
+import { buildKnownWireHandler } from "../../cli/src/providers/wire-handler.js";
 import type { ConfigManager } from "./config-manager.js";
 import { detectFromHeaders } from "./detection.js";
 import type { ApiKeys, DetectedApp, LogEntry } from "./types.js";
@@ -61,6 +64,37 @@ export class RoutingMiddleware {
   }
 
   /**
+   * The handler built from the catalog connection's wire, when the catalog
+   * publishes a known wire for `provider` + `modelName` (catalog 3.7.0): the
+   * API, URL, limit field and reasoning are the wire's, exactly as in the CLI
+   * proxy. `null` keeps the branch's own composition, which picks nothing by
+   * model name either.
+   */
+  private wiredHandler(
+    definitionName: string,
+    remote: RemoteProvider | undefined,
+    modelName: string,
+    apiKey: string,
+    model: string
+  ): Handler | null {
+    const resolution = resolveConnection(definitionName, modelName);
+    if (!resolution.ok || resolution.connection.wire.status !== "known") return null;
+    const provider: RemoteProvider = remote ?? {
+      name: definitionName,
+      baseUrl: "",
+      apiPath: "",
+      apiKeyEnvVar: "",
+      prefixes: [],
+    };
+    return buildKnownWireHandler(
+      { provider, modelName, apiKey, targetModel: model, port: this.bridgePort, sharedOpts: {} },
+      definitionName,
+      resolution.connection,
+      resolution.connection.wire
+    ) as unknown as Handler | null;
+  }
+
+  /**
    * Create handler for a model ID using ComposedHandler + Provider + Adapter.
    */
   private createHandlerForModel(model: string): Handler {
@@ -73,6 +107,8 @@ export class RoutingMiddleware {
       const geminiConfig = remoteProviders.find((p) => p.name === "gemini");
       if (!geminiConfig) throw new Error("Gemini provider not found in registry");
       const modelName = model.startsWith("g/") ? model.slice(2) : model.slice(7);
+      const wired = this.wiredHandler("google", geminiConfig, modelName, apiKey, model);
+      if (wired) return wired;
       const provider = new GeminiApiKeyProvider(geminiConfig, modelName, apiKey);
       const adapter = new GeminiAPIFormat(modelName);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
@@ -87,6 +123,8 @@ export class RoutingMiddleware {
       const openaiConfig = remoteProviders.find((p) => p.name === "openai");
       if (!openaiConfig) throw new Error("OpenAI provider not found in registry");
       const modelName = model.slice(4);
+      const wired = this.wiredHandler("openai", openaiConfig, modelName, apiKey, model);
+      if (wired) return wired;
       const provider = new OpenAIProvider(openaiConfig, modelName, apiKey);
       const adapter = new OpenAIAPIFormat(modelName);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
@@ -103,6 +141,8 @@ export class RoutingMiddleware {
       if (!mmConfig) throw new Error("MiniMax provider not found in registry");
       const prefix = model.startsWith("mm/") ? 3 : 5;
       const modelName = model.slice(prefix);
+      const wired = this.wiredHandler("minimax", mmConfig, modelName, apiKey, model);
+      if (wired) return wired;
       const provider = new AnthropicCompatProvider(mmConfig, apiKey);
       const adapter = new AnthropicAPIFormat(modelName, mmConfig.name);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
@@ -118,6 +158,8 @@ export class RoutingMiddleware {
       if (!kimiConfig) throw new Error("Kimi provider not found in registry");
       const prefix = model.startsWith("kimi/") ? 5 : 9;
       const modelName = model.slice(prefix);
+      const wired = this.wiredHandler("kimi", kimiConfig, modelName, apiKey, model);
+      if (wired) return wired;
       const provider = new AnthropicCompatProvider(kimiConfig, apiKey);
       const adapter = new AnthropicAPIFormat(modelName, kimiConfig.name);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
@@ -133,6 +175,8 @@ export class RoutingMiddleware {
       if (!glmConfig) throw new Error("GLM provider not found in registry");
       const prefix = model.startsWith("glm/") ? 4 : 6;
       const modelName = model.slice(prefix);
+      const wired = this.wiredHandler("glm", glmConfig, modelName, apiKey, model);
+      if (wired) return wired;
       const provider = new OpenAIProvider(glmConfig, modelName, apiKey);
       const adapter = new OpenAIAPIFormat(modelName);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
@@ -155,8 +199,16 @@ export class RoutingMiddleware {
     // Default: OpenRouter for everything else
     const apiKey = this.apiKeys.openrouter;
     if (!apiKey) throw new Error(`OpenRouter API key required for model: ${model}`);
+    const wired = this.wiredHandler(
+      "openrouter",
+      remoteProviders.find((p) => p.name === "openrouter"),
+      model,
+      apiKey,
+      model
+    );
+    if (wired) return wired;
     const orProvider = new OpenRouterProvider(apiKey);
-    const orAdapter = new OpenRouterAPIFormat(model);
+    const orAdapter = new OpenRouterAPIFormat(model, { vendor: "" });
     return new ComposedHandler(orProvider, model, model, this.bridgePort, {
       adapter: orAdapter,
     }) as unknown as Handler;

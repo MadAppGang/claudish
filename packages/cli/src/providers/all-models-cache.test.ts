@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type DiskCacheV3,
   type SlimModelEntry,
+  _clearAllModelsCacheMemo,
   readAllModelsCache,
   reasoningStatusOf,
+  routeRegistryPathFor,
   writeAllModelsCache,
+  writeRouteRegistry,
 } from "./all-models-cache.js";
 
 const dirs: string[] = [];
@@ -93,5 +96,205 @@ describe("reasoningStatusOf", () => {
         supportsThinking: true,
       })
     ).toBe("unknown");
+  });
+});
+
+const wireFixture: DiskCacheV3 = JSON.parse(
+  readFileSync(
+    new URL("../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json", import.meta.url),
+    "utf8"
+  )
+);
+beforeEach(() => _clearAllModelsCacheMemo());
+
+function knownConnection(cache: DiskCacheV3) {
+  return cache.entries
+    .flatMap((entry) => entry.aggregators ?? [])
+    .find(
+      (connection) => connection.routeStatus === "mapped" && connection.wire?.status === "known"
+    )!;
+}
+
+describe("wire registry cache validation", () => {
+  test("loads the whole production fixture", () => {
+    const path = cachePath();
+    writeAllModelsCache(wireFixture, path);
+    expect(readAllModelsCache(path)).toEqual(wireFixture);
+  });
+  const invalidCases: Array<[string, (cache: DiskCacheV3) => void]> = [
+    [
+      "mapped connection without wire",
+      (cache) => {
+        delete knownConnection(cache).wire;
+      },
+    ],
+    [
+      "malformed connection wire",
+      (cache) => {
+        Object.assign(knownConnection(cache).wire!, { api: "realtime" });
+      },
+    ],
+    [
+      "known API absent from its profile",
+      (cache) => {
+        const connection = knownConnection(cache);
+        if (connection.wire?.status !== "known") throw new Error("Expected known fixture wire");
+        delete cache.routeRegistry!.registry.routes[connection.route!.routeId]!.profiles[
+          connection.route!.routeProfileId
+        ]!.apis[connection.wire.api];
+      },
+    ],
+    [
+      "missing route profile",
+      (cache) => {
+        const route = knownConnection(cache).route!;
+        delete cache.routeRegistry!.registry.routes[route.routeId]!.profiles[route.routeProfileId];
+      },
+    ],
+    [
+      "different registry generation",
+      (cache) => {
+        cache.routeRegistry!.generationId = "other-generation";
+      },
+    ],
+    [
+      "malformed registry",
+      (cache) => {
+        Reflect.deleteProperty(cache.routeRegistry!.registry, "routes");
+      },
+    ],
+  ];
+  for (const [name, mutate] of invalidCases) {
+    test(`rejects ${name}`, () => {
+      const path = cachePath();
+      const cache = structuredClone(wireFixture);
+      writeAllModelsCache(cache, path);
+      expect(readAllModelsCache(path)).toEqual(cache);
+      mutate(cache);
+      writeFileSync(path, JSON.stringify(cache));
+      expect(readAllModelsCache(path)).toBeNull();
+    });
+  }
+  test("accepts a cache written before route registries", () => {
+    const cache = structuredClone(wireFixture);
+    delete cache.routeRegistry;
+    const path = cachePath();
+    writeAllModelsCache(cache, path);
+    expect(readAllModelsCache(path)).toEqual(cache);
+  });
+  test("accepts a missing wire under registry 3.6.0", () => {
+    const cache = structuredClone(wireFixture);
+    cache.routeRegistry!.registry.registryVersion = "3.6.0";
+    delete knownConnection(cache).wire;
+    const path = cachePath();
+    writeAllModelsCache(cache, path);
+    expect(readAllModelsCache(path)).toEqual(cache);
+  });
+  test("memo observes writer updates, direct size-changing writes and deletion", () => {
+    const path = cachePath();
+    const cache = structuredClone(wireFixture);
+    writeAllModelsCache(cache, path);
+    const timestamp = new Date("2026-10-12T00:00:00Z");
+    utimesSync(path, timestamp, timestamp);
+    const firstRead = readAllModelsCache(path);
+    expect(firstRead).toEqual(cache);
+    expect(readAllModelsCache(path)).toBe(firstRead);
+    // Same size and mtime: only writeAllModelsCache's invalidation sees this.
+    cache.lastUpdated = "2026-10-13T00:00:00.000Z";
+    expect(cache.lastUpdated.length).toBe(wireFixture.lastUpdated.length);
+    writeAllModelsCache(cache, path);
+    utimesSync(path, timestamp, timestamp);
+    expect(readAllModelsCache(path)).toEqual(cache);
+    // Same mtime, different size: out-of-band writes must also invalidate.
+    cache.entries[0]!.displayName = "A different and longer value written directly to disk";
+    writeFileSync(path, JSON.stringify(cache));
+    utimesSync(path, timestamp, timestamp);
+    expect(readAllModelsCache(path)).toEqual(cache);
+    rmSync(path);
+    expect(readAllModelsCache(path)).toBeNull();
+  });
+});
+
+describe("route registry sidecar", () => {
+  function withoutRegistry() {
+    const cache = structuredClone(wireFixture);
+    delete cache.routeRegistry;
+    return cache;
+  }
+  test("attaches a matching sidecar without embedding it in the models file", () => {
+    const path = cachePath();
+    writeAllModelsCache(withoutRegistry(), path);
+    writeFileSync(routeRegistryPathFor(path), JSON.stringify(wireFixture.routeRegistry));
+    expect(readAllModelsCache(path)?.routeRegistry).toEqual(wireFixture.routeRegistry);
+    expect(JSON.parse(readFileSync(path, "utf8")).routeRegistry).toBeUndefined();
+  });
+  test.each(["generation", "profile"])("ignores a sidecar with mismatched %s", (mismatch) => {
+    const path = cachePath();
+    const cache = withoutRegistry();
+    const registry = structuredClone(wireFixture.routeRegistry!);
+    if (mismatch === "generation") registry.generationId = "different-generation";
+    else {
+      const route = knownConnection(cache).route!;
+      delete registry.registry.routes[route.routeId]!.profiles[route.routeProfileId];
+    }
+    writeAllModelsCache(cache, path);
+    writeRouteRegistry(registry, path);
+    expect(readAllModelsCache(path)).toEqual(cache);
+  });
+  test("both writers persist the sidecar and the registry writer invalidates a memoized read", () => {
+    const path = cachePath();
+    expect(routeRegistryPathFor(path)).toBe(path.replace(/\.json$/, ".routes.json"));
+    writeAllModelsCache(wireFixture, path);
+    expect(JSON.parse(readFileSync(routeRegistryPathFor(path), "utf8"))).toEqual(
+      wireFixture.routeRegistry
+    );
+    rmSync(routeRegistryPathFor(path));
+    writeAllModelsCache(withoutRegistry(), path);
+    expect(readAllModelsCache(path)?.routeRegistry).toBeUndefined();
+    writeRouteRegistry(wireFixture.routeRegistry!, path);
+    expect(readAllModelsCache(path)?.routeRegistry).toEqual(wireFixture.routeRegistry);
+  });
+  test("memo observes out-of-band sidecar creation, size, mtime and removal", () => {
+    const path = cachePath();
+    const side = routeRegistryPathFor(path);
+    writeAllModelsCache(withoutRegistry(), path);
+    expect(readAllModelsCache(path)?.routeRegistry).toBeUndefined();
+    const bytes = JSON.stringify(wireFixture.routeRegistry);
+    const stamp = new Date("2026-10-12T00:00:00Z");
+    writeFileSync(side, bytes);
+    utimesSync(side, stamp, stamp);
+    expect(readAllModelsCache(path)?.routeRegistry).toEqual(wireFixture.routeRegistry);
+    const invalid = JSON.stringify({ ...wireFixture.routeRegistry, generationId: "wrong" });
+    writeFileSync(side, invalid);
+    utimesSync(side, stamp, stamp);
+    expect(readAllModelsCache(path)?.routeRegistry).toBeUndefined();
+    writeFileSync(side, bytes);
+    utimesSync(side, stamp, stamp);
+    expect(readAllModelsCache(path)?.routeRegistry).toEqual(wireFixture.routeRegistry);
+    // Same byte count: only the sidecar mtime reveals this invalid generation.
+    writeFileSync(
+      side,
+      bytes.replace(
+        wireFixture.catalogGenerationId,
+        "x".repeat(wireFixture.catalogGenerationId.length)
+      )
+    );
+    utimesSync(side, new Date(stamp.getTime() + 2000), new Date(stamp.getTime() + 2000));
+    expect(readAllModelsCache(path)?.routeRegistry).toBeUndefined();
+    writeFileSync(side, bytes);
+    expect(readAllModelsCache(path)?.routeRegistry).toBeDefined();
+    rmSync(side);
+    expect(readAllModelsCache(path)?.routeRegistry).toBeUndefined();
+  });
+  test("an older claudish rewrite cannot attach the previous generation's sidecar", () => {
+    const path = cachePath();
+    writeAllModelsCache(wireFixture, path);
+    expect(readAllModelsCache(path)?.routeRegistry).toBeDefined();
+    const newer = { ...withoutRegistry(), catalogGenerationId: "new-generation" };
+    writeFileSync(path, JSON.stringify(newer));
+    expect(readAllModelsCache(path)).toEqual(newer);
+    expect(JSON.parse(readFileSync(routeRegistryPathFor(path), "utf8"))).toEqual(
+      wireFixture.routeRegistry
+    );
   });
 });

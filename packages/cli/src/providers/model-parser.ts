@@ -66,6 +66,10 @@ export interface ParsedModel {
   isLegacySyntax: boolean;
   /** Whether provider was explicitly specified (vs auto-detected) */
   isExplicitProvider: boolean;
+  /** `+pro` / `+standard` on the spec (removed from `model`). See `wire-markers.ts`. */
+  mode?: WireMode;
+  /** `#<speed>` on the spec (removed from `model`). */
+  speed?: WireSpeed;
 }
 
 /**
@@ -80,6 +84,8 @@ import {
   isDirectApiProvider as _isDirectApiProvider,
   isLocalTransport,
 } from "./provider-definitions.js";
+import { type WireMarkers, splitWireMarkers } from "./wire-markers.js";
+import type { WireMode, WireSpeed } from "./wire-request.js";
 
 export const PROVIDER_SHORTCUTS: Record<string, string> = _getShortcuts();
 
@@ -148,8 +154,22 @@ export function parseModelChain(modelSpec: string): string[] {
     .split(MODEL_CHAIN_SEPARATOR)
     .map((s) => s.trim())
     .filter(Boolean);
-  return parts.length > 0 ? parts : [modelSpec];
+  // `+` also marks a request mode (`cx@gpt-6-sol+pro`, see `wire-markers.ts`).
+  // A segment that is ONLY a mode word, optionally followed by `#<speed>` or
+  // `:N`, is that marker on the spec before it, never a chain element: every
+  // element a chain carries is an explicit `provider@model` spec.
+  const merged: string[] = [];
+  for (const part of parts) {
+    if (merged.length > 0 && MODE_MARKER_SEGMENT.test(part)) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}+${part}`;
+    } else {
+      merged.push(part);
+    }
+  }
+  return merged.length > 0 ? merged : [modelSpec];
 }
+
+const MODE_MARKER_SEGMENT = /^(pro|standard)(#[a-z]+)?(:\d+)?$/i;
 
 /**
  * Parse a model specification string
@@ -166,6 +186,29 @@ export function parseModelChain(modelSpec: string): string[] {
  * @returns Parsed model information
  */
 export function parseModelSpec(modelSpec: string): ParsedModel {
+  // Mode and speed markers are not part of any model id: strip them first, so
+  // every consumer (routing, --probe, validation) sees the model alone. An
+  // invalid marker is left in place and fails as an unknown model, or is
+  // refused with its own message by the proxy, which splits markers strictly.
+  let markers: WireMarkers | undefined;
+  try {
+    markers = splitWireMarkers(modelSpec);
+  } catch {
+    markers = undefined;
+  }
+  if (markers && (markers.mode || markers.speed)) {
+    const parsed = parseModelSpecWithoutMarkers(markers.spec);
+    return {
+      ...parsed,
+      original: modelSpec,
+      ...(markers.mode ? { mode: markers.mode } : {}),
+      ...(markers.speed ? { speed: markers.speed } : {}),
+    };
+  }
+  return parseModelSpecWithoutMarkers(modelSpec);
+}
+
+function parseModelSpecWithoutMarkers(modelSpec: string): ParsedModel {
   const original = modelSpec;
 
   // Check for URL-style model (http:// or https://)

@@ -264,6 +264,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--effort-override": "value",
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
+  "--accept-served-model": "none",
   "--op-env": "value",
   "--op": "value",
   "--cost-track": "none",
@@ -766,6 +767,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--no-pro-on-ultracode") {
       // Escape hatch when it is enabled via config/env: off for this run.
       config.proOnUltracode = false;
+    } else if (arg === "--accept-served-model") {
+      // Some connections serve reasoning-off with a DIFFERENT model (Kimi Code
+      // k3: thinking off is served by K2.8 Preview — the catalog's
+      // `served_model_changes` warning). Without this flag claudish keeps
+      // reasoning on and says why; with it, it sends the disable. Exported as
+      // env so child claudish processes inherit the choice.
+      process.env.CLAUDISH_ACCEPT_SERVED_MODEL = "1";
     } else if (arg === "--op-env" || arg.startsWith("--op-env=")) {
       // The actual 1Password Environment read happens early in index.ts
       // (highest priority). Here we only consume the flag + its value so it
@@ -1637,6 +1645,8 @@ async function probeModelRouting(
     supportsVision: boolean;
     transportOverride: string | null;
     effectiveStreamFormat: string;
+    /** How the catalog connection is called, from its wire; absent off-catalog. */
+    wireSummary?: string;
   };
 
   /** One model in `--probe --json`: the routing decision, as `explainRoute` made it. */
@@ -1787,36 +1797,48 @@ async function probeModelRouting(
     const resolvedSpec = resolveRemoteProvider(firstReadyRoute.modelSpec);
     const modelName = resolvedSpec?.modelName || parsedModel;
 
+    // A catalog connection is described by its WIRE: the same resolution the
+    // request uses (`buildWireHandler`), so --probe cannot show a composition
+    // the request does not have. This used to be a hand-written provider table
+    // plus a model-name check, i.e. a second guess beside the request's own.
+    const { resolveConnection } = await import("./providers/connection-resolver.js");
+    const { describeConnectionWire } = await import("./providers/wire-handler.js");
+    const { lookupModelForProvider } = await import("./adapters/model-catalog.js");
+    const definitionName = providerName === "gemini" ? "google" : providerName;
+    const resolution = resolveConnection(definitionName, modelName);
+    if (resolution.ok) {
+      const { wire } = resolution.connection;
+      const byApi: Record<string, [string, string]> = {
+        "chat-completions": [
+          definitionName === "openrouter" ? "OpenRouterAPIFormat" : "OpenAIAPIFormat",
+          "openai-sse",
+        ],
+        responses: ["CodexAPIFormat", "openai-responses-sse"],
+        "anthropic-messages": ["AnthropicAPIFormat", "anthropic-sse"],
+        gemini: ["GeminiAPIFormat", "gemini-sse"],
+      };
+      const [adapter, stream] =
+        wire.status === "known" ? byApi[wire.api] : ["(tried in turn)", "(per API)"];
+      return {
+        formatAdapter: adapter,
+        declaredStreamFormat: stream,
+        modelTranslator: "wire",
+        contextWindow: lookupModelForProvider(modelName, definitionName) ?? 0,
+        supportsVision: false,
+        transportOverride: null,
+        effectiveStreamFormat: stream,
+        wireSummary: describeConnectionWire(resolution.connection),
+      };
+    }
+
+    // Not a catalog connection (dynamic subscription, local, LiteLLM, custom
+    // endpoint): each has one fixed composition per provider.
     let formatAdapterName = "OpenAIAPIFormat";
     let declaredStreamFormat = "openai-sse";
 
-    const anthropicCompatProviders = [
-      "minimax",
-      "minimax-coding",
-      "kimi",
-      "kimi-coding",
-      "qwen-token-plan",
-      "qwen-coding",
-      "qwen-payg",
-      "z-ai",
-    ];
-    const isMinimaxModel = modelName.toLowerCase().includes("minimax");
-
-    if (anthropicCompatProviders.includes(providerName)) {
-      formatAdapterName = "AnthropicAPIFormat";
-      declaredStreamFormat = "anthropic-sse";
-    } else if (
-      (providerName === "opencode-zen" || providerName === "opencode-zen-go") &&
-      isMinimaxModel
-    ) {
-      formatAdapterName = "AnthropicAPIFormat";
-      declaredStreamFormat = "anthropic-sse";
-    } else if (providerName === "gemini" || providerName === "antigravity") {
+    if (providerName === "antigravity") {
       formatAdapterName = "GeminiAPIFormat";
       declaredStreamFormat = "gemini-sse";
-    } else if (providerName === "ollamacloud") {
-      formatAdapterName = "OllamaAPIFormat";
-      declaredStreamFormat = "openai-sse";
     } else if (providerName === "litellm") {
       formatAdapterName = "LiteLLMAPIFormat";
       declaredStreamFormat = "openai-sse";
@@ -1831,27 +1853,23 @@ async function probeModelRouting(
       declaredStreamFormat = "openai-sse";
     }
 
-    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
-    const modelTranslator = resolveModelDialect(modelName);
-    const modelTranslatorName = modelTranslator.getName();
+    // No dialect is picked by model name any more; the only profile that names
+    // one is the Grok subscription.
+    const modelTranslatorName = providerName === "grok-subscription" ? "GrokModelDialect" : "none";
 
     const TRANSPORT_OVERRIDES: Record<string, string> = {
       litellm: "openai-sse",
       openrouter: "openai-sse",
     };
     const transportOverride = TRANSPORT_OVERRIDES[providerName] || null;
-
-    const modelTranslatorFormat =
-      modelTranslatorName !== "DefaultAPIFormat" ? modelTranslator.getStreamFormat() : null;
-    const effectiveStreamFormat =
-      transportOverride || modelTranslatorFormat || declaredStreamFormat;
+    const effectiveStreamFormat = transportOverride || declaredStreamFormat;
 
     return {
       formatAdapter: formatAdapterName,
       declaredStreamFormat,
       modelTranslator: modelTranslatorName,
-      contextWindow: modelTranslator.getContextWindow(),
-      supportsVision: modelTranslator.supportsVision(),
+      contextWindow: lookupModelForProvider(modelName, definitionName) ?? 0,
+      supportsVision: true,
       transportOverride,
       effectiveStreamFormat,
     };
@@ -2296,6 +2314,7 @@ ${h("OPTIONS")}
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
+  ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)
   ${green("--dangerous")}              Pass --dangerouslyDisableSandbox to Claude Code

@@ -35,13 +35,15 @@ import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings
  */
 
 import { appendFileSync } from "node:fs";
-import { lookupModelTokenParam } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
 import { getCatalogEntries, latestAnthropicTierModelId } from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
+import { resolveConnection, resolveRouteProfile } from "../providers/connection-resolver.js";
+import { type KnownWire, type WireApi, wireRequestUrl } from "../providers/connection-wire.js";
 import { parseModelSpec } from "../providers/model-parser.js";
+import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
@@ -1510,6 +1512,13 @@ export interface AdvisorRoute {
   /** The model id placed in the request body, after catalog resolution. */
   wireModel: string;
   /**
+   * The API this request is built for: the connection's `wire.api` (catalog
+   * 3.7.0), or the profile's Chat Completions when the wire is not known.
+   */
+  api: WireApi;
+  /** The connection's known wire, when the catalog publishes one. */
+  wire?: KnownWire;
+  /**
    * Set to the ALIAS when `wireModel` is one the live catalog could not resolve
    * to an id the endpoint accepts — `haiku` with a cold catalog. Such a route
    * must NEVER be POSTed: `haiku` is claudish/Claude Code vocabulary, and
@@ -1519,16 +1528,59 @@ export interface AdvisorRoute {
   unresolvedAlias?: string;
 }
 
-const ADVISOR_ENDPOINTS: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
+/**
+ * The provider documentation's endpoints, used ONLY when no route registry is
+ * cached (a cold catalog): every other request takes its URL from the
+ * connection's registry profile, like any claudish request.
+ */
+const ADVISOR_COLD_CATALOG_ENDPOINTS: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
   google: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
   openai: "https://api.openai.com/v1/chat/completions",
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
   anthropic: "https://api.anthropic.com/v1/messages",
 });
 
+/** The claudish provider whose catalog connection an advisor route uses. */
+const ADVISOR_CATALOG_PROVIDER: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
+  google: "google",
+  openai: "openai",
+  openrouter: "openrouter",
+  anthropic: "anthropic",
+});
+
 function routeOf(kind: AdvisorRouteKind, wireModel: string): AdvisorRoute {
-  const url = ADVISOR_ENDPOINTS[kind];
-  return { kind, host: new URL(url).host, url, credential: kind, wireModel };
+  const provider = ADVISOR_CATALOG_PROVIDER[kind];
+  const resolution = resolveConnection(provider, wireModel);
+  let api: WireApi | undefined;
+  let wire: KnownWire | undefined;
+  let baseUrl: string | undefined;
+  if (resolution.ok && resolution.connection.wire.status === "known") {
+    wire = resolution.connection.wire;
+    api = wire.api;
+    baseUrl = resolution.connection.profile.apis[api]?.baseUrl;
+  } else {
+    // Not published for this provider, or its wire unknown: the profile's
+    // Chat Completions (Messages for Anthropic), with nothing else sent.
+    const profile = resolveRouteProfile(provider)?.profile;
+    api = kind === "anthropic" ? "anthropic-messages" : "chat-completions";
+    baseUrl = profile?.apis[api]?.baseUrl;
+  }
+  const url = baseUrl
+    ? wireRequestUrl(baseUrl, api, wireModel, false)
+    : ADVISOR_COLD_CATALOG_ENDPOINTS[kind];
+  if (!baseUrl) {
+    api = kind === "anthropic" ? "anthropic-messages" : "chat-completions";
+    log(`[Advisor] no route registry for ${provider}; using the documented endpoint ${url}`);
+  }
+  return {
+    kind,
+    host: new URL(url).host,
+    url,
+    credential: kind,
+    wireModel,
+    api,
+    ...(wire ? { wire } : {}),
+  };
 }
 
 /**
@@ -1871,72 +1923,83 @@ export async function resolveAdvisorCredential(
 const ADVISOR_MAX_OUTPUT_TOKENS = 2048;
 
 /**
- * The output-token parameter THIS ROUTE accepts, and the budget to put in it.
- *
- * Per ROUTE, because the parameter belongs to the endpoint, not to the model:
- *
- * - `openrouter` and `google` keep `max_tokens`. Both normalise it for every
- *   model they serve, and run D proves it live (deepseek-v4-pro, HTTP 200).
- * - `openai` (api.openai.com) asks the LIVE catalog, via the same
- *   `tokenParam` field claudish's OpenAI chat-completions converter reads first
- *   (`OpenAIApiFormat.tokenParamName` → `lookupModelTokenParam`). That converter
- *   is the existing per-format rule; its catalog lookup is the part that is
- *   right, and it is reused here rather than restated. Its private name-based
- *   fallback (`gpt-5`/`o1`/`o3`/`o4` → `max_completion_tokens`) is NOT copied —
- *   a second copy of a guess is exactly what CLAUDE.md's "never hardcode a
- *   provider's models" rule is about, and this endpoint has a better default (below).
- *
- * ONE endpoint-level correction on the catalog's answer: `max_output_tokens` is
- * the RESPONSES-API spelling. The catalog says exactly that for gpt-5.6-sol
- * (`endpoints.openai.api === "responses"`), but the advisor always POSTs
- * `/v1/chat/completions`, which does not accept it. On this route it becomes
- * `max_completion_tokens` — the spelling OpenAI's own 400 asked for:
- *   "Unsupported parameter: 'max_tokens' is not supported with this model.
- *    Use 'max_completion_tokens' instead."
- * (observed twice for gpt-5.6-sol, runs phase7b-B and phase7b-C).
- *
- * An unknown model on the openai route defaults to `max_completion_tokens`,
- * the current chat-completions spelling; `max_tokens` is the deprecated one and
- * is precisely what the newer models reject.
+ * One advisor or collector request, built for the route's API and shaped by
+ * its connection's wire — the same step a session request takes (output-limit
+ * field, reasoning encoding), so the advisor never sends a field the catalog
+ * did not publish for that connection. Without a known wire, no output limit
+ * and no reasoning field is sent.
  */
-function advisorTokenParamFor(route: AdvisorRoute): string {
-  if (route.kind !== "openai") return "max_tokens";
-  let fromCatalog: string | undefined;
-  try {
-    fromCatalog = lookupModelTokenParam(route.wireModel);
-  } catch {
-    // The lookup rejects a `provider@model` string outright; a wire id it will
-    // not read is simply no information, like a cold cache.
-  }
-  if (fromCatalog === "max_tokens" || fromCatalog === "max_completion_tokens") return fromCatalog;
-  return "max_completion_tokens";
-}
-
-/** Builds an OpenAI chat-completions request for a non-Anthropic route. */
 function buildAdvisorRequest(
   route: AdvisorRoute,
   messages: any[],
   apiKeys: AdvisorApiKeys,
-  systemPrompt: string = ADVISOR_SYSTEM_PROMPT
-): { headers: Record<string, string>; body: any } {
-  if (route.kind === "anthropic") {
-    // The Messages API has its own request shape; only the collector uses it.
-    throw new Error(`${route.wireModel}: the Anthropic route is collector-only`);
-  }
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKeys[route.credential] ?? ""}`,
-  };
+  systemPrompt: string = ADVISOR_SYSTEM_PROMPT,
+  userText?: string
+): { headers: Record<string, string>; body: any; extractText: (data: any) => string | undefined } {
+  const key = apiKeys[route.credential] ?? "";
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (route.kind === "openrouter") {
     headers["HTTP-Referer"] = "https://claudish.com";
     headers["X-Title"] = "Claudish Advisor";
   }
-  const body: Record<string, unknown> = {
-    model: route.wireModel,
-    messages: [{ role: "system", content: systemPrompt }, ...convertToOpenAIMessages(messages)],
-  };
-  body[advisorTokenParamFor(route)] = ADVISOR_MAX_OUTPUT_TOKENS;
-  return { headers, body };
+  const turns: Array<{ role: string; content: string }> =
+    userText !== undefined
+      ? [{ role: "user", content: userText }]
+      : convertToOpenAIMessages(messages).map((m: any) => ({
+          role: m.role,
+          content: typeof m.content === "string" ? m.content : extractBlocksAsText(m.content),
+        }));
+
+  let body: Record<string, unknown>;
+  let extractText: (data: any) => string | undefined;
+  switch (route.api) {
+    case "anthropic-messages":
+      headers["x-api-key"] = key;
+      headers["anthropic-version"] = "2023-06-01";
+      // The Messages API REQUIRES `max_tokens` (it is the protocol's only limit
+      // field); a known wire writes the same field again below.
+      body = {
+        model: route.wireModel,
+        system: systemPrompt,
+        messages: turns,
+        max_tokens: ADVISOR_MAX_OUTPUT_TOKENS,
+      };
+      extractText = extractAnthropicText;
+      break;
+    case "responses":
+      headers.Authorization = `Bearer ${key}`;
+      body = { model: route.wireModel, instructions: systemPrompt, input: turns, stream: false };
+      extractText = extractResponsesText;
+      break;
+    case "gemini":
+      headers["x-goog-api-key"] = key;
+      body = {
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: turns.map((t) => ({
+          role: t.role === "assistant" ? "model" : "user",
+          parts: [{ text: t.content }],
+        })),
+        generationConfig: { maxOutputTokens: ADVISOR_MAX_OUTPUT_TOKENS },
+      };
+      extractText = extractGeminiText;
+      break;
+    default:
+      headers.Authorization = `Bearer ${key}`;
+      body = {
+        model: route.wireModel,
+        messages: [{ role: "system", content: systemPrompt }, ...turns],
+      };
+      extractText = extractChatCompletionText;
+  }
+
+  if (route.wire) {
+    const shaped = shapeRequestFromWire(body, route.wire, {
+      maxTokens: ADVISOR_MAX_OUTPUT_TOKENS,
+      hasTools: false,
+    });
+    mergeWireHeaders(headers, shaped.headers);
+  }
+  return { headers, body, extractText };
 }
 
 /**
@@ -2189,6 +2252,27 @@ function extractChatCompletionText(data: any): string | undefined {
   return undefined;
 }
 
+/** Advice text from a Responses body: its output_text parts, joined. */
+function extractResponsesText(data: any): string | undefined {
+  if (typeof data?.output_text === "string" && data.output_text) return data.output_text;
+  const parts = (Array.isArray(data?.output) ? data.output : [])
+    .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
+    .filter((c: any) => c?.type === "output_text" && typeof c.text === "string")
+    .map((c: any) => c.text);
+  return parts.length > 0 ? parts.join("") : undefined;
+}
+
+/** Advice text from a Gemini generateContent body: its first candidate's text parts. */
+function extractGeminiText(data: any): string | undefined {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return undefined;
+  const text = parts
+    .filter((p: any) => typeof p?.text === "string" && !p.thought)
+    .map((p: any) => p.text)
+    .join("");
+  return text || undefined;
+}
+
 /** Advice text from an Anthropic messages body: its first text block. */
 function extractAnthropicText(data: any): string | undefined {
   const blocks = data?.content;
@@ -2210,7 +2294,7 @@ async function callAdvisorModel(
   let plan: AdvisorFetchPlan;
   try {
     const route = advisorRouteFor(modelSpec, "panel");
-    const { headers, body } = buildAdvisorRequest(route, messages, apiKeys);
+    const { headers, body, extractText } = buildAdvisorRequest(route, messages, apiKeys);
     plan = {
       role: "panel",
       requestedModel: modelSpec,
@@ -2218,7 +2302,7 @@ async function callAdvisorModel(
       headers,
       body,
       timeoutMs: ADVISOR_PANEL_TIMEOUT_MS,
-      extractText: extractChatCompletionText,
+      extractText,
       emptyStubPath: ADVISOR_STUB_PATHS.PANEL_EMPTY,
       errorStubPath: ADVISOR_STUB_PATHS.PANEL_ERROR,
     };
@@ -2257,34 +2341,6 @@ function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {
   );
 }
 
-function planAnthropicCollector(
-  requestedModel: string,
-  route: AdvisorRoute,
-  adviceText: string,
-  apiKey?: string
-): AdvisorFetchPlan {
-  return {
-    role: "collector",
-    requestedModel,
-    route,
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey ?? "",
-      "anthropic-version": "2023-06-01",
-    },
-    body: {
-      model: route.wireModel,
-      max_tokens: 1024,
-      system: COLLECTOR_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: adviceText }],
-    },
-    timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
-    extractText: extractAnthropicText,
-    emptyStubPath: ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY,
-    errorStubPath: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
-  };
-}
-
 async function callCollectorModel(
   collectorSpec: string,
   advice: Array<{ model: string; text: string }>,
@@ -2312,28 +2368,27 @@ async function callCollectorModel(
       );
     }
 
-    if (route.kind === "anthropic") {
-      plan = planAnthropicCollector(collectorSpec, route, adviceText, apiKeys.anthropic);
-    } else {
-      // External collector via OpenRouter/Google/OpenAI
-      const { headers, body } = buildAdvisorRequest(route, [], apiKeys, COLLECTOR_SYSTEM_PROMPT);
-      // Override messages since buildAdvisorRequest would try to convert
-      body.messages = [
-        { role: "system", content: COLLECTOR_SYSTEM_PROMPT },
-        { role: "user", content: adviceText },
-      ];
-      plan = {
-        role: "collector",
-        requestedModel: collectorSpec,
-        route,
-        headers,
-        body,
-        timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
-        extractText: extractChatCompletionText,
-        emptyStubPath: ADVISOR_STUB_PATHS.COLLECTOR_EMPTY,
-        errorStubPath: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
-      };
-    }
+    const { headers, body, extractText } = buildAdvisorRequest(
+      route,
+      [],
+      apiKeys,
+      COLLECTOR_SYSTEM_PROMPT,
+      adviceText
+    );
+    plan = {
+      role: "collector",
+      requestedModel: collectorSpec,
+      route,
+      headers,
+      body,
+      timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
+      extractText,
+      emptyStubPath:
+        route.kind === "anthropic"
+          ? ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY
+          : ADVISOR_STUB_PATHS.COLLECTOR_EMPTY,
+      errorStubPath: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
+    };
   } catch (err) {
     const base = {
       role: "collector" as const,

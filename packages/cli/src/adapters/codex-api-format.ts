@@ -14,12 +14,7 @@
 import { mapToolChoiceToResponsesAPI } from "../handlers/shared/format/openai-tools.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
-import {
-  type AdapterResult,
-  BaseAPIFormat,
-  type EffortLevel,
-  matchesModelFamily,
-} from "./base-api-format.js";
+import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 import { reasoningForCall } from "./reasoning-cache.js";
 
 /**
@@ -46,6 +41,21 @@ export function normalizeCodexModel(modelId: string | undefined): string {
 }
 
 export class CodexAPIFormat extends BaseAPIFormat {
+  /**
+   * `false` builds the GENERIC Responses body every Responses connection
+   * accepts (catalog 3.7.0 R8): no `store`, no `include`. Those two are ChatGPT
+   * Codex behaviour and stay on the Codex subscription only. The output limit,
+   * reasoning and verbosity are not this body's business on a catalog
+   * connection either: the wire shaper (`ComposedHandler` step 5w) removes what
+   * is written here and writes what the connection publishes.
+   */
+  private readonly codexExtras: boolean;
+
+  constructor(modelId: string, wireFormat?: StreamFormat, options: { codexExtras?: boolean } = {}) {
+    super(modelId, wireFormat);
+    this.codexExtras = options.codexExtras ?? true;
+  }
+
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
@@ -54,17 +64,9 @@ export class CodexAPIFormat extends BaseAPIFormat {
     };
   }
 
-  shouldHandle(modelId: string): boolean {
-    // Two valid Codex naming patterns:
-    //  - prefix:  "codex", "codex-mini", "openai/codex-foo"
-    //  - suffix:  "gpt-5-codex", "gpt-5.2-codex", "openai/gpt-5-codex"
-    // The suffix form is what the openai-codex provider's nativeModelPatterns
-    // matches (/codex$/i), so the format adapter must agree — otherwise the
-    // request gets routed to the Codex /v1/responses endpoint but shaped as
-    // a Chat Completions body, which the server 400s.
-    if (matchesModelFamily(modelId, "codex")) return true;
-    const lower = modelId.toLowerCase();
-    return /(^|\/)[a-z0-9.+-]*-codex$/.test(lower);
+  /** Never selected by model name: the connection's `wire.api` chooses Responses. */
+  shouldHandle(_modelId: string): boolean {
+    return false;
   }
 
   getName(): string {
@@ -81,7 +83,9 @@ export class CodexAPIFormat extends BaseAPIFormat {
     if (replayedReasoning > 0) {
       log(`[CodexAPIFormat] replaying ${replayedReasoning} cached reasoning item(s)`);
     }
-    const normalizedModel = normalizeCodexModel(this.modelId);
+    // The ChatGPT Codex backend knows bare ids only; every other Responses host
+    // gets the connection's exact wire id.
+    const model = this.codexExtras ? normalizeCodexModel(this.modelId) : this.modelId;
 
     // Strip IDs from message items (stateless mode doesn't support server-side state)
     const strippedMessages = convertedMessages.map((item: any) => {
@@ -89,33 +93,18 @@ export class CodexAPIFormat extends BaseAPIFormat {
       return rest;
     });
 
-    // BUG FIX: this used to hardcode reasoning.effort = "medium", ignoring
-    // Claude Code's effort signal entirely. Now read it and clamp per the
-    // Codex (Responses API) model gates; default stays "medium" when absent.
-    const effort = this.resolveCodexEffort(claudeRequest);
-
+    // No output limit, reasoning effort or verbosity here: on a catalog
+    // connection those are the wire's (step 5w), and nothing else may choose
+    // them. The old name-based effort ladder and its "medium" default are gone.
     const payload: any = {
-      model: normalizedModel,
+      model,
       input: strippedMessages,
       stream: true,
-      store: false,
-      include: ["reasoning.encrypted_content"],
-      reasoning: {
-        effort,
-        summary: "auto",
-      },
-      text: {
-        verbosity: "medium",
-      },
+      ...(this.codexExtras ? { store: false, include: ["reasoning.encrypted_content"] } : {}),
     };
 
     if (claudeRequest.system) {
       payload.instructions = claudeRequest.system;
-    }
-
-    if (claudeRequest.max_tokens) {
-      // Codex API doesn't support max_tokens - use default
-      // payload.max_tokens = Math.max(16, claudeRequest.max_tokens);
     }
 
     if (tools.length > 0) {
@@ -144,66 +133,6 @@ export class CodexAPIFormat extends BaseAPIFormat {
   }
 
   // ─── Private helpers ───────────────────────────────────────────────
-
-  /**
-   * Resolve Claude Code's effort signal to a Codex Responses-API
-   * `reasoning.effort` value. Codex models accept the OpenAI set
-   * `none | low | medium | high | xhigh` but NOT `minimal` (codex drops it)
-   * and `max` doesn't exist (ceiling is xhigh). `xhigh` is documented only on
-   * gpt-5.1-codex-max. `none` is valid on the gpt-5.1-codex family.
-   *
-   * Default is "medium" when Claude Code sends no effort signal (the historical
-   * Codex default — preserved so behavior is unchanged for non-effort requests).
-   */
-  private resolveCodexEffort(claudeRequest: any): string {
-    const level = this.resolveEffortLevel(claudeRequest);
-    if (!level) return "medium"; // historical default
-
-    const value = this.clampCodexEffort(level);
-    log(`[CodexAPIFormat] reasoning.effort -> ${value} (from ${level}) for ${this.modelId}`);
-    return value;
-  }
-
-  /** gpt-5.1-codex-max (and later codex-max), plus the gpt-5.6 family —
-   *  the models accepting xhigh on the Responses API. */
-  private acceptsXhigh(): boolean {
-    const m = this.modelId.toLowerCase();
-    return /codex.*max/.test(m) || /gpt-5\.6/.test(m);
-  }
-
-  /** gpt-5.6 family — first OpenAI models with a native `max` effort
-   *  (catalog-confirmed: efforts=[max,xhigh,high,medium,low,none]). */
-  private acceptsMax(): boolean {
-    return /gpt-5\.6/.test(this.modelId.toLowerCase());
-  }
-
-  /** gpt-5.1+ codex family and the gpt-5.6 family — accept `none`. */
-  private isCodex51Plus(): boolean {
-    const m = this.modelId.toLowerCase();
-    return /gpt-5\.[1-9].*codex/.test(m) || /gpt-5\.6/.test(m);
-  }
-
-  private clampCodexEffort(level: EffortLevel): string {
-    switch (level) {
-      case "none":
-        // `none` valid on the gpt-5.1-codex family; older codex → low.
-        return this.isCodex51Plus() ? "none" : "low";
-      case "minimal":
-        return "low"; // codex drops `minimal`
-      case "low":
-      case "medium":
-      case "high":
-        return level;
-      case "xhigh":
-        return this.acceptsXhigh() ? "xhigh" : "high";
-      case "max":
-        // gpt-5.6 takes native max; older codex has no max → xhigh/high.
-        if (this.acceptsMax()) return "max";
-        return this.acceptsXhigh() ? "xhigh" : "high";
-      default:
-        return "medium";
-    }
-  }
 
   /**
    * Convert Chat Completions format messages to Responses API format.

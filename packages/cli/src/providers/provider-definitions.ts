@@ -321,12 +321,14 @@ export type TieredProviderDefinition = ProviderDefinition & { tier: RouteTier };
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Handler factories — twelve builders shared across twenty-six providers.
+// Handler factories, shared across providers.
 //
 // Declared once here rather than inline per entry because the mapping is
-// many-to-one: `openaiProfile` alone serves x-ai, qwen, deepseek, mistralai and
-// both Sakana products. Inlining would have copied the same thunk nine times,
-// which is how tables drift.
+// many-to-one (several OpenAI-compatible providers share `openaiProfile`), and
+// inlining copies the same thunk per entry, which is how tables drift. A
+// catalog-routed provider is built from its connection's wire BEFORE its
+// profile is consulted (`createHandlerForProvider` → `buildWireHandler`); the
+// profile serves only the providers and models the catalog does not route.
 // ---------------------------------------------------------------------------
 
 const geminiHandler = lazyHandler((m) => m.geminiProfile);

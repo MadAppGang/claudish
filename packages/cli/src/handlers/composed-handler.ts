@@ -21,13 +21,17 @@
  */
 
 import type { Context } from "hono";
-import type { BaseAPIFormat, EffortLevel } from "../adapters/base-api-format.js";
+import {
+  type BaseAPIFormat,
+  DefaultAPIFormat,
+  type EffortLevel,
+} from "../adapters/base-api-format.js";
+import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
 import type { ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { resolveModelDialect } from "../adapters/dialect-manager.js";
-import { lookupModelForProvider } from "../adapters/model-catalog.js";
+import { lookupModelAcceptsImages, lookupModelForProvider } from "../adapters/model-catalog.js";
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
@@ -43,8 +47,20 @@ import {
 } from "../logger.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { deepMergeParams } from "../model-params.js";
+import type { ResolvedConnection } from "../providers/connection-resolver.js";
+import type { WireHeader } from "../providers/connection-wire.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
+import { wireMarkerContext } from "../providers/wire-markers.js";
+import {
+  type WireChoices,
+  type WireMode,
+  type WireSpeed,
+  mergeWireHeaders,
+  recoverBorrowedWireFields,
+  shapeRequestFromWire,
+  wireChoicesFromClaudeRequest,
+} from "../providers/wire-request.js";
 import { recoveryClock } from "../recovery/clock.js";
 import {
   type RecoveryOutcome,
@@ -59,7 +75,7 @@ import {
   describeImages,
 } from "../services/vision-proxy.js";
 import { type SessionEventRegistry, extractSessionId } from "../session-events/index.js";
-import { applyProInjection } from "../session-events/pro-injection.js";
+import { applyProInjection, isUltracodeMainTurn } from "../session-events/pro-injection.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
 import { classifyError, reportError } from "../telemetry.js";
@@ -199,6 +215,21 @@ export interface ComposedHandlerOptions {
    * Defaults to ~/.claudish/cloud-models-catalog-v3.json. Only tests should pass this.
    */
   catalogCachePath?: string;
+  /**
+   * The catalog connection this handler calls, with its `wire` (catalog 3.7.0).
+   * When its wire is known, step 5w shapes the output limit, reasoning, mode and
+   * speed from it alone, after every adapter and dialect has run.
+   */
+  connection?: ResolvedConnection;
+  /**
+   * A model-family dialect the PROFILE chose for a provider that serves one
+   * family (the Grok subscription). Never chosen from the model name.
+   */
+  dialect?: BaseAPIFormat;
+  /** `+pro` on the model spec: request mode pro, refused where the wire does not publish it. */
+  wireMode?: WireMode;
+  /** `#<speed>` on the model spec, refused where the wire does not publish it. */
+  wireSpeed?: WireSpeed;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -254,27 +285,34 @@ export class ComposedHandler implements ModelHandler {
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Initialize dialect manager for automatic dialect/format selection.
-    // Always pass the bare modelName — passing routed strings here was the root
-    // cause of #102 (zai@glm-4.7 false-matching GLMModelDialect).
+    // The dialect is never picked by model name. A catalog connection's `wire`
+    // (or a custom endpoint's declared one) decides every reasoning and limit
+    // field (step 5w); a profile that genuinely serves one model family names
+    // its dialect explicitly (`options.dialect`: the Grok subscription). The
+    // name-ordered dialect factory this replaced picked, for example, the GLM
+    // dialect for any id containing "glm", whatever host or API served it.
     //
-    // The second argument is the REQUEST wire format, which only this class
-    // knows: dialects self-select by model name, and the same model can be
-    // served over different wires by different providers (Qwen: DashScope
-    // OpenAI-compatible vs. Alibaba Token Plan's Anthropic Messages endpoint),
-    // each with a differently-named reasoning knob. The Layer 1 FormatConverter
-    // decides the request shape, so its getStreamFormat() is the signal — NOT
-    // provider.overrideStreamFormat(), which only re-labels the RESPONSE for
-    // aggregators. Undefined when no explicit converter was passed (the dialect
-    // is then also the converter) → dialects fall back to the OpenAI default.
-    this.resolvedDialect = resolveModelDialect(
-      this.bareModelName,
-      this.explicitAdapter?.getStreamFormat()
-    );
+    // The dialect gets the REQUEST wire format, which only this class knows:
+    // the Layer 1 converter decides the request shape, so its getStreamFormat()
+    // is the signal — NOT provider.overrideStreamFormat(), which only re-labels
+    // the RESPONSE for aggregators.
+    //
+    // One quirk is the MODEL's on every host and no wire field describes it:
+    // MiniMax rejects a temperature outside its range. It keys on the catalog's
+    // vendor field (data), and the MiniMax dialect's reasoning fields are then
+    // overwritten by the wire like any other (step 5w runs after it).
+    this.resolvedDialect =
+      options.dialect ??
+      (options.connection?.vendor === "minimax"
+        ? new MiniMaxModelDialect(this.bareModelName, this.explicitAdapter?.getStreamFormat())
+        : new DefaultAPIFormat(this.bareModelName, this.explicitAdapter?.getStreamFormat()));
 
-    // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
-    // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
     const resolvedModelAdapter = this.resolvedDialect;
+    if (options.connection) {
+      for (const adapter of [this.explicitAdapter, this.resolvedDialect]) {
+        adapter?.setUpstreamVendor(options.connection.vendor ?? "");
+      }
+    }
     if (resolvedModelAdapter.getName() !== "DefaultAPIFormat") {
       this.modelAdapter = resolvedModelAdapter;
     }
@@ -305,8 +343,20 @@ export class ComposedHandler implements ModelHandler {
     // Use bareModelName for the middleware gate — .includes() works identically for
     // "google@gemini-2.5-flash" and "gemini-2.5-flash", and bare form is the invariant.
     this.middlewareManager = new MiddlewareManager();
-    if (this.bareModelName.includes("gemini") || this.bareModelName.includes("google/")) {
-      this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
+    // With a connection, from data: a Gemini-API wire, or a Google model behind
+    // a gateway (OpenRouter carries its thought signatures in reasoning_details).
+    const connectionWire = options.connection?.wire;
+    if (
+      options.connection
+        ? (connectionWire?.status === "known" && connectionWire.api === "gemini") ||
+          options.connection.vendor === "google"
+        : this.bareModelName.includes("gemini") || this.bareModelName.includes("google/")
+    ) {
+      // Selected from data when there is a connection: the middleware's own
+      // name gate must not re-filter an opaque gateway id out again.
+      this.middlewareManager.register(
+        new GeminiThoughtSignatureMiddleware({ alwaysHandle: !!options.connection })
+      );
     }
     this.middlewareManager
       .initialize()
@@ -321,7 +371,7 @@ export class ComposedHandler implements ModelHandler {
     // through. getAdapter() picks explicitAdapter or resolvedDialect at request
     // time and modelAdapter runs in addition to it, so pinning only one leaves
     // the flag working on some models and silently not on others. Safe to
-    // mutate: resolveModelDialect() returns a fresh instance per handler, and
+    // mutate: the dialect is built per handler by its profile, and
     // an explicit adapter is built per handler by its profile.
     if (options.effortOverride) {
       for (const dialect of new Set(
@@ -355,6 +405,18 @@ export class ComposedHandler implements ModelHandler {
 
   /** Model vision support — model adapter wins over provider adapter */
   private getModelSupportsVision(): boolean {
+    // A catalog connection asks the catalog's data about the MODEL (not a
+    // dialect's default by name). Unknown is not "no": an image the user
+    // attached is sent, and the upstream's own answer is what they see.
+    const connection = this.options.connection;
+    if (connection) {
+      if (connection.generationId === "declared") return true;
+      try {
+        return lookupModelAcceptsImages(connection.modelId, this.options.catalogCachePath) ?? true;
+      } catch {
+        return true;
+      }
+    }
     return this.modelAdapter?.supportsVision() ?? this.getAdapter().supportsVision();
   }
 
@@ -1102,7 +1164,75 @@ export class ComposedHandler implements ModelHandler {
     // (transformPayload) on purpose: after, so they beat every adapter default;
     // before, so they write into the payload itself rather than into a
     // provider envelope that 5c may wrap around it.
-    if (this.options.proOnUltracode) {
+    // 5w. A known catalog wire decides the output limit, reasoning, mode and
+    // speed — nothing else does. It runs after every adapter and dialect (it
+    // removes whatever they emitted for those decisions) and before
+    // --model-params, which stays the user's last word.
+    let wireHeaders: WireHeader[] = [];
+    let wireBorrowed: string[] = [];
+    const wire = this.options.connection?.wire;
+    if (wire?.status === "known") {
+      const choices: WireChoices = {
+        ...wireChoicesFromClaudeRequest(claudeRequest, this.options.effortOverride),
+        // `--accept-served-model` (or CLAUDISH_ACCEPT_SERVED_MODEL=1): the user
+        // named the swap, so a part the catalog warns about may be sent.
+        acceptServedModelChange: process.env.CLAUDISH_ACCEPT_SERVED_MODEL === "1",
+      };
+      const markers = wireMarkerContext.getStore();
+      const wireMode = this.options.wireMode ?? markers?.mode;
+      const wireSpeed = this.options.wireSpeed ?? markers?.speed;
+      if (wireMode) {
+        choices.mode = { value: wireMode, explicit: true };
+      } else if (
+        this.options.proOnUltracode &&
+        isUltracodeMainTurn({
+          enabled: true,
+          sessionId: extractSessionId(claudeRequest?.metadata),
+          outputConfig: claudeRequest?.output_config,
+          registry: this.options.sessionEventRegistry,
+        })
+      ) {
+        choices.mode = { value: "pro", explicit: false };
+      }
+      if (wireSpeed) choices.speed = { value: wireSpeed, explicit: true };
+
+      const shaped = shapeRequestFromWire(
+        requestPayload,
+        wire,
+        choices,
+        this.options.connection?.ownerWire
+      );
+      wireBorrowed = shaped.borrowed;
+      const where = `${this.options.connection?.route.routeId}/${this.options.connection?.route.routeProfileId} · ${this.options.connection?.externalModelId}`;
+      for (const note of shaped.notes) log(`[Wire] ${where}: ${note}`);
+      if (shaped.refusal) {
+        return c.json(
+          wrapAnthropicError(
+            400,
+            `claudish: ${shaped.refusal} (${where})`,
+            "invalid_request_error"
+          ),
+          400 as any
+        );
+      }
+      wireHeaders = shaped.headers;
+    } else if (
+      this.options.wireMode ||
+      this.options.wireSpeed ||
+      wireMarkerContext.getStore()?.mode ||
+      wireMarkerContext.getStore()?.speed
+    ) {
+      // A marker asks for something only a connection's wire can grant; without
+      // one there is nothing that says how, or whether, to send it.
+      return c.json(
+        wrapAnthropicError(
+          400,
+          `claudish: ${this.targetModel} has no catalog wire, so a +mode or #speed marker cannot be applied`,
+          "invalid_request_error"
+        ),
+        400 as any
+      );
+    } else if (this.options.proOnUltracode) {
       applyProInjection(requestPayload, {
         enabled: true,
         sessionId: extractSessionId(claudeRequest?.metadata),
@@ -1256,9 +1386,16 @@ export class ComposedHandler implements ModelHandler {
     // no FallbackHandler exists — `proxy-server.ts`'s bare 500.
     //
     // The touch is refresh-conditional, which makes this rare, not safe.
+    // Every header fetch below goes through this, so a header the wire requires
+    // (a beta token next to the field it wrote) survives the auth retries too.
+    const fetchHeaders = async (): Promise<Record<string, string>> => {
+      const fetched = await this.provider.getHeaders(payload);
+      mergeWireHeaders(fetched, wireHeaders);
+      return fetched;
+    };
     let headers: Record<string, string>;
     try {
-      headers = await this.provider.getHeaders(payload);
+      headers = await fetchHeaders();
     } catch (err: any) {
       const conn = classifyConnectionError(err);
       if (!conn) {
@@ -1270,7 +1407,7 @@ export class ComposedHandler implements ModelHandler {
         err,
         conn,
         this.connectionEndpointFor(err, endpoint),
-        () => this.provider.getHeaders(),
+        fetchHeaders,
         {
           startTime,
           // An auth site with the unclamped primary fetch still ahead of it —
@@ -1474,9 +1611,18 @@ export class ComposedHandler implements ModelHandler {
         const candidates = [this.modelAdapter, this.getAdapter()].filter(
           (a, i, all): a is BaseModelAdapter => !!a?.recoverFromRejection && all.indexOf(a) === i
         );
-        const errorText = candidates.length > 0 ? await response.clone().text() : "";
-        let recovery: { payload: any; note: string } | null = null;
-        for (const candidate of candidates) {
+        const errorText =
+          candidates.length > 0 || wireBorrowed.length > 0 ? await response.clone().text() : "";
+        // Fields borrowed from the owner's connection (this connection's own
+        // value is unknown) are the first suspects: tried in turn, dropped on the
+        // 400 that names them. Only those fields — never one the wire published.
+        let recovery: { payload: any; note: string } | null = recoverBorrowedWireFields(
+          requestPayload,
+          wireBorrowed,
+          errorText
+        );
+        if (recovery) wireBorrowed = [];
+        for (const candidate of recovery ? [] : candidates) {
           recovery = candidate.recoverFromRejection(requestPayload, errorText);
           if (recovery) break;
         }
@@ -1499,7 +1645,7 @@ export class ComposedHandler implements ModelHandler {
           // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
           // out of here is untouched.
           const doParamRetry = async (sig?: AbortSignal): Promise<Response> => {
-            const retryHeaders = await this.provider.getHeaders(payload);
+            const retryHeaders = await fetchHeaders();
             retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
             return fetch(
               endpoint,
@@ -1565,7 +1711,7 @@ export class ComposedHandler implements ModelHandler {
         // leave the other exactly as exposed as it was.
         const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
           await this.provider.forceRefreshAuth!();
-          const retryHeaders = await this.provider.getHeaders(payload);
+          const retryHeaders = await fetchHeaders();
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.

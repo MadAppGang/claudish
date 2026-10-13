@@ -1,71 +1,94 @@
-/**
- * Regression: Claude Code effort → OpenAI reasoning_effort mapping.
- *
- * Claude Code (Opus 4.7/4.8) conveys effort via `output_config.effort` (a string
- * level: none/low/medium/high/xhigh/max). Previously claudish only mapped the
- * legacy `thinking.budget_tokens`, gated to o1/o3 models, so for gpt-5.5 the
- * effort was silently DROPPED (no reasoning_effort reached OpenAI) — and the
- * legacy mapping could emit `minimal`, which gpt-5.x REJECTS.
- *
- * Valid OpenAI reasoning_effort values for gpt-5.x (verified against the live
- * API): none | low | medium | high | xhigh. (minimal and max are rejected.)
- */
-
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
+import { resolveConnection } from "../providers/connection-resolver.js";
+import { shapeRequestFromWire, wireChoicesFromClaudeRequest } from "../providers/wire-request.js";
+import { CodexAPIFormat } from "./codex-api-format.js";
+import { resolveModelDialect } from "./dialect-manager.js";
 import { OpenAIAPIFormat } from "./openai-api-format.js";
 
-function reasoningEffortFor(modelId: string, effort: string): string | undefined {
-  const fmt = new OpenAIAPIFormat(modelId);
-  const req: any = { output_config: { effort }, max_tokens: 100, temperature: 1 };
-  // buildChatCompletionsPayload is the ComposedHandler path that sets the field.
-  const payload = (fmt as any).buildChatCompletionsPayload(req, [], []);
-  return payload.reasoning_effort;
-}
+const cachePath = new URL(
+  "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
+  import.meta.url
+).pathname;
 
-describe("output_config.effort → reasoning_effort (gpt-5.5)", () => {
-  test.each([
-    ["low", "low"],
-    ["medium", "medium"],
-    ["high", "high"],
-    ["xhigh", "xhigh"], // gpt-5.5 supports xhigh — must pass through, not clamp to high
-    ["none", "none"],
-    ["minimal", "low"], // gpt-5.5 REJECTS "minimal" → map to "low"
-    ["max", "xhigh"], // gpt-5.5 REJECTS "max" → xhigh is the ceiling
-  ])("effort '%s' → reasoning_effort '%s'", (input, expected) => {
-    expect(reasoningEffortFor("gpt-5.5-2026-04-23", input)).toBe(expected);
-  });
+test.each(["gpt-5.5", "o3-mini", "o1-mini", "gpt-4-turbo", "fugu-ultra", "gpt-5-codex"])(
+  "OpenAI format uses max_tokens without reasoning or name selection for %s",
+  (id) => {
+    const format = new OpenAIAPIFormat(id);
+    const request = {
+      max_tokens: 100,
+      thinking: { budget_tokens: 40000 },
+      output_config: { effort: "high" },
+    };
+    const payload = format.buildPayload(request, [], []);
+    expect(payload.max_tokens).toBe(100);
+    for (const key of [
+      "reasoning_effort",
+      "reasoning",
+      "max_completion_tokens",
+      "max_output_tokens",
+    ])
+      expect(payload).not.toHaveProperty(key);
+    expect(format.shouldHandle(id)).toBe(false);
+    const prepared = format.prepareRequest({ thinking: request.thinking, keep: "yes" }, request);
+    expect(prepared).not.toHaveProperty("thinking");
+    expect(prepared.keep).toBe("yes");
+    expect(prepared).not.toHaveProperty("reasoning_effort");
+  }
+);
 
-  test("the bare rolling gpt-5.5 alias maps effort too", () => {
-    expect(reasoningEffortFor("gpt-5.5", "xhigh")).toBe("xhigh");
-  });
+test.each(["gpt-5.5", "o3-mini", "gpt-5-codex", "gpt-5.1-codex-max"])(
+  "%s does not select an OpenAI or Codex dialect",
+  (id) => {
+    expect(resolveModelDialect(id).getName()).toBe("DefaultAPIFormat");
+    expect(new CodexAPIFormat(id).shouldHandle(id)).toBe(false);
+  }
+);
 
-  test("o-series models still map effort", () => {
-    expect(reasoningEffortFor("o3-mini", "high")).toBe("high");
-  });
-
-  test("legacy thinking.budget_tokens still maps (no minimal — gpt-5.x rejects it)", () => {
-    const fmt = new OpenAIAPIFormat("gpt-5.5");
-    const low = (fmt as any).buildChatCompletionsPayload(
-      { thinking: { budget_tokens: 2000 }, max_tokens: 100 },
+test.each([undefined, "low", "medium", "high", "xhigh", "max"])(
+  "Codex format does not invent reasoning or verbosity for effort %s",
+  (effort) => {
+    const payload = new CodexAPIFormat("gpt-5.1-codex-max").buildPayload(
+      { max_tokens: 100, output_config: { effort } },
       [],
       []
     );
-    expect(low.reasoning_effort).toBe("low"); // never "minimal"
-    const high = (fmt as any).buildChatCompletionsPayload(
-      { thinking: { budget_tokens: 40000 }, max_tokens: 100 },
-      [],
-      []
-    );
-    expect(high.reasoning_effort).toBe("high");
-  });
+    expect(payload).not.toHaveProperty("reasoning");
+    expect(payload).not.toHaveProperty("text");
+    expect(payload).not.toHaveProperty("reasoning_effort");
+  }
+);
+test("Codex extras alone enable model normalization, store and include", () => {
+  const id = "vendor/exact-model";
+  const generic = new CodexAPIFormat(id, undefined, { codexExtras: false }).buildPayload(
+    {},
+    [],
+    []
+  );
+  expect(generic.model).toBe(id);
+  expect(generic).not.toHaveProperty("store");
+  expect(generic).not.toHaveProperty("include");
+  const codex = new CodexAPIFormat(id).buildPayload({}, [], []);
+  expect(codex.model).toBe("exact-model");
+  expect(codex.store).toBe(false);
+  expect(codex.include).toEqual(["reasoning.encrypted_content"]);
+});
 
-  test("non-reasoning model (gpt-4-turbo) does NOT get reasoning_effort", () => {
-    expect(reasoningEffortFor("gpt-4-turbo", "high")).toBeUndefined();
+test.each([
+  ["low", "low"],
+  ["medium", "medium"],
+  ["high", "high"],
+  ["minimal", "low"],
+  ["max", "max"],
+])("published OpenAI Responses wire maps %s to %s", (effort, expected) => {
+  const result = resolveConnection("openai", "gpt-6.1-sol", cachePath);
+  if (!result.ok || result.connection.wire.status !== "known")
+    throw new Error("missing fixture wire");
+  const body: Record<string, unknown> = {};
+  shapeRequestFromWire(body, result.connection.wire, {
+    ...wireChoicesFromClaudeRequest({ max_tokens: 100, output_config: { effort } }),
+    hasTools: false,
   });
-
-  test("no effort signal → no reasoning_effort set", () => {
-    const fmt = new OpenAIAPIFormat("gpt-5.5");
-    const payload = (fmt as any).buildChatCompletionsPayload({ max_tokens: 100 }, [], []);
-    expect(payload.reasoning_effort).toBeUndefined();
-  });
+  expect(body).toHaveProperty("reasoning.effort", expected);
+  expect(body).toHaveProperty("max_output_tokens", 100);
+  expect(body).not.toHaveProperty("reasoning_effort");
 });

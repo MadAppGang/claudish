@@ -2,9 +2,16 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
+import {
+  type DiskCacheV3,
+  type SlimModelEntry,
+  _clearAllModelsCacheMemo,
+  readAllModelsCache,
+  writeAllModelsCache,
+} from "./all-models-cache.js";
 import {
   _resetCatalogClient,
+  buildRoutesUrl,
   catalogWarmDisabledFor,
   getCatalogEntries,
   refreshCatalog,
@@ -31,6 +38,7 @@ function restore(name: string, value: string | undefined): void {
 }
 beforeEach(() => {
   _resetCatalogClient();
+  _clearAllModelsCacheMemo();
   delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
   process.env.CLAUDISH_CATALOG_URL = "https://catalog.test/queryModels?catalog=slim";
   process.env.CLAUDISH_PLANS_URL = "https://catalog.test/queryPlans";
@@ -50,6 +58,24 @@ function envelope(data: unknown, generationId = "generation-a"): Response {
     generationId,
     generatedAt: "2026-09-19T01:33:46.169Z",
     data,
+  });
+}
+const wireFixture: DiskCacheV3 = JSON.parse(
+  readFileSync(
+    new URL("../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json", import.meta.url),
+    "utf8"
+  )
+);
+
+function legacyRoutes(): Response {
+  // These existing pagination tests predate wires. Keep their rows and assertions
+  // meaningful with a 3.6.0 registry; the wire tests below use production 3.7.0.
+  return envelope({
+    mode: "routes",
+    registry: {
+      ...structuredClone(wireFixture.routeRegistry!.registry),
+      registryVersion: "3.6.0",
+    },
   });
 }
 function entry(modelId: string, provider: string, externalModelId: string): SlimModelEntry {
@@ -111,6 +137,7 @@ describe("v3 catalog refresh", () => {
         generation: request.searchParams.get("generationId"),
         accept: new Headers(init?.headers).get("accept"),
       });
+      if (request.searchParams.get("catalog") === "routes") return legacyRoutes();
       if (request.pathname === "/queryModels")
         return envelope({
           mode: "slim",
@@ -141,6 +168,12 @@ describe("v3 catalog refresh", () => {
         generation: "generation-a",
         accept: CATALOG_V3_ACCEPT,
       },
+      {
+        pathname: "/queryModels",
+        cursor: null,
+        generation: "generation-a",
+        accept: CATALOG_V3_ACCEPT,
+      },
     ]);
     expect(readAllModelsCache(cachePath)?.entries).toEqual([first, second]);
     expect(readAllModelsCache(cachePath)?.plans).toEqual([plan]);
@@ -151,7 +184,9 @@ describe("v3 catalog refresh", () => {
     const cachePath = tempCachePath();
     let planGeneration = "generation-a";
     globalThis.fetch = mock(async (url: string | URL | Request) => {
-      const path = new URL(String(url)).pathname;
+      const request = new URL(String(url));
+      if (request.searchParams.get("catalog") === "routes") return legacyRoutes();
+      const path = request.pathname;
       return path === "/queryPlans"
         ? envelope(
             {
@@ -186,7 +221,9 @@ describe("v3 catalog refresh", () => {
     const cachePath = tempCachePath();
     let total = 1;
     globalThis.fetch = mock(async (url: string | URL | Request) => {
-      const path = new URL(String(url)).pathname;
+      const request = new URL(String(url));
+      if (request.searchParams.get("catalog") === "routes") return legacyRoutes();
+      const path = request.pathname;
       return path === "/queryPlans"
         ? envelope({
             plans: [
@@ -312,3 +349,255 @@ describe("resolveTargetForCatalog", () => {
     });
   }
 });
+
+describe("route registry refresh", () => {
+  function serveFixture(
+    options: {
+      cache?: DiskCacheV3;
+      routesGeneration?: (attempt: number) => string;
+      registry?: unknown;
+    } = {}
+  ) {
+    const cache = options.cache ?? wireFixture;
+    const requests: Array<{ url: URL; accept: string | null }> = [];
+    let attempts = 0;
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({ url, accept: new Headers(init?.headers).get("accept") });
+      if (url.searchParams.get("catalog") === "routes") {
+        return envelope(
+          {
+            mode: "routes",
+            registry:
+              options.registry === undefined ? cache.routeRegistry!.registry : options.registry,
+          },
+          options.routesGeneration?.(attempts) ?? cache.catalogGenerationId
+        );
+      }
+      if (url.pathname === "/queryPlans") {
+        return envelope(
+          { plans: cache.plans, total: cache.plans.length },
+          cache.catalogGenerationId
+        );
+      }
+      // Two model pages make a full retry observable, including cursor reset.
+      if (!url.searchParams.has("cursor")) attempts++;
+      const second = url.searchParams.has("cursor");
+      return envelope(
+        {
+          mode: "slim",
+          models: second ? cache.entries.slice(8) : cache.entries.slice(0, 8),
+          total: cache.entries.length,
+          ...(second ? {} : { nextCursor: "fixture-page-two" }),
+        },
+        cache.catalogGenerationId
+      );
+    }) as unknown as typeof fetch;
+    return requests;
+  }
+
+  function expectAttempt(requests: Array<{ url: URL; accept: string | null }>) {
+    expect(
+      requests.map(({ url, accept }) => ({
+        path: url.pathname,
+        mode: url.searchParams.get("catalog"),
+        cursor: url.searchParams.get("cursor"),
+        generation: url.searchParams.get("generationId"),
+        accept,
+      }))
+    ).toEqual([
+      {
+        path: "/queryModels",
+        mode: "slim",
+        cursor: null,
+        generation: null,
+        accept: CATALOG_V3_ACCEPT,
+      },
+      {
+        path: "/queryModels",
+        mode: "slim",
+        cursor: "fixture-page-two",
+        generation: wireFixture.catalogGenerationId,
+        accept: CATALOG_V3_ACCEPT,
+      },
+      {
+        path: "/queryPlans",
+        mode: null,
+        cursor: null,
+        generation: wireFixture.catalogGenerationId,
+        accept: CATALOG_V3_ACCEPT,
+      },
+      {
+        path: "/queryModels",
+        mode: "routes",
+        cursor: null,
+        generation: wireFixture.catalogGenerationId,
+        accept: CATALOG_V3_ACCEPT,
+      },
+    ]);
+  }
+
+  test("pins the routes URL to the model generation and writes its registry", async () => {
+    const cachePath = tempCachePath();
+    const requests = serveFixture();
+    expect(await refreshCatalog(1000, { cachePath })).toEqual({
+      kind: "refreshed",
+      modelCount: 16,
+      catalogGenerationId: wireFixture.catalogGenerationId,
+      pages: 2,
+    });
+    expectAttempt(requests);
+    const cache = readAllModelsCache(cachePath)!;
+    expect(cache.entries).toEqual(wireFixture.entries);
+    expect(cache.routeRegistry).toEqual(wireFixture.routeRegistry);
+    expect(cache.routeRegistry!.generationId).toBe(cache.catalogGenerationId);
+  });
+
+  test.each([
+    ["persistent mismatch", false],
+    ["matching retry", true],
+  ] as const)("retries the full refresh exactly once: %s", async (_name, recovers) => {
+    const cachePath = tempCachePath();
+    writeAllModelsCache(wireFixture, cachePath);
+    const bytes = readFileSync(cachePath, "utf8");
+    const requests = serveFixture({
+      routesGeneration: (attempt) =>
+        recovers && attempt === 2 ? wireFixture.catalogGenerationId : "different-generation",
+    });
+    expect(await refreshCatalog(1000, { cachePath })).toEqual(
+      recovers
+        ? {
+            kind: "refreshed",
+            modelCount: 16,
+            catalogGenerationId: wireFixture.catalogGenerationId,
+            pages: 2,
+          }
+        : { kind: "fetch_failed", reason: "generation_mismatch" }
+    );
+    expect(requests).toHaveLength(8);
+    expectAttempt(requests.slice(0, 4));
+    expectAttempt(requests.slice(4));
+    if (recovers) {
+      expect(readAllModelsCache(cachePath)!.routeRegistry).toEqual(wireFixture.routeRegistry);
+    } else {
+      expect(readFileSync(cachePath, "utf8")).toBe(bytes);
+    }
+  });
+
+  test("malformed registry fails empty without replacing the existing file", async () => {
+    const cachePath = tempCachePath();
+    writeAllModelsCache(wireFixture, cachePath);
+    const bytes = readFileSync(cachePath, "utf8");
+    const registry = structuredClone(wireFixture.routeRegistry!.registry);
+    Reflect.deleteProperty(registry, "routes");
+    const requests = serveFixture({ registry });
+    expect(await refreshCatalog(1000, { cachePath })).toEqual({
+      kind: "fetch_failed",
+      reason: "empty",
+    });
+    expect(requests).toHaveLength(4);
+    expect(readFileSync(cachePath, "utf8")).toBe(bytes);
+  });
+
+  test("wires missing from a 3.7.0 connection fail incomplete without replacing the file", async () => {
+    const cachePath = tempCachePath();
+    writeAllModelsCache(wireFixture, cachePath);
+    const bytes = readFileSync(cachePath, "utf8");
+    const cache = structuredClone(wireFixture);
+    const connection = cache.entries
+      .flatMap((entry) => entry.aggregators ?? [])
+      .find((connection) => connection.routeStatus === "mapped")!;
+    delete connection.wire;
+    const requests = serveFixture({ cache });
+    expect(await refreshCatalog(1000, { cachePath })).toEqual({
+      kind: "fetch_failed",
+      reason: "incomplete",
+    });
+    expect(requests).toHaveLength(4);
+    expect(readFileSync(cachePath, "utf8")).toBe(bytes);
+  });
+
+  test("buildRoutesUrl discards slim filters, pagination and stale generation", () => {
+    const url = new URL(
+      buildRoutesUrl(
+        "https://catalog.test/queryModels?catalog=slim&cursor=old&limit=5&provider=openai&generationId=stale",
+        "generation/with spaces+opaque"
+      )
+    );
+    expect(url.origin + url.pathname).toBe("https://catalog.test/queryModels");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      catalog: "routes",
+      generationId: "generation/with spaces+opaque",
+    });
+  });
+});
+
+test.each(["routes-only", "routes-fail", "disabled"])(
+  "registry readiness in isolated HOME: %s",
+  (scenario) => {
+    const home = mkdtempSync(join(tmpdir(), "registry-ready-"));
+    dirs.push(home);
+    const source = (name: string) => JSON.stringify(new URL(name, import.meta.url).pathname);
+    const child = Bun.spawnSync(
+      [
+        process.execPath,
+        "--eval",
+        `
+    import assert from "node:assert/strict";
+    import { readFileSync, existsSync } from "node:fs";
+    import { ALL_MODELS_CACHE_PATH, writeAllModelsCache, readAllModelsCache, routeRegistryPathFor } from ${source("./all-models-cache.ts")};
+    import { ensureRouteRegistryReady } from ${source("./catalog-client.ts")};
+    const fixture = JSON.parse(readFileSync(${source("../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json")}, "utf8"));
+    const registry = fixture.routeRegistry;
+    delete fixture.routeRegistry;
+    assert.ok(ALL_MODELS_CACHE_PATH.startsWith(process.env.HOME + "/"));
+    writeAllModelsCache(fixture);
+    const calls = [];
+    const original = globalThis.fetch;
+    const envelope = data => Response.json({contractVersion: 3, generationId: fixture.catalogGenerationId, generatedAt: fixture.lastUpdated, data});
+    globalThis.fetch = async input => {
+      const url = new URL(String(input));
+      assert.equal(url.hostname, "catalog.test");
+      calls.push(url);
+      if (url.searchParams.get("catalog") === "routes") {
+        if (process.env.SCENARIO === "routes-fail" && calls.length === 1) return new Response("unavailable", {status: 503});
+        return envelope({mode: "routes", registry: registry.registry});
+      }
+      if (url.pathname === "/queryPlans") return envelope({plans: fixture.plans, total: fixture.plans.length});
+      const second = url.searchParams.has("cursor");
+      return envelope({mode: "slim", models: second ? fixture.entries.slice(8) : fixture.entries.slice(0,8), total: fixture.entries.length, ...(second ? {} : {nextCursor: "next"})});
+    };
+    try {
+      await ensureRouteRegistryReady(2000);
+      if (process.env.SCENARIO === "disabled") {
+        assert.equal(calls.length, 0);
+        assert.equal(existsSync(routeRegistryPathFor(ALL_MODELS_CACHE_PATH)), false);
+      } else {
+        assert.equal(calls[0].pathname, "/queryModels");
+        assert.deepEqual(Object.fromEntries(calls[0].searchParams), {catalog: "routes", generationId: fixture.catalogGenerationId});
+        if (process.env.SCENARIO === "routes-only") assert.equal(calls.length, 1);
+        else assert.deepEqual(calls.filter(u => u.searchParams.get("catalog") === "slim").map(u => u.searchParams.get("cursor")), [null, "next"]);
+        assert.deepEqual(readAllModelsCache().routeRegistry, registry);
+        assert.deepEqual(JSON.parse(readFileSync(routeRegistryPathFor(ALL_MODELS_CACHE_PATH), "utf8")), registry);
+      }
+    } finally { globalThis.fetch = original; }
+  `,
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          SCENARIO: scenario,
+          CLAUDISH_DISABLE_KEYCHAIN: "1",
+          CLAUDISH_DISABLE_OP: "1",
+          CLAUDISH_DISABLE_CATALOG_WARM: scenario === "disabled" ? "1" : "0",
+          CLAUDISH_CATALOG_URL: "https://catalog.test/queryModels?catalog=slim",
+          CLAUDISH_PLANS_URL: "https://catalog.test/queryPlans",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+  }
+);

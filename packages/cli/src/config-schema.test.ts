@@ -199,3 +199,80 @@ describe("CustomEndpointSchema (discriminated union)", () => {
     ).toThrow();
   });
 });
+
+describe("custom endpoint declared wire", () => {
+  const wire = {
+    tokenParam: "max_tokens",
+    reasoning: {
+      enable: [{ path: "/chat_template_kwargs/enable_thinking", value: true }],
+      disable: [{ path: "/chat_template_kwargs/enable_thinking", value: false }],
+      effort: {
+        path: "/reasoning_effort",
+        values: { low: "small", high: "large" },
+        default: "low",
+      },
+    },
+  };
+  for (const kind of ["simple", "complex"] as const) {
+    const endpoint = (transport: string, declared: unknown): unknown =>
+      kind === "simple"
+        ? {
+            kind,
+            url: "https://example.invalid/v1",
+            format: transport,
+            apiKey: "fake",
+            wire: declared,
+          }
+        : {
+            kind,
+            displayName: "Test",
+            baseUrl: "https://example.invalid",
+            transport,
+            apiKey: "fake",
+            wire: declared,
+          };
+    test.each(["chat-completions", "responses"])(`${kind} openai accepts %s`, (api) => {
+      const input = endpoint("openai", { ...wire, api });
+      expect(input).toEqual(CustomEndpointSchema.parse(input));
+    });
+    test(`${kind} anthropic accepts Messages and none`, () => {
+      const input = endpoint("anthropic", { api: "anthropic-messages", tokenParam: "none" });
+      expect(input).toEqual(CustomEndpointSchema.parse(input));
+    });
+    test(`${kind} rejects an API incompatible with its transport`, () => {
+      expect(
+        CustomEndpointSchema.safeParse(endpoint("openai", { api: "anthropic-messages" })).success
+      ).toBe(false);
+      expect(
+        CustomEndpointSchema.safeParse(endpoint("anthropic", { api: "responses" })).success
+      ).toBe(false);
+      if (kind === "complex") {
+        expect(
+          CustomEndpointSchema.safeParse(endpoint("litellm", { api: "responses" })).success
+        ).toBe(false);
+        expect(
+          CustomEndpointSchema.safeParse(endpoint("litellm", { api: "chat-completions" })).success
+        ).toBe(true);
+      }
+    });
+    test.each(["enable", "disable", "effort"])(
+      `${kind} %s pointer requires a leading slash`,
+      (field) => {
+        const value =
+          field === "effort" ? { path: "reasoning_effort" } : [{ path: "thinking", value: true }];
+        expect(
+          CustomEndpointSchema.safeParse(endpoint("openai", { reasoning: { [field]: value } }))
+            .success
+        ).toBe(false);
+      }
+    );
+    test(`${kind} accepts empty wire and identity effort declaration`, () => {
+      expect(CustomEndpointSchema.safeParse(endpoint("openai", {})).success).toBe(true);
+      expect(
+        CustomEndpointSchema.safeParse(
+          endpoint("openai", { reasoning: { effort: { path: "/effort" } } })
+        ).success
+      ).toBe(true);
+    });
+  }
+});

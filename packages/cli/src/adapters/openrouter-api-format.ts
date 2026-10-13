@@ -15,29 +15,25 @@ import {
   mapToolChoiceToOpenAI,
 } from "../handlers/shared/format/openai-tools.js";
 import type { StreamFormat } from "../providers/transport/types.js";
-import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
-import { resolveModelDialect } from "./dialect-manager.js";
+import { type AdapterResult, BaseAPIFormat, DefaultAPIFormat } from "./base-api-format.js";
+import { GeminiAPIFormat } from "./gemini-api-format.js";
 
 export class OpenRouterAPIFormat extends BaseAPIFormat {
   private innerAdapter: BaseAPIFormat;
+  /**
+   * The model's vendor, from its catalog connection (`""` when the catalog
+   * names none or the model is not in the catalog). The upstream family's
+   * fixes key on it; nothing here is chosen by the model name, and reasoning
+   * is the connection wire's (step 5w).
+   */
+  private readonly vendor: string;
 
-  constructor(modelId: string) {
+  constructor(modelId: string, options: { vendor: string }) {
     super(modelId);
-
-    // Get model-specific dialect (GrokModelDialect, GeminiAPIFormat, etc.)
-    this.innerAdapter = resolveModelDialect(modelId);
-  }
-
-  /** Synchronous reasoning support check via model ID patterns */
-  private modelSupportsReasoning(): boolean {
-    const id = this.modelId.toLowerCase();
-    return (
-      id.includes("o1") ||
-      id.includes("o3") ||
-      id.includes("r1") ||
-      id.includes("qwq") ||
-      id.includes("reasoning")
-    );
+    this.vendor = options.vendor;
+    this.setUpstreamVendor(options.vendor);
+    this.innerAdapter =
+      options.vendor === "google" ? new GeminiAPIFormat(modelId) : new DefaultAPIFormat(modelId);
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────
@@ -65,14 +61,10 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
     // Use default OpenAI conversion
     const messages = super.convertMessages(claudeRequest, filterIdentityFn);
 
-    // Add model-specific system prompt tweaks
-    if (this.modelId.includes("grok") || this.modelId.includes("x-ai")) {
-      const msg =
-        "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
-      this.appendToSystemPrompt(messages, msg);
-    }
+    // The Grok tool-format instruction is added by the shared converter above,
+    // keyed on the connection's vendor (or the name, without a connection).
 
-    if (this.modelId.includes("gemini") || this.modelId.includes("google/")) {
+    if (this.vendor === "google") {
       const geminiMsg = `CRITICAL INSTRUCTION FOR OUTPUT FORMAT:
 1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
 2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so...", "First, I need to..."
@@ -121,16 +113,6 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
 
     if (tools.length > 0) {
       payload.tools = tools;
-    }
-
-    // Include reasoning for models that support it
-    if (this.modelSupportsReasoning()) {
-      payload.include_reasoning = true;
-    }
-
-    // Pass through thinking config
-    if (claudeRequest.thinking) {
-      payload.thinking = claudeRequest.thinking;
     }
 
     const toolChoice = mapToolChoiceToOpenAI(claudeRequest.tool_choice);

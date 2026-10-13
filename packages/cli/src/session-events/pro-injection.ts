@@ -104,6 +104,31 @@ export function applyProInjection(
   opts: ProInjectionOptions
 ): boolean {
   try {
+    if (!isUltracodeMainTurn(opts)) return false;
+    // Capability gate LAST: it is the only gate that touches the filesystem.
+    const resolved = resolveVariantPreset(opts.bareModelName, opts.provider, opts.cachePath);
+    if (!resolved) return false;
+    deepMergeParams(requestPayload, resolved.params);
+    log(
+      `[SessionEvents] ultracode active → preset ${resolved.preset} for ${opts.targetModel} ` +
+        `(catalog ${resolved.sourceLabel}, session ${opts.sessionId})`
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this request is an ultracode main-loop turn with `proOnUltracode` on:
+ * the gates of {@link applyProInjection} without the capability lookup. A
+ * catalog connection asks this, then sends pro only where its own
+ * `wire.reasoning.mode` publishes it. Never throws.
+ */
+export function isUltracodeMainTurn(
+  opts: Pick<ProInjectionOptions, "enabled" | "sessionId" | "outputConfig" | "registry">
+): boolean {
+  try {
     if (!opts.enabled || !opts.sessionId) return false;
     // Composite wire guard (2026-07-15): subagent requests carry the SAME
     // session_id as the main loop (empirically verified — Anthropic exposes no
@@ -131,16 +156,7 @@ export function applyProInjection(
     registry.ensureSession(opts.sessionId);
     registry.sync(opts.sessionId);
     const state = registry.getState(opts.sessionId);
-    if (!state?.ultracodeActive) return false;
-    // Capability gate LAST: it is the only gate that touches the filesystem.
-    const resolved = resolveVariantPreset(opts.bareModelName, opts.provider, opts.cachePath);
-    if (!resolved) return false;
-    deepMergeParams(requestPayload, resolved.params);
-    log(
-      `[SessionEvents] ultracode active → preset ${resolved.preset} for ${opts.targetModel} ` +
-        `(catalog ${resolved.sourceLabel}, session ${opts.sessionId})`
-    );
-    return true;
+    return state?.ultracodeActive === true;
   } catch {
     return false;
   }

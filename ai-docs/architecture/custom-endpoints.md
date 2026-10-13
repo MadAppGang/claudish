@@ -110,3 +110,19 @@ edit rather than a hunt for ternaries.
 Verified live against a header-inspecting mock — `authorization: null`, `x-api-key` **absent
 from the request entirely** (not empty), and a declared `headers: {"X-Team":"platform"}` still
 delivered, since for some gateways a custom header IS the credential.
+
+## The declared wire (v10.5.0)
+
+A custom endpoint has no catalog connection, so until v10.5.0 its request shape came from the
+model NAME: a name-picked dialect (`enable_thinking` for anything matching `qwen`, a `thinking`
+toggle for `glm-N.M ≥ 4.5`) and `OpenAIAPIFormat`'s `gpt-5`/`o1`/`o3`/`o4` token-field rule. That
+is the guessing the catalog wire reader removed everywhere else ([`wire.md`](wire.md)).
+
+An endpoint now declares a `wire` block (`CustomEndpointWireSchema`) in the catalog's own
+vocabulary, and `declared-wire.ts` turns it into a connection that goes through the same step 5w
+as a catalog connection. With no block the documented defaults apply: the transport's API,
+`max_tokens` (`max_output_tokens` on Responses), and no reasoning field. The schema refuses a
+`wire.api` the transport cannot speak (Messages on `openai`, Chat on `anthropic`).
+
+Bundled vendors with a catalog route (`together`, `fireworks`) are built from the catalog wire
+first; the other bundled rows take the declared defaults.

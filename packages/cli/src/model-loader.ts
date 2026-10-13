@@ -11,6 +11,7 @@ import {
   type CatalogV3Envelope,
   parseCatalogV3Envelope,
 } from "./providers/catalog-v3.js";
+import type { ConnectionWire } from "./providers/connection-wire.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import type { OpenRouterModel } from "./types.js";
 
@@ -164,6 +165,12 @@ export interface AggregatorEntry {
   contextWindow?: number;
   /** Reasoning behavior verified for this exact serving provider/model route. */
   reasoning?: RouteReasoningCapabilities;
+  /**
+   * How to call this exact connection (catalog 3.7.0): API, output-limit field,
+   * reasoning encoding, mode and speed. Present on every mapped connection of a
+   * 3.7.0 generation; the only source of request decisions.
+   */
+  wire?: ConnectionWire;
 }
 
 /**

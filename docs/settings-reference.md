@@ -22,6 +22,7 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 | `--model` | `-m` | string | none (prompts interactively) | Model to use. Accepts `provider@model` syntax, legacy `prefix/model`, or bare model name for auto-detection |
 | `--default-provider` | | string | none | Default provider for auto-routing (v7.0.0+). Overrides env var and config file. Valid: built-in provider names or custom endpoint names |
 | `--config` | | path | none | Use this file as the run's ONLY config, replacing both the global and project config. Consumed before `parseArgs()` — see [Config File Override](#44-config-file-override---config) |
+| `--accept-served-model` | | boolean | false | Allow a reasoning-off that the connection serves with a DIFFERENT model (catalog `served_model_changes`; e.g. Kimi Code `k3`: thinking off is served by K2.8 Preview). Without it reasoning stays on and the log says why. Env: `CLAUDISH_ACCEPT_SERVED_MODEL=1` (v10.5.0+) |
 | `--model-opus` | | string | none | Model for Opus role (planning, complex tasks) |
 | `--model-sonnet` | | string | none | Model for Sonnet role (default coding) |
 | `--model-haiku` | | string | none | Model for Haiku role (fast tasks, background) |
@@ -425,6 +426,21 @@ ll@my-model                      # LiteLLM proxy with auto catalog resolution
 
 Provider part is **case-insensitive**. Shortcuts are resolved to canonical provider names.
 
+**Request mode and speed markers (v10.5.0+).** A model spec may end in `+pro` and/or
+`#<speed>` (`fast`, `priority`, `flex`, `ultrafast`, `standard`):
+
+```
+cx@gpt-6-sol+pro          # reasoning mode pro
+oai@gpt-6-sol#fast        # fast speed tier (sent as the connection's native value, e.g. service_tier=priority)
+oai@gpt-6-sol+pro#flex    # both, in either order
+```
+
+A marker is only a REQUEST. Each catalog connection publishes which modes and speeds it offers
+(`claudish --probe <model>` prints them); a value the connection does not offer is refused with
+the list it does offer, never silently dropped or guessed. A faster tier can bill at a higher
+rate. The markers need a catalog connection (or a custom endpoint); they are refused elsewhere.
+`-pro`/`-fast` are NOT markers: `gpt-6-sol-pro` and `kimi-k3-fast` are separate models.
+
 ### 5.2 Provider Shortcuts
 
 #### Remote Providers
@@ -669,6 +685,7 @@ For OpenAI- or Anthropic-compatible servers:
 | `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`) |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
 | `models` | string[] | no | Restrict to listed models; omit to allow any |
+| `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
 
@@ -729,6 +746,38 @@ Full control over transport, auth, headers, and stream format:
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
 | `models` | string[] | no | Restrict to listed models |
+| `wire` | object | no | How requests are built — see **Declaring the wire** below |
+
+### Declaring the wire (v10.5.0+)
+
+claudish never chooses a request's output-limit field or reasoning parameters from the model
+name. A catalog provider gets them from the cloud models catalog; a custom endpoint gets them
+from its `wire` block, or from these documented defaults:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `api` | the transport's API | `"chat-completions"`, `"responses"` (openai transport only) or `"anthropic-messages"` |
+| `tokenParam` | `max_tokens` (`max_output_tokens` on Responses) | The output-limit field; `"none"` sends no limit |
+| `reasoning` | nothing sent | `effort: { path, values?, default? }`, `enable: [{path, value}]`, `disable: [{path, value}]` |
+
+Paths are RFC 6901 pointers into the request body. `effort.values` maps claudish's effort
+names (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) to the endpoint's own values;
+when omitted, the names are sent as they are. A requested effort the endpoint does not list is
+clamped to the nearest one it does. Example for a vLLM server running a Qwen thinking model:
+
+```json
+"wire": {
+  "tokenParam": "max_tokens",
+  "reasoning": {
+    "enable":  [{ "path": "/chat_template_kwargs/enable_thinking", "value": true }],
+    "disable": [{ "path": "/chat_template_kwargs/enable_thinking", "value": false }]
+  }
+}
+```
+
+Before v10.5.0 claudish picked these from the model name (a Qwen name got `enable_thinking`,
+a `gpt-5` name got `max_completion_tokens`); such an endpoint now needs the block above, or
+`--model-params`, to keep that behaviour.
 
 ### Environment variable expansion
 

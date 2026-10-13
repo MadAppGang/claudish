@@ -46,7 +46,15 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
     }
   >();
 
+  /**
+   * `alwaysHandle`: the handler selected this middleware from catalog data
+   * (a Gemini-API wire, or a Google model behind a gateway), so the model name
+   * — possibly an opaque gateway id — is not asked again.
+   */
+  constructor(private readonly options: { alwaysHandle?: boolean } = {}) {}
+
   shouldHandle(modelId: string): boolean {
+    if (this.options.alwaysHandle) return true;
     return modelId.includes("gemini") || modelId.includes("google/");
   }
 

@@ -12,6 +12,7 @@
 import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
+import { sseDataPayload } from "./sse-line.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -33,25 +34,6 @@ interface AnthropicPassthroughOpts {
   onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
   onToolCallObserved?: (name: string) => void;
   onTurnEnd?: () => void;
-}
-
-/**
- * Payload of an SSE `data:` line, or null when the line isn't one.
- *
- * The SSE spec makes the space after the colon OPTIONAL — `data:{...}` and
- * `data: {...}` are both valid, and a conforming parser strips at most ONE
- * leading space. Every anthropic-transport provider we had fixtures for
- * (MiniMax, Z.AI) emits the spaced form, so the older
- * `startsWith("data: ")` gate silently skipped every line from Alibaba Model
- * Studio (qwen-token-plan), which emits the bare form. The stream still reached
- * Claude Code verbatim, so sessions worked — but claudish's own inspection
- * (token accounting, in-stream error detection, thinking re-indexing,
- * Layer-4 repairToolArgs) never ran.
- */
-function sseDataPayload(line: string): string | null {
-  if (!line.startsWith("data:")) return null;
-  const rest = line.slice(5);
-  return rest.startsWith(" ") ? rest.slice(1) : rest;
 }
 
 /**

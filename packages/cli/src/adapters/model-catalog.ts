@@ -13,7 +13,6 @@
 import type { ReasoningModeCapabilities } from "../model-loader.js";
 import {
   type CachedSubscriptionPlan,
-  type ModelEndpoint,
   type ReasoningCapability,
   type RouteVariant,
   type SlimModelEntry,
@@ -73,6 +72,20 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
     supportsVision: entry.supportsVision,
     releaseDate: entry.releaseDate,
   };
+}
+
+/**
+ * Whether the catalog says this model accepts images: its `inputModalities`
+ * when published (a list without "image" is a no), else `supportsVision`.
+ * `undefined` when the catalog states neither — unknown, never false.
+ */
+export function lookupModelAcceptsImages(modelId: string, cachePath?: string): boolean | undefined {
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!entry) return undefined;
+  if (Array.isArray(entry.inputModalities) && entry.inputModalities.length > 0) {
+    return entry.inputModalities.includes("image");
+  }
+  return typeof entry.supportsVision === "boolean" ? entry.supportsVision : undefined;
 }
 
 /**
@@ -138,22 +151,6 @@ export function lookupModelMaxOutputTokens(
 ): number | undefined {
   const value = findCacheEntry(modelId, cachePath)?.maxOutputTokens;
   return typeof value === "number" && value > 0 ? value : undefined;
-}
-
-/**
- * The output-token parameter name this model's API expects.
- *
- * Returns `max_tokens` / `max_completion_tokens` / `max_output_tokens`, or
- * undefined for a cold cache or a model the catalog has no opinion on — in
- * which case the caller keeps whatever it did before.
- *
- * Callers must PREFER this over any name-based guess. Measured against the live
- * catalog, guessing from the name sends the wrong parameter to the whole
- * gpt-5.6-* family (they take `max_output_tokens`, the guess says
- * `max_completion_tokens`).
- */
-export function lookupModelTokenParam(modelId: string, cachePath?: string): string | undefined {
-  return findCacheEntry(modelId, cachePath)?.tokenParam;
 }
 
 /**
@@ -274,18 +271,6 @@ export function lookupModelCapabilities(
   const entry = findCacheEntry(modelId, cachePath);
   if (!entry) return undefined;
   return { supportsTools: entry.supportsTools, supportsThinking: entry.supportsThinking };
-}
-
-/**
- * The wire API this model is reachable on for a transport family
- * (`openai` / `anthropic` / `gemini`).
- */
-export function lookupModelEndpoint(
-  modelId: string,
-  transport: string,
-  cachePath?: string
-): ModelEndpoint | undefined {
-  return findCacheEntry(modelId, cachePath)?.endpoints?.[transport];
 }
 
 /**

@@ -127,3 +127,25 @@ describe("printProbeResults calculated-route headings", () => {
     expect(output).not.toContain("auto-route@");
   });
 });
+
+test("the Wire line renders the catalog wire summary", () => {
+  const wireSummary = "fixture/direct-api · opaque: responses · limit max_output_tokens";
+  const output = render({
+    model: "fixture@opaque",
+    routingSource: "explicit",
+    routingExplanation: "explicit · fixture",
+    chain: [],
+    dropped: [],
+    wiring: {
+      formatAdapter: "CodexAPIFormat",
+      declaredStreamFormat: "openai-responses-sse",
+      effectiveStreamFormat: "openai-responses-sse",
+      modelTranslator: "wire",
+      contextWindow: 100000,
+      supportsVision: false,
+      transportOverride: null,
+      wireSummary,
+    },
+  });
+  expect(output).toContain(wireSummary);
+});
