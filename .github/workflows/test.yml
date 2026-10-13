@@ -114,3 +114,30 @@ jobs:
         timeout-minutes: 40
         env:
           CLAUDISH_SKIP_LIVE_E2E: "1"
+
+  # S1: a user hook module (.ts type import, .ts value import through the
+  # Bun.plugin virtual module, .js) loads from a `--target bun` bundle and from a
+  # `--compile` binary. The hermetic job above runs the same test on macOS with
+  # the pinned 1.3.10; this job runs it on every OS/arch release.yml builds a
+  # binary for, with the Bun release.yml builds with (`latest`), because that is
+  # the binary magus installs. The test imports no dependency, so there is no
+  # `bun install` (and no package.json rewrite by a newer bun).
+  hooks-loading:
+    name: hook module loading · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: S1 hook loading (source, dist bundle, compiled binary)
+        run: bun test packages/cli/src/hooks/s1-probe/
+        timeout-minutes: 5
