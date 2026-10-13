@@ -41,7 +41,7 @@ de #445 ; tout levier nomme le contrôle qu'il touche (en principe aucun : on vi
 | Périmètre | workspace `claudish` seul (`/coordinate` de roo-extensions est un autre mandat) |
 | Hub | `http://192.168.0.50:3000` — **po-2025** depuis le 05/09 |
 | Relais | `http://192.168.0.46:3000` (po-2023) — maillon de flotte, **ni le hub ni mon chemin** |
-| Sidecar | `localhost:3002`, conteneur `claudish-sidecar`, upstream `.50` ; client `ANTHROPIC_BASE_URL` = `.50` |
+| Sidecar | `localhost:3002`, conteneur `claudish-sidecar`, upstream `.50` ; client `ANTHROPIC_BASE_URL` = `http://127.0.0.1:3002` (mesuré 12/10) : **le sidecar porte toutes mes sessions** → recreate seulement par gate 5b |
 | Captures | locales `D:\claudish-captures` · hub en lecture seule `\\192.168.0.50\d$\claudish-captures` · archives `G:\Mon Drive\Backups-Cloud\claudish\captures-YYYY-MM-DD.7z` |
 
 Sonder **hub ET relais** : deux hystérésis indépendantes. Le hub n'est pas un corpus complet (ce que le
