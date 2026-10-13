@@ -1,0 +1,12 @@
+{
+  "boot": { "boot": "repl", "registry": "idle" },
+  "agent": { "boot": "repl", "registry": "idle" },
+  "badagent": { "boot": "exited", "agentRejected": true, "registry": "absent" },
+  "onboarding": { "boot": "dialog:onboarding", "registry": "absent" },
+  "trust": { "boot": "dialog:trust", "registry": "absent" },
+  "apikey": { "boot": "dialog:api_key", "registry": "absent" },
+  "bypass": { "boot": "dialog:bypass", "registry": "absent" },
+  "mcp": { "boot": "choice", "registry": "absent" },
+  "settingserr": { "boot": "choice", "registry": "absent" },
+  "nokey": { "boot": "repl", "registry": "idle" }
+}
