@@ -31,7 +31,7 @@ import type { ProviderTransport, StreamFormat } from "../providers/transport/typ
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { lookupModelForProvider } from "../adapters/model-catalog.js";
+import { lookupModelAcceptsImages, lookupModelForProvider } from "../adapters/model-catalog.js";
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
@@ -405,6 +405,18 @@ export class ComposedHandler implements ModelHandler {
 
   /** Model vision support — model adapter wins over provider adapter */
   private getModelSupportsVision(): boolean {
+    // A catalog connection asks the catalog's data about the MODEL (not a
+    // dialect's default by name). Unknown is not "no": an image the user
+    // attached is sent, and the upstream's own answer is what they see.
+    const connection = this.options.connection;
+    if (connection) {
+      if (connection.generationId === "declared") return true;
+      try {
+        return lookupModelAcceptsImages(connection.modelId, this.options.catalogCachePath) ?? true;
+      } catch {
+        return true;
+      }
+    }
     return this.modelAdapter?.supportsVision() ?? this.getAdapter().supportsVision();
   }
 

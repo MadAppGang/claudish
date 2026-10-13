@@ -75,6 +75,20 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
 }
 
 /**
+ * Whether the catalog says this model accepts images: its `inputModalities`
+ * when published (a list without "image" is a no), else `supportsVision`.
+ * `undefined` when the catalog states neither — unknown, never false.
+ */
+export function lookupModelAcceptsImages(modelId: string, cachePath?: string): boolean | undefined {
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!entry) return undefined;
+  if (Array.isArray(entry.inputModalities) && entry.inputModalities.length > 0) {
+    return entry.inputModalities.includes("image");
+  }
+  return typeof entry.supportsVision === "boolean" ? entry.supportsVision : undefined;
+}
+
+/**
  * Reasoning capability for a model, straight from the slim catalog.
  *
  * Separate from {@link lookupModel} on purpose: that one gates on
