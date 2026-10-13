@@ -46,11 +46,12 @@ the GitHub Release as a prerelease, which is the only variant.
    `optionalDependencies` to the release version at publish time. A CLI published
    against platform packages that do not exist at that version installs
    "successfully" and then fails to find the binary at runtime.
-3. **External prerequisite, every release** — the build downloads magmux from the
-   LATEST release of `MadAppGang/magmux`, a different repository. The version that
-   ships is therefore decided at build time by another repo's release state, not
-   by anything in this one. If that download fails or that repo has no matching
-   platform asset, the build fails before anything publishes.
+3. **External prerequisite, every release** — the build downloads magmux from
+   `MadAppGang/magmux`, a different repository, at the tag pinned in
+   `.github/magmux.env` (with a checksum per platform; `test.yml` installs the same
+   pin). The pin, not that repo's latest release, decides what ships. If the pinned
+   release lacks a platform asset or a checksum does not match, the build fails
+   before anything publishes. Preflight lists the PINNED tag's assets.
 
 ## CI/CD
 
@@ -72,6 +73,22 @@ state a clean runner lacks. The 10.3.0 PR needed four CI runs for three faults
 no local run showed — a test reading `~/.claudish/probe-models.json`, a type
 error in a test written after the last typecheck, and a global `fetch` stub
 counting a background request only a clean runner makes.
+
+**The live catalog is the same trap, from both directions.** A test that reads the
+cloud models catalog breaks when the catalog publishes a new generation (10.5.0:
+grok-4.3 gained `xhigh`, so a Grok effort test failed on `main` too) and when the
+runner has none cached (a request with an explicit provider awaits
+`ensureCatalogReady(5000)`, equal to bun's 5 s test timeout, and shares any
+earlier test's pending warm through a module-global promise). A failure on the
+PR that also fails on a clean export of `origin/main` is not the release's, but
+it is still a red gate: make the test hermetic (seed the catalog; disable and
+reset the warm) and re-run, rather than tag over it.
+
+`boot-canary.yml` also runs on PRs that touch `pane/` and every 6 hours: it boots
+each spawn shape against the Claude Code pinned in `.github/claude-code.version`
+(blocking cell) and npm's latest (non-blocking). It is not part of `release.yml`.
+A red pinned cell means the pane boot reader no longer matches Claude Code —
+fix that before releasing, the same as a red `test.yml`.
 
 npm publishing uses OIDC trusted publishing, so no `NPM_TOKEN` exists and nothing
 can be published from a developer machine. `HOMEBREW_TAP_TOKEN` is the only
@@ -143,12 +160,15 @@ Two constraints hold regardless of who authorises:
   shared with the main checkout and every sibling worktree. Never `git stash`
   during a release; use a WIP commit.
 
-SETTLED 2026-09-23 — the magmux source. The build keeps downloading the LATEST
-release of `MadAppGang/magmux`; it is not pinned to a known-good tag. A failed
-download, or a latest release missing a platform asset, BLOCKS the release: the
-build job fails before anything publishes, which is the intended behaviour and
-needs no workflow change. Decided by the repository owner when asked during the
-v10.0.2 release. Preflight checks it by listing the latest release's assets.
+SETTLED, then SUPERSEDED — the magmux source. On 2026-09-23 (v10.0.2) the build
+kept downloading the LATEST release of `MadAppGang/magmux`. Since `7563ab21`
+(10.4.0) it is PINNED: `.github/magmux.env` holds the tag and one checksum per
+platform, `release.yml` refuses a pin below `MIN_MAGMUX_VERSION` and verifies each
+download, and `test.yml` runs the pane suites against the same pin — MCP slots run
+in magmux panes, so the magmux that ships must be the one that was tested, and a
+new magmux release must not change what an existing claudish tag ships. A missing
+asset or checksum mismatch BLOCKS the release before anything publishes. Bump the
+pin deliberately (tag and all four sums together) after the pane suites pass on it.
 
 SETTLED 2026-09-15 — the two `displayWidth` tests in
 `packages/cli/src/tui/viz/color.test.ts`. They were NOT flaky and must NOT be
@@ -164,4 +184,4 @@ not the pinned one, so the local red is gone and the gate's coverage is not.
 When the Bun pin is bumped, RE-BASELINE those budgets against the new oracle.
 Never widen them to clear a red run: the budget is the whole assertion.
 
-verified: 2026-09-24 @ b0ab89f
+verified: 2026-10-14 @ 2a0cf33
