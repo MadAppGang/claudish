@@ -34,10 +34,10 @@ test("google vendor selects Gemini behavior for an opaque id", () => {
     ])
   ).toEqual(new Map([["call_1", "signed-thought"]]));
 });
-test("without a vendor the existing prompt and include_reasoning rules remain", () => {
-  const format = new OpenRouterAPIFormat("grok-reasoning");
-  expect(format.convertMessages(request)[0].content).toContain(
-    "MUST use the OpenAI tool_calls format with JSON"
-  );
-  expect(format.buildPayload(request, [], []).include_reasoning).toBe(true);
+test("unknown vendor does not infer prompts or reasoning from the name", () => {
+  const format = new OpenRouterAPIFormat("grok-gemini-o3-reasoning", { vendor: "" });
+  expect(format.convertMessages(request)).toEqual(request.messages);
+  const body = format.buildPayload({ ...request, thinking: { type: "enabled" } }, [], []);
+  expect(body).not.toHaveProperty("include_reasoning");
+  expect(body).not.toHaveProperty("thinking");
 });

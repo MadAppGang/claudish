@@ -16,47 +16,24 @@ import {
 } from "../handlers/shared/format/openai-tools.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat, DefaultAPIFormat } from "./base-api-format.js";
-import { resolveModelDialect } from "./dialect-manager.js";
 import { GeminiAPIFormat } from "./gemini-api-format.js";
 
 export class OpenRouterAPIFormat extends BaseAPIFormat {
   private innerAdapter: BaseAPIFormat;
   /**
-   * The model's vendor from its catalog connection, when there is one. With
-   * it, nothing here is chosen by model name: the upstream family's fixes key
-   * on this field, and reasoning is the connection wire's (step 5w). Without
-   * it (no catalog connection), the name-picked dialect still applies.
+   * The model's vendor, from its catalog connection (`""` when the catalog
+   * names none or the model is not in the catalog). The upstream family's
+   * fixes key on it; nothing here is chosen by the model name, and reasoning
+   * is the connection wire's (step 5w).
    */
-  private readonly vendor?: string;
+  private readonly vendor: string;
 
-  constructor(modelId: string, options: { vendor?: string } = {}) {
+  constructor(modelId: string, options: { vendor: string }) {
     super(modelId);
     this.vendor = options.vendor;
-    if (options.vendor !== undefined) this.setUpstreamVendor(options.vendor);
+    this.setUpstreamVendor(options.vendor);
     this.innerAdapter =
-      options.vendor === undefined
-        ? resolveModelDialect(modelId)
-        : options.vendor === "google"
-          ? new GeminiAPIFormat(modelId)
-          : new DefaultAPIFormat(modelId);
-  }
-
-  private isUpstream(vendor: "google", nameHints: string[]): boolean {
-    if (this.vendor !== undefined) return this.vendor === vendor;
-    return nameHints.some((hint) => this.modelId.includes(hint));
-  }
-
-  /** Without a connection only: the old name check, kept for that path. */
-  private modelSupportsReasoning(): boolean {
-    if (this.vendor !== undefined) return false;
-    const id = this.modelId.toLowerCase();
-    return (
-      id.includes("o1") ||
-      id.includes("o3") ||
-      id.includes("r1") ||
-      id.includes("qwq") ||
-      id.includes("reasoning")
-    );
+      options.vendor === "google" ? new GeminiAPIFormat(modelId) : new DefaultAPIFormat(modelId);
   }
 
   // ─── Text processing delegates to inner adapter ───────────────────
@@ -87,7 +64,7 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
     // The Grok tool-format instruction is added by the shared converter above,
     // keyed on the connection's vendor (or the name, without a connection).
 
-    if (this.isUpstream("google", ["gemini", "google/"])) {
+    if (this.vendor === "google") {
       const geminiMsg = `CRITICAL INSTRUCTION FOR OUTPUT FORMAT:
 1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
 2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so...", "First, I need to..."
@@ -136,16 +113,6 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
 
     if (tools.length > 0) {
       payload.tools = tools;
-    }
-
-    // Include reasoning for models that support it
-    if (this.modelSupportsReasoning()) {
-      payload.include_reasoning = true;
-    }
-
-    // Pass through thinking config
-    if (claudeRequest.thinking) {
-      payload.thinking = claudeRequest.thinking;
     }
 
     const toolChoice = mapToolChoiceToOpenAI(claudeRequest.tool_choice);

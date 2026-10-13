@@ -26,11 +26,11 @@ import {
   DefaultAPIFormat,
   type EffortLevel,
 } from "../adapters/base-api-format.js";
+import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
 import type { ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { resolveModelDialect } from "../adapters/dialect-manager.js";
 import { lookupModelForProvider } from "../adapters/model-catalog.js";
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
@@ -221,6 +221,11 @@ export interface ComposedHandlerOptions {
    * speed from it alone, after every adapter and dialect has run.
    */
   connection?: ResolvedConnection;
+  /**
+   * A model-family dialect the PROFILE chose for a provider that serves one
+   * family (the Grok subscription). Never chosen from the model name.
+   */
+  dialect?: BaseAPIFormat;
   /** `+pro` on the model spec: request mode pro, refused where the wire does not publish it. */
   wireMode?: WireMode;
   /** `#<speed>` on the model spec, refused where the wire does not publish it. */
@@ -280,31 +285,28 @@ export class ComposedHandler implements ModelHandler {
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Initialize dialect manager for automatic dialect/format selection.
-    // Always pass the bare modelName — passing routed strings here was the root
-    // cause of #102 (zai@glm-4.7 false-matching GLMModelDialect).
+    // The dialect is never picked by model name. A catalog connection's `wire`
+    // (or a custom endpoint's declared one) decides every reasoning and limit
+    // field (step 5w); a profile that genuinely serves one model family names
+    // its dialect explicitly (`options.dialect`: the Grok subscription). The
+    // name-ordered dialect factory this replaced picked, for example, the GLM
+    // dialect for any id containing "glm", whatever host or API served it.
     //
-    // The second argument is the REQUEST wire format, which only this class
-    // knows: dialects self-select by model name, and the same model can be
-    // served over different wires by different providers (Qwen: DashScope
-    // OpenAI-compatible vs. Alibaba Token Plan's Anthropic Messages endpoint),
-    // each with a differently-named reasoning knob. The Layer 1 FormatConverter
-    // decides the request shape, so its getStreamFormat() is the signal — NOT
-    // provider.overrideStreamFormat(), which only re-labels the RESPONSE for
-    // aggregators. Undefined when no explicit converter was passed (the dialect
-    // is then also the converter) → dialects fall back to the OpenAI default.
+    // The dialect gets the REQUEST wire format, which only this class knows:
+    // the Layer 1 converter decides the request shape, so its getStreamFormat()
+    // is the signal — NOT provider.overrideStreamFormat(), which only re-labels
+    // the RESPONSE for aggregators.
     //
-    // A CATALOG CONNECTION gets no name-picked dialect at all: its `wire`
-    // decides every reasoning and limit field (step 5w), and a dialect chosen
-    // by model name is exactly the guess the wire replaces. Only a handler
-    // without a connection (dynamic subscription, custom or local endpoint)
-    // still resolves one.
-    this.resolvedDialect = options.connection
-      ? new DefaultAPIFormat(this.bareModelName, this.explicitAdapter?.getStreamFormat())
-      : resolveModelDialect(this.bareModelName, this.explicitAdapter?.getStreamFormat());
+    // One quirk is the MODEL's on every host and no wire field describes it:
+    // MiniMax rejects a temperature outside its range. It keys on the catalog's
+    // vendor field (data), and the MiniMax dialect's reasoning fields are then
+    // overwritten by the wire like any other (step 5w runs after it).
+    this.resolvedDialect =
+      options.dialect ??
+      (options.connection?.vendor === "minimax"
+        ? new MiniMaxModelDialect(this.bareModelName, this.explicitAdapter?.getStreamFormat())
+        : new DefaultAPIFormat(this.bareModelName, this.explicitAdapter?.getStreamFormat()));
 
-    // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
-    // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
     const resolvedModelAdapter = this.resolvedDialect;
     if (options.connection) {
       for (const adapter of [this.explicitAdapter, this.resolvedDialect]) {
@@ -369,7 +371,7 @@ export class ComposedHandler implements ModelHandler {
     // through. getAdapter() picks explicitAdapter or resolvedDialect at request
     // time and modelAdapter runs in addition to it, so pinning only one leaves
     // the flag working on some models and silently not on others. Safe to
-    // mutate: resolveModelDialect() returns a fresh instance per handler, and
+    // mutate: the dialect is built per handler by its profile, and
     // an explicit adapter is built per handler by its profile.
     if (options.effortOverride) {
       for (const dialect of new Set(

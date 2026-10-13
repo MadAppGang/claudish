@@ -26,7 +26,7 @@ const BUILDERS: [string, () => { buildPayload: (r: any, m: any[], t: any[]) => a
   ["BaseAPIFormat", () => new DefaultAPIFormat("some-model")],
   ["OpenAIAPIFormat", () => new OpenAIAPIFormat("gpt-4o")],
   ["LiteLLMAPIFormat", () => new LiteLLMAPIFormat("gpt-4o", "http://localhost:4000")],
-  ["OpenRouterAPIFormat", () => new OpenRouterAPIFormat("openai/gpt-4o")],
+  ["OpenRouterAPIFormat", () => new OpenRouterAPIFormat("openai/gpt-4o", { vendor: "openai" })],
   ["LocalModelAdapter", () => new LocalModelAdapter("qwen2.5-coder", "ollama")],
 ];
 

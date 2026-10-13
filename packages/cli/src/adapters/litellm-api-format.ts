@@ -1,21 +1,17 @@
 /**
  * LiteLLMAPIFormat — Layer 1 wire format for LiteLLM proxy.
  *
- * Handles LiteLLM-specific model transforms:
- * - Inline image conversion for MiniMax (LiteLLM doesn't forward image_url properly)
- * - OpenAI-compatible payload with stream_options and tool_choice
+ * An OpenAI-compatible payload with stream_options and tool_choice. Nothing
+ * here is chosen by model name: an image goes as the standard `image_url`
+ * part, and the upstream's own answer is what tells the user it cannot read
+ * one. (A MiniMax-by-name inline-base64 rewrite used to sit here.)
  */
 
 import { mapToolChoiceToOpenAI } from "../handlers/shared/format/openai-tools.js";
-import { log } from "../logger.js";
 import { DefaultAPIFormat } from "./base-api-format.js";
-
-/** Models needing image_url → inline base64 conversion */
-const INLINE_IMAGE_MODEL_PATTERNS = ["minimax"];
 
 export class LiteLLMAPIFormat extends DefaultAPIFormat {
   private visionSupported: boolean;
-  private needsInlineImages: boolean;
 
   // baseUrl is accepted for backwards-compatible call sites (provider-profiles,
   // custom-endpoints-loader, tests) but no longer consulted — the cached
@@ -24,9 +20,6 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
   constructor(modelId: string, _baseUrl: string) {
     super(modelId);
     this.visionSupported = this.checkVisionSupport();
-    this.needsInlineImages = INLINE_IMAGE_MODEL_PATTERNS.some((p) =>
-      modelId.toLowerCase().includes(p)
-    );
   }
 
   getName(): string {
@@ -39,57 +32,6 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
 
   supportsVision(): boolean {
     return this.visionSupported;
-  }
-
-  /**
-   * Convert messages, then transform image_url blocks to inline base64 text
-   * for models where LiteLLM doesn't properly forward image content.
-   */
-  convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
-    const messages = super.convertMessages(claudeRequest, filterIdentityFn);
-
-    if (!this.needsInlineImages) return messages;
-
-    for (const msg of messages) {
-      if (!Array.isArray(msg.content)) continue;
-
-      const newContent: any[] = [];
-      let inlineImages = "";
-
-      for (const part of msg.content) {
-        if (part.type === "image_url") {
-          const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
-          if (url?.startsWith("data:")) {
-            const base64Match = url.match(/^data:[^;]+;base64,(.+)$/);
-            if (base64Match) {
-              inlineImages += `\n[Image base64:${base64Match[1]}]`;
-              log(`[LiteLLMAPIFormat] Converted image_url to inline base64 for ${this.modelId}`);
-            }
-          } else if (url) {
-            inlineImages += `\n[Image URL: ${url}]`;
-          }
-        } else {
-          newContent.push(part);
-        }
-      }
-
-      if (inlineImages) {
-        const lastText = newContent.findLast((p: any) => p.type === "text");
-        if (lastText) {
-          lastText.text += inlineImages;
-        } else {
-          newContent.push({ type: "text", text: inlineImages.trim() });
-        }
-      }
-
-      if (newContent.length === 1 && newContent[0].type === "text") {
-        msg.content = newContent[0].text;
-      } else if (newContent.length > 0) {
-        msg.content = newContent;
-      }
-    }
-
-    return messages;
   }
 
   /**

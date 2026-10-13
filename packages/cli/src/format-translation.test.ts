@@ -2898,7 +2898,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
 
   async function getOpenRouterAdapter() {
     const mod = await import("./adapters/openrouter-api-format.js");
-    return new mod.OpenRouterAPIFormat("google/gemini-3.1-pro-preview");
+    return new mod.OpenRouterAPIFormat("google/gemini-3.1-pro-preview", { vendor: "google" });
   }
 
   async function getGeminiParser() {

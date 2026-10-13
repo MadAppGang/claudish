@@ -1845,27 +1845,23 @@ async function probeModelRouting(
       declaredStreamFormat = "openai-sse";
     }
 
-    const { resolveModelDialect } = await import("./adapters/dialect-manager.js");
-    const modelTranslator = resolveModelDialect(modelName);
-    const modelTranslatorName = modelTranslator.getName();
+    // No dialect is picked by model name any more; the only profile that names
+    // one is the Grok subscription.
+    const modelTranslatorName = providerName === "grok-subscription" ? "GrokModelDialect" : "none";
 
     const TRANSPORT_OVERRIDES: Record<string, string> = {
       litellm: "openai-sse",
       openrouter: "openai-sse",
     };
     const transportOverride = TRANSPORT_OVERRIDES[providerName] || null;
-
-    const modelTranslatorFormat =
-      modelTranslatorName !== "DefaultAPIFormat" ? modelTranslator.getStreamFormat() : null;
-    const effectiveStreamFormat =
-      transportOverride || modelTranslatorFormat || declaredStreamFormat;
+    const effectiveStreamFormat = transportOverride || declaredStreamFormat;
 
     return {
       formatAdapter: formatAdapterName,
       declaredStreamFormat,
       modelTranslator: modelTranslatorName,
-      contextWindow: modelTranslator.getContextWindow(),
-      supportsVision: modelTranslator.supportsVision(),
+      contextWindow: lookupModelForProvider(modelName, definitionName) ?? 0,
+      supportsVision: true,
       transportOverride,
       effectiveStreamFormat,
     };

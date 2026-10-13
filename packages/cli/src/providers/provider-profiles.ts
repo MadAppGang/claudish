@@ -23,6 +23,7 @@ import { DefaultAPIFormat } from "../adapters/base-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { DevinAPIFormat } from "../adapters/devin-api-format.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
+import { GrokModelDialect } from "../adapters/grok-model-dialect.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
 import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
@@ -35,6 +36,7 @@ import { ComposedHandler } from "../handlers/composed-handler.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { log, logStderr } from "../logger.js";
 import { formatProvenanceLog, resolveCredentialProvenance } from "./api-key-provenance.js";
+import { declaredConnection, declaredWire } from "./declared-wire.js";
 import { getProviderByName } from "./provider-definitions.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
@@ -205,6 +207,10 @@ export const grokSubscriptionProfile: ProviderProfile = {
     const adapter = new OpenAIAPIFormat(ctx.modelName);
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
+      // The subscription serves Grok models only and publishes no catalog wire
+      // (its account decides what it serves), so the profile names the Grok
+      // dialect: its effort encoding with learn-on-400 recovery.
+      dialect: new GrokModelDialect(ctx.modelName, adapter.getStreamFormat()),
       tokenStrategy: "delta-aware",
       ...ctx.sharedOpts,
     });
@@ -338,9 +344,18 @@ export const litellmProfile: ProviderProfile = {
     }
     const transport = new LiteLLMProviderTransport(ctx.provider.baseUrl, ctx.apiKey, ctx.modelName);
     const adapter = new LiteLLMAPIFormat(ctx.modelName, ctx.provider.baseUrl);
+    // LiteLLM has no catalog connection; the documented default wire applies
+    // (chat, max_tokens, no reasoning field) rather than a name-picked dialect.
+    const connection = declaredConnection(
+      "litellm",
+      ctx.modelName,
+      ctx.provider.baseUrl,
+      declaredWire("chat-completions", undefined)
+    );
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
       ...ctx.sharedOpts,
+      connection,
     });
     log(`[Proxy] Created LiteLLM handler (composed): ${ctx.modelName} (${ctx.provider.baseUrl})`);
     return handler;

@@ -35,6 +35,7 @@ import {
   warmCatalog,
 } from "./providers/catalog-client.js";
 import { type ResolvedConnection, resolveConnection } from "./providers/connection-resolver.js";
+import { declaredConnection, declaredWire } from "./providers/declared-wire.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -378,10 +379,18 @@ export async function createProxyServer(
       // the transport's getHeaders() (single source of truth) — the legacy
       // openrouterApiKey param is no longer the signing source.
       const orProvider = new OpenRouterProviderTransport("", modelId);
-      const orAdapter = new OpenRouterAPIFormat(
-        modelId,
-        wired.connection ? { vendor: wired.connection.vendor ?? "" } : {}
-      );
+      // A model the catalog does not publish on OpenRouter still gets a wire:
+      // the documented default (chat, max_tokens, no reasoning field), never
+      // the name-picked dialect.
+      const connection =
+        wired.connection ??
+        declaredConnection(
+          "openrouter",
+          modelId,
+          "https://openrouter.ai/api/v1",
+          declaredWire("chat-completions", undefined)
+        );
+      const orAdapter = new OpenRouterAPIFormat(modelId, { vendor: connection.vendor ?? "" });
       openRouterHandlers.set(
         modelId,
         new ComposedHandler(orProvider, modelId, modelId, port, {
@@ -389,7 +398,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
           invocationMode,
           ...requestShapingOpts,
-          connection: wired.connection,
+          connection,
         })
       );
     }
@@ -414,6 +423,14 @@ export async function createProxyServer(
         poeHandlers.set(modelId, new RefusingHandler(wired.refusal));
         return poeHandlers.get(modelId)!;
       }
+      const connection =
+        wired.connection ??
+        declaredConnection(
+          "poe",
+          modelId,
+          "https://api.poe.com/v1",
+          declaredWire("chat-completions", undefined)
+        );
       // The transport resolves its key through the authority in getHeaders().
       const poeTransport = new PoeProvider();
       poeHandlers.set(
@@ -422,7 +439,7 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
           invocationMode,
           ...requestShapingOpts,
-          connection: wired.connection,
+          connection,
         })
       );
     }

@@ -54,7 +54,7 @@ function parsedResponse(name: string): Response {
   return createStreamingResponseHandler(
     createMockContext(),
     fixtureToResponse(name),
-    new OpenRouterAPIFormat("x-ai/grok-4.6"),
+    new OpenRouterAPIFormat("x-ai/grok-4.6", { vendor: "x-ai" }),
     "x-ai/grok-4.6",
     null,
     undefined,

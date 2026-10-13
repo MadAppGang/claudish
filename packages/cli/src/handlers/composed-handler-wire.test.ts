@@ -295,37 +295,51 @@ test.each([
   }
 );
 
-test("a catalog connection bypasses the MiniMax name-picked temperature dialect", async () => {
-  const connection = resolved("opencode-zen", "minimax-m3");
-  const ctx = context("opencode-zen", "minimax-m3");
-  const connected = buildKnownWireHandler(ctx, "opencode-zen", connection, connection.wire)!;
-  const offCatalog = new ComposedHandler(
-    new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey),
-    ctx.targetModel,
-    ctx.modelName,
-    0,
-    { adapter: new OpenAIAPIFormat(ctx.modelName) }
-  );
-  handlers.push(connected, offCatalog);
-  const bodies: any[] = [];
-  globalThis.fetch = (async (_input, init) => {
-    bodies.push(JSON.parse(String(init?.body)));
-    return new Response("captured", { status: 599 });
-  }) as typeof fetch;
-  for (const handler of [connected, offCatalog]) {
-    const app = new Hono();
-    app.post("/", (c) =>
-      handler.handle(c, {
-        model: "minimax-m3",
-        messages: [{ role: "user", content: "hello" }],
-        max_tokens: 100,
-        temperature: 0,
-        stream: true,
-      })
-    );
-    await app.request("/", { method: "POST" });
+test.each([
+  [0, 0.01],
+  [2, 1],
+])(
+  "MiniMax vendor clamps temperature %s while wire reasoning wins",
+  async (temperature, clamped) => {
+    const connection = resolved("opencode-zen-go", "minimax-m3");
+    expect(connection.vendor).toBe("minimax");
+    // This Messages wire has unknown reasoning; its owner uses Chat, so no
+    // reasoning can be borrowed. Step 5w must erase the dialect thinking toggle.
+    expect(connection.wire.reasoning).toEqual({ status: "unknown" });
+    const foreign = structuredClone(connection);
+    foreign.vendor = "openai";
+    const bodies: any[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response("captured", { status: 418 });
+    }) as typeof fetch;
+    for (const c of [connection, foreign]) {
+      const handler = buildKnownWireHandler(
+        context("opencode-zen-go", "minimax-m3"),
+        "opencode-zen-go",
+        c,
+        c.wire
+      )!;
+      handlers.push(handler);
+      const app = new Hono();
+      app.post("/", (ctx) =>
+        handler.handle(ctx, {
+          model: "minimax-m3",
+          messages: [{ role: "user", content: "hello" }],
+          max_tokens: 100,
+          temperature,
+          stream: true,
+          output_config: { effort: "high" },
+        })
+      );
+      await app.request("/", { method: "POST" });
+    }
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].temperature).toBe(clamped);
+    expect(bodies[1].temperature).toBe(temperature);
+    for (const body of bodies) {
+      expect(body).not.toHaveProperty("thinking");
+      expect(body).not.toHaveProperty("reasoning_effort");
+    }
   }
-  expect(bodies).toHaveLength(2);
-  expect(bodies[0].temperature).toBe(0);
-  expect(bodies[1].temperature).toBe(0.01);
-});
+);
