@@ -260,7 +260,7 @@ function applyReasoning(
       const warning = warningFor(reasoning.warnings, "disable");
       if (warning && !choices.acceptServedModelChange) {
         result.notes.push(
-          `turning reasoning off is served by ${warning.servedModel} on this connection; reasoning kept on (${warning.code})`
+          `turning reasoning off is served by ${warning.servedModel} on this connection; reasoning kept on (${warning.code}; --accept-served-model allows it)`
         );
         off = false;
       } else {

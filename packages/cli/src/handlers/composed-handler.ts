@@ -1174,6 +1174,9 @@ export class ComposedHandler implements ModelHandler {
     if (wire?.status === "known") {
       const choices: WireChoices = {
         ...wireChoicesFromClaudeRequest(claudeRequest, this.options.effortOverride),
+        // `--accept-served-model` (or CLAUDISH_ACCEPT_SERVED_MODEL=1): the user
+        // named the swap, so a part the catalog warns about may be sent.
+        acceptServedModelChange: process.env.CLAUDISH_ACCEPT_SERVED_MODEL === "1",
       };
       const markers = wireMarkerContext.getStore();
       const wireMode = this.options.wireMode ?? markers?.mode;

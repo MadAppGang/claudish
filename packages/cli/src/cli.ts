@@ -264,6 +264,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--effort-override": "value",
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
+  "--accept-served-model": "none",
   "--op-env": "value",
   "--op": "value",
   "--cost-track": "none",
@@ -766,6 +767,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--no-pro-on-ultracode") {
       // Escape hatch when it is enabled via config/env: off for this run.
       config.proOnUltracode = false;
+    } else if (arg === "--accept-served-model") {
+      // Some connections serve reasoning-off with a DIFFERENT model (Kimi Code
+      // k3: thinking off is served by K2.8 Preview — the catalog's
+      // `served_model_changes` warning). Without this flag claudish keeps
+      // reasoning on and says why; with it, it sends the disable. Exported as
+      // env so child claudish processes inherit the choice.
+      process.env.CLAUDISH_ACCEPT_SERVED_MODEL = "1";
     } else if (arg === "--op-env" || arg.startsWith("--op-env=")) {
       // The actual 1Password Environment read happens early in index.ts
       // (highest priority). Here we only consume the flag + its value so it
@@ -2306,6 +2314,7 @@ ${h("OPTIONS")}
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
+  ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)
   ${green("--dangerous")}              Pass --dangerouslyDisableSandbox to Claude Code
