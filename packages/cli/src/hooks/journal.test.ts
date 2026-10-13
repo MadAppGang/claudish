@@ -7,8 +7,9 @@ import {
   type JournalEntry,
   MAX_JOURNAL_BYTES,
   classifyPath,
+  isUploadDecision,
+  isUploadSurface,
   recordDecision,
-  toUploadable,
 } from "./journal.js";
 
 async function inTempDir(run: (dir: string) => Promise<void>): Promise<void> {
@@ -35,56 +36,35 @@ function journalEntry(overrides: Partial<JournalEntry> = {}): JournalEntry {
   };
 }
 
-describe("toUploadable", () => {
-  it("preserves the non-identifying signal while stripping all local path detail", () => {
-    const entry = journalEntry({
-      local: {
-        observedPath: "/Users/jack/dev/acme/acme-portal/plans/wrong.md",
-        expectedPath: "/Users/jack/dev/acme/acme-portal/plans/assigned.md",
-        note: "jack wrote wrong.md for the acme portal instead of assigned.md",
-      },
-    });
-
-    const uploadable = toUploadable(entry);
-    const serialized = JSON.stringify(uploadable);
-
-    for (const identifyingFragment of [
-      "/Users",
-      "jack",
-      "acme",
-      "acme-portal",
-      "wrong.md",
-      "assigned.md",
-    ]) {
-      expect(serialized).not.toContain(identifyingFragment);
+describe("upload sets", () => {
+  it("accepts only the surfaces and decisions the telemetry backend lists", () => {
+    // docs/specs/behavior-telemetry-backend.md, "Enumerations" — closed sets.
+    for (const surface of ["request", "tool_call", "model_output", "sequence"] as const) {
+      expect(isUploadSurface(surface)).toBe(true);
     }
-    expect(Object.hasOwn(uploadable, "local")).toBe(false);
-    expect(serialized).not.toContain('"local"');
-    expect(uploadable).toEqual({
-      schema: JOURNAL_SCHEMA_VERSION,
-      ts: entry.ts,
-      model: entry.model,
-      provider: entry.provider,
-      surface: entry.surface,
-      decision: entry.decision,
-      ruleId: entry.ruleId,
-      toolName: entry.toolName,
-      argKeys: entry.argKeys,
-      pathRelation: entry.pathRelation,
-    });
-    expect(uploadable.schema).toBe(JOURNAL_SCHEMA_VERSION);
+    for (const surface of ["response", "session"] as const) {
+      expect(isUploadSurface(surface)).toBe(false);
+    }
+    for (const decision of ["ignored", "matched", "warned", "repaired", "novel"] as const) {
+      expect(isUploadDecision(decision)).toBe(true);
+    }
+    for (const decision of [
+      "superseded",
+      "invalid",
+      "timeout",
+      "error",
+      "disabled",
+      "dropped",
+      "queued",
+      "delivered",
+      "raw",
+    ] as const) {
+      expect(isUploadDecision(decision)).toBe(false);
+    }
   });
 
-  it("does not upload fields added to a local entry unless explicitly allowed", () => {
-    const entry = {
-      ...journalEntry(),
-      futureSensitiveField: "top-secret-client-name",
-    } as JournalEntry;
-
-    const serialized = JSON.stringify(toUploadable(entry));
-
-    expect(serialized).not.toContain("futureSensitiveField");
-    expect(serialized).not.toContain("top-secret-client-name");
+  it("writes schema 2 locally", () => {
+    expect(JOURNAL_SCHEMA_VERSION).toBe(2);
   });
 });
 

@@ -33,9 +33,9 @@ export {
   setSessionContextWindow,
   setTelemetryConsent,
   spoolPendingSync,
-} from "./telemetry/aggregate.js";
-export type { ContextBucket, SessionReport } from "./telemetry/aggregate.js";
-export { drainOutbox, resetDrainState } from "./telemetry/upload.js";
+} from "../hooks/telemetry/aggregate.js";
+export type { ContextBucket, SessionReport } from "../hooks/telemetry/aggregate.js";
+export { drainOutbox, resetDrainState } from "../hooks/telemetry/upload.js";
 export type {
   BehaviorConfig,
   BehaviorContext,

@@ -1927,7 +1927,7 @@ export async function runClaudeWithProxy(
       // above go on the CHILD's env, while the proxy runs here in the parent and
       // only knows the model's spec window. No-op unless telemetry is opted in.
       try {
-        const { setSessionContextWindow } = await import("./behavior/telemetry/aggregate.js");
+        const { setSessionContextWindow } = await import("./hooks/telemetry/aggregate.js");
         setSessionContextWindow(realWindow);
       } catch {
         // Telemetry must never affect launching Claude Code.

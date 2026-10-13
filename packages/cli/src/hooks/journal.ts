@@ -1,5 +1,8 @@
 /**
- * Behavior decision journal.
+ * Hook decision journal (`~/.claudish/behavior-journal.jsonl`).
+ *
+ * The file keeps its name: it names the behaviour-telemetry product and its
+ * `POST /v1/behavior` endpoint, not the deleted `behavior/` module.
  *
  * Records what the supervisor SAW and what it DECIDED, so the decisions can be
  * analysed later and turned into deterministic rules. This is the input to the
@@ -12,7 +15,7 @@
  * genuinely needs it: "the model wrote to <this> instead of <that>" is the whole
  * signal, and stripping it leaves nothing to learn from.
  *
- * An UPLOADABLE record carries no paths at all. Not sanitized paths — none. The
+ * What may LEAVE the machine carries no paths at all. Not sanitized paths — none. The
  * existing `sanitizeForReport()` masks the home directory but keeps the rest, so
  * `/Users/***\/dev/acme/acme-portal/...` still names a client. For aggregate
  * analysis the literal path is not needed anyway: what matters is the CATEGORY
@@ -28,7 +31,7 @@
  *
  * Local journalling is always on and needs no consent: it is the user's own data
  * on their own disk, exactly like `logs/`. Upload is a SEPARATE opt-in
- * (`behavior.telemetry.enabled`) and deliberately does NOT ride on the existing
+ * (`hooks.telemetry.enabled`) and deliberately does NOT ride on the existing
  * `stats.enabled` consent — that consent was given for usage statistics, and
  * silently reusing it to ship behavioural records would be consent laundering.
  */
@@ -38,11 +41,28 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { log } from "../logger.js";
 
-/** Bump when the uploadable shape changes, so consumers can version-gate. */
-export const JOURNAL_SCHEMA_VERSION = 1;
+/**
+ * Local journal line schema. 2 since the hook system: the line names the event,
+ * the hook and the action. Uploads are NOT journal lines — they are the session
+ * aggregate built by `telemetry/aggregate.ts`, which keeps its own schema (1).
+ */
+export const JOURNAL_SCHEMA_VERSION = 2;
 
 /** Which supervision surface produced this decision. */
-export type Surface = "request" | "tool_call" | "model_output" | "sequence";
+export type Surface =
+  | "request"
+  | "tool_call"
+  | "model_output"
+  | "sequence"
+  | "response"
+  | "session";
+
+/**
+ * The surfaces the telemetry backend accepts. A CLOSED set fixed by the server
+ * contract (`docs/specs/behavior-telemetry-backend.md`); `response` and
+ * `session` are local only.
+ */
+export type UploadSurface = "request" | "tool_call" | "model_output" | "sequence";
 
 /** What the supervisor did. */
 export type Decision =
@@ -50,7 +70,44 @@ export type Decision =
   | "matched" // a rule matched and applied
   | "warned" // a rule matched but severity was warn
   | "repaired" // arguments were rewritten
-  | "novel"; // nothing matched and the observer was consulted
+  | "novel" // nothing matched and the observer was consulted
+  | "superseded" // an earlier hook won the same target
+  | "invalid" // the action was refused (shape, limit, not allowed for the event)
+  | "timeout" // the handler did not return within its timeout
+  | "error" // the handler threw or rejected
+  | "disabled" // the circuit breaker disabled the hook
+  | "dropped" // an injection or annotation was dropped
+  | "queued" // an injection or note was queued
+  | "delivered" // an injection was delivered
+  | "raw"; // a raw (unsafe) hook touched the request or response
+
+/**
+ * The decision values the telemetry backend accepts — the `counts.*` keys of
+ * the server contract. Everything added since is local only.
+ */
+export type UploadDecision = "ignored" | "matched" | "warned" | "repaired" | "novel";
+
+const UPLOAD_SURFACES: ReadonlySet<string> = new Set<UploadSurface>([
+  "request",
+  "tool_call",
+  "model_output",
+  "sequence",
+]);
+const UPLOAD_DECISIONS: ReadonlySet<string> = new Set<UploadDecision>([
+  "ignored",
+  "matched",
+  "warned",
+  "repaired",
+  "novel",
+]);
+
+export function isUploadSurface(surface: Surface): surface is UploadSurface {
+  return UPLOAD_SURFACES.has(surface);
+}
+
+export function isUploadDecision(decision: Decision): decision is UploadDecision {
+  return UPLOAD_DECISIONS.has(decision);
+}
 
 /**
  * How a file path related to the one the harness expected.
@@ -65,60 +122,55 @@ export type PathRelation =
   | "no_expectation"
   | "not_applicable";
 
+/** Hook events, plus `raw` for every raw-tier stage. */
+export type JournalEvent =
+  | "request"
+  | "toolCall"
+  | "responseRewrite"
+  | "responseEnd"
+  | "sessionStart"
+  | "sessionIdle"
+  | "sessionBlocked"
+  | "sessionEnd"
+  | "raw";
+
+/**
+ * One local journal line. Never uploaded as-is: the upload is the per-session
+ * aggregate, and the only fields that reach it are passed explicitly by the
+ * hook engine's `journal()` fan-out, which also applies the user-hook privacy
+ * rules there.
+ */
 export interface JournalEntry {
+  /** JOURNAL_SCHEMA_VERSION. Absent on lines written by the pre-hook engine. */
+  schema?: number;
   ts: string;
+  event?: JournalEvent;
+  /** The real hook id — local only. */
+  hookId?: string;
+  action?: string;
   model: string;
   provider: string;
+  sessionId?: string;
   surface: Surface;
   decision: Decision;
+  /** Same as hookId (kept for readers of schema 1). */
   ruleId?: string;
   toolName?: string;
   /** Argument KEYS only — never values. */
   argKeys?: string[];
   pathRelation?: PathRelation;
-  /** Full local detail. Stripped from anything uploaded. */
+  /** Full local detail. Never uploaded. */
   local?: {
     observedPath?: string;
     expectedPath?: string;
     note?: string;
   };
+  /** At most 200 chars. Local only. */
+  detail?: string;
 }
 
-/** The subset that may leave the machine. Constructed by omission, not by masking. */
-export interface UploadableEntry {
-  schema: number;
-  ts: string;
-  model: string;
-  provider: string;
-  surface: Surface;
-  decision: Decision;
-  ruleId?: string;
-  toolName?: string;
-  argKeys?: string[];
-  pathRelation?: PathRelation;
-}
-
-/**
- * Project a journal entry to its uploadable form.
- *
- * Deliberately an ALLOW-list: new fields added to JournalEntry do not leak by
- * default, they have to be added here explicitly. A deny-list would ship the
- * next contributor's new field to the cloud by accident.
- */
-export function toUploadable(entry: JournalEntry): UploadableEntry {
-  return {
-    schema: JOURNAL_SCHEMA_VERSION,
-    ts: entry.ts,
-    model: entry.model,
-    provider: entry.provider,
-    surface: entry.surface,
-    decision: entry.decision,
-    ruleId: entry.ruleId,
-    toolName: entry.toolName,
-    argKeys: entry.argKeys,
-    pathRelation: entry.pathRelation,
-  };
-}
+/** The longest `detail` a journal line carries. */
+export const MAX_DETAIL_CHARS = 200;
 
 /** Classify an observed path against the expected one, without keeping either. */
 export function classifyPath(observed?: string, expected?: string): PathRelation {

@@ -19,8 +19,17 @@
  *
  * ## Consent
  *
- * Everything here is a no-op unless `behavior.telemetry.enabled` is true. That
- * flag is deliberately separate from `stats.enabled` — see BehaviorConfig.
+ * Everything here is a no-op unless `hooks.telemetry.enabled` is true. That
+ * flag is deliberately separate from `stats.enabled`: that consent was granted
+ * for usage statistics, and reusing it for behavioural records would be consent
+ * laundering.
+ *
+ * ## Privacy of user hooks
+ *
+ * This module stores what it is given. The hook engine's `journal()` fan-out is
+ * the only caller in the hook system, and it passes a user hook's id as `"user"`
+ * and withholds an `mcp__` tool name on such a row BEFORE calling
+ * `recordTelemetryDecision` (hooks/engine.ts).
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -29,7 +38,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { log } from "../../logger.js";
 import { VERSION } from "../../version.js";
-import type { Decision, PathRelation, Surface } from "../journal.js";
+import type { PathRelation, UploadDecision, UploadSurface } from "../journal.js";
 
 /** Pinned by the deployed server contract. Bump only with the backend. */
 export const TELEMETRY_SCHEMA_VERSION = 1;
@@ -134,9 +143,9 @@ function hashSessionId(rawSessionId: string, model: string): string {
 /** One row of the `decisions[]` array, accumulated. */
 interface DecisionAggregate {
   rule_id?: string;
-  surface: Surface;
+  surface: UploadSurface;
   tool_name?: string;
-  counts: Partial<Record<Decision, number>>;
+  counts: Partial<Record<UploadDecision, number>>;
   path_relations: Partial<Record<PathRelation, number>>;
 }
 
@@ -163,9 +172,9 @@ export interface SessionReport {
   turns: number;
   decisions: Array<{
     rule_id?: string;
-    surface: Surface;
+    surface: UploadSurface;
     tool_name?: string;
-    counts: Partial<Record<Decision, number>>;
+    counts: Partial<Record<UploadDecision, number>>;
     path_relations: Partial<Record<PathRelation, number>>;
   }>;
 }
@@ -194,7 +203,7 @@ const sessions = new Map<string, SessionState>();
 /**
  * Consent. PUSHED in by BehaviorEngine rather than read from config here.
  *
- * The engine already holds the parsed, validated `behavior` block, so re-reading
+ * The engine already holds the parsed, validated `hooks` block, so re-reading
  * config from the request path would be both wasteful and a second place for the
  * flag to be interpreted. Default false: nothing is collected until an opt-in is
  * observed, so a code path that forgets to set it fails closed.
@@ -271,8 +280,8 @@ export function recordTelemetryDecision(p: {
   sessionId?: string;
   model: string;
   provider: string;
-  surface: Surface;
-  decision: Decision;
+  surface: UploadSurface;
+  decision: UploadDecision;
   ruleId?: string;
   toolName?: string;
   pathRelation?: PathRelation;

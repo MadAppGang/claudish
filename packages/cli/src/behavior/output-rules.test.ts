@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as journal from "../hooks/journal.js";
 import * as logger from "../logger.js";
 import type { BehaviorEngine } from "./engine.js";
 import { createBehaviorEngine } from "./index.js";
-import * as journal from "./journal.js";
 import type { BehaviorRule, ModelOutputContext, Severity } from "./types.js";
 
 const SESSION_A = "ce7d9e68-f907-444f-9680-69ec3048ce9c";

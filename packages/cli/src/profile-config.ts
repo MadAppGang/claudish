@@ -241,11 +241,21 @@ export interface ClaudishProfileConfig {
   predefinedEndpoints?: Record<string, unknown>;
 
   /**
-   * Layer 4 behavior-compatibility settings (rule severities, hooks, observer).
-   * Validated at the consumption site via Zod in behavior/config.ts, not here —
-   * `loadConfig` runs on lightweight startup paths and stays Zod-free.
+   * The pre-hook-system `behavior` block. The hook system never reads it: its
+   * only reader there is the reporter in hooks/config.ts, which tells the user
+   * what to move into `hooks`.
+   * It stays on the allowlist as an opaque passthrough so the next global save
+   * does not silently drop it before the user has moved it.
    */
   behavior?: Record<string, unknown>;
+
+  /**
+   * The hook system (modules, severity, injection cap, observer, telemetry
+   * consent). Read from the GLOBAL config only — a project `.claudish.json` is
+   * repo-controlled and must not name code to run. Validated at the consumption
+   * site via Zod in hooks/config.ts; `loadConfig` stays Zod-free.
+   */
+  hooks?: Record<string, unknown>;
 
   /**
    * Apply a model's catalog provider-preset (e.g. `reasoning.mode=pro`) while
@@ -411,6 +421,12 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.behavior !== undefined) {
       merged.behavior = config.behavior;
+    }
+    // Same trap as keychain/onepasswordEnvironments: omitted from this
+    // allowlist, the block survives on disk until the first global save and is
+    // then silently dropped — every user hook would stop loading with no error.
+    if (config.hooks !== undefined) {
+      merged.hooks = config.hooks;
     }
     // Same trap as keychain/onepasswordEnvironments above: omitted from this
     // allowlist, the field survives on disk until the first global save and is

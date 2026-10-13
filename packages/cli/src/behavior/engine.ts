@@ -12,15 +12,22 @@
  * cannot read each other's plan file path.
  */
 
-import { log } from "../logger.js";
-import { resolveSeverity } from "./config.js";
-import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "./harness.js";
-import { type Decision, type Surface, classifyPath, recordDecision } from "./journal.js";
+import {
+  type Decision,
+  type Surface,
+  classifyPath,
+  isUploadDecision,
+  isUploadSurface,
+  recordDecision,
+} from "../hooks/journal.js";
 import {
   recordTelemetryDecision,
   recordTelemetryTurn,
   setTelemetryConsent,
-} from "./telemetry/aggregate.js";
+} from "../hooks/telemetry/aggregate.js";
+import { log } from "../logger.js";
+import { resolveSeverity } from "./config.js";
+import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "./harness.js";
 import type {
   BehaviorConfig,
   BehaviorContext,
@@ -411,16 +418,17 @@ export class BehaviorSession {
     // Same call site as the local journal, so the two can never disagree about
     // what happened. This one only counts — no paths, no values; see
     // telemetry/aggregate.ts. It is a no-op unless telemetry is opted in.
-    recordTelemetryDecision({
-      sessionId: this.sessionId,
-      model: this.modelId,
-      provider: this.providerName,
-      surface,
-      decision,
-      ruleId: detail.ruleId,
-      toolName: detail.toolName,
-      pathRelation,
-    });
+    if (isUploadSurface(surface) && isUploadDecision(decision))
+      recordTelemetryDecision({
+        sessionId: this.sessionId,
+        model: this.modelId,
+        provider: this.providerName,
+        surface,
+        decision,
+        ruleId: detail.ruleId,
+        toolName: detail.toolName,
+        pathRelation,
+      });
 
     void recordDecision({
       ts: new Date().toISOString(),
@@ -432,7 +440,7 @@ export class BehaviorSession {
       toolName: detail.toolName,
       argKeys: detail.argKeys,
       pathRelation,
-      // Full detail stays local; toUploadable() drops this wholesale.
+      // Full detail stays local; nothing uploads a journal line.
       local: {
         observedPath: detail.observedPath,
         expectedPath: detail.expectedPath,
@@ -564,7 +572,7 @@ export class BehaviorEngine {
     // background of a live process, because shutdown is synchronous and cannot
     // await a POST. Never awaited, never allowed to throw.
     if (optedIn) {
-      void import("./telemetry/upload.js")
+      void import("../hooks/telemetry/upload.js")
         .then((m) => m.drainOutbox())
         .catch((err) => log(`[behavior:telemetry] drain unavailable: ${err}`));
     }
