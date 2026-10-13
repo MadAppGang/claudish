@@ -10,6 +10,7 @@ lives in `ROADMAP.md`.
 ## Where the rationale lives — all files below are in `ai-docs/architecture/`
 
 - `routing.md` — `provider@model` syntax, every provider prefix, catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
+- `wire.md` — every request built from the connection's catalog `wire` + route registry (no model-name rules anywhere); clamp / borrow-and-drop / try-in-turn; the first-run refusal trap; `+pro` vs the `+` chain separator; custom endpoints' declared wire; read before touching `connection-*.ts`, `wire-*.ts`, step 5w, or any limit/reasoning field
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
 - `network-recovery.md` — the two-tier connection hold: the DERIVED deadline (`API_TIMEOUT_MS`, not a
   watchdog), why tier 2 answers 503 and never 429, why the banner is magmux's `overlay` and never a
