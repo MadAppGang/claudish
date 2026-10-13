@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { setConfigFileOverride } from "./config-override.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { log, logStderr } from "./logger.js";
+import { _resetCatalogClient } from "./providers/catalog-client.js";
 import { __resetEndpointDiagnosticsForTests } from "./providers/endpoint-diagnostics.js";
 import { invalidateEndpointRegistration } from "./providers/endpoint-registration.js";
 import { __resetPredefinedStateForTests } from "./providers/predefined-endpoints.js";
@@ -244,8 +245,10 @@ describe('proxy handler routing for authScheme "none"', () => {
     const saved = process.env[envVar];
     const savedCatalogWarm = process.env.CLAUDISH_DISABLE_CATALOG_WARM;
     delete process.env[envVar];
-    // The catalog wait equals the test timeout on a cold runner.
+    // An earlier proxy's pending warm is shared through _warmPromise;
+    // disabled warming only takes effect once that promise is cleared.
     process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
+    _resetCatalogClient();
 
     try {
       const { status, body } = await requestTokenCount(
@@ -270,6 +273,7 @@ describe('proxy handler routing for authScheme "none"', () => {
       else process.env[envVar] = saved;
       if (savedCatalogWarm === undefined) delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
       else process.env.CLAUDISH_DISABLE_CATALOG_WARM = savedCatalogWarm;
+      _resetCatalogClient();
     }
   });
 });
