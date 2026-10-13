@@ -74,6 +74,69 @@ function requireKeyUnlessNoAuth<
   }
 }
 
+const WireValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+/** RFC 6901 pointer into the request body root, e.g. `/reasoning/effort`. */
+const WirePointerSchema = z.string().startsWith("/");
+
+const WireAssignmentSchema = z.object({ path: WirePointerSchema, value: WireValueSchema });
+
+/**
+ * How a custom endpoint is called, declared by the user — the same vocabulary
+ * the cloud models catalog publishes per connection (`wire`), because a custom
+ * endpoint has no catalog connection and claudish never guesses one from the
+ * model name. Every field is optional; the documented defaults are:
+ *
+ *   api         the transport's API (openai → chat-completions, anthropic →
+ *               anthropic-messages); an openai endpoint may say "responses"
+ *   tokenParam  max_tokens (chat, messages) / max_output_tokens (responses);
+ *               "none" sends no output limit
+ *   reasoning   nothing sent. Declare `effort.path` (and optionally `values`,
+ *               mapping claudish's effort names none…max to the endpoint's own
+ *               values; identity when omitted), `enable`, `disable`.
+ */
+export const CustomEndpointWireSchema = z.object({
+  api: z.enum(["chat-completions", "responses", "anthropic-messages"]).optional(),
+  tokenParam: z
+    .enum(["max_tokens", "max_completion_tokens", "max_output_tokens", "none"])
+    .optional(),
+  reasoning: z
+    .object({
+      enable: z.array(WireAssignmentSchema).optional(),
+      disable: z.array(WireAssignmentSchema).optional(),
+      effort: z
+        .object({
+          path: WirePointerSchema,
+          values: z.record(z.string(), WireValueSchema).optional(),
+          default: z.string().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+/** A declared `wire.api` must be one the endpoint's transport can speak. */
+function requireWireApiForTransport(
+  transport: string,
+  wire: z.infer<typeof CustomEndpointWireSchema> | undefined,
+  ctx: z.RefinementCtx
+): void {
+  const api = wire?.api;
+  if (!api) return;
+  const allowed: Record<string, string[]> = {
+    openai: ["chat-completions", "responses"],
+    litellm: ["chat-completions"],
+    anthropic: ["anthropic-messages"],
+  };
+  if (allowed[transport] && !allowed[transport].includes(api)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["wire", "api"],
+      message: `wire.api "${api}" is not spoken by the ${transport} transport (use ${allowed[transport].join(" or ")})`,
+    });
+  }
+}
+
 // "Simple" custom endpoint: just URL + format + key.
 // Reuses existing OpenAI/Anthropic format converters and a generic transport.
 export const CustomEndpointSimpleSchema = z
@@ -91,8 +154,12 @@ export const CustomEndpointSimpleSchema = z
     authScheme: CustomEndpointAuthSchemeSchema.optional(),
     modelPrefix: z.string().optional(),
     models: z.array(z.string()).optional(),
+    wire: CustomEndpointWireSchema.optional(),
   })
-  .superRefine(requireKeyUnlessNoAuth);
+  .superRefine((ep, ctx) => {
+    requireKeyUnlessNoAuth(ep, ctx);
+    requireWireApiForTransport(ep.format, ep.wire, ctx);
+  });
 
 // "Complex" custom endpoint: a runtime PROVIDER_PROFILES entry.
 // All ProviderProfile fields, with reasonable defaults documented in Phase 3.
@@ -111,8 +178,12 @@ export const CustomEndpointComplexSchema = z
       .optional(),
     modelPrefix: z.string().optional(),
     models: z.array(z.string()).optional(),
+    wire: CustomEndpointWireSchema.optional(),
   })
-  .superRefine(requireKeyUnlessNoAuth);
+  .superRefine((ep, ctx) => {
+    requireKeyUnlessNoAuth(ep, ctx);
+    requireWireApiForTransport(ep.transport, ep.wire, ctx);
+  });
 
 export const CustomEndpointSchema = z.discriminatedUnion("kind", [
   CustomEndpointSimpleSchema,
@@ -150,6 +221,7 @@ export const PredefinedEndpointsConfigSchema = z.object({
   enable: z.array(z.string()).optional(),
 });
 
+export type CustomEndpointWire = z.infer<typeof CustomEndpointWireSchema>;
 export type CustomEndpointSimple = z.infer<typeof CustomEndpointSimpleSchema>;
 export type CustomEndpointComplex = z.infer<typeof CustomEndpointComplexSchema>;
 export type CustomEndpoint = z.infer<typeof CustomEndpointSchema>;
