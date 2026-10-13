@@ -2,6 +2,49 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.6.0] - 2026-10-13
+
+### ⚠ BREAKING CHANGES
+
+- a request without a catalog connection or a declared *(routing)* ([`10d9516`](https://github.com/MadAppGang/claudish/commit/10d95160b26607dbf3101296ea47c2b0b79bfd54))
+- claudish no longer sends `reasoning_effort` or picks a *(routing)* ([`0d40e39`](https://github.com/MadAppGang/claudish/commit/0d40e3961415e964df2581f076863200e220db60))
+
+### Bug Fixes
+
+- read SSE `data:` lines without the space after the colon *(adapters)* ([`3dbd316`](https://github.com/MadAppGang/claudish/commit/3dbd3167315f7e23ff6b3fa6083de61c02c84f92))
+- read image support from the catalog, not a dialect's default *(routing)* ([`b66a2a0`](https://github.com/MadAppGang/claudish/commit/b66a2a078815e8a59c045d040c04aefba71a3133))
+- list models from the route registry's host *(discovery)* ([`af4b098`](https://github.com/MadAppGang/claudish/commit/af4b098a50aa8159d0b2d0e75582bcd44dc9f018))
+- keep the route registry in a sidecar older releases leave alone *(catalog)* ([`2ebb20a`](https://github.com/MadAppGang/claudish/commit/2ebb20ae9ff47a99b486b581fe212888a711b7d1))
+- retry the catalog instead of caching a first-run refusal *(routing)* ([`3a25794`](https://github.com/MadAppGang/claudish/commit/3a257944300255b716097afccbc8f5dea2676a57))
+- send grok-* to /v1/responses instead of chat *(opencode-zen-go)* ([`4db144a`](https://github.com/MadAppGang/claudish/commit/4db144a70ba2a6a33820f149c60a156870912bf7))
+
+### Documentation
+
+- document the wire reader, model-spec markers and custom wire *(catalog)* ([`9bde383`](https://github.com/MadAppGang/claudish/commit/9bde383b1e9237edd826792c045d31de964a4f0e))
+- correct the profile and OpenCode Messages comments *(routing)* ([`acf356b`](https://github.com/MadAppGang/claudish/commit/acf356be5073c58b9e1e88a9649bcb29246c7b28))
+- add the per-connection wire profile request to Models Index *(catalog)* ([`e17523f`](https://github.com/MadAppGang/claudish/commit/e17523f23333c1009d9486c708ed35dfba17ab17))
+- record the pinned magmux and the catalog test trap in the playbook *(release)* ([`b8857a8`](https://github.com/MadAppGang/claudish/commit/b8857a808072198fc05196712bc6e0e5d0690146))
+- update CHANGELOG.md for v10.5.0([`a0230cc`](https://github.com/MadAppGang/claudish/commit/a0230ccadbc89a423741035f1f1ed6f4bbda9ceb))
+
+### New Features
+
+- build macOS bridge handlers from the connection's wire *(bridge)* ([`5360766`](https://github.com/MadAppGang/claudish/commit/53607665cdd48488617d223a86d48ed3cce4f510))
+- build advisor requests from the connection's wire *(advisor)* ([`9baf642`](https://github.com/MadAppGang/claudish/commit/9baf6421a449ad2df4f254a63d0938962e2928af))
+- add --accept-served-model for reasoning-off served by another model *(effort)* ([`e436e8e`](https://github.com/MadAppGang/claudish/commit/e436e8e6b5e520624d6e9f9809c9173274882c86))
+- declare the request shape in a `wire` block *(custom-endpoints)* ([`a2259c7`](https://github.com/MadAppGang/claudish/commit/a2259c7270e9fb309780f8c4257593353c91d97d))
+- show each hop's API, URL and fields from its catalog wire *(probe)* ([`e7f4cef`](https://github.com/MadAppGang/claudish/commit/e7f4cef92578d6e4d4e876db7c60705289f06a6e))
+- build catalog requests from the connection's wire *(routing)* ([`b16dbd4`](https://github.com/MadAppGang/claudish/commit/b16dbd4b707a0674a7471c042ac8dd5f2d2fb238))
+- read connection wires and the route registry *(catalog)* ([`11d2ce2`](https://github.com/MadAppGang/claudish/commit/11d2ce2491e9382da08f34a910d9d45d1b740fa6))
+
+### Other Changes
+
+- v10.6.0 *(release)* ([`e70c3ba`](https://github.com/MadAppGang/claudish/commit/e70c3ba55ff1766d417a1c9aceec32d1c131f1e0))
+
+### Refactoring
+
+- stop picking request dialects by model name *(routing)* ([`10d9516`](https://github.com/MadAppGang/claudish/commit/10d95160b26607dbf3101296ea47c2b0b79bfd54))
+- remove model-name API, token and effort rules *(routing)* ([`0d40e39`](https://github.com/MadAppGang/claudish/commit/0d40e3961415e964df2581f076863200e220db60))
+
 ## [10.5.0] - 2026-10-13
 
 ### Bug Fixes
