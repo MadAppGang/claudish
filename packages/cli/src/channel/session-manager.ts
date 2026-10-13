@@ -205,8 +205,12 @@ interface SessionEntry {
   eventRing: DiagnosticEvent[];
   /** Bytes of answer prose appended (the `outputBytes` metric). */
   proseBytes: number;
-  /** Turn indexes whose answer reached the scrollback. */
-  answeredTurns: Set<number>;
+  /**
+   * The answer text each turn index has put in the scrollback. A background notification
+   * after the settle re-settles the SAME turn (D23) with a longer answer; only its new tail
+   * is appended.
+   */
+  answeredTurns: Map<number, string>;
   waitLogPath: string;
   waitLogBytes: number;
   /** The `since` of the wait that is open now, or null. */
@@ -945,7 +949,7 @@ export class SessionManager {
       upstreamErrorLogPath: join(sessionDir, "upstream-errors.jsonl"),
       eventRing: [],
       proseBytes: 0,
-      answeredTurns: new Set(),
+      answeredTurns: new Map(),
       waitLogPath: join(sessionDir, "waits.jsonl"),
       waitLogBytes: 0,
       waitSince: null,
@@ -1688,11 +1692,14 @@ export class SessionManager {
 
   /** A settled turn's answer → scrollback, `output.log` and `outputBytes`. Once per turn. */
   private appendAnswer(entry: SessionEntry, index: number, answer: string): void {
-    if (entry.answeredTurns.has(index)) return;
-    entry.answeredTurns.add(index);
-    if (!answer) return;
-    const text = answer.endsWith("\n") ? answer : `${answer}\n`;
-    entry.proseBytes += Buffer.byteLength(answer, "utf-8");
+    const prior = entry.answeredTurns.get(index);
+    // a re-settle that adds nothing, or rewrites rather than extends, appends nothing
+    if (prior !== undefined && (answer.length <= prior.length || !answer.startsWith(prior))) return;
+    entry.answeredTurns.set(index, answer);
+    const added = prior === undefined ? answer : answer.slice(prior.length).replace(/^\n+/, "");
+    if (!added) return;
+    const text = added.endsWith("\n") ? added : `${added}\n`;
+    entry.proseBytes += Buffer.byteLength(added, "utf-8");
     this.appendToOutput(entry, text);
   }
 
