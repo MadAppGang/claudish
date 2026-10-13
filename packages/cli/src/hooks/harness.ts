@@ -7,9 +7,12 @@
  * than a hunt through every rule.
  *
  * Anchors verified against the Claude Code 2.1.220 binary.
+ *
+ * Moved unchanged from the behavior layer (`behavior/harness.ts`); the hook
+ * request stage and the built-in hooks read it.
  */
 
-import type { HarnessFacts } from "./types.js";
+import type { HarnessFacts } from "./public.js";
 
 /**
  * Plan-file path anchors, in the three forms CC emits.

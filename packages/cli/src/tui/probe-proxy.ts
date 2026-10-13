@@ -50,7 +50,8 @@ export async function ensureProbeProxy(): Promise<string> {
       false,
       process.env.ANTHROPIC_API_KEY,
       undefined,
-      { quiet: true }
+      // Hooks never see --probe traffic.
+      { quiet: true, hooks: false }
     );
     probeProxy = proxy;
     return proxy.url;

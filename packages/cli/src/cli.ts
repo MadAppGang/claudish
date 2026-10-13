@@ -1846,7 +1846,8 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          { quiet: true }
+          // Hooks never see --probe traffic.
+          { quiet: true, hooks: false }
         );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1957,7 +1958,8 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          { quiet: true }
+          // Hooks never see --probe traffic.
+          { quiet: true, hooks: false }
         );
         updateStep("Starting probe proxy", "done");
       } catch {

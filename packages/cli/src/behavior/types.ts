@@ -55,7 +55,7 @@ export interface HarnessFacts {
    * Empty means "no listing found", NOT "the user has no skills" — a rule must
    * not conclude anything from an empty list.
    */
-  skills?: AvailableSkill[];
+  skills?: ReadonlyArray<AvailableSkill>;
 }
 
 /** A skill Claude Code offered the model. */

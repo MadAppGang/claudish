@@ -6,6 +6,7 @@
 import {
   assertNotNested,
   assertPaneChildInteractive,
+  isPaneChild,
   paneChildBootNotes,
 } from "./pane/child-env.js";
 
@@ -1230,6 +1231,9 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          // Proxy events run in the process that hosts the proxy: a pane child
+          // for MCP/team slots, the interactive launcher otherwise.
+          hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",
         }
       )
     );

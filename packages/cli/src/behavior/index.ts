@@ -13,7 +13,7 @@ import type { BehaviorRule } from "./types.js";
 
 export { BehaviorEngine, BehaviorSession } from "./engine.js";
 export { parseBehaviorConfig, resolveSeverity } from "./config.js";
-export { detectHarnessFacts } from "./harness.js";
+export { detectHarnessFacts } from "../hooks/harness.js";
 export { loadHookRules } from "./hooks.js";
 export { buildDigest } from "./observer/digest.js";
 export type { ObserverDigest } from "./observer/digest.js";

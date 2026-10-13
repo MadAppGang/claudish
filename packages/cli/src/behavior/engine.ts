@@ -12,6 +12,7 @@
  * cannot read each other's plan file path.
  */
 
+import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "../hooks/harness.js";
 import {
   type Decision,
   type Surface,
@@ -27,7 +28,6 @@ import {
 } from "../hooks/telemetry/aggregate.js";
 import { log } from "../logger.js";
 import { resolveSeverity } from "./config.js";
-import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "./harness.js";
 import type {
   BehaviorConfig,
   BehaviorContext,

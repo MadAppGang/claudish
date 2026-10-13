@@ -23,6 +23,9 @@ import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { loadHooksOnce } from "./hooks/index.js";
+import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
+import { initLogger, log } from "./logger.js";
 import { SessionManager } from "./mcp-session/index.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
 import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
@@ -266,7 +269,7 @@ async function getProxy(): Promise<ProxyServer> {
       false, // not monitor mode
       process.env.ANTHROPIC_API_KEY,
       undefined, // no model map
-      { quiet: true }
+      { quiet: true, hostMode: "mcp" }
     );
     proxyInstance = proxy;
     return proxy;
@@ -2381,6 +2384,27 @@ function unknownToolModeWarning(mode: string): string | undefined {
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
 async function main() {
+  // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
+  // the JSON-RPC writer alone. Every other stdout route — Bun's native
+  // console.log, process.stdout.write, fs.writeSync(1), Bun.write(Bun.stdout),
+  // an inheriting child — lands on stderr or in the debug log, so no hook
+  // output (and no stray write of claudish's own) can corrupt the protocol.
+  // Where libc cannot be bound, `active` is false, stdout is untouched, and the
+  // loader loads no user hook module in this process.
+  const iso: ProtocolStdout = isolateProtocolStdout();
+
+  // `CLAUDISH_DEBUG` (1/true) is the documented always-on debug switch; the MCP
+  // server never parses CLI flags, so it reads the env var directly. The debug
+  // log is also where hook output and diverted stdout writes go.
+  const debugEnv = process.env.CLAUDISH_DEBUG?.toLowerCase();
+  if (debugEnv === "1" || debugEnv === "true") initLogger(true, "debug", true);
+  if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
+
+  // Session hooks need the engine without a proxy, so loading starts now, in the
+  // background. The MCP server's own proxy (run_prompt, preflight) awaits the
+  // same memoised promise before it builds a handler.
+  void loadHooksOnce({ hostMode: "mcp" });
+
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   // Inside a session a claudish owner started, one level of nesting is the limit:
   // only the one-shot tools of NESTED_MCP_TOOL_NAMES, intersected with the groups
@@ -2493,8 +2517,9 @@ async function main() {
     }
   });
 
-  // Connect via stdio transport.
-  const transport = new StdioServerTransport();
+  // Connect via stdio transport, writing through the protocol writer (the real
+  // stdout's private descriptor when isolation is active).
+  const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
   installMcpShutdown(sessionManager);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
