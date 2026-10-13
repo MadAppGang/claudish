@@ -9,6 +9,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { credentials } from "../auth/credentials/authority.js";
 import {
@@ -23,7 +26,6 @@ import {
 } from "./model-discovery.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
-import { OpenAIProviderTransport } from "./transport/openai.js";
 
 const realFetch = globalThis.fetch;
 const realGetRequestAuth = credentials.getRequestAuth;
@@ -502,45 +504,62 @@ describe("rankDiscoveredModels", () => {
 
 describe("OpenAI-compatible probe discovery", () => {
   test("uses an authenticated dynamic models catalog and advances past excluded models", async () => {
-    const provider: ProviderDefinition = {
-      name: "account-scoped-openai-probe-test",
-      displayName: "Account Scoped Probe Test",
-      transport: "openai",
-      baseUrl: "https://account-scoped.invalid",
-      apiPath: "/v1/chat/completions",
-      apiKeyEnvVar: "ACCOUNT_SCOPED_PROBE_TEST_KEY",
-      apiKeyDescription: "Offline test key",
-      apiKeyUrl: "https://account-scoped.invalid/key",
-      shortcuts: [],
-      legacyPrefixes: [],
-      modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
-      createHandler: { kind: "none", reason: "virtual", note: "Offline test fixture" },
-      isDirectApi: true,
-    };
-    registerRuntimeProvider(provider);
-    stubJsonResponse({
-      data: [
-        { id: "grok-4.5", context_length: 500_000 },
-        { id: "grok-4.6", context_length: 1_000_000 },
-        { id: "grok-imagine-image", context_length: 2_000_000 },
-      ],
-    });
-
-    const transport = new OpenAIProviderTransport(
-      {
-        name: provider.name,
-        baseUrl: provider.baseUrl,
-        apiPath: provider.apiPath,
-        apiKeyEnvVar: provider.apiKeyEnvVar,
-        prefixes: [],
-      },
-      "<discover>",
-      ""
-    );
-
-    expect(await transport.discoverProbeModel()).toEqual({ model: "grok-4.6" });
-    expect(await transport.discoverProbeModel(new Set(["grok-4.6"]))).toEqual({
-      model: "grok-4.5",
-    });
+    // The probe filter requires published chat metadata; isolate its default
+    // cache in a child rather than depending on the developer's cloud cache.
+    const home = mkdtempSync(join(tmpdir(), "probe-discovery-"));
+    try {
+      mkdirSync(join(home, ".claudish"));
+      const fixture = readFileSync(
+        new URL(
+          "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      writeFileSync(join(home, ".claudish/cloud-models-catalog-v3.json"), fixture);
+      const child = Bun.spawnSync(
+        [
+          process.execPath,
+          "--eval",
+          `
+        const { registerRuntimeProvider } = await import(${JSON.stringify(new URL("./runtime-providers.ts", import.meta.url).pathname)});
+        const { OpenAIProviderTransport } = await import(${JSON.stringify(new URL("./transport/openai.ts", import.meta.url).pathname)});
+        const { credentials } = await import(${JSON.stringify(new URL("../auth/credentials/authority.ts", import.meta.url).pathname)});
+        const provider = { name: "account-scoped-openai-probe-test", displayName: "Account Scoped Probe Test", transport: "openai", baseUrl: "https://account-scoped.invalid", apiPath: "/v1/chat/completions", apiKeyEnvVar: "ACCOUNT_SCOPED_PROBE_TEST_KEY", apiKeyDescription: "Test", apiKeyUrl: "https://example.invalid", shortcuts: [], legacyPrefixes: [], modelDiscovery: { path: "/v1/models", format: "openai-models-list" }, createHandler: {kind: "none", reason: "virtual", note: "test"}, isDirectApi: true };
+        registerRuntimeProvider(provider);
+        const originalFetch = globalThis.fetch, originalAuth = credentials.getRequestAuth;
+        credentials.getRequestAuth = async () => ({headers: {Authorization: "Bearer fake"}});
+        const calls = [];
+        globalThis.fetch = async (url, init) => {
+          calls.push({ url, headers: Object.fromEntries(new Headers(init.headers)) });
+          return Response.json({data: [{id: "grok-4.7", context_length: 1000000}, {id: "grok-build-0.1", context_length: 500000}, {id: "mai-voice-2.1", context_length: 2000000}]});
+        };
+        try {
+          const transport = new OpenAIProviderTransport({...provider, prefixes: []}, "<discover>", "");
+          console.log(JSON.stringify({first: await transport.discoverProbeModel(), second: await transport.discoverProbeModel(new Set(["grok-4.7"])), calls}));
+        } finally { globalThis.fetch = originalFetch; credentials.getRequestAuth = originalAuth; }
+      `,
+        ],
+        {
+          env: {
+            PATH: process.env.PATH,
+            HOME: home,
+            CLAUDISH_DISABLE_KEYCHAIN: "1",
+            CLAUDISH_DISABLE_OP: "1",
+            CLAUDISH_DISABLE_CATALOG_WARM: "1",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      const result = JSON.parse(child.stdout.toString());
+      expect(result.first).toEqual({ model: "grok-4.7" });
+      expect(result.second).toEqual({ model: "grok-build-0.1" });
+      expect(result.calls).toHaveLength(1);
+      expect(result.calls[0].headers.authorization).toBe("Bearer fake");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

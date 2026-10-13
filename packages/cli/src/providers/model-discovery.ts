@@ -29,6 +29,7 @@
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
+import { resolveRouteProfile } from "./connection-resolver.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -397,6 +398,27 @@ export function invalidateModelDiscovery(provider?: string): void {
 }
 
 /**
+ * The model-list URL for a catalog-routed provider: its route profile's base
+ * URL in the route registry plus `/models` — the host its requests use, so
+ * discovery moves with the registry (OpenCode moved Zen to
+ * `opencode.ai/inference/v1` on 2026-10-12). Every registry base already ends
+ * in the API's version root. `undefined` — keep the definition's URL — when
+ * the user overrode the base URL, or no registry is cached.
+ */
+function registryModelsEndpoint(
+  providerName: string,
+  def: { baseUrlEnvVars?: string[] }
+): string | undefined {
+  if ((def.baseUrlEnvVars ?? []).some((envVar) => process.env[envVar])) return undefined;
+  const profile = resolveRouteProfile(providerName)?.profile;
+  const base =
+    profile?.apis["chat-completions"]?.baseUrl ??
+    profile?.apis.responses?.baseUrl ??
+    profile?.apis["anthropic-messages"]?.baseUrl;
+  return base ? `${base.replace(/\/+$/, "")}/models` : undefined;
+}
+
+/**
  * Resolve a provider's base URL: env override (in catalog order), else the
  * catalog default. Mirrors localBaseUrl() but works for remote providers too.
  */
@@ -646,7 +668,7 @@ export async function discoverProviderModelsCatalog(
       detail: `no base URL resolved — check ${overrides || "the provider's baseUrl"}`,
     });
   }
-  const endpoint = `${baseUrl}${descriptor.path}`;
+  const endpoint = registryModelsEndpoint(providerName, def) ?? `${baseUrl}${descriptor.path}`;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
