@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.5.0] - 2026-10-13
+
+### Bug Fixes
+
+- append a re-woken turn's follow-up answer to get_output *(mcp)* ([`bd5b26d`](https://github.com/MadAppGang/claudish/commit/bd5b26db44bc89c90224577b3963c9bb28317a0e))
+- accept the agent-labelled input box rule at slot boot *(team)* ([`cada488`](https://github.com/MadAppGang/claudish/commit/cada488aaa63ef582728f6fc5f58e0ffd3cc4a19))
+
+### Documentation
+
+- record the session registry and park the in-child mod *(team)* ([`f4fb61d`](https://github.com/MadAppGang/claudish/commit/f4fb61d0187a1c538a534039a2e0815c73b48223))
+- update CHANGELOG.md for v10.4.1([`2e4ac24`](https://github.com/MadAppGang/claudish/commit/2e4ac2468afca757519e0d27e24fc0892a1f5fa6))
+
+### New Features
+
+- log session-registry vs screen disagreements per pane *(mcp)* ([`873f59d`](https://github.com/MadAppGang/claudish/commit/873f59de8dd5f9597facee51159ed4ef032dee90))
+
+### Other Changes
+
+- v10.5.0 *(release)* ([`d599c9c`](https://github.com/MadAppGang/claudish/commit/d599c9c457398d85a40488afcf693a4053418fc2))
+
 ## [10.4.1] - 2026-10-07
 
 ### Bug Fixes
