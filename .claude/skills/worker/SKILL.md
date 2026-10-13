@@ -33,7 +33,9 @@ skill **`worker-issues`**.
      journaux** (trace durable des éditions d'infra) ; consent kill
      (`session-watch.kill.enabled`) : ≥24 h de journal sain avant armement, consigné.
 4. **Commit + PR AVANT le rapport** — ne jamais annoncer un travail non commité.
-   `git pull origin main` d'abord ; conventional commits.
+   `git pull origin main` d'abord ; conventional commits. Body PR/commentaire :
+   `--body-file <f>` — `--body @f` publie le chemin (6 corps vides au 13/10) ;
+   relire le body publié avant de le citer.
 5. **Rapport [DONE] sur le dashboard workspace** — faits, métriques, décisions.
    Tags : `DONE`, `ASK` si arbitrage user.
 6. **Ré-armement** (si session interactive coord/worker) :
