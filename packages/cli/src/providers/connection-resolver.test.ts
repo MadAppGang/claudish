@@ -264,11 +264,24 @@ describe("production connection resolution", () => {
   test("legacy cache reports no-registry", () => {
     const cache = structuredClone(fixture);
     delete cache.routeRegistry;
-    writeAllModelsCache(cache, cachePath);
-    expect(resolveConnection("openai", "gpt-6.1-sol", cachePath)).toEqual({
+    const legacyPath = join(dir, "legacy.json");
+    writeAllModelsCache(cache, legacyPath);
+    _clearAllModelsCacheMemo();
+    expect(resolveConnection("openai", "gpt-6.1-sol", legacyPath)).toEqual({
       ok: false,
       reason: "no-registry",
     });
+  });
+  test("legacy cache resolves with a matching route registry sidecar", () => {
+    const expected = resolveConnection("openai", "gpt-6.1-sol", cachePath);
+    expect(expected.ok).toBe(true);
+    const cache = structuredClone(fixture);
+    delete cache.routeRegistry;
+    // Keep the matching-generation sidecar written by beforeEach.
+    writeAllModelsCache(cache, cachePath);
+    _clearAllModelsCacheMemo();
+    expect(JSON.parse(readFileSync(cachePath, "utf8")).routeRegistry).toBeUndefined();
+    expect(resolveConnection("openai", "gpt-6.1-sol", cachePath)).toEqual(expected);
   });
   test.each(["GPT-6.1-SOL", "vendor/GPT-6.1-SOL", "OPENAI/GPT-6.1-SOL:BATCH"])(
     "resolves canonical ids and aliases case-insensitively: %s",

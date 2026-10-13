@@ -531,3 +531,73 @@ describe("route registry refresh", () => {
     });
   });
 });
+
+test.each(["routes-only", "routes-fail", "disabled"])(
+  "registry readiness in isolated HOME: %s",
+  (scenario) => {
+    const home = mkdtempSync(join(tmpdir(), "registry-ready-"));
+    dirs.push(home);
+    const source = (name: string) => JSON.stringify(new URL(name, import.meta.url).pathname);
+    const child = Bun.spawnSync(
+      [
+        process.execPath,
+        "--eval",
+        `
+    import assert from "node:assert/strict";
+    import { readFileSync, existsSync } from "node:fs";
+    import { ALL_MODELS_CACHE_PATH, writeAllModelsCache, readAllModelsCache, routeRegistryPathFor } from ${source("./all-models-cache.ts")};
+    import { ensureRouteRegistryReady } from ${source("./catalog-client.ts")};
+    const fixture = JSON.parse(readFileSync(${source("../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json")}, "utf8"));
+    const registry = fixture.routeRegistry;
+    delete fixture.routeRegistry;
+    assert.ok(ALL_MODELS_CACHE_PATH.startsWith(process.env.HOME + "/"));
+    writeAllModelsCache(fixture);
+    const calls = [];
+    const original = globalThis.fetch;
+    const envelope = data => Response.json({contractVersion: 3, generationId: fixture.catalogGenerationId, generatedAt: fixture.lastUpdated, data});
+    globalThis.fetch = async input => {
+      const url = new URL(String(input));
+      assert.equal(url.hostname, "catalog.test");
+      calls.push(url);
+      if (url.searchParams.get("catalog") === "routes") {
+        if (process.env.SCENARIO === "routes-fail" && calls.length === 1) return new Response("unavailable", {status: 503});
+        return envelope({mode: "routes", registry: registry.registry});
+      }
+      if (url.pathname === "/queryPlans") return envelope({plans: fixture.plans, total: fixture.plans.length});
+      const second = url.searchParams.has("cursor");
+      return envelope({mode: "slim", models: second ? fixture.entries.slice(8) : fixture.entries.slice(0,8), total: fixture.entries.length, ...(second ? {} : {nextCursor: "next"})});
+    };
+    try {
+      await ensureRouteRegistryReady(2000);
+      if (process.env.SCENARIO === "disabled") {
+        assert.equal(calls.length, 0);
+        assert.equal(existsSync(routeRegistryPathFor(ALL_MODELS_CACHE_PATH)), false);
+      } else {
+        assert.equal(calls[0].pathname, "/queryModels");
+        assert.deepEqual(Object.fromEntries(calls[0].searchParams), {catalog: "routes", generationId: fixture.catalogGenerationId});
+        if (process.env.SCENARIO === "routes-only") assert.equal(calls.length, 1);
+        else assert.deepEqual(calls.filter(u => u.searchParams.get("catalog") === "slim").map(u => u.searchParams.get("cursor")), [null, "next"]);
+        assert.deepEqual(readAllModelsCache().routeRegistry, registry);
+        assert.deepEqual(JSON.parse(readFileSync(routeRegistryPathFor(ALL_MODELS_CACHE_PATH), "utf8")), registry);
+      }
+    } finally { globalThis.fetch = original; }
+  `,
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          SCENARIO: scenario,
+          CLAUDISH_DISABLE_KEYCHAIN: "1",
+          CLAUDISH_DISABLE_OP: "1",
+          CLAUDISH_DISABLE_CATALOG_WARM: scenario === "disabled" ? "1" : "0",
+          CLAUDISH_CATALOG_URL: "https://catalog.test/queryModels?catalog=slim",
+          CLAUDISH_PLANS_URL: "https://catalog.test/queryPlans",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+  }
+);

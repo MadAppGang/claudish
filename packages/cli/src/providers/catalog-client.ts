@@ -7,6 +7,7 @@ import {
   readAllModelsCache,
   wiresMatchRegistry,
   writeAllModelsCache,
+  writeRouteRegistry,
 } from "./all-models-cache.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
@@ -582,7 +583,21 @@ export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
  * built from it. Such a cache is refreshed rather than accepted.
  */
 export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> {
-  if (readAllModelsCache()?.routeRegistry) return;
+  const cache = readAllModelsCache();
+  if (cache?.routeRegistry) return;
+  // Models cached, registry missing or of another generation (an older claudish
+  // rewrote the models): fetch only the routes of THIS generation — one small
+  // request instead of the whole refresh.
+  if (cache && !catalogWarmDisabled()) {
+    const result = await fetchRouteRegistry(timeoutMs, cache.catalogGenerationId);
+    if (result.ok) {
+      const routeRegistry = { generationId: cache.catalogGenerationId, registry: result.registry };
+      if (wiresMatchRegistry(cache.entries, routeRegistry, cache.catalogGenerationId)) {
+        writeRouteRegistry(routeRegistry);
+        return;
+      }
+    }
+  }
   await waitForCatalogWarm(timeoutMs);
 }
 
