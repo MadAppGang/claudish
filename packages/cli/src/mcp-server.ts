@@ -42,8 +42,14 @@ import {
 } from "./model-loader.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 
-// Load environment variables
-config();
+// Load environment variables. quiet is load-bearing here, not cosmetic: this
+// process speaks MCP JSON-RPC over STDOUT, and dotenv 17.x prints its
+// "[dotenv@17.x] injecting env…" banner on STDOUT the moment a .env exists in
+// the cwd — one non-JSON line at init and the host fails the handshake,
+// silently leaving the user with no claudish tools (upstream 3086261d, half 2;
+// measured on our pinned dotenv@17.2.3: banner on stdout with a .env present,
+// silent with quiet). index.ts passes the same flag for the same reason.
+config({ quiet: true });
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
