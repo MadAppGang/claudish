@@ -1,0 +1,55 @@
+description: "claudish CLI: can a recommended model fix a failing test through Claude Code?"
+
+# One model spec per run. `cli.experiment.yaml` sweeps it over the recommended
+# list; `gen-experiments.ts` writes that file from `claudish --models-top --json`.
+params:
+  model: kimi-k3
+
+harness:
+  type: claude-code
+  # The program under test. madbench refuses a non-Anthropic model unless the
+  # binary is claudish, and `claudish --model <spec>` is the user's own path:
+  # routing, the wire built from the catalog, the stream parser, tool calls.
+  binary: claudish
+  model: "{{model}}"
+  # Interactive (the default): Bash parks at an approval menu nobody answers
+  # unless the mode is bypassPermissions. claudish forwards the flag to claude.
+  args: ["--permission-mode", "bypassPermissions"]
+
+defaults:
+  # workspace, not home. Level `home` replaces HOME, which hides ~/.claudish
+  # (config, 1Password and Keychain references, catalog cache). The madbench
+  # example local-agent-orchestration measured 20/20 Scenarios failing as
+  # "agent never started" under `home`.
+  sandbox: workspace
+  # A reasoning model on a cold catalog can need the 30 s catalog wait plus
+  # several turns. Tighten after 2-3 real runs.
+  timeout: 480s
+  capture: log
+
+scenarios:
+  - name: fix-slugify
+    description: "Read a failing test, edit the source, run the test"
+    testdata: ./testdata/cli
+    prompt: |
+      The test in slugify.test.ts fails. Fix slugify.ts so that `bun test`
+      passes. Do not change slugify.test.ts. Run `bun test` to confirm.
+    checks:
+      # The outcome, with its anti-cheat in the same Check: `bun test` passes AND
+      # the four cases are still there. Apart, the anti-cheat half passes under
+      # a no-op agent and `madbench check` reports it WRONGLY PASSED.
+      - type: exec
+        args:
+          cmd: [sh, -c, 'bun test && test "$(grep -c "expect(slugify" slugify.test.ts)" -ge 4']
+          expected_exit: 0
+          timeout: 60s
+      # The model drove tools through the proxy: it read the code...
+      - type: any-of
+        checks:
+          - { type: session:tool-used, value: Read }
+          - { type: session:tool-used, value: Bash }
+      # ...and changed it with a file tool.
+      - type: any-of
+        checks:
+          - { type: session:tool-used, value: Edit }
+          - { type: session:tool-used, value: Write }
