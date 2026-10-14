@@ -43,6 +43,35 @@ describe("convertOpenAIRequestToAnthropic", () => {
     expect(out.messages[0]).toEqual({ role: "user", content: [{ type: "text", text: "hi" }] });
   });
 
+  // Semantic Kernel ITextGenerationService serializes a plain prompt string as a
+  // SINGLE system message — before this degradation the converted body carried an
+  // empty `messages` array and the upstream answered 400 "No user query found in
+  // messages." (measured 2026-10-15, Qwen lane, facade + hub identical).
+  test("system-only conversation degrades to a user turn, not an empty body", () => {
+    const out = convertOpenAIRequestToAnthropic({
+      model: "qwen3.6-35b-a3b",
+      messages: [{ role: "system", content: "Summarize the French revolution." }],
+    });
+    expect(out.system).toBeUndefined();
+    expect(out.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "Summarize the French revolution." }] },
+    ]);
+  });
+
+  test("multiple system-only messages join into the synthesized user turn", () => {
+    const out = convertOpenAIRequestToAnthropic({
+      model: "m",
+      messages: [
+        { role: "system", content: "Part one." },
+        { role: "developer", content: "Part two." },
+      ],
+    });
+    expect(out.system).toBeUndefined();
+    expect(out.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "Part one.\n\nPart two." }] },
+    ]);
+  });
+
   test("user string content → text block", () => {
     const out = convertOpenAIRequestToAnthropic({
       model: "m",

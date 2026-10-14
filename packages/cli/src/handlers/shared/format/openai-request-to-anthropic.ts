@@ -211,7 +211,24 @@ export function convertOpenAIRequestToAnthropic(openai: any): any {
     transformed.push({ role: msg.role, content: msg.content ?? "" });
   }
 
-  if (systemParts.length) out.system = systemParts.join("\n\n");
+  // A conversation holding ONLY system/developer messages — Semantic Kernel's
+  // ITextGenerationService serializes a plain prompt string exactly this way —
+  // would leave `messages` empty, and the upstream rejects the degenerate body
+  // ("No user query found in messages.", measured on the Qwen lane 2026-10-15,
+  // relayed verbatim to the client as a 400) while api.openai.com, vLLM direct
+  // and OpenRouter all answer it. Drop-in parity: the prompt rides as the user
+  // turn (system stays unset — no duplicated text). A body with NO message at
+  // all still forwards empty and fails upstream, same as api.openai.com.
+  if (systemParts.length) {
+    if (transformed.length) {
+      out.system = systemParts.join("\n\n");
+    } else {
+      transformed.push({
+        role: "user",
+        content: [{ type: "text", text: systemParts.join("\n\n") }],
+      });
+    }
+  }
   out.messages = transformed;
 
   // Sampling / stop params.
