@@ -154,6 +154,13 @@ services:
       # #348 — overload-walk time budget (ms). Default 300000; 0 = off. Same
       # read-per-request class as the switch above, same container rule.
       - CLAUDISH_FAILOVER_WALK_BUDGET_MS=${CLAUDISH_FAILOVER_WALK_BUDGET_MS:-}
+      # #317 — per-session output-token ceiling (option B). Both empty → inert
+      # (no counting, no refusal, zero added bytes). The WARN-only pose ships
+      # first: set CLAUDISH_SESSION_BUDGET_WARN on the hub, leave CEILING empty
+      # until the user fixes the values. Read-per-request — but a container
+      # needs the NAME here to ever see a value (#304).
+      - CLAUDISH_SESSION_BUDGET_CEILING=${CLAUDISH_SESSION_BUDGET_CEILING:-}
+      - CLAUDISH_SESSION_BUDGET_WARN=${CLAUDISH_SESSION_BUDGET_WARN:-}
       # #431 — step-skip kill switch: "0" restores the pre-#431 behavior (an
       # overflowed/busy cascade step surfaces its recovery turn / waits
       # unbounded instead of skipping forward). Read-per-request.

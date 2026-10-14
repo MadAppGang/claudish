@@ -324,6 +324,38 @@ describe("forwardToUpstream — failover hysteresis (FAIL path)", () => {
     expect(state.consecutiveFail).toBe(0);
   });
 
+  // ── #317 pin 6: the session budget ceiling's 429 crosses the relay intact ───
+  // The hub's per-session output-token ceiling answers locally with a labeled
+  // 429 + retry-after = the real remaining window. A 429 is not a 5xx: it must
+  // never feed the AUTONOMOUS hysteresis (the hub is alive and answering), and
+  // Claude Code honors the relayed Retry-After instead of hammering. The body
+  // is the byte-shape sessionBudgetRefusalAnthropic() produces.
+  const SESSION_CEILING_429_BODY = JSON.stringify({
+    type: "error",
+    error: {
+      type: "rate_limit_error",
+      message:
+        "[SessionBudgetCeiling] session …7855949f consumed 5000000 output tokens in a 24h sliding window (ceiling 5000000) — retry after 78300s",
+    },
+  });
+
+  it("a session-ceiling 429 is PASSED THROUGH with its retry-after — no markFail, no local replay, relay stays NOMINAL (#317 pin 6)", async () => {
+    fetchImpl = async () =>
+      new Response(SESSION_CEILING_429_BODY, {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "78300" },
+      });
+    const state = deadState();
+    state.consecutiveFail = 1; // a prior genuine failure must NOT be compounded by the 429
+    const r = await forwardToUpstream(mockForwardContext({}), { model: "m", stream: false }, state);
+    expect(r).not.toBeNull(); // forwarded to the client, never locally replayed
+    expect(r!.status).toBe(429);
+    expect(await r!.text()).toBe(SESSION_CEILING_429_BODY);
+    expect(r!.headers.get("retry-after")).toBe("78300"); // the window remainder reaches the client
+    expect(state.consecutiveFail).toBe(0); // a 429 is liveness evidence, same as the 529 reset
+    expect(state.alive).toBe(true); // still NOMINAL
+  });
+
   // ── #318: the hub's own drain admission freeze, marked ─────────────────────
   // The #306 freeze answers new admissions with 503 + Retry-After while the hub
   // is about to restart. A relay used to read that as a hub failure (markFail +

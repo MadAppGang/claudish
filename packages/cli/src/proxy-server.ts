@@ -89,6 +89,11 @@ import {
   servedStepForNotices,
 } from "./fork/failover.js";
 import {
+  admitSessionBudget,
+  openSessionBudgetAttempt,
+  sessionBudgetRefusalAnthropic,
+} from "./fork/session-budget.js";
+import {
   readStepSkip,
   stepSkipDisabled,
   readStepBusyWaitMs,
@@ -1248,6 +1253,9 @@ export async function createProxyServer(
     const maxAttempts = rule ? rule.steps.length + 1 : 1; // nominal + each step
     const armGraceMs = getArmGraceMs();
     const sessionKey = extractSessionKey(body); // #91 point 4: per-session dwell
+    // #317: the machine half of the budget key — same attribution header the
+    // capture pipeline and the proxy-key rotation bucketizer read.
+    const machineHeader = c.req.header("x-claudish-machine") ?? null;
     let graceRetried = false; // #91: one wait-and-retry on the nominal per request
     // #263/#331: concretes this request already paid, per step index. A
     // concurrent nominal success (onNominalSuccess → resetAllStepFailures) can
@@ -1405,6 +1413,10 @@ export async function createProxyServer(
           markCascadeStepAttempt(c, 0);
         }
       }
+      // #317: FRESH attempt token per upstream attempt — the usage sink keys
+      // the max-ledger on it, and two paid attempts of one request must land
+      // in two slots or the second under-counts. No-op when both bars are off.
+      openSessionBudgetAttempt(c.req.raw, machineHeader, sessionKey, process.env);
       response = await handler.handle(c, body);
       if (pinnedModel && !response.ok) body.model = modelBeforePin;
       // #431 AC1/AC3 — a step that cannot take THIS request skips forward.
@@ -1625,6 +1637,8 @@ export async function createProxyServer(
                 bucket,
                 walk.concrete
               );
+              // #317: the walk is a paid upstream attempt too — fresh token.
+              openSessionBudgetAttempt(c.req.raw, machineHeader, sessionKey, process.env);
               const walkResp = await walkHandler.handle(c, body);
               if (walkResp.ok) {
                 // The step proved itself — mirror the loop's success
@@ -2202,6 +2216,19 @@ export async function createProxyServer(
       // cascade below re-resolves as failover state mutates (same source of truth).
       const sessionKey = extractSessionKey(body);
 
+      // #317 option B — per-session output-token ceiling, admission BEFORE any
+      // handler resolution: a refused request pays no upstream and writes no
+      // failover state (not even the dwell pin the resolution below writes).
+      // Inert without CLAUDISH_SESSION_BUDGET_* (null admission, zero work).
+      {
+        const admission = admitSessionBudget(
+          c.req.header("x-claudish-machine") ?? null,
+          sessionKey,
+          process.env
+        );
+        if (admission?.refused) return sessionBudgetRefusalAnthropic(admission);
+      }
+
       // #83 grain 2: capability vocabulary — lift the session's declaration from
       // trailing assistant history, once per session (the #91 p4 dwell seam),
       // gated CLAUDISH_CAPABILITY_VOCAB (default off → zero work).
@@ -2307,6 +2334,31 @@ export async function createProxyServer(
 
       const anthropicBody = convertOpenAIRequestToAnthropic(openaiBody);
       const wantsStream = openaiBody.stream === true;
+
+      // #317 option B — same admission as /v1/messages, on the OpenAI wire
+      // shape this ingress speaks (sk-agent / AsyncOpenAI consumers get a
+      // programmatic consumer's error envelope, with the same retry-after).
+      {
+        const openaiSessionKey = extractSessionKey(anthropicBody);
+        const admission = admitSessionBudget(
+          c.req.header("x-claudish-machine") ?? null,
+          openaiSessionKey,
+          process.env
+        );
+        if (admission?.refused) {
+          return c.json(
+            {
+              error: {
+                message: admission.message,
+                type: "rate_limit_error",
+                code: null,
+              },
+            },
+            429,
+            { "retry-after": String(admission.retryAfterSec) }
+          );
+        }
+      }
 
       // #275: same one-bucket-per-request rule as /v1/messages (see there).
       const requestRole = roleFromModelName(anthropicBody.model);

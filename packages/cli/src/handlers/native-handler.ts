@@ -4,6 +4,7 @@ import { log, maskCredential } from "../logger.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
 import { createResponseCapture, appendUpstreamError } from "./shared/response-capture.js";
 import { requestNumberFor } from "../fork/middleware/request-logger.js";
+import { recordSessionBudgetOutput } from "../fork/session-budget.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import { matchesProxyKey } from "./shared/proxy-keys.js";
 import { noteProxyKeyAuthentication } from "./shared/proxy-key-rotation.js";
@@ -373,7 +374,18 @@ export class NativeHandler implements ModelHandler {
                   recordAdvisorEventsFromChunk(advisorCfg, chunkText);
                   const lines = buffer.split("\n");
                   buffer = lines.pop() || "";
-                  for (const line of lines) if (line.trim()) eventLog += line + "\n";
+                  for (const line of lines) {
+                    if (line.trim()) eventLog += line + "\n";
+                    // #317: the terminal message_delta carries the upstream
+                    // usage — feed the per-session budget counter. Max-per-
+                    // attempt in the sink makes this idempotent and tolerant
+                    // of any earlier partial usage line. Never throws.
+                    if (line.includes('"output_tokens"')) {
+                      for (const m of line.matchAll(/"output_tokens"\s*:\s*(\d+)/g)) {
+                        recordSessionBudgetOutput(c.req.raw, Number(m[1]));
+                      }
+                    }
+                  }
                 }
                 if (eventLog) log(eventLog);
                 cap.note("reader done");
@@ -402,6 +414,12 @@ export class NativeHandler implements ModelHandler {
       const data = await anthropicResponse.json();
       log("\n=== [NATIVE] Response ===");
       log(JSON.stringify(data, null, 2));
+
+      // #317: non-streaming native usage feeds the session budget too.
+      {
+        const n = Number((data as any)?.usage?.output_tokens);
+        if (Number.isFinite(n) && n > 0) recordSessionBudgetOutput(c.req.raw, n);
+      }
 
       // Advisor tap for the non-streaming branch (mostly for title-classifier
       // calls on Haiku which return JSON). Picks up any advisor tool_use ids

@@ -65,6 +65,7 @@ import {
 } from "./shared/step-skip.js";
 import { StepBusyError } from "./shared/concurrency-limiter.js";
 import { isQuotaExhaustion } from "../fork/failover.js";
+import { recordSessionBudgetOutput } from "../fork/session-budget.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import {
@@ -1587,6 +1588,10 @@ export class ComposedHandler implements ModelHandler {
     // count would report a nearly-full conversation as almost empty and disarm
     // auto-compaction. (S4-c)
     const onTokenUpdate = (input: number, output: number, detail?: UsageCacheDetail) => {
+      // #317: upstream output tokens feed the per-session budget counter (the
+      // attempt token was attached to c.req.raw by the cascade loop). Never
+      // throws; no-op when the instrument is inert (no token attached).
+      recordSessionBudgetOutput(c.req.raw, output);
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
         case "accumulate-both":
