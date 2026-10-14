@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.6.1] - 2026-10-14
+
+### Bug Fixes
+
+- print help for `claudish update --help` instead of updating *(update)* ([`86dc5fd`](https://github.com/MadAppGang/claudish/commit/86dc5fd2f025a66c630edcbd882bd7265f6502ec))
+
+### Documentation
+
+- update CHANGELOG.md for v10.6.0([`efd5896`](https://github.com/MadAppGang/claudish/commit/efd5896c688f6a5cf619854e616d30e492c3ef23))
+
+### Other Changes
+
+- v10.6.1 *(release)* ([`530d5ed`](https://github.com/MadAppGang/claudish/commit/530d5ed9ce9739cde68cbb1ee100207623323817))
+
 ## [10.6.0] - 2026-10-13
 
 ### ⚠ BREAKING CHANGES
