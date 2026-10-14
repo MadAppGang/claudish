@@ -96,6 +96,10 @@ def parse_args():
                     default=r"C:\Program Files\NVIDIA Corporation\NVIDIA App\7z.exe")
     ap.add_argument("--keep", action="store_true",
                     help="keep extracted day dirs (default: temp, deleted)")
+    ap.add_argument("--trust-unmarked", action="store_true",
+                    help="accept a pre-marker extraction dir on both member "
+                         "patterns (one stderr line per dir accepted); "
+                         "default re-extracts any unmarked dir")
     ap.add_argument("--top", type=int, default=15)
     return ap.parse_args()
 
@@ -104,9 +108,40 @@ def fname_dt(date_h, minutes):
     return datetime.strptime(date_h + minutes, "%Y-%m-%dT%H%M")
 
 
+def extract_complete(d, trust_unmarked=False):
+    """True only for a dir whose extraction FINISHED.
+
+    `os.path.isdir(d) and os.listdir(d)` accepts a PARTIAL extraction: a 7z
+    run killed by a vanishing archive device (measured 2026-07-05, G: DriveFS
+    unmount) left every req and zero resp, and the census printed an empty
+    table for a day holding 10,498 responses while the archive was intact.
+    The marker is written after a clean extraction. A dir WITHOUT the marker
+    means RE-EXTRACT, never trust: the earlier both-member-patterns fallback
+    still accepted a partial extraction at its most likely kill point --
+    7z writes the .json members before the .sse ones, which carry most of
+    the bytes, so a kill lands mid-resp phase more often than mid-req
+    (review of 77a96b10, bloquant 1: 50 req + 1 resp was accepted). The
+    fallback survives only behind --trust-unmarked, one stderr line per dir
+    accepted that way, so the acceptance is visible in every census log."""
+    if os.path.isfile(os.path.join(d, ".extract-complete")):
+        return True
+    if not trust_unmarked:
+        return False
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return False
+    ok = (any(n.startswith("req-") and n.endswith(".json") for n in names)
+          and any(n.startswith("resp-") and n.endswith(".sse") for n in names))
+    if ok:
+        print("trust-unmarked: accepting %s without .extract-complete" % d,
+              file=sys.stderr)
+    return ok
+
+
 def day_dir(day, a, root):
     d = os.path.join(root, "comp-" + day)
-    if os.path.isdir(d) and os.listdir(d):
+    if extract_complete(d, trust_unmarked=a.trust_unmarked):
         return d
     archive = os.path.join(a.archives_dir, "captures-%s.7z" % day)
     if not os.path.isfile(archive):
@@ -116,6 +151,7 @@ def day_dir(day, a, root):
     subprocess.run([a.seven_z, "x", archive, "-o" + d,
                     "req-*.json", "resp-*.sse", "-y"],
                    check=True, stdout=subprocess.DEVNULL)
+    open(os.path.join(d, ".extract-complete"), "w").close()
     return d
 
 

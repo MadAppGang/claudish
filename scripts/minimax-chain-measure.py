@@ -114,7 +114,55 @@ def parse_iso(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
-def extract_archives(archives, scratch_root, since, until, model_substr):
+def extract_spec(since, until, model_substr):
+    """The marker payload: what this dir was extracted FOR. A targeted
+    extraction is complete only for its own (window, lane) -- a marker that
+    does not name its target asserts a completeness it does not carry
+    (review of 77a96b10, bloquant 2)."""
+    return {
+        "since": since.isoformat() if since else None,
+        "until": until.isoformat() if until else None,
+        "model": model_substr,
+    }
+
+
+def extract_complete(d, spec=None, trust_unmarked=False):
+    """True only for a dir whose TARGETED extraction FINISHED, for THIS spec.
+
+    The marker carries the extraction target as one JSON line (extract_spec);
+    a marker for another window/lane means the dir was extracted for a
+    different question and must be re-extracted, not reused. Same guard shape
+    as compaction-trend.extract_complete otherwise -- `isdir and listdir`
+    accepted a partial extraction left by a killed run as complete (incident
+    detail in compaction-trend.py), and a dir without a marker now means
+    RE-EXTRACT, the both-member-patterns fallback surviving only behind
+    --trust-unmarked with one stderr line per dir accepted that way."""
+    mp = os.path.join(d, ".extract-complete")
+    if os.path.isfile(mp):
+        if spec is None:
+            return True
+        try:
+            with open(mp, encoding="utf-8") as f:
+                marked = json.loads(f.read().strip() or "null")
+        except (OSError, ValueError):
+            return False
+        return marked == spec
+    if not trust_unmarked:
+        return False
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return False
+    ok = (any(n.startswith("req-") and n.endswith(".json") for n in names)
+          and any(n.startswith("resp-") and n.endswith(".sse") for n in names))
+    if ok:
+        print("trust-unmarked: accepting %s without .extract-complete" % d,
+              file=sys.stderr)
+    return ok
+
+
+def extract_archives(archives, scratch_root, since, until, model_substr,
+                     trust_unmarked=False):
     """Targeted extraction: LIST first, compute the targets from the NAMES
     (the model rides the resp filename; reqN + ts ride both), then one
     extract(targets=...) per archive -- the solid blocks decompress once and
@@ -127,10 +175,11 @@ def extract_archives(archives, scratch_root, since, until, model_substr):
         import py7zr
     except ImportError:
         sys.exit("py7zr is required for --archive (pip install --user py7zr)")
+    spec = extract_spec(since, until, model_substr)
     dirs = []
     for a in archives:
         dest = os.path.join(scratch_root, os.path.splitext(os.path.basename(a))[0])
-        if os.path.isdir(dest) and os.listdir(dest):
+        if extract_complete(dest, spec=spec, trust_unmarked=trust_unmarked):
             dirs.append(dest)
             continue
         os.makedirs(dest, exist_ok=True)
@@ -169,6 +218,9 @@ def extract_archives(archives, scratch_root, since, until, model_substr):
                         break
             print("extracting %d target files of %d ..." % (len(targets), len(names)))
             z.extract(path=dest, targets=sorted(targets))
+        with open(os.path.join(dest, ".extract-complete"), "w",
+                  encoding="utf-8") as f:
+            json.dump(spec, f)
         dirs.append(dest)
     return dirs
 
@@ -364,6 +416,10 @@ def main():
     ap.add_argument("--json", help="write the result JSON here")
     ap.add_argument("--scratch", help="scratch disk/dir for the extraction (default: system temp)")
     ap.add_argument("--keep", action="store_true", help="keep the extraction scratch dir (default: removed)")
+    ap.add_argument("--trust-unmarked", action="store_true",
+                    help="accept a pre-marker extraction dir on both member "
+                         "patterns (one stderr line per dir accepted); default "
+                         "re-extracts any unmarked or wrong-spec dir")
     args = ap.parse_args()
 
     if not args.archive and not args.dir:
@@ -375,7 +431,9 @@ def main():
     try:
         if args.archive:
             scratch = tempfile.mkdtemp(prefix="mm-chain-", dir=args.scratch)
-            dirs.extend(extract_archives(args.archive, scratch, since, until, args.model_substr))
+            dirs.extend(extract_archives(args.archive, scratch, since, until,
+                                         args.model_substr,
+                                         trust_unmarked=args.trust_unmarked))
         res = scan(dirs, since, until, args.model_substr)
     finally:
         if scratch and not args.keep:
