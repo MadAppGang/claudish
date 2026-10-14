@@ -74,7 +74,11 @@ import {
 } from "../services/vision-proxy.js";
 import { reportError, classifyError } from "../telemetry.js";
 import { recordStats } from "../stats.js";
-import { wrapAnthropicError, ensureAnthropicErrorFormat } from "./shared/anthropic-error.js";
+import {
+  wrapAnthropicError,
+  ensureAnthropicErrorFormat,
+  extractProviderMessage,
+} from "./shared/anthropic-error.js";
 import {
   buildConnectionErrorMessage,
   classifyConnectionError,
@@ -1072,7 +1076,31 @@ export class ComposedHandler implements ModelHandler {
             } catch {
               // Stats must never crash claudish
             }
-            return c.json(wrapAnthropicError(retryResp.status, errorText), retryResp.status as any);
+            // (port 196e6f8f) `errorText` IS the raw upstream body here — often a
+            // whole SSE frame or nested JSON, not a sentence. Parse it first
+            // (upstream passes `parsedErrorBody ?? errorText`) so a JSON body
+            // yields its nested sentence instead of the whole document
+            // re-stringified into provider_message; the `!==` guard then keeps
+            // the field for the non-JSON case, exactly like the main non-ok
+            // return below.
+            let parsedRetryBody: unknown = errorText;
+            try {
+              parsedRetryBody = JSON.parse(errorText);
+            } catch {
+              // not JSON — the raw text is what we have (SSE frames unwrap inside)
+            }
+            const retryEnvelope = ensureAnthropicErrorFormat(
+              retryResp.status,
+              parsedRetryBody
+            );
+            const retryProviderSentence = extractProviderMessage(parsedRetryBody);
+            if (
+              retryProviderSentence &&
+              retryProviderSentence !== retryEnvelope.error.message
+            ) {
+              retryEnvelope.error.provider_message = retryProviderSentence;
+            }
+            return c.json(retryEnvelope, retryResp.status as any);
           }
         } catch (err: any) {
           log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
@@ -1241,7 +1269,18 @@ export class ComposedHandler implements ModelHandler {
           return this.buildOverflowRecoveryResponse(c, payload, est, overflow.used, overflow.limit);
         }
 
-        return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
+        // (port 196e6f8f) When the body was JSON, `message` already IS the
+        // provider's sentence and the field would duplicate it — the `!==` guard
+        // keeps provider_message for the case that needs it: the non-JSON
+        // fallback above wrapped a whole raw body (SSE frame included) as the
+        // message, and the unwrapped sentence beside it is what a clipping
+        // consumer can actually read.
+        const envelope = ensureAnthropicErrorFormat(response.status, errorBody);
+        const providerSentence = extractProviderMessage(errorBody);
+        if (providerSentence && providerSentence !== envelope.error.message) {
+          envelope.error.provider_message = providerSentence;
+        }
+        return c.json(envelope, response.status as any);
       }
     }
 

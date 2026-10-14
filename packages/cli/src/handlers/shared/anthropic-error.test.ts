@@ -3,6 +3,8 @@ import {
   statusToErrorType,
   wrapAnthropicError,
   ensureAnthropicErrorFormat,
+  sseDataPayload,
+  extractProviderMessage,
 } from "./anthropic-error.js";
 
 describe("statusToErrorType", () => {
@@ -141,5 +143,72 @@ describe("ensureAnthropicErrorFormat", () => {
     const body = { error: "some raw error", type: "overloaded_error" };
     const result = ensureAnthropicErrorFormat(503, body);
     expect(result.error.type).toBe("overloaded_error");
+  });
+});
+
+// ── Port of upstream 196e6f8f: the provider's own words travel separately ──
+
+describe("wrapAnthropicError provider_message (196e6f8f)", () => {
+  it("flattens the provider sentence to one line and keeps it beside message", () => {
+    const result = wrapAnthropicError(
+      400,
+      "Alibaba PAYG error",
+      "invalid_request_error",
+      "Model\n access denied."
+    );
+    expect(result.error.provider_message).toBe("Model access denied.");
+  });
+
+  it("omits the field when absent or blank", () => {
+    const absent = wrapAnthropicError(400, "err");
+    const blank = wrapAnthropicError(400, "err", undefined, " \n\t ");
+    expect(Object.hasOwn(absent.error, "provider_message")).toBe(false);
+    expect(Object.hasOwn(blank.error, "provider_message")).toBe(false);
+  });
+});
+
+describe("sseDataPayload (196e6f8f)", () => {
+  const PAYLOAD = '{"code":"AccessDenied","message":"Model access denied.","request_id":"x"}';
+
+  it("reads a real frame, concatenating multiple data lines", () => {
+    expect(sseDataPayload(`event:error\ndata:${PAYLOAD}`)).toBe(PAYLOAD);
+    const split = ["event:error", 'data:{"code":"AccessDenied",', 'data:"message":"Model access denied.",', 'data:"request_id":"x"}'].join("\n");
+    expect(sseDataPayload(split)).toBe(PAYLOAD);
+  });
+
+  it("reads the FLATTENED frame — newlines already spaces, no line starts with data:", () => {
+    const flattened = `event:error data:${PAYLOAD}`;
+    expect(sseDataPayload(flattened)).toBe(PAYLOAD);
+  });
+
+  it("returns undefined for a non-SSE body", () => {
+    expect(sseDataPayload("Model access denied.")).toBeUndefined();
+    expect(sseDataPayload(PAYLOAD)).toBeUndefined();
+  });
+});
+
+describe("extractProviderMessage (196e6f8f)", () => {
+  it("preserves an ordinary string", () => {
+    expect(extractProviderMessage("plain error")).toBe("plain error");
+  });
+
+  it("unwraps a nested SSE frame riding in error.message (auth-retry re-wrap shape)", () => {
+    expect(
+      extractProviderMessage({
+        error: {
+          message: `event:error data:{"code":"AccessDenied","message":"Model access denied.","request_id":"x"}`,
+        },
+      })
+    ).toBe("Model access denied.");
+  });
+
+  it("opens a flattened frame and takes a non-JSON payload as-is", () => {
+    expect(extractProviderMessage("event:error data:not json at all")).toBe("not json at all");
+  });
+
+  it("reads FastAPI detail arrays", () => {
+    expect(extractProviderMessage({ detail: [{ msg: "field required", loc: ["body"] }] })).toBe(
+      "field required"
+    );
   });
 });

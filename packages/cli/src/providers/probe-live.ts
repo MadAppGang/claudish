@@ -12,6 +12,8 @@
  * not a silent failover to something else.
  */
 
+import { sseDataPayload } from "../handlers/shared/anthropic-error.js";
+
 export type ProbeState =
   | "live"
   | "key-missing"
@@ -159,7 +161,7 @@ async function safeReadBody(response: Response): Promise<string> {
   }
 }
 
-function classifyHttpError(
+export function classifyHttpError(
   status: number,
   body: string,
   latencyMs: number
@@ -205,24 +207,55 @@ function classifyHttpError(
   };
 }
 
+// (port 196e6f8f) The probe reads the PROXY's envelope (it goes through the
+// running proxy), so the flattened/nested frame shapes occur here in full:
+// a non-JSON upstream body rides in `error.message` as a whole SSE frame, and
+// by the time the probe reads it the newlines are spaces — no line starts with
+// `data:`. `error.provider_message` carries the unwrapped sentence; read it
+// FIRST, and unwrap whatever string we do get.
 function extractErrorMessage(body: string): string | undefined {
   if (!body) return undefined;
   try {
     const parsed = JSON.parse(body);
     const msg =
+      parsed?.error?.provider_message ||
       parsed?.error?.message ||
       parsed?.error?.error?.message ||
       parsed?.message ||
       parsed?.detail;
     if (typeof msg === "string" && msg.length > 0) {
-      return msg.length > 160 ? `${msg.slice(0, 157)}...` : msg;
+      return clip(oneLine(unwrapFrame(msg)));
     }
   } catch {
     // not JSON, fall through
   }
-  const trimmed = body.trim();
+  const unwrapped = unwrapFrame(body);
+  const trimmed = oneLine(unwrapped);
   if (!trimmed) return undefined;
-  return trimmed.length > 160 ? `${trimmed.slice(0, 157)}...` : trimmed;
+  return clip(trimmed);
+}
+
+function clip(msg: string): string {
+  return msg.length > 160 ? `${msg.slice(0, 157)}...` : msg;
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// Open an SSE frame if that is what this text is, otherwise hand it back
+// (port of upstream 196e6f8f's unwrapFrame).
+function unwrapFrame(text: string): string {
+  const payload = sseDataPayload(text);
+  if (!payload) return text;
+  try {
+    const parsed = JSON.parse(payload);
+    const msg =
+      parsed?.error?.message || parsed?.message || parsed?.error || parsed?.detail;
+    return typeof msg === "string" && msg.length > 0 ? msg : payload;
+  } catch {
+    return payload;
+  }
 }
 
 /**

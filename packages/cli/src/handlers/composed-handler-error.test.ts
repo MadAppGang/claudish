@@ -384,3 +384,105 @@ describe("ComposedHandler.handle — bounded same-provider connect retry (#251)"
     expect(JSON.stringify(message)).not.toContain("connection_error");
   });
 });
+
+describe("ComposedHandler.handle — non-ok body: the provider's own words travel separately (196e6f8f port)", () => {
+  test("a non-JSON SSE-frame body surfaces provider_message with the unwrapped sentence", async () => {
+    // The non-JSON fallback wraps the WHOLE raw body as error.message — an SSE
+    // frame. The unwrapped provider sentence must travel beside it.
+    const frame =
+      'event:error\ndata:{"code":"AccessDenied","message":"Model access denied.","request_id":"x"}';
+    globalThis.fetch = (async () =>
+      new Response(frame, { status: 403 })) as unknown as typeof fetch;
+    const { c, captured } = makeContext();
+    await makeHandler().handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(403);
+    const err = captured.body?.error as { message?: string; provider_message?: string };
+    // message keeps the raw frame (the fallback wrap — unchanged behavior)…
+    expect(err.message).toContain("event:error");
+    // …and the sentence rides in provider_message — unwrapped all the way to
+    // the provider's words (string arm re-enters: frame → payload → message).
+    expect(err.provider_message).toBe("Model access denied.");
+  });
+
+  test("a JSON error body does NOT duplicate itself into provider_message", async () => {
+    const body = JSON.stringify({
+      error: { type: "permission_error", message: "Model access denied." },
+    });
+    globalThis.fetch = (async () =>
+      new Response(body, { status: 403 })) as unknown as typeof fetch;
+    const { c, captured } = makeContext();
+    await makeHandler().handle(c, PAYLOAD);
+
+    const err = captured.body?.error as { message?: string; provider_message?: string };
+    expect(err.message).toBe("Model access denied.");
+    expect(Object.hasOwn(err, "provider_message")).toBe(false);
+  });
+
+  // The auth-retry return (401 → forceRefreshAuth → retried fetch non-ok) is
+  // a SECOND wiring site with its own errorText. Before the CR fix it passed
+  // the RAW text to the extractor: a JSON body re-stringified the whole
+  // document into provider_message, duplicating message. Pinned here with a
+  // transport that HAS forceRefreshAuth — without it the 401 branch never
+  // fires and this site is untested (that is exactly how the bug survived).
+  test("auth-retry path (forceRefreshAuth): a JSON body yields the nested sentence, no self-duplication", async () => {
+    const transport = makeTransport() as unknown as Record<string, unknown>;
+    transport.forceRefreshAuth = async () => {};
+    const body = JSON.stringify({
+      error: { type: "permission_error", message: "Token expired after refresh." },
+    });
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call += 1;
+      // #1: the 401 that triggers the forced refresh; #2: the retry's non-ok body
+      return call === 1
+        ? new Response("expired", { status: 401 })
+        : new Response(body, { status: 403 });
+    }) as unknown as typeof fetch;
+    const { c, captured } = makeContext();
+    const handler = new ComposedHandler(
+      transport as unknown as ProviderTransport,
+      "fugu-ultra",
+      "fugu-ultra",
+      8464,
+      {}
+    );
+    await handler.handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(403);
+    const err = captured.body?.error as { message?: string; provider_message?: string };
+    // The envelope read the PARSED body: message is the provider's sentence…
+    expect(err.message).toBe("Token expired after refresh.");
+    // …not the whole JSON document, and the identical sentence does not ride
+    // a second time in provider_message (the `!==` guard).
+    expect(Object.hasOwn(err, "provider_message")).toBe(false);
+  });
+
+  test("auth-retry path (forceRefreshAuth): an SSE-frame body keeps the frame in message, the sentence in provider_message", async () => {
+    const transport = makeTransport() as unknown as Record<string, unknown>;
+    transport.forceRefreshAuth = async () => {};
+    const frame =
+      'event:error\ndata:{"code":"AccessDenied","message":"Refreshed token lacks scope.","request_id":"y"}';
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call += 1;
+      return call === 1
+        ? new Response("expired", { status: 401 })
+        : new Response(frame, { status: 403 });
+    }) as unknown as typeof fetch;
+    const { c, captured } = makeContext();
+    const handler = new ComposedHandler(
+      transport as unknown as ProviderTransport,
+      "fugu-ultra",
+      "fugu-ultra",
+      8464,
+      {}
+    );
+    await handler.handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(403);
+    const err = captured.body?.error as { message?: string; provider_message?: string };
+    expect(err.message).toContain("event:error");
+    expect(err.provider_message).toBe("Refreshed token lacks scope.");
+  });
+});
