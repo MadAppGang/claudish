@@ -13,6 +13,7 @@ import {
   getOverflowCap,
   resetOverflowCapsForTests,
 } from "./shared/context-overflow.js";
+import { isQuotaExhaustion } from "../fork/failover.js";
 
 // REGRESSION: structural weakness that allowed #102 — ComposedHandler must reject
 // provider-routed strings in the modelName slot so dialect selection cannot be
@@ -354,6 +355,115 @@ describe("getRecoveryHint — a quota 403 is not an auth fault", () => {
   test("401 for an unsupported model still reads as a model problem", () => {
     const hint = getRecoveryHint(401, '{"error":"unsupported model"}', "Zen");
     expect(hint).toMatch(/model not supported/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getRecoveryHint — fa09cb7e port: name an unsupported model, not the payload
+//
+// Upstream measured (2026-09-17, Alibaba): the Token Plan and PAYG hosts answer
+// an id their silo does not serve with a bare `400 Model not exist` — matched
+// none of the phrases, so the only hint was "Request format may be incompatible
+// with provider", sending the reader to audit a payload that is fine. The same
+// wording can also surface under 401/403 (the OpenCode Zen shape), so the
+// phrases that NAME a model are shared by both branches. The bare
+// "not supported" is 401/403-only (review of #455, B1): on a 400 it most often
+// faults a parameter or a content type, and keying the model hint on it
+// regressed measured bodies that main classified correctly.
+// ---------------------------------------------------------------------------
+describe("getRecoveryHint — fa09cb7e port: an unsupported model is a model problem", () => {
+  test("bare 400 `Model not exist` gets the model hint, not the format hint", () => {
+    const hint = getRecoveryHint(400, "Model not exist", "Qwen Token Plan");
+    expect(hint).toBe("Model not supported by this provider. Verify model name.");
+    expect(hint).not.toMatch(/format/i);
+  });
+
+  test("the same body in an error envelope behaves identically", () => {
+    const hint = getRecoveryHint(
+      400,
+      '{"error":{"code":"InvalidParameter","message":"Model not exist"}}',
+      "Qwen Token Plan"
+    );
+    expect(hint).toBe("Model not supported by this provider. Verify model name.");
+  });
+
+  test("a model-unsupported 401 is recognized as well (shared predicate)", () => {
+    const hint = getRecoveryHint(401, "Model not exist", "Qwen Token Plan");
+    expect(hint).toBe("Model not supported by this provider. Verify model name.");
+  });
+
+  test("the model check runs BEFORE the size test — a body spelling 'tokens' is not input-too-large", () => {
+    // The size test is a bare includes("token"); without the ordering a
+    // model-unsupported body that happens to spell "tokens" is claimed as
+    // "Input too large" and buries the real cause. The body must NAME the
+    // model (review of #455, B1): a bare "not supported for token streaming"
+    // no longer keys the hint on 400.
+    const hint = getRecoveryHint(
+      400,
+      "Model not found: glm-9.5 does not take part in token streaming",
+      "Qwen Token Plan"
+    );
+    expect(hint).toBe("Model not supported by this provider. Verify model name.");
+  });
+
+  test("B1: a 400 'not supported' faulting a parameter or content keeps the format hint", () => {
+    // Measured regressions of the shared list (review of #455): on a 400 the
+    // bare phrase most often names a parameter or a content type, and keying
+    // the model hint on it sent the operator to audit a model id that was
+    // fine. Bodies verbatim.
+    expect(getRecoveryHint(400, "Image input is not supported for this model", "OpenAI")).toBe(
+      "Request format may be incompatible with provider."
+    );
+    expect(getRecoveryHint(400, "stream_options is not supported", "OpenAI")).toBe(
+      "Request format may be incompatible with provider."
+    );
+  });
+
+  test("B1: OpenAI's max_tokens body never says 'Verify model name'", () => {
+    // Verbatim OpenAI 400. It falls through to "Input too large" (as on main,
+    // already imperfect); a future parameter-specific hint may replace that —
+    // out of scope here. The pin only requires it never points at the model id.
+    const hint = getRecoveryHint(
+      400,
+      "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+      "OpenAI"
+    );
+    expect(hint).not.toMatch(/verify model name/i);
+  });
+
+  test("B1 branch split: bare 'not supported' arms the model hint on 401, not on 400", () => {
+    // On an auth-status answer the bare wording almost always names the model
+    // (OpenCode Zen); on a 400 it must fall through. Same body, two statuses,
+    // two hints — the split IS the fix.
+    const body = "This model is not supported";
+    expect(getRecoveryHint(401, body, "Zen")).toBe(
+      "Model not supported by this provider. Verify model name."
+    );
+    expect(getRecoveryHint(400, body, "Zen")).toBe(
+      "Request format may be incompatible with provider."
+    );
+  });
+
+  test("the model hint never arms the quota classifier — a model fault must not exile a role", () => {
+    // isQuotaExhaustion keys role failover on 403 bodies naming quota walls; a
+    // model-unsupported 403 (and the hint's own wording, should it ever be
+    // quoted back in a body) must stay out of it. The cascade's job on a model
+    // fault is handled elsewhere (step-skip / wiring), never by the wall arm.
+    expect(isQuotaExhaustion(403, "Model not exist")).toBe(false);
+    expect(isQuotaExhaustion(400, "Model not exist")).toBe(false);
+    expect(
+      isQuotaExhaustion(
+        403,
+        '{"error":{"message":"Model not supported by this provider. Verify model name."}}'
+      )
+    ).toBe(false);
+    // Control: a real quota wall still arms — the port did not touch it. The
+    // verbatim Kimi 5-hour body (proven arming by the describe above), never a
+    // paraphrase: an invented "quota" sentence that fails to match the real
+    // phrase list is a broken control that says nothing.
+    const VERBATIM_KIMI_WALL =
+      '{"error":{"type":"invalid_request_error","message":"You\'ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan"}}';
+    expect(isQuotaExhaustion(403, VERBATIM_KIMI_WALL)).toBe(true);
   });
 });
 

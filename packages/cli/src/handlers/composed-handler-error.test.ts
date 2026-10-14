@@ -294,6 +294,37 @@ describe("FallbackHandler chain — a connect failure advances, all-hosts-down s
     expect(secondCalled).toBe(true);
     expect(res.ok).toBe(true);
   });
+
+  test("a 400 `Model not exist` STOPS the chain — a model fault is not a transport blip (fa09cb7e)", async () => {
+    // The fa09cb7e port names this body in the RECOVERY HINT only; retry
+    // semantics are deliberately unchanged. isRetryableError's 400 list does
+    // not carry Alibaba's wording ("does not exist" ≠ "not exist"), so the
+    // chain does not advance to another host that would serve the same id —
+    // the model is wrong, not the transport.
+    let secondCalled = false;
+    const first = {
+      handle: async () =>
+        new Response(JSON.stringify(wrapAnthropicError(400, "Model not exist", "invalid_request_error")), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+    };
+    const second = {
+      handle: async () => {
+        secondCalled = true;
+        return new Response("{}", { status: 200 });
+      },
+    };
+    const fb = new FallbackHandler([
+      { name: "first", handler: first as any },
+      { name: "second", handler: second as any },
+    ]);
+    const { c } = makeContext();
+    const res = await fb.handle(c, PAYLOAD);
+
+    expect(secondCalled).toBe(false);
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("ComposedHandler.handle — bounded same-provider connect retry (#251)", () => {
