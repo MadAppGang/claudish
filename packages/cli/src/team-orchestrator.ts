@@ -9,6 +9,8 @@ import {
   type CaptureResult,
   type CaptureUnchanged,
   ContractErrorException,
+  DEFAULT_PANE_COLS,
+  DEFAULT_PANE_ROWS,
   type FailureReason,
   type FinalVerdict,
   MAX_LIVE_PANES,
@@ -23,6 +25,7 @@ import {
   TERMINAL_STATES,
   type TeamCancelResult,
   type TeamListResult,
+  type TeamResizeResult,
   type TeamRunRow,
   assertMagmuxAvailable,
   checkChildFlags,
@@ -651,10 +654,10 @@ export async function cancelTeamRun(
 function neverSpawnedCapture(): CaptureResult {
   return {
     seq: 0,
-    cols: 160,
-    rows: 50,
+    cols: DEFAULT_PANE_COLS,
+    rows: DEFAULT_PANE_ROWS,
     cursor: { x: 0, y: 0 },
-    lines: Array.from({ length: 50 }, () => ""),
+    lines: Array.from({ length: DEFAULT_PANE_ROWS }, () => ""),
     final: true,
   };
 }
@@ -680,6 +683,33 @@ export function captureTeamSlot(
     return sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : c;
   }
   return e.session.capture(sinceSeq, { spans: spans === true });
+}
+
+/**
+ * Contract F: set one slot's terminal size (clamped), in any state, mid-turn included.
+ * A slot whose pane never spawned answers the default size with `changed:false`; a
+ * terminal one its last size. Throws `ContractErrorException`: `unknown_run`,
+ * `unknown_slot`, `resize_unsupported`, `delivery_unavailable`.
+ */
+export async function resizeTeamSlot(
+  path: string | undefined,
+  slot: string,
+  cols: number,
+  rows: number,
+  runId?: string
+): Promise<TeamResizeResult> {
+  const run = addressRun(path, runId);
+  if (!run) throw unknownRun(path, runId);
+  const e = run.slots.get(slot);
+  if (!e)
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+    );
+  const where = { run_id: run.runId, path: run.path, slot };
+  if (!e.session)
+    return { ...where, cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS, changed: false, seq: 0 };
+  return { ...where, ...(await e.session.resize(cols, rows)) };
 }
 
 /**

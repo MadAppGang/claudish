@@ -1,4 +1,4 @@
-> The 14-tool MCP surface and its four groups, the sessions behind it (panes, records, polling), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+> The 15-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -304,12 +304,12 @@ into one unattributable file. The capture **redacts at write time** now that it 
 only a path a user opted into: a 401/403 body routinely echoes the credential that failed,
 and `get_diagnostics` hands these records to an agent.
 
-## MCP Tools (14 total)
+## MCP Tools (15 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
 - **Agentic** (3): `preflight`, `team`, `report_error`
-- **Session** (7): `create_session`, `send_input`, `get_output`, `cancel_session`,
-  `list_sessions`, `get_diagnostics`, `capture_session`
+- **Session** (8): `create_session`, `send_input`, `get_output`, `cancel_session`,
+  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`
 - **Debug** (1): `compare_models`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
@@ -327,10 +327,16 @@ what a caller cannot see from the model id.
 `pane-session.md`): `list_sessions` answers `{contract_version, capabilities, sessions}` with one
 `SessionRow` per session (state, reason, `reason_detail`, tokens, `cost_usd`, tool calls, turns, `idle_seconds`,
 `activity`, `pane`); `cancel_session` answers `{session_id, state, changed}`; `capture_session`
-answers the session's current 160×50 screen `{seq, cols, rows, cursor, lines, final, spans?}`, or
-`{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant for polling
-at about 1 Hz. Their errors are a JSON `ContractError`. `team` gains the same verbs as modes
-(`list`, `status`, `capture`, `cancel`).
+answers the session's current screen `{seq, cols, rows, cursor, lines, final, spans?}` (160×50 at
+launch), or `{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant
+for polling at about 1 Hz. `resize_session` answers `{session_id, cols, rows, changed, seq,
+pending?}`: the size actually set after clamping to 80–500 × 24–200, and the screen `seq` once the
+redraw at that size has landed, so a capture with that `since_seq` already sees it. Their errors
+are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
+`resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or
+the pane is unreachable). `team` gains the same verbs as modes (`list`, `status`, `capture`,
+`cancel`, `resize`). Why the size is the viewer's and what resizing costs the screen heuristics:
+`pane-session.md`, "Terminal size".
 
 The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
@@ -341,12 +347,12 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 
 | Value | Tools |
 |---|---|
-| unset, `all` | all 14 |
+| unset, `all` | all 15 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error` |
-| `session` | the 7 session tools |
+| `session` | the 8 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 14, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+| `channel`, or any other value | all 15, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
 
 Unknown values keep selecting everything, because a server that lists fewer tools than its host
 expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
@@ -354,7 +360,7 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 14 tools` after the unknown-value warning, but an MCP
+stderr startup line shows `tools: channel, 15 tools` after the unknown-value warning, but an MCP
 host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
@@ -545,7 +551,7 @@ not checked". `testing.md` has the rules.
   `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
   and a live team run.
 
-**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 14-name list, the session-only 7 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` and `capture_session` each broke both pins on the way in, which is the guard working.
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session` and `resize_session` each broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 

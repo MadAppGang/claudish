@@ -15,6 +15,7 @@
  */
 
 import type { SpanRun } from "./contract.js";
+import { DEFAULT_PANE_COLS } from "./pane-size.js";
 
 export interface ScreenState {
   seq: number;
@@ -70,10 +71,14 @@ export function emptyScreen(cols: number, rows: number): ScreenState {
  * A full-width box rule: `─`, at least 20 cells and at least cols−1 wide. Under `--agent`,
  * Claude Code writes the agent's name into the top rule's right end (`──── dev:reviewer ─`),
  * so one ` label ─` tail is part of the rule.
+ *
+ * The width floor is capped at the launch width: every capture this rule was measured on
+ * is 160 columns wide, and whether Claude Code draws the rule edge to edge on a much wider
+ * screen is not yet captured. On a narrower screen the floor is `cols − 1`.
  */
 export function isBoxRule(line: string | undefined, cols: number): boolean {
   if (!line || !/^─+(?: [^─]+ ─+)?$/.test(line)) return false;
-  return line.length >= Math.max(20, Math.min(cols, 160) - 1);
+  return line.length >= Math.max(20, Math.min(cols, DEFAULT_PANE_COLS) - 1);
 }
 
 /**

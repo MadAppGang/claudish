@@ -24,7 +24,7 @@ first for why print mode is not a faithful subset of the REPL.
 owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pane watcher  (/bin/sh, argv0 claudish-pane-watcher)
    │
    └── spawn, detached ──▶ magmux --headless --no-status --id <paneId> --sock-dir <root> -e ". <ctl>/pane-launch.sh"
-                               COLUMNS=160 LINES=50, SHELL=<ctl>/sh-shim
+                               COLUMNS=160 LINES=50 (launch size), SHELL=<ctl>/sh-shim
                                └─ pane 0: sh-shim -l -c ". pane-launch.sh"  =  /bin/sh -c …
                                     └─ cd -- '<realpath cwd>' || exit 97
                                        exec claudish -i --model <spawnModel> -y --quiet --session-id <uuid> --add-dir <turnDir> [caller flags]
@@ -398,7 +398,8 @@ run the user's profile.
   `COLORTERM`, `CLAUDE_CODE_SSE_PORT`, `ENABLE_IDE_INTEGRATION`, `ITERM_*`, `VSCODE_*`, …) that
   steer a TUI's rendering and integrations; and the host identity (`CLAUDISH_LAUNCHER_PID`/`PPID`,
   `CLAUDE_CODE_SESSION_ID`), which describes the MCP server's host, not the pane's new session.
-- **Added:** `COLUMNS=160 LINES=50`, the slot's `CLAUDISH_TOKEN_FILE` and
+- **Added:** `COLUMNS`/`LINES` at the launch size (160×50 unless a size was requested while the
+  pane was starting; they are not updated by a later resize — "Terminal size" below), the slot's `CLAUDISH_TOKEN_FILE` and
   `CLAUDISH_UPSTREAM_ERROR_LOG`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` when the owner left
   it unset (it suppresses side calls billed on the routed model).
 - **`MAGMUX_*` survives in the child.** magmux injects `MAGMUX_SOCK` into the pane; it is excluded
@@ -475,6 +476,59 @@ nested launch is refused first. A pane child exports no
 classifier reads. `network-recovery.md` §7 accepts ~300 client attempts only where a person can see
 the banner; a headless pane has no viewer. Tier 1's hold still runs; an exhausted episode answers an
 inline 400 and the slot is FAILED `api_error`.
+
+## Terminal size
+
+**The size is the viewer's, not ours.** Every pane used to be born 160×50 and stay there, so a
+docked viewer either showed empty rows below the screen or cut every line. 160×50 is now only the
+launch default (`pane/pane-size.ts`); `resize_session` and `team(mode:"resize")` set it at any time,
+mid-turn included, clamped to cols 80–500 × rows 24–200. The floor is not arbitrary: at 80 columns
+every closed-list dialog marker still fits one row's width, and 24 rows still hold a full permission
+or trust dialog, so boot and blocked-screen detection keep working. magmux's own limits (≥ 20 × 3,
+≤ 10000 per side) are wider, so a clamped size can never earn its `too_small`/`too_large`.
+
+**A resize is a real one.** claudish sends magmux's `resize` op (`{type:"resize", pane:0, cols,
+rows}` → `{rows, cols, changed, manual}`); magmux sets the PTY winsize, the child gets a genuine
+SIGWINCH, and Claude Code reflows by reading the TTY. magmux then pushes a keyframe at the new
+geometry to every frames-mode watcher, which `applyFrame` consumes and which bumps `seq` like any
+other visible change. A magmux without the op (no `resize` in `capabilities.verbs`, read at every
+connect and redial) answers `resize_unsupported`. Once the pin and `MIN_MAGMUX_VERSION` move to the
+magmux release that ships the verb, an older magmux is refused at launch and that path is defensive.
+
+**Last caller wins, without locks.** The session keeps a `desiredSize` and an `appliedSize` (null =
+unknown, e.g. after `client_lost`/`client_timeout`). `resize()` records the desired size and awaits
+one per-pane drain loop that always sends the LATEST desired size, so a viewer dragging an edge
+produces a few requests, not one per intermediate size. The same-size short-circuit (`changed:false`,
+no request) applies only when `appliedSize` is known, equal and nothing is in flight; otherwise
+magmux's `changed` decides. While the client is disconnected, or the pane is still starting, the
+size is stored and the call answers `changed:true, pending:true`; `attach()` re-applies it after
+`capabilities`, and a starting pane launches at it. After every await the phase is re-checked: a
+session that went terminal answers its final capture's size with `changed:false`.
+
+**A capture after a resize sees the new size.** On `changed:true`, `resize()` waits up to 1000 ms
+for the screen model to reach the set size and returns that screen's `seq`, so a caller passing it
+as `since_seq` never reads a pre-resize frame as current.
+
+**What a resize costs the screen heuristics.** The classifier was written against 160 columns;
+at other widths its checks are width-proof: echo prefixes are `min(40, cols − 4)` long and compared
+against box text with row breaks removed, dialog markers match the dialog region joined into one
+string, and the working row tolerates a wrapped tail. They are validated on real Claude Code screens
+captured at 80, 120 and 250 columns. A resize redraw moves the above-box region, which only DELAYS
+settle and boot (it restarts their quiet clocks) and never completes them. Two places would have
+read a redraw as evidence and therefore ignore it for `RESIZE_QUIET_MS` (2 s) after a resize:
+degraded admission (`maybeDegradedAccept` counts only the echo there, so an undelivered prompt
+still fails `prompt_not_accepted`), and the activity timestamp behind `idle_seconds` and
+`last_activity_at` (a separate activity clock; `screen.changedAt` still moves).
+
+**What does not follow a resize.** `COLUMNS`/`LINES` in the child's environment stay at the launch
+values — they are shell-managed keys of the snapshot, and Claude Code reads the TTY winsize, not
+them. Children of Claude Code's Bash tool inherit that environment, so their output stays formatted
+for the launch width. Documented, not fixed.
+
+**Contract additions (additive in v1).** The `resize` verb on both owners (`resize_session`,
+`team(mode:"resize")`), the `resize` capability (advertised only together with the magmux pin that
+ships the op), and two `ContractError` codes that only this verb emits: `resize_unsupported` and
+`delivery_unavailable`.
 
 ## Nothing outlives its owner (D15)
 
@@ -637,9 +691,11 @@ type and new fields may only be added.
 - Verbs: `team(mode="list")` → `{contract_version, capabilities, runs}`; `team(mode="status")` adds
   `contract_version`, `capabilities` and a `run` row to its payload; `team(mode="cancel")` and
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`
-  return the 160×50 screen `{seq, cols, rows, cursor, lines, final, spans?}` or
-  `{unchanged:true, seq, final}` when `since_seq` is current. Errors are a JSON `ContractError`
-  (`unknown_run`, `unknown_slot`, `unknown_session`, `invalid_args`).
+  return the screen at its current size `{seq, cols, rows, cursor, lines, final, spans?}` or
+  `{unchanged:true, seq, final}` when `since_seq` is current; `team(mode="resize")` and
+  `resize_session` return `{…, cols, rows, changed, seq, pending?}` ("Terminal size"). Errors are a
+  JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`, `invalid_args`, and from
+  `resize` only `resize_unsupported`, `delivery_unavailable`).
 - `run_id` (`<team_session_id>-<base36 start ms>-<6 hex>`) addresses one run even after a newer
   run reused its path, while the server retains it (30 minutes after it settles, at most 20 settled
   runs). A path holds at most one ACTIVE run.

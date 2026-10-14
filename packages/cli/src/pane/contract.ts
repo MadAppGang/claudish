@@ -1,7 +1,7 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
- * peer's Claude Code mod reads from `team(mode="list"|"status"|"cancel"|"capture")`,
- * `list_sessions`, `cancel_session` and `capture_session`.
+ * peer's Claude Code mod reads from `team(mode="list"|"status"|"cancel"|"capture"|"resize")`,
+ * `list_sessions`, `cancel_session`, `capture_session` and `resize_session`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
@@ -240,11 +240,11 @@ export type SpanRun = [col: number, len: number, fg: number, bg: number, attr: n
 /** D */
 export interface CaptureResult {
   /** claudish-owned. 0 = no frame received yet (lines all ""); ≥ 1 after the first frame; +1 per visible
-   * change (text, colours, cursor, alt screen); never resets for a pane's life */
+   * change (text, colours, cursor, alt screen, size); never resets for a pane's life */
   seq: number;
-  /** 160 */
+  /** the pane's current width: 160 at launch, then whatever the last resize set */
   cols: number;
-  /** 50 */
+  /** the pane's current height: 50 at launch, then whatever the last resize set */
   rows: number;
   cursor: { x: number; y: number };
   /** exactly `rows` entries, plain text, right-trimmed; Claude Code's screen (no scrollback) */
@@ -260,10 +260,43 @@ export interface CaptureUnchanged {
   final: boolean;
 }
 
-/** E */
+/**
+ * F — `resize_session`. `cols`/`rows` are the size SET (the request clamped to cols 80–500,
+ * rows 24–200); `changed` = the pane's size moved; `seq` = the screen's seq after the
+ * resize (the first capture at the new size once `changed`). `pending: true` = the socket
+ * is reconnecting (or the pane is still starting): the size is stored and applied on the
+ * reconnect (or at launch). A terminal session answers its last size with `changed:false`.
+ */
+export interface ResizeResult {
+  session_id: string;
+  cols: number;
+  rows: number;
+  changed: boolean;
+  seq: number;
+  pending?: true;
+}
+/** F — `team(mode="resize")`: the same answer, addressed by run and slot. */
+export interface TeamResizeResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  cols: number;
+  rows: number;
+  changed: boolean;
+  seq: number;
+  pending?: true;
+}
+
+/** E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs. */
 export interface ContractError {
   error: {
-    code: "unknown_run" | "unknown_slot" | "unknown_session" | "invalid_args";
+    code:
+      | "unknown_run"
+      | "unknown_slot"
+      | "unknown_session"
+      | "invalid_args"
+      | "resize_unsupported"
+      | "delivery_unavailable";
     message: string;
   };
 }

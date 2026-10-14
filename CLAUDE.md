@@ -35,9 +35,9 @@ lives in `ROADMAP.md`.
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-sessions.md` — the 14-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, the session records the magus monitor reads),
-  `run_prompt`'s Claude Code print path, progress keepalive
+- `mcp-sessions.md` — the 15-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, the session records the
+  magus monitor reads), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every

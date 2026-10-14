@@ -23,7 +23,13 @@ import { join } from "node:path";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
-import type { CaptureResult, CaptureUnchanged, FailureReason, SlotState } from "./contract.js";
+import {
+  type CaptureResult,
+  type CaptureUnchanged,
+  ContractErrorException,
+  type FailureReason,
+  type SlotState,
+} from "./contract.js";
 import { MagmuxClient, type MagmuxConnectError } from "./magmux-client.js";
 import {
   type ClaudishLaunch,
@@ -60,6 +66,14 @@ import {
   updateRecord,
   writeRecord,
 } from "./pane-registry.js";
+import {
+  DEFAULT_PANE_COLS,
+  DEFAULT_PANE_ROWS,
+  type PaneSize,
+  RESIZE_QUIET_MS,
+  clampPaneSize,
+  samePaneSize,
+} from "./pane-size.js";
 import {
   type GroupSnapshot,
   type PaneIdentity,
@@ -146,6 +160,9 @@ const WATCH_FPS = 4;
 const POLL_BACKSTOP_MS = 1_000;
 /** R3-M4: a `finishing` turn with a static screen for this many secondary windows. */
 const TURN_END_MISSING_FACTOR = 3;
+/** A resize reply, and the screen showing the new size after it. */
+const RESIZE_REPLY_MS = 10_000;
+const RESIZE_SCREEN_MS = 1_000;
 /** The session registry is re-read at most this often (telemetry only). */
 const REGISTRY_READ_MS = 250;
 /** A registry/screen disagreement must hold this long before it is counted. */
@@ -176,6 +193,8 @@ export interface PaneSessionOptions {
   shape: "one-shot" | "interactive";
   /** enqueued before boot; delivered on boot_ready */
   initialPrompt?: string;
+  /** the pane's size at launch, clamped here; DEFAULT_PANE_COLS × DEFAULT_PANE_ROWS when absent */
+  initialSize?: PaneSize;
   /** false when callerFlags remove Read (§2.3 rule 4) */
   readAvailable: boolean;
   decide: (turn: SettledTurn) => FinalVerdict | "continue";
@@ -204,6 +223,18 @@ export interface PaneSessionOptions {
     replStableMs?: number;
     nudgeClearDeadlineMs?: number;
   };
+}
+
+/**
+ * What `resize` answers: the size SET, whether the pane's size moved, and the screen's
+ * seq after it. `pending` = the socket is reconnecting; the size is applied on the redial.
+ */
+export interface PaneResizeOutcome {
+  cols: number;
+  rows: number;
+  changed: boolean;
+  seq: number;
+  pending?: true;
 }
 
 export type SendResult =
@@ -236,6 +267,12 @@ export interface PaneSession {
   snapshot(): PaneSnapshot;
   capture(sinceSeq?: number, opts?: { spans?: boolean }): CaptureResult | CaptureUnchanged;
   send(text: string): SendResult;
+  /**
+   * Set the terminal size (clamped). Allowed in every live state; a terminal session
+   * answers its last size with `changed:false`. Throws `ContractErrorException` with
+   * `resize_unsupported` (magmux lacks the op) or `delivery_unavailable`.
+   */
+  resize(cols: number, rows: number): Promise<PaneResizeOutcome>;
   turnAnswer(index: number): string;
   /** main-chain assistant message ids the transcript has shown, first-seen order, each once */
   assistantMessageIds(): readonly string[];
@@ -256,6 +293,12 @@ interface Admission {
   panelEscaped: boolean;
   /** degraded acceptance armed (no transcript evidence after the entry delay) */
   degraded: boolean;
+}
+
+/** A `resize` call waiting for the drain worker's send that carries its size (or a later one). */
+interface ResizeWaiter {
+  resolve: (r: PaneResizeOutcome) => void;
+  reject: (e: unknown) => void;
 }
 
 interface ScreenTurn {
@@ -319,7 +362,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private initialPending: boolean;
   private shape: "one-shot" | "interactive";
   private queue: string[] = [];
-  private screen: ScreenState = emptyScreen(160, 50);
+  private screen: ScreenState;
   private final = false;
   private turnIndex = 0;
   private admission: Admission | null = null;
@@ -357,6 +400,19 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private disagreeCounted = new Set<string>();
   private exitScrollback = "";
   private exitLastLine = "";
+
+  /** the size the viewer asked for last (clamped); the drain worker always sends THIS one */
+  private desiredSize: PaneSize;
+  /** the pane's size as magmux last confirmed it; null = unknown (a lost or timed-out reply) */
+  private appliedSize: PaneSize | null;
+  /** `capabilities.verbs` contains "resize", as of the latest attach */
+  private supportsResize = false;
+  private resizeWaiters: ResizeWaiter[] = [];
+  private resizeDraining = false;
+  /** when the last resize request was sent (or confirmed changed); 0 = never */
+  private lastResizeAt = 0;
+  /** the last screen change that is activity, i.e. not a resize redraw (M4) */
+  private activityChangedAt = 0;
 
   private bootKind: string | null = null;
   private bootKindSince = 0;
@@ -396,6 +452,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.turnDir = ids.turnDir;
     this.identity = { paneId: ids.paneId, sessionUuid: o.sessionUuid, ctlDir: ids.ctlDir };
     this.shape = o.shape;
+    const size = launchSize(o);
+    this.desiredSize = size;
+    // magmux sizes the pane from COLUMNS/LINES at launch, so the launch size is applied
+    this.appliedSize = { ...size };
+    this.screen = emptyScreen(size.cols, size.rows);
     this.initialPending = !!o.initialPrompt;
     if (o.initialPrompt) this.queue.push(o.initialPrompt);
     this.secondaryQuietMs = o.timings?.secondaryQuietMs ?? SECONDARY_QUIET_MS;
@@ -510,7 +571,6 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       client.close();
       return;
     }
-    this.client = client;
     client.on("snapshot", (e) => this.onSnapshot(e));
     client.on("frame", (f: MagmuxFrame) => this.onFrame(f));
     client.on("exit", (e) => void this.onPaneExit(e));
@@ -518,9 +578,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       if (e?.pane === 0) this.paneClosed = true;
     });
     client.on("disconnected", () => this.onDisconnected(client));
-    const caps = await client.request<{ version?: string; protocol?: number }>({
+    const caps = await client.request<{ version?: string; protocol?: number; verbs?: unknown }>({
       type: "capabilities",
     });
+    // The resize flag is set BEFORE this.client: a resize arriving in between sees a
+    // disconnected session (stored, pending), never a connected one without the op.
+    this.supportsResize =
+      caps.ok && Array.isArray(caps.result.verbs) && caps.result.verbs.includes("resize");
+    // dropped while asking: `disconnected` has already started the redial
+    if (client.isClosed) return;
+    this.client = client;
     if (caps.ok) {
       const v = String(caps.result.version ?? "");
       if (caps.result.protocol !== 1 || !versionAtLeast(v, MIN_MAGMUX_VERSION)) {
@@ -532,6 +599,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         return;
       }
     }
+    // a size set while disconnected, or one whose reply was lost, is applied now
+    if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();
     await client.request({ type: "watch", pane: 0, mode: "frames", fps: WATCH_FPS });
     // An `exit` pushed before this connection subscribed (a child that dies in its first
     // milliseconds, or one that exited in a reconnect gap) is only visible in `list`.
@@ -566,7 +635,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private onFrame(f: MagmuxFrame): void {
     if (f.pane !== undefined && f.pane !== 0) return;
+    const seq = this.screen.seq;
     this.screen = applyFrame(this.screen, f);
+    if (this.screen.seq !== seq && !this.inResizeQuiet(this.screen.changedAt))
+      this.activityChangedAt = this.screen.changedAt;
     this.framePending = true;
     if (!this.claudeCodeVersion) {
       const m = this.screen.lines.join("\n").match(/Claude Code v(\d+\.\d+\.\d+)/);
@@ -1180,7 +1252,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!box || box.text !== "") return;
     const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
     const echo = this.screen.lines.some((l) => l.startsWith(`❯ ${line.slice(0, 40)}`));
-    const changed = adm.deliveredAt !== null && this.screen.aboveBoxChangedAt > adm.deliveredAt;
+    // H2: a resize redraws everything above the box; within its quiet window only the echo counts
+    const changed =
+      adm.deliveredAt !== null &&
+      this.screen.aboveBoxChangedAt > adm.deliveredAt &&
+      !this.inResizeQuiet(this.screen.aboveBoxChangedAt);
     if (!echo && !changed) return;
     this.turnSource = "screen";
     this.anomaly("degraded_mode");
@@ -1565,7 +1641,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   snapshot(): PaneSnapshot {
     const view = this.follower.view();
     const terminal = isTerminalPhase(this.phase);
-    const lastAct = Math.max(this.screen.changedAt, view.lastAppendAt ?? 0);
+    // M4: a resize redraw is not activity, so it never resets idle_seconds
+    const lastAct = Math.max(this.activityChangedAt, view.lastAppendAt ?? 0);
     const cur = view.current;
     const hasTranscript =
       view.availability === "ok" && view.usage.tokensIn + view.usage.tokensOut > 0;
@@ -1654,6 +1731,145 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     // Never report a queued prompt for a session this very step ended.
     if (isTerminalPhase(this.phase)) return { ok: false, reason: "terminal" };
     return { ok: true, queued: this.queue.length };
+  }
+
+  async resize(cols: number, rows: number): Promise<PaneResizeOutcome> {
+    const size = clampPaneSize(cols, rows);
+    if (isTerminalPhase(this.phase)) return this.lastSizeOutcome();
+    if (!this.supportsResize)
+      throw new ContractErrorException(
+        "resize_unsupported",
+        'this magmux has no resize op (capabilities.verbs lacks "resize"); a newer magmux is needed'
+      );
+    if (!this.client) return this.pendingOutcome(size);
+    // Same size and nothing in flight: no request. Otherwise magmux's `changed` decides.
+    if (
+      samePaneSize(this.appliedSize, size) &&
+      samePaneSize(this.desiredSize, size) &&
+      !this.resizeDraining
+    )
+      return { ...size, changed: false, seq: this.screen.seq };
+    this.desiredSize = size;
+    return new Promise<PaneResizeOutcome>((resolve, reject) => {
+      this.resizeWaiters.push({ resolve, reject });
+      this.kickResize();
+    });
+  }
+
+  /** Store the size for the redial (`attach` applies it) and answer it as pending. */
+  private pendingOutcome(size: PaneSize): PaneResizeOutcome {
+    this.desiredSize = { ...size };
+    return { ...size, changed: true, seq: this.screen.seq, pending: true };
+  }
+
+  /** A terminal pane's answer: the size of its last screen, unchanged. */
+  private lastSizeOutcome(): PaneResizeOutcome {
+    return { cols: this.screen.cols, rows: this.screen.rows, changed: false, seq: this.screen.seq };
+  }
+
+  /** A screen change at `at` falls within RESIZE_QUIET_MS after the last resize. */
+  private inResizeQuiet(at: number): boolean {
+    return (
+      this.lastResizeAt > 0 && at >= this.lastResizeAt && at - this.lastResizeAt < RESIZE_QUIET_MS
+    );
+  }
+
+  /** Start the per-pane drain worker unless it runs already. */
+  private kickResize(): void {
+    if (this.resizeDraining) return;
+    this.resizeDraining = true;
+    void this.drainResize().finally(() => {
+      this.resizeDraining = false;
+      // a waiter that arrived after the loop's last check
+      if (this.resizeWaiters.length > 0) this.kickResize();
+    });
+  }
+
+  /**
+   * The single resize worker of this pane (H3, M3): one request at a time, always the
+   * LATEST desired size, so the sizes of a drag coalesce. Each send answers every waiter
+   * queued before it; a waiter that arrives during it gets the next send. With no waiter
+   * it runs once: `attach` re-applying the size after a redial. The phase is re-checked
+   * after every await: a terminal pane answers its last size, `changed:false`.
+   */
+  private async drainResize(): Promise<void> {
+    let first = true;
+    while (first || this.resizeWaiters.length > 0) {
+      first = false;
+      const batch = this.resizeWaiters.splice(0);
+      const answer = (r: PaneResizeOutcome) => {
+        for (const w of batch) w.resolve(r);
+      };
+      const fail = (e: ContractErrorException) => {
+        for (const w of batch) w.reject(e);
+      };
+      if (isTerminalPhase(this.phase)) {
+        answer(this.lastSizeOutcome());
+        continue;
+      }
+      const want = { ...this.desiredSize };
+      const c = this.client;
+      if (!c) {
+        answer(this.pendingOutcome(want));
+        continue;
+      }
+      if (!this.supportsResize) {
+        fail(new ContractErrorException("resize_unsupported", "this magmux has no resize op"));
+        continue;
+      }
+      // stamped before the send: the child's SIGWINCH redraw can arrive before the reply
+      const before = this.lastResizeAt;
+      this.lastResizeAt = Date.now();
+      const r = await c.request<{ cols?: number; rows?: number; changed?: boolean }>(
+        { type: "resize", pane: 0, cols: want.cols, rows: want.rows },
+        RESIZE_REPLY_MS
+      );
+      if (isTerminalPhase(this.phase)) {
+        answer(this.lastSizeOutcome());
+        continue;
+      }
+      if (!r.ok) {
+        // magmux may have applied a request whose reply was lost: the size is unknown
+        if (r.code === "client_lost" || r.code === "client_timeout") this.appliedSize = null;
+        // the connection is gone: the redial's attach re-applies desiredSize
+        if (r.code === "client_lost" || r.code === "client_closed") {
+          answer(this.pendingOutcome(this.desiredSize));
+          continue;
+        }
+        this.lastResizeAt = before;
+        fail(
+          new ContractErrorException(
+            "delivery_unavailable",
+            `magmux did not resize the pane: ${r.code}${r.error ? `: ${r.error}` : ""}`
+          )
+        );
+        continue;
+      }
+      const set = {
+        cols: typeof r.result.cols === "number" ? r.result.cols : want.cols,
+        rows: typeof r.result.rows === "number" ? r.result.rows : want.rows,
+      };
+      this.appliedSize = set;
+      if (r.result.changed !== true) {
+        // no reflow, no keyframe: nothing to keep quiet
+        this.lastResizeAt = before;
+        answer({ ...set, changed: false, seq: this.screen.seq });
+        continue;
+      }
+      this.lastResizeAt = Date.now();
+      // H4: the answer's seq is the first screen at the new size (magmux's forced keyframe)
+      await this.waitFor(
+        () =>
+          isTerminalPhase(this.phase) ||
+          (this.screen.cols === set.cols && this.screen.rows === set.rows),
+        RESIZE_SCREEN_MS
+      );
+      if (isTerminalPhase(this.phase)) {
+        answer(this.lastSizeOutcome());
+        continue;
+      }
+      answer({ ...set, changed: true, seq: this.screen.seq });
+    }
   }
 
   turnAnswer(index: number): string {
@@ -1864,6 +2080,13 @@ function signalQuietly(target: number, sig: NodeJS.Signals): void {
   }
 }
 
+/** The pane's size at launch: the owner's initial size, clamped, else the default. */
+function launchSize(o: PaneSessionOptions): PaneSize {
+  return o.initialSize
+    ? clampPaneSize(o.initialSize.cols, o.initialSize.rows)
+    : { cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS };
+}
+
 function isControl(text: string): boolean {
   const t = text.trim();
   return t === "/exit" || t === "/quit";
@@ -1917,7 +2140,13 @@ function preparePane(
     dirs = createLaunchDirs(root);
     const argv = buildClaudishPaneArgv(o.spawnModel, o.sessionUuid, dirs.turnDir, o.callerFlags);
     writeLauncherFiles(dirs.ctlDir, launcherScript(cwd, launch, argv));
-    const { magmuxEnv } = buildPaneEnv({ parentEnv, slotEnv: o.slotEnv, cwd, ctlDir: dirs.ctlDir });
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv,
+      slotEnv: o.slotEnv,
+      cwd,
+      ctlDir: dirs.ctlDir,
+      ...launchSize(o),
+    });
     return { paneId, sockPath, cwd, ...dirs, magmuxEnv };
   } catch (e) {
     for (const d of dirs ? [dirs.ctlDir, dirs.turnDir] : [])

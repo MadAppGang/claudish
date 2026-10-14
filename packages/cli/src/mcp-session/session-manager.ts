@@ -43,13 +43,17 @@ import {
   type CaptureResult,
   type CaptureUnchanged,
   ContractErrorException,
+  DEFAULT_PANE_COLS,
+  DEFAULT_PANE_ROWS,
   FAILURE_REASONS,
   type FailureReason,
   type FinalVerdict,
   type PaneBlock,
   type PaneSession,
   type PaneSessionOptions,
+  type PaneSize,
   type PaneSnapshot,
+  type ResizeResult,
   SLOT_STATES,
   type SessionCancelResult,
   type SessionRow,
@@ -57,6 +61,7 @@ import {
   type SlotState,
   assertMagmuxAvailable,
   checkChildFlags,
+  clampPaneSize,
   deliveryRefusal,
   flagsRemoveRead,
   isTerminalState,
@@ -224,6 +229,8 @@ interface SessionEntry {
   lastLoggedTool: string | null;
   assistantIdsLogged: number;
   anomaliesLogged: Set<string>;
+  /** A size asked for while the pane was still starting (L2): its launch size, else applied once it started. */
+  requestedSize: PaneSize | null;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
@@ -610,10 +617,10 @@ function diskProseBytes(
 function blankFinalCapture(): CaptureResult {
   return {
     seq: 0,
-    cols: 160,
-    rows: 50,
+    cols: DEFAULT_PANE_COLS,
+    rows: DEFAULT_PANE_ROWS,
     cursor: { x: 0, y: 0 },
-    lines: Array.from({ length: 50 }, () => ""),
+    lines: Array.from({ length: DEFAULT_PANE_ROWS }, () => ""),
     final: true,
   };
 }
@@ -947,6 +954,7 @@ export class SessionManager {
       lastLoggedTool: null,
       assistantIdsLogged: 0,
       anomaliesLogged: new Set(),
+      requestedSize: null,
     };
   }
 
@@ -957,6 +965,8 @@ export class SessionManager {
     p: { flags: string[]; readAvailable: boolean; parentEnv: Record<string, string | undefined> }
   ): Promise<void> {
     const info = entry.info;
+    // L2: a size asked for before this point is the pane's launch size
+    const launch = entry.requestedSize;
     const paneOpts: PaneSessionOptions = {
       kind: "s",
       label: info.sessionId,
@@ -975,6 +985,7 @@ export class SessionManager {
       },
       shape: info.shape,
       ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
+      ...(launch ? { initialSize: launch } : {}),
       readAvailable: p.readAvailable,
       decide: (turn) => this.decide(entry, turn),
       onBlocked: (b) => this.onBlocked(entry, b),
@@ -990,6 +1001,12 @@ export class SessionManager {
       this.failNeverSpawned(entry, err);
       throw err;
     }
+    // a size asked for while the pane started (after its environment was built): apply it
+    // now; the pane's own worker answers any later resize
+    const asked = entry.requestedSize;
+    entry.requestedSize = null;
+    if (asked && (asked.cols !== launch?.cols || asked.rows !== launch?.rows))
+      entry.session.resize(asked.cols, asked.rows).catch(() => undefined);
     if (!entry.ended) this.applySnapshot(entry, entry.session.snapshot());
   }
 
@@ -1336,6 +1353,34 @@ export class SessionManager {
     if (!entry.session) return { session_id: sessionId, state: entry.info.state, changed: false };
     const r = entry.session.cancel();
     return { session_id: sessionId, state: r.state, changed: r.changed };
+  }
+
+  /**
+   * Set a session's terminal size (§8 F), clamped. Allowed in every live state, mid-turn
+   * included; last caller wins. A session whose pane is still starting stores the size and
+   * starts at it (L2), answering `changed:true, pending:true`; one whose pane never
+   * started answers the default size with `changed:false`. Throws
+   * `ContractErrorException`: `unknown_session`, `resize_unsupported`,
+   * `delivery_unavailable`.
+   */
+  async resizeSession(sessionId: string, cols: number, rows: number): Promise<ResizeResult> {
+    const entry = this.liveEntry(sessionId);
+    if (!entry) throw unknownSession(sessionId);
+    if (!entry.session) {
+      if (isTerminalState(entry.info.state))
+        return {
+          session_id: sessionId,
+          cols: DEFAULT_PANE_COLS,
+          rows: DEFAULT_PANE_ROWS,
+          changed: false,
+          seq: 0,
+        };
+      const size = clampPaneSize(cols, rows);
+      entry.requestedSize = size;
+      return { session_id: sessionId, ...size, changed: true, seq: 0, pending: true };
+    }
+    const r = await entry.session.resize(cols, rows);
+    return { session_id: sessionId, ...r };
   }
 
   /**

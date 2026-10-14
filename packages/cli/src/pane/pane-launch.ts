@@ -31,6 +31,7 @@ import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { isPaneShellManagedKey } from "./child-env.js";
+import { DEFAULT_PANE_COLS, DEFAULT_PANE_ROWS } from "./pane-size.js";
 import { type WatcherArgs, isValidPaneId, sockPathOf, watcherArgv } from "./process-identity.js";
 
 /* ───────────────────────────── socket root ───────────────────────────── */
@@ -182,6 +183,9 @@ export interface PaneEnvInput {
   /** the control directory holding `sh-shim` */
   ctlDir: string;
   platform?: NodeJS.Platform;
+  /** the pane's size at launch (already clamped); DEFAULT_PANE_COLS × DEFAULT_PANE_ROWS when absent */
+  cols?: number;
+  rows?: number;
 }
 
 /**
@@ -195,8 +199,8 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
     if (v === undefined || isStrippedFromChildEnv(k)) continue;
     env[k] = v;
   }
-  env.COLUMNS = "160";
-  env.LINES = "50";
+  env.COLUMNS = String(input.cols ?? DEFAULT_PANE_COLS);
+  env.LINES = String(input.rows ?? DEFAULT_PANE_ROWS);
   if (input.parentEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined)
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   Object.assign(env, input.slotEnv);
