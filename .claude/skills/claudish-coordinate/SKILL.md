@@ -180,7 +180,8 @@ passage à 12 h). Contexte et mesures : reference.md § Phase 4c et l'enquête #
 
 Les onglets sont ouverts par le user dans le Playwright Edge d'ai-01 ; les URLs font foi verbatim dans
 `C:\Users\MYIA\.claudish-browser\provider-consoles-urls.json`.
-- Lancer `provider-consoles-reader.py` **détaché**. Un relevé n'est valide que si `read` = 11.
+- Lancer `C:\Users\MYIA\.claudish-browser\provider-consoles-reader.py` **détaché** (hors dépôt, propre à
+  ai-01). Un relevé n'est valide que si `read` = 11 dans `readings\_pass.txt`.
 - Chiffres d'usage seulement, **sur le dashboard interne seulement**. Jamais sur GitHub, où seuls des ratios
   dérivés vont en #405.
 - Aucun clic dans les fenêtres du user.
