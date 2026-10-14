@@ -30,7 +30,7 @@
  * leaves a REPL behind. `CONTRACT_FAKE_SIGTERM_MARKER` is written on SIGTERM or SIGHUP.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -60,8 +60,8 @@ const scenario = asClaude
   : model.startsWith("fake-")
     ? model.slice(5).replace(/-\d+$/, "")
     : "marker";
-const COLS = Number(env.COLUMNS) || 160;
-const ROWS = Number(env.LINES) || 50;
+let COLS = Number(env.COLUMNS) || 160;
+let ROWS = Number(env.LINES) || 50;
 const cwd = (() => {
   try {
     return realpathSync(process.cwd());
@@ -398,7 +398,6 @@ const rec = {
 /* ───────────────────────────── screen ───────────────────────────── */
 
 const BANNER = screenLines("repl-boot-empty").slice(0, 4);
-const RULE = "─".repeat(COLS);
 const STATUS = [
   "  cwd • fake • $0.000 • N/A",
   "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
@@ -435,6 +434,7 @@ function render(): void {
 }
 
 function replRows(): string[] {
+  const RULE = "─".repeat(COLS);
   const out: string[] = Array.from({ length: ROWS }, () => "");
   const boxLines = S.box.split("\n");
   const top = ROWS - 4 - boxLines.length;
@@ -1115,6 +1115,25 @@ function markSignal(sig: string): void {
 }
 
 function installSignals(): void {
+  process.on("SIGWINCH", () => {
+    try {
+      // Bun's stdout dimensions can still be stale inside SIGWINCH; query the pty.
+      const size = spawnSync("stty", ["size"], { stdio: ["inherit", "pipe", "ignore"] });
+      const match =
+        size.status === 0 ? size.stdout?.toString().trim().match(/^(\d+)\s+(\d+)$/) : null;
+      if (match) {
+        const rows = Number(match[1]);
+        const cols = Number(match[2]);
+        if (Number.isSafeInteger(rows) && rows > 0 && Number.isSafeInteger(cols) && cols > 0) {
+          ROWS = rows;
+          COLS = cols;
+        }
+      }
+    } catch {
+      // Keep the current dimensions if the terminal size cannot be read.
+    }
+    render();
+  });
   const ignoreTerm = scenario === "ignore_term";
   const ignoreHup = scenario === "ignore_hup" || ignoreTerm;
   process.on("SIGTERM", () => {
