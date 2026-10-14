@@ -1,6 +1,7 @@
 # recommended-models: does every recommended model work through claudish?
 
-Two Benches, one question each, swept over the recommended list by two Experiments.
+Two Benches, one question each, swept over the recommended list by one Experiment per
+list category and Bench.
 
 | Bench | Path under test | The model must |
 |---|---|---|
@@ -13,20 +14,27 @@ that a route answers, not that the model can use tools.
 
 ## The variants come from the catalog
 
+Every command in this README runs from this folder
+(`ai-docs/benches/recommended-models/`). The Benches resolve their own paths against the
+Bench file, and the script writes into `experiments/` beside it.
+
 ```
 bun scripts/gen-experiments.ts
 ```
 
-Every command in this README runs from this folder
-(`ai-docs/benches/recommended-models/`). The Benches resolve their own paths against the
-Bench file, and the script writes next to itself, so the folder is the only working
-directory to remember.
+reads `claudish --models-top --json` and writes one Experiment per list category and Bench:
 
-writes `cli.experiment.yaml` and `mcp.experiment.yaml` from `claudish --models-top --json`:
-first every recommended model by bare name (routing chooses the hop), then every distinct
-subscription command the list publishes (`cx@gpt-6.1-sol`, `kc@k3`, ...). The list changes
+| Category | Variants (one model spec each) | Files |
+|---|---|---|
+| `programming` | the recommended models by bare name; routing chooses the hop | `experiments/programming.cli.experiment.yaml`, `experiments/programming.mcp.experiment.yaml` |
+| `fast` | the same, for the fast models | `experiments/fast.cli.experiment.yaml`, `experiments/fast.mcp.experiment.yaml` |
+| `subscription` | each published subscription command (`cx@gpt-6.1-sol`, `kc@k3`, ...); a native-route row is its bare name (`claude-opus-5-5`) | `experiments/subscription.cli.experiment.yaml`, `experiments/subscription.mcp.experiment.yaml` |
+
+The categories are read from the list, so a new one gets its own files. Each variant is named
+by its model spec; quote it on the command line: `--variant oc@glm-5.3`. The list changes
 with each catalog generation, so re-run the script before a real run. Each file names the
-generation it was written from.
+generation it was written from, and the script deletes files for a category that left the
+list.
 
 ## Running
 
@@ -39,11 +47,12 @@ madbench preflight mcp.madbench.yaml
 madbench check     mcp.madbench.yaml
 ```
 
-A real run, one variant first:
+A real run, one category at a time, MCP first because it is cheaper:
 
 ```
-madbench cli.experiment.yaml --variant kimi-k3 --report-json <path>
-madbench mcp.experiment.yaml --report-json <path>
+madbench experiments/programming.mcp.experiment.yaml --report-json <path>
+madbench experiments/programming.cli.experiment.yaml --report-json <path>
+madbench experiments/programming.cli.experiment.yaml --variant kimi-k3 --report-json <path>
 ```
 
 Both Benches run the `claudish` on `PATH`. Check `claudish --version` first: a stale global
