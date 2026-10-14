@@ -32,7 +32,7 @@ const STATES = [
 
 for (const [cols, rows] of [[80, 24], [120, 40], [250, 60]] as const) {
   describe(`${cols}x${rows} real Claude Code captures`, () => {
-    test.each(STATES)("%s", (state) => {
+    test.each([...STATES])("%s", (state) => {
       const screen = loadScreen(`size-${cols}x${rows}-${state}`);
       expect(screen.cols).toBe(cols);
       expect(screen.rows).toBe(rows);
