@@ -57,6 +57,8 @@ mkdirSync(OUT_DIR, { recursive: true });
 for (const f of readdirSync(OUT_DIR)) if (f.endsWith(".experiment.yaml")) rmSync(join(OUT_DIR, f));
 
 const written = new Date().toISOString();
+const files: string[] = [];
+console.log(`Recommended list, catalog generation ${doc.generationId}\n`);
 for (const [category, specs] of byCategory) {
   for (const bench of ["cli", "mcp"]) {
     const lines = [
@@ -78,8 +80,13 @@ for (const [category, specs] of byCategory) {
     for (const spec of specs) {
       lines.push(`  - name: ${JSON.stringify(spec)}`, `    params: { model: ${JSON.stringify(spec)} }`);
     }
-    writeFileSync(join(OUT_DIR, `${category}.${bench}.experiment.yaml`), `${lines.join("\n")}\n`);
+    const file = `${category}.${bench}.experiment.yaml`;
+    writeFileSync(join(OUT_DIR, file), `${lines.join("\n")}\n`);
+    files.push(`experiments/${file}`);
   }
-  console.log(`${category}: ${specs.length} variants  ${specs.join("  ")}`);
+  console.log(`${category} (${specs.length})`);
+  specs.forEach((spec, i) => console.log(`  ${String(i + 1).padStart(2)}. ${spec}`));
+  console.log("");
 }
-console.log(`generation ${doc.generationId}`);
+console.log(`Wrote ${files.length} files:`);
+for (const f of files) console.log(`  ${f}`);
