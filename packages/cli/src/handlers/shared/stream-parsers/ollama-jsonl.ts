@@ -13,6 +13,8 @@ import type { Context } from "hono";
 import { log } from "../../../logger.js";
 import { createResponseCapture } from "../response-capture.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
+import { messageStartUsage } from "./message-start-usage.js";
+import { toAnthropicUsage } from "./usage-cache-split.js";
 
 export function createOllamaJsonlStream(
   c: Context,
@@ -20,6 +22,8 @@ export function createOllamaJsonlStream(
   opts: {
     modelName: string;
     onTokenUpdate?: (input: number, output: number) => void;
+    /** Previous turn's input-token count, seeding message_start (#179/#444). */
+    priorInputTokens?: number;
   }
 ): Response {
   // Diagnostic capture (no-op unless CLAUDISH_CAPTURE_DIR is set) — this lane
@@ -71,7 +75,7 @@ export function createOllamaJsonlStream(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          usage: messageStartUsage(opts.priorInputTokens),
         },
       });
       send("ping", { type: "ping" });
@@ -105,7 +109,10 @@ export function createOllamaJsonlStream(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: "end_turn", stop_sequence: null },
-              usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+              // #444 — the shared shaper (no cache fields on this wire → all
+              // ordinary input) so the three input keys ship together and sum
+              // back to prompt_eval_count (#179).
+              usage: toAnthropicUsage({ prompt_tokens: promptTokens, completion_tokens: completionTokens }),
             });
             send("message_stop", { type: "message_stop" });
           }
@@ -123,7 +130,9 @@ export function createOllamaJsonlStream(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: "end_turn", stop_sequence: null },
-              usage: { input_tokens: 0, output_tokens: 0 },
+              // Same shaping as the happy path: explicit zeros in the four-key
+              // shape, which the client's merge falls back over the seed.
+              usage: toAnthropicUsage({ prompt_tokens: promptTokens, completion_tokens: completionTokens }),
             });
             send("message_stop", { type: "message_stop" });
           } catch {}

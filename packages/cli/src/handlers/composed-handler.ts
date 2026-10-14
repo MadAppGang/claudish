@@ -1724,6 +1724,9 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           onToolCall,
           unwrapResponse: this.options.unwrapGeminiResponse,
+          // #444 — same seed contract as the openai lane: message_start carries
+          // the previous turn's input count, never a bare 0.
+          priorInputTokens,
         });
       }
 
@@ -1731,6 +1734,8 @@ export class ComposedHandler implements ModelHandler {
         return createOllamaJsonlStream(c, response, {
           modelName: this.bareModelName,
           onTokenUpdate,
+          // #444 — same seed contract as the openai lane.
+          priorInputTokens,
         });
 
       default:

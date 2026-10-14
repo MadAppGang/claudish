@@ -12,12 +12,16 @@ import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { log } from "../../../logger.js";
 import { createResponseCapture } from "../response-capture.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
+import { messageStartUsage } from "./message-start-usage.js";
+import { toAnthropicUsage } from "./usage-cache-split.js";
 
 export interface GeminiSseOptions {
   modelName: string;
   adapter?: BaseAPIFormat;
   middlewareManager?: MiddlewareManager;
   onTokenUpdate?: (input: number, output: number) => void;
+  /** Previous turn's input-token count, seeding message_start (#179/#444). */
+  priorInputTokens?: number;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
   /** CodeAssist wraps chunks in {response: {...}} */
@@ -75,6 +79,24 @@ export function createGeminiSseStream(
       // which is a meaning ("the stream ended without one"), never a bug.
       let sentStopReason: string | undefined;
 
+      // #444 — Gemini's usageMetadata is camelCase (promptTokenCount /
+      // candidatesTokenCount / cachedContentTokenCount), spellings the shared
+      // shaper deliberately does not know: splitPromptTokens reads the openai /
+      // DeepSeek spellings, and widening it with Gemini's dialect would make one
+      // provider's naming everyone's. Map to the openai shape HERE, at the only
+      // call site, so the three input counters ship together and sum back to
+      // promptTokenCount (#179). cachedContentTokenCount is the cache-READ share
+      // of the prompt — the same subset relation openai's cached_tokens holds.
+      const shapedUsage = () =>
+        toAnthropicUsage({
+          prompt_tokens: usage?.promptTokenCount || 0,
+          completion_tokens: usage?.candidatesTokenCount || 0,
+          prompt_tokens_details:
+            usage?.cachedContentTokenCount > 0
+              ? { cached_tokens: usage.cachedContentTokenCount }
+              : undefined,
+        });
+
       send("message_start", {
         type: "message_start",
         message: {
@@ -85,7 +107,7 @@ export function createGeminiSseStream(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          usage: messageStartUsage(opts.priorInputTokens),
         },
       });
       send("ping", { type: "ping" });
@@ -150,7 +172,7 @@ export function createGeminiSseStream(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn", stop_sequence: null },
-              usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+              usage: shapedUsage(),
             });
             send("message_stop", { type: "message_stop" });
           }
@@ -162,7 +184,11 @@ export function createGeminiSseStream(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: "end_turn", stop_sequence: null },
-              usage: { input_tokens: 0, output_tokens: 0 },
+              // Same shaping as the happy path (openai-lane convention): the
+              // last-ditch delta carries the four-key shape too — with usage
+              // still null this degrades to explicit zeros, which the client's
+              // merge falls back over the seed.
+              usage: shapedUsage(),
             });
             send("message_stop", { type: "message_stop" });
           } catch {}
