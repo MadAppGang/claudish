@@ -109,3 +109,18 @@ whole resilience model rather than special-casing one ingress. The deep liveness
 
 `/v1/models` discovery · OpenAI web-search tool interception · per-role thinking policy on the
 OpenAI path.
+
+
+---
+
+# Migrated verbatim from the repo-level `CLAUDE.md` (#445 A1, 2026-10-12)
+
+## OpenAI-Compatible Ingress (v7.2+)
+
+`/v1/messages` is the **native** ingress; `POST /v1/chat/completions` is a **translated** one — converted to Anthropic shape, run through the **same** `getHandlerForRequest` → `ComposedHandler.handle` pipeline, then translated back. An OpenAI client (sk-agent, any `AsyncOpenAI` consumer) therefore inherits the routing cascade, budget failover, accounting and leak policy for free, by changing `base_url` alone.
+
+- **Never-hang holds here too**: a malformed stream degrades to a single terminal chunk + `data: [DONE]`. `thinking` blocks surface as `reasoning_content`; `stop_reason` maps to `finish_reason`.
+- **Request-side thinking controls are mapped (#435)** — `enable_thinking` (top level or under `chat_template_kwargs`) and `reasoning_effort` land on the house `thinking` object: `false` → `{type:"disabled"}`, `true` → enabled with a 2048 default budget, effort → the inverse of `openai-api-format`'s budget ladder (2000/8000/24000/32000). An enabled block is always legal (≥1024, `< max_tokens`): against a client-sent `max_tokens` it clamps; against our own 4096 placeholder it *raises* the placeholder — clamping "high" to 4095 would invert the ask to "minimal" downstream. Same fix closes the Qwen openai-wire passthrough, which mapped *any* `originalRequest.thinking` to `enable_thinking: true` — the exact inversion of a disabled ask. Measured end-to-end on gc@glm-5.3 via the hub (2026-10-11): 36→3 completion tokens, reasoning gone.
+- **A failover notice never rides the content here (#229)** — it arrives in the `x-claudish-failover-notice` response header (base64 of the UTF-8 text), on both the streaming and JSON responses, and the relay passes it through. `/v1/messages` keeps the in-content block 0 for the Claude Code agent loop. The gate is the route (`noticePolicyForIngress`), never a user-agent: a programmatic consumer reading a notice as its answer is how an empty model output passed a code review on 2026-09-23.
+- **The relay is path-aware** — a sidecar forwards to the *same* route the client hit, so an OpenAI request reaches the hub's `/v1/chat/completions` in NOMINAL mode and the resilience model is preserved. The deep liveness probe stays on `/v1/messages`.
+- Out of scope for now: `/v1/models` discovery, OpenAI web-search interception, per-role thinking policy on this path. Detail: `docs/reference/openai-ingress.md`.

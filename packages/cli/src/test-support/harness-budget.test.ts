@@ -46,6 +46,14 @@ const BUDGETS: Budget[] = [
     maxBytes: 6.5 * 1024,
     detail: ".claude/skills/worker/reference.md (section of the same name)",
   },
+  {
+    // Loaded on every turn by every agent working in this repo — the decision
+    // layer itself. 94 365 B before #445 (A1); each moved narrative now lives in
+    // a docs/reference/<theme>.md file named by the pointer table at its top.
+    path: "CLAUDE.md",
+    maxBytes: 40 * 1024 + 960,
+    detail: "docs/reference/<theme>.md (see the pointer table at the top of CLAUDE.md)",
+  },
 ];
 
 describe("harness byte budgets (#445)", () => {
@@ -73,12 +81,24 @@ describe("harness byte budgets (#445)", () => {
       ).toBeLessThanOrEqual(b.maxBytes);
     });
 
-    test(`${b.path}: every reference.md pointer resolves`, () => {
+    test(`${b.path}: every reference pointer resolves`, () => {
       // A slimmed file is only lossless while the place it points to exists.
+      // Skills point at a sibling reference.md; CLAUDE.md points at
+      // docs/reference/<theme>.md files relative to the repo root.
       const full = join(REPO_ROOT, b.path);
       const text = readFileSync(full, "utf-8");
-      if (text.includes("reference.md")) {
+      // The sibling-reference.md guard is the A3 skill structure; scoping it to
+      // SKILL.md avoids a false positive on CLAUDE.md, whose "reference.md"
+      // substring only ever occurs inside "settings-reference.md".
+      if (b.path.includes("SKILL.md") && text.includes("reference.md")) {
         expect(existsSync(join(dirname(full), "reference.md")), `${b.path} points to reference.md, which is missing`).toBe(true);
+      }
+      // CR #449 (non-blocking): CLAUDE.md also points at docs/settings-reference.md,
+      // docs/three-layer-architecture.md and docs/deployment/*.md — match any
+      // docs/ path, the existence check is the same and the cost is nil.
+      const refs = text.match(/docs\/[A-Za-z0-9/._-]+\.md/g) ?? [];
+      for (const r of refs) {
+        expect(existsSync(join(REPO_ROOT, r)), `${b.path} points to ${r}, which is missing`).toBe(true);
       }
     });
   }
