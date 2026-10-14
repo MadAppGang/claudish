@@ -87,8 +87,12 @@ import {
 import { type Delivery, planDelivery, writeTurnFile } from "./prompt-delivery.js";
 import {
   agentRejectedLine,
+  boxStartsWith,
   choiceDialog,
+  echoHead,
+  flatText,
   hasChoiceDialog,
+  hasEcho,
   inputBox,
   isWorking,
   readBoot,
@@ -1086,16 +1090,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** After a lost reply: the line is in the box (typed), or already submitted (echo, witness). */
   private async landedAfterLostReply(text: string, enter: boolean): Promise<boolean> {
     await this.nextFrame(1000);
-    const head = text.slice(0, 40);
+    const head = echoHead(text, this.screen.cols);
     const box = inputBox(this.screen);
-    let landed = !!box && box.text.startsWith(head);
+    let landed = !!box && boxStartsWith(box, head);
     if (landed && enter) await this.key("enter");
     if (!landed && enter) {
       this.follower.poll();
       const cur = this.follower.view().current;
       landed =
         (!!cur && cur.index === this.turnIndex && cur.acceptedAt !== null) ||
-        this.screen.lines.some((l) => l.startsWith(`❯ ${head}`));
+        hasEcho(this.screen.lines, head);
     }
     if (landed) this.anomaly("send_reply_lost");
     return landed;
@@ -1146,7 +1150,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return (
       !inputBox(this.screen) &&
       !hasChoiceDialog(this.screen) &&
-      /Esc to cancel/.test(screenText(this.screen))
+      /Esc to cancel/.test(flatText(this.screen.lines))
     );
   }
 
@@ -1199,7 +1203,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       if (this.admission !== adm || this.phase !== "ADMITTING") return "gone";
       const box = inputBox(this.screen);
       if (box && box.text === "") return "empty";
-      if (box && !box.text.startsWith(head)) return "other";
+      if (box && !boxStartsWith(box, head)) return "other";
       const left = end - Date.now();
       if (left <= 0) return box ? "line" : "other";
       // Resolves on the next frame (screen seq change) or at the deadline.
@@ -1210,8 +1214,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private nudge(adm: Admission): void {
     const box = inputBox(this.screen);
     const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    const head = line.slice(0, 40);
-    if (!adm.resent && box && line && box.text.startsWith(head)) {
+    const head = echoHead(line, this.screen.cols);
+    if (!adm.resent && box && line && boxStartsWith(box, head)) {
       adm.resent = true;
       this.anomaly("resent_enter");
       void (async () => {
@@ -1236,7 +1240,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       !adm.panelEscaped &&
       !box &&
       !hasChoiceDialog(this.screen) &&
-      /Esc to cancel/.test(screenText(this.screen))
+      /Esc to cancel/.test(flatText(this.screen.lines))
     ) {
       // A panel command (`/cost`, `/usage`, …) writes no record and swallows input until Esc.
       adm.panelEscaped = true;
@@ -1251,7 +1255,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const box = inputBox(this.screen);
     if (!box || box.text !== "") return;
     const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    const echo = this.screen.lines.some((l) => l.startsWith(`❯ ${line.slice(0, 40)}`));
+    const echo = hasEcho(this.screen.lines, echoHead(line, this.screen.cols));
     // H2: a resize redraws everything above the box; within its quiet window only the echo counts
     const changed =
       adm.deliveredAt !== null &&

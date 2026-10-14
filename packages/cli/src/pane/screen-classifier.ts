@@ -39,7 +39,8 @@ export type ChoiceDialogKind = "permission" | "plan" | "question";
 
 /**
  * The choice dialogs a RUNNING turn can block on (R3-H1's closed list). Each header is
- * verbatim from a 2.1.290 capture. None of them has a `No, and tell Claude …(esc)` row
+ * verbatim from a 2.1.290 capture, and is matched against the dialog region flattened into
+ * one string (`flatText`), so a header word-wrapped on a narrow pane still matches. None of them has a `No, and tell Claude …(esc)` row
  * any more: permission ends `3. No` / `Esc to cancel · Tab to amend`, plan approval has
  * no No row at all, AskUserQuestion ends `Enter to select · ↑/↓ to navigate · Esc to cancel`.
  */
@@ -47,7 +48,8 @@ export const CHOICE_DIALOGS: ReadonlyArray<{ kind: ChoiceDialogKind; header: Reg
   { kind: "permission", header: /\bDo you want to proceed\?/ },
   {
     kind: "permission",
-    header: /\bDo you want to (create|make this edit to|overwrite|delete) .+\?/,
+    // the file name is bounded so a flattened region never lets it span a whole dialog
+    header: /\bDo you want to (create|make this edit to|overwrite|delete) .{1,300}?\?/,
   },
   { kind: "plan", header: /\bWould you like to proceed\?/ },
   { kind: "question", header: /Enter to select · ↑\/↓ to navigate/ },
@@ -60,8 +62,11 @@ const FIRST_OPTION = /^\s*(❯\s*)?1\.\s+\S/;
 /** Footers of 2.1.290's selection dialogs (boot dialogs have no numbers). */
 const SELECT_FOOTER = /Enter to (confirm|select)\b.*Esc to cancel/;
 
-/** The working row: glyph, a capitalised word ending in `…`, an optional `(…)`. */
-const WORKING_ROW = /^\s*[·✢✳✶✻✽*●∗]\s+[A-Z][\w'-]*…(\s+\(.*\))?\s*$/;
+/**
+ * The working row: glyph, a capitalised word ending in `…`, an optional `(…)`. On a narrow
+ * pane the parenthesised tail can wrap, so a tail with no `)` on this row also matches.
+ */
+const WORKING_ROW = /^\s*[·✢✳✶✻✽*●∗]\s+[A-Z][\w'-]*…(\s+\((?:.*\)|[^)]*))?\s*$/;
 
 /** Bullet of an assistant message block. */
 const BULLET = /^⏺(\s|$)/;
@@ -77,6 +82,32 @@ export function screenText(s: ScreenState): string {
   const lines = [...s.lines];
   while (lines.length && !lines[lines.length - 1]?.trim()) lines.pop();
   return lines.join("\n");
+}
+
+/**
+ * Rows joined with a space, whitespace runs collapsed: what a marker phrase is matched
+ * against. Claude Code word-wraps dialog prose to the pane width and drops the space at
+ * the wrap, so a phrase on one 160-column row can split across two at 80 columns.
+ */
+export function flatText(lines: readonly string[]): string {
+  return lines.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/** Whitespace removed. Typed text and echoes wrap at a space (not drawn) or mid-word. */
+function squash(s: string): string {
+  return s.replace(/\s+/g, "");
+}
+
+/**
+ * How many leading characters of a typed line identify it on screen: `min(40, cols − 4)`,
+ * compared with whitespace removed and across wrapped rows (`echoAt`, `boxStartsWith`).
+ */
+export function echoHeadLength(cols: number): number {
+  return Math.max(1, Math.min(40, cols - 4));
+}
+
+export function echoHead(line: string, cols: number): string {
+  return line.slice(0, echoHeadLength(cols));
 }
 
 /** Characters of `line` whose cell is NOT faint. Columns are code-point indexes. */
@@ -96,6 +127,40 @@ export interface InputBox {
   text: string; // typed text, placeholder (faint) cells excluded, trimmed
   menuOpen: boolean;
   menuItem: string | null;
+}
+
+/**
+ * The box holds a line starting with `head`. `box.text` joins its rows with `\n`, and a
+ * long line wraps at a space Claude Code does not draw, so both sides lose their whitespace.
+ */
+export function boxStartsWith(box: InputBox, head: string): boolean {
+  return squash(box.text).startsWith(squash(head));
+}
+
+/**
+ * Row `i` is the echo of a submitted line starting with `head`: `❯ ` with an ASCII space
+ * (the box prompt is `❯` + NO-BREAK SPACE, so the box itself never matches), followed by
+ * its two-space continuation rows when the echo wraps, compared with whitespace removed.
+ * At 120 columns a prompt whose third word is a long path echoes as `❯ Use the Write tool
+ * to create the file` alone, the path on the next row (`size-120x40-permission-…`).
+ */
+export function echoAt(lines: readonly string[], i: number, head: string): boolean {
+  const first = lines[i] ?? "";
+  if (!first.startsWith("❯ ")) return false;
+  const want = squash(head);
+  let got = squash(first.slice(2));
+  for (let j = i + 1; got.length < want.length && j < lines.length; j++) {
+    const row = lines[j] ?? "";
+    if (!/^ {2}\S/.test(row)) break;
+    got += squash(row);
+  }
+  return got.startsWith(want);
+}
+
+/** Some row is the echo of a submitted line starting with `head`. */
+export function hasEcho(lines: readonly string[], head: string): boolean {
+  for (let i = 0; i < lines.length; i++) if (echoAt(lines, i, head)) return true;
+  return false;
 }
 
 const MENU_ROW = /^\s{2}❯ \/\S|^\s{4}\/\S|^\s{4}[*+] \S/;
@@ -169,7 +234,8 @@ export function choiceDialog(s: ScreenState): ChoiceDialog | null {
   const lines = s.lines;
   const start = lastBulletRow(lines) + 1;
   const below = lines.slice(start);
-  const kind = CHOICE_DIALOGS.find((d) => below.some((l) => d.header.test(l)))?.kind;
+  const flat = flatText(below);
+  const kind = CHOICE_DIALOGS.find((d) => d.header.test(flat))?.kind;
   if (!kind) return null;
   if (!below.some((l) => FIRST_OPTION.test(l))) return null;
   return { kind, text: below.filter((l) => l.trim()).join("\n") };
@@ -230,7 +296,7 @@ export function screenAnswer(s: ScreenState, echo: string): string {
   const lines = s.lines;
   const top = boxTopRow(lines, s.cols);
   const end = top >= 0 ? top : lines.length;
-  const start = echoRow(lines, end, `❯ ${echo.slice(0, 40)}`) + 1;
+  const start = echoRow(lines, end, echoHead(echo, s.cols)) + 1;
   if (start <= 0) return "";
   const out: string[] = [];
   let inProse = false;
@@ -242,9 +308,10 @@ export function screenAnswer(s: ScreenState, echo: string): string {
   return out.join("\n").trim();
 }
 
-/** The LAST row above `end` starting with `head`, or -1. */
+/** The LAST echo row above `end` of a line starting with `head`, or -1. */
 function echoRow(lines: readonly string[], end: number, head: string): number {
-  for (let i = end - 1; i >= 0; i--) if ((lines[i] ?? "").startsWith(head)) return i;
+  const above = lines.slice(0, end);
+  for (let i = end - 1; i >= 0; i--) if (echoAt(above, i, head)) return i;
   return -1;
 }
 
@@ -275,8 +342,9 @@ export function agentRejectedLine(text: string): string | null {
   return m ? m[0] : null;
 }
 
-function namedDialog(text: string): NamedDialog | null {
-  for (const d of NAMED_DIALOGS) if (text.includes(d.marker)) return d.name;
+/** Matched against the flattened screen, so a marker wrapped on a narrow pane still names it. */
+function namedDialog(flat: string): NamedDialog | null {
+  for (const d of NAMED_DIALOGS) if (flat.includes(d.marker)) return d.name;
   return null;
 }
 
@@ -292,7 +360,7 @@ function isUnnamedChoice(lines: readonly string[]): boolean {
 export function readBoot(s: ScreenState): BootReading {
   const text = screenText(s);
   const box = inputBox(s);
-  const named = namedDialog(text);
+  const named = namedDialog(flatText(s.lines));
   if (box && !named) return box.text === "" ? { kind: "repl" } : { kind: "booting" };
   if (named) return { kind: "dialog", name: named, text };
   if (isUnnamedChoice(s.lines)) return { kind: "choice", text };
