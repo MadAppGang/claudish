@@ -477,7 +477,7 @@ if (isMcpMode) {
   import("./auth/quota-command.js").then((m) => m.quotaCommand(quotaProviderArg));
 } else if (isUpdateCommand) {
   // Self-update command (checked early to work with aliases like `claudish -y update`)
-  import("./update-command.js").then((m) => m.updateCommand());
+  import("./update-command.js").then((m) => m.updateCommand(args));
 } else if (isInitCommand) {
   // Profile setup wizard — pass --local/--global scope flag if provided
   const scopeFlag = args.includes("--local")

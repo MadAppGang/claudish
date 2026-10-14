@@ -388,10 +388,27 @@ export async function performUpdate(): Promise<UpdateOutcome> {
   return { status: "failed", method: installInfo.method };
 }
 
+function printUpdateHelp(): void {
+  console.log(`Usage: claudish update
+
+Checks the npm registry for the latest claudish release and, when it is newer
+than this one, installs it with the package manager that installed this copy
+(bun, npm or Homebrew), then shows what changed.
+
+Options:
+  -h, --help   Show this help and exit without checking or installing
+`);
+}
+
 /**
  * Main update command entry point
  */
-export async function updateCommand(): Promise<void> {
+export async function updateCommand(args: string[] = []): Promise<void> {
+  // Before anything touches the network: `update --help` once ran the update.
+  if (args.includes("--help") || args.includes("-h")) {
+    printUpdateHelp();
+    return;
+  }
   refreshAnsi();
   // Get current version and installation info
   const currentVersion = getVersion();

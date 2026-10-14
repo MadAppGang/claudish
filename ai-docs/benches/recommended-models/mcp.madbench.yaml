@@ -1,0 +1,70 @@
+description: "claudish MCP: does run_prompt get an answer from a recommended model?"
+
+# One model spec per run. `mcp.experiment.yaml` sweeps it over the recommended
+# list; `gen-experiments.ts` writes that file from `claudish --models-top --json`.
+params:
+  model: kimi-k3
+
+harness:
+  type: claude-code
+  # The host is native Claude Code. The model under test is reached ONLY
+  # through the claudish MCP server, so the Harness model stays fixed across
+  # every variant and the guard has nothing to audit.
+  model: claude-haiku-5-5
+  # The server is declared inline, not through config.dirs: config.dirs needs
+  # sandbox level `home`, and claudish needs `workspace` (madbench refuses the
+  # pair at run time, after preflight and check both pass). Inline JSON, not a
+  # file path, because a path would resolve in the workspace.
+  # --strict-mcp-config keeps the user's installed claudish plugin server out.
+  args:
+    - --mcp-config
+    - '{"mcpServers":{"claudish":{"command":"claudish","args":["--mcp"]}}}'
+    - --strict-mcp-config
+
+defaults:
+  # workspace, not home: the MCP server is `claudish --mcp`, and it needs the
+  # real ~/.claudish for its config, credentials and catalog cache.
+  sandbox: workspace
+  # One request through the proxy, no tools: --print is enough and needs no
+  # permission mode.
+  interactive: false
+  timeout: 360s
+  capture: log
+
+scenarios:
+  - name: run-prompt
+    description: "The host calls run_prompt once with the model under test and relays the answer"
+    prompt: |
+      Call the claudish MCP tool `run_prompt` exactly once, with these arguments:
+
+      - model: {{model}}
+      - prompt: What is 4817 + 2906? Reply with the number only.
+
+      Use the model string exactly as written. Then reply with the text the
+      tool returned, verbatim. Do not compute the sum yourself and do not
+      call any other tool.
+    checks:
+      # Before any spend: the server started and answered tools/list.
+      - type: environment:mcp-reachable
+        value: claudish
+      # The agent's own startup record lists the server as connected.
+      # (environment:tool-available would say more, but it always ERRORS under
+      # the mock, so the negative control could never hold: docs/checks.md.)
+      - type: environment:mcp-connected
+        value: claudish
+      # Exactly one call: a retry on a second model could otherwise supply
+      # the answer the first model failed to give.
+      - type: session:tool-used
+        value: mcp__claudish__run_prompt
+        args: { eq: 1 }
+      # The call named the model under test, letter for letter.
+      - type: session:tool-args-match
+        value: mcp__claudish__run_prompt
+        args:
+          args: { model: "{{model}}" }
+      # THE detector: the answer is in the MCP tool's own result. The host can
+      # compute 7723 itself, but it cannot write a tool_result. A failed route
+      # returns "Error: ..." and no number.
+      - type: session:match
+        value: '\b7723\b'
+        args: { type: tool_result, regex: true }
