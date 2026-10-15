@@ -41,7 +41,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 export interface RelayState {
-  /** Upstream hub base URL, e.g. "http://192.168.0.46:3000" or "https://models.myia.io". */
+  /** Upstream hub base URL, e.g. "http://192.168.0.50:3000" or "https://models.myia.io". */
   upstream: string;
   /** gzip the forwarded request body (WAN externals only). */
   compress: boolean;

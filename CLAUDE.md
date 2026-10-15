@@ -110,7 +110,7 @@ One binary, three modes, selected by `CLAUDISH_RELAY_UPSTREAM`. Each machine run
 
 | `CLAUDISH_RELAY_UPSTREAM` | Mode | Behavior |
 | --- | --- | --- |
-| **unset** | **HUB** (po-2023) | Always local. Zero change vs. before. |
+| **unset** | **HUB** (po-2025) | Always local. Zero change vs. before. |
 | set + hub **alive** | **NOMINAL relay** | Forwards the raw request to the hub; response repiped through the never-hang passthrough. **No local capture** (hub captures centrally). |
 | set + hub **dead** (hysteresis) | **AUTONOMOUS** | Falls through to the normal local pipeline + local capture. |
 

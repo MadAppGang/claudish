@@ -82,8 +82,9 @@ const modelMap = getModelMapping(profileConfig.defaultProfile);
 // Sidecar relay (fork extension). When CLAUDISH_RELAY_UPSTREAM is set, this
 // process is a sidecar: it relays traffic to the central hub in NOMINAL mode and
 // falls back to the local pipeline (AUTONOMOUS) when the hub is unreachable.
-// Unset → this process IS the hub (po-2023): no relay, always local, unchanged.
-//   CLAUDISH_RELAY_UPSTREAM — hub base URL (LAN http://192.168.0.46:3000 or WAN https://models.myia.io)
+// Unset → this process IS the hub (po-2025 since the 2026-09 migration): no
+// relay, always local, unchanged.
+//   CLAUDISH_RELAY_UPSTREAM — hub base URL (LAN http://192.168.0.50:3000 or WAN https://models.myia.io)
 //   CLAUDISH_RELAY_COMPRESS — "1"/"true" → gzip the forwarded request body (WAN externals only)
 //   CLAUDISH_NO_ANTHROPIC   — set on every non-ai-01 sidecar; read in proxy-server's leak guard
 const relayUpstream = process.env.CLAUDISH_RELAY_UPSTREAM?.trim();

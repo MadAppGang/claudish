@@ -68,9 +68,9 @@ services:
       # Empty disables capture writing (sidecar default; hub leaves it at /captures).
       - CLAUDISH_CAPTURE_DIR=${CLAUDISH_CAPTURE_DIR-/captures}
       # Sidecar relay (fork extension). All empty → this container is the HUB
-      # (po-2023): always local, unchanged. On a sidecar machine, set these in the
-      # per-machine .env:
-      #   CLAUDISH_RELAY_UPSTREAM — hub URL (LAN http://192.168.0.46:3000, WAN https://models.myia.io)
+      # (po-2025 since the 2026-09 migration): always local, unchanged. On a
+      # sidecar machine, set these in the per-machine .env:
+      #   CLAUDISH_RELAY_UPSTREAM — hub URL (LAN http://192.168.0.50:3000, WAN https://models.myia.io)
       #   CLAUDISH_RELAY_COMPRESS — 1 on WAN externals (po-2025, web1) only
       #   CLAUDISH_NO_ANTHROPIC   — 1 on every machine except ai-01 (leak-policy backstop)
       #   CLAUDISH_RELAY_HEADER_TIMEOUT_MS — relay header budget (#320); empty = the
