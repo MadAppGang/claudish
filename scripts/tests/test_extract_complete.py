@@ -18,9 +18,9 @@ targeted-extraction carrier (minimax-chain-measure), the marker names its
 spec {since, until, model} and a marker for another target is a miss
 (bloquant 2).
 
-Pinned here, for BOTH carriers (compaction-trend.day_dir path and
-minimax-chain-measure.extract_archives path -- the predicate must not drift
-between the two copies):
+Pinned here, for ALL THREE carriers (compaction-trend.day_dir path,
+minimax-chain-measure.extract_archives path, native-trend.day_dir path --
+the predicate must not drift between the copies):
 
   1. THE INCIDENT SHAPE -- req-only partial dir: False (the pin the old
      guard fails).
@@ -36,10 +36,17 @@ between the two copies):
      of the flag, made visible by its stderr line per accepted dir.
   7. minimax carrier only -- marker of ANOTHER spec: False; marker of the
      SAME spec: True; spec asked over an (old) empty marker: False.
+  8. native carrier only (#460) -- its extraction spec is a SINGLE member
+     pattern (`resp-*-native-*.sse`), so the cross-pattern completeness
+     signal of the req+resp carriers does not exist: under trust_unmarked
+     any resp-native member is accepted (with the stderr line), and a dir
+     holding no resp-native member at all is False.
 
 Mutation proofs (run before pushing): restore `isdir and listdir` in either
 carrier -> pins 1/2 red; restore the unconditional both-patterns fallback ->
-pin 3 red.
+pin 3 red; restore native-trend's old acceptance (`any .sse`) as its trust
+fallback -> the no-resp-native pin of 8 red (a dir with zero native members
+passes -- the exact hole).
 
 Run standalone (no pytest needed):
   python scripts/tests/test_extract_complete.py
@@ -68,11 +75,13 @@ CARRIERS = [
     ("compaction-trend", load("_ct", os.path.join(SCRIPTS, "compaction-trend.py"))),
     ("minimax-chain-measure",
      load("_mcm", os.path.join(SCRIPTS, "minimax-chain-measure.py"))),
+    ("native-trend", load("_nt", os.path.join(SCRIPTS, "native-trend.py"))),
 ]
 
 REQ = "req-1-1-2026-07-05T10-00-00-000Z-direct.json"
 RESP = "resp-1-r1-2026-07-05T10-00-01-000Z-openai-x.sse"
 RESP2 = "resp-1-r2-2026-07-05T10-00-02-000Z-openai-x.sse"
+RESP_NATIVE = "resp-1-r1-2026-07-05T10-00-03-000Z-native-x.sse"
 
 SPEC_A = {"since": "2026-10-01T00:00:00+00:00",
           "until": "2026-10-02T00:00:00+00:00", "model": "MiniMax"}
@@ -103,6 +112,7 @@ def main():
     both = mk(root, "both", [REQ, RESP, RESP2])
     empty = mk(root, "empty", [])
     absent = os.path.join(root, "absent")
+    natresp = mk(root, "natresp", [RESP_NATIVE])   # single-pattern carrier
     marked = mk_spec(root, "marked", None)             # empty marker (legacy)
     marked_a = mk_spec(root, "marked-a", SPEC_A)
     marked_b = mk_spec(root, "marked-b", SPEC_B)
@@ -132,8 +142,12 @@ def main():
         verdicts = {n: m.extract_complete(path) for n, m in CARRIERS}
         check(label, verdicts, want)
 
-    # --trust-unmarked fallback, both carriers
-    print("trust-unmarked:")
+    # --trust-unmarked fallback. The fallback reads each carrier's OWN member
+    # patterns: the req+resp carriers cross-check both patterns, while
+    # native-trend extracts the single resp-native pattern -- so these
+    # verdicts are pinned per carrier family, not uniformly.
+    print("trust-unmarked (req+resp carriers):")
+    pair_carriers = [(n, m) for n, m in CARRIERS if n != "native-trend"]
     trust_cases = [
         ("both patterns, --trust-unmarked", both, True),
         ("req-only, --trust-unmarked", reqonly, False),
@@ -141,8 +155,21 @@ def main():
     ]
     for label, path, want in trust_cases:
         verdicts = {n: m.extract_complete(path, trust_unmarked=True)
-                    for n, m in CARRIERS}
+                    for n, m in pair_carriers}
         check(label, verdicts, want)
+
+    print("trust-unmarked (native-trend):")
+    nt = dict(CARRIERS)["native-trend"]
+    nat_trust_cases = [
+        ("resp-native member, --trust-unmarked", natresp, True),
+        ("no resp-native member, --trust-unmarked", both, False),
+        ("empty, --trust-unmarked", empty, False),
+    ]
+    for label, path, want in nat_trust_cases:
+        v = nt.extract_complete(path, trust_unmarked=True)
+        fails += 0 if v == want else 1
+        print("  %-48s %s %s" % (label, v,
+                                 "OK" if v == want else "FAIL (want %s)" % want))
 
     # spec-carrying markers, minimax carrier only (targeted extraction)
     print("spec markers (minimax-chain-measure):")

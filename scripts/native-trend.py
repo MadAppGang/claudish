@@ -35,6 +35,10 @@ Traps, each of which yields a wrong-but-plausible trend line:
   8. Context size (in_frais + cache_read + cache_creation) and the cache
      hit ratio are the control columns: if they are flat while OUT/req
      doubles, the drift is in what the model WRITES, not what it reads.
+  9. A pre-existing nat-* dir may be a PARTIAL extraction (a killed 7z run
+     leaves it non-empty; measured ancestor 2026-07-05): day_dir re-extracts
+     any dir without .extract-complete -- --trust-unmarked accepts a
+     resp-native dir without the marker, one stderr line per dir accepted.
 """
 
 import argparse
@@ -68,12 +72,45 @@ def parse_args():
                     default=r"C:\Program Files\NVIDIA Corporation\NVIDIA App\7z.exe")
     ap.add_argument("--keep", action="store_true",
                     help="keep extracted day dirs (default: temp, deleted)")
+    ap.add_argument("--trust-unmarked", action="store_true",
+                    help="accept a pre-marker extraction dir holding "
+                         "resp-native members (one stderr line per dir "
+                         "accepted); default re-extracts any unmarked dir")
     return ap.parse_args()
+
+
+def extract_complete(d, trust_unmarked=False):
+    """True only for a dir whose extraction FINISHED (#448 guard, ported).
+
+    The old acceptance `isdir and any(.sse)` passes a PARTIAL extraction: a
+    killed 7z run (measured ancestor 2026-07-05, G: DriveFS unmount) leaves
+    the dir non-empty, and the trend then reads an undercounted day as
+    complete. The marker is written after a clean extraction; a dir WITHOUT
+    it means RE-EXTRACT. This carrier has a SINGLE member pattern, so the
+    req+resp cross-check of compaction-trend does not exist here -- the
+    fallback (behind --trust-unmarked only) accepts any resp-native member,
+    one stderr line per dir accepted, so the acceptance is visible in every
+    trend log. Pinned by scripts/tests/test_extract_complete.py.
+    """
+    if os.path.isfile(os.path.join(d, ".extract-complete")):
+        return True
+    if not trust_unmarked:
+        return False
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return False
+    ok = any(n.startswith("resp-") and "-native-" in n and n.endswith(".sse")
+             for n in names)
+    if ok:
+        print("trust-unmarked: accepting %s without .extract-complete" % d,
+              file=sys.stderr)
+    return ok
 
 
 def day_dir(day, a, root):
     d = os.path.join(root, "nat-" + day)
-    if os.path.isdir(d) and any(f.endswith(".sse") for f in os.listdir(d)):
+    if extract_complete(d, trust_unmarked=a.trust_unmarked):
         return d
     archive = os.path.join(a.archives_dir, "captures-%s.7z" % day)
     if not os.path.isfile(archive):
@@ -83,6 +120,7 @@ def day_dir(day, a, root):
     subprocess.run([a.seven_z, "x", archive, "-o" + d,
                     "resp-*-native-*.sse", "-y"],
                    check=True, stdout=subprocess.DEVNULL)
+    open(os.path.join(d, ".extract-complete"), "w").close()
     return d
 
 
