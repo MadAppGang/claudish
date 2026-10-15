@@ -35,6 +35,11 @@
  *    asserts in K8 stay green (its holder never 429s) — pinned instead by the
  *    transport-level suite; the route-level contract is documented, not
  *    re-derived here.
+ *  - m10 (#441): disable the contextLimit clamp ⇒ K15 red (the oversized ask
+ *    ships 16384 on the wire, > the 8 400 bound).
+ *  - m11 (#441): default an ABSENT contextLimit to 262144 ⇒ K15's
+ *    absent-field assert red (a plain endpoint ships 8361, not the verbatim
+ *    16384) — the byte-identical-when-absent property bites.
  *
  * Same harness contract as proxy-server-wall-surface-route.test.ts.
  */
@@ -165,7 +170,7 @@ async function postMessage(
     model?: string;
     session?: string;
     content?: string;
-    /** K13 (#442 CR): raw Anthropic content blocks (e.g. a base64 image). */
+    /** K16 (#442 CR): raw Anthropic content blocks (e.g. a base64 image). */
     contentBlocks?: unknown[];
     stream?: boolean;
     maxTokens?: number;
@@ -249,7 +254,7 @@ beforeEach(() => {
         // so their limiters are built with maxConcurrency from the first use.
         "b0-ep": ep("b0", { maxConcurrency: 1 }),
         "b1-ep": ep("b1"),
-        // K12 (#441): the dynamic contextLimit endpoints.
+        // K15 (#441): the dynamic contextLimit endpoints.
         "ctx-ep": ep("ctx", { contextLimit: 262144 }),
         "ctx-both-ep": ep("ctxb", { contextLimit: 262144, maxOutputTokens: 8000 }),
       },
@@ -527,7 +532,7 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     expect(upstreamBodies.s0[0].max_tokens).toBe(32000);
   }, 30_000);
 
-  test("K12 (#441): contextLimit clamps max_tokens to the window remainder — dynamic, composed, inert when absent", async () => {
+  test("K15 (#441): contextLimit clamps max_tokens to the window remainder — dynamic, composed, inert when absent", async () => {
     await spin();
     resetFailoverForTests({}); // direct endpoints, no cascade
     setRoleNominalResolver(() => undefined);
@@ -570,7 +575,7 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     expect(upstreamBodies.ctx[2].max_tokens).toBe(16_384);
   }, 30_000);
 
-  test("K13 (#442 CR): a base64 image does not eat the window — the clamp estimate allocates 1600/block, not base64/4", async () => {
+  test("K16 (#442 CR): a base64 image does not eat the window — the clamp estimate allocates 1600/block, not base64/4", async () => {
     await spin();
     resetFailoverForTests({}); // direct endpoints, no cascade
     setRoleNominalResolver(() => undefined);
@@ -602,7 +607,7 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     expect(upstreamBodies.ctx[0].max_tokens).toBe(16_384);
   }, 30_000);
 
-  test("K14 (#442 CR): below a useful floor the clamp stands down — the refusal stays skippable", async () => {
+  test("K17 (#442 CR): below a useful floor the clamp stands down — the refusal stays skippable", async () => {
     await spin();
     resetFailoverForTests({});
     setRoleNominalResolver(() => undefined);
