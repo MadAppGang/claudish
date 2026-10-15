@@ -28,6 +28,17 @@ export function mergeRoutingRules(
 }
 
 /**
+ * The user's two rule files, before merging. `sources` keeps rule composition
+ * and problem detection testable without reading machine config.
+ */
+export interface RoutingRuleSources {
+  /** Rules from ~/.claudish/config.json (global). */
+  globalRules: RoutingRules;
+  /** Rules from ./.claudish.json (project). */
+  localRules: RoutingRules;
+}
+
+/**
  * Load effective routing rules. Layers:
  *   1. DEFAULT_ROUTING_RULES (built-in, see default-routing-rules.ts)
  *   2. Global config (~/.claudish/config.json)
@@ -40,22 +51,30 @@ export function mergeRoutingRules(
  * Always returns a non-null `RoutingRules` because defaults are baked in.
  * To get strict no-fallback mode, set `routing["*"] = []` in user config.
  */
-export function loadRoutingRules(): RoutingRules {
-  return mergeRoutingRules(DEFAULT_ROUTING_RULES, loadUserRoutingRules());
+export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
+  return mergeRoutingRules(DEFAULT_ROUTING_RULES, loadUserRoutingRules(sources));
+}
+
+/** Read the user's two rule files off disk, before merging. */
+export function loadRoutingRuleSources(): RoutingRuleSources {
+  return {
+    localRules: loadLocalConfig()?.routing ?? {},
+    globalRules: loadConfig().routing ?? {},
+  };
 }
 
 /**
  * User-authored routing layers only (global config ← local config), without
  * the baked-in defaults. This is the "the user explicitly spoke about this
  * model" set — see matchUserRoutingOverride for its one load-bearing use.
+ *
+ * Prints nothing (upstream 5af1bf3f): it runs inside TUIs and on every
+ * `route()` call, where a stray stderr line lands in the middle of a frame.
+ * Problems in the rules are {@link routingRuleProblems}'s to report: the proxy
+ * prints them once at startup.
  */
-export function loadUserRoutingRules(): RoutingRules {
-  const local = loadLocalConfig()?.routing ?? {};
-  const global_ = loadConfig().routing ?? {};
-
-  validateRoutingRules(local);
-  validateRoutingRules(global_);
-
+export function loadUserRoutingRules(sources?: RoutingRuleSources): RoutingRules {
+  const { localRules: local, globalRules: global_ } = sources ?? loadRoutingRuleSources();
   return { ...global_, ...local };
 }
 
@@ -86,17 +105,53 @@ export function matchUserRoutingOverride(
   return globKeys.some((pattern) => globMatch(pattern, model));
 }
 
-/** Warn about config issues that would silently misbehave. */
-function validateRoutingRules(rules: RoutingRules): void {
+/** A problem in the user's routing rules that would make them silently misbehave. */
+export interface RoutingRuleProblem {
+  /** The config file the rule is in. */
+  scope: "global" | "project";
+  /** The rule key as stored. */
+  pattern: string;
+  problem: "multiple-wildcards";
+}
+
+/**
+ * Every problem in the user's two rule files. Pure: it reads nothing and prints
+ * nothing, so a TUI can show the result and the proxy can print it once
+ * (upstream 5af1bf3f).
+ *
+ * Each file is checked on its own, as the rules have always been: a key that
+ * collides only with a key in the OTHER file is not reported.
+ *
+ * An empty chain is not a problem: `[]` is the user's explicit no-route.
+ */
+export function routingRuleProblems(sources: RoutingRuleSources): RoutingRuleProblem[] {
+  return [
+    ...ruleTableProblems(sources.globalRules, "global"),
+    ...ruleTableProblems(sources.localRules, "project"),
+  ];
+}
+
+function ruleTableProblems(rules: RoutingRules, scope: "global" | "project"): RoutingRuleProblem[] {
+  const problems: RoutingRuleProblem[] = [];
   for (const key of Object.keys(rules)) {
     // Multi-wildcard patterns only use the first *, rest become literals
     if (key !== "*" && (key.match(/\*/g) || []).length > 1) {
-      console.error(
-        `[claudish] Warning: routing pattern "${key}" has multiple wildcards — only single * is supported. This pattern may not match as expected.`
-      );
+      problems.push({ scope, pattern: key, problem: "multiple-wildcards" });
     }
     // Empty chain is valid — explicit no-fallback mode (route() returns
-    // no-route). No warning needed; user opted in.
+    // no-route). Not a problem; user opted in.
+  }
+  return problems;
+}
+
+/** One line for a rule problem, without a "[claudish]" prefix (logStderr adds it). */
+export function describeRoutingRuleProblem(problem: RoutingRuleProblem): string {
+  switch (problem.problem) {
+    case "multiple-wildcards":
+      return (
+        `routing pattern "${problem.pattern}" (${problem.scope}) has more than one * — ` +
+        "only a single * is supported, so it may not match as expected."
+      );
   }
 }
 

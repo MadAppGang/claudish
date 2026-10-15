@@ -47,11 +47,14 @@ import {
 } from "./handlers/shared/proxy-key-rotation.js";
 import { admissionFreezeState } from "./handlers/shared/admission-freeze.js";
 import {
+  describeRoutingRuleProblem,
   effectiveDefaultProvider,
+  loadRoutingRuleSources,
   loadRoutingRules,
   loadUserRoutingRules,
   matchUserRoutingOverride,
   route,
+  routingRuleProblems,
 } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { applyNativePinOverride } from "./providers/native-pin-auto.js";
@@ -771,14 +774,23 @@ export async function createProxyServer(
   // routing engine consults these via route() for every bare-name request.
   // `userRoutingRules` keeps the user-authored subset apart: it is what lets a
   // user routing override beat the native-anthropic heuristic below (2c).
-  const effectiveRoutingRules = loadRoutingRules();
+  const routingRuleSources = loadRoutingRuleSources();
+  const effectiveRoutingRules = loadRoutingRules(routingRuleSources);
   // The fallback hop, resolved once beside the rules and passed to route()
   // with them (upstream 9f8364f5). Passing rules alone makes route() read NO
   // default provider (its guard keeps this machine's setting out of tests),
   // so before this every bare name the proxy routed appended NO fallback hop,
   // whatever `defaultProvider` — or `CLAUDISH_DEFAULT_PROVIDER` — said.
   const effectiveFallbackProvider = effectiveDefaultProvider();
-  const userRoutingRules = loadUserRoutingRules();
+  const userRoutingRules = loadUserRoutingRules(routingRuleSources);
+  // Problems in those rules, reported ONCE, here (upstream 5af1bf3f): before
+  // Claude Code owns the terminal, and through logStderr, which the quiet flag
+  // and a diagnostics pane both govern. `loadRoutingRules` prints nothing,
+  // because it also runs inside TUIs and on every `route()` call — the old
+  // per-load console.error tore TUI frames mid-draw.
+  for (const problem of routingRuleProblems(routingRuleSources)) {
+    logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
+  }
 
   // Cache fallback handlers by target model string.
   // No TTL/invalidation: claudish is ephemeral per session, so env changes
