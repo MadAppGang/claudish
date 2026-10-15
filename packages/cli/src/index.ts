@@ -44,6 +44,38 @@ function loadStoredApiKeys(): void {
 
 loadStoredApiKeys();
 
+// `--default-provider <name>`: strip it from argv and export it as
+// CLAUDISH_DEFAULT_PROVIDER before parseArgs and every subcommand dispatch
+// (port of upstream 9be012fc). The env variable is the ONE place the flag
+// lives after this: route(), the proxy, `--probe` and every child claudish
+// (team, channel sessions) read it through `resolveDefaultProvider`.
+// `--probe` is why this cannot wait for parseArgs: it runs and exits inside
+// parseArgs's argv loop, so a flag read there or after it never reached it,
+// in either argv order. Runs AFTER loadStoredApiKeys(), whose env writes must
+// not beat a flag the user typed (it never touches CLAUDISH_DEFAULT_PROVIDER,
+// so the order is belt-and-suspenders).
+async function applyDefaultProviderFlag(): Promise<void> {
+  const { planDefaultProviderFlag } = await import("./default-provider.js");
+  const plan = planDefaultProviderFlag(process.argv.slice(2));
+  if (plan.kind === "none") return;
+  if (plan.kind === "error") {
+    console.error(`[claudish] ${plan.message}`);
+    process.exit(1);
+  }
+
+  process.argv = [...process.argv.slice(0, 2), ...plan.argv];
+  // An in-process env write reaches children only because they INHERIT
+  // process.env: every claudish child today is spawned through
+  // node:child_process, with `...process.env` or default inheritance.
+  // `Bun.spawn`/`Bun.spawnSync` without an `env` option DROP in-process
+  // writes (measured upstream on Bun 1.4.0), so a future spawn written that
+  // way silently loses this flag. Pass `env: process.env` there.
+  // `""` is exported as-is: it disables the fallback hop.
+  process.env.CLAUDISH_DEFAULT_PROVIDER = plan.value;
+}
+
+await applyDefaultProviderFlag();
+
 // Check for MCP mode before loading heavy dependencies
 const isMcpMode = process.argv.includes("--mcp");
 

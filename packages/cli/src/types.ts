@@ -31,10 +31,6 @@ export interface ClaudishConfig {
    */
   skipModelsUpdate?: boolean;
   profile?: string; // Profile name to use for model mapping
-  /** --default-provider <name> CLI flag (Phase 1 of LiteLLM-demotion refactor) */
-  defaultProvider?: string;
-  /** Resolved default provider (computed via resolveDefaultProvider() after argv parsing) */
-  resolvedDefaultProvider?: import("./default-provider.js").ResolvedDefaultProvider;
   claudeArgs: string[];
   _hasPositionalPrompt?: boolean; // Internal: true when a positional prompt arg was found (not a flag value)
 

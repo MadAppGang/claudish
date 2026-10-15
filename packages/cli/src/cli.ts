@@ -336,13 +336,15 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.profile = profileArg;
-    } else if (arg === "--default-provider") {
-      const dpArg = args[++i];
-      if (!dpArg) {
-        console.error("--default-provider requires a provider name");
-        process.exit(1);
+    } else if (arg === "--default-provider" || arg.startsWith("--default-provider=")) {
+      // index.ts strips this flag and exports it as CLAUDISH_DEFAULT_PROVIDER
+      // before parseArgs runs (planDefaultProviderFlag), so this branch fires
+      // only for a caller that skipped that step. It consumes the flag and its
+      // value so neither leaks to Claude Code as a passthrough arg
+      // (upstream 9be012fc).
+      if (arg === "--default-provider" && i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        i++;
       }
-      config.defaultProvider = dpArg;
     } else if (arg === "--cost-tracker") {
       // Enable cost tracking for this session
       config.costTracking = true;
@@ -642,15 +644,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   // Phase 1 (LiteLLM-demotion refactor): resolve the effective default provider
   // and emit a one-shot stderr hint when legacy LITELLM auto-promotion kicks in.
-  // This currently has no routing effect — Phase 2 wires it into auto-route.
+  // Routing reads the same value through the environment: `--default-provider`
+  // is exported as CLAUDISH_DEFAULT_PROVIDER by index.ts before parseArgs
+  // (planDefaultProviderFlag), so this call and every downstream route() agree
+  // (upstream 9be012fc).
   try {
     const fileConfigForResolver = loadConfig();
     const resolved = resolveDefaultProvider({
-      cliFlag: config.defaultProvider,
       config: fileConfigForResolver,
       env: process.env,
     });
-    config.resolvedDefaultProvider = resolved;
 
     if (resolved.legacyAutoPromoted && !config.quiet) {
       const markerFile = join(homedir(), ".claudish", ".legacy-litellm-hint-shown");
@@ -1716,7 +1719,9 @@ OPTIONS:
   -m, --model <model>      OpenRouter model to use (required for single-shot mode)
   -p, --profile <name>     Use named profile for model mapping (default: uses default profile)
   --default-provider <name> Default provider for bare model names (builtin or customEndpoints key)
-                           Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json
+                           Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json;
+                           "" disables the fallback. Exported to the env before parsing, so
+                           --probe and child sessions see it wherever it sits in argv
   --port <port>            Proxy server port (default: random)
   -d, --debug              Enable debug logging to file (logs/claudish_*.log)
   --no-logs                Disable always-on structural logging (~/.claudish/logs/)

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildLegacyHint,
+  planDefaultProviderFlag,
   resolveDefaultProvider,
   type ResolvedDefaultProvider,
 } from "./default-provider.js";
@@ -126,6 +129,108 @@ describe("resolveDefaultProvider precedence", () => {
 
     expect(result.provider).toBe("from-env");
     expect(result.source).toBe("env-var");
+  });
+
+  test("an empty env var disables the fallback and keeps the env-var source (upstream 9be012fc)", () => {
+    // `--default-provider ""` arrives as CLAUDISH_DEFAULT_PROVIDER="" via
+    // planDefaultProviderFlag: PRESENT-but-empty beats the config file and
+    // disables the fallback hop. A missing env var falls through instead.
+    const config = makeConfig({ defaultProvider: "from-config" });
+
+    const empty = resolveDefaultProvider({
+      config,
+      env: { CLAUDISH_DEFAULT_PROVIDER: "" },
+    });
+    expect(empty).toEqual({ provider: "", source: "env-var", legacyAutoPromoted: false });
+
+    const missing = resolveDefaultProvider({ config, env: {} });
+    expect(missing.provider).toBe("from-config");
+    expect(missing.source).toBe("config-file");
+  });
+});
+
+describe("planDefaultProviderFlag (upstream 9be012fc: pre-scan before parseArgs)", () => {
+  test("no flag → none, argv untouched", () => {
+    const plan = planDefaultProviderFlag(["--probe", "glm-5.2", "--json"]);
+    expect(plan).toEqual({ kind: "none" });
+  });
+
+  test("flag before --probe → apply, stripped", () => {
+    const plan = planDefaultProviderFlag(["--default-provider", "poe", "--probe", "m", "--json"]);
+    expect(plan.kind).toBe("apply");
+    if (plan.kind === "apply") {
+      expect(plan.value).toBe("poe");
+      expect(plan.argv).toEqual(["--probe", "m", "--json"]);
+    }
+  });
+
+  test("flag AFTER --probe → apply all the same (the bug this port fixes)", () => {
+    // --probe runs and exits inside parseArgs's argv loop, so a flag parsed
+    // there — or positioned after it — never reached the probe. The pre-scan
+    // is position-blind by design.
+    const plan = planDefaultProviderFlag(["--probe", "m", "--default-provider", "poe"]);
+    expect(plan.kind).toBe("apply");
+    if (plan.kind === "apply") {
+      expect(plan.value).toBe("poe");
+      expect(plan.argv).toEqual(["--probe", "m"]);
+    }
+  });
+
+  test("= form, and empty value survives as a real value", () => {
+    const eq = planDefaultProviderFlag(["--default-provider=poe", "prompt"]);
+    expect(eq).toEqual({ kind: "apply", value: "poe", argv: ["prompt"] });
+
+    const empty = planDefaultProviderFlag(["--default-provider", "", "prompt"]);
+    expect(empty).toEqual({ kind: "apply", value: "", argv: ["prompt"] });
+  });
+
+  test("last occurrence wins; every occurrence is stripped", () => {
+    const plan = planDefaultProviderFlag([
+      "--default-provider=a",
+      "--default-provider",
+      "b",
+      "x",
+    ]);
+    expect(plan).toEqual({ kind: "apply", value: "b", argv: ["x"] });
+  });
+
+  test("dangling flag or flag-like value → error, argv not half-consumed", () => {
+    const dangling = planDefaultProviderFlag(["--default-provider"]);
+    expect(dangling.kind).toBe("error");
+
+    const flagLike = planDefaultProviderFlag(["--default-provider", "--json", "m"]);
+    expect(flagLike.kind).toBe("error");
+  });
+
+  test("scan stops at -- : the rest belongs to Claude Code", () => {
+    const plan = planDefaultProviderFlag(["--default-provider", "poe", "--", "--default-provider", "keep"]);
+    expect(plan.kind).toBe("apply");
+    if (plan.kind === "apply") {
+      expect(plan.value).toBe("poe");
+      expect(plan.argv).toEqual(["--", "--default-provider", "keep"]);
+    }
+  });
+});
+
+describe("index.ts applies the flag plan before any dispatch (structural pin)", () => {
+  // The pre-scan only works if it runs BEFORE the argv is consumed: before the
+  // MCP-mode check and before parseArgs. Structural pin in the mcp-dotenv-quiet
+  // style (in-process import of index.ts would start the CLI).
+  const source = readFileSync(join(import.meta.dir, "index.ts"), "utf-8");
+
+  test("applyDefaultProviderFlag is defined and awaited before the MCP-mode check", () => {
+    const call = "await applyDefaultProviderFlag();";
+    const gate = 'const isMcpMode = process.argv.includes("--mcp");';
+    const callIdx = source.indexOf(call);
+    const gateIdx = source.indexOf(gate);
+    expect(callIdx).toBeGreaterThanOrEqual(0);
+    expect(gateIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeLessThan(gateIdx);
+  });
+
+  test("the applied plan exports the value to the env, not to a config field", () => {
+    expect(source).toContain("process.env.CLAUDISH_DEFAULT_PROVIDER = plan.value;");
+    expect(source).not.toContain("config.defaultProvider = plan.value");
   });
 });
 
