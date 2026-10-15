@@ -1,6 +1,7 @@
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
+import { resolveDefaultProvider } from "../default-provider.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { resolveModelNameSync } from "./model-catalog-resolver.js";
@@ -412,4 +413,23 @@ export function route(
         ? undefined
         : loadConfig().defaultProvider;
   return routeBare(model, parsed.provider, rules, defaultProvider);
+}
+
+/**
+ * The fallback hop the PROXY passes to route() beside its rules snapshot
+ * (port of upstream 9f8364f5). Resolved through the full precedence
+ * (flag → env → config → OPENROUTER_API_KEY → hardcoded) so the proxy's
+ * chains name the same default the documented precedence promises.
+ *
+ * Why this exists: `route(model, rules)` — rules override, no default
+ * override — reads NO default provider (the guard above keeps the host
+ * machine's config out of unit tests), so before the proxy passed the
+ * resolved value explicitly, its bare-name routing appended NO fallback hop
+ * at all, whatever `defaultProvider` (or `CLAUDISH_DEFAULT_PROVIDER`) said.
+ *
+ * Read once beside loadRoutingRules() at createProxyServer. An empty string
+ * is a real value — it disables the fallback hop.
+ */
+export function effectiveDefaultProvider(): string {
+  return resolveDefaultProvider({ config: loadConfig(), env: process.env }).provider;
 }

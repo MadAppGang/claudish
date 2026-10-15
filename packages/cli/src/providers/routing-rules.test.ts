@@ -16,6 +16,7 @@ import {
   matchRoutingRule,
   matchUserRoutingOverride,
   buildRoutingChain,
+  effectiveDefaultProvider,
   loadRoutingRules,
   mergeRoutingRules,
   normalizeGlmSlug,
@@ -707,6 +708,53 @@ describe("route() with defaultProvider", () => {
   test("defaultProvider with no credentials → still no-route if rest of chain also lacks creds", () => {
     const plan = route("gpt-5", { "gpt-*": ["openai"] }, "xai");
     expect(plan.kind).toBe("no-route");
+  });
+
+  test("defaultProvider '' (explicit empty) appends nothing — same as undefined (upstream 9f8364f5)", () => {
+    // The proxy passes the RESOLVED default, and a resolved "" is the explicit
+    // opt-out (`--default-provider ""` / CLAUDISH_DEFAULT_PROVIDER=""). At the
+    // routeBare seam it must behave exactly like no default at all.
+    process.env.OPENAI_API_KEY = "oai-test";
+    const planEmpty = route("gpt-5", { "gpt-*": ["openai"] }, "");
+    const planNone = route("gpt-5", { "gpt-*": ["openai"] });
+    expect(planEmpty.kind).toBe("ok");
+    expect(planEmpty).toEqual(planNone);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// effectiveDefaultProvider — what the proxy passes beside its rules snapshot
+// (upstream 9f8364f5: route(model, rules) alone read NO default provider)
+// ---------------------------------------------------------------------------
+
+describe("effectiveDefaultProvider() (upstream 9f8364f5)", () => {
+  const savedDp = process.env.CLAUDISH_DEFAULT_PROVIDER;
+  const savedOr = process.env.OPENROUTER_API_KEY;
+
+  afterEach(() => {
+    if (savedDp === undefined) delete process.env.CLAUDISH_DEFAULT_PROVIDER;
+    else process.env.CLAUDISH_DEFAULT_PROVIDER = savedDp;
+    if (savedOr === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = savedOr;
+  });
+
+  test("env CLAUDISH_DEFAULT_PROVIDER wins over whatever config.json says", () => {
+    process.env.CLAUDISH_DEFAULT_PROVIDER = "poe";
+    expect(effectiveDefaultProvider()).toBe("poe");
+  });
+
+  test("env '' is a real value: disables the fallback hop", () => {
+    // `--default-provider ""` survives its trip through the environment
+    // (upstream 9be012fc exports it verbatim) and must not fall back to the
+    // config file here.
+    process.env.CLAUDISH_DEFAULT_PROVIDER = "";
+    expect(effectiveDefaultProvider()).toBe("");
+  });
+
+  test("env absent → resolves to a string (config/openrouter tier), never throws", () => {
+    delete process.env.CLAUDISH_DEFAULT_PROVIDER;
+    delete process.env.OPENROUTER_API_KEY;
+    expect(typeof effectiveDefaultProvider()).toBe("string");
   });
 });
 
