@@ -427,6 +427,24 @@ Describe 'split-brain-scan' {
             $r.Code | Should -Be 1
         }
 
+        It 'skips Disabled-state tasks entirely: a frozen non-benign result is history, not a live failure' {
+            # #362 calibration, measured 15/10 fleet-wide: the machine-local
+            # \WMI-Startup-Capture (State=Disabled, LastTaskResult=0xFFFD0000)
+            # produced ~20 flags/day per machine and fed the 95-FLAG/24h volume
+            # that blocks kill armement. The skip is STATE-scoped on purpose —
+            # the same frozen code on a Ready task still flags, preserving
+            # review #342's "any state" intent for tasks that can run.
+            $global:SBScanState.Tasks = @(
+                (New-Task 'WMI-Startup-Capture' '\' 'Disabled' 1 @((New-Action 'wscript.exe' '"D:\ops\capture.vbs"')) 4294770688),
+                (New-Task 'ready-failing' '\Claudish\' 'Ready' 1 @((New-Action 'wscript.exe' '"D:\ops\claude-hidden-launchers.vbs"')) 4294770688)
+            )
+            $r = Invoke-Scan (New-ScanRoot)
+            $r.Out | Should -Match 'launcher-shaped actions visible: 2'   # anti-vacuous
+            $r.Out | Should -Not -Match ('TASK-NONZERO-RESULT: ' + [regex]::Escape('\WMI-Startup-Capture'))
+            $r.Out | Should -Match ('TASK-NONZERO-RESULT: ' + [regex]::Escape('\Claudish\ready-failing') + ' State=Ready LastTaskResult=4294770688 \(0xFFFD0000\)')
+            $r.Code | Should -Be 1
+        }
+
         It 'flags a FAILING LastTaskResult even outside State=Running (ghost cron dying every tick)' {
             $global:SBScanState.Tasks = @(
                 (New-Task 'zombie-tick' '\Claudish\' 'Ready' 1 @((New-Action 'wscript.exe' '"D:\ops\claude-hidden-launchers.vbs"')) 1)

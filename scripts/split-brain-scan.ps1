@@ -359,7 +359,14 @@ foreach ($t in $info) {
     # (review #342): the Running-only test was blind to a Ready task failing
     # on every tick.
     $benign = 0, 2147946720, 267008, 267009, 267010, 267011, 267012, 267013, 267045
-    if (($null -ne $t.LastRes) -and ($benign -notcontains [long]$t.LastRes)) {
+    # Disabled tasks are skipped by STATE (#362 calibration, measured 15/10:
+    # the machine-local \WMI-Startup-Capture, State=Disabled, carries a frozen
+    # LastTaskResult=0xFFFD0000 and cried ~20 flags/day per machine, blocking
+    # the kill-armament precondition). A task that cannot run reports frozen
+    # history, never a live signal — and the skip stays state-scoped: #342's
+    # "any state" intent holds for Ready/Running, so the same result code on
+    # a Ready task still flags (pinned in the tests).
+    if (($null -ne $t.LastRes) -and ($t.State -ne 'Disabled') -and ($benign -notcontains [long]$t.LastRes)) {
         $flags.Add(("TASK-NONZERO-RESULT: {0} State={1} LastTaskResult={2} (0x{3:X8})" -f $t.Name, $t.State, $t.LastRes, [long]$t.LastRes))
     }
 }
