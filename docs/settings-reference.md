@@ -745,17 +745,16 @@ When routing through aggregators like OpenRouter or LiteLLM, models require vend
 1. User specifies bare model name (e.g., `or@qwen3-coder-next`).
 2. Resolver searches the provider's cached model catalog for an exact suffix match.
 3. If found, uses the vendor-prefixed ID (e.g., `qwen/qwen3-coder-next`).
-4. If not found in cache, falls back to static map (`OPENROUTER_VENDOR_MAP`) for cold starts.
+4. If the in-memory cache is cold, falls back to the disk cache (`~/.claudish/all-models.json`, persisted by the last successful refresh); if that is absent too, the bare name is passed through unchanged — there is no static fallback map (removed upstream `ba650d5`).
 
 **Rules**:
 - Exact match only; no fuzzy or normalized matching.
-- Dynamic catalogs (from provider APIs) are primary; static map is cold-start fallback only.
+- Dynamic catalogs (from provider APIs) are primary; disk cache next; passthrough unchanged otherwise.
 - Resolution is synchronous (`resolveModelNameSync()`) using in-memory cache + `readFileSync`.
 
 **Current resolvers**:
-- **OpenRouter**: Searches `_cachedOpenRouterModels` + `all-models.json` by exact suffix.
+- **OpenRouter**: Searches the slim in-memory catalog + `all-models.json` by exact suffix (modelId → aliases → externalId → suffix).
 - **LiteLLM**: Searches `litellm-models-{hash}.json` by exact match and prefix-stripping.
-- **Static fallback**: `OPENROUTER_VENDOR_MAP` for OpenRouter when no cache exists.
 
 ---
 
