@@ -12,13 +12,21 @@
  * Run: bun test packages/cli/src/routing-rule-problems.test.ts
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   describeRoutingRuleProblem,
   routingRuleProblems,
 } from "./providers/routing-rules.js";
+import {
+  clearRuntimeRegistry,
+  registerRuntimeProvider,
+} from "./providers/runtime-providers.js";
+
+afterEach(() => {
+  clearRuntimeRegistry();
+});
 
 describe("routingRuleProblems (upstream 5af1bf3f)", () => {
   test("multi-wildcard patterns are reported per file, with their scope", () => {
@@ -53,6 +61,57 @@ describe("routingRuleProblems (upstream 5af1bf3f)", () => {
     });
     expect(line).toBe(
       'routing pattern "gpt-*-*" (global) has more than one * — only a single * is supported, so it may not match as expected.'
+    );
+    expect(line.startsWith("[claudish]")).toBe(false);
+  });
+});
+
+describe("unknown-provider (upstream 8a23cf3e)", () => {
+  test("an entry naming a provider claudish does not know is reported", () => {
+    const problems = routingRuleProblems({
+      globalRules: { "my-model": ["typo@my-model"] },
+      localRules: {},
+    });
+    expect(problems).toEqual([
+      { scope: "global", pattern: "my-model", problem: "unknown-provider", entry: "typo@my-model" },
+    ]);
+  });
+
+  test("shortcuts are resolved before the lookup (or@ -> openrouter is known)", () => {
+    expect(
+      routingRuleProblems({ globalRules: { "gpt-*": ["or@openai/gpt-4o"] }, localRules: {} })
+    ).toEqual([]);
+  });
+
+  test("a runtime-registered custom endpoint is known — not a typo", () => {
+    // isKnownProvider only consults the registry key; a name-only def is the
+    // minimal honest fixture for that lookup.
+    registerRuntimeProvider({ name: "vllm-myia" } as Parameters<
+      typeof registerRuntimeProvider
+    >[0]);
+    expect(
+      routingRuleProblems({
+        globalRules: { "local-coding": ["vllm-myia@qwen3.6-35b-a3b"] },
+        localRules: {},
+      })
+    ).toEqual([]);
+  });
+
+  test("a bare builtin entry is known", () => {
+    expect(
+      routingRuleProblems({ globalRules: { "kimi-*": ["moonshot"] }, localRules: {} })
+    ).toEqual([]);
+  });
+
+  test("describeRoutingRuleProblem names the entry and the resolved provider", () => {
+    const line = describeRoutingRuleProblem({
+      scope: "project",
+      pattern: "my-model",
+      problem: "unknown-provider",
+      entry: "typo@my-model",
+    });
+    expect(line).toBe(
+      'routing rule "my-model" (project) names "typo@my-model", but no provider "typo" exists, so that entry never routes.'
     );
     expect(line.startsWith("[claudish]")).toBe(false);
   });

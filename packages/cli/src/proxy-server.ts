@@ -787,7 +787,9 @@ export async function createProxyServer(
   // Claude Code owns the terminal, and through logStderr, which the quiet flag
   // and a diagnostics pane both govern. `loadRoutingRules` prints nothing,
   // because it also runs inside TUIs and on every `route()` call — the old
-  // per-load console.error tore TUI frames mid-draw.
+  // per-load console.error tore TUI frames mid-draw. The custom endpoints were
+  // registered above (loadCustomEndpoints), so a rule naming one is not
+  // reported as an unknown provider (upstream 8a23cf3e).
   for (const problem of routingRuleProblems(routingRuleSources)) {
     logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
   }

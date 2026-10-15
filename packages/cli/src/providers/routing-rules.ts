@@ -49,7 +49,13 @@ export interface RoutingRuleSources {
  * interleaving).
  *
  * Always returns a non-null `RoutingRules` because defaults are baked in.
- * To get strict no-fallback mode, set `routing["*"] = []` in user config.
+ * Strict no-fallback mode takes TWO settings: `routing["*"] = []` in user
+ * config AND an empty default provider (`CLAUDISH_DEFAULT_PROVIDER=""` or
+ * `defaultProvider: ""`). Since the proxy passes `effectiveDefaultProvider()`
+ * to route(), routeBare() appends the default hop to every bare-name chain,
+ * an empty one included — and with nothing set that hop resolves to
+ * `openrouter`. Compose-deployed containers already pass an empty
+ * `CLAUDISH_DEFAULT_PROVIDER` (docker-compose.yml), so they stay opt-out.
  */
 export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
   return mergeRoutingRules(DEFAULT_ROUTING_RULES, loadUserRoutingRules(sources));
@@ -111,13 +117,20 @@ export interface RoutingRuleProblem {
   scope: "global" | "project";
   /** The rule key as stored. */
   pattern: string;
-  problem: "multiple-wildcards";
+  problem: "multiple-wildcards" | "unknown-provider";
+  /** `unknown-provider` only: the rule entry, as written, that names no known provider. */
+  entry?: string;
 }
 
 /**
  * Every problem in the user's two rule files. Pure: it reads nothing and prints
  * nothing, so a TUI can show the result and the proxy can print it once
  * (upstream 5af1bf3f).
+ *
+ * `unknown-provider` (upstream 8a23cf3e) asks the provider registry, so the
+ * CALLER registers the custom endpoints first (`loadCustomEndpoints` in the
+ * proxy, before it reads the rules); without that every custom endpoint a rule
+ * names reads as a typo.
  *
  * Each file is checked on its own, as the rules have always been: a key that
  * collides only with a key in the OTHER file is not reported.
@@ -140,8 +153,29 @@ function ruleTableProblems(rules: RoutingRules, scope: "global" | "project"): Ro
     }
     // Empty chain is valid — explicit no-fallback mode (route() returns
     // no-route). Not a problem; user opted in.
+    for (const entry of rules[key] ?? []) {
+      if (!isKnownProvider(ruleEntryProvider(entry))) {
+        problems.push({ scope, pattern: key, problem: "unknown-provider", entry });
+      }
+    }
   }
   return problems;
+}
+
+/**
+ * The claudish provider a rule entry names: the part before an optional
+ * `@<model>`, with a shortcut (`or`) resolved, exactly as `buildRoutingChain`
+ * resolves it.
+ */
+function ruleEntryProvider(entry: RoutingEntry): string {
+  const atIdx = entry.indexOf("@");
+  const providerRaw = atIdx === -1 ? entry : entry.slice(0, atIdx);
+  return PROVIDER_SHORTCUTS[providerRaw.toLowerCase()] ?? providerRaw.toLowerCase();
+}
+
+/** A built-in provider or a runtime-registered custom endpoint. */
+function isKnownProvider(provider: string): boolean {
+  return getProviderByName(provider) !== undefined || getRuntimeProviders().has(provider);
 }
 
 /** One line for a rule problem, without a "[claudish]" prefix (logStderr adds it). */
@@ -152,6 +186,13 @@ export function describeRoutingRuleProblem(problem: RoutingRuleProblem): string 
         `routing pattern "${problem.pattern}" (${problem.scope}) has more than one * — ` +
         "only a single * is supported, so it may not match as expected."
       );
+    case "unknown-provider": {
+      const entry = problem.entry ?? "";
+      return (
+        `routing rule "${problem.pattern}" (${problem.scope}) names "${entry}", but no ` +
+        `provider "${ruleEntryProvider(entry)}" exists, so that entry never routes.`
+      );
+    }
   }
 }
 
