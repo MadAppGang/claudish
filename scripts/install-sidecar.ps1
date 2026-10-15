@@ -30,7 +30,7 @@
   explicitly or export CLAUDISH_PROXY_KEY in the environment.
 
 .PARAMETER Compress
-  Set CLAUDISH_RELAY_COMPRESS=1 (WAN externals only: po-2025).
+  Set CLAUDISH_RELAY_COMPRESS=1 (WAN upstream only).
 
 .PARAMETER NoAnthropic
   Set CLAUDISH_NO_ANTHROPIC=1 (every machine except ai-01 — leak-policy backstop).
@@ -82,11 +82,13 @@
   Host dir mounted as /captures. Default D:\claudish-captures.
 
 .EXAMPLE
-  # ai-01 (Anthropic authority — NO NoAnthropic; WAN upstream: its Docker has no LAN route)
-  .\install-sidecar.ps1 -Machine myia-ai-01 -Upstream https://models.myia.io -ProxyKey '<CLUSTER_KEY>' -HostPort 3002 -ContainerName claudish-sidecar
+  # ai-01 (Anthropic authority — NO NoAnthropic; LAN, measured from inside the container 2026-10-15)
+  .\install-sidecar.ps1 -Machine myia-ai-01 -Upstream http://192.168.0.50:3000 -ProxyKey '<CLUSTER_KEY>' -HostPort 3002 -ContainerName claudish-sidecar
 
-  # po-2025 (WAN external — Compress + NoAnthropic)
-  .\install-sidecar.ps1 -Machine myia-po-2025 -Upstream https://models.myia.io -ProxyKey '<CLUSTER_KEY>' -Compress -NoAnthropic
+  # a LAN machine (e.g. po-2026)
+  .\install-sidecar.ps1 -Machine myia-po-2026 -Upstream http://192.168.0.50:3000 -ProxyKey '<CLUSTER_KEY>' -NoAnthropic
+
+  # Never run on the hub machine (po-2025): it runs no sidecar.
 #>
 
 [CmdletBinding()]
