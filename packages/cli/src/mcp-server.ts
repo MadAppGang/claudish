@@ -18,6 +18,8 @@ import { config } from "dotenv";
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+
+import { sseDataPayload } from "./handlers/shared/stream-parsers/sse-line.js";
 import { fileURLToPath } from "node:url";
 import {
   setupSession,
@@ -188,7 +190,10 @@ export function parseAnthropicSse(raw: string): {
     const lines = block.split("\n").filter((l) => l.trim());
     let dataStr = "";
     for (const line of lines) {
-      if (line.startsWith("data: ")) dataStr += line.slice(6);
+      // SSE spec: the space after `data:` is optional — read both forms
+      // through the shared helper (upstream 3dbd3167).
+      const payload = sseDataPayload(line);
+      if (payload !== null) dataStr += payload;
     }
     if (!dataStr || dataStr === "[DONE]") continue;
 

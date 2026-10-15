@@ -19,6 +19,7 @@ import { overflowReportedTokens, overflowReportFloor } from "../overflow-report-
 import { createResponseCapture } from "../response-capture.js";
 import { ttftMarkerLine } from "../traffic-markers.js";
 import { isPolicyRefusal, logPolicyRefusal } from "./policy-refusal.js";
+import { sseDataPayload } from "./sse-line.js";
 import { toAnthropicUsage } from "./usage-cache-split.js";
 
 /**
@@ -427,9 +428,8 @@ export function createResponsesStreamHandler(
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (line.startsWith("event: ")) continue;
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6);
+            const data = sseDataPayload(line);
+            if (data === null) continue;
             dataEvents++;
             totalBytes += line.length;
             if (!ttftLogged) {

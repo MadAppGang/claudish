@@ -13,6 +13,7 @@ import { log } from "../../../logger.js";
 import { createResponseCapture } from "../response-capture.js";
 import { requestNumberFor } from "../../../fork/middleware/request-logger.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import { sseDataPayload } from "./sse-line.js";
 import { toAnthropicUsage } from "./usage-cache-split.js";
 
 export interface GeminiSseOptions {
@@ -228,8 +229,8 @@ export function createGeminiSseStream(
           buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (!line.trim() || !line.startsWith("data: ")) continue;
-            const dataStr = line.slice(6);
+            const dataStr = line.trim() ? sseDataPayload(line) : null;
+            if (dataStr === null) continue;
             if (dataStr === "[DONE]") {
               await finalize("done");
               return;

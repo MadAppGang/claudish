@@ -32,6 +32,7 @@ import {
 } from "./policy-refusal.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { type BlockRef, createBlockWriter } from "./block-writer.js";
+import { sseDataPayload } from "./sse-line.js";
 import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
 import { splitPromptTokens, toAnthropicUsage } from "./usage-cache-split.js";
 
@@ -930,8 +931,8 @@ export function createStreamingResponseHandler(
             buffer = lines.pop() || "";
 
             for (const line of lines) {
-              if (!line.trim() || !line.startsWith("data: ")) continue;
-              const dataStr = line.slice(6);
+              const dataStr = line.trim() ? sseDataPayload(line) : null;
+              if (dataStr === null) continue;
               if (!ttftLogged) {
                 ttftLogged = true;
                 process.stdout.write(
