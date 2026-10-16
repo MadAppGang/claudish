@@ -2,7 +2,7 @@
  * The Muse Code account's dynamic models catalog: `GET /muse-code/models`.
  *
  * Captured 2026-10-15 (muse-wire.md §4): an OpenAI-style list whose rows carry
- * `metadata["muse-code"]` — `name`, `release_date`, `is_hidden`,
+ * `metadata["muse-code"]` — `name`, `release_date`, `is_hidden`, `tool_call`,
  * `modalities{input,output}`, `limit{context,output}` and the effort
  * `variants`. That metadata is why this is its own format rather than
  * `openai-models-list`: `GET /v1/models` lists ids only, with `created: 0`.
@@ -40,6 +40,7 @@ interface MuseModelMetadata {
   name?: unknown;
   release_date?: unknown;
   is_hidden?: unknown;
+  tool_call?: unknown;
   modalities?: { input?: unknown; output?: unknown };
   limit?: { context?: unknown; output?: unknown };
 }
@@ -81,6 +82,10 @@ export function parseMuseModels(body: unknown): DiscoveredModel[] | null {
         ? { releaseDate: release.slice(0, 10) }
         : {}),
       ...(reported ? { reported } : {}),
+      // The endpoint's own `tool_call`, projected only when it is a boolean:
+      // an unreported value stays undefined ("not reported", read as yes),
+      // while a `tool_call: false` row is never offered as tool-capable.
+      ...(typeof meta.tool_call === "boolean" ? { supportsTools: meta.tool_call } : {}),
     });
   }
   return models;

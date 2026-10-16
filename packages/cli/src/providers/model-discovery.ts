@@ -114,9 +114,10 @@ export interface DiscoveredModel {
   /**
    * Whether the model can call tools, when the endpoint says so.
    *
-   * Only Ollama reports it (via its own capability list / name heuristics), and
-   * it genuinely varies there — a local embedding or vision-only pull cannot
-   * drive Claude Code. Undefined means "not reported", which callers read as
+   * Ollama reports it (via its own capability list / name heuristics), and it
+   * genuinely varies there — a local embedding or vision-only pull cannot drive
+   * Claude Code. Muse Code reports it as `metadata["muse-code"].tool_call`
+   * (`muse-models.ts`). Undefined means "not reported", which callers read as
    * yes, since every hosted dynamic models catalog in claudish is tool-capable.
    */
   supportsTools?: boolean;
