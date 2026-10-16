@@ -24,7 +24,7 @@ useBlackboxEnv();
 
 type Json = Record<string, unknown>;
 const keys = (v: unknown): string[] => Object.keys(v as Json).sort();
-const CAPABILITIES = ["list", "status", "cancel", "capture", "capture_since_seq", "capture_spans"];
+const CAPABILITIES = ["list", "status", "cancel", "capture", "capture_since_seq", "capture_spans", "resize"];
 
 // REQ-15: literal sorted sets from architecture-contracts.md, not from implementation.
 const ALL_TOOLS = [

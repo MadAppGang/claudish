@@ -11,7 +11,7 @@
 
 export const CONTRACT_VERSION = 1;
 
-/** v1 announces exactly these. */
+/** v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.0. */
 export const CAPABILITIES = [
   "list",
   "status",
@@ -19,6 +19,7 @@ export const CAPABILITIES = [
   "capture",
   "capture_since_seq",
   "capture_spans",
+  "resize",
 ] as const;
 
 export interface ContractMeta {

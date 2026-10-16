@@ -51,7 +51,7 @@ A refusal is an `invalid_args` error before any credential work. `create_session
 argument becomes `--agent <name>`; an unknown name is refused by the child itself (FAILED
 `agent_rejected`), so claudish runs no agent probe of its own.
 
-**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.14.0,
+**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.15.0,
 else `Error: magmux_unavailable: …`), credential pre-hydration, the parent session read, a pane
 reservation (`Error: pane_limit: …` past 48 live panes per user), `prompt.md`, `spawn.json`, then the
 pane. `create_session` returns `{session_id, state}` once the pane exists, without waiting for boot.
@@ -334,7 +334,9 @@ pending?}`: the size actually set after clamping to 80–500 × 24–200, and th
 redraw at that size has landed, so a capture with that `since_seq` already sees it. Their errors
 are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
 `resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or
-the pane is unreachable). `team` gains the same verbs as modes (`list`, `status`, `capture`,
+the pane is unreachable). `capabilities` lists `resize` since the pin moved to magmux 0.15.0, the
+first release with the op; the per-pane check of magmux's `verbs` stays as the defence against a
+binary that passes the version floor but lacks the op. `team` gains the same verbs as modes (`list`, `status`, `capture`,
 `cancel`, `resize`). Why the size is the viewer's and what resizing costs the screen heuristics:
 `pane-session.md`, "Terminal size".
 
