@@ -70,6 +70,7 @@
  * identical inputs, and the reason would live nowhere a user could see.
  */
 
+import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
 import { externalIdFor, getCatalogEntries, isMovingPointer } from "./catalog-client.js";
@@ -111,8 +112,10 @@ export interface RouteCandidate {
  *
  * - `excluded-by-content-use`: the provider maps the model only through a
  *   content-use opt-in wire id, which claudish never chooses (`content-use.ts`).
+ * - `excluded-by-membership`: a subscription's catalog-published plan
+ *   membership does not include the model, although its route is mapped.
  */
-export type GatheringExclusion = "excluded-by-content-use";
+export type GatheringExclusion = "excluded-by-content-use" | "excluded-by-membership";
 
 /** A candidate the catalog publishes and the gatherer did not keep, with why. */
 export interface ExcludedCandidate {
@@ -219,12 +222,21 @@ function findCatalogEntry(entries: SlimModelEntry[], model: string): SlimModelEn
  *     the model is a moving pointer. Its rule — never send a pointer the user did
  *     not ask for — is the one claudish already applies everywhere, so there is
  *     no honest id to send and no candidate.
+ *
+ * One candidate is EXPLAINED rather than skipped or kept: a `subscription`-tier
+ * connection for a model outside its plan's published membership
+ * (`resolveSubscriptionRouting` → `not-served`) goes to `excluded` as
+ * `excluded-by-membership`. A mapped connection is not membership: the catalog
+ * can map a plan's route for a model the plan does not include, and a user rule
+ * naming that provider was already dropped for it, while the gathered path kept
+ * it as a hop. Both paths now ask the same question of the same function.
  */
 function gatherFromConnections(
   entry: SlimModelEntry,
   candidates: RouteCandidate[],
   excluded: ExcludedCandidate[],
-  unmappedRoutes: Set<string>
+  unmappedRoutes: Set<string>,
+  cachePath: string | undefined
 ): void {
   for (const connection of entry.aggregators ?? []) {
     if (connection.routeStatus !== "mapped") continue;
@@ -237,7 +249,18 @@ function gatherFromConnections(
       const wireId = externalIdFor(entry, provider);
       if (!wireId || wireId !== connection.externalModelId) continue;
 
-      candidates.push(connectionCandidate(entry, connection, provider, tier, wireId));
+      const candidate = connectionCandidate(entry, connection, provider, tier, wireId);
+      // The catalog-published subscription tier only: a dynamic subscription's
+      // account decides its models, and `resolveSubscriptionRouting` answers
+      // `unknown` for a client-selected plan anyway.
+      if (
+        tier === "subscription" &&
+        resolveSubscriptionRouting(entry.modelId, provider, cachePath).kind === "not-served"
+      ) {
+        excluded.push({ candidate, outcome: "excluded-by-membership" });
+        continue;
+      }
+      candidates.push(candidate);
     }
   }
 
@@ -248,7 +271,10 @@ function gatherFromConnections(
   // `muse-spark-1.3-contributor`) shows in `--probe` as dropped, with the reason.
   // A provider that also maps a plain id already has its candidate, and its
   // opt-in sibling is not news.
-  const gatheredProviders = new Set(candidates.map((candidate) => candidate.provider));
+  const gatheredProviders = new Set([
+    ...candidates.map((candidate) => candidate.provider),
+    ...excluded.map(({ candidate }) => candidate.provider),
+  ]);
   for (const connection of entry.optInConnections ?? []) {
     if (connection.routeStatus !== "mapped") continue;
     for (const provider of routableProviders(connection, unmappedRoutes)) {
@@ -495,7 +521,7 @@ export function gatherRouteCandidates(model: string, cachePath?: string): Candid
   // Source order is the dedupe rule: a real catalog connection beats a namespace
   // claim for the same (provider, wireId), because it carries a price and a
   // window the claim cannot know.
-  if (entry) gatherFromConnections(entry, gathered, setAside, unmappedRoutes);
+  if (entry) gatherFromConnections(entry, gathered, setAside, unmappedRoutes, cachePath);
   gatherFromNamespaceClaims(model, entry, gathered);
 
   // JSON, not a delimiter: an injective key is the whole requirement, and any
