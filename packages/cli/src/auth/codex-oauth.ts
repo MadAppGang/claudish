@@ -315,10 +315,15 @@ export class CodexOAuth {
     }
 
     // A non-2xx: 429/5xx is transient, a rejected grant (400/401/403) terminal.
+    // Only the terminal answer tells the user to log in again: a busy or down
+    // token host says nothing about the login, and a new login does not help.
     if (!response.ok) {
       log(`[CodexOAuth] Refresh failed: HTTP ${response.status}`);
+      const busy = response.status === 429 || (response.status >= 500 && response.status <= 599);
       throw credentialHttpError(
-        `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: Token refresh failed: ${response.status} - ${text}`,
+        busy
+          ? `The Codex token host is busy or unavailable (HTTP ${response.status}); retrying will usually work.\n\nDetails: ${text}`
+          : `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: Token refresh failed: ${response.status} - ${text}`,
         response.status
       );
     }
