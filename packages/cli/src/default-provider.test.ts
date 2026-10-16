@@ -64,6 +64,27 @@ describe("resolveDefaultProvider precedence", () => {
     expect(result.legacyAutoPromoted).toBe(false);
   });
 
+  test('strict opt-out asymmetry (#483 CR): config "" is NOT an opt-out, env "" is', () => {
+    // The truthiness guard on the config branch drops defaultProvider:"" and
+    // falls through to openrouter — only a PRESENT-EMPTY CLAUDISH_DEFAULT_
+    // PROVIDER disables the fallback hop. Pinned so the strict-mode recipe in
+    // docs/settings-reference.md §6.1 (routing["*"]=[] + env present-empty)
+    // can never drift from the resolver again.
+    const configEmpty = makeConfig({ defaultProvider: "" });
+    const envOr: NodeJS.ProcessEnv = { OPENROUTER_API_KEY: "or-key" };
+
+    const configResult = resolveDefaultProvider({ config: configEmpty, env: envOr });
+    expect(configResult.provider).toBe("openrouter");
+    expect(configResult.source).toBe("openrouter-key");
+
+    const envResult = resolveDefaultProvider({
+      config: configEmpty,
+      env: { ...envOr, CLAUDISH_DEFAULT_PROVIDER: "" },
+    });
+    expect(envResult.provider).toBe("");
+    expect(envResult.source).toBe("env-var");
+  });
+
   test("LITELLM env vars no longer auto-promote (commit 5: removed)", () => {
     // Pre-commit-5, having both LITELLM_BASE_URL and LITELLM_API_KEY set
     // would resolve provider="litellm" with source="legacy-litellm". After
