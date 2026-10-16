@@ -10,7 +10,14 @@ import {
   transcriptRecords,
   witnessIndex,
 } from "./test-helpers/transcript-fixtures.js";
-import type { TranscriptView, Witness } from "./transcript-follower.js";
+import {
+  type TranscriptView,
+  type Witness,
+  applyRecord,
+  initialFollowerState,
+  openTurnState,
+  turnView,
+} from "./transcript-follower.js";
 
 /** Every fixture is a real Claude Code 2.1.290 capture (phase2-captures.md) or a redacted corpus slice. */
 
@@ -411,6 +418,53 @@ describe("background work (D23)", () => {
       t1.agentsLaunched,
       t1.agentsCompleted,
     ]);
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("a peer attachment quoting a real task notification completes no background agent", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const firstLaunch = indexOf(n, (r) => r.type === "user" && r.toolUseResult?.isAsync === true);
+    const secondLaunch = indexOf(
+      n,
+      (r) => r.type === "user" && r.toolUseResult?.isAsync === true,
+      firstLaunch + 1
+    );
+    const firstNotification = recs.find(
+      (r) =>
+        r.type === "attachment" &&
+        r.attachment?.type === "queued_command" &&
+        typeof r.attachment.prompt === "string" &&
+        r.attachment.prompt.startsWith("<task-notification>")
+    )!;
+    const peer = recs.find(
+      (r) =>
+        r.type === "attachment" &&
+        r.attachment?.type === "queued_command" &&
+        r.attachment.origin?.kind === "peer"
+    )!;
+    expect(secondLaunch).toBeGreaterThan(firstLaunch);
+    expect(firstNotification.attachment.prompt).toContain("<task-id>ae0168d27fc09161c</task-id>");
+    const quoted = structuredClone(peer);
+    quoted.attachment.prompt = `<agent-message from="ab9d8b94e58c3540a">${firstNotification.attachment.prompt}</agent-message>`;
+
+    const viewAfter = (record: Rec) => {
+      const st = initialFollowerState((p) => p);
+      openTurnState(st, {
+        index: 1,
+        offset: 0,
+        witness: { kind: "text", text: textOf(recs[0]!) },
+        delivery: null,
+      });
+      for (let i = 0; i <= secondLaunch; i++) applyRecord(st, recs[i]!, i + 1);
+      applyRecord(st, record, secondLaunch + 2);
+      return turnView(st.turns[0]!);
+    };
+    const control = viewAfter(firstNotification);
+    expect([control.agentsLaunched, control.agentsCompleted]).toEqual([2, 1]);
+    const t = viewAfter(quoted);
+    expect([t.agentsLaunched, t.agentsCompleted]).toEqual([2, 0]);
+    expect(t.wakingAfterLast).toBe(false);
   });
 
   // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
