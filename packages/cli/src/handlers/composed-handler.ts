@@ -87,6 +87,7 @@ import {
   isTerminalError,
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
+import { authVerdictHeaders } from "./shared/auth-failure.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import type { ConnectionErrorKind } from "./shared/connection-error.js";
 import {
@@ -99,6 +100,7 @@ import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-un
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
+import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
@@ -2001,6 +2003,15 @@ export class ComposedHandler implements ModelHandler {
               ? CONTEXT_OVERFLOW_PHRASE
               : undefined,
           });
+          // A SUBSCRIPTION's rejected credential stops the routing chain here
+          // (`auth-failure.ts`): the next hop would bill the user per token for a
+          // login they can fix. A spent allowance (402/429) is not a credential
+          // failure and still advances, with its warning.
+          const verdictHeaders =
+            (response.status === 401 || response.status === 403) &&
+            isSubscriptionProvider(this.provider.name)
+              ? authVerdictHeaders("terminal")
+              : undefined;
           // Carry the ORIGINAL upstream status as a structured field so
           // machine consumers (probe classification) can tell a remapped
           // auth failure from a genuine 400.
@@ -2015,7 +2026,8 @@ export class ComposedHandler implements ModelHandler {
               // useless to a probe row that clips.
               providerMsg
             ),
-            400 as any
+            400 as any,
+            verdictHeaders
           );
         }
         return c.json(

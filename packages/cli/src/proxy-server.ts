@@ -831,7 +831,11 @@ export async function createProxyServer(
         // differs (a provider it cannot construct), and the remaining candidates
         // are still strictly better than failing the request.
         if (handler) {
-          candidates.push({ name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider, handler });
+          candidates.push({
+            name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider,
+            provider: parsed.provider,
+            handler,
+          });
         }
       }
 
@@ -935,7 +939,11 @@ export async function createProxyServer(
               handler = await getRemoteProviderHandler(candidate.modelSpec, invocationMode);
             }
             if (handler) {
-              candidates.push({ name: candidate.displayName, handler });
+              candidates.push({
+                name: candidate.displayName,
+                provider: candidate.provider,
+                handler,
+              });
             }
           }
 
