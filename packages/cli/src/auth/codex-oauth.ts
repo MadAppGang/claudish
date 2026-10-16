@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 import { markOwnTimeout } from "../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../handlers/shared/transient-retry.js";
 import { log } from "../logger.js";
-import { credentialHttpError, terminalCredentialError } from "./credentials/credential-error.js";
+import { credentialHttpError } from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
 
@@ -329,9 +329,9 @@ export class CodexOAuth {
     }
 
     // A 2xx that is not JSON is a gateway answering for the token host:
-    // retryable. A 2xx JSON with no access token is a protocol failure, and
-    // nothing is persisted from it (the old code saved `access_token:
-    // undefined`).
+    // retryable. A 2xx JSON with no access token does not show the login is
+    // dead either: retryable (503), and nothing is persisted from it (the old
+    // code saved `access_token: undefined`).
     let tokens: Partial<TokenResponse>;
     try {
       tokens = JSON.parse(text) as Partial<TokenResponse>;
@@ -344,8 +344,11 @@ export class CodexOAuth {
       );
     }
     if (typeof tokens?.access_token !== "string" || tokens.access_token.length === 0) {
-      throw terminalCredentialError(
-        "The Codex token host answered without an access token; nothing was saved. Run `claudish login codex` if this persists."
+      throw Object.assign(
+        new Error(
+          "The Codex token host answered without an access token; nothing was saved. Retrying will usually work; run `claudish login codex` if this persists."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
       );
     }
 

@@ -545,8 +545,9 @@ export class KimiOAuth {
     }
 
     // A 2xx that is not JSON is a gateway answering for the token host:
-    // retryable, and the login stays. A 2xx JSON with no access token is a
-    // protocol failure: terminal, with nothing persisted and nothing deleted.
+    // retryable, and the login stays. A 2xx JSON with no access token does not
+    // show the login is dead either: retryable (503), with nothing persisted
+    // and nothing deleted.
     let tokens: Partial<TokenResponse>;
     try {
       tokens = JSON.parse(text) as Partial<TokenResponse>;
@@ -559,8 +560,11 @@ export class KimiOAuth {
       );
     }
     if (typeof tokens?.access_token !== "string" || tokens.access_token.length === 0) {
-      throw terminalCredentialError(
-        "The Kimi token host answered without an access token; nothing was saved. Run `claudish login kimi` if this persists."
+      throw Object.assign(
+        new Error(
+          "The Kimi token host answered without an access token; nothing was saved. Retrying will usually work; run `claudish login kimi` if this persists."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
       );
     }
 
