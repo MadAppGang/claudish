@@ -648,6 +648,23 @@ Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation
   yield to magmux, and slash commands may come back `unconfirmed`. Once 0.16.0 is the minimum, the
   `editorMode: "normal"` overlay key can go. Trigger: magmux 0.16.0 released with final field
   names, and `.github/magmux.env` bumped to it.
+- **A prompt typed twice under load.** `pane-session.integration.test.ts` "a send whose reply is
+  lost after magmux typed it is not typed twice" failed inside a full `test:safe` run on
+  2026-10-17 with `Received: "Set model to \`haiku/model haiku\`"`, and passed alone (54/0). Two
+  sibling tests in that file timed out in the same run. The retype nudge (`PaneSession.nudge`,
+  `awaitClearedBox`) is the code that can type a line a second time; the 10.7.0 release review
+  also found a race there (ctrl-u lets degraded acceptance accept an empty box). Trigger: now;
+  reproduce with the loaded-run harness (3 parallel suites) before changing the nudge. Owner
+  since 2026-10-17: the `resize_session` redesign (branch `worktree-claudish-mcp-session-size`),
+  which rewrites box location and acceptance; the race is one of its requirements, with a test at
+  production timings, and the doubled-typing test runs in each of its loaded runs.
+- **An upstream stream error is shown as assistant text, so the turn reads COMPLETED.** A
+  `create_session` on `gpt-6.1-sol` (`cx@`, claudish 10.6.3) ended its only turn with the
+  assistant text `[API Error: server_is_overloaded Our servers are currently overloaded. Please
+  try again later.]`; `upstreamErrors` was `[]`, `reason` null, state COMPLETED, after 27 tool calls
+  and no work done. A caller reading only the state takes it for a finished task. Trigger: find
+  where the Responses stream converts a mid-stream `error` event into a text block, and check it
+  on 10.7.0 first.
 
 ---
 
