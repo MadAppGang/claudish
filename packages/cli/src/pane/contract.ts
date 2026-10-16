@@ -11,7 +11,7 @@
 
 export const CONTRACT_VERSION = 1;
 
-/** v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.0. */
+/** v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.1. */
 export const CAPABILITIES = [
   "list",
   "status",

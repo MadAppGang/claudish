@@ -608,8 +608,8 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   pane's life. `capture` and `capture_session` are memory reads. `aboveBoxChangedAt` moves only when a
   row ABOVE the input box changes, so the status line ticking under the box never holds a quiet window
   open. 4 fps (research recommended 2–4) halves boot, witness and settle latency at no idle cost.
-- `assertMagmuxAvailable` requires `magmux --version` ≥ 0.15.0 (cached per binary), and every
-  connect re-checks `capabilities` (`protocol: 1`, version ≥ 0.15.0). claudish never substitutes print mode.
+- `assertMagmuxAvailable` requires `magmux --version` ≥ 0.15.1 (cached per binary), and every
+  connect re-checks `capabilities` (`protocol: 1`, version ≥ 0.15.1). claudish never substitutes print mode.
   The release job bundles a pinned magmux and checks the pin against `MIN_MAGMUX_VERSION`.
 - **Latent, outside this driver:** `team-grid.ts` (CLI `--grid`) does not pass `--sock-dir`, so an
   inherited `MAGMUX_SOCK_DIR` would move its socket (F7).

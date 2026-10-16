@@ -1139,7 +1139,7 @@ function assertValidRequirePattern(pattern: string | undefined): void {
 /**
  * The pre-spawn refusals of a team run, in the order the MCP `run` handler applies them
  * BEFORE `setupSession` writes anything (§4.1): the caller's flags (D18), a prompt that
- * cannot be delivered with those flags (§2.3 rule 4), magmux present (≥ 0.15.0), no
+ * cannot be delivered with those flags (§2.3 rule 4), magmux present (≥ 0.15.1), no
  * ACTIVE run at the path, and room under the per-user pane limit. Each throws an Error
  * whose message starts with its code (`invalid_args:`, `magmux_unavailable:`,
  * `pane_limit:`). `startModels` repeats them, so the CLI gets the same checks.
