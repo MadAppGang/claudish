@@ -301,7 +301,13 @@ export async function forceRefreshMuseApiKey(opts: {
   try {
     return await ensureMuseCredentialReady({ prompt: opts.prompt });
   } catch (err) {
-    if (err instanceof MuseCredentialError || isLoginRejection(err)) {
+    // Reworded only when the re-mint found no login that works (every source
+    // rejected, or none left). The team/MCP message and the Keychain messages
+    // name their own fix and pass through unchanged.
+    const noWorkingLogin =
+      isLoginRejection(err) ||
+      (err instanceof MuseCredentialError && err.message === MUSE_NO_LOGIN_MESSAGE);
+    if (noWorkingLogin) {
       throw new MuseCredentialError(
         "Meta rejected a freshly minted Muse Code key (HTTP 401): run `claudish login muse` (or `muse login`)."
       );
