@@ -13,7 +13,7 @@ import type { Context } from "hono";
 import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
-import { authVerdict } from "./shared/auth-failure.js";
+import { authVerdict, isCredentialRejection } from "./shared/auth-failure.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
 import { isClaudishConnectionVerdict, isRecoveryHoldResponse } from "./shared/recovery-marker.js";
 import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
@@ -297,7 +297,12 @@ export function isRetryableError(
   // Asked of the uid — a display name is never a subscription.
   if (providerId && isSubscriptionProvider(providerId)) {
     const recovered = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
-    if (status === 401 || recovered === 401) return false;
+    // A credential rejection only: a 401 that says the MODEL is not carried
+    // (OpenCode Zen Go's "Model <id> is not supported") is a per-model miss and
+    // advances, as it always did (`isCredentialRejection`).
+    if ((status === 401 || recovered === 401) && isCredentialRejection(401, errorBody)) {
+      return false;
+    }
   }
 
   // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────

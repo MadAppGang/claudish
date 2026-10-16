@@ -40,6 +40,8 @@ import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { wrapAnthropicError } from "./anthropic-error.js";
 import { classifyConnectionError } from "./connection-error.js";
+import { hasModelUnsupportedWording } from "./model-unsupported.js";
+import { isQuotaExhaustionError } from "./quota-exhaustion.js";
 
 /** The header name. Referenced by name in no other file — import this. */
 export const AUTH_VERDICT_HEADER = "x-claudish-auth-verdict";
@@ -70,6 +72,56 @@ export type AuthFailure =
   | { kind: "transient"; status: number; message: string }
   | { kind: "terminal"; message: string; upstreamStatus?: number }
   | { kind: "unknown"; message: string };
+
+/**
+ * Whether an upstream 401/403 rejects the CREDENTIAL — a dead, revoked or
+ * unsubscribed login — rather than this one request.
+ *
+ * The status alone does not say. Two answers arrive under it that are about
+ * the model or the allowance, and both must keep advancing the routing chain
+ * exactly as they did before the subscription stop existed:
+ *
+ *   - a model the provider does not carry. OpenCode Zen Go answers
+ *     `401 "Model deepseek-v4-pro-0813 is not supported"` (measured 2026-08-18,
+ *     the same key serving `kimi-k3` with 200) and
+ *     `401 "Model grok-4.6 is not supported for format oa-compat"`
+ *     (ai-docs/reports/grok-46-zen-go-misroute-was-stale-902-20260907.md). A
+ *     catalog that drifts behind the plan sends such a model there, and the
+ *     next hop serves it. Read with `hasModelUnsupportedWording`, the one
+ *     predicate the recovery hint and the probe state already share;
+ *   - a spent allowance (`403 "You've reached your usage limit for this
+ *     billing cycle"`, Kimi Code), read with `isQuotaExhaustionError`, which
+ *     advances with its per-token warning;
+ *   - a model the account may not use HERE. Zen Go answers
+ *     `403 {"error":{"type":"RegionError","message":"The latest version of this
+ *     model is only available hosted in China and requires explicit opt in: …"}}`
+ *     (measured 2026-08-19, `model-unsupported.ts`). Read from the provider's
+ *     own error TYPE, which names a region rather than a credential.
+ *
+ * Only what is left is a credential verdict that stops the chain.
+ */
+export function isCredentialRejection(status: number, errorBody: string): boolean {
+  if (status !== 401 && status !== 403) return false;
+  if (hasModelUnsupportedWording(errorBody)) return false;
+  if (isQuotaExhaustionError(status, errorBody)) return false;
+  if (/region/i.test(providerErrorType(errorBody) ?? "")) return false;
+  return true;
+}
+
+/**
+ * The provider's own `error.type` in a raw upstream JSON error body. Read at
+ * the sites that hold the upstream body (the generic remap, settleAuthRetry);
+ * claudish's remapped 400 does not carry it, and FallbackHandler's own
+ * subscription rule covers 401 only, so a 403 RegionError advances there too.
+ */
+function providerErrorType(errorBody: string): string | undefined {
+  try {
+    const type = (JSON.parse(errorBody) as { error?: { type?: unknown } })?.error?.type;
+    return typeof type === "string" ? type : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** The fields a credential path sets on what it throws. */
 interface ErrorFields {

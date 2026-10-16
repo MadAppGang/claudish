@@ -90,6 +90,7 @@ import {
 import {
   authVerdictHeaders,
   classifyAuthFailure,
+  isCredentialRejection,
   respondAuthFailure,
 } from "./shared/auth-failure.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
@@ -1875,7 +1876,13 @@ export class ComposedHandler implements ModelHandler {
                 retryResp.status,
                 errorText
               );
-              if (isSubscriptionProvider(this.provider.name) || transportTerminal === true) {
+              // The subscription stop is for a credential rejection only; a model
+              // or allowance miss keeps its pass-through route (`isCredentialRejection`).
+              if (
+                (isSubscriptionProvider(this.provider.name) &&
+                  isCredentialRejection(retryResp.status, errorText)) ||
+                transportTerminal === true
+              ) {
                 const hint = getRecoveryHint(
                   retryResp.status,
                   errorText,
@@ -2141,9 +2148,11 @@ export class ComposedHandler implements ModelHandler {
           // (`auth-failure.ts`): the next hop would bill the user per token for a
           // login they can fix. A spent allowance (402/429) is not a credential
           // failure and still advances, with its warning.
+          // A model the provider does not carry (Zen Go's 401 "Model <id> is not
+          // supported") is NOT a credential rejection and keeps advancing.
           const verdictHeaders =
-            (response.status === 401 || response.status === 403) &&
-            isSubscriptionProvider(this.provider.name)
+            isSubscriptionProvider(this.provider.name) &&
+            isCredentialRejection(response.status, errorText)
               ? authVerdictHeaders("terminal")
               : undefined;
           // Carry the ORIGINAL upstream status as a structured field so
