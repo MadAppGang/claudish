@@ -22,11 +22,7 @@ import { promisify } from "node:util";
 import { markOwnTimeout } from "../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../handlers/shared/transient-retry.js";
 import { log } from "../logger.js";
-import {
-  credentialHttpError,
-  isTransientCredentialError,
-  terminalCredentialError,
-} from "./credentials/credential-error.js";
+import { credentialHttpError, terminalCredentialError } from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
 
@@ -297,52 +293,79 @@ export class CodexOAuth {
       );
     }
 
+    // The body is read apart from its parse (the grok-oauth.ts split). `fetch`
+    // resolves on the HEADERS and the request's timeout signal is still armed
+    // while the body streams, so a stalled or reset body is a network fault:
+    // it keeps its cause, its own-timeout mark and the endpoint, and connection
+    // recovery classifies it. It is never "log in again".
+    let text: string;
     try {
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw credentialHttpError(
-          `Token refresh failed: ${response.status} - ${errorText}`,
-          response.status
-        );
-      }
-
-      const tokens = (await response.json()) as TokenResponse;
-
-      // Extract account_id from refreshed id_token if present
-      const accountId = tokens.id_token
-        ? this.extractAccountId(tokens.id_token)
-        : this.credentials.account_id;
-
-      // Update credentials (keep existing refresh token if new one not provided)
-      const updatedCredentials: CodexCredentials = {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token || this.credentials.refresh_token,
-        expires_at: Date.now() + tokens.expires_in * 1000,
-        account_id: accountId,
-      };
-
-      this.saveCredentials(updatedCredentials);
-      this.credentials = updatedCredentials;
-
+      text = await response.text();
+    } catch (e) {
       log(
-        `[CodexOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
+        `[CodexOAuth] Lost ${OAUTH_CONFIG.tokenUrl} while reading the token: ${(e as Error).message}`
       );
-
-      return updatedCredentials.access_token;
-    } catch (e: any) {
-      log(`[CodexOAuth] Refresh failed: ${e.message}`);
-      // A 429/5xx from the token host is retryable and keeps its fields; it is
-      // not "credentials invalid" (`credential-error.ts`).
-      if (isTransientCredentialError(e)) throw e;
-      // `{ cause }` here too: a connection reset while reading the response body
-      // is a network fault that arrives after the fetch resolved.
       throw Object.assign(
-        terminalCredentialError(
-          `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: ${e.message}`
+        new Error(
+          `Lost the connection to ${OAUTH_CONFIG.tokenUrl} while reading the Codex token: ${(e as Error).message}`,
+          { cause: markOwnTimeout(e) }
         ),
-        { cause: e }
+        { claudishEndpoint: OAUTH_CONFIG.tokenUrl }
       );
     }
+
+    // A non-2xx: 429/5xx is transient, a rejected grant (400/401/403) terminal.
+    if (!response.ok) {
+      log(`[CodexOAuth] Refresh failed: HTTP ${response.status}`);
+      throw credentialHttpError(
+        `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: Token refresh failed: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+
+    // A 2xx that is not JSON is a gateway answering for the token host:
+    // retryable. A 2xx JSON with no access token is a protocol failure, and
+    // nothing is persisted from it (the old code saved `access_token:
+    // undefined`).
+    let tokens: Partial<TokenResponse>;
+    try {
+      tokens = JSON.parse(text) as Partial<TokenResponse>;
+    } catch {
+      throw Object.assign(
+        new Error(
+          "Codex token refresh answered with a body that is not JSON; retrying will usually work."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
+      );
+    }
+    if (typeof tokens?.access_token !== "string" || tokens.access_token.length === 0) {
+      throw terminalCredentialError(
+        "The Codex token host answered without an access token; nothing was saved. Run `claudish login codex` if this persists."
+      );
+    }
+
+    // Extract account_id from refreshed id_token if present
+    const accountId = tokens.id_token
+      ? this.extractAccountId(tokens.id_token)
+      : this.credentials.account_id;
+
+    // Update credentials (keep existing refresh token if new one not provided)
+    const expiresIn = typeof tokens.expires_in === "number" ? tokens.expires_in : 3600;
+    const updatedCredentials: CodexCredentials = {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || this.credentials.refresh_token,
+      expires_at: Date.now() + expiresIn * 1000,
+      account_id: accountId,
+    };
+
+    this.saveCredentials(updatedCredentials);
+    this.credentials = updatedCredentials;
+
+    log(
+      `[CodexOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
+    );
+
+    return updatedCredentials.access_token;
   }
 
   /**
