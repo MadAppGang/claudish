@@ -351,6 +351,107 @@ describe("background work (D23)", () => {
     expect([t2.agentsLaunched, t2.agentsCompleted]).toEqual([1, 1]);
     expect(t2.turnDurationAfterLast).toEqual({ pendingBackgroundAgentCount: null });
   });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("mid-turn attachment notifications: both async agents are counted before any notification", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    const first = indexOf(n, (r) => r.type === "user" && r.toolUseResult?.isAsync === true);
+    const second = indexOf(
+      n,
+      (r) => r.type === "user" && r.toolUseResult?.isAsync === true,
+      first + 1
+    );
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBeGreaterThan(first);
+    const { views } = run(n, [{ at: 0, witness: text(w) }], { upTo: second + 1 });
+    const t = cur(views[0]);
+    expect([t.agentsLaunched, t.agentsCompleted]).toEqual([2, 0]);
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("mid-turn attachment notifications complete both agents exactly once without waking the turn", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    const last = recs.findLastIndex(
+      (r) =>
+        r.type === "attachment" &&
+        r.attachment?.type === "queued_command" &&
+        typeof r.attachment.prompt === "string" &&
+        r.attachment.prompt.startsWith("<task-notification>")
+    );
+    expect(last).toBeGreaterThan(0);
+    const { views } = run(n, [{ at: 0, witness: text(w) }], { upTo: last + 1 });
+    const t = cur(views[0]);
+    expect(t.wakingAfterLast).toBe(false);
+    expect([t.agentsLaunched, t.agentsCompleted]).toEqual([2, 2]);
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("a peer agent-message attachment completes no background agent", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    // The redactor removes the <agent-message> body but keeps origin.kind.
+    const peer = indexOf(
+      n,
+      (r) =>
+        r.type === "attachment" &&
+        r.attachment?.type === "queued_command" &&
+        r.attachment.origin?.kind === "peer"
+    );
+    expect(peer).toBeGreaterThan(0);
+    const before = run(n, [{ at: 0, witness: text(w) }], { upTo: peer });
+    const after = run(n, [{ at: 0, witness: text(w) }], { upTo: peer + 1 });
+    const t1 = cur(before.views[0]);
+    const t2 = cur(after.views[0]);
+    expect([t2.agentsLaunched, t2.agentsCompleted]).toEqual([
+      t1.agentsLaunched,
+      t1.agentsCompleted,
+    ]);
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("the first attachment notification neither wakes the turn nor changes lastChatOffset", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    const first = indexOf(
+      n,
+      (r) =>
+        r.type === "attachment" &&
+        r.attachment?.type === "queued_command" &&
+        typeof r.attachment.prompt === "string" &&
+        r.attachment.prompt.startsWith("<task-notification>")
+    );
+    expect(first).toBeGreaterThan(0);
+    const before = run(n, [{ at: 0, witness: text(w) }], { upTo: first });
+    const after = run(n, [{ at: 0, witness: text(w) }], { upTo: first + 1 });
+    const t = cur(after.views[0]);
+    expect(t.wakingAfterLast).toBe(false);
+    expect(t.lastChatOffset).toBe(cur(before.views[0]).lastChatOffset);
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("an id-less attachment notification preserves the auto-compaction turn ending", () => {
+    const n = "corpus-redacted/auto-compaction-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    const notification = indexOf(
+      n,
+      (r) =>
+        r.type === "attachment" &&
+        r.attachment?.type === "queued_command" &&
+        r.attachment.prompt === "<task-notification>redacted</task-notification>"
+    );
+    expect(notification).toBeGreaterThan(0);
+    const { views } = run(n, [{ at: 0, witness: text(w) }]);
+    const t = cur(views[0]);
+    expect(t.wakingAfterLast).toBe(false);
+    expect(t.turnDurationAfterLast).not.toBeNull();
+  });
 });
 
 describe("Claude Code's own continuations wake the model", () => {

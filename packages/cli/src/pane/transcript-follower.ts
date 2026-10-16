@@ -227,6 +227,17 @@ function isTaskNotification(r: Rec): boolean {
   return r.origin?.kind === "task-notification" || userText(r).includes("<task-notification>");
 }
 
+/**
+ * A `<task-notification>` Claude Code absorbed into a turn still running: a main-chain
+ * `attachment` with `attachment.type:"queued_command"` (captured 2.1.263 and 2.1.301). The
+ * prefix test keeps out a peer `<agent-message>` that merely quotes one.
+ */
+function queuedTaskNotification(r: Rec): string | null {
+  const a = r.type === "attachment" ? r.attachment : null;
+  if (a?.type !== "queued_command" || typeof a.prompt !== "string") return null;
+  return a.prompt.startsWith("<task-notification>") ? a.prompt : null;
+}
+
 function taskIdOf(text: string): string | null {
   const m = text.match(/<task-id>([^<]+)<\/task-id>/);
   return m ? (m[1] ?? "").trim() : null;
@@ -446,6 +457,17 @@ function applyNotification(t: TurnState, text: string): void {
   t.shells.delete(id);
 }
 
+/**
+ * Completes the agent or closes the shell only, never waking and never chat activity: the
+ * attachment rides an API request already in flight, and the assistant record that answers it
+ * follows (1,133 of 1,134 corpus notification attachments; the other was a file still being
+ * written).
+ */
+function applyQueuedNotification(t: TurnState, r: Rec): void {
+  const text = queuedTaskNotification(r);
+  if (text) applyNotification(t, text);
+}
+
 function applyUser(t: TurnState, r: Rec, offset: number): void {
   const c = contentOf(r);
   if (Array.isArray(c) && c.some((b) => b?.type === "tool_result")) {
@@ -519,6 +541,7 @@ export function applyRecord(
   else if (r.type === "system" && r.subtype === "stop_hook_summary") {
     if (t.lastAssistant) t.stopHookAfterLast = true;
   } else if (r.type === "system" && r.subtype === "turn_duration") applyTurnDuration(state, t, r);
+  applyQueuedNotification(t, r); // attachment records only; the predicate rejects every other type
   // compact_boundary carries no turn fact; compactions are counted on the isCompactSummary record
   return state;
 }

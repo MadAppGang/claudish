@@ -217,7 +217,8 @@ model. Over the corpus: 1,944 such gaps, p50 2,122 ms, p90 3,545, p95 4,918, **p
 ending that has already happened; it never ends work.
 
 **Waking records.** A main-chain user record after the last assistant message means the turn is not
-over: a `<task-notification>`, Stop-hook feedback, or an `isMeta` record — Claude Code continuing on
+over: a `<task-notification>` (only as a main-chain `user` record; the mid-turn attachment form below
+never wakes), Stop-hook feedback, or an `isMeta` record — Claude Code continuing on
 its own. 2.1.290 auto-continues a `max_tokens` stop (`Output token limit hit. Resume directly …`,
 captured four times with a 60-token cap) and finally writes a synthetic `max_output_tokens` API error,
 which settles as FAILED `api_error`. A refusal is followed by an `isMeta` companion and a continuation
@@ -230,6 +231,15 @@ after it, which was never observed.
   launched one with no `run_in_background` in its input — and completes on the
   `<task-notification>` whose `<task-id>` is that `agentId`. This mirrors Claude Code's own
   `pendingBackgroundAgentCount`, which `turn_duration` carries only when it is above 0.
+- A notification arrives in one of two forms (captured 2.1.263 and 2.1.301). After the turn ended it
+  is a `user` record (`origin.kind:"task-notification"`), which wakes. Absorbed into a turn still
+  running it is a main-chain `attachment` with `attachment.type:"queued_command"` whose prompt starts
+  `<task-notification>`; it completes the agent or closes the shell but never wakes, because it rides
+  a request already in flight and the assistant record that answers it follows (1,133 of 1,134 corpus
+  attachments; the other was a file still being written). Unread, session 779a03f0 stayed RUNNING /
+  `background` with both agents done until cancel (2026-10-16). `queue-operation` records are not
+  read: a removal does not prove delivery. The redaction script keeps `<task-id>` inside a redacted
+  notification, so a fixture still links it to its launch.
 - A background Bash is not awaited. If its notification arrives before settle it wakes the model and
   is part of the turn; otherwise the turn settles at Claude Code's own `turn_duration` and the anomaly
   `background_shell_open: <command>` names it — in the team slot's `detail` and the result card too

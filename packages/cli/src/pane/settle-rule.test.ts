@@ -70,6 +70,23 @@ describe("path P — turn_duration", () => {
     });
   });
 
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("settles at the first turn_duration after mid-turn attachment notifications complete both agents", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    expect(witnessIndex(n, w)).toBe(0);
+    const td = indexOf(n, (r) => r.type === "system" && r.subtype === "turn_duration");
+    expect(td).toBeGreaterThan(0);
+    const v = viewOf(n, w, { upTo: td + 1 });
+    expect(decideSettle(input(v))).toEqual({
+      settled: true,
+      by: "turn_duration",
+      stopReason: "end_turn",
+      anomalies: [],
+    });
+  });
+
   test("waits for the screen: typed text, a dialog, a working row, or a chat record < 500 ms old", () => {
     const v = viewOf("pear-hookless", PEAR);
     expect(decideSettle(input(v, { screen: { ...IDLE_SCREEN, boxEmpty: false } })).settled).toBe(
