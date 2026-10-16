@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.7.1] - 2026-10-16
+
+### Bug Fixes
+
+- tell a nested session to run delegated work itself *(mcp)* ([`01f3ec1`](https://github.com/MadAppGang/claudish/commit/01f3ec149e051b951a0efe2fc68ad1eb2e5ba978))
+
+### Documentation
+
+- record why the nested instructions name the delegate role *(mcp)* ([`68cb097`](https://github.com/MadAppGang/claudish/commit/68cb0976357bdd026ce8419e77e401e74820a4e2))
+- stamp the playbook verified at the v10.7.0 merge *(release)* ([`fb3f470`](https://github.com/MadAppGang/claudish/commit/fb3f470f5e6324ce4688d08f1aa06b47f9158e0f))
+- update CHANGELOG.md for v10.7.0([`e3930ae`](https://github.com/MadAppGang/claudish/commit/e3930ae93d1da3a7dc218aa30e97d9e7c058a97d))
+
+### Other Changes
+
+- v10.7.1 *(release)* ([`bcbc968`](https://github.com/MadAppGang/claudish/commit/bcbc9686620a034ba8355780713ffb5bc822160c))
+
 ## [10.7.0] - 2026-10-16
 
 ### ⚠ BREAKING CHANGES
