@@ -1,0 +1,10 @@
+{
+  "generationId": "g-20261016053727894-8a743761",
+  "capturedAt": "2026-10-16T07:12:08.330Z",
+  "requests": [
+    "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=recommended",
+    "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=slim&status=all&includeRouteVariants=true&limit=1000&generationId=g-20261016053727894-8a743761",
+    "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=slim&status=all&includeRouteVariants=true&limit=1000&cursor=eyJjb250cmFjdFZlcnNpb24iOjMsImdlbmVyYXRpb25JZCI6ImctMjAyNjEwMTYwNTM3Mjc4OTQtOGE3NDM3NjEiLCJvZmZzZXQiOjEwMDAsInJlc291cmNlIjoibW9kZWxzIiwicXVlcnlIYXNoIjoiODVhM2Q3MzdhYWJjOWMwMWJkY2QwZjE1OGViMjc3OTU2YjVmZjFmODI5ODUwNjI4NGZhZWJhMjU2OWNjYjVlYSIsInNpZ25hdHVyZSI6ImE1YWZhMjcxZWNiNmIzMThmODRmMDcxN2QwYjkyOTIzODdlYmY2OTg3YzYxNmI3NTA2MWQzYTkzYTZiYjgyNzcifQ&generationId=g-20261016053727894-8a743761",
+    "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=top100&generationId=g-20261016053727894-8a743761"
+  ]
+}

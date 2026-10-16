@@ -32,16 +32,7 @@ import {
   resolveProgressIntervalMs,
   startHeartbeat,
 } from "./mcp/progress-heartbeat.js";
-import {
-  type RecommendedModelGroup,
-  type RecommendedModelsDoc,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  formatListingPrice,
-  getRecommendedModels,
-  groupRecommendedModels,
-  normalizePricingDisplay,
-} from "./model-loader.js";
+import { type RecommendedModelsDoc, getRecommendedModels } from "./model-loader.js";
 import {
   ContractErrorException,
   type FailureReason,
@@ -63,10 +54,9 @@ import { isLocalProviderName } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED, nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
-import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
-import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
+import { nativeShortcutForVendor, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
 import {
   type ModelStatus,
@@ -934,80 +924,14 @@ function defineTools(
         };
       }
 
-      const { flagship, fast } = groupRecommendedModels(doc.models);
-
-      // Native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
-      const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
-      const getNativePrefix = (firebaseSlug: string): string | null => {
-        const canonical = nativeProviderForVendor(firebaseSlug);
-        if (!canonical) return null;
-        const def = providerByName.get(canonical);
-        if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
-        return def.shortcuts[0];
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: renderRecommendedMarkdown(doc, nativeShortcutForVendor),
+          },
+        ],
       };
-
-      const renderGroup = (group: RecommendedModelGroup): string => {
-        const m = group.primary;
-        const pricing = formatListingPrice(m);
-        const ctx = m.context || "N/A";
-        const caps: string[] = [];
-        if (m.supportsTools) caps.push("tools");
-        if (m.supportsReasoning) caps.push("reasoning");
-        if (m.supportsVision) caps.push("vision");
-        const capsLine = caps.length > 0 ? caps.join(", ") : "none";
-
-        const prefixes = collectRoutingPrefixes(group, getNativePrefix);
-        const accessLine =
-          prefixes.length > 0 ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ") : `\`${m.id}\``;
-
-        return [
-          `### ${m.id}`,
-          `- **Pricing**: ${pricing} avg · ${ctx} context`,
-          `- **Capabilities**: ${capsLine}`,
-          `- **Access**: ${accessLine}`,
-          "",
-        ].join("\n");
-      };
-
-      let output = "# Recommended Models\n\n";
-      output += `_Last updated: ${doc.lastUpdated || "unknown"}_\n\n`;
-
-      if (flagship.length > 0) {
-        output += "## Flagship models\n\n";
-        for (const group of flagship) output += renderGroup(group);
-      }
-
-      if (fast.length > 0) {
-        output += "## Fast variants\n\n";
-        for (const group of fast) output += renderGroup(group);
-      }
-
-      // Quick picks — over the deduped primaries
-      const primaries = [...flagship, ...fast].map((g) => g.primary);
-      const picks = computeQuickPicks(primaries);
-      const pickLines: string[] = [];
-      if (picks.budget)
-        pickLines.push(
-          `- **Budget**: \`${picks.budget.id}\` (${normalizePricingDisplay(
-            picks.budget.pricing?.average
-          )})`
-        );
-      if (picks.largeContext)
-        pickLines.push(
-          `- **Large context**: \`${picks.largeContext.id}\` (${
-            picks.largeContext.context || "N/A"
-          })`
-        );
-      if (picks.mostCapable) pickLines.push(`- **Most capable**: \`${picks.mostCapable.id}\``);
-      if (picks.visionCoding) pickLines.push(`- **Vision + coding**: \`${picks.visionCoding.id}\``);
-      if (picks.agentic) pickLines.push(`- **Agentic**: \`${picks.agentic.id}\``);
-
-      if (pickLines.length > 0) {
-        output += "## Quick picks\n\n";
-        output += `${pickLines.join("\n")}\n`;
-      }
-
-      return { content: [{ type: "text" as const, text: output }] };
     },
   });
 
