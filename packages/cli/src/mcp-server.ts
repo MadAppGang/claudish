@@ -33,6 +33,11 @@ import {
   startHeartbeat,
 } from "./mcp/progress-heartbeat.js";
 import {
+  type RunPromptResult,
+  runPromptViaClaudeCode,
+  stopAllClaudeCodePrintChildren,
+} from "./mcp/run-prompt-claude-code.js";
+import {
   type RecommendedModelGroup,
   type RecommendedModelsDoc,
   collectRoutingPrefixes,
@@ -171,6 +176,12 @@ interface ToolCallContext {
    * heartbeat has been stopped. Never throws.
    */
   reportProgress: (message?: string) => void;
+  /**
+   * Fires when the host cancels the call (`notifications/cancelled`) or gives up on it
+   * (its own request timeout). From the SDK's `RequestHandlerExtra.signal`. A tool that
+   * starts a child process stops it on this signal.
+   */
+  signal: AbortSignal;
 }
 
 interface ToolDefinition {
@@ -318,7 +329,7 @@ export async function runPromptViaProxy(
   prompt: string,
   systemPrompt?: string,
   maxTokens?: number
-): Promise<{ content: string; usage?: { input: number; output: number } }> {
+): Promise<RunPromptResult> {
   const proxy = await getProxy();
 
   // Build Anthropic Messages API request
@@ -351,6 +362,44 @@ export async function runPromptViaProxy(
   }
 
   return { content: parsed.text, usage: parsed.usage };
+}
+
+/**
+ * One `run_prompt` request, on the path its model needs. `nativeRouteFor` FIRST, as
+ * the proxy does (CLAUDE.md invariant): a bare Claude name (`claude-*`, `opus`,
+ * `sonnet`, `haiku`, `internal`, ...) runs as one Claude Code print-mode call on the
+ * user's own Claude Code login, because the proxy's native route forwards the
+ * caller's credential and an MCP call has none. Every other model, including the
+ * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
+ * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
+ */
+export async function runPrompt(
+  model: string,
+  prompt: string,
+  systemPrompt?: string,
+  signal?: AbortSignal,
+  maxTokens?: number
+): Promise<RunPromptResult> {
+  if (nativeRouteFor(model) !== null) {
+    return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
+  }
+  return runPromptViaProxy(model, prompt, systemPrompt, maxTokens);
+}
+
+/** `run_prompt`'s success text: the answer, then a footer of token and auth lines. */
+function formatRunPromptResult(result: RunPromptResult): string {
+  const footer: string[] = [];
+  if (result.usage) {
+    footer.push(`Tokens: ${result.usage.input} input, ${result.usage.output} output`);
+  }
+  if (result.auth !== undefined) {
+    footer.push(
+      result.auth === "subscription"
+        ? "Auth: Claude Code login (subscription)"
+        : `Auth: ${result.auth}`
+    );
+  }
+  return footer.length > 0 ? `${result.content}\n\n---\n${footer.join("\n")}` : result.content;
 }
 
 function fuzzyScore(text: string, query: string): number {
@@ -854,14 +903,24 @@ function defineTools(
   tools.push({
     name: "run_prompt",
     description:
-      "Run a prompt through any model — supports all providers (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, etc.) with auto-routing, fallback chains, and custom routing rules.",
+      "One quick prompt, straight to one model's API: a single request and its answer. No " +
+      "Claude Code session, no tools, no files, no conversation state — this is not subagent " +
+      "work. For a task that needs tools, files or more than one turn, use create_session " +
+      "(one model) or team (several models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, " +
+      "Gemini, GPT, Grok, …) go through claudish's routing straight to the provider's API. " +
+      "A Claude model name (claude-*, opus, sonnet, haiku) runs as one Claude Code " +
+      "print-mode call on the user's own Claude Code login, with tools, MCP servers and " +
+      "settings off.",
     inputSchema: {
       type: "object",
       properties: {
         model: {
           type: "string",
           description:
-            "Model name or ID. Short names auto-route to the best provider (e.g., 'kimi-k2.5', 'glm-5', 'gpt-5.4'). Provider prefix optional (e.g., 'google@gemini-3.1-pro-preview', 'or@x-ai/grok-3').",
+            "Model name or model spec. A bare name auto-routes to the best provider; " +
+            "'provider@model' pins the provider (e.g. 'google@gemini-4-argon', " +
+            "'or@x-ai/grok-4.7'). A bare Claude name (claude-*, opus, sonnet, haiku) runs on " +
+            "Claude Code's own login.",
         },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
@@ -873,19 +932,16 @@ function defineTools(
     // A single reasoning model can block for many minutes with nothing on the
     // wire. Handler body unchanged — the dispatch owns the keepalive.
     heartbeat: true,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
-        const result = await runPromptViaProxy(
+        const result = await runPrompt(
           args.model as string,
           args.prompt as string,
           args.system_prompt as string | undefined,
+          ctx.signal,
           args.max_tokens as number | undefined
         );
-        let response = result.content;
-        if (result.usage) {
-          response += `\n\n---\nTokens: ${result.usage.input} input, ${result.usage.output} output`;
-        }
-        return { content: [{ type: "text" as const, text: response }] };
+        return { content: [{ type: "text" as const, text: formatRunPromptResult(result) }] };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         return {
@@ -1163,7 +1219,7 @@ function defineTools(
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPromptViaProxy(model, prompt, systemPrompt, maxTokens);
+          const result = await runPrompt(model, prompt, systemPrompt, ctx.signal, maxTokens);
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
@@ -2496,6 +2552,7 @@ async function main() {
       : NOOP_HEARTBEAT;
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
+      signal: extra.signal,
     };
 
     try {
@@ -2538,6 +2595,9 @@ async function main() {
  */
 function installMcpShutdown(sessionManager: SessionManager): void {
   const before = async (): Promise<void> => {
+    // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
+    // their process groups here, or they outlive the server.
+    stopAllClaudeCodePrintChildren();
     await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
   };
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the

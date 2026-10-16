@@ -154,7 +154,13 @@ export const HOST_IDENTITY_VARS = [
 /** Linux's per-variable limit (MAX_ARG_STRLEN 131,072) with a margin. */
 export const LINUX_ENV_STRING_LIMIT = 131_000;
 
-function strippedFromPane(key: string): boolean {
+/**
+ * Whether `key` is withheld from every claudish child this server starts: a pane child
+ * (`buildPaneEnv`) and `run_prompt`'s print child (`mcp/run-prompt-claude-code.ts`).
+ * One list for both spawners: `STRIPPED_CHILD_VARS` (a nested-session marker), every
+ * `MAGMUX_*` key, the terminal-identity set and the server's host identity.
+ */
+export function isStrippedFromChildEnv(key: string): boolean {
   return (
     (STRIPPED_CHILD_VARS as readonly string[]).includes(key) ||
     key.startsWith("MAGMUX_") ||
@@ -186,7 +192,7 @@ export interface PaneEnvInput {
 export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, string> } {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.parentEnv)) {
-    if (v === undefined || strippedFromPane(k)) continue;
+    if (v === undefined || isStrippedFromChildEnv(k)) continue;
     env[k] = v;
   }
   env.COLUMNS = "160";
