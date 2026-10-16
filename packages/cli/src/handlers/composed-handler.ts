@@ -1790,9 +1790,7 @@ export class ComposedHandler implements ModelHandler {
           }
           if (retryResp.ok) {
             response = retryResp;
-          } else if (
-            isCredentialRejection(retryResp.status, await retryResp.clone().text())
-          ) {
+          } else if (isCredentialRejection(retryResp.status, await retryResp.clone().text())) {
             // The re-fetch's credential was REJECTED (401/403 that is not a
             // model, quota or region answer). That is the newer, decisive fact:
             // the parameter is fixed and the login is what is wrong now. It

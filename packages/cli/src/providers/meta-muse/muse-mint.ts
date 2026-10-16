@@ -44,10 +44,7 @@
  * Nothing here caches, logs or persists a secret; the caller owns the state.
  */
 
-import {
-  classifyConnectionError,
-  markOwnTimeout,
-} from "../../handlers/shared/connection-error.js";
+import { classifyConnectionError, markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { VERSION } from "../../version.js";
 
 /**
