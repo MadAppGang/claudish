@@ -163,24 +163,9 @@ export interface SessionCreateOptions {
   parentEnv?: Record<string, string | undefined>;
 }
 
-export interface ChannelEvent {
-  type: ChannelEventType;
-  model: string;
-  content: string;
-  elapsedSeconds: number;
-  /**
-   * ISO-8601 timestamp of session creation. Populated by SessionManager from
-   * `entry.info.startedAt`. Used by the bridge to populate SEP-1686-shaped
-   * `meta.created_at` for forward-compat with notifications/tasks/status.
-   */
-  createdAt: string;
-  extraMeta?: Record<string, string>;
-}
-
 export interface SessionManagerOptions {
   maxSessions?: number;
   scrollbackCapacity?: number;
-  onStateChange?: (sessionId: string, event: ChannelEvent) => void;
   /** Artifact root override. Defaults to CLAUDISH_SESSIONS_DIR, then ~/.claudish/sessions. */
   sessionsDir?: string;
   /**

@@ -76,7 +76,6 @@ import { sessionsDirFrom } from "./home-dir.js";
 import { hostPidFrom } from "./parent-session.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import type {
-  ChannelEvent,
   ChannelEventType,
   SessionCreateOptions,
   SessionInfo,
@@ -220,19 +219,9 @@ interface SessionEntry {
   /** The terminal transition was handled (records written). */
   ended: boolean;
   evictHandle: ReturnType<typeof setTimeout> | null;
-  /** The last channel event emitted; STARTING is the initial state, never a frame. */
-  lastEvent: ChannelEventType;
-  lastFrameTool: string | null;
-  lastFrameToolCount: number;
-  lastToolFrameAt: number;
   lastLoggedTool: string | null;
   assistantIdsLogged: number;
   anomaliesLogged: Set<string>;
-  sendRejectedSeen: number;
-  /** Optional frame meta for the next frame (`prompt_not_read`, `send_rejected`). */
-  pendingMeta: Record<string, string>;
-  /** The question or permission text of the current block, for the frame content. */
-  blockText: string | null;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
@@ -426,15 +415,6 @@ function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(value, null, 2), "utf-8");
   renameSync(tmp, path);
-}
-
-/** The count of one anomaly key in a snapshot's `anomalies` (`key` or `key ×n`). */
-function anomalyCount(anomalies: readonly string[], key: string): number {
-  for (const a of anomalies) {
-    if (a === key) return 1;
-    if (a.startsWith(`${key} ×`)) return Number(a.slice(key.length + 2)) || 1;
-  }
-  return 0;
 }
 
 /** An anomaly entry without its `×n` count suffix. */
@@ -643,7 +623,6 @@ export class SessionManager {
   private scrollbackCapacity: number;
   private sessionsDir: string;
   private terminalRetentionMs: number;
-  private onStateChange?: (sessionId: string, event: ChannelEvent) => void;
   private readonly parentEnv: Record<string, string | undefined>;
   private readonly paneTimings: SessionManagerOptions["paneTimings"];
   /** createSession calls past their checks whose entry is not in the map yet. */
@@ -672,7 +651,6 @@ export class SessionManager {
     // `$HOME` before `os.homedir()`, by the rule the plugin monitor shares —
     // see home-dir.ts. Diverging here makes every run invisible to it.
     this.sessionsDir = options?.sessionsDir ?? sessionsDirFrom(process.env);
-    this.onStateChange = options?.onStateChange;
     this.parentEnv = options?.parentEnv ?? process.env;
     this.paneTimings = options?.paneTimings;
   }
@@ -957,16 +935,9 @@ export class SessionManager {
       waitSince: null,
       ended: false,
       evictHandle: null,
-      lastEvent: "starting",
-      lastFrameTool: null,
-      lastFrameToolCount: 0,
-      lastToolFrameAt: 0,
       lastLoggedTool: null,
       assistantIdsLogged: 0,
       anomaliesLogged: new Set(),
-      sendRejectedSeen: 0,
-      pendingMeta: {},
-      blockText: null,
     };
   }
 
@@ -1026,7 +997,6 @@ export class SessionManager {
     info.elapsedSeconds = elapsedSecondsBetween(info.startedAt, Date.parse(at));
     this.appendEvent(entry, { type: "state", from: "STARTING", to: "FAILED", at });
     this.endRecords(entry, null);
-    this.emitFrame(entry, { state: "FAILED", activity: null, toolCalls: 0 });
   }
 
   // ─── Pane policy (D8) ──────────────────────────────────────────────────
@@ -1053,10 +1023,9 @@ export class SessionManager {
       const v = classifyRunOutput({ answer: turn.answer, apiError: turn.apiError });
       return { state: "FAILED", reason: "api_error", detail: v?.detail ?? "API error" };
     }
-    // An interactive turn whose task file was not fully read continues; the caller is
-    // told on the next frame (r2, X-M4).
+    // An interactive turn whose task file was not fully read continues; the anomaly is
+    // in the session's event log (r2, X-M4).
     if (turn.delivery.complete === false) {
-      entry.pendingMeta.prompt_not_read = "true";
       this.appendEvent(entry, {
         type: "anomaly",
         key: "prompt_not_read",
@@ -1069,15 +1038,14 @@ export class SessionManager {
     return "continue";
   }
 
-  /** A question or a permission dialog waits for `send_input` (the channel can answer). */
-  private onBlocked(entry: SessionEntry, b: PaneBlock): "wait" {
-    entry.blockText = b.text;
+  /** A question or a permission dialog waits for `send_input` (the caller can answer). */
+  private onBlocked(_entry: SessionEntry, _b: PaneBlock): "wait" {
     return "wait";
   }
 
   // ─── Pane callbacks ────────────────────────────────────────────────────
 
-  /** `onTransition`: every wire-state change, synchronously, before any frame. */
+  /** `onTransition`: every wire-state change, synchronously. */
   private onPaneTransition(
     entry: SessionEntry,
     t: { from: SlotState; to: SlotState; at: string; snap: PaneSnapshot }
@@ -1085,13 +1053,10 @@ export class SessionManager {
     if (entry.ended) return;
     const { snap } = t;
     this.applySnapshot(entry, snap);
-    // Before the frame, so the wait line is on disk by the time anyone hears of it.
     this.recordWaitTransition(entry, t.from, t.to, t.at, snap);
     this.appendEvent(entry, { type: "state", from: t.from, to: t.to, at: t.at });
     this.logPaneFacts(entry, snap);
-    if (!isWaiting(t.to)) entry.blockText = null;
     if (isTerminalState(t.to)) this.onTerminal(entry, snap);
-    this.emitFrame(entry, snap);
   }
 
   /** `onChange` (coalesced): activity and accounting changes within a state. */
@@ -1099,7 +1064,6 @@ export class SessionManager {
     if (entry.ended) return;
     this.applySnapshot(entry, snap);
     this.logPaneFacts(entry, snap);
-    this.emitFrame(entry, snap);
   }
 
   /** The terminal transition: answer, records and eviction, before the reap starts. */
@@ -1214,80 +1178,6 @@ export class SessionManager {
       if (entry.anomaliesLogged.has(key)) continue;
       entry.anomaliesLogged.add(key);
       this.appendEvent(entry, { type: "anomaly", key, at });
-    }
-    const rejected = anomalyCount(snap.anomalies, "send_not_accepted");
-    if (rejected > entry.sendRejectedSeen) {
-      entry.sendRejectedSeen = rejected;
-      entry.pendingMeta.send_rejected = "true";
-    }
-  }
-
-  /**
-   * One channel frame when the derived event changes, plus a coalesced `tool_executing`
-   * repeat (≤ 1 frame/s) when the tool or the tool count changes.
-   */
-  private emitFrame(
-    entry: SessionEntry,
-    snap: Pick<PaneSnapshot, "state" | "activity" | "toolCalls">
-  ): void {
-    const { event, tool } = channelEventFor(snap);
-    const now = Date.now();
-    const changed = event !== entry.lastEvent;
-    const toolRepeat =
-      !changed &&
-      event === "tool_executing" &&
-      (tool !== entry.lastFrameTool || snap.toolCalls !== entry.lastFrameToolCount) &&
-      now - entry.lastToolFrameAt >= 1000;
-    if (!changed && !toolRepeat) return;
-    entry.lastEvent = event;
-    if (event === "tool_executing") {
-      entry.lastFrameTool = tool;
-      entry.lastFrameToolCount = snap.toolCalls;
-      entry.lastToolFrameAt = now;
-    }
-    const extraMeta: Record<string, string> = {
-      ...(tool ? { tool, tool_count: String(snap.toolCalls) } : {}),
-      ...(snap.activity ? { activity: snap.activity } : {}),
-      ...entry.pendingMeta,
-    };
-    entry.pendingMeta = {};
-    try {
-      this.onStateChange?.(entry.info.sessionId, {
-        type: event,
-        model: entry.info.model,
-        content: this.frameContent(entry, event, tool),
-        elapsedSeconds: entry.info.elapsedSeconds,
-        createdAt: entry.info.startedAt,
-        extraMeta,
-      });
-    } catch {
-      // a notification consumer must never break the session
-    }
-  }
-
-  private frameContent(entry: SessionEntry, event: ChannelEventType, tool: string | null): string {
-    const info = entry.info;
-    switch (event) {
-      case "running":
-        return "The turn is running.";
-      case "tool_executing":
-        return `Using ${tool}.`;
-      case "waiting_for_input":
-        return entry.blockText
-          ? `The model asked a question; send_input declines it and becomes the next prompt.\n${entry.blockText}`
-          : "The turn finished; waiting for send_input.";
-      case "awaiting_permission":
-        return `A permission dialog is open for ${info.activity ?? "a tool"}; send_input declines it and becomes the next prompt.${entry.blockText ? `\n${entry.blockText}` : ""}`;
-      case "completed":
-        return `Session completed (${info.turnsCompleted} turn(s)). Call get_output for the answer.`;
-      case "cancelled":
-        return "Session cancelled.";
-      case "timeout":
-        return `Timeout after ${info.timeoutSeconds}s; the pane was closed.`;
-      case "failed":
-        return `${info.state} ${info.reason ?? ""}${info.detail ? `: ${info.detail}` : ""}`.trim();
-      default:
-        return "";
     }
   }
 

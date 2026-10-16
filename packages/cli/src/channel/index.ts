@@ -17,6 +17,5 @@ export type {
   SessionInfo,
   SessionCreateOptions,
   SessionManagerOptions,
-  ChannelEvent,
   ChannelEventType,
 } from "./types.js";
