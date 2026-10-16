@@ -451,15 +451,16 @@ async function settleToken<T>(
   token: string,
   use: (accessToken: string) => Promise<T>
 ): Promise<{ kind: "used"; value: T; source: "keychain" }> {
-  retainedToken = token;
+  // Held only AFTER a failure: holding it while `use` runs would hand it to a
+  // second in-process caller, which would then mint in parallel.
+  if (retainedToken === token) retainedToken = null;
   try {
     const value = await use(token);
-    retainedToken = null;
     return { kind: "used", value, source: "keychain" };
   } catch (err) {
     // A rejected login will not get better on retry; anything else keeps the
     // approved token so the retry needs no second dialog.
-    if ((err as { terminal?: unknown })?.terminal === true) retainedToken = null;
+    if ((err as { terminal?: unknown })?.terminal !== true) retainedToken = token;
     throw err;
   }
 }
