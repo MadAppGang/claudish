@@ -753,10 +753,11 @@ export class ComposedHandler implements ModelHandler {
 
   /**
    * Answer a failure at a credential site that is NOT a connection fault
-   * (`auth-failure.ts`): a terminal one — and any unclassifiable one of a
-   * SUBSCRIPTION — as 400 with the terminal verdict, so the chain stops and the
-   * message lands inline; a transient one as 503/429 with the transient
-   * verdict, never 401.
+   * (`auth-failure.ts`): a terminal one (a dead or unsubscribed login, as the
+   * producer marked it) as 400 with the terminal verdict, so the chain stops and
+   * the message lands inline; a transient one — and any unclassifiable one of a
+   * SUBSCRIPTION — as 503/429 with the transient verdict, retried on the same
+   * hop, never 401.
    *
    * An unclassifiable failure of a METERED provider gets 401 only where
    * `meteredUnknown` is `"401"` (the refreshAuth and forceRefreshAuth catches,
@@ -1390,10 +1391,10 @@ export class ComposedHandler implements ModelHandler {
           //     hidden behind "API error · Retrying", and walked the chain.
           //   - transient (the token host answered 5xx/429) → 503/429 with the
           //     transient verdict, never 401: the same hop answers on retry.
-          //   - unclassifiable: a SUBSCRIPTION → terminal 400 (Kimi's plain
-          //     "run `claudish login kimi`" error lands inline); a METERED
-          //     provider → 401 as before, so the chain may try a provider with
-          //     another credential.
+          //   - unclassifiable: a SUBSCRIPTION → 503 with the transient verdict
+          //     (retried, never walked; a dead login is marked terminal by its
+          //     producer, `credential-error.ts`); a METERED provider → 401 as
+          //     before, so the chain may try a provider with another credential.
           const answered = this.answerAuthFailure(c, err, "401");
           if (answered) return answered;
           throw err;
@@ -1461,7 +1462,7 @@ export class ComposedHandler implements ModelHandler {
       const conn = classifyConnectionError(err);
       if (!conn) {
         // A credential failure this site can place is answered here — terminal
-        // or a subscription's unclassifiable one as 400, transient as 503/429.
+        // as 400; transient, or a subscription's unclassifiable one, as 503/429.
         // Anything else (a metered provider's unclassifiable throw) keeps its
         // existing route out of here untouched.
         const answered = this.answerAuthFailure(c, err, "rethrow");
@@ -1997,10 +1998,10 @@ export class ComposedHandler implements ModelHandler {
             } catch {
               // Stats must never crash claudish
             }
-            // The same classifier as the refreshAuth catch: terminal (and a
-            // subscription's unclassifiable failure) → 400 with the terminal
-            // verdict; transient → 503/429; a metered provider's
-            // unclassifiable failure → 401 as before.
+            // The same classifier as the refreshAuth catch: terminal → 400 with
+            // the terminal verdict; transient, or a subscription's
+            // unclassifiable failure → 503/429 with the transient verdict; a
+            // metered provider's unclassifiable failure → 401 as before.
             const answered = this.answerAuthFailure(c, err, "401");
             if (answered) return answered;
             throw err;

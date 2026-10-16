@@ -461,14 +461,26 @@ in one order:
 | connection | `classifyConnectionError` | none; the caller runs connection recovery first |
 | terminal | `err.terminal === true` | 400 `invalid_request_error`, verdict `terminal`, `upstream_status` kept |
 | transient | `upstreamStatus` 429 or 5xx, or `transient: true` | 429 for a 429, otherwise 503, verdict `transient` |
-| unknown, subscription | anything else | as terminal |
+| unknown, subscription | anything else | 503 `overloaded_error`, verdict `transient` (retried on the same hop, never walked) |
 | unknown, metered | anything else | 401 at `refreshAuth` and `forceRefreshAuth` only; other sites rethrow |
 
-`unknown` on a subscription is terminal, not transient (a deviation from the architecture's 503).
-Connection faults are classified first and real transients carry a status, so what is left is
-overwhelmingly a credential fault: Kimi's "No Kimi OAuth credentials found. Please run `claudish
-login kimi` first." is a plain `Error`. Answered 503 it would hide behind about two minutes of
-Claude Code's silent retries.
+**The rule: a dead or unsubscribed credential is a terminal 400 that stops the chain; an
+unclassified failure is a retryable 503.** It holds because the PRODUCERS say what their failure
+is, through `auth/credentials/credential-error.ts` (`d86e3d86`): a missing login or a rejected
+grant is `terminalCredentialError`, a token host's 429/5xx is `credentialHttpError` (transient,
+with its `upstreamStatus`). Kimi's "No Kimi OAuth credentials found. Please run `claudish login
+kimi` first." is therefore `terminal`, not `unknown`. What is still `unknown` is a failure nobody
+classified, and for a subscription the conservative answer is retry: stopping a working plan with a
+login instruction because a token host blinked is the worse error. (An earlier cut answered
+`unknown` as terminal; it turned Grok's token-host 503 into a fatal "run `claudish login grok`".)
+
+The producers that must keep this contract, and the first place a NEW subscription provider must
+follow it: `auth/grok-oauth.ts`, `providers/grok/grok-credentials.ts`, `auth/kimi-oauth.ts`,
+`auth/codex-oauth.ts`, `auth/antigravity-token.ts` (both the expiry and the forced refresh),
+`auth/antigravity-user.ts`, `auth/oauth-manager.ts` (missing login), and the Muse Code mint and
+core (`providers/meta-muse/`). A TRANSPORT must not swallow what they throw: a catch that returns
+normally hands ComposedHandler nothing to classify (CLAUDE.md's transport-catch invariant). The
+Codex and Kimi Code transports each had one, and both now rethrow (`ecbb92d1`, `2bf1f736`).
 
 All five auth sites in `composed-handler.ts` (`refreshAuth`, `getHeaders`, the primary fetch, the
 parameter-recovery re-fetch, `forceRefreshAuth`) use it, and so does a `recoverConnection` that
