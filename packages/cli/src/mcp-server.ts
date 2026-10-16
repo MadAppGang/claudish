@@ -21,6 +21,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
+import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import { SessionManager } from "./mcp-session/index.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
@@ -2403,6 +2404,9 @@ function installMcpShutdown(sessionManager: SessionManager): void {
  * Called from index.ts when --mcp flag is used.
  */
 export function startMcpServer() {
+  // An MCP server never opens a credential dialog: its host is a program, and
+  // its panes are pane children (`auth/credentials/prompt-role.ts`).
+  setCredentialPromptRole("never");
   main().catch((error) => {
     console.error("[claudish] MCP fatal error:", error);
     process.exit(1);

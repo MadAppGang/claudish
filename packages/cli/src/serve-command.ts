@@ -28,6 +28,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { type SlotRoute, createProxyServer } from "./proxy-server.js";
 
@@ -119,6 +120,9 @@ function loadModelMap(path: string): { slotMap: Map<string, SlotRoute>; slotIds:
 }
 
 export async function serveCommand(args: string[]): Promise<void> {
+  // A gateway for Claude Desktop answers requests nobody at a terminal made:
+  // it never opens a credential dialog (`auth/credentials/prompt-role.ts`).
+  setCredentialPromptRole("never");
   let serveArgs: ServeArgs;
   try {
     serveArgs = parseServeArgs(args);

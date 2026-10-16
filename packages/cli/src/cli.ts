@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
+import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { ENV } from "./config.js";
 import { setStderrQuiet } from "./logger.js";
 import {
@@ -821,6 +822,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       await initializeClaudishSkill();
       process.exit(0);
     } else if (arg === "--probe") {
+      // A probe is a diagnostic and never opens a credential dialog. `runCli`
+      // already decided `never` from argv; this lowers it for any other caller
+      // of parseArgs (`auth/credentials/prompt-role.ts`).
+      setCredentialPromptRole("never");
       // Probe models — show fallback chain for each model
       const probeModels: string[] = [];
       while (i + 1 < args.length && !args[i + 1].startsWith("--")) {

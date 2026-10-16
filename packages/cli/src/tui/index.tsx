@@ -4,6 +4,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
+import { setCredentialPromptRole } from "../auth/credentials/prompt-role.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { setStderrQuiet } from "../logger.js";
 import { applyRendererThemeMode } from "../theme/renderer-theme.js";
@@ -31,6 +32,10 @@ import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.
  * rare and the state machine is small.
  */
 export async function startConfigTui(): Promise<void> {
+  // The config TUI may read a credential only inside an explicit user action,
+  // in-process, before that action issues any proxy request
+  // (`auth/credentials/prompt-role.ts`).
+  setCredentialPromptRole("tui");
   // Register bundled endpoints before the first render: the Providers tab is
   // built from `getAllProviders()`, so a catalog vendor the user has a key for
   // must already be in the provider list or it simply is not there to configure.

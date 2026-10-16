@@ -632,6 +632,23 @@ async function runCli() {
       await detectAndSetThemeMode();
     });
 
+    // The credential prompt role, fixed BEFORE parseArgs: `--probe` exits inside
+    // it, and the model picker below may need a credential. A pane child, a
+    // piped or CI launch, and `--probe` never open a credential dialog
+    // (`auth/credentials/prompt-role.ts`).
+    {
+      const { decideLaunchRole, setCredentialPromptRole } = await import(
+        "./auth/credentials/prompt-role.js"
+      );
+      setCredentialPromptRole(
+        decideLaunchRole({
+          argv: process.argv.slice(2),
+          stdinIsTTY: process.stdin.isTTY === true,
+          stderrIsTTY: process.stderr.isTTY === true,
+        })
+      );
+    }
+
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
