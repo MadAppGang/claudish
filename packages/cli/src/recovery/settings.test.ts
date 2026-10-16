@@ -344,6 +344,21 @@ describe("an MCP pane child is never eligible for a recovery surface (D22)", () 
     ).toEqual({ kind: "none", reason: "pane-child" });
   });
 
+  test("T-U-9: flag and pane cwd disable recovery before the ambient branch", () => {
+    expect(
+      magmuxPaneCapability({
+        interactive: true,
+        stdoutIsTty: true,
+        parentEnv: {
+          CLAUDISH_PANE_CHILD: "1",
+          CLAUDISH_PANE_CWD: "/w",
+          MAGMUX_SOCK: "/tmp/x.sock",
+        },
+        magmuxBinary: "/opt/magmux",
+      })
+    ).toEqual({ kind: "none", reason: "pane-child" });
+  });
+
   test("the same environment without the marker is still ambient", () => {
     expect(
       magmuxPaneCapability({

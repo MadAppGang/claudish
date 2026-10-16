@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertNotNested } from "./pane/child-env.js";
 import { installPaneShutdownHooks } from "./pane/index.js";
 import {
   type TeamRunOptions,
@@ -116,6 +117,11 @@ export async function teamCommand(args: string[]): Promise<void> {
   const firstArg = args[0] ?? "";
   const legacySubs = ["run", "judge", "run-and-judge", "status"];
   const subcommand = legacySubs.includes(firstArg) ? firstArg : "run";
+
+  // run, judge and run-and-judge start models; inside an MCP-started session that
+  // is a second level of nesting (exit 64). Checked before any argument validation.
+  // `status` only reads a session directory, so it stays usable.
+  if (subcommand !== "status") assertNotNested();
 
   const rawSessionPath = getFlag(args, "--path") ?? ".";
   let sessionPath: string;

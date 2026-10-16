@@ -230,6 +230,8 @@ Each session is an interactive Claude Code running your model in its own headles
 
 `CLAUDISH_MCP_TOOLS` accepts: `all` (default), `channel`, `agentic`, or `low-level`. Channel tools are included in `all` by default.
 
+Inside a session that claudish itself started (a `create_session` or `team` pane), the server runs in nested mode. Whatever `CLAUDISH_MCP_TOOLS` says, it offers at most the four one-shot tools (`run_prompt`, `compare_models`, `list_models`, `search_models`) and no session tools. A model-running `claudish` launched from that session's shell (`-p`, interactive, `team run`) exits 64 with `nested session refused`. One level of nesting is the limit.
+
 ### Channel events
 
 When a session runs, Claude Code receives `<channel source="claudish">` notifications with these event types:

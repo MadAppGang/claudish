@@ -7,9 +7,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   McpServer,
+  SERVER_ENTRY,
   type ToolResult,
   paneOrphans,
   serverEnv,
@@ -25,17 +28,19 @@ const CAPABILITIES = ["list", "status", "cancel", "capture", "capture_since_seq"
 let layout: TempLayout;
 let server: McpServer;
 
-beforeEach(async () => {
-  layout = makeTempLayout("bbsurface");
-  server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-});
+function useStandardServer(): void {
+  beforeEach(async () => {
+    layout = makeTempLayout("bbsurface");
+    server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
+  });
 
-afterEach(async () => {
-  await server.close();
-  const report = await paneOrphans(layout);
-  layout.cleanup();
-  expect(report).toEqual({ processes: [], files: [] });
-});
+  afterEach(async () => {
+    await server.close();
+    const report = await paneOrphans(layout);
+    layout.cleanup();
+    expect(report).toEqual({ processes: [], files: [] });
+  });
+}
 
 function contractError(r: ToolResult, code: string): void {
   expect(r.isError).toBe(true);
@@ -47,6 +52,7 @@ function contractError(r: ToolResult, code: string): void {
 }
 
 describe("tool list (FR11, §4)", () => {
+  useStandardServer();
   test("14 tools, capture_session among them, team modes are exactly the seven", async () => {
     const tools = await server.listTools();
     const names = tools.map((t) => t.name);
@@ -92,6 +98,7 @@ describe("tool list (FR11, §4)", () => {
 });
 
 describe("team: mode and argument errors", () => {
+  useStandardServer();
   test("an unknown team mode answers the text `Error: Unknown mode: <mode>`", async () => {
     const r = await server.callTool("team", { mode: "bogus-mode", path: join(layout.cwd, "x") });
     expect(r.isError).toBe(true);
@@ -175,6 +182,7 @@ describe("team: mode and argument errors", () => {
 });
 
 describe("channel: argument errors that need no pane", () => {
+  useStandardServer();
   test("create_session refuses a print-mode flag with text `Error: invalid_args:`", async () => {
     const r = await server.callTool("create_session", {
       model: "contract-fake-model",
@@ -185,4 +193,131 @@ describe("channel: argument errors that need no pane", () => {
     const list = await server.callTool("list_sessions", { include_completed: true });
     expect((list.json as Json).sessions).toEqual([]);
   });
+});
+
+describe("nested MCP server over stdio", () => {
+  let layout: TempLayout;
+  let client: Client | undefined;
+  let transport: StdioClientTransport | undefined;
+  let stderr: string;
+
+  beforeEach(() => {
+    layout = makeTempLayout("nested-surface");
+    client = undefined;
+    transport = undefined;
+    stderr = "";
+  });
+
+  afterEach(async () => {
+    try {
+      if (client) await client.close();
+    } finally {
+      try {
+        await transport?.close();
+      } finally {
+        const report = await paneOrphans(layout);
+        layout.cleanup();
+        expect(report).toEqual({ processes: [], files: [] });
+      }
+    }
+  }, 30_000);
+
+  async function connect(mode: string | undefined, nested = true): Promise<Client> {
+    transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["run", SERVER_ENTRY, "--mcp"],
+      cwd: layout.cwd,
+      env: serverEnv(layout, {
+        CLAUDISH_PANE_CHILD: nested ? "1" : undefined,
+        CLAUDISH_MCP_TOOLS: mode,
+      }),
+      stderr: "pipe",
+    });
+    transport.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    client = new Client({ name: "nested-surface-tests", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(transport);
+    return client;
+  }
+
+  const fourTools = ["compare_models", "list_models", "run_prompt", "search_models"];
+  const removedTools = [
+    "team",
+    "create_session",
+    "send_input",
+    "get_output",
+    "cancel_session",
+    "list_sessions",
+    "get_diagnostics",
+    "capture_session",
+    "preflight",
+    "report_error",
+  ];
+
+  test("T-MCP-1: all exposes exactly four nested tools and logs the nested startup line", async () => {
+    const c = await connect("all");
+    const names = (await c.listTools()).tools.map((tool) => tool.name).sort();
+    expect(names).toEqual(fourTools);
+    for (const name of removedTools) expect(names).not.toContain(name);
+    // stderr and stdout are separate pipes: wait briefly for the startup line to be drained.
+    const deadline = Date.now() + 2000;
+    while (!stderr.includes("MCP server started") && Date.now() < deadline) await Bun.sleep(10);
+    expect(stderr.split(/\r?\n/)).toContain(
+      "[claudish] MCP server started (tools: nested, 4 tools)"
+    );
+  }, 30_000);
+
+  for (const [mode, expected] of [
+    ["channel", []],
+    ["low-level", fourTools],
+    ["agentic", []],
+    [undefined, fourTools],
+  ] as const) {
+    test(`T-MCP-2: ${mode ?? "unset"} intersects its tool group with nested tools`, async () => {
+      const c = await connect(mode);
+      expect((await c.listTools()).tools.map((tool) => tool.name).sort()).toEqual([...expected]);
+      expect(c.getServerCapabilities()).toHaveProperty("tools");
+      expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
+      expect(c.getInstructions()).toContain("## Nested mode — no sessions");
+      expect(c.getInstructions()).not.toContain("Channel Mode");
+    }, 30_000);
+  }
+
+  test("T-MCP-3: initialize advertises tools without channels and gives nested instructions", async () => {
+    const c = await connect("all");
+    expect(c.getServerCapabilities()).toHaveProperty("tools");
+    expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
+    const instructions = c.getInstructions();
+    const { NESTED_INSTRUCTIONS } = await import("../mcp/nested-mode.js");
+    expect(instructions).toBe(NESTED_INSTRUCTIONS);
+    expect(
+      instructions?.startsWith(
+        "Claudish MCP server provides access to external AI models for one-shot calls."
+      )
+    ).toBe(true);
+    expect(instructions).toContain("## Nested mode — no sessions");
+    expect(instructions).toContain("nested session refused");
+    expect(instructions).not.toContain("Channel Mode");
+    expect(instructions).not.toMatch(/^- (?:preflight|report_error):/m);
+  }, 30_000);
+
+  test("T-MCP-4: removed session tools answer Unknown tool and leave no panes", async () => {
+    const c = await connect("all");
+    for (const name of ["create_session", "team"]) {
+      const result = await c.callTool({ name, arguments: { model: "x", prompt: "y" } });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: `Error: Unknown tool "${name}"` }]);
+    }
+    expect(await paneOrphans(layout)).toEqual({ processes: [], files: [] });
+  }, 30_000);
+
+  test("T-MCP-5: without the flag all still exposes 14 tools and the channel capability", async () => {
+    const c = await connect("all", false);
+    const tools = (await c.listTools()).tools;
+    expect(tools).toHaveLength(14);
+    expect(new Set(tools.map((tool) => tool.name)).size).toBe(14);
+    expect(c.getServerCapabilities()?.experimental?.["claude/channel"]).toBeDefined();
+    expect(c.getInstructions()).not.toContain("## Nested mode — no sessions");
+  }, 30_000);
 });
