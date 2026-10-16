@@ -43,7 +43,7 @@ import {
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { proxyRouteDecision } from "./providers/native-route.js";
-import { describeMissingCredential } from "./providers/provider-definitions.js";
+import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
   createUrlProvider,
@@ -63,6 +63,7 @@ import {
 import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
+import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import { RefusingHandler } from "./providers/wire-handler.js";
 import {
@@ -1192,11 +1193,21 @@ export async function createProxyServer(
     const handler =
       getLocalProviderHandler(targetModel) ?? (await getRemoteProviderHandler(targetModel));
     const transport = (handler as unknown as { provider?: ProviderTransport })?.provider;
-    if (!transport?.discoverProbeModel) {
+    // A handler that exposes no transport (a catalog provider built as a
+    // try-in-turn handler) still answers from the provider's own dynamic
+    // models catalog when its definition declares one.
+    const definition = getProviderByName(provider);
+    const discover = transport?.discoverProbeModel
+      ? (ex?: ReadonlySet<string>) => transport.discoverProbeModel!(ex)
+      : definition?.modelDiscovery
+        ? (ex?: ReadonlySet<string>) =>
+            discoverProviderProbeModel(provider, definition.displayName, ex)
+        : undefined;
+    if (!discover) {
       return c.json({ provider, model: null, reason: "transport does not support discovery" }, 404);
     }
     try {
-      const outcome = await transport.discoverProbeModel(exclude);
+      const outcome = await discover(exclude);
       return c.json({
         provider,
         model: outcome.model,

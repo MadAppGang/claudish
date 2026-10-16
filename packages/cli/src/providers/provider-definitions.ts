@@ -724,6 +724,9 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     shortcuts: ["muse"],
     shortestPrefix: "muse",
     legacyPrefixes: [],
+    // The account's own list, with windows and modalities; contributor ids are
+    // moved out of every offered list by the discovery choke point.
+    modelDiscovery: { path: "/muse-code/models", format: "muse-code-models" },
     isDirectApi: true,
     description: "Muse Code on your Meta subscription (muse@)",
   },

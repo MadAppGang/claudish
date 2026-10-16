@@ -235,3 +235,7 @@ async function fetchOllamaModelsCatalog(): Promise<FetcherResult> {
 registerModelDiscoveryFetcher("devin-connect", fetchDevinModelsCatalog);
 registerModelDiscoveryFetcher("antigravity", fetchAntigravityModelsCatalog);
 registerModelDiscoveryFetcher("ollama-tags", fetchOllamaModelsCatalog);
+registerModelDiscoveryFetcher("muse-code-models", async () => {
+  const { fetchMuseCodeModelsCatalog } = await import("./meta-muse/muse-models.js");
+  return fetchMuseCodeModelsCatalog();
+});

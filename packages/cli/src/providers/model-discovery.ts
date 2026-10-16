@@ -150,8 +150,17 @@ export interface ModelDiscoveryDescriptor {
    *   GET, so `path` is ignored. Owned by `auth/antigravity-user.ts`. Exists
    *   because the response carries a per-subscription `maxTokens` that the
    *   shared catalog contradicts — see the branch below.
+   * - `muse-code-models`: Meta's `GET /muse-code/models`, signed with the key
+   *   minted from the Muse Code login, whose rows carry `metadata["muse-code"]`
+   *   (name, hidden flag, window, modalities). Owned by
+   *   `providers/meta-muse/muse-models.ts`.
    */
-  format: "openai-models-list" | "devin-connect" | "ollama-tags" | "antigravity";
+  format:
+    | "openai-models-list"
+    | "devin-connect"
+    | "ollama-tags"
+    | "antigravity"
+    | "muse-code-models";
 }
 
 /**
