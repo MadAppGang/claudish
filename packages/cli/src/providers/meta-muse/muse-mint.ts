@@ -36,13 +36,18 @@
  * - 2xx whose body is not a JSON object → transient too (upstreamStatus 502).
  * - network fault → rethrown with `{ cause }` (timeout marked as claudish's
  *   own) and `claudishEndpoint`, so connection recovery classifies it.
+ * - a local fetch error that is no network fault (an invalid header value) →
+ *   rethrown with `{ cause }`, unclassified, and NOT described as unreachable.
  * - a readable 200 without a usable key, or any other status → terminal
  *   protocol error.
  *
  * Nothing here caches, logs or persists a secret; the caller owns the state.
  */
 
-import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
+import {
+  classifyConnectionError,
+  markOwnTimeout,
+} from "../../handlers/shared/connection-error.js";
 import { VERSION } from "../../version.js";
 
 /**
@@ -164,15 +169,7 @@ export async function mintMuseApiKey(
       signal: AbortSignal.timeout(MINT_TIMEOUT_MS),
     });
   } catch (error) {
-    // Not terminal: a network fault can heal. `{ cause }` keeps the syscall code
-    // findable, `markOwnTimeout` marks the ceiling above as ours, and
-    // `claudishEndpoint` names the host that failed (the mint, not the model).
-    throw Object.assign(
-      new Error(`Could not reach ${url} to mint a Muse Code key: ${(error as Error).message}`, {
-        cause: markOwnTimeout(error),
-      }),
-      { claudishEndpoint: url }
-    );
+    throw describeFetchFailure(markOwnTimeout(error), url);
   }
 
   if (response.status === 401 || response.status === 403) {
@@ -221,6 +218,46 @@ export async function mintMuseApiKey(
   }
 
   return interpretMint(body);
+}
+
+/**
+ * The error for a mint `fetch` that threw. Either way it is not terminal and
+ * keeps the original as `cause`, so classification is unchanged: a connection
+ * fault is recovered, anything else is D10's unclassified answer (a retryable
+ * 503 on a subscription).
+ *
+ * Only the MESSAGE differs. "Could not reach" is said only of what
+ * `classifyConnectionError` recognises as a connection fault, including our
+ * own timeout (`markOwnTimeout`); `claudishEndpoint` names the mint host for
+ * that report. Anything else is reported as what it is, an error claudish does
+ * not recognise as a network fault. Often it was raised locally before a socket
+ * existed: Bun's `Header 'Authorization' has invalid value`
+ * for a stored token holding a control or non-Latin-1 character is the measured
+ * case. Calling that a network outage sent the user to check a network that
+ * was fine, while the corrupt login retried forever.
+ */
+function describeFetchFailure(error: unknown, url: string): Error {
+  const detail = (error as Error | undefined)?.message ?? String(error);
+  if (classifyConnectionError(error)) {
+    return Object.assign(
+      new Error(`Could not reach ${url} to mint a Muse Code key: ${detail}`, { cause: error }),
+      { claudishEndpoint: url }
+    );
+  }
+  // Bun's header error QUOTES the value: `Header 'Authorization' has invalid
+  // value: 'Bearer dca:…'`, the durable login itself. It is replaced, never
+  // echoed into a message that reaches the chat and the debug log, and the
+  // original is not kept as `cause` either: nothing classifies it (it is no
+  // connection fault), so the only thing it could still carry is the token.
+  if (/authorization/i.test(detail)) {
+    return new Error(
+      `The Muse Code key request to ${url} was not sent: the stored Muse Code login is not a valid Authorization header value (value withheld). Run \`claudish login muse\` to replace it.`
+    );
+  }
+  return new Error(
+    `The Muse Code key request to ${url} failed before any answer, with an error claudish does not recognise as a network fault: ${detail}`,
+    { cause: error }
+  );
 }
 
 /**
