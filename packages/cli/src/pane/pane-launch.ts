@@ -484,7 +484,7 @@ export const KNOWN_CLAUDISH_FLAGS: readonly string[] = Object.keys(CLAUDISH_FLAG
 
 /* ───────────────────────────── magmux binary ───────────────────────────── */
 
-export const MIN_MAGMUX_VERSION = "0.14.0";
+export const MIN_MAGMUX_VERSION = "0.15.0";
 
 export class MagmuxUnavailableError extends Error {
   readonly code = "magmux_unavailable";
@@ -505,7 +505,7 @@ export function versionAtLeast(v: string, min: string): boolean {
 const magmuxCache = new Map<string, { binary: string; version: string }>();
 const execFileAsync = promisify(execFile);
 
-/** The magmux binary and its version (≥ 0.14.0), cached per process. Never a `-p` fallback. */
+/** The magmux binary and its version (≥ 0.15.0), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(
   binary?: string
 ): Promise<{ binary: string; version: string }> {

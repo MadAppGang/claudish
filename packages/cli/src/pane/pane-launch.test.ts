@@ -274,26 +274,26 @@ describe("watcher argv and version gate", () => {
   test("the magmux version probe never blocks the event loop; an old version is refused", async () => {
     const dir = tmp();
     const slow = join(dir, "magmux-slow");
-    writeFileSync(slow, "#!/bin/sh\nsleep 0.6\necho 'magmux 0.14.0 (fake)'\n");
+    writeFileSync(slow, "#!/bin/sh\nsleep 0.6\necho 'magmux 0.15.0 (fake)'\n");
     chmodSync(slow, 0o755);
     let ticks = 0;
     const timer = setInterval(() => ticks++, 50);
     try {
-      expect(await assertMagmuxAvailable(slow)).toEqual({ binary: slow, version: "0.14.0" });
+      expect(await assertMagmuxAvailable(slow)).toEqual({ binary: slow, version: "0.15.0" });
     } finally {
       clearInterval(timer);
     }
     expect(ticks).toBeGreaterThanOrEqual(5); // a synchronous probe would let none run
     const old = join(dir, "magmux-old");
-    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.13.9'\n");
+    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.14.0'\n");
     chmodSync(old, 0o755);
-    await expect(assertMagmuxAvailable(old)).rejects.toThrow(/panes need >= 0.14.0/);
+    await expect(assertMagmuxAvailable(old)).rejects.toThrow(/panes need >= 0.15.0/);
   });
 
   test("versionAtLeast", () => {
-    expect(versionAtLeast("0.14.0", "0.14.0")).toBe(true);
-    expect(versionAtLeast("0.15.2", "0.14.0")).toBe(true);
-    expect(versionAtLeast("0.13.9", "0.14.0")).toBe(false);
-    expect(versionAtLeast("1.0.0", "0.14.0")).toBe(true);
+    expect(versionAtLeast("0.15.0", "0.15.0")).toBe(true);
+    expect(versionAtLeast("0.15.2", "0.15.0")).toBe(true);
+    expect(versionAtLeast("0.14.9", "0.15.0")).toBe(false);
+    expect(versionAtLeast("1.0.0", "0.15.0")).toBe(true);
   });
 });
