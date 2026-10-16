@@ -182,7 +182,38 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
       body,
     });
 
-    const parsed = (await response.json().catch(() => ({}))) as TokenResponse;
+    // The body is read apart from its parse: a reset while it streams is a
+    // network fault and keeps its cause and endpoint, so connection recovery
+    // classifies it. Only a body that arrived and does not parse is treated as
+    // an answer with no token (the same split as the Muse mint).
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw Object.assign(
+        new Error(
+          `Lost the connection to ${TOKEN_ENDPOINT} while reading the Grok token: ${(error as Error).message}`,
+          { cause: error }
+        ),
+        { claudishEndpoint: TOKEN_ENDPOINT }
+      );
+    }
+    let parsed: TokenResponse;
+    try {
+      parsed = JSON.parse(text) as TokenResponse;
+    } catch {
+      // A 2xx that is not JSON is a gateway answering for the token host, not
+      // a verdict on the grant: retryable. A non-2xx falls to its status below.
+      if (response.ok) {
+        throw Object.assign(
+          new Error(
+            "Grok token refresh answered with a body that is not JSON; retrying will usually work."
+          ),
+          { transient: true as const, upstreamStatus: 503 }
+        );
+      }
+      parsed = {};
+    }
     if (!response.ok || !parsed.access_token) {
       const detail = parsed.error_description ?? parsed.error ?? `HTTP ${response.status}`;
       // `invalid_grant` means the refresh token is dead — only a new login
