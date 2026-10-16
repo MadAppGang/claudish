@@ -319,9 +319,10 @@ export function parseAnthropicSse(raw: string): {
 /**
  * One request through the in-process proxy, for every model that is not a bare
  * Claude name. The body carries NO `max_tokens`: step 5w strips every output-limit
- * field the adapters write and adds the wire's own only when the request has one, so
- * the upstream applies its own default and no model limit is pinned here
- * (ai-docs/architecture/wire.md).
+ * field the adapters write and adds the wire's own only when the request has one,
+ * except on the Messages API, which requires one and gets the catalog's
+ * `maxOutputTokens`. No model limit is pinned here
+ * (ai-docs/architecture/wire.md "Output limit").
  */
 export async function runPromptViaProxy(
   model: string,
