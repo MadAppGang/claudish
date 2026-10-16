@@ -13,7 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -98,6 +98,25 @@ describe("buildClaudishSettingsOverlay", () => {
     ).toBe(false);
   });
 
+  test.each([true, false])("pane editorMode follows the marker (proxy=%p)", (proxyAuthMode) => {
+    const saved = process.env.CLAUDISH_PANE_CHILD;
+    try {
+      for (const marker of ["1", undefined, "0", ""]) {
+        if (marker === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+        else process.env.CLAUDISH_PANE_CHILD = marker;
+        const overlay = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
+        if (marker === "1") expect(overlay.editorMode).toBe("normal");
+        else expect(Object.hasOwn(overlay, "editorMode")).toBe(false);
+        expect(overlay.statusLine).toBe(statusLine);
+        if (proxyAuthMode) expect(overlay.forceLoginMethod).toBe("console");
+        else expect(Object.hasOwn(overlay, "forceLoginMethod")).toBe(false);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = saved;
+    }
+  });
+
   test("the default reads the CLAUDISH_PANE_CHILD marker", () => {
     const saved = process.env.CLAUDISH_PANE_CHILD;
     try {
@@ -117,18 +136,79 @@ describe("buildClaudishSettingsOverlay", () => {
 });
 
 describe("mergeUserSettingsIfPresent", () => {
-  const merged = (userSettings: Record<string, unknown>, paneChild: boolean) => {
-    const path = join(tmpdir(), `claudish-merge-${randomUUID()}.json`);
-    writeFileSync(path, "{}");
+  const merged = (
+    userSettings: Record<string, unknown>,
+    paneChild: boolean | undefined,
+    proxyAuthMode = true,
+    form: "inline" | "file" = "inline"
+  ) => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-merge-"));
+    const path = join(dir, "overlay.json");
     try {
-      const config = baseConfig({ claudeArgs: ["--settings", JSON.stringify(userSettings)] });
-      mergeUserSettingsIfPresent(config, path, statusLine, true, paneChild);
+      writeFileSync(
+        path,
+        JSON.stringify(buildClaudishSettingsOverlay(statusLine, proxyAuthMode, paneChild))
+      );
+      const userPath = join(dir, "user.json");
+      if (form === "file") writeFileSync(userPath, JSON.stringify(userSettings));
+      const config = baseConfig({
+        claudeArgs: ["--settings", form === "file" ? userPath : JSON.stringify(userSettings)],
+      });
+      mergeUserSettingsIfPresent(config, path, statusLine, proxyAuthMode, paneChild);
       expect(config.claudeArgs).toEqual([]);
       return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     } finally {
-      rmSync(path, { force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
   };
+
+  for (const form of ["inline", "file"] as const) {
+    test.each([true, false])(
+      `pane editorMode overrides caller vim in ${form} settings (proxy=%p)`,
+      (proxyAuthMode) => {
+        const saved = process.env.CLAUDISH_PANE_CHILD;
+        try {
+          process.env.CLAUDISH_PANE_CHILD = "1";
+          const settings = merged({ editorMode: "vim", x: 1 }, undefined, proxyAuthMode, form);
+          expect(settings).toMatchObject({ editorMode: "normal", x: 1, statusLine });
+          if (proxyAuthMode) expect(settings.forceLoginMethod).toBe("console");
+          else expect(Object.hasOwn(settings, "forceLoginMethod")).toBe(false);
+
+          delete process.env.CLAUDISH_PANE_CHILD;
+          expect(merged({ editorMode: "vim", x: 1 }, undefined, proxyAuthMode, form)).toMatchObject(
+            {
+              editorMode: "vim",
+              x: 1,
+              statusLine,
+            }
+          );
+          expect(
+            Object.hasOwn(merged({ x: 1 }, undefined, proxyAuthMode, form), "editorMode")
+          ).toBe(false);
+        } finally {
+          if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+          else process.env.CLAUDISH_PANE_CHILD = saved;
+        }
+      }
+    );
+
+    test.each([true, false])(
+      `editorMode does not change forceLoginMethod precedence in ${form} settings (pane=%p)`,
+      (paneChild) => {
+        const caller = { editorMode: "vim", forceLoginMethod: "claudeai", x: 1 };
+        expect(merged(caller, paneChild, true, form)).toMatchObject({
+          forceLoginMethod: "claudeai",
+          editorMode: paneChild ? "normal" : "vim",
+          x: 1,
+        });
+        expect(merged(caller, paneChild, false, form)).toMatchObject({
+          forceLoginMethod: "claudeai",
+          editorMode: paneChild ? "normal" : "vim",
+          x: 1,
+        });
+      }
+    );
+  }
 
   test("a pane child's merged settings carry skipDangerousModePermissionPrompt", () => {
     expect(merged({ model: "x" }, true).skipDangerousModePermissionPrompt).toBe(true);
