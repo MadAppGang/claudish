@@ -4,7 +4,7 @@
  * Claudish MCP Server
  *
  * Exposes all claudish models (OpenRouter, Kimi, GLM, Qwen, MiniMax, Gemini, OpenAI,
- * local models, etc.) and channel sessions as MCP tools for Claude Code.
+ * local models, etc.) and sessions as MCP tools for Claude Code.
  * Routes through the same proxy engine as the CLI — same auto-routing, fallback chains,
  * custom routing rules, and provider transports.
  *
@@ -21,10 +21,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
-import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
 import { parentSessionForCall } from "./channel/parent-session.js";
-import type { ChannelEventType } from "./channel/types.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type HeartbeatHandle,
@@ -122,39 +120,32 @@ const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
 const OPENROUTER_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "openrouter-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 
-/** Instructions added to Claude's system prompt when channel mode is active. */
-const INSTRUCTIONS = `Claudish MCP server provides access to external AI models (OpenRouter, Ollama, LM Studio, etc.) for coding tasks.
+/** The server's `instructions`, which the host adds to its system prompt. */
+const INSTRUCTIONS = `Claudish MCP server gives you access to external AI models (OpenRouter, Ollama, LM Studio and every claudish provider), and to Claude models on the user's own Claude Code login.
 
-## Channel Mode — External Model Sessions
+## Which tool
 
-When channel mode is active, you receive <channel source="claudish" ...> notifications about running external model sessions. Each session is an interactive Claude Code running the model in its own headless terminal pane.
+- run_prompt: one quick prompt to one model's API. One request, one answer; no tools, no files, no session.
+- create_session: one model doing a task as a full Claude Code session (tools, files, several turns).
+- team: several models on the same task, each a full Claude Code session, with optional blind judging.
 
-### Events
+## Sessions
 
-- running: The session's turn is running (its prompt was accepted). Note the session_id for future calls.
-- tool_executing: The model is using a tool (Read, Write, Bash, etc.). Carries tool and tool_count.
-- input_required (event waiting_for_input): The session waits for send_input: an interactive session between turns, or a session stopped on a question (meta activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
-- input_required (event awaiting_permission): A permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
-- completed: The session finished successfully. Call get_output to retrieve the full output.
-- failed: The session failed (boot, prompt not accepted or not read, child exited, API error, pane lost). Call get_diagnostics for the cause.
-- timeout: The session hit its timeout_seconds; the pane was closed. Call get_diagnostics to see how far it got.
-- cancelled: The session was cancelled via cancel_session.
+Each session is an interactive Claude Code running the model in its own headless terminal pane. Nothing is pushed to you while it runs: poll.
 
-### Workflow
+1. create_session returns {session_id, state: "STARTING"} at once while Claude Code boots.
+2. Poll list_sessions (include_completed: true), about once every 10 seconds. Each row has state, activity, idle_seconds and accounting.
+   - STARTING: booting, or the first prompt is not yet accepted.
+   - RUNNING: a turn is in progress (activity names the tool in use).
+   - AWAITING_INPUT: waiting for send_input — an interactive session between turns, or a turn stopped on a question (activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
+   - AWAITING_PERMISSION: a permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
+   - COMPLETED, FAILED, TIMEOUT, CANCELLED, EMPTY: finished.
+3. send_input may be called at any time; it is queued until the session is idle.
+4. COMPLETED: call get_output for the answer.
+5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
+6. capture_session reads a session's current screen; cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
 
-1. Call create_session with a model and prompt to start an async session (state STARTING while Claude Code boots).
-2. Watch for <channel> notifications — they arrive automatically.
-3. send_input may be called at any time; it is queued until the session is idle. On input_required, call send_input with the answer.
-4. On completed: call get_output to get the full response.
-5. On failed or timeout — or on a completed session whose output is empty or
-   surprising — call get_diagnostics. It returns the child's final screen, the
-   upstream error bodies, the recent state records, the resolved model chain and the
-   paths to the full records. It needs no re-run and no debug flag.
-6. Use list_sessions to see sessions: each row has state, activity, idle_seconds and accounting.
-7. Use capture_session to read a session's current terminal screen.
-8. Use cancel_session to stop a running session.
-
-The session_id in the channel tag's meta attributes is the key for all tool calls.`;
+The session_id from create_session is the key for every session tool.`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -852,37 +843,7 @@ const sanitize = sanitizeForReport;
 
 // ─── Tool Definitions ────────────────────────────────────────────────────────
 
-/**
- * Pushes a live progress frame to the client, or is a no-op when the channel
- * capability is not enabled. `team` uses this to report per-model token/cost
- * stats while a multi-minute run is still in flight.
- *
- * Channels are the ONLY measured-working push mechanism FOR RENDERING:
- * `notifications/progress` renders nowhere on Claude Code 2.1.220 — verified empty
- * in both the agent's context and the interactive terminal UI. See
- * ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md.
- *
- * That says nothing about KEEPALIVE, which is the opposite result: a progress frame
- * resets the client's MCP idle timer and a channel frame does not (measured
- * 2026-08-14 on 2.1.231 — a real `team` run died at exactly 1800s while emitting
- * channel frames throughout). See
- * ai-docs/sessions/mcp-progress-idle-timeout-20260814-000000-b7e21f4a/findings.md.
- * The two mechanisms are complementary and both stay: channel is the visible
- * surface, `notifications/progress` (mcp/progress-heartbeat.ts) is the keepalive.
- */
-type ChannelNotifier = (params: {
-  content: string;
-  sessionId: string;
-  event: string;
-  model: string;
-  elapsedSeconds: number;
-  createdAt: string;
-}) => void;
-
-function defineTools(
-  sessionManager: SessionManager,
-  notifyChannel: ChannelNotifier
-): ToolDefinition[] {
+function defineTools(sessionManager: SessionManager): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
 
   // ── Low-Level Tools ──────────────────────────────────────────────────
@@ -1609,9 +1570,8 @@ function defineTools(
     },
     group: "agentic",
     // The tool the whole keepalive exists for: a real run was aborted at exactly
-    // 1800s of channel-frame-only silence. NOT gated on `channelEnabled` — that
-    // failure happened in a session with channels unregistered, so gating the
-    // keepalive behind the channel group would reproduce the bug exactly.
+    // 1800s with no `notifications/progress` on the wire. A progress frame is the
+    // only notification measured to reset the client's MCP idle timer.
     //
     // Still needed even though `run` no longer blocks on answers: `run-and-judge` is
     // the pipeline mode and holds the call open for the whole run, and `run` itself
@@ -1654,36 +1614,15 @@ function defineTools(
 
         const resolved = validateSessionPath(path);
 
-        // Live per-model token/cost progress for the run modes. The session
-        // basename is a stable, human-recognisable id for the channel frames.
-        const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
-        const teamCreatedAt = new Date().toISOString();
         const runOpts = {
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
-          onProgress: (u: {
-            rendered: string;
-            phase: "running" | "settled";
-            allFailed: boolean;
-          }) => {
-            // Two mechanisms, deliberately both: the channel frame below is what
-            // the agent and the human SEE, and this one is what keeps the client
-            // from aborting the call. A state change is real news, so refresh the
-            // idle timer at that moment as well as on the periodic tick. Short
-            // phase string only — the rendered grid stays on the channel path.
+          onProgress: (u: { phase: "running" | "settled" }) => {
+            // A state change is real news, so refresh the client's idle timer at
+            // that moment as well as on the periodic tick. Short phase string only:
+            // the run's progress is read with `team(mode:"status")`, never pushed.
             ctx.reportProgress(`team: ${u.phase}`);
-            notifyChannel({
-              content: u.rendered,
-              sessionId: teamSessionId,
-              // A settled run must emit a TERMINAL event. Emitting "running"
-              // for the final frame leaves any status-tracking consumer
-              // believing the run never closed.
-              event: u.phase === "settled" ? (u.allFailed ? "failed" : "completed") : "running",
-              model: "team",
-              elapsedSeconds: (Date.now() - Date.parse(teamCreatedAt)) / 1000,
-              createdAt: teamCreatedAt,
-            });
           },
         };
 
@@ -1710,10 +1649,10 @@ function defineTools(
 
             // The run's record in the sessions directory, for observers outside
             // this process (the magus claudish plugin monitor): the run's own
-            // status.json lives wherever the caller pointed `path`, and its only
-            // completion push is a channel frame Claude Code drops without
-            // `--channels`. Written BEFORE any pane exists; a throw here fails
-            // the call with nothing started.
+            // status.json lives wherever the caller pointed `path`, and the record
+            // is how an observer outside this process learns the run ended.
+            // Written BEFORE any pane exists; a throw here fails the call with
+            // nothing started.
             const parentClaudeSessionId = await parentSessionForCall({
               hostPid: sessionManager.hostPid,
             });
@@ -1987,8 +1926,9 @@ function defineTools(
     name: "create_session",
     description:
       "Create a new claudish proxy session for an external model: an interactive Claude Code running " +
-      "it in its own headless magmux pane. Returns at once with state STARTING; the session produces " +
-      "channel notifications as it runs. With a prompt it is one-shot (it ends when that turn " +
+      "it in its own headless magmux pane. Returns at once with state STARTING; nothing is " +
+      "pushed while it runs: poll list_sessions (about once every 10 s) for its state, then " +
+      "call get_output once it is COMPLETED. With a prompt it is one-shot (it ends when that turn " +
       "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.14.0 " +
       "(darwin and linux).",
     inputSchema: {
@@ -2149,7 +2089,8 @@ function defineTools(
     name: "get_output",
     description:
       "Get a session's answer prose (each settled turn's assistant text, from its transcript). " +
-      "Call after the 'completed' notification to get the full response.",
+      "Call once list_sessions shows the session COMPLETED (or between turns of an " +
+      "interactive session).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2244,7 +2185,7 @@ function defineTools(
 
   // Diagnostics as API.
   //
-  // Two channel sessions once ran 900 seconds of genuine billed work — 241
+  // Two sessions once ran 900 seconds of genuine billed work — 241
   // assistant messages, ~94k output tokens, 150 tool calls — and reported
   // success with an empty output log. The cause was one line, written to
   // `~/.claudish/sessions/<id>/stderr.log` and left there:
@@ -2360,152 +2301,34 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
   }
 }
 
-// ─── SEP-1686 status mapping ─────────────────────────────────────────────────
-// Maps Claudish's 9-value `event` enum to SEP-1686's 5-value `TaskStatus`.
-// See: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
-// Migration plan: ai-docs/sessions/.../sep-1686-migration-schema.md
-type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
-
-// A `Record` over `ChannelEventType`, so an event type without a projection is a
-// compile error rather than a silent `"working"` from the fall-through below.
-const TASK_STATUS_BY_EVENT: Record<ChannelEventType, TaskStatus> = {
-  starting: "working",
-  running: "working",
-  tool_executing: "working",
-  waiting_for_input: "input_required",
-  // A permission dialog is open and only the caller's `send_input` moves the
-  // session on. It had no key, so it fell through to "working": a SEP-1686
-  // consumer polled a session that was waiting on it as if it were busy.
-  awaiting_permission: "input_required",
-  completed: "completed",
-  failed: "failed",
-  cancelled: "cancelled",
-  // The key whose ABSENCE forced the channel wire to lie. `mapEventToTaskStatus`
-  // falls through to `?? "working"`, so a session killed by its own timeout was
-  // reported to a SEP-1686 consumer as still working — which is why the timeout
-  // path once emitted `"failed"` on the wire while the record said `"timeout"`.
-  // With this key present the timeout emits its own event; SEP-1686 has no
-  // `timeout` member, and `failed` is the only honest projection of it.
-  timeout: "failed",
-};
-
-const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>(Object.entries(TASK_STATUS_BY_EVENT));
-
-// Exported ONLY so the regression guard can call it instead of grepping this
-// file's source text. The behaviour worth guarding is the fall-through below: a
-// key missing from EVENT_TO_TASK_STATUS does not throw, it silently yields
-// "working", so a dead session (e.g. one killed by its own timeout) reports to a
-// SEP-1686 consumer as still alive. Only a real call can catch that; a source
-// regex stays green if the entry moves to a dead map, is shadowed, or ends up in
-// a comment.
-export function mapEventToTaskStatus(event: string): TaskStatus {
-  return EVENT_TO_TASK_STATUS.get(event) ?? "working";
-}
-
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
 async function main() {
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   const enabledGroups = resolveToolGroups(toolMode);
 
-  // Create server with channel capability
+  // Tools only, for every tool mode. No `experimental: {"claude/channel": {}}`: the
+  // server pushes nothing; a host polls `list_sessions` and reads the records.
   const server = new Server(
     // `version.ts` is generated from packages/cli/package.json, so serverInfo names
     // the release the host is actually talking to.
     { name: "claudish", version: VERSION },
     {
-      capabilities: {
-        ...(enabledGroups.has("session") ? { experimental: { "claude/channel": {} } } : {}),
-        tools: {},
-      },
+      capabilities: { tools: {} },
       instructions: INSTRUCTIONS,
     }
   );
 
-  // Create session manager with channel notification bridge.
-  // The bridge translates SessionManager events into MCP notifications.
-  // When CLAUDISH_CHANNEL_TRACE=1 is set, the diagnostics module wraps the
-  // callback to log each step of the producer→bridge→wire pipeline.
-  //
-  // Wire format aligns with SEP-1686 (Tasks) for forward-compat: each
-  // notification carries both Claudish-specific fields (`session_id`, `event`)
-  // and SEP-1686-shaped fields (`task_id`, `status`, `created_at`,
-  // `last_updated_at`). When Claude Code ships notifications/tasks/status
-  // receiver support, the migration is a method-name swap + payload restructure
-  // (no semantic changes).
-  // See: ai-docs/sessions/.../sep-1686-migration-schema.md
-  const sessionManager = new SessionManager({
-    onStateChange: wrapStateChange((sessionId, event) => {
-      // `timeout` is here because it used to arrive AS `failed` — the wire had
-      // no timeout event until EVENT_TO_TASK_STATUS learned to project one — and
-      // dropping the hint when the event split in two would have been a silent
-      // regression. Both are terminal failures worth reporting, and both are now
-      // explainable without a re-run via get_diagnostics.
-      const notificationContent =
-        event.type === "failed" || event.type === "timeout"
-          ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the final screen, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
-          : event.content;
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: notificationContent,
-          meta: {
-            session_id: sessionId,
-            event: event.type,
-            model: event.model,
-            elapsed_seconds: String(event.elapsedSeconds),
-            // SEP-1686 forward-compat fields (additive, do not break consumers
-            // of the existing fields above):
-            task_id: sessionId,
-            status: mapEventToTaskStatus(event.type),
-            created_at: event.createdAt,
-            last_updated_at: new Date().toISOString(),
-            ...event.extraMeta,
-          },
-        },
-      });
-      watchNotificationResult(result, { sessionId, eventType: event.type });
-    }),
-  });
-
-  // Live-progress push for long-running tools. Gated on the channel capability
-  // actually being declared — emitting a channel frame the client never
-  // registered for is silently dropped, and `team` still writes status.txt
-  // regardless, so there is always a visible path.
-  const channelEnabled = enabledGroups.has("session");
-  const notifyChannel: ChannelNotifier = (p) => {
-    if (!channelEnabled) return;
-    try {
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: p.content,
-          meta: {
-            // meta keys must match [a-zA-Z0-9_]+ — Claude Code silently drops
-            // keys containing hyphens or other characters.
-            session_id: p.sessionId,
-            event: p.event,
-            model: p.model,
-            elapsed_seconds: String(Math.round(p.elapsedSeconds)),
-            task_id: p.sessionId,
-            status: mapEventToTaskStatus(p.event),
-            created_at: p.createdAt,
-            last_updated_at: new Date().toISOString(),
-          },
-        },
-      });
-      watchNotificationResult(result, { sessionId: p.sessionId, eventType: p.event });
-    } catch {
-      // Progress reporting must never fail the tool call it is describing.
-    }
-  };
+  // Sessions are observed by polling (`list_sessions`, `get_output`) and through
+  // their records on disk; nothing is pushed to the host.
+  const sessionManager = new SessionManager();
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
   const progressIntervalMs = resolveProgressIntervalMs();
 
   // Build tool registry
-  const allTools = defineTools(sessionManager, notifyChannel);
+  const allTools = defineTools(sessionManager);
   const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
   const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
 
@@ -2528,7 +2351,7 @@ async function main() {
   // keepalive for as long as it runs: the client aborts a call that emits nothing
   // for its idle window (30 min on stdio by default — the exact 1800s a real
   // `team` run died at), and a progress frame is the ONLY notification measured to
-  // reset that timer. Channel frames do not.
+  // reset that timer.
   //
   // `extra.sendNotification` is preferred over `server.notification` because it is
   // the request-scoped sender; on non-stdio transports it is what correlates the
@@ -2581,11 +2404,8 @@ async function main() {
     }
   });
 
-  // Connect via stdio transport. installWireTap() is a no-op unless
-  // CLAUDISH_CHANNEL_TRACE=1 is set; when active it mirrors outbound channel
-  // notification frames to stderr so we can confirm wire-level delivery.
+  // Connect via stdio transport.
   const transport = new StdioServerTransport();
-  installWireTap();
   await server.connect(transport);
   installMcpShutdown(sessionManager);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
@@ -2596,7 +2416,7 @@ async function main() {
 
 /**
  * Shutdown (D15 layer 3, §20.3 item 8): stdin EOF, transport close, SIGINT, SIGTERM and
- * SIGHUP settle every team run and channel session CANCELLED — so their records end
+ * SIGHUP settle every team run and session CANCELLED — so their records end
  * (`meta.json`, the closing wait line) — then reap every pane in parallel and exit.
  * Installed before any pane exists, so `startPaneSession`'s own default hooks never
  * replace these options. A SIGKILL of this process ends no record; the per-pane
