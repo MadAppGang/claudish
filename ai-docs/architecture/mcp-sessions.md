@@ -469,7 +469,13 @@ as a plugin server. One level of nesting is the limit (why, and the CLI side of 
   it, whereas a group filter would admit any future tool of its group;
 - declares only the `tools` capability, as every claudish MCP server now does;
 - answers `initialize` with `NESTED_INSTRUCTIONS` in place of the normal instructions, so the model
-  reads why the session tools are absent;
+  reads why the session tools are absent and what to do instead: it is the delegate, so it does the
+  task with its own tools, and a workflow step that says to delegate is satisfied by its own run.
+  Without that last sentence (10.6.3), a gpt-6.1-sol child running `/dev:qa`-style work found no
+  `create_session` and started `codex exec` through `terminal:mux`. The fix is guidance, not a
+  guard: no CLI is blocked. The text lives here because every child receives the server
+  instructions, including one that never loads the claudish-usage skill, whose section "Inside a
+  claudish session (child mode)" carries the longer version;
 - drops the "use the `report_error` tool" hint from `run_prompt`'s and `compare_models`' error
   texts, since that tool is not registered;
 - logs `[claudish] MCP server started (tools: nested, 4 tools)`.

@@ -520,6 +520,9 @@ describe("nested MCP server over stdio", () => {
     ).toBe(true);
     expect(instructions).toContain("## Nested mode — no sessions");
     expect(instructions).toContain("nested session refused");
+    expect(instructions).toContain(
+      "You are the delegate: do the task with your own tools; a workflow step that says to delegate is satisfied by you running it."
+    );
     expect(instructions).not.toContain("Channel Mode");
     expect(instructions).not.toMatch(/^- (?:preflight|report_error):/m);
   }, 30_000);
