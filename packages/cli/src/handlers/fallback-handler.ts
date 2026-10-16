@@ -320,6 +320,17 @@ export function isRetryableError(
     if ((status === 401 || recovered === 401) && isCredentialRejection(401, errorBody)) {
       return false;
     }
+    // A RAW 403 credential rejection stops it too (measured: `403
+    // {"error":{"type":"invalid_api_key"}}` from a subscription hop advanced
+    // onto the metered `meta@`). Raw only: the upstream body still carries the
+    // provider's own `error.type`, so `isCredentialRejection` can tell Zen Go's
+    // `403 RegionError` (a model opt-in, which advances) from a dead login. A
+    // RECOVERED 403 cannot be told apart that way — claudish's remapped 400
+    // body says `invalid_request_error` — so it keeps advancing; a 403 the
+    // ComposedHandler placed already carries the terminal verdict header above.
+    if (status === 403 && isCredentialRejection(403, errorBody)) {
+      return false;
+    }
   }
 
   // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────

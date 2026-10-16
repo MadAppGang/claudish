@@ -112,8 +112,9 @@ export function isCredentialRejection(status: number, errorBody: string): boolea
 /**
  * The provider's own `error.type` in a raw upstream JSON error body. Read at
  * the sites that hold the upstream body (the generic remap, settleAuthRetry);
- * claudish's remapped 400 does not carry it, and FallbackHandler's own
- * subscription rule covers 401 only, so a 403 RegionError advances there too.
+ * claudish's remapped 400 does not carry it. FallbackHandler's own
+ * subscription rule therefore stops on a RAW 403 (whose body still carries the
+ * type, so a 403 RegionError advances) and not on a recovered one.
  */
 function providerErrorType(errorBody: string): string | undefined {
   try {
