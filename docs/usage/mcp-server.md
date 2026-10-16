@@ -4,11 +4,11 @@
 
 Claudish isn't just a CLI. It's also an MCP server that exposes external AI models as tools.
 
-Claude can call Grok, GPT-5, or Gemini mid-conversation to get a second opinion, run a comparison, or delegate specialized tasks. With channel mode, it can also spawn full async sessions — complete with push notifications and interactive input.
+Claude can call Grok, GPT-5, or Gemini mid-conversation to get a second opinion, or delegate a task to another model as a full async session that it polls and answers with `send_input`.
 
-The server exposes **14 tools** across three groups: low-level (4), agentic (3), and channel (7).
+The server exposes **14 tools** across four groups: low-level (3), agentic (3), session (7), and debug (1).
 
-### Requirements for `team` and channel sessions
+### Requirements for `team` and sessions
 
 Every `team` slot and every `create_session` session is a real, interactive Claude Code session
 running your model, inside its own headless [magmux](magmux.md) pane. That needs:
@@ -57,13 +57,30 @@ Claude will use the `run_prompt` tool to call Grok.
 
 ### `run_prompt`
 
-Run a prompt through any model. Supports all providers (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, etc.) with auto-routing, fallback chains, and custom routing rules.
+One quick prompt, straight to one model's API: a single request and its answer. No Claude Code
+session, no tools, no files, no conversation state — this is not subagent work. For a task that
+needs tools, files or more than one turn, use `create_session` (one model) or `team` (several
+models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, …) go through claudish's
+routing straight to the provider's API.
 
 **Parameters:**
-- `model` (required) - Model name or ID. Short names auto-route to the best provider (e.g., `kimi-k2.5`, `glm-5`). Provider prefix optional (e.g., `google@gemini-3.1-pro-preview`, `or@x-ai/grok-3`).
+- `model` (required) - Model name or model spec. A bare name auto-routes to the best provider (e.g., `kimi-k3`, `glm-5.3`); `provider@model` pins the provider (e.g., `google@gemini-4-argon`, `or@x-ai/grok-4.7`).
 - `prompt` (required) - The prompt to send
 - `system_prompt` (optional) - System prompt for context
-- `max_tokens` (optional) - Max response length (default: 4096)
+
+There is no output-limit parameter. The request carries no `max_tokens`, so the provider applies
+its own default.
+
+**Claude models.** A bare Claude name (`claude-*`, `opus`, `sonnet`, `haiku`, `internal`) does not
+go to an API from the MCP server. It runs as one Claude Code print-mode call through claudish
+(`claudish -p --model <model> --output-format json …`) on your own Claude Code login: tools, MCP
+servers, settings sources and slash commands are off, Claude Code's default system prompt is
+replaced by yours (or by an empty one), and it runs in a new empty working directory so no
+project `CLAUDE.md` or memory is loaded. claudish never reads your Claude Code login itself; the
+`claude` binary signs in on its own. The answer ends with an `Auth:` line,
+`Auth: Claude Code login (subscription)` on a subscription. If you never signed in, the error is
+Claude Code's own "Not logged in" text: run `claude` once. An explicit spec such as
+`anthropic@claude-opus-5-5` is the metered Anthropic API and takes the ordinary routing path.
 
 **Model IDs:**
 | Common Name | Model ID |
@@ -118,19 +135,22 @@ Search for models with "vision" capability
 
 ---
 
-### `compare_models`
+### `compare_models` (debug)
 
-Run the same prompt through multiple models and compare.
+A debug tool, in the `debug` group. Send the same single prompt to several models, one after
+another, and show their answers side by side — to check that routes answer or to eyeball raw
+answers. Each model gets exactly what `run_prompt` sends: one request, no tools, no Claude Code
+session (a Claude entry takes `run_prompt`'s Claude Code path). Not for real work: use `team` for
+a blind-judged multi-model run, or `create_session` for one model doing a task.
 
 **Parameters:**
-- `models` (required) - Array of model IDs
+- `models` (required) - Array of model names or model specs, in the order to run them
 - `prompt` (required) - The prompt to compare
 - `system_prompt` (optional) - System prompt
-- `max_tokens` (optional) - Max response length
 
 **Example:**
 ```
-Compare responses from Grok, GPT-5, and Gemini for: "Explain this regex"
+Check that kimi-k3, glm-5.3 and minimax-m3 all answer: "Say OK"
 ```
 
 ---
@@ -205,13 +225,14 @@ Report a claudish error to developers. Always ask the user for consent before ca
 
 ---
 
-## Channel Mode
+## Sessions
 
-Channel mode lets Claude Code spawn external model sessions asynchronously and receive push notifications as they run.
+`create_session` starts an external model session asynchronously. Each session is an interactive
+Claude Code running your model in its own headless magmux pane (see "Requirements" above).
+Nothing is pushed to you while it runs: poll `list_sessions`. When a session asks a question,
+answer it with `send_input`. When it completes, `get_output` returns the full response.
 
-Each session is an interactive Claude Code running your model in its own headless magmux pane (see "Requirements" above). Claude Code gets notified at each state change via `<channel>` tags — no polling needed. When a session asks a question, Claude answers it via `send_input`. When it completes, `get_output` retrieves the full response. A tool that cannot receive channel notifications can poll `list_sessions` and `capture_session` instead.
-
-**Enable channel tools:**
+The session tools are in the `session` group, which `all` (the default) includes:
 
 ```json
 {
@@ -228,25 +249,42 @@ Each session is an interactive Claude Code running your model in its own headles
 }
 ```
 
-`CLAUDISH_MCP_TOOLS` accepts: `all` (default), `channel`, `agentic`, or `low-level`. Channel tools are included in `all` by default.
+`CLAUDISH_MCP_TOOLS` selects the tools the server lists:
 
-### Channel events
+| `CLAUDISH_MCP_TOOLS` | Tools |
+|---|---|
+| unset, `all` | all 14 |
+| `low-level` | `run_prompt`, `list_models`, `search_models` |
+| `agentic` | `preflight`, `team`, `report_error` |
+| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session` |
+| `debug` | `compare_models` |
+| any other value | all 14 |
 
-When a session runs, Claude Code receives `<channel source="claudish">` notifications with these event types:
+`channel` was the old name of the `session` group. It is no longer a group, so it selects all 14
+tools.
 
-| Event | Meaning |
-|-------|---------|
-| `starting` | Claude Code is booting in the session's pane. Note the `session_id` for future calls. |
-| `running` | The session's turn is running: its prompt was accepted. |
-| `tool_executing` | Model is using a tool (Read, Write, Bash, etc.); the notification carries `tool` and `tool_count`. |
-| `waiting_for_input` | The session waits for `send_input`: an interactive session between turns, or a session stopped on a question (`activity` `AskUserQuestion`). A send during a question declines it and becomes the next prompt. Its SEP-1686 `status` is `input_required`. |
-| `awaiting_permission` | A permission or plan-approval dialog is open (only when your `claude_flags` ask for one, e.g. `--permission-mode plan`). A send declines it and becomes the next prompt. Also `input_required`. |
-| `completed` | Session finished. Call `get_output` for the full response. |
-| `failed` | The session failed: Claude Code could not boot, the prompt was never accepted or its task file never fully read, the child exited, an API error, or the pane was lost. The content says which; call `get_diagnostics` for the rest. |
-| `timeout` | The session reached its `timeout_seconds`; the pane was closed. |
-| `cancelled` | Session was cancelled via `cancel_session`. |
+### Polling workflow
 
-### Workflow example
+1. `create_session` returns `{session_id, state: "STARTING"}` at once while Claude Code boots.
+2. Poll `list_sessions` (`include_completed: true`) about once every 10 seconds. Each row has
+   `state`, `activity`, `idle_seconds` and accounting:
+   - `STARTING`: booting, or the first prompt is not yet accepted.
+   - `RUNNING`: a turn is in progress (`activity` names the tool in use).
+   - `AWAITING_INPUT`: waiting for `send_input` — an interactive session between turns, or a turn
+     stopped on a question (`activity` `AskUserQuestion`). A send declines a question and becomes
+     the next prompt.
+   - `AWAITING_PERMISSION`: a permission or plan-approval dialog is open (only when your
+     `claude_flags` ask for one, e.g. `--permission-mode plan`). A send declines it and becomes
+     the next prompt.
+   - `COMPLETED`, `FAILED`, `TIMEOUT`, `CANCELLED`, `EMPTY`: finished.
+3. `send_input` may be called at any time; it is queued until the session is idle.
+4. `COMPLETED`: call `get_output` for the answer.
+5. `FAILED` or `TIMEOUT` — or `COMPLETED` with an empty or surprising answer — call
+   `get_diagnostics`. It returns the child's final screen, the upstream error bodies, the recent
+   state records, the resolved model chain and the paths to the full records. It needs no re-run
+   and no debug flag.
+6. `capture_session` reads a session's current screen; `cancel_session` stops it. Nothing stops a
+   session for being idle: a child inside a long build is silent and working.
 
 One-shot — a `prompt` is given, so the session ends on its own after its answer:
 
@@ -254,12 +292,10 @@ One-shot — a `prompt` is given, so the session ends on its own after its answe
 1. create_session(model: "google@gemini-2.0-flash", prompt: "Refactor this module")
    → { session_id: "1a2b3c4d", state: "STARTING" }
 
-2. <channel event="running" session_id="1a2b3c4d" ...>
-   <channel event="tool_executing" tool="Read" tool_count="3" ...>
+2. list_sessions(include_completed: true)   every ~10 s
+   → state RUNNING, activity "Read" … then state COMPLETED
 
-3. <channel event="completed" session_id="1a2b3c4d">
-
-4. get_output(session_id: "1a2b3c4d")
+3. get_output(session_id: "1a2b3c4d")
    → { output: "...", state: "COMPLETED", turnsCompleted: 1, ... }
 ```
 
@@ -270,14 +306,12 @@ every turn, until you cancel it or it times out:
 1. create_session(model: "google@gemini-2.0-flash")
    → { session_id: "5e6f7a8b", state: "STARTING" }
 
-2. <channel event="waiting_for_input" session_id="5e6f7a8b">
+2. list_sessions → state AWAITING_INPUT
 
 3. send_input(session_id: "5e6f7a8b", text: "Refactor this module")
    → { success: true, queued: 0 }
 
-4. <channel event="running" ...>
-   <channel event="tool_executing" ...>
-   <channel event="waiting_for_input" session_id="5e6f7a8b">
+4. list_sessions → RUNNING … then AWAITING_INPUT again
 
 5. get_output(session_id: "5e6f7a8b"), then send_input again or cancel_session
 ```
@@ -303,7 +337,7 @@ is interactive and waits for `send_input`.
 ### `send_input`
 
 Send a prompt to a session. Accepted in every state that has not ended, and queued until the
-session is idle: during `starting` and `running` it waits its turn; in `waiting_for_input` it is
+session is idle: during `STARTING` and `RUNNING` it waits its turn; in `AWAITING_INPUT` it is
 delivered at once; during a question or a permission dialog the dialog is declined and the text
 becomes the next prompt. Any accepted send makes a one-shot session interactive. `/clear` and
 `/resume` are not accepted.
@@ -319,7 +353,8 @@ becomes the next prompt. Any accepted send makes a one-shot session interactive.
 ### `get_output`
 
 Retrieve a session's answer prose: each settled turn's assistant text, read from Claude Code's
-own transcript. Call after the `completed` channel event.
+own transcript. Call once `list_sessions` shows the session `COMPLETED` (or between turns of an
+interactive session).
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
@@ -343,7 +378,7 @@ processes finish in the background. Calling it again changes nothing.
 
 ### `list_sessions`
 
-List channel sessions this server holds.
+List the sessions this server holds.
 
 **Parameters:**
 - `include_completed` (optional) - Include completed, failed, and cancelled sessions (default: false)
@@ -417,7 +452,7 @@ When a tool call fails (provider errors, model not found, timeouts), the error r
 - `compare_models` — per-model failures in comparison
 - `team` — model failures during team runs
 - `create_session` — session spawn failures
-- Channel `failed` events — session runtime failures
+- Sessions that end `FAILED` — call `get_diagnostics`, then report
 
 ### For plugin authors
 
@@ -464,7 +499,8 @@ Use Gemini 3 Pro (it has 1M context) to analyze this entire codebase
 ### Multi-model validation
 
 ```
-Compare what Grok, GPT-5, and Gemini think about this architecture decision
+Have Grok, GPT-5, and Gemini each review this architecture decision, then judge blind
+→ team(mode: "run-and-judge", ...)
 ```
 
 ### Budget optimization
@@ -533,23 +569,25 @@ export OPENROUTER_API_KEY='sk-or-v1-...'
 │ Claude Code │ ◄──────────────────► │   Claudish  │ ◄───────────► │ OpenRouter  │
 │             │     (stdio)           │  MCP Server │               │    API      │
 │             │                       │             │               └─────────────┘
-│  Receives   │  channel notifications│  Sessions   │  headless magmux pane, one per session
-│  <channel>  │ ◄─────────────────── │  Manager    │ ──────────► claudish -i → Claude Code
-│  tags       │                       │             │               (interactive)
+│  polls      │  list_sessions,       │  Sessions   │  headless magmux pane, one per session
+│  sessions   │  get_output (answers) │  Manager    │ ──────────► claudish -i → Claude Code
+│             │ ◄──────────────────► │             │               (interactive)
 └─────────────┘                       └─────────────┘
 ```
 
-**Standard tool call flow (low-level tools):**
+**`run_prompt` flow:**
 1. Claude Code sends tool call via MCP (stdio)
 2. Claudish MCP server receives it
-3. Server calls the target model via the proxy engine
+3. A non-Claude model: the server calls it through the proxy engine. A bare Claude name: the server
+   runs one `claudish -p` on your Claude Code login
 4. Response returned to Claude Code
 
-**Channel session flow:**
+**Session flow:**
 1. Claude Code calls `create_session`
 2. Claudish starts a headless magmux pane running an interactive Claude Code on your model
-3. The session manager follows Claude Code's own transcript and screen and fires channel notifications
-4. Claude Code receives `<channel>` tags at each state change
+3. The session manager follows Claude Code's own transcript and screen and writes the session's
+   state and records
+4. Claude Code polls `list_sessions` for the state
 5. On completion, Claude Code calls `get_output`
 
 The pane is closed when the session ends, and nothing it started outlives the MCP server: if the
@@ -565,11 +603,11 @@ its files.
 | Full alternative session | CLI | Replace Claude entirely |
 | Get second opinion | MCP | Quick tool call mid-conversation |
 | Batch automation | CLI | Scripts and pipelines |
-| Model comparison | MCP | Easy multi-model comparison |
+| Model comparison | MCP | `team` runs several models on one task |
 | Interactive coding | CLI | Full Claude Code experience |
 | Specialized subtask | MCP | Delegate to expert model |
 | Blind judging | MCP | `team` tool with anonymized outputs |
-| Long async task | MCP | Channel session with notifications |
+| Long async task | MCP | `create_session`, polled with `list_sessions` |
 
 ---
 
@@ -582,15 +620,15 @@ OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
 ```
 
 **Test the tools:**
-Use Claude Code and ask it to list available MCP tools. You should see all 14: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, and `capture_session`.
+Use Claude Code and ask it to list available MCP tools. You should see all 14 tools: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, and `capture_session`.
 
 **Check which tool group is active:**
 ```bash
-CLAUDISH_MCP_TOOLS=channel OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
-# [claudish] MCP server started (tools: channel, 7 tools)
+CLAUDISH_MCP_TOOLS=session OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
+# [claudish] MCP server started (tools: session, 7 tools)
 ```
 
-**Check magmux** (needed by `team` and channel sessions):
+**Check magmux** (needed by `team` and sessions):
 ```bash
 magmux --version   # 0.14.0 or newer
 ```
@@ -605,9 +643,7 @@ magmux --version   # 0.14.0 or newer
 
 **Rate limits:** OpenRouter has rate limits. Heavy parallel usage might hit them.
 
-**Channel notifications:** Channel mode requires Claude Code to support the `claude/channel` experimental MCP capability.
-
-**Platforms:** `team` and channel sessions need magmux 0.14.0+ and run on macOS and Linux only; Windows is not supported for them.
+**Platforms:** `team` and sessions need magmux 0.14.0+ and run on macOS and Linux only; Windows is not supported for them.
 
 ---
 
