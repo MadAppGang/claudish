@@ -519,15 +519,16 @@ export async function resolveGrokAccessToken(): Promise<string> {
     try {
       return await GrokOAuth.getInstance().getToken();
     } catch (error) {
-      // Fall through to the CLI credential rather than failing outright: a
-      // user who has BOTH should not be blocked by one being broken. If there
-      // is no CLI credential either, the throw below carries the real message.
-      // A transient or network failure keeps its own classification: wrapping
-      // it terminal would stop a working subscription on a token-host blip.
-      if (!readGrokCredential()) {
-        if (isTransientCredentialError(error) || classifyConnectionError(error)) throw error;
-        throw terminal(`${(error as Error).message}`);
-      }
+      // A transient or network failure is rethrown FIRST, whatever else is on
+      // disk: the claudish login is fine and its token host only blinked, so
+      // the request retries. Falling through would sign with a possibly stale
+      // ~/.grok/auth.json, and wrapping it terminal would stop a working
+      // subscription.
+      if (isTransientCredentialError(error) || classifyConnectionError(error)) throw error;
+      // Otherwise fall through to the CLI credential rather than failing
+      // outright: a user who has BOTH should not be blocked by one being
+      // broken. With no CLI credential either, this throw carries the message.
+      if (!readGrokCredential()) throw terminal(`${(error as Error).message}`);
     }
   }
 
