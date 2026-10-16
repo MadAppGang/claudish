@@ -213,6 +213,38 @@ describe("quick-prompt public surface", () => {
   }, 30_000);
 });
 
+describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
+  for (const value of ["channel", "lowlevel", undefined, "all", "session", "debug"]) {
+    test(`${value ?? "unset"}: warns exactly once only for an unknown value`, async () => {
+      if (value !== undefined) {
+        await server.close();
+        server = await McpServer.start({
+          env: serverEnv(layout, { CLAUDISH_MCP_TOOLS: value }),
+          cwd: layout.cwd,
+        });
+      }
+      const tools = await server.listTools();
+      await server.close();
+      const warnings = server.stderrText
+        .split(/\r?\n/)
+        .filter((line) => line.includes("CLAUDISH_MCP_TOOLS"));
+      if (value === "channel" || value === "lowlevel") {
+        expect(tools.map((tool) => tool.name).sort()).toEqual(ALL_TOOLS);
+        expect(tools).toHaveLength(14);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain(value);
+        expect(warnings[0]).toContain("all, low-level, agentic, session, debug");
+        if (value === "channel") {
+          expect(warnings[0]).toContain("renamed to");
+          expect(warnings[0]).toContain("session");
+        }
+      } else {
+        expect(warnings).toEqual([]);
+      }
+    }, 30_000);
+  }
+});
+
 // REQ-20 (TEST-21–TEST-26): preserve the existing pane-free session/team regressions.
 describe("tool list (FR11, §4)", () => {
   test("14 tools, capture_session among them, team modes are exactly the seven", async () => {
@@ -342,7 +374,7 @@ describe("team: mode and argument errors", () => {
   });
 });
 
-describe("channel: argument errors that need no pane", () => {
+describe("session: argument errors that need no pane", () => {
   test("create_session refuses a print-mode flag with text `Error: invalid_args:`", async () => {
     const r = await server.callTool("create_session", {
       model: "contract-fake-model",
