@@ -330,6 +330,17 @@ export async function withInteractiveCredential<T>(action: () => Promise<T>): Pr
 }
 
 /**
+ * Resolve the Muse login in-process for a config-TUI action (Test, Test All,
+ * the Routing tab's probe) before it sends anything to the probe proxy. The
+ * action is the user's keypress, so the Keychain may be read here; the proxy's
+ * requests then find the key in memory. Never throws: the action reports what
+ * its own request finds.
+ */
+export async function prepareMuseLoginForTuiAction(): Promise<void> {
+  await withInteractiveCredential(async () => undefined);
+}
+
+/**
  * The one cached Muse Code credential status, for sync readers (Providers tab,
  * `claudish providers --json`, `source.ts`). The two file checks are sync;
  * `keychain` comes from the async presence memo ({@link refreshMuseCredentialStatus}).
