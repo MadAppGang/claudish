@@ -156,7 +156,6 @@ let keychainEpoch = 0;
 /** The epoch `inFlight` was started in. */
 let inFlightEpoch = 0;
 
-/** Replace the side-effect seam; `null` restores the real one. */
 /**
  * Forget every token this module holds for the process: the approved token
  * kept after a transient mint failure and an answer a timed-out caller left
@@ -173,6 +172,7 @@ export function resetMuseKeychainState(): void {
   inFlight = null;
 }
 
+/** Replace the side-effect seam; `null` restores the real one. */
 export function setMuseKeychainTestDeps(next: Partial<MuseKeychainDeps> | null): void {
   deps = next ? { ...defaultDeps, ...next } : defaultDeps;
   presenceMemo = null;
