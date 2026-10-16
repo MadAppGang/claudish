@@ -413,8 +413,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private supportsResize = false;
   private resizeWaiters: ResizeWaiter[] = [];
   private resizeDraining = false;
-  /** when the last resize request was sent (or confirmed changed); 0 = never */
-  private lastResizeAt = 0;
+  /** the size of the worker's last send on this connection; null = none since the attach */
+  private lastSentSize: PaneSize | null = null;
+  /**
+   * The resize quiet window [from, until): opened at a send, only ever extended (a lost
+   * reply may follow an applied resize, so nothing retracts it); 0 = never opened.
+   */
+  private resizeQuietFrom = 0;
+  private resizeQuietUntil = 0;
   /** the last screen change that is activity, i.e. not a resize redraw (M4) */
   private activityChangedAt = 0;
 
@@ -604,6 +610,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       }
     }
     // a size set while disconnected, or one whose reply was lost, is applied now
+    this.lastSentSize = null;
     if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();
     await client.request({ type: "watch", pane: 0, mode: "frames", fps: WATCH_FPS });
     // An `exit` pushed before this connection subscribed (a child that dies in its first
@@ -1771,10 +1778,30 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return { cols: this.screen.cols, rows: this.screen.rows, changed: false, seq: this.screen.seq };
   }
 
-  /** A screen change at `at` falls within RESIZE_QUIET_MS after the last resize. */
+  /** A screen change at `at` falls within the resize quiet window. */
   private inResizeQuiet(at: number): boolean {
+    return this.resizeQuietFrom > 0 && at >= this.resizeQuietFrom && at < this.resizeQuietUntil;
+  }
+
+  /** Open the quiet window (or keep the open one's start) and extend its end, never retract it. */
+  private extendResizeQuiet(): void {
+    const now = Date.now();
+    if (now >= this.resizeQuietUntil) this.resizeQuietFrom = now;
+    this.resizeQuietUntil = Math.max(this.resizeQuietUntil, now + RESIZE_QUIET_MS);
+  }
+
+  /**
+   * A size no waiter carries is still owed: a `pending` one stored while the worker sat in
+   * its screen wait, whose redial's `attach` kick found the worker running. Only a size the
+   * worker has not sent on this connection is owed, so a refused one is never resent.
+   */
+  private resizeOwed(): boolean {
     return (
-      this.lastResizeAt > 0 && at >= this.lastResizeAt && at - this.lastResizeAt < RESIZE_QUIET_MS
+      !!this.client &&
+      this.supportsResize &&
+      !isTerminalPhase(this.phase) &&
+      !samePaneSize(this.appliedSize, this.desiredSize) &&
+      !samePaneSize(this.lastSentSize, this.desiredSize)
     );
   }
 
@@ -1784,8 +1811,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.resizeDraining = true;
     void this.drainResize().finally(() => {
       this.resizeDraining = false;
-      // a waiter that arrived after the loop's last check
-      if (this.resizeWaiters.length > 0) this.kickResize();
+      // a waiter, or an owed size, that arrived after the loop's last check
+      if (this.resizeWaiters.length > 0 || this.resizeOwed()) this.kickResize();
     });
   }
 
@@ -1793,12 +1820,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * The single resize worker of this pane (H3, M3): one request at a time, always the
    * LATEST desired size, so the sizes of a drag coalesce. Each send answers every waiter
    * queued before it; a waiter that arrives during it gets the next send. With no waiter
-   * it runs once: `attach` re-applying the size after a redial. The phase is re-checked
-   * after every await: a terminal pane answers its last size, `changed:false`.
+   * it runs once (`attach` re-applying the size after a redial), and again while a size is
+   * owed. The phase is re-checked after every await: a terminal pane answers its last
+   * size, `changed:false`.
    */
   private async drainResize(): Promise<void> {
     let first = true;
-    while (first || this.resizeWaiters.length > 0) {
+    while (first || this.resizeWaiters.length > 0 || this.resizeOwed()) {
       first = false;
       const batch = this.resizeWaiters.splice(0);
       const answer = (r: PaneResizeOutcome) => {
@@ -1821,9 +1849,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         fail(new ContractErrorException("resize_unsupported", "this magmux has no resize op"));
         continue;
       }
-      // stamped before the send: the child's SIGWINCH redraw can arrive before the reply
-      const before = this.lastResizeAt;
-      this.lastResizeAt = Date.now();
+      // opened before the send: the child's SIGWINCH redraw can arrive before the reply
+      this.lastSentSize = want;
+      this.extendResizeQuiet();
       const r = await c.request<{ cols?: number; rows?: number; changed?: boolean }>(
         { type: "resize", pane: 0, cols: want.cols, rows: want.rows },
         RESIZE_REPLY_MS
@@ -1833,14 +1861,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         continue;
       }
       if (!r.ok) {
-        // magmux may have applied a request whose reply was lost: the size is unknown
-        if (r.code === "client_lost" || r.code === "client_timeout") this.appliedSize = null;
+        // magmux may have applied a request whose reply was lost: the size is unknown, and
+        // its redraw may still arrive
+        if (r.code === "client_lost" || r.code === "client_timeout") {
+          this.appliedSize = null;
+          this.extendResizeQuiet();
+        }
         // the connection is gone: the redial's attach re-applies desiredSize
         if (r.code === "client_lost" || r.code === "client_closed") {
           answer(this.pendingOutcome(this.desiredSize));
           continue;
         }
-        this.lastResizeAt = before;
         fail(
           new ContractErrorException(
             "delivery_unavailable",
@@ -1855,12 +1886,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       };
       this.appliedSize = set;
       if (r.result.changed !== true) {
-        // no reflow, no keyframe: nothing to keep quiet
-        this.lastResizeAt = before;
         answer({ ...set, changed: false, seq: this.screen.seq });
         continue;
       }
-      this.lastResizeAt = Date.now();
+      this.extendResizeQuiet();
       // H4: the answer's seq is the first screen at the new size (magmux's forced keyframe)
       await this.waitFor(
         () =>
