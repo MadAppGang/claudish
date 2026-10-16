@@ -42,10 +42,18 @@
 
 import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { VERSION } from "../../version.js";
-import { inheritedMuseEnv } from "./muse-env-trust.js";
 
-/** The default base host. `MUSE_CODE_BASE_URL` overrides it (the provider's `baseUrlEnvVars`). */
-export const MUSE_CODE_DEFAULT_BASE_URL = "https://api.meta.ai";
+/**
+ * The ONLY host the Muse Code login, the minted key and Muse requests go to.
+ *
+ * Fixed, with no environment override. Bun loads the cwd `.env` before any
+ * claudish code runs (measured on Bun 1.4.0), so a variable that redirected
+ * this host — or one that opted into redirecting it — could be set by any
+ * repository the user runs claudish in, and would send the durable `dca:`
+ * login (possibly the one copied from the Muse Code CLI's Keychain item) to
+ * that repository's server. Tests use the injected `fetch` seam instead.
+ */
+export const MUSE_CODE_BASE_URL = "https://api.meta.ai";
 
 /** Meta's subscribe page, used when the mint names no `action_url` of its own. */
 export const MUSE_CODE_SUBSCRIBE_URL = "https://accountscenter.meta.com/muse_code/?ep=no_payg";
@@ -113,81 +121,12 @@ export class MuseMintTransientError extends Error {
   }
 }
 
-/** The only host the Muse Code login is sent to without an explicit opt-in. */
-export const MUSE_CODE_TRUSTED_HOST = "api.meta.ai";
-
-/** The env var that permits a `MUSE_CODE_BASE_URL` on any other host (a test rig, a proxy you run). */
-export const MUSE_CODE_ALLOW_CUSTOM_HOST_ENV = "CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST";
-
-/**
- * The base URL the `dca:` login (the mint) and the minted key (the model list
- * and `/v1/responses`) may be sent to.
- *
- * WHY THIS REFUSES. The `dca:` token is the account's durable login, possibly
- * the one copied from the Muse Code CLI's Keychain item, and it mints keys until
- * Meta revokes it. `index.ts` loads a `.env` from whatever directory claudish
- * runs in, so a cloned repository could set `MUSE_CODE_BASE_URL` (and the
- * opt-in) and redirect the login to its own host. The rules:
- *
- * - `https://api.meta.ai`, with no userinfo, query or fragment, is honoured
- *   from anywhere; the result is the URL's origin plus its path, nothing else.
- * - Any other host needs `CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST=1` in the
- *   environment the process INHERITED (`muse-env-trust.ts`, snapshotted before
- *   dotenv runs), AND the base URL itself must be the inherited value: a `.env`
- *   can supply neither. Plain `http://` is then accepted only for loopback.
- *
- * Every refusal is terminal and names the variable. When `env` is not
- * `process.env` (the injected test seam), it is treated as inherited.
- */
-export function museTrustedBaseUrl(env: Record<string, string | undefined> = process.env): string {
-  const raw = env.MUSE_CODE_BASE_URL?.trim();
-  if (!raw) return MUSE_CODE_DEFAULT_BASE_URL;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new MuseMintProtocolError(`MUSE_CODE_BASE_URL is not a URL: ${raw}`);
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new MuseMintProtocolError(
-      "MUSE_CODE_BASE_URL may not carry credentials, a query or a fragment."
-    );
-  }
-  const base = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
-  if (url.protocol === "https:" && url.hostname === MUSE_CODE_TRUSTED_HOST) return base;
-
-  const inherited =
-    env === process.env
-      ? inheritedMuseEnv()
-      : { baseUrl: env.MUSE_CODE_BASE_URL, allowCustomHost: env[MUSE_CODE_ALLOW_CUSTOM_HOST_ENV] };
-  const fromDotenv = inherited?.baseUrl?.trim() !== raw;
-  if (inherited?.allowCustomHost !== "1" || fromDotenv) {
-    throw new MuseMintProtocolError(
-      `MUSE_CODE_BASE_URL points at ${url.protocol}//${url.host}, not https://${MUSE_CODE_TRUSTED_HOST}: claudish will not send your Muse Code login there. ${
-        fromDotenv
-          ? "It was not set by your shell (a .env in the current directory may not redirect the login)."
-          : `Unset it, or export ${MUSE_CODE_ALLOW_CUSTOM_HOST_ENV}=1 in your shell (a .env does not count) if you run that host yourself.`
-      }`
-    );
-  }
-  const loopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
-    throw new MuseMintProtocolError(
-      `MUSE_CODE_BASE_URL must be https:// (plain http:// only for a loopback test server): ${raw}`
-    );
-  }
-  return base;
-}
-
-/** The mint endpoint for the configured base host (see {@link museTrustedBaseUrl}). */
-export function museMintUrl(env: Record<string, string | undefined> = process.env): string {
-  return `${museTrustedBaseUrl(env)}/muse-code/key`;
-}
+/** The mint endpoint (fixed: see {@link MUSE_CODE_BASE_URL}). */
+export const MUSE_MINT_URL = `${MUSE_CODE_BASE_URL}/muse-code/key`;
 
 /** Injectable `fetch`, so the mint is testable without a network. */
 export interface MuseMintDeps {
   fetch: typeof fetch;
-  env: Record<string, string | undefined>;
 }
 
 /**
@@ -200,7 +139,7 @@ export async function mintMuseApiKey(
   deps: Partial<MuseMintDeps> = {}
 ): Promise<MuseMint> {
   const doFetch = deps.fetch ?? fetch;
-  const url = museMintUrl(deps.env ?? process.env);
+  const url = MUSE_MINT_URL;
 
   let response: Response;
   try {

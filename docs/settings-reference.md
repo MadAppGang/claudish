@@ -269,7 +269,6 @@ If none of them answers, the error says so and names both remedies (`VERTEX_PROJ
 | `QWEN_CODING_PLAN_BASE_URL` | Alibaba Coding Plan endpoint | `https://coding-intl.dashscope.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | Alibaba PAYG endpoint; repoint here for a mainland-China account | `https://dashscope-intl.aliyuncs.com` |
 | `META_BASE_URL` | Meta Model API (`meta@`) | `https://api.meta.ai` |
-| `MUSE_CODE_BASE_URL` | Muse Code subscription (`muse@`): the `/v1/responses`, `/muse-code/key` and `/muse-code/models` host | `https://api.meta.ai` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud hosted API | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen API (base; `/v1/chat/completions` appended) | `https://opencode.ai/zen` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server URL (**required** to enable LiteLLM routing) | none |

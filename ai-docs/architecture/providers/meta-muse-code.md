@@ -227,6 +227,18 @@ POST https://auth.meta.com/oidc/device/token/   (form)
 - Logout deletes both files and revokes nothing remotely. The shape of `muse-code/logout` was
   never captured.
 
+## One host, with no override
+
+The `dca:` login, the minted key and every Muse request go only to `https://api.meta.ai`
+(`MUSE_CODE_BASE_URL`, a constant in `providers/meta-muse/muse-mint.ts`); the definition declares
+no `baseUrlEnvVars`. An earlier cut honoured an environment override, then an opt-in variable for
+a non-Meta host, then the opt-in only from the inherited environment. Each was bypassable: Bun loads
+`.env`, `.env.local` and `.env.<NODE_ENV>` from the working directory before the first claudish
+module runs (measured on Bun 1.4.0), so any repository the user runs claudish in could set both
+variables and receive the login, which may be the one copied from the Muse Code CLI's Keychain
+item. No environment-based switch can be trusted, so there is none. Tests use the mint's injected
+`fetch` seam.
+
 ## The mint is the entitlement evidence
 
 ```

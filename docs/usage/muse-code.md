@@ -156,6 +156,12 @@ minutes, so a lapsed subscription stops within 30 minutes even in a long session
 If your Muse Code login expires mid-session, the request stops with a login message. claudish does
 not move the request to a metered provider.
 
+## Where your login goes
+
+claudish sends your Muse Code login, the key it mints from it, and every `muse@` request only to
+`https://api.meta.ai`. There is no setting to change that host: a `.env` file in a project folder
+could otherwise redirect your login to someone else's server.
+
 ## Logging out
 
 ```bash

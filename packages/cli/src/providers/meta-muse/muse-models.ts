@@ -24,7 +24,7 @@
 import { credentials } from "../../auth/credentials/authority.js";
 import { VERSION } from "../../version.js";
 import type { DiscoveredModel, FetcherResult } from "../model-discovery.js";
-import { museTrustedBaseUrl } from "./muse-mint.js";
+import { MUSE_CODE_BASE_URL } from "./muse-mint.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -33,12 +33,8 @@ function oneLine(text: string, max = 200): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
-/** The models endpoint for the configured base host. */
-export function museModelsUrl(env: Record<string, string | undefined> = process.env): string {
-  // The same host rule as the mint: the minted key goes only where the login may.
-  const base = museTrustedBaseUrl(env);
-  return `${base}/muse-code/models`;
-}
+/** The models endpoint: the minted key goes only to the fixed Muse Code host. */
+export const MUSE_MODELS_URL = `${MUSE_CODE_BASE_URL}/muse-code/models`;
 
 interface MuseModelMetadata {
   name?: unknown;
@@ -92,15 +88,7 @@ export function parseMuseModels(body: unknown): DiscoveredModel[] | null {
 
 /** The `muse-code-models` fetcher. Never throws. */
 export async function fetchMuseCodeModelsCatalog(): Promise<FetcherResult> {
-  let endpoint: string;
-  try {
-    endpoint = museModelsUrl();
-  } catch (err) {
-    return {
-      kind: "failed",
-      failure: { kind: "no-credentials", detail: oneLine((err as Error).message) },
-    };
-  }
+  const endpoint = MUSE_MODELS_URL;
   let headers: Record<string, string>;
   try {
     const auth = await credentials.getRequestAuth("meta-muse-code", { model: "" });

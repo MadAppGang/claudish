@@ -456,7 +456,6 @@ Every one of these also accepts `CUSTOM_<NAME>_KEY` as an alias, and any of them
 | `QWEN_TOKEN_PLAN_BASE_URL` | Alibaba Token Plan | `https://token-plan.ap-southeast-1.maas.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | Alibaba PAYG | `https://dashscope-intl.aliyuncs.com` |
 | `META_BASE_URL` | Meta Model API (`meta@`) | `https://api.meta.ai` |
-| `MUSE_CODE_BASE_URL` | Muse Code subscription (`muse@`) | `https://api.meta.ai` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen | `https://opencode.ai/zen` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server | _(required with LITELLM_API_KEY)_ |
