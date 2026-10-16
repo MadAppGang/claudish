@@ -146,6 +146,15 @@ let presenceMemo: { at: number; value: MuseKeychainPresence } | null = null;
 let inFlight: Promise<GenericPasswordResult> | null = null;
 /** A value a timed-out caller left behind; the next caller takes it without a dialog. */
 let lateResult: GenericPasswordResult | null = null;
+/**
+ * The Keychain-state epoch. `resetMuseKeychainState()` bumps it; a read or a
+ * token use that started in an older epoch may finish, but its result is
+ * DROPPED: it never becomes `lateResult` or `retainedToken`, and a caller
+ * after the reset never joins it. `security` itself is never killed.
+ */
+let keychainEpoch = 0;
+/** The epoch `inFlight` was started in. */
+let inFlightEpoch = 0;
 
 /** Replace the side-effect seam; `null` restores the real one. */
 /**
@@ -156,8 +165,12 @@ let lateResult: GenericPasswordResult | null = null;
  * from without asking again. An outstanding `security` is left alone.
  */
 export function resetMuseKeychainState(): void {
+  keychainEpoch++;
   retainedToken = null;
   lateResult = null;
+  // The outstanding read keeps running (never killed), but no caller after
+  // the reset joins it; its answer is dropped (see `keychainEpoch`).
+  inFlight = null;
 }
 
 export function setMuseKeychainTestDeps(next: Partial<MuseKeychainDeps> | null): void {
@@ -403,6 +416,7 @@ export async function withMuseKeychainLogin<T>(
       rewriteLock(deps.pid(), "claudish");
     });
     inFlight = done;
+    inFlightEpoch = keychainEpoch;
     return raceJoin(done, deadline, use);
   }
 }
@@ -423,12 +437,12 @@ async function raceJoin<T>(
   if (winner === "timeout") {
     // `security` keeps running. When it answers, keep the answer for the next
     // caller in this process and free the machine-wide lock.
+    const startedIn = inFlightEpoch;
     void done.then((result) => {
-      if (inFlight === done) {
-        inFlight = null;
-        lateResult = result;
-        releaseLock();
-      }
+      if (inFlight === done) inFlight = null;
+      // An answer approved after a reset (a logout) is dropped, not kept.
+      if (startedIn === keychainEpoch) lateResult = result;
+      releaseLock();
     });
     return { kind: "timeout" };
   }
@@ -460,13 +474,17 @@ async function settleToken<T>(
   // Held only AFTER a failure: holding it while `use` runs would hand it to a
   // second in-process caller, which would then mint in parallel.
   if (retainedToken === token) retainedToken = null;
+  const startedIn = keychainEpoch;
   try {
     const value = await use(token);
     return { kind: "used", value, source: "keychain" };
   } catch (err) {
     // A rejected login will not get better on retry; anything else keeps the
-    // approved token so the retry needs no second dialog.
-    if ((err as { terminal?: unknown })?.terminal !== true) retainedToken = token;
+    // approved token so the retry needs no second dialog — unless a reset (a
+    // logout) happened while `use` ran, in which case the token is dropped.
+    if ((err as { terminal?: unknown })?.terminal !== true && startedIn === keychainEpoch) {
+      retainedToken = token;
+    }
     throw err;
   }
 }
