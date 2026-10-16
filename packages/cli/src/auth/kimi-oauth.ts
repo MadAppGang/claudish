@@ -558,7 +558,11 @@ export class KimiOAuth {
       this.credentials = null;
 
       // FIX H4: Check for API key fallback (FR5 priority)
-      if (process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY) {
+      if (
+        process.env.MOONSHOT_API_KEY ||
+        process.env.KIMI_API_KEY ||
+        process.env.KIMI_CODING_API_KEY
+      ) {
         log("[KimiOAuth] Falling back to API key mode");
         // Return empty string to signal fallback to handler
         // Handler will detect API key and use it instead
