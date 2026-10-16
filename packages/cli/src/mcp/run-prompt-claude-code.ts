@@ -15,7 +15,7 @@
  * The prompt goes on stdin, the child runs in an empty temporary directory (otherwise
  * CLAUDE.md and memory load: 8 718 input tokens instead of ~590), and the child's
  * environment drops the three `ANTHROPIC_*` variables that would take the request off
- * the login. Rationale and measurements: ai-docs/architecture/mcp-channel.md
+ * the login. Rationale and measurements: ai-docs/architecture/mcp-sessions.md
  * ("run_prompt") and headless-vs-interactive.md (why `-p` is safe for this one call).
  */
 

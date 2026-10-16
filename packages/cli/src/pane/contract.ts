@@ -6,7 +6,7 @@
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
  * version 1; new fields may only be ADDED. `FailureReason` lives here because both
- * owners (team and the channel) produce it.
+ * owners (team and the MCP sessions) produce it.
  */
 
 export const CONTRACT_VERSION = 1;

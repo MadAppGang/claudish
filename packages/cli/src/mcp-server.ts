@@ -21,9 +21,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
-import { SessionManager } from "./channel/index.js";
-import { parentSessionForCall } from "./channel/parent-session.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { SessionManager } from "./mcp-session/index.js";
+import { parentSessionForCall } from "./mcp-session/parent-session.js";
 import {
   type HeartbeatHandle,
   NOOP_HEARTBEAT,
@@ -2004,7 +2004,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         });
 
         // The conversation live in the calling window, from the host's session
-        // record: one read at call time, no wait. See channel/parent-session.ts.
+        // record: one read at call time, no wait. See mcp-session/parent-session.ts.
         const parentClaudeSessionId = await parentSessionForCall({
           hostPid: sessionManager.hostPid,
         });

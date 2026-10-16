@@ -1,6 +1,6 @@
 // ─── SessionManager ──────────────────────────────────────────────────────────
 //
-// Lifecycle owner for channel sessions. Each session is one INTERACTIVE Claude Code,
+// Lifecycle owner for MCP sessions. Each session is one INTERACTIVE Claude Code,
 // launched through claudish (`claudish -i --model X -y --quiet --session-id <uuid>
 // --add-dir <turnDir> [caller flags]`) inside its own headless magmux pane and driven
 // over the pane's socket (packages/cli/src/pane/, architecture §2). There is no `-p`,
@@ -78,8 +78,8 @@ import { sessionsDirFrom } from "./home-dir.js";
 import { hostPidFrom } from "./parent-session.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import type {
-  ChannelEventType,
   SessionCreateOptions,
+  SessionEventType,
   SessionInfo,
   SessionManagerOptions,
 } from "./types.js";
@@ -105,8 +105,8 @@ export interface DiagnosticEvent {
 export interface SessionDiagnostics {
   sessionId: string;
   state: SlotState;
-  /** The current channel event (10.4.0's `status` key, RB7). */
-  event: ChannelEventType;
+  /** The current session event (10.4.0's `status` key, RB7). */
+  event: SessionEventType;
   reason: FailureReason | null;
   detail: string | null;
   /** The model as the caller asked for it. */
@@ -310,11 +310,11 @@ const STATE_OF_10_4_STATUS: Record<string, SlotState> = {
 };
 
 /**
- * The channel event for a session state (architecture §3.4). Pure; the wire, the
+ * The event for a session state (architecture §3.4). Pure; the wire, the
  * wait log's `to` and `get_diagnostics.event` all read it.
  */
-export function channelEventFor(snap: { state: SlotState; activity: string | null }): {
-  event: ChannelEventType;
+export function sessionEventFor(snap: { state: SlotState; activity: string | null }): {
+  event: SessionEventType;
   tool: string | null;
 } {
   switch (snap.state) {
@@ -1116,7 +1116,7 @@ export class SessionManager {
         wait: "closed",
         since: entry.waitSince,
         at: entry.info.completedAt ?? new Date().toISOString(),
-        to: channelEventFor(entry.info).event,
+        to: sessionEventFor(entry.info).event,
       });
       entry.waitSince = null;
     }
@@ -1176,7 +1176,7 @@ export class SessionManager {
         at,
       });
     }
-    const { tool } = channelEventFor(snap);
+    const { tool } = sessionEventFor(snap);
     if (tool && tool !== entry.lastLoggedTool)
       this.appendEvent(entry, { type: "tool", name: tool, at });
     entry.lastLoggedTool = tool;
@@ -1240,7 +1240,7 @@ export class SessionManager {
     return {
       sessionId,
       state: info.state,
-      event: channelEventFor(info).event,
+      event: sessionEventFor(info).event,
       reason: isTerminalState(info.state) && info.state !== "COMPLETED" ? info.reason : null,
       detail: info.detail,
       // The resolved chain, both halves: what the caller asked for, and the pinned
@@ -1523,7 +1523,7 @@ export class SessionManager {
     return {
       sessionId: info.sessionId,
       state: info.state,
-      event: channelEventFor(info).event,
+      event: sessionEventFor(info).event,
       reason: info.reason,
       detail: info.detail,
       model: info.model,
@@ -1680,7 +1680,7 @@ export class SessionManager {
         wait: "closed",
         since: entry.waitSince ?? at,
         at,
-        to: channelEventFor(snap).event,
+        to: sessionEventFor(snap).event,
       });
       entry.waitSince = null;
     }
@@ -1695,7 +1695,7 @@ export class SessionManager {
     entry: SessionEntry,
     line:
       | { wait: "open"; since: string; turns: number }
-      | { wait: "closed"; since: string; at: string; to: ChannelEventType }
+      | { wait: "closed"; since: string; at: string; to: SessionEventType }
   ): void {
     if (entry.waitLogBytes >= WAIT_LOG_LIMIT) return;
     const payload = `${JSON.stringify(line)}\n`;

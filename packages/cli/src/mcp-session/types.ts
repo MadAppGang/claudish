@@ -1,20 +1,20 @@
-// ─── Channel Mode Types ──────────────────────────────────────────────────────
+// ─── MCP Session Types ───────────────────────────────────────────────────────
 
 import type { FailureReason, PaneSessionOptions, SlotState } from "../pane/index.js";
 
 /**
- * Every value the channel wire's `event` field may carry, as a runtime list so a
+ * Every value a session row's `event` field may carry, as a runtime list so a
  * test can walk it (`event-task-status.test.ts` checks each one against
- * `EVENT_TO_TASK_STATUS`). `ChannelEventType` is derived from it.
+ * `EVENT_TO_TASK_STATUS`). `SessionEventType` is derived from it.
  *
- * It is its own union, derived from the session's `SlotState` by `channelEventFor`
+ * It is its own union, derived from the session's `SlotState` by `sessionEventFor`
  * (session-manager.ts): the stream-json `SessionStatus` it once mirrored is gone with
  * that transport. 10.4.0's `finishing` is not here (architecture §20.3 item 5, RB1): a
  * pane session decides a one-shot verdict at settle, so the "exiting" interval it named
  * does not exist; the wait for Claude Code's end-of-turn record is `activity:"finishing"`
  * on a RUNNING row.
  */
-export const CHANNEL_EVENT_TYPES = [
+export const SESSION_EVENT_TYPES = [
   "starting",
   "running",
   "tool_executing",
@@ -28,17 +28,17 @@ export const CHANNEL_EVENT_TYPES = [
 ] as const;
 
 /**
- * The values the channel wire's `event` field may carry.
+ * The values a session row's `event` field may carry.
  *
  * `EVENT_TO_TASK_STATUS` (mcp-server.ts) maps each onto SEP-1686's 5-value
  * `TaskStatus`; it is a `Record` over this type, so an event without a projection is a
  * compile error. `timeout` has its own key (→ `failed`): before it existed the timeout
  * path fell through to `?? "working"` and reported a dead session as still working.
  */
-export type ChannelEventType = (typeof CHANNEL_EVENT_TYPES)[number];
+export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
 
 /**
- * One channel session, in memory (architecture §3.3). Persisted as `meta.json` through
+ * One MCP session, in memory (architecture §3.3). Persisted as `meta.json` through
  * `toMetaRecord`, which keeps every 10.4.0 key under its 10.4.0 name (the magus monitor
  * reads them) and adds the pane keys.
  */
@@ -101,7 +101,7 @@ export interface SessionInfo {
   /**
    * The Claude Code conversation live in the calling window when
    * create_session ran: the host session record's `sessionId`, else
-   * `CLAUDE_CODE_SESSION_ID` (channel/parent-session.ts). Absent when neither
+   * `CLAUDE_CODE_SESSION_ID` (mcp-session/parent-session.ts). Absent when neither
    * is a well-formed id.
    */
   parentClaudeSessionId?: string;
@@ -114,7 +114,7 @@ export interface SessionInfo {
 export interface SessionCreateOptions {
   /**
    * The model as the caller asked for it. This is the session's DISPLAY
-   * identity — `SessionInfo.model`, channel `meta.model`, `list_sessions` — and
+   * identity — `SessionInfo.model`, the session's `meta.model`, `list_sessions` — and
    * the agent correlates on it, so it is never rewritten.
    */
   model: string;
@@ -179,7 +179,7 @@ export interface SessionManagerOptions {
   terminalRetentionMs?: number;
   /**
    * Test override for the host pid recorded in `spawn.json`. Default:
-   * `hostPidFrom(process.env, process.ppid)` (channel/parent-session.ts). An
+   * `hostPidFrom(process.env, process.ppid)` (mcp-session/parent-session.ts). An
    * override records no `launcherPid`.
    */
   hostPid?: number;

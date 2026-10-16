@@ -5,7 +5,7 @@
  * instead of having to open `status.json` or `get_diagnostics`.
  *
  * `reasonDetail` is pure; both row builders (team's `toSlotRow` / `teamRunRowFromDisk`
- * and the channel's `sessionRowOf`) call it. `upstreamRecordsFor` is the one bounded
+ * and the MCP session manager's `sessionRowOf`) call it. `upstreamRecordsFor` is the one bounded
  * read of the upstream-error capture file, done only when the rule can use it.
  *
  * Only the provider's `error.message` is ever lifted out of an upstream body: the body

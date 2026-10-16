@@ -6,7 +6,7 @@ Every MCP `team` slot (`run`, `run-and-judge` and the judge children), every CLI
 over that pane's socket. There is no `-p`, no `--stdin`, no stream-json and no positional prompt
 anywhere in that path. The driver is `packages/cli/src/pane/`; its public surface is
 `pane/index.ts` and its live object is `PaneSession`. Team (`team-orchestrator.ts`) and the
-channel (`channel/session-manager.ts`) are its two owners.
+MCP sessions (`mcp-session/session-manager.ts`) are its two owners.
 
 One exception: CLI `--grid` (`team-grid.ts`) still launches `claudish --model X -y --quiet
 '<prompt>'` print-mode children in a VISIBLE magmux with `-w`. It is a viewer for a human, not
@@ -265,7 +265,7 @@ dialog also needs the screen: `hasChoiceDialog` is a CLOSED list (R3-H1) — a n
 below the last `⏺` block, and no input box. An unrecognised layout is "not a dialog", an honest
 unknown, never `blocked`: numbered prose with a `No, …(esc)` line over a running Bash is a captured
 negative fixture. The owner decides what a block means: team fails the slot `blocked` with the
-question as its detail (D19, team has no answering verb); the channel waits in AWAITING_INPUT or
+question as its detail (D19, team has no answering verb); an MCP session waits in AWAITING_INPUT or
 AWAITING_PERMISSION. A caller reaches a permission dialog only through `--permission-mode plan`:
 `-y` beats `--permission-mode default`, and `--no-auto-approve` is reserved.
 
@@ -488,7 +488,7 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   300 ms apart, so N REPLs do not write `~/.claude.json` in the same instant.
 - **No claudish timer ends a team slot after its prompt was accepted.** Boot and admission bound
   only the time before any work exists. Stop hooks and background agents are waited for without a
-  bound. A channel session's `timeout_seconds` is the caller's own deadline and the only
+  bound. An MCP session's `timeout_seconds` is the caller's own deadline and the only
   post-acceptance timer. See [`team-lifecycle.md`](team-lifecycle.md).
 
 ## The phase table

@@ -10,7 +10,7 @@ For shipped features see `CLAUDE.md`; for the engineering rationale behind them 
 
 Status: **removed** (10.7.0). The server no longer declares `experimental: {"claude/channel": {}}`
 and sends no `notifications/claude/channel` frame; hosts poll `list_sessions` and read the session
-records. Rationale and what replaced each fact: `ai-docs/architecture/mcp-channel.md` ("Push
+records. Rationale and what replaced each fact: `ai-docs/architecture/mcp-sessions.md` ("Push
 notifications were removed").
 
 The old phases are closed with it: Phase 1 (the SEP-1686 forward-compat fields `task_id`,
@@ -26,7 +26,7 @@ default, drop the legacy method) have no legacy method left to migrate from.
   (`modelcontextprotocol/typescript-sdk#1041`).
 - A live `create_session` run shows the completion arriving in the orchestrator agent's context.
 
-**Effort if triggered**: small. The facts are already in `SessionManager` (`channelEventFor`, the
+**Effort if triggered**: small. The facts are already in `SessionManager` (`sessionEventFor`, the
 `waits.jsonl` transitions); a push is one subscriber on the pane's `onTransition` and `onChange`
 hooks plus a payload builder and its wire-format test.
 
@@ -79,7 +79,7 @@ The conclusion drawn at the time — that this would both fire into a void and d
 
 ### Re-measured 2026-07-29 against Claude Code **2.1.220** — one blocker is gone, one is confirmed harder
 
-Probes: `packages/cli/src/channel/test-helpers/capability-probe.ts` (agent context, `-p`) and
+Probes: `packages/cli/src/mcp-session/test-helpers/capability-probe.ts` (agent context, `-p`) and
 `progress-regression-mock.ts` driven through an interactive tmux session (terminal UI).
 Full findings: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`.
 
@@ -124,7 +124,7 @@ that reaches a reader. It is not, however, a substitute on the *liveness* axis, 
 - Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md` (lost — same)
 - Idle-timeout measurement against 2.1.231 (the three-arm probe): `ai-docs/reports/mcp-progress-keepalive/findings.md`
 - Keepalive implementation design: `ai-docs/reports/mcp-progress-keepalive/architecture.md`
-- Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
+- Test artifacts: `packages/cli/src/mcp-session/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
 - Field evidence of the transport-kill bug the latch defends against: <https://github.com/GLips/Figma-Context-MCP/issues/362>
 - Stale `progressToken` claim: <https://github.com/anthropics/claude-code/issues/58687>
 
@@ -291,7 +291,7 @@ If a trigger condition has been met, move the item to *In Progress* and create t
 
 ## Consolidate the two channel test-helper stand-ins
 
-`packages/cli/src/channel/test-helpers/` now holds **two** helpers that can echo argv:
+`packages/cli/src/mcp-session/test-helpers/` now holds **two** helpers that can echo argv:
 
 - `fake-claudish.ts` — the original; consumed by BOTH `channel/session-manager.test.ts` and
   `team-orchestrator.test.ts`, the latter via `--print-argv` to assert the exact spawn

@@ -202,7 +202,7 @@ function redactLogLine(message: string, timestamp: string): string {
  * two claudish processes that start in the same second therefore compute the
  * same path and each wipes what the other wrote.
  *
- * That is not a rare race: `team` and channel `create_session` spawn their
+ * That is not a rare race: `team` and `create_session` spawn their
  * children together, so a three-model run reliably lands three processes inside
  * one second. Measured 2026-09-16 on exactly such a run, the surviving file held
  * three interleaved `[Proxy] Server started` lines on three different ports and

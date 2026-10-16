@@ -122,7 +122,7 @@ export const LEGACY_PREFIX_PATTERNS = _getLegacyPrefixPatterns();
  *
  *   zgo@minimax-m2.5+mm@MiniMax-M2.5+or@minimax/minimax-m2.5
  *
- * Why a chain form exists at all: `team` and channel `create_session` spawn child
+ * Why a chain form exists at all: `team` and `create_session` spawn child
  * claudish processes with an EXPLICIT spec rather than the bare name, because a
  * bare name makes the child re-resolve credentials and open its own 1Password SDK
  * client — and that handshake is arbitrated machine-wide, so N children racing it

@@ -50,7 +50,7 @@ Measurements and the upstream status are in `ai-docs/architecture/headless-vs-in
 
 ---
 
-## Headless panes: MCP `team` and channel sessions
+## Headless panes: MCP `team` and MCP sessions
 
 This is what claudish uses magmux for most. Every slot of an MCP `team` run, every CLI
 `claudish team` / `--team --mode json` slot, and every `create_session` session runs as an
@@ -74,8 +74,8 @@ has finished, and closes the pane when the slot or session ends.
 | `team(mode:"list")` | every run the MCP server holds, with one row per slot: state, activity, idle seconds, tokens |
 | `team(mode:"status", path)` | one run's rows under `run.slots` |
 | `team(mode:"capture", path, slot)` | that slot's current 160×50 screen |
-| `capture_session(session_id)` | a channel session's current 160×50 screen |
-| `list_sessions` | every channel session, same row shape |
+| `capture_session(session_id)` | an MCP session's current 160×50 screen |
+| `list_sessions` | every MCP session, same row shape |
 
 A capture carries a `seq` that grows with every visible change; pass it back as `since_seq` and an
 unchanged screen answers `{unchanged: true}`, so polling about once a second is cheap. See

@@ -110,7 +110,7 @@ export interface ConfigOverrideDeps {
 
 /**
  * Decide the override for a run. Precedence: an explicit `--config` flag wins;
- * otherwise `CLAUDISH_CONFIG` (which is how spawned team/channel child claudish
+ * otherwise `CLAUDISH_CONFIG` (which is how spawned team/MCP session child claudish
  * processes inherit the parent's override).
  *
  * Both `--config <file>` and `--config=<file>` are accepted. A flag with no

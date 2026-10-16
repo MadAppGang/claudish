@@ -228,7 +228,7 @@ config TUI's Routing header and its own interaction with `--config`, which nothi
 **How the flag travels.** `index.ts` strips `--default-provider` from argv and exports its value
 as `CLAUDISH_DEFAULT_PROVIDER` before `parseArgs` and before any subcommand runs
 (`planDefaultProviderFlag`). After that the env var is the flag's only carrier: `route()`, the
-proxy, `--probe` and every child claudish (team, channel sessions) read it there. It cannot be read
+proxy, `--probe` and every child claudish (team, MCP sessions) read it there. It cannot be read
 any later, for two reasons: `--probe` runs and exits inside `parseArgs`'s argv loop, and a child
 process inherits env, not argv. `--default-provider ""` exports an empty value, which disables
 the hop. The export runs after `--op-env` and `--op`, which overwrite env unconditionally, so the

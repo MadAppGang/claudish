@@ -815,7 +815,7 @@ export function createTempSettingsFile(
   const tempPath = join(claudishDir, `settings-${timestamp}.json`);
 
   // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
-  // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
+  // MCP session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
   // An enclosing claudish session's PUBLISHED file (inherited by a claudish run from its
   // Bash tool) is not an assignment — see assignedTokenFile. Resolved by the same
   // function as the tracker and the summary, so the status line can never be pointed at
@@ -2269,10 +2269,10 @@ function setupSignalHandlers(
       // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
       //
       // This one line manufactured the 900-second silent success. A supervisor
-      // (the channel session manager's timeout, `team`'s deadline, a CI runner)
+      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
       // would SIGTERM the process group, this handler would run its cleanup and
       // exit 0, and every layer above read that 0 as "the run succeeded". The
-      // channel manager then let the exit UPGRADE a state its timeout handler
+      // session manager then let the exit UPGRADE a state its timeout handler
       // had already recorded as failed, and wrote `status: "completed"` to
       // meta.json for a session that had been killed. A graceful shutdown is
       // still a shutdown: the process did not finish its work, and its exit

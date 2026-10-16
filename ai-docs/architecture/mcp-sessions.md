@@ -5,9 +5,9 @@
 # MCP sessions and tool surface
 
 The MCP server runs async model sessions (`create_session` and the other session tools) that the
-host polls, plus `run_prompt` and `team`. The file keeps its old name, `mcp-channel.md`, because
-`CLAUDE.md` and the index link to it; the channel push it was named for is gone (see "Push
-notifications were removed").
+host polls, plus `run_prompt` and `team`. It was `mcp-channel.md`, named for the channel push,
+which is gone (see "Push notifications were removed"); the module it describes moved from
+`packages/cli/src/channel/` to `packages/cli/src/mcp-session/` in the same rename.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/
 and `serverInfo.version` is `VERSION` from `version.ts` (generated from `packages/cli/package.json`;
 it said `9.0.0` until 10.7.0).
 
-## Components (`packages/cli/src/channel/`)
+## Components (`packages/cli/src/mcp-session/`)
 
 - **SessionManager** — the sessions' policy and records: creates sessions, owns the queue of
   `send_input`, decides a turn's verdict, writes the session records, enforces `timeout_seconds`
@@ -111,7 +111,7 @@ in the background (worst case ≈ 12 s). A second call returns the same state wi
 
 **`timeout` is its own state, never `failed`.** A session killed by its own `timeout_seconds` is
 TIMEOUT in memory, `meta.json` `status: "timeout"`, and `to: "timeout"` in `waits.jsonl`. Until
-Phase 3 of the channel work the channel wire said `failed` for it, because the SEP-1686 projection
+Phase 3 of the channel work the channel push said `failed` for it, because the SEP-1686 projection
 had no `timeout` key and fell through to `working`; that projection (`mapEventToTaskStatus`) was
 deleted with the push in 10.7.0, and the records never had the split.
 
@@ -141,7 +141,7 @@ not answered (RB2).
 ```
 
 `since` keys the wait (the `closed` line repeats it); `turns` is `turnsCompleted` at the
-open; `to` is the channel event of the new state (`channelEventFor`: `running`, `tool_executing`,
+open; `to` is the session event of the new state (`sessionEventFor`: `running`, `tool_executing`,
 `completed`, `failed`, `cancelled`, `timeout`, …), never another wait (the phase table has no
 wait-to-wait edge). The vocabulary outlived the push it was named for: the field is a record
 contract the monitor reads, so it keeps those words. It is append-only because an observer polling the directory (the magus
@@ -187,7 +187,7 @@ sessions directory and reports progress to the Claude Code window that started a
 `mcpPid` is also the pane record's owner, and the watchers make the monitor's liveness inference
 sound: when the writer dies, its panes die with it.
 
-**`hostPid` is structural, computed once at startup** (`hostPidFrom`, `channel/parent-session.ts`).
+**`hostPid` is structural, computed once at startup** (`hostPidFrom`, `mcp-session/parent-session.ts`).
 A compiled binary or `bun src/index.ts` is the direct child of Claude Code, so `hostPid` is
 `process.ppid`. An npm/bun global install runs Claude Code → `node bin/claudish.cjs` → `bun
 dist/index.js`, so the launcher puts `CLAUDISH_LAUNCHER_PID` (itself) and
@@ -198,7 +198,7 @@ environment strips the pair and `CLAUDE_CODE_SESSION_ID`, so a claudish MCP serv
 pane cannot inherit the host's identity either.
 
 **`parentClaudeSessionId` is the host session record's id, read once per call**
-(`parentSessionForCall`, `channel/parent-session.ts`). At `create_session` and
+(`parentSessionForCall`, `mcp-session/parent-session.ts`). At `create_session` and
 `team(mode:"run")` time claudish reads `<configDir>/sessions/<hostPid>.json` (`configDir` is
 `CLAUDE_CONFIG_DIR`, else `$HOME/.claude`) and records its `sessionId` when the file parses,
 its `pid` equals `hostPid` and the id is well formed. Only when no record can be read does it
@@ -332,7 +332,7 @@ answers the session's current 160×50 screen `{seq, cols, rows, cursor, lines, f
 at about 1 Hz. Their errors are a JSON `ContractError`. `team` gains the same verbs as modes
 (`list`, `status`, `capture`, `cancel`).
 
-The tool list is pinned by an EXACT frozen array in `channel/e2e-channel.test.ts`, so
+The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-channel.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
 it is a wire contract, and an accidental change to the tool surface should be loud.
 
@@ -354,7 +354,8 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 14 tools`, but an MCP host does not show stderr.
+stderr startup line shows `tools: channel, 14 tools` after the unknown-value warning, but an MCP
+host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
 
@@ -470,7 +471,7 @@ the same facts from the records. The frames were never a keepalive either (next 
 Where the facts are now: `list_sessions` rows (`state`, `activity`, `idle_seconds`, accounting),
 `get_output`, `get_diagnostics`, `capture_session`, and the session records (`spawn.json`,
 `waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which the magus monitor reads and which
-are byte-identical to before. `waits.jsonl` keeps the channel-event vocabulary in its `to` field.
+are byte-identical to before. `waits.jsonl` keeps the same event names in its `to` field.
 `team` progress is `team(mode:"status")`. The `notifications/progress` keepalive stays.
 
 The trigger to reconsider is in `ROADMAP.md`: Claude Code delivering `notifications/tasks/status`
@@ -482,7 +483,7 @@ Diagnostic script: `scripts/pane-drive.ts` drives one pane session from the comm
 ## Testing
 
 ```bash
-bun test ./packages/cli/src/channel/
+bun test ./packages/cli/src/mcp-session/
 ```
 
 Sessions are panes, so the suites that start one run a REAL headless magmux with the pane
@@ -491,7 +492,7 @@ fake child (`pane/test-helpers/fake-interactive-child.ts`) as `CLAUDISH_BIN`, un
 socket, record or launcher directory is left. Without magmux they skip with "magmux not installed —
 not checked". `testing.md` has the rules.
 
-- `session-manager.test.ts` — the pure seams (`channelEventFor` over every `SlotState`,
+- `session-manager.test.ts` — the pure seams (`sessionEventFor` over every `SlotState`,
   `toMetaRecord`, `sessionRowOf`, `normaliseTimeoutSeconds`), the two-generation disk reader, the
   hostile-id and bounded-read guards, live pane sessions (one-shot and promptless `waits.jsonl`
   transitions, a send queued while STARTING (G7) or RUNNING, the timeout staying TIMEOUT in memory,

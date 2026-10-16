@@ -338,7 +338,7 @@ const startsInFlight = new Map<StartFlight, Promise<unknown>>();
 const teamRuns = new Map<string, LiveTeamRun>();
 /** resolved path → run_id of the newest run started there */
 const newestRunByPath = new Map<string, string>();
-export const SETTLED_RUN_RETENTION_MS = 30 * 60_000; // same as channel TERMINAL_RETENTION_MS
+export const SETTLED_RUN_RETENTION_MS = 30 * 60_000; // same as the MCP session manager's TERMINAL_RETENTION_MS
 export const MAX_SETTLED_RUNS = 20;
 /** Slots of one run spawn this far apart, so N REPLs do not write ~/.claude.json at once (X-L8). */
 export const BOOT_STAGGER_MS = 300;

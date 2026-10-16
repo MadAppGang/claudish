@@ -26,11 +26,11 @@ lives in `ROADMAP.md`.
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, the frozen mod contract v1, the session registry
   read as telemetry (and why no in-child mod or argv prompt). Read before editing `pane/`, team spawn
-  or channel spawn
+  or MCP session spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-channel.md` — the 14-tool MCP surface and its four groups, sessions on panes (`send_input`
+- `mcp-sessions.md` — the 14-tool MCP surface and its four groups, sessions on panes (`send_input`
   queueing, `capture_session`, the session records the magus monitor reads), `run_prompt`'s Claude
   Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
@@ -233,7 +233,7 @@ for rationale. Three write-ups already died this way.
 
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->
-- Don't run claudish directly in main bash — use dedicated channel sessions or `/delegate`
+- Don't run claudish directly in main bash — use dedicated MCP sessions (`create_session`) or `/delegate`
 <!-- learned: 2026-09-02 source: near_miss -->
 - NEVER `git stash` from a worktree. The stash stack is shared with the main checkout and
   every sibling worktree, and concurrent sessions push and pop it. A bare push/pop pair is

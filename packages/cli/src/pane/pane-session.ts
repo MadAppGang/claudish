@@ -14,13 +14,13 @@
  *
  * No claudish timer ends a turn after its prompt was accepted (D10). The only bounds are
  * boot (90 s) and admission of the CREATED prompt (30 s), before any work exists, and a
- * channel session's own `timeoutMs`.
+ * MCP session's own `timeoutMs`.
  */
 
 import type { ChildProcess } from "node:child_process";
 import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { claudeConfigDir } from "../channel/parent-session.js";
+import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
 import type { CaptureResult, CaptureUnchanged, FailureReason, SlotState } from "./contract.js";
@@ -173,7 +173,7 @@ export interface PaneSessionOptions {
   bootTimeoutMs?: number;
   /** initialDelivery only */
   admitTimeoutMs?: number;
-  /** whole-session deadline → TIMEOUT (channel only; team never passes it) */
+  /** whole-session deadline → TIMEOUT (MCP sessions only; team never passes it) */
   timeoutMs?: number;
   /** coalesced ≤ 4/s */
   onChange?: (snap: PaneSnapshot, prev: SlotState) => void;

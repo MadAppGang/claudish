@@ -95,8 +95,8 @@ like a confident answer. Prefer "unknown" to a plausible guess in any automated 
 
 ## A fixture must live where the test lives, never in scratch space
 
-`channel/test-helpers/captured-stream-json.ts` reads real captured stream-json frames at
-MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
+`channel/test-helpers/captured-stream-json.ts` (the directory is now `mcp-session/`) read real
+captured stream-json frames at MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
 `ai-docs/sessions/dev-arch-*/probes/` — where the probe that recorded them happened to write.
 
 `.gitignore:56` excludes `ai-docs/sessions/`. So the files existed on exactly one machine and
@@ -181,7 +181,7 @@ widen them to clear a red run: the budget is the entire assertion.
 
 MCP `team` slots and `create_session` run as interactive Claude Code in headless magmux panes
 (`pane-session.md`), so every suite that starts one — `pane/*.integration.test.ts`,
-`pane/pane-registry.test.ts`, the channel and team suites, `mcp-contract.e2e.test.ts`,
+`pane/pane-registry.test.ts`, the MCP session and team suites, `mcp-contract.e2e.test.ts`,
 `mcp-shutdown.e2e.test.ts` — runs a REAL `magmux --headless`. The transport's behaviour (frames,
 `exit` events, `close_pane`, slow-subscriber drops, socket paths) is magmux's, and a simulated
 magmux would test our model of it instead.

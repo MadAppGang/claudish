@@ -1,7 +1,7 @@
 export { ScrollbackBuffer } from "./scrollback-buffer.js";
 export {
   SessionManager,
-  channelEventFor,
+  sessionEventFor,
   normaliseTimeoutSeconds,
   sessionRowOf,
   toMetaRecord,
@@ -12,10 +12,10 @@ export type {
   SessionDiagnostics,
   SessionOutput,
 } from "./session-manager.js";
-export { CHANNEL_EVENT_TYPES } from "./types.js";
+export { SESSION_EVENT_TYPES } from "./types.js";
 export type {
   SessionInfo,
   SessionCreateOptions,
   SessionManagerOptions,
-  ChannelEventType,
+  SessionEventType,
 } from "./types.js";

@@ -222,7 +222,7 @@ which `--permission-mode default` produces no dialog (measured), and `--no-auto-
 reserved flag. A permission dialog therefore appears only for plan approval
 (`--permission-mode plan`). `PaneSession` recognises it, and AskUserQuestion, from a closed list of
 named dialog headers on the screen plus the pending tool in the transcript; team fails such a slot
-`blocked`, a channel session waits in `AWAITING_PERMISSION` or `AWAITING_INPUT` for `send_input`.
+`blocked`, an MCP session waits in `AWAITING_PERMISSION` or `AWAITING_INPUT` for `send_input`.
 
 ## What this means when you are writing code here
 
@@ -246,7 +246,7 @@ named dialog headers on the screen plus the pending tool in the transcript; team
 `run_prompt` (and each Claude entry of `compare_models`) on a bare Claude name runs
 `claudish -p --model <model> --output-format json --tools "" --strict-mcp-config
 --setting-sources "" --disable-slash-commands --no-session-persistence` with the prompt on stdin
-(`mcp/run-prompt-claude-code.ts`; the full rationale is in [`mcp-channel.md`](mcp-channel.md)
+(`mcp/run-prompt-claude-code.ts`; the full rationale is in [`mcp-sessions.md`](mcp-sessions.md)
 "`run_prompt`: two paths"). It has to be a Claude Code call because claudish may not read the
 Claude Code login itself, and it can be `-p` because none of what makes `-p` untrustworthy applies:
 

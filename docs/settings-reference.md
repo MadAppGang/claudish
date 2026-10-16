@@ -391,7 +391,7 @@ CLAUDISH_CONFIG=/abs/qa-config.json claudish --model glm@glm-4.6 "task"
 |---|---|
 | Precedence | The `--config` flag wins over `CLAUDISH_CONFIG`; a dangling `--config` (or one followed by another flag) is a usage error, not a silent fallback |
 | Flag visibility | Consumed and stripped before `parseArgs()`, so the child `claude` process never sees it |
-| Child processes | Re-exported as an absolute `CLAUDISH_CONFIG`, so `claudish` children spawned by team and channel modes inherit the same override |
+| Child processes | Re-exported as an absolute `CLAUDISH_CONFIG`, so `claudish` children spawned by team and MCP sessions inherit the same override |
 | Writes | `claudish config` saves target the override file — the machine config is never mutated with override-derived data |
 | Env vars | Still resolve first: a shell env var or `.env` entry beats the override file's `apiKeys` |
 | Scope | Config only. OAuth credential files (`kimi-oauth.json`, `gemini-oauth.json`, …) stay machine-level |
