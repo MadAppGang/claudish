@@ -174,6 +174,44 @@ describe.skipIf(!RESIZE_AVAILABLE)("pane resize through MCP (requires magmux res
     expect((await redrawn(id, 100, 40)).lines.some((l) => /─{99,}/.test(l))).toBe(true);
   }, T_TEST);
 
+  for (const growth of [
+    { name: "160x50 → 160x60", from: undefined, cols: 160 },
+    { name: "100x40 → 220x60", from: { cols: 100, rows: 40 }, cols: 220 },
+  ]) {
+    test(`row grow ${growth.name} preserves the input box and settles the next turn`, async () => {
+      const id = await create();
+      expect(await capture(id)).toMatchObject({ cols: 160, rows: 50 });
+      const firstPrompt = "answer before growing the pane";
+      await call("send_input", { session_id: id, text: firstPrompt });
+      await waitFor(async () => {
+        const s = await row(id);
+        return s?.state === "AWAITING_INPUT" && (s.turns_completed as number) >= 1;
+      }, { what: "first turn settled before grow", timeoutMs: 25_000, intervalMs: 100 });
+
+      if (growth.from) {
+        await resize(id, growth.from.cols, growth.from.rows);
+        await redrawn(id, growth.from.cols, growth.from.rows);
+      }
+      await resize(id, growth.cols, 60);
+      const c = await redrawn(id, growth.cols, 60);
+      expect(c).toMatchObject({ cols: growth.cols, rows: 60 });
+      const rule = new RegExp(`─{${growth.cols - 1},}`);
+      expect(c.lines.slice(-6).some((l) => rule.test(l))).toBe(true);
+      expect(c.lines.some((l) => l.includes("─") && /cwd • fake|bypass permissions on/.test(l)))
+        .toBe(false);
+
+      const prompt = "answer after growing the pane";
+      await call("send_input", { session_id: id, text: prompt });
+      const answer = `ANSWER contract-fake-model ${createHash("sha1").update(prompt).digest("hex").slice(0, 8)}`;
+      await waitFor(async () => {
+        const s = await row(id);
+        const screen = await capture(id);
+        return s?.state === "AWAITING_INPUT" && (s.turns_completed as number) >= 2
+          && screen.lines.some((l) => l.includes(answer));
+      }, { what: "grown pane turn settled with answer", timeoutMs: 25_000, intervalMs: 100 });
+    }, T_TEST);
+  }
+
   test("same size leaves the idle capture seq unchanged", async () => {
     const id = await create();
     await resize(id, 100, 40);

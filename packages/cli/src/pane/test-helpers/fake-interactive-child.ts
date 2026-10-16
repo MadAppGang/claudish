@@ -422,9 +422,12 @@ function fit(l: string): string {
 function render(): void {
   let out = "\x1b[H\x1b[2J";
   const rows = S.full ? S.full.slice(0, ROWS) : replRows();
+  let cursorRow = 0;
   rows.forEach((l, y) => {
     if (!l) return;
-    out += `\x1b[${y + 1};1H`;
+    // Claude Code walks down relatively; CUP here would hide stale scroll-region bugs.
+    if (y > cursorRow) out += `\r\x1b[${y - cursorRow}B`;
+    cursorRow = y;
     if (l.startsWith("\u0000ghost")) out += `❯ \x1b[2m${PLACEHOLDER}\x1b[22m`;
     else out += fit(l);
   });
