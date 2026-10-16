@@ -21,7 +21,6 @@ import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeSync } 
 import { homedir, hostname, platform, release } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { classifyConnectionError } from "../handlers/shared/connection-error.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import {
@@ -496,84 +495,115 @@ export class KimiOAuth {
 
     log("[KimiOAuth] Refreshing access token");
 
+    const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
+    const headers = {
+      "Content-Type": "application/x-www-form-urlencoded",
+      ...this.getPlatformHeaders(),
+    };
+    const body = new URLSearchParams({
+      client_id: OAUTH_CONFIG.clientId,
+      grant_type: "refresh_token",
+      refresh_token: this.credentials.refresh_token,
+    });
+
+    // The request and its body are network: a failure of either keeps its cause
+    // and the endpoint, so connection recovery classifies it, and the login on
+    // disk is left alone (the grok-oauth.ts split).
+    let response: Response;
+    let text: string;
     try {
-      const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
-      const headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        ...this.getPlatformHeaders(),
-      };
-
-      const body = new URLSearchParams({
-        client_id: OAUTH_CONFIG.clientId,
-        grant_type: "refresh_token",
-        refresh_token: this.credentials.refresh_token,
-      });
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw credentialHttpError(
-          `Token refresh failed: ${response.status} - ${errorText}`,
-          response.status
-        );
-      }
-
-      const tokens = (await response.json()) as TokenResponse;
-
-      // Update credentials (keep existing refresh token if new one not provided)
-      const updatedCredentials: KimiCredentials = {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token || this.credentials.refresh_token,
-        expires_at: Date.now() + tokens.expires_in * 1000,
-        scope: tokens.scope,
-        token_type: tokens.token_type,
-      };
-
-      this.saveCredentials(updatedCredentials);
-      this.credentials = updatedCredentials;
-
-      log(
-        `[KimiOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
-      );
-
-      return updatedCredentials.access_token;
-    } catch (e: any) {
-      log(`[KimiOAuth] Refresh failed: ${e.message}`);
-
-      // A token host that is down or busy (network fault, 429, 5xx) says
-      // nothing about the login. Keep the credentials and let the request
-      // retry; deleting them here turned a blip into a forced re-login.
-      if (isTransientCredentialError(e) || classifyConnectionError(e)) throw e;
-
-      // Delete invalid credentials
-      const credPath = this.getCredentialsPath();
-      if (existsSync(credPath)) {
-        unlinkSync(credPath);
-      }
-      this.credentials = null;
-
-      // FIX H4: Check for API key fallback (FR5 priority)
-      if (
-        process.env.MOONSHOT_API_KEY ||
-        process.env.KIMI_API_KEY ||
-        process.env.KIMI_CODING_API_KEY
-      ) {
-        log("[KimiOAuth] Falling back to API key mode");
-        // Return empty string to signal fallback to handler
-        // Handler will detect API key and use it instead
-        throw new Error("OAuth_FALLBACK_TO_API_KEY");
-      }
-
-      // No API key available, throw error with instructions
-      throw terminalCredentialError(
-        `OAuth credentials invalid. Please re-login or set API key:\n  - Run: claudish login kimi\n  - Or set: export MOONSHOT_API_KEY='your-api-key'\n\nDetails: ${e.message}`
+      response = await fetch(url, { method: "POST", headers, body });
+      text = await response.text();
+    } catch (e) {
+      log(`[KimiOAuth] Could not reach ${url}: ${(e as Error).message}`);
+      throw Object.assign(
+        new Error(`Could not reach ${url} to refresh the Kimi token: ${(e as Error).message}`, {
+          cause: e,
+        }),
+        { claudishEndpoint: url }
       );
     }
+
+    if (!response.ok) {
+      const failure = credentialHttpError(
+        `Token refresh failed: ${response.status} - ${text}`,
+        response.status
+      );
+      // A token host that is down or busy (429, 5xx) says nothing about the
+      // login: keep it, and let the request retry.
+      if (isTransientCredentialError(failure)) throw failure;
+      // A CLASSIFIED rejection of the grant (400/401/403): the only case that
+      // deletes the stored login.
+      return this.rejectLogin(failure);
+    }
+
+    // A 2xx that is not JSON is a gateway answering for the token host:
+    // retryable, and the login stays. A 2xx JSON with no access token is a
+    // protocol failure: terminal, with nothing persisted and nothing deleted.
+    let tokens: Partial<TokenResponse>;
+    try {
+      tokens = JSON.parse(text) as Partial<TokenResponse>;
+    } catch {
+      throw Object.assign(
+        new Error(
+          "Kimi token refresh answered with a body that is not JSON; retrying will usually work."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
+      );
+    }
+    if (typeof tokens?.access_token !== "string" || tokens.access_token.length === 0) {
+      throw terminalCredentialError(
+        "The Kimi token host answered without an access token; nothing was saved. Run `claudish login kimi` if this persists."
+      );
+    }
+
+    // Update credentials (keep existing refresh token if new one not provided)
+    const expiresIn = typeof tokens.expires_in === "number" ? tokens.expires_in : 3600;
+    const updatedCredentials: KimiCredentials = {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || this.credentials.refresh_token,
+      expires_at: Date.now() + expiresIn * 1000,
+      scope: tokens.scope ?? this.credentials.scope,
+      token_type: tokens.token_type ?? this.credentials.token_type,
+    };
+
+    this.saveCredentials(updatedCredentials);
+    this.credentials = updatedCredentials;
+
+    log(
+      `[KimiOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
+    );
+
+    return updatedCredentials.access_token;
+  }
+
+  /**
+   * The token host REJECTED the grant (a classified 400/401/403): the stored
+   * login cannot recover, so it is deleted, and the caller gets the fallback
+   * signal or the login instruction.
+   */
+  private rejectLogin(failure: Error): never {
+    log(`[KimiOAuth] Refresh rejected: ${failure.message}`);
+    const credPath = this.getCredentialsPath();
+    if (existsSync(credPath)) {
+      unlinkSync(credPath);
+    }
+    this.credentials = null;
+
+    // FIX H4: Check for API key fallback (FR5 priority)
+    if (
+      process.env.MOONSHOT_API_KEY ||
+      process.env.KIMI_API_KEY ||
+      process.env.KIMI_CODING_API_KEY
+    ) {
+      log("[KimiOAuth] Falling back to API key mode");
+      throw new Error("OAuth_FALLBACK_TO_API_KEY");
+    }
+
+    // No API key available, throw error with instructions
+    throw terminalCredentialError(
+      `OAuth credentials invalid. Please re-login or set API key:\n  - Run: claudish login kimi\n  - Or set: export MOONSHOT_API_KEY='your-api-key'\n\nDetails: ${failure.message}`
+    );
   }
 
   /**
