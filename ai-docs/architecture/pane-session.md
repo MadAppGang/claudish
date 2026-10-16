@@ -619,6 +619,21 @@ type and new fields may only be added.
   bodies carry `user_id`. One pure function, `reasonDetail()` in `pane/reason-detail.ts`, computes
   it for both row builders (`toSlotRow` / `teamRunRowFromDisk` and `sessionRowOf`); the capture file
   is read (16 KB tail) only for a terminal `api_error` row.
+- `recent` (added within v1, 2026-10-17) is the last 20 steps of the current turn, oldest first,
+  each `{at, kind, tool, summary}`: one per main-chain assistant block after the witness (text,
+  thinking, tool_use; an AskUserQuestion tool_use is `kind:"ask"`), `at` the record's own
+  timestamp. It exists so the mod can draw a running line (a badge, the step's words, and its
+  duration to the next step's `at`) without polling fast enough to see every step: at 1 Hz,
+  `activity` alone drops any tool shorter than the poll interval and can say `Bash` but never
+  which command. The summary is ONE line, at most 100 characters, from ONE named input field
+  (`file_path` for Read/Edit/Write, the first line of `command` for Bash, `pattern` for
+  Grep/Glob, `query`, `url`, `description` for Task/Agent, the first question for an ask, the
+  first line for text and thinking; empty for any other tool), and it goes through
+  `redactSecrets`: a Bash line or a url can hold a token. Nothing from a tool result is ever
+  read. Paths keep the home directory, unlike `report_error`'s sanitizer, because the rows never
+  leave the machine. Null before the first step and on rows built from disk (no live follower,
+  as for `activity`); kept after the turn settles until the next turn opens. `pane/slot-steps.ts`
+  (`stepOf`), fed by `applyAssistant` in `pane/transcript-follower.ts`.
 - Verbs: `team(mode="list")` → `{contract_version, capabilities, runs}`; `team(mode="status")` adds
   `contract_version`, `capabilities` and a `run` row to its payload; `team(mode="cancel")` and
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`

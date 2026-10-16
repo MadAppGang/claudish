@@ -1,6 +1,6 @@
 // ─── MCP Session Types ───────────────────────────────────────────────────────
 
-import type { FailureReason, PaneSessionOptions, SlotState } from "../pane/index.js";
+import type { FailureReason, PaneSessionOptions, SlotState, SlotStep } from "../pane/index.js";
 
 /**
  * Every value a session row's `event` field may carry, as a runtime list so a
@@ -82,6 +82,8 @@ export interface SessionInfo {
   idleSeconds: number | null;
   /** RUNNING: tool name, "thinking", "background" or "finishing"; a blocked tool; else null. */
   activity: string | null;
+  /** SlotRow.recent: the current turn's last steps; null before the first and when read from disk. */
+  recent: SlotStep[] | null;
   /** Set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). */
   reason: FailureReason | null;
   detail: string | null;

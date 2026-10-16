@@ -154,6 +154,25 @@ export interface SlotRow {
   activity: string | null;
   /** informational only (do not parse, no verb takes it); null if no pane was ever spawned */
   pane: string | null;
+  /** [additive] the last RECENT_STEP_LIMIT (20) steps of the current turn, oldest first, from the
+   * main-chain transcript; null before the first step and on rows built from disk. Kept after the
+   * turn settles until the next turn starts. Each summary is one line (≤ 100 chars), credentials
+   * masked; never a whole tool input and nothing from a tool result. `pane/slot-steps.ts` */
+  recent: SlotStep[] | null;
+}
+
+/** One step of a slot's turn: an assistant text, thinking or tool_use block. */
+export interface SlotStep {
+  /** ISO 8601: the transcript record's own timestamp */
+  at: string;
+  /** "ask" is a tool_use of AskUserQuestion */
+  kind: "text" | "thinking" | "tool" | "ask";
+  /** the tool name for "tool" and "ask"; null for "text" and "thinking" */
+  tool: string | null;
+  /** text and thinking: the first line; tool: the input naming its target (file_path, the first
+   * line of a Bash command, pattern, query, url, description) or "" for any other tool; ask: the
+   * first question */
+  summary: string;
 }
 
 /** list_sessions row = SlotRow + session fields. `slot` equals `session_id`. */

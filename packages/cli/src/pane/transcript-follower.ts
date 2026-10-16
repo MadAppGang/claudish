@@ -39,6 +39,8 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { SlotStep } from "./contract.js";
+import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
 
 export type Witness =
   | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
@@ -87,6 +89,8 @@ export interface TurnView {
   lastChatOffset: number | null;
   /** a local command's `<local-command-stdout>` after its witness (ANSI removed); null otherwise */
   localCommandOutput: string | null;
+  /** the last RECENT_STEP_LIMIT steps of this turn, oldest first (SlotRow.recent); [] before the first */
+  recent: SlotStep[];
 }
 
 export interface SessionFacts {
@@ -145,6 +149,8 @@ interface TurnState {
   read: ReadState | null;
   lastChatOffset: number | null;
   localOutput: { text: string; offset: number } | null;
+  /** at most RECENT_STEP_LIMIT, oldest dropped first */
+  steps: SlotStep[];
 }
 
 export interface FollowerState {
@@ -390,7 +396,15 @@ function applyAssistant(state: FollowerState, t: TurnState, r: Rec, offset: numb
   t.waking = false;
   t.apiError = isApiError ? apiErrorOf(r) : null;
   if (isApiError) return;
-  for (const b of m.content ?? []) applyAssistantBlock(state, t, b, offset);
+  const at = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
+  for (const b of m.content ?? []) {
+    applyAssistantBlock(state, t, b, offset);
+    const step = stepOf(b, at);
+    if (step) {
+      t.steps.push(step);
+      if (t.steps.length > RECENT_STEP_LIMIT) t.steps.shift();
+    }
+  }
 }
 
 function apiErrorOf(r: Rec): TurnView["apiError"] {
@@ -607,6 +621,7 @@ export function openTurnState(
     read: t.delivery ? newReadState(t.delivery) : null,
     lastChatOffset: null,
     localOutput: null,
+    steps: [],
   });
   return state;
 }
@@ -660,6 +675,7 @@ export function turnView(t: TurnState): TurnView {
     preambleBytes,
     lastChatOffset: t.lastChatOffset,
     localCommandOutput: t.localOutput?.text ?? null,
+    recent: [...t.steps],
   };
 }
 

@@ -49,5 +49,6 @@ export function toSlotRow(
           ? `${snap.activity}: agent_count_mismatch`
           : snap.activity,
     pane: snap.paneId || null,
+    recent: snap.recent,
   };
 }
