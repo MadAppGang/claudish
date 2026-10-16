@@ -115,12 +115,19 @@ route: a pane child receives every prompt the way a user gives it — typed, pas
 ## Boot: read from screen content, and never accept a dialog
 
 Boot is ready when the screen shows the REPL input box — a full-width `─` rule, a row starting
-`❯` + U+00A0, a second rule — with nothing typed, for 500 ms. Placeholder text in the box carries
+`❯` + U+00A0, a second rule — with nothing typed, for 3 s (`REPL_STABLE_MS`). Placeholder text in the box carries
 magmux attribute 2 (faint) and does not count as typed. Under `--agent` the top rule carries the
 agent's name at its right end (`──── dev:reviewer ─`); `isBoxRule` accepts that one label, and
 until 10.4.2 it did not, so every slot given an `agent` failed `boot_timeout` at 90 s with a ready
 box on screen (fixture `repl-boot-agent`). Measured spawn → empty box: 0.67–1.97 s
 with catalog warm-up off; the ≈11 s of earlier research included claudish's 4–7 s catalog warm-up.
+
+**Why 3 s and not 500 ms.** Claude Code draws the box and then, 1–2 s later, resets stdin (a
+termios cooked→raw blip). A line typed into that window is lost or sits in the box unsubmitted, in
+normal editor mode as well as vim. Measured 2026-10-16 (Claude Code 2.1.301, magmux 0.15.1, magmux
+owner): with the box stable for 500 ms and `--settings {"editorMode":"normal"}`, 2/2 team slots
+failed `prompt_not_accepted`, the retry failed one, and the third try got through. A stable box is
+not proof the child reads its input, so boot waits the reset out; the cost is ≈2.5 s per boot.
 
 What blocks boot is decided by **"no input box"**, and named by a closed list:
 
@@ -319,8 +326,13 @@ magmux refused it (`busy`, `pane_*`) or it was never written; when the REPLY was
 (`client_timeout`, `client_lost`) magmux may already have typed it, so the next frame decides: the
 line in the box (or, for an Enter send, its witness or echo) means it landed (`send_reply_lost`), and
 only an empty box is typed again — a blind retry put the line in the box twice and no witness could
-match. With no witness 10 s after delivery, a line still in the box gets one more Enter
-(`resent_enter`). A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
+match. With no witness 10 s after delivery, a line still in the box is cleared with ctrl-u, retyped
+once and submitted (`resent_enter`, then `retyped_prompt`): a line typed into the startup stdin
+reset (Boot, above) may show in the box without the child holding it as input, so a bare
+second Enter cannot be relied on to submit it. If ctrl-u left the line in
+place the remedy is one more Enter, and a box left holding anything else is `clear_failed` — a
+second copy is never typed. The retyped line is the same line, so the witness and read coverage
+are unchanged. A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
 input swallowed until Esc) gets an Esc 500 ms after delivery (`panel_dismissed`), and once the empty
 box is back its admission ends without a turn (`panel_command`); it used to wait the 30 s bound and
 was then taken as a degraded acceptance. The prompt a session was CREATED with must be accepted

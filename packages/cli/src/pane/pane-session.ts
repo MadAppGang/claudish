@@ -120,8 +120,14 @@ export const DEGRADED_ENTRY_MS = 10_000;
 export const SCREEN_SETTLE_QUIET_MS = 3_000;
 /** A panel command's screen must have been up this long after delivery before Esc. */
 const PANEL_SETTLE_MS = 500;
-/** The REPL box must read empty this long before boot is ready. */
-const REPL_STABLE_MS = 500;
+/**
+ * The REPL box must read empty this long before boot is ready. Claude Code draws its
+ * input box and then, 1–2 s later, resets stdin (a termios cooked→raw blip); a prompt
+ * typed into that window is lost or never submitted, in vim and normal editor mode
+ * alike. Measured 2026-10-16 (Claude Code 2.1.301, magmux 0.15.1): at 500 ms, 2/2 team
+ * slots failed `prompt_not_accepted`. 3 s waits the reset out.
+ */
+export const REPL_STABLE_MS = 3_000;
 /** A dialog or choice screen static this long blocks boot. */
 const BOOT_STATIC_MS = 5_000;
 const TICK_MS = 250;
@@ -949,8 +955,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   private async deliver(adm: Admission): Promise<void> {
-    const plan = adm.plan;
-    if (plan.mode !== "typed" && plan.mode !== "file" && plan.mode !== "command") return;
+    if (await this.typeAndSubmit(adm.plan)) adm.deliveredAt = Date.now();
+  }
+
+  /** Type the plan's line and submit it. False for a plan with nothing to type. */
+  private async typeAndSubmit(plan: Delivery): Promise<boolean> {
+    if (plan.mode !== "typed" && plan.mode !== "file" && plan.mode !== "command") return false;
     if (plan.mode === "command") {
       await this.typeLine(plan.line, false);
       await this.nextFrame(500);
@@ -961,7 +971,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     } else {
       await this.typeLine(plan.line, true);
     }
-    adm.deliveredAt = Date.now();
+    return true;
   }
 
   /**
@@ -1082,16 +1092,34 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return true;
   }
 
-  /** +10 s without a witness: the line still in the box → Enter again; a panel → Esc. */
+  /**
+   * +10 s without a witness: the line still in the box → clear it, retype it once and
+   * submit; a panel → Esc. The line sits unsent when it was typed into Claude Code's
+   * startup stdin reset (see `REPL_STABLE_MS`), where a bare second Enter cannot be relied
+   * on to submit it. Ctrl-U clears the box (phase2-captures keylog). The same line is
+   * retyped, so the turn's witness and read coverage are unchanged.
+   */
   private nudge(adm: Admission): void {
     const box = inputBox(this.screen);
     const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    if (!adm.resent && box && line && box.text.startsWith(line.slice(0, 40))) {
+    const head = line.slice(0, 40);
+    if (!adm.resent && box && line && box.text.startsWith(head)) {
       adm.resent = true;
       this.anomaly("resent_enter");
       void (async () => {
         if (box.menuOpen) await this.key("escape");
-        await this.key("enter");
+        await this.key("ctrl-u");
+        await this.nextFrame(500);
+        const after = inputBox(this.screen);
+        if (after && after.text === "") {
+          this.anomaly("retyped_prompt");
+          await this.typeAndSubmit(adm.plan);
+        } else if (after?.text.startsWith(head)) {
+          // Ctrl-U did not take: the old remedy, one more Enter. Never type a second copy.
+          await this.key("enter");
+        } else {
+          this.anomaly("clear_failed");
+        }
       })();
       return;
     }
