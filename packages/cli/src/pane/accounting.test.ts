@@ -53,6 +53,7 @@ function snap(over: Partial<PaneSnapshot> = {}): PaneSnapshot {
     claudeCodeVersion: null,
     shape: "one-shot",
     turnEndRecordMissing: false,
+    agentCountMismatch: false,
     ...over,
   };
 }
@@ -241,6 +242,34 @@ describe("toSlotRow (§8 B)", () => {
       acct
     );
     expect(resumed.activity).toBe("Bash");
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("the row's activity carries agent_count_mismatch only while the live snapshot flag holds", () => {
+    const acct = mergeAccounting(snap(), null);
+    const id = { slot: "05", model: "m", spawnModel: null };
+    const live = snap({ activity: "background", agentCountMismatch: true });
+    const resumed = snap({
+      activity: "Bash",
+      agentCountMismatch: false,
+      anomalies: ["agent_count_mismatch: claudish 2 pending, Claude Code 0"],
+    });
+    const settled = snap({
+      state: "COMPLETED",
+      phase: "COMPLETED",
+      activity: null,
+      agentCountMismatch: false,
+      anomalies: resumed.anomalies,
+    });
+    expect([
+      live.agentCountMismatch,
+      resumed.agentCountMismatch,
+      settled.agentCountMismatch,
+    ]).toEqual([true, false, false]);
+    // History alone cannot label a slot that resumed work or settled.
+    expect(toSlotRow(id, resumed, acct).activity).toBe("Bash");
+    expect(toSlotRow(id, settled, acct).activity).toBeNull();
+    expect(toSlotRow(id, live, acct).activity).toBe("background: agent_count_mismatch");
   });
 
   test("a pane that never spawned has pane null", () => {

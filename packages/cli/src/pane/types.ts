@@ -72,4 +72,10 @@ export interface PaneSnapshot {
    * the same name stays in `anomalies` as history.
    */
   turnEndRecordMissing: boolean;
+  /**
+   * LIVE: the unsettled turn's background agents pending by claudish's counters differ from
+   * Claude Code's `pendingBackgroundAgentCount` at its end record. False once they agree or
+   * the turn settles; the `agent_count_mismatch` anomaly stays in `anomalies` as history.
+   */
+  agentCountMismatch: boolean;
 }

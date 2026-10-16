@@ -269,6 +269,16 @@ clears the moment activity leaves `finishing`, and only while it holds do `activ
 row's `activity` read `finishing: turn_end_record_missing`; the anomaly stays as history. A sticky
 read presented a slot the model had woken again as wedged. No timer ends the turn (D10).
 
+**Counts that disagree.** While a turn is unsettled after a `turn_duration` and not waking, the
+background agents claudish counts as pending (`agentsLaunched - agentsCompleted`) are compared with
+Claude Code's own `pendingBackgroundAgentCount` (absent means 0). When they differ the anomaly
+`agent_count_mismatch: claudish <counted> pending, Claude Code <reported>` is added once per onset of
+a pair, and the CONDITION is live (`agentCountMismatch` on the snapshot): only while it holds does the
+row's `activity` read `background: agent_count_mismatch`; it clears when the counts agree or the turn
+settles, and the anomaly stays as history. It never settles or ends a turn: Claude Code's count is a
+witness, never the decider (D23). Session 779a03f0 (2026-10-16) sat at claudish 2 pending, Claude
+Code 0 until cancel, with nothing on the row to say why.
+
 **Blocked.** A pending `AskUserQuestion` comes from the transcript. A permission or plan-approval
 dialog also needs the screen: `hasChoiceDialog` is a CLOSED list (R3-H1) — a named header
 (`Do you want to proceed?`, `Do you want to create|make this edit to|overwrite|delete …?`,

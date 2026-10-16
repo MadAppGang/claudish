@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTeamStatusPayload, teamStatusNote } from "./mcp-server.js";
-import { CAPABILITIES, type TeamRunRow } from "./pane/index.js";
+import {
+  CAPABILITIES,
+  type PaneSnapshot,
+  type TeamRunRow,
+  mergeAccounting,
+  toSlotRow,
+} from "./pane/index.js";
 import { type ModelStatus, type TeamStatus, teamRunRowFromDisk } from "./team-orchestrator.js";
 
 const PATH = "/tmp/team-status-payload-test";
@@ -130,6 +136,65 @@ describe("buildTeamStatusPayload", () => {
     expect(payload).toHaveProperty("note");
     expect(payload.note).toContain("outputSize");
     expect(payload).not.toHaveProperty("summary");
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("carries the live agent_count_mismatch activity and keeps its history after the condition clears", () => {
+    const anomaly = "agent_count_mismatch: claudish 2 pending, Claude Code 0";
+    const snap: PaneSnapshot = {
+      paneId: "c1-k0-t01-abcdef",
+      phase: "RUNNING",
+      state: "RUNNING",
+      reason: null,
+      detail: null,
+      activity: "background",
+      lastActivityAt: "2026-10-06T01:00:00.000Z",
+      idleSeconds: 0,
+      turnsCompleted: 0,
+      tokensIn: 33324,
+      tokensOut: 44,
+      toolCalls: 2,
+      liveAnswerBytes: 0,
+      exitCode: null,
+      captureSource: null,
+      turnSource: "transcript",
+      pendingInputs: 0,
+      connected: true,
+      startedAt: "2026-10-06T00:59:00.000Z",
+      endedAt: null,
+      transcriptPath: "/x.jsonl",
+      panePid: 1,
+      screenTail: "",
+      anomalies: [anomaly],
+      claudeCodeVersion: null,
+      shape: "one-shot",
+      turnEndRecordMissing: false,
+      agentCountMismatch: true,
+    };
+    const status: TeamStatus = {
+      startedAt: snap.startedAt,
+      models: { "01": { ...slot("RUNNING", 0), anomalies: snap.anomalies } },
+    };
+    const id = { slot: "01", model: "haiku", spawnModel: null };
+    for (const current of [snap, { ...snap, activity: "Bash", agentCountMismatch: false }]) {
+      const row = toSlotRow(id, current, mergeAccounting(current, null, id));
+      const payload = buildTeamStatusPayload({
+        status,
+        sessionPath: PATH,
+        idle: { "01": 0 },
+        activity: { "01": row.activity! },
+        liveBytes: { "01": 0 },
+        run: { ...runOf(status), slots: [row] },
+      });
+      expect((payload.models as TeamStatus["models"])["01"]?.anomalies).toEqual([anomaly]);
+      expect(payload.activity_by_slot).toEqual({
+        "01": current.agentCountMismatch ? "background: agent_count_mismatch" : "Bash",
+      });
+      expect((payload.run as TeamRunRow).slots[0]?.activity).toBe(
+        current.agentCountMismatch ? "background: agent_count_mismatch" : "Bash"
+      );
+      expect((payload.models as TeamStatus["models"])["01"]?.state).toBe("RUNNING");
+    }
   });
 
   test("keys the note on any non-terminal slot, not only RUNNING", () => {

@@ -97,6 +97,7 @@ import {
   SECONDARY_QUIET_MS,
   type ScreenFacts,
   type SettleDecision,
+  agentCountMismatch,
   decideSettle,
 } from "./settle-rule.js";
 import {
@@ -344,6 +345,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private claudeCodeVersion: string | null = null;
   private anomalies = new Map<string, number>();
   private turnEndMissing = false;
+  /** the live agent_count_mismatch pair as `counted/reported`; null while counts agree */
+  private agentMismatch: string | null = null;
   private readonly registry: SessionRegistry;
   private registryRec: RegistryRecord | null = null;
   private registryEverSeen = false;
@@ -1247,6 +1250,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
     this.activity = decision.activity;
     this.checkTurnEndMissing();
+    this.checkAgentCountMismatch(t);
   }
 
   private checkEscape(): void {
@@ -1272,6 +1276,21 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       quiet >= TURN_END_MISSING_FACTOR * this.secondaryQuietMs && !stopHookRunning(this.screen);
     if (missing && !this.turnEndMissing) this.anomaly("turn_end_record_missing");
     this.turnEndMissing = missing;
+  }
+
+  /**
+   * claudish's pending background agents disagree with Claude Code's count at the turn's
+   * end record. Live like turn_end_record_missing; the anomaly counts each onset of a pair.
+   * It never settles or ends the turn: Claude Code's count is a witness (D23).
+   */
+  private checkAgentCountMismatch(t: TurnView): void {
+    const m = agentCountMismatch(t);
+    const key = m ? `${m.counted}/${m.reported}` : null;
+    if (m && key !== this.agentMismatch)
+      this.anomaly(
+        `agent_count_mismatch: claudish ${m.counted} pending, Claude Code ${m.reported}`
+      );
+    this.agentMismatch = key;
   }
 
   /** Blocked detection (H7): AskUserQuestion from the transcript; permission needs the dialog too. */
@@ -1352,6 +1371,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private finishTurn(turn: SettledTurn, chatOffset: number | null, exitCode: number | null): void {
     this.turnEndMissing = false;
+    this.agentMismatch = null;
     this.answers.set(turn.index, turn.answer);
     // owners ask for the current or the last settled turn: keep a few, not the session's all
     for (const k of this.answers.keys()) if (k <= turn.index - KEPT_ANSWERS) this.answers.delete(k);
@@ -1582,6 +1602,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.phase === "RUNNING" &&
         this.activity === "finishing" &&
         this.turnEndMissing,
+      agentCountMismatch: !terminal && this.phase === "RUNNING" && this.agentMismatch !== null,
     };
   }
 

@@ -427,6 +427,7 @@ function notableAnomalies(snap: PaneSnapshot): string[] {
     (a) =>
       a.startsWith("background_shell_open") ||
       a.startsWith("turn_end_record_missing") ||
+      a.startsWith("agent_count_mismatch") ||
       a.startsWith("prompt_not_read")
   );
 }
