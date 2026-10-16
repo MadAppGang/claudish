@@ -888,12 +888,13 @@ For local Qwen models, setting `CLAUDISH_QWEN_NO_THINK=1` prepends `/no_think` t
 |------|---------|---------------------|
 | `~/.claudish/config.json` | Global settings, profiles, telemetry, routing | Profile/telemetry commands |
 | `~/.claudish/all-models.json` | Full OpenRouter model catalog | Every 2 days; or `--models-refresh` |
+| `~/.claudish/recommended-models-cache-v2.json` | Recommended list projection (`--models-top`, MCP `list_models`) | After 24 h; or `--models-refresh` |
 | `~/.claudish/litellm-models-{hash}.json` | LiteLLM model list (one file per unique `LITELLM_BASE_URL`) | On each LiteLLM model list fetch |
 | `~/.claudish/kimi-oauth.json` | Kimi OAuth access + refresh tokens | `claudish --kimi-login` |
 | `.claudish.json` | Local/project config | Profile commands with `--local` |
 | `.env` | Environment variables (auto-loaded at startup) | Manual |
 
-Cache files can be force-refreshed with `claudish --models --models-refresh` or `claudish --models-top --models-refresh`. The `--models-refresh` flag deletes `all-models.json`, `pricing-cache.json`, and all `litellm-models-*.json` files before fetching fresh data.
+Cache files can be force-refreshed with `claudish --models --models-refresh` or `claudish --models-top --models-refresh`. The `--models-refresh` flag deletes `all-models.json`, `pricing-cache.json`, `recommended-models-cache-v2.json`, and all `litellm-models-*.json` files before fetching fresh data.
 
 ---
 

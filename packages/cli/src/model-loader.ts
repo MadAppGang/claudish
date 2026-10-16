@@ -1,7 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readAllModelsCache } from "./providers/all-models-cache.js";
+import {
+  type CachedSubscriptionPlan,
+  type SlimModelEntry,
+  readAllModelsCache,
+} from "./providers/all-models-cache.js";
 import { PROVIDER_TO_PREFIX } from "./providers/auto-route.js";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
 import { ensureCatalogReady } from "./providers/catalog-client.js";
@@ -19,16 +23,67 @@ import type { OpenRouterModel } from "./types.js";
 // These mirror `firebase/functions/src/schema.ts` but are defined locally so we
 // don't cross the monorepo tsconfig boundary.
 
+// ─── Recommendation tiers ────────────────────────────────────────────────────
+
+/** One known recommendation tier and how listings present it. */
+export interface RecommendationSectionDef {
+  /** The backend's `tier` value, verbatim. */
+  readonly recommendationTier: string;
+  readonly title: string;
+  readonly description?: string;
+  /** False keeps every model of this tier out of the Quick picks (R9: luxury is never automatic). */
+  readonly quickPickEligible: boolean;
+}
+
 /**
- * Single recommended model entry from Firebase `?catalog=recommended`.
- * Matches `RecommendedModelEntry` in firebase/functions/src/schema.ts.
+ * The ONE ordered table of recommendation tiers this build knows. Section order,
+ * headings, descriptions and quick-pick eligibility are all read from here; no
+ * listing hardcodes a heading. The backend's tier set is OPEN: a `tier` value not
+ * in this table is skipped silently wherever it is read, so a new backend tier
+ * needs one row here and nothing else.
+ */
+export const RECOMMENDATION_SECTIONS = [
+  { recommendationTier: "flagship", title: "Flagship", quickPickEligible: true },
+  {
+    recommendationTier: "cost_efficient",
+    title: "Cost-efficient",
+    description: "Best value: strong models at a much lower cost per task",
+    quickPickEligible: true,
+  },
+  { recommendationTier: "lightweight", title: "Lightweight", quickPickEligible: true },
+  {
+    recommendationTier: "luxury",
+    title: "Luxury",
+    description: "Most capable, most expensive. Use for the hardest tasks",
+    quickPickEligible: false,
+  },
+  { recommendationTier: "subscription", title: "Subscription", quickPickEligible: true },
+] as const satisfies readonly RecommendationSectionDef[];
+
+/** Exactly "flagship" | "cost_efficient" | "lightweight" | "luxury" | "subscription". */
+export type RecommendationTier = (typeof RECOMMENDATION_SECTIONS)[number]["recommendationTier"];
+
+const RECOMMENDATION_TIER_INDEX: ReadonlyMap<string, number> = new Map(
+  RECOMMENDATION_SECTIONS.map((section, index) => [section.recommendationTier, index])
+);
+
+function isRecommendationTier(value: unknown): value is RecommendationTier {
+  return typeof value === "string" && RECOMMENDATION_TIER_INDEX.has(value);
+}
+
+/**
+ * One row of the projected recommended-models list: one `(recommendationTier,
+ * model)` pair (subscription rows: one per route binding and plan). A model the
+ * backend lists in two tiers is two rows.
  */
 export interface RecommendedModelEntry {
   id: string;
   name: string;
   description: string;
   provider: string;
-  category: string;
+  /** The backend's recommendation tier, verbatim. */
+  recommendationTier: RecommendationTier;
+  /** Rank within `recommendationTier`, from 1. */
   priority: number;
   pricing: {
     input: string;
@@ -70,8 +125,8 @@ export interface RecommendedSubscriptionRoute {
 }
 
 /**
- * Response from Firebase `?catalog=recommended`.
- * Matches `RecommendedModelsDoc` in firebase/functions/src/schema.ts.
+ * The recommended-models list projected from `?catalog=recommended`: what
+ * `--models-top --json` prints and what the disk cache holds.
  */
 export interface RecommendedModelsDoc {
   contractVersion?: 3;
@@ -79,6 +134,13 @@ export interface RecommendedModelsDoc {
   version: string;
   lastUpdated: string;
   generatedAt?: string;
+  /**
+   * The recommendation tiers this build knows, in table order. On disk it is the
+   * WRITER's list: a reader that knows a tier missing from it refetches instead
+   * of showing a listing silently missing that section, and a reader that keeps
+   * the file replaces it with its own list (it drops rows of tiers it lacks).
+   */
+  recommendationTiers?: string[];
   source?: string;
   models: RecommendedModelEntry[];
 }
@@ -286,10 +348,20 @@ let _cachedRecommendedModels: RecommendedModelsDoc | null = null;
 const FIREBASE_BASE_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels";
 const FIREBASE_RECOMMENDED_URL = `${FIREBASE_BASE_URL}?catalog=recommended`;
 
+/**
+ * The projected recommended-models list, on disk.
+ *
+ * `-v2`, not `recommended-models-cache.json`: the row shape changed (`category`
+ * removed, `recommendationTier` added). Older claudish builds sharing
+ * `~/.claudish` check only `contractVersion` and `generationId`, so they would
+ * accept a new-shape file under the old name and list every model as a fast
+ * variant. A new ROW SHAPE gets a new file; a new TIER does not (see
+ * `recommendationTiers`). This build never reads, writes or deletes the old file.
+ */
 export const RECOMMENDED_MODELS_CACHE_PATH = join(
   homedir(),
   ".claudish",
-  "recommended-models-cache.json"
+  "recommended-models-cache-v2.json"
 );
 const RECOMMENDED_FETCH_TIMEOUT_MS = 5000;
 const SEARCH_FETCH_TIMEOUT_MS = 10000;
@@ -322,179 +394,474 @@ async function fetchCatalogData<T>(
   return (await fetchCatalogPage<T>(url, timeoutMs, generationId)).data;
 }
 
-function recommendationProjection(
-  recommendations: {
-    contractVersion: number;
-    generationId: string;
-    entries: Array<{
-      modelId: string;
-      tier: "flagship" | "lightweight" | "subscription";
-      route?: { routeId: string; routeProfileId: string };
-      planId?: string;
-    }>;
-  },
-  richModels: ModelDoc[] = []
+/**
+ * One element of `data.recommendations.entries`, as the backend sends it.
+ * `tier` is a plain string on purpose: the backend's tier set is open, and a
+ * value this build does not know is skipped, never rejected.
+ */
+export interface RecommendationWireEntry {
+  modelId: string;
+  tier: string;
+  /** Backend: `route` and `planId` are both present or both absent. */
+  route?: { routeId: string; routeProfileId: string };
+  planId?: string;
+}
+
+/** `data.recommendations` of `?catalog=recommended`. */
+export interface RecommendationsWire {
+  contractVersion: number;
+  generationId: string;
+  /** Malformed elements are skipped; a non-array throws. */
+  entries: unknown[];
+}
+
+/**
+ * The cloud models catalog of ONE generation, as far as the projection reads it:
+ * from each record `modelId`, `displayName`, `provider`, `contextWindow`,
+ * `releaseDate` and `aggregators[].route` / `.externalModelId`; from each plan `id`.
+ */
+export interface RecommendationCatalogSnapshot {
+  catalogGenerationId: string;
+  entries: SlimModelEntry[];
+  plans: CachedSubscriptionPlan[];
+}
+
+type KnownWireEntry = RecommendationWireEntry & { tier: RecommendationTier };
+
+/** A usable wire entry, or null (not an object, no string modelId, or a tier this build does not know). */
+function readWireEntry(value: unknown): KnownWireEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.modelId !== "string" || !isRecommendationTier(raw.tier)) return null;
+  const rawRoute = raw.route as Record<string, unknown> | null | undefined;
+  const route =
+    rawRoute &&
+    typeof rawRoute === "object" &&
+    typeof rawRoute.routeId === "string" &&
+    typeof rawRoute.routeProfileId === "string"
+      ? { routeId: rawRoute.routeId, routeProfileId: rawRoute.routeProfileId }
+      : undefined;
+  return {
+    modelId: raw.modelId,
+    tier: raw.tier,
+    ...(route ? { route } : {}),
+    ...(typeof raw.planId === "string" ? { planId: raw.planId } : {}),
+  };
+}
+
+/**
+ * Dedupe key of one entry: within a tier only, so a model listed in two tiers
+ * keeps a row in each. A subscription entry is one ROUTE BINDING under one PLAN,
+ * so two entries for one model on different routes, or on one route under two
+ * plans, are both kept.
+ */
+function recommendationDedupeKey(entry: KnownWireEntry): string {
+  return entry.tier === "subscription"
+    ? JSON.stringify([
+        entry.tier,
+        entry.modelId,
+        entry.route?.routeId ?? null,
+        entry.route?.routeProfileId ?? null,
+        entry.planId ?? null,
+      ])
+    : JSON.stringify([entry.tier, entry.modelId]);
+}
+
+/**
+ * Project `?catalog=recommended` onto the cloud models catalog of the same
+ * generation. Pure: reads no file and no network.
+ *
+ * Per entry, in API order: skip a malformed entry or a tier not in
+ * `RECOMMENDATION_SECTIONS` (silently: the tier set is open); skip a `modelId`
+ * absent from `catalog.entries` (every tier: an id the catalog does not know
+ * has no provider and no name); skip a repeated dedupe key; otherwise emit one
+ * row whose `recommendationTier` is the entry's tier, verbatim, and whose
+ * `priority` is its 1-based rank within that tier. Only a `subscription` entry
+ * whose route resolves to a command carries `subscription`/`subscriptions`.
+ *
+ * Throws on envelope faults only: `contractVersion !== 3`, `entries` not an
+ * array, or a catalog of a different generation.
+ */
+export function projectRecommendations(
+  recommendations: RecommendationsWire,
+  catalog: RecommendationCatalogSnapshot,
+  richModels: ModelDoc[] = [],
+  now: Date = new Date()
 ): RecommendedModelsDoc {
   if (recommendations.contractVersion !== 3 || !Array.isArray(recommendations.entries)) {
     throw new Error("Model catalog recommendations do not match v3");
   }
-  const cache = readAllModelsCache();
-  if (!cache || cache.catalogGenerationId !== recommendations.generationId) {
+  // An empty catalog generation is the wrapper's "no slim cache" snapshot: never a match.
+  if (
+    !catalog.catalogGenerationId ||
+    catalog.catalogGenerationId !== recommendations.generationId
+  ) {
     throw new Error("Recommendation and model catalog generations differ");
   }
-  const byId = new Map(cache?.entries.map((entry) => [entry.modelId, entry]) ?? []);
-  const richById = new Map(richModels.map((model) => [model.modelId, model]));
+  const byId = new Map(catalog.entries.map((entry) => [entry.modelId, entry]));
+  const richById = new Map<string, ModelDoc>();
+  for (const model of richModels) {
+    if (!richById.has(model.modelId)) richById.set(model.modelId, model);
+  }
+  const seenKeys = new Set<string>();
+  const rankByTier = new Map<RecommendationTier, number>();
+  const models: RecommendedModelEntry[] = [];
+
+  for (const value of recommendations.entries) {
+    const recommended = readWireEntry(value);
+    if (!recommended) continue;
+    const model = byId.get(recommended.modelId);
+    if (!model) continue;
+    const key = recommendationDedupeKey(recommended);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    const priority = (rankByTier.get(recommended.tier) ?? 0) + 1;
+    rankByTier.set(recommended.tier, priority);
+
+    const rich = richById.get(recommended.modelId);
+    const subscription =
+      recommended.tier === "subscription"
+        ? subscriptionRouteFor(recommended, model, catalog.plans)
+        : undefined;
+    models.push({
+      id: recommended.modelId,
+      name: rich?.displayName ?? model.displayName ?? recommended.modelId,
+      description: rich?.description ?? "",
+      provider: rich?.provider ?? model.provider ?? "",
+      recommendationTier: recommended.tier,
+      priority,
+      pricing: {
+        input: typeof rich?.pricing?.input === "number" ? `$${rich.pricing.input}/1M` : "N/A",
+        output: typeof rich?.pricing?.output === "number" ? `$${rich.pricing.output}/1M` : "N/A",
+        average:
+          typeof rich?.pricing?.input === "number" && typeof rich?.pricing?.output === "number"
+            ? `$${((rich.pricing.input + rich.pricing.output) / 2).toFixed(2)}/1M`
+            : "N/A",
+      },
+      context: rich?.contextWindow
+        ? String(rich.contextWindow)
+        : model.contextWindow
+          ? String(model.contextWindow)
+          : "N/A",
+      releaseDate: model.releaseDate,
+      ...(subscription ? { subscription, subscriptions: [subscription] } : {}),
+    });
+  }
+
+  const stamp = now.toISOString();
   return {
     contractVersion: 3,
     generationId: recommendations.generationId,
     version: recommendations.generationId,
-    lastUpdated: new Date().toISOString(),
-    generatedAt: new Date().toISOString(),
-    models: recommendations.entries.map((recommended, index) => {
-      const model = byId.get(recommended.modelId);
-      const rich = richById.get(recommended.modelId);
-      const provider = recommended.route ? providerForCatalogRoute(recommended.route) : undefined;
-      const connection = model?.aggregators?.find(
-        (candidate) =>
-          candidate.route?.routeId === recommended.route?.routeId &&
-          candidate.route?.routeProfileId === recommended.route?.routeProfileId
-      );
-      const plan = cache?.plans.find((candidate) => candidate.id === recommended.planId);
-      const prefix = provider ? (PROVIDER_TO_PREFIX[provider] ?? provider) : undefined;
-      const command =
-        prefix && connection?.externalModelId
-          ? provider === "native-anthropic"
-            ? connection.externalModelId
-            : `${prefix}@${connection.externalModelId}`
-          : undefined;
-      const subscription =
-        recommended.tier === "subscription" && provider && command
-          ? {
-              ...(provider === "native-anthropic" ? {} : { prefix }),
-              plan: plan?.id ?? recommended.planId ?? provider,
-              command,
-              planIds: recommended.planId ? [recommended.planId] : [],
-              routingProvider: provider,
-              tier: provider === "native-anthropic" ? ("native" as const) : ("general" as const),
-            }
-          : undefined;
-      return {
-        id: recommended.modelId,
-        name: rich?.displayName ?? model?.displayName ?? recommended.modelId,
-        description: rich?.description ?? "",
-        provider: rich?.provider ?? model?.provider ?? "",
-        category:
-          recommended.tier === "flagship"
-            ? "programming"
-            : recommended.tier === "lightweight"
-              ? "fast"
-              : "subscription",
-        priority: index + 1,
-        pricing: {
-          input: typeof rich?.pricing?.input === "number" ? `$${rich.pricing.input}/1M` : "N/A",
-          output: typeof rich?.pricing?.output === "number" ? `$${rich.pricing.output}/1M` : "N/A",
-          average:
-            typeof rich?.pricing?.input === "number" && typeof rich?.pricing?.output === "number"
-              ? `$${((rich.pricing.input + rich.pricing.output) / 2).toFixed(2)}/1M`
-              : "N/A",
-        },
-        context: rich?.contextWindow
-          ? String(rich.contextWindow)
-          : model?.contextWindow
-            ? String(model.contextWindow)
-            : "N/A",
-        releaseDate: model?.releaseDate,
-        ...(subscription ? { subscription, subscriptions: [subscription] } : {}),
-      };
-    }),
+    lastUpdated: stamp,
+    generatedAt: stamp,
+    recommendationTiers: RECOMMENDATION_SECTIONS.map((section) => section.recommendationTier),
+    models,
   };
+}
+
+/**
+ * The callable route of one subscription entry, or undefined when its route
+ * binding names no claudish provider or the model has no connection on it with
+ * a wire id. A subscription row without one is still a row.
+ */
+function subscriptionRouteFor(
+  recommended: KnownWireEntry,
+  model: SlimModelEntry,
+  plans: CachedSubscriptionPlan[]
+): RecommendedSubscriptionRoute | undefined {
+  if (!recommended.route) return undefined;
+  const provider = providerForCatalogRoute(recommended.route);
+  if (!provider) return undefined;
+  const connection = model.aggregators?.find(
+    (candidate) =>
+      candidate.route?.routeId === recommended.route?.routeId &&
+      candidate.route?.routeProfileId === recommended.route?.routeProfileId
+  );
+  const prefix = PROVIDER_TO_PREFIX[provider] ?? provider;
+  if (!connection?.externalModelId) return undefined;
+  const command =
+    provider === "native-anthropic"
+      ? connection.externalModelId
+      : `${prefix}@${connection.externalModelId}`;
+  const plan = plans.find((candidate) => candidate.id === recommended.planId);
+  return {
+    ...(provider === "native-anthropic" ? {} : { prefix }),
+    plan: plan?.id ?? recommended.planId ?? provider,
+    command,
+    planIds: recommended.planId ? [recommended.planId] : [],
+    routingProvider: provider,
+    tier: provider === "native-anthropic" ? "native" : "general",
+  };
+}
+
+/**
+ * The production wrapper: the slim cache, then the projection. The envelope and
+ * generation checks live in `projectRecommendations` only; a missing cache is
+ * passed as an empty snapshot with no generation, which fails its generation
+ * check ("generations differ") after the envelope check, as before.
+ */
+function recommendationProjection(
+  recommendations: RecommendationsWire,
+  richModels: ModelDoc[] = []
+): RecommendedModelsDoc {
+  const cache = readAllModelsCache();
+  return projectRecommendations(
+    recommendations,
+    cache
+      ? {
+          catalogGenerationId: cache.catalogGenerationId,
+          entries: cache.entries,
+          plans: cache.plans,
+        }
+      : { catalogGenerationId: "", entries: [], plans: [] },
+    richModels
+  );
+}
+
+// ─── Disk-cache reader ───────────────────────────────────────────────────────
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isRouteObject(value: unknown): value is RecommendedSubscriptionRoute {
+  return (
+    isRecord(value) &&
+    typeof value.plan === "string" &&
+    typeof value.command === "string" &&
+    (value.prefix === undefined || typeof value.prefix === "string") &&
+    (value.planIds === undefined || isStringArray(value.planIds))
+  );
+}
+
+/** A row every consumer can dereference without a TypeError, of a tier this build knows. */
+function isUsableRow(value: unknown): value is RecommendedModelEntry {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "string" || value.id.length === 0) return false;
+  if (!isRecommendationTier(value.recommendationTier)) return false;
+  if (typeof value.priority !== "number" || !Number.isFinite(value.priority)) return false;
+  if (
+    typeof value.name !== "string" ||
+    typeof value.description !== "string" ||
+    typeof value.provider !== "string" ||
+    typeof value.context !== "string"
+  ) {
+    return false;
+  }
+  const pricing = value.pricing;
+  if (
+    !isRecord(pricing) ||
+    typeof pricing.input !== "string" ||
+    typeof pricing.output !== "string" ||
+    typeof pricing.average !== "string"
+  ) {
+    return false;
+  }
+  if (value.releaseDate !== undefined && typeof value.releaseDate !== "string") return false;
+  if (value.subscription !== undefined && !isRouteObject(value.subscription)) return false;
+  if (
+    value.subscriptions !== undefined &&
+    !(Array.isArray(value.subscriptions) && value.subscriptions.every(isRouteObject))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Read a parsed disk-cache value. Returns a NEW doc holding only usable rows, or
+ * null. Never throws; never mutates `value`.
+ *
+ * Doc level (failure → null, so the caller refetches): contract 3, string
+ * `generationId`/`version`/`lastUpdated`/`generatedAt`, array `models`, and a
+ * `recommendationTiers` that lists EVERY tier of this build's table. A file whose
+ * writer did not know one of this build's tiers may have dropped that tier's rows.
+ *
+ * Row level (failure → that row skipped): a row of a tier a NEWER build knows is
+ * skipped here, not fatal, and so is a row a consumer could not dereference.
+ * Zero rows left → null. The returned `recommendationTiers` is this build's
+ * table, so it names exactly the tiers its rows can carry.
+ */
+export function readProjectedRecommendationsDoc(value: unknown): RecommendedModelsDoc | null {
+  if (!isRecord(value)) return null;
+  if (value.contractVersion !== 3) return null;
+  if (
+    typeof value.generationId !== "string" ||
+    typeof value.version !== "string" ||
+    typeof value.lastUpdated !== "string" ||
+    typeof value.generatedAt !== "string" ||
+    !Array.isArray(value.models)
+  ) {
+    return null;
+  }
+  const writerTiers = value.recommendationTiers;
+  if (!isStringArray(writerTiers)) return null;
+  if (!RECOMMENDATION_SECTIONS.every((section) => writerTiers.includes(section.recommendationTier)))
+    return null;
+  const models = value.models.filter(isUsableRow);
+  if (models.length === 0) return null;
+  // Report the tiers THIS build kept, not the writer's: a newer writer's extra
+  // tier had its rows dropped above, so its list would no longer match `models`.
+  return {
+    ...(value as unknown as RecommendedModelsDoc),
+    recommendationTiers: RECOMMENDATION_SECTIONS.map((section) => section.recommendationTier),
+    models,
+  };
+}
+
+/**
+ * Steps 2-4 of the disk-cache read, shared by both read paths: absent file,
+ * unparsable file or unusable doc → null. The empty doc of
+ * `getRecommendedModelsSync` never reaches the reader: it is a return value,
+ * never written to disk.
+ */
+function readRecommendedModelsCacheFile(): RecommendedModelsDoc | null {
+  if (!existsSync(RECOMMENDED_MODELS_CACHE_PATH)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
+  return readProjectedRecommendationsDoc(parsed);
 }
 
 // ─── Recommended models grouping + formatting helpers ───────────────────────
 
 /**
- * A group of recommended-model entries that all share the same `id`. The
- * `primary` is the non-subscription entry (programming/vision/reasoning/fast);
- * `subscriptions` is every `category:"subscription"` entry in the group, in the
- * order they appeared in the source doc (which reflects access-method order).
+ * One model in one section. `primary` is that model's row of the section's
+ * tier; `subscriptions` is every `recommendationTier: "subscription"` row with
+ * the same id anywhere in the doc, in doc order, so the model's subscription
+ * routes show on its via/Access line in whichever section it appears.
  */
 export interface RecommendedModelGroup {
   id: string;
   primary: RecommendedModelEntry;
   subscriptions: RecommendedModelEntry[];
-  /** Category bucket for display: "flagship" = programming/vision/reasoning; "fast" = fast variants. */
-  bucket: "flagship" | "fast";
+}
+
+/** One non-empty recommendation tier, ready to render. */
+export interface RecommendedSection {
+  recommendationTier: RecommendationTier;
+  title: string;
+  description?: string;
+  /** Never empty; sorted by `primary.priority`. */
+  groups: RecommendedModelGroup[];
+}
+
+function sectionDefFor(tier: string): RecommendationSectionDef | undefined {
+  const index = RECOMMENDATION_TIER_INDEX.get(tier);
+  return index === undefined ? undefined : RECOMMENDATION_SECTIONS[index];
 }
 
 /**
- * Group `entries` by `id`, preserving priority order. Each returned group's
- * bucket is derived from the primary entry's `category`:
- *   - "programming" | "vision" | "reasoning" → "flagship"
- *   - "fast"                                  → "fast"
- * Subscription-only groups (no non-subscription primary) are defensively
- * classified as "fast" — shouldn't happen in practice but keeps them visible.
+ * Sections in `RECOMMENDATION_SECTIONS` order, empty ones omitted. Does not
+ * mutate `entries`.
  *
  * **Ordering.** The backend's curated ranking stays PRIMARY; freshness is only
- * the tiebreak (the repo-wide model-ordering rule). The curated ranking is two
- * keys, not one: `priority` restarts at 1 for every `category`, so sorting on
- * the bare number would interleave tiers (flagship #1, lightweight #1,
- * flagship #2, …). The sort key is therefore:
- *
- *   1. order of first appearance of the entry's `category` in the doc
- *   2. `priority` ascending within that category
- *   3. `compareByReleaseDateDesc` — newest first, only on a genuine tie
- *
- * Keys 1+2 reproduce the doc's own order exactly for a well-formed doc, so on
- * real data this is a no-op and key 3 never fires. It engages only when the
- * backend leaves two same-category entries at the same priority. As a bonus,
- * the explicit sort makes the output independent of any in-place reordering of
- * the shared cached doc (`getAvailableModels` sorts `data.models` in place).
+ * the tiebreak (the repo-wide model-ordering rule). Within a section groups sort
+ * by `priority`, which is the rank within that tier, then
+ * `compareByReleaseDateDesc` on a genuine tie (never between rows of one
+ * projection, whose priorities are distinct per tier). A model listed in two
+ * tiers is a group in each of the two sections. Rows of a tier not in the table
+ * are ignored.
  */
-export function groupRecommendedModels(entries: RecommendedModelEntry[]): {
-  flagship: RecommendedModelGroup[];
-  fast: RecommendedModelGroup[];
-} {
-  const byId = new Map<string, RecommendedModelEntry[]>();
-  const categoryOrder = new Map<string, number>();
+export function groupRecommendedModels(
+  entries: readonly RecommendedModelEntry[]
+): RecommendedSection[] {
+  const subscriptionRowsById = new Map<string, RecommendedModelEntry[]>();
   for (const entry of entries) {
-    const list = byId.get(entry.id);
+    if (entry.recommendationTier !== "subscription") continue;
+    const list = subscriptionRowsById.get(entry.id);
     if (list) list.push(entry);
-    else byId.set(entry.id, [entry]);
-    if (!categoryOrder.has(entry.category)) categoryOrder.set(entry.category, categoryOrder.size);
+    else subscriptionRowsById.set(entry.id, [entry]);
   }
 
-  const flagship: RecommendedModelGroup[] = [];
-  const fast: RecommendedModelGroup[] = [];
-
-  for (const [id, members] of byId.entries()) {
-    const primary = members.find((m) => m.category !== "subscription") ?? members[0];
-    const subscriptions = members.filter((m) => m.category === "subscription");
-    const bucket: "flagship" | "fast" =
-      primary.category === "programming" ||
-      primary.category === "vision" ||
-      primary.category === "reasoning"
-        ? "flagship"
-        : "fast";
-    const group: RecommendedModelGroup = { id, primary, subscriptions, bucket };
-    if (bucket === "flagship") flagship.push(group);
-    else fast.push(group);
+  const sections: RecommendedSection[] = [];
+  for (const def of RECOMMENDATION_SECTIONS) {
+    const primaryById = new Map<string, RecommendedModelEntry>();
+    for (const entry of entries) {
+      if (entry.recommendationTier !== def.recommendationTier) continue;
+      const current = primaryById.get(entry.id);
+      if (!current || entry.priority < current.priority) primaryById.set(entry.id, entry);
+    }
+    if (primaryById.size === 0) continue;
+    const groups: RecommendedModelGroup[] = [...primaryById.values()].map((primary) => ({
+      id: primary.id,
+      primary,
+      subscriptions: subscriptionRowsById.get(primary.id) ?? [],
+    }));
+    groups.sort(
+      (a, b) =>
+        a.primary.priority - b.primary.priority || compareByReleaseDateDesc(a.primary, b.primary)
+    );
+    const description: string | undefined = "description" in def ? def.description : undefined;
+    sections.push({
+      recommendationTier: def.recommendationTier,
+      title: def.title,
+      ...(description ? { description } : {}),
+      groups,
+    });
   }
+  return sections;
+}
 
-  const byCuratedPriorityThenFreshness = (
-    a: RecommendedModelGroup,
-    b: RecommendedModelGroup
-  ): number => {
-    const aCat = categoryOrder.get(a.primary.category) ?? Number.MAX_SAFE_INTEGER;
-    const bCat = categoryOrder.get(b.primary.category) ?? Number.MAX_SAFE_INTEGER;
-    if (aCat !== bCat) return aCat - bCat;
-    if (a.primary.priority !== b.primary.priority) return a.primary.priority - b.primary.priority;
-    return compareByReleaseDateDesc(a.primary, b.primary);
-  };
+/**
+ * The Quick picks input: primaries of `quickPickEligible` sections, in section
+ * order then group order, unique by id (first kept), minus EVERY id that also
+ * appears in a non-eligible section. "Most capable" is the priciest candidate,
+ * so a luxury model let in through another section would be picked by
+ * construction. `computeQuickPicks` sorts stably, so a tie goes to the earlier
+ * candidate.
+ */
+export function quickPickCandidates(
+  sections: readonly RecommendedSection[]
+): RecommendedModelEntry[] {
+  const excluded = new Set<string>();
+  for (const section of sections) {
+    if (sectionDefFor(section.recommendationTier)?.quickPickEligible === false) {
+      for (const group of section.groups) excluded.add(group.id);
+    }
+  }
+  const seen = new Set<string>();
+  const candidates: RecommendedModelEntry[] = [];
+  for (const section of sections) {
+    if (sectionDefFor(section.recommendationTier)?.quickPickEligible !== true) continue;
+    for (const group of section.groups) {
+      if (excluded.has(group.id) || seen.has(group.id)) continue;
+      seen.add(group.id);
+      candidates.push(group.primary);
+    }
+  }
+  return candidates;
+}
 
-  flagship.sort(byCuratedPriorityThenFreshness);
-  fast.sort(byCuratedPriorityThenFreshness);
-
-  return { flagship, fast };
+/**
+ * One row per model id, in section order then priority, first row winning.
+ * For surfaces that list MODELS rather than sections (`--model` help, the
+ * picker's fallback list). Does not mutate `entries`.
+ */
+export function uniqueRecommendedModels(
+  entries: readonly RecommendedModelEntry[]
+): RecommendedModelEntry[] {
+  const sectionIndex = (entry: RecommendedModelEntry): number =>
+    RECOMMENDATION_TIER_INDEX.get(entry.recommendationTier) ?? Number.MAX_SAFE_INTEGER;
+  const ordered = [...entries].sort(
+    (a, b) => sectionIndex(a) - sectionIndex(b) || a.priority - b.priority
+  );
+  const seen = new Set<string>();
+  const unique: RecommendedModelEntry[] = [];
+  for (const entry of ordered) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    unique.push(entry);
+  }
+  return unique;
 }
 
 /**
@@ -708,7 +1075,9 @@ export function computeQuickPicks(primaries: RecommendedModelEntry[]): QuickPick
  *
  * Resolution order:
  *   1. In-memory cache (unless forceRefresh)
- *   2. Disk cache at RECOMMENDED_MODELS_CACHE_PATH (24h TTL via FIREBASE_CACHE_TTL_HOURS)
+ *   2. Disk cache at RECOMMENDED_MODELS_CACHE_PATH, read through
+ *      `readProjectedRecommendationsDoc` (24h TTL via FIREBASE_CACHE_TTL_HOURS:
+ *      claudish's own refetch interval, not the backend's evidence lifetime)
  *   3. Firebase ?catalog=recommended (writes disk cache on success)
  *
  * Throws when all three tiers fail. The bundled fallback was removed in commit
@@ -733,23 +1102,16 @@ export async function getRecommendedModels(
   // Tier 2: disk cache (if fresh)
   // Firebase-derived data — OK to cache locally per the catalog policy.
   // TTL shared with all other Firebase caches via FIREBASE_CACHE_TTL_HOURS.
-  if (!forceRefresh && existsSync(RECOMMENDED_MODELS_CACHE_PATH)) {
-    try {
-      const cacheData = JSON.parse(
-        readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
-      ) as RecommendedModelsDoc;
-      if (
-        cacheData.contractVersion === 3 &&
-        cacheData.generationId === readAllModelsCache()?.catalogGenerationId &&
-        cacheData.models &&
-        cacheData.models.length > 0 &&
-        isFreshEnough(cacheData)
-      ) {
-        _cachedRecommendedModels = cacheData;
-        return cacheData;
-      }
-    } catch {
-      // Corrupt disk cache — fall through to Firebase
+  // An absent, unparsable or unusable file falls through to Firebase.
+  if (!forceRefresh) {
+    const cacheData = readRecommendedModelsCacheFile();
+    if (
+      cacheData &&
+      cacheData.generationId === readAllModelsCache()?.catalogGenerationId &&
+      isFreshEnough(cacheData)
+    ) {
+      _cachedRecommendedModels = cacheData;
+      return cacheData;
     }
   }
 
@@ -798,7 +1160,8 @@ export async function getRecommendedModels(
  *
  * Tiers (no network):
  *   1. In-memory cache
- *   2. Disk cache (no freshness check — best-effort)
+ *   2. Disk cache, read through `readProjectedRecommendationsDoc`, same
+ *      generation and freshness checks as the async path
  *
  * Sync access is best-effort; bundled fallback removed per the Firebase-only
  * catalog rule. Help text degrades to an empty doc if Firebase has never been
@@ -810,24 +1173,12 @@ export function getRecommendedModelsSync(): RecommendedModelsDoc {
   const cached = _cachedRecommendedModels;
   if (cached && cached.generationId === generationId) return cached;
 
-  if (existsSync(RECOMMENDED_MODELS_CACHE_PATH)) {
-    try {
-      const cacheData = JSON.parse(
-        readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
-      ) as RecommendedModelsDoc;
-      if (
-        cacheData.contractVersion === 3 &&
-        cacheData.generationId === generationId &&
-        cacheData.models &&
-        cacheData.models.length > 0 &&
-        isFreshEnough(cacheData)
-      ) {
-        _cachedRecommendedModels = cacheData;
-        return cacheData;
-      }
-    } catch {
-      // Fall through to empty doc
-    }
+  // An absent, unparsable or unusable file gives the empty doc. The empty doc is
+  // a RETURN value only: it is never written to disk, so it is never read back.
+  const cacheData = readRecommendedModelsCacheFile();
+  if (cacheData && cacheData.generationId === generationId && isFreshEnough(cacheData)) {
+    _cachedRecommendedModels = cacheData;
+    return cacheData;
   }
 
   return { version: "0", lastUpdated: "", models: [] };
@@ -1070,7 +1421,9 @@ export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
   const data = getRecommendedModelsSync();
   const modelInfo: Record<string, ModelMetadata> = {};
 
-  for (const model of data.models) {
+  // One key per model: a model in two recommendation tiers keeps the metadata of
+  // its first-listed row.
+  for (const model of uniqueRecommendedModels(data.models)) {
     modelInfo[model.id] = {
       name: model.name,
       description: model.description,
@@ -1092,7 +1445,9 @@ export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
 }
 
 /**
- * Get list of available model IDs (sorted by priority) from the recommended doc.
+ * Get list of available model IDs from the recommended doc: one per model, in
+ * section order then priority (`uniqueRecommendedModels`), then "custom".
+ * Never sorts the shared cached doc in place: `--models-top --json` prints it.
  */
 export function getAvailableModels(): OpenRouterModel[] {
   if (_cachedModelIds) {
@@ -1100,7 +1455,7 @@ export function getAvailableModels(): OpenRouterModel[] {
   }
 
   const data = getRecommendedModelsSync();
-  const modelIds = data.models.sort((a, b) => a.priority - b.priority).map((m) => m.id);
+  const modelIds = uniqueRecommendedModels(data.models).map((m) => m.id);
 
   const result = [...modelIds, "custom"];
   _cachedModelIds = result;

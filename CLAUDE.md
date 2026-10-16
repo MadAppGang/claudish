@@ -74,6 +74,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | route candidate | option, hop (before filtering), chain entry | one `(provider, wire id)` pair gathered for a model, BEFORE the credential and availability filters. A candidate is a proposal; a hop is what survived |
 | tier | class, category, rank, level | a provider's routing class: `subscription`, `dynamic-subscription`, `native`, `gateway`, `fallback`. Ordering is by tier first, and only then by vendor and price — except that the two subscription tiers count as one, so a vendor's own dynamic subscription leads another vendor's catalog subscription (`gk@` before `zengo@` for `grok-4.x`) |
 | namespace claim | pattern match, native claim | a dynamic subscription becoming a candidate because its `nativeModelPatterns` match the name. It exists so the availability filter can ASK the account; it is never evidence that the account is served |
+| recommendation tier | category, bucket, tier (alone, on a recommendation) | the backend's curated list a model is recommended in: `flagship`, `cost_efficient`, `lightweight`, `luxury`, `subscription`. The projected field is `recommendationTier`; a value claudish does not know is skipped. Bare "tier" is the routing class above |
 
 **Providers and routing**
 
