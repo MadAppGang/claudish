@@ -382,13 +382,16 @@ connection the gatherer has nothing to offer. A bare `muse-spark-1.3` goes to `m
 
 ## Captures
 
-Raw captures are in the GITIGNORED session directory
+The full reverse-engineering notes, §1 to §8, are tracked at
+`ai-docs/reports/meta-muse-code-wire-capture-20261016.md` (tokens redacted at capture time; the
+home path and the subscription tier id scrubbed).
+
+The raw captures stayed in the GITIGNORED session directory
 `ai-docs/sessions/dev-feature-muse-code-20261016-010810-37623ac2/research/`. They do not survive a
-fresh clone. The facts above are the durable record.
+fresh clone; the report and the facts above are the durable record.
 
 | File | What |
 |---|---|
-| `muse-wire.md` | the full reverse-engineering notes, §1 to §8 |
 | `capture.log` | a PONG run through the base-url proxy |
 | `cap2/` | a one-tool-call run (the Responses round trip) |
 | `cap3/` | a contributor-mode run |
