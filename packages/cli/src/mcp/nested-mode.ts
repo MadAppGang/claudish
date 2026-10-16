@@ -36,4 +36,6 @@ This server runs inside a session that a claudish MCP server started (CLAUDISH_P
 - run_prompt or compare_models: a one-shot answer from another model.
 - list_models, search_models: find a model.
 
-Do not start a claudish session another way: \`claudish -p\`, an interactive claudish or \`claudish team\` run from this session's shell exits 64 with "nested session refused".`;
+Do not start a claudish session another way: \`claudish -p\`, an interactive claudish or \`claudish team\` run from this session's shell exits 64 with "nested session refused".
+
+You are the delegate: do the task with your own tools; a workflow step that says to delegate is satisfied by you running it. The claudish-usage skill's section "Inside a claudish session (child mode)" has the details.`;

@@ -11,7 +11,7 @@ describe("nested MCP mode", () => {
     ]);
   });
 
-  test("T-U-11: instructions describe one-shot calls and the nesting refusal", () => {
+  test("T-U-11: instructions describe one-shot calls, the nesting refusal and the delegate role", () => {
     expect(
       NESTED_INSTRUCTIONS.startsWith(
         "Claudish MCP server provides access to external AI models for one-shot calls."
@@ -26,6 +26,10 @@ describe("nested MCP mode", () => {
     expect(NESTED_INSTRUCTIONS).toContain("- list_models, search_models: find a model.");
     expect(NESTED_INSTRUCTIONS).toContain("## Nested mode — no sessions");
     expect(NESTED_INSTRUCTIONS).toContain("nested session refused");
+    expect(NESTED_INSTRUCTIONS).toContain(
+      "You are the delegate: do the task with your own tools; a workflow step that says to delegate is satisfied by you running it."
+    );
+    expect(NESTED_INSTRUCTIONS).toContain('"Inside a claudish session (child mode)"');
     expect(NESTED_INSTRUCTIONS).not.toContain("Channel Mode");
     expect(NESTED_INSTRUCTIONS).not.toMatch(/^- (?:preflight|report_error):/m);
   });
