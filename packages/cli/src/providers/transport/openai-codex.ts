@@ -58,8 +58,15 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
       // A token host's 429/5xx is the same kind of fact: the subscription is
       // there and busy, so the request retries rather than moving to metered.
       if (isTransientCredentialError(err)) throw err;
-      // The refresh was REJECTED (or no OAuth) → use the api-key path below.
-      this.cachedAuth = null;
+      // A REJECTED refresh of a logged-in user is rethrown too. The composite
+      // throws only when the OAuth half was available and failed (with no
+      // OAuth login it returns the api-key artifact and never reaches this
+      // catch), so falling to the api-key path here moved a ChatGPT subscriber
+      // onto developer-billed api.openai.com, or sent `Bearer ` with no key,
+      // and the `claudish login codex` message was lost. ComposedHandler's
+      // refreshAuth site answers the terminal error as a 400 that stops the
+      // chain; nothing here records the metered arm.
+      throw err;
     }
     // ── DO NOT rewrite this as `this.cachedAuth ? "subscription" : "metered"` ──
     //
