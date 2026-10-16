@@ -1,5 +1,5 @@
 /**
- * Unit and process-level regression tests for the channel's interactive pane transport
+ * Unit and process-level regression tests for the session's interactive pane transport
  * (architecture §7, §12.4).
  *
  * Process-level tests drive `SessionManager` directly: every session is the fake
@@ -40,8 +40,8 @@ import { projectsDir, transcriptPathFor } from "../session/session-discovery.js"
 import { readWaitLines } from "../test-helpers/contract-records.js";
 import {
   SessionManager,
-  channelEventFor,
   normaliseTimeoutSeconds,
+  sessionEventFor,
   sessionRowOf,
   toMetaRecord,
 } from "./session-manager.js";
@@ -110,8 +110,8 @@ function sampleInfo(over: Partial<SessionInfo> = {}): SessionInfo {
 
 // ─── pure ────────────────────────────────────────────────────────────────────
 
-describe("exported channel seams (pure)", () => {
-  test("channelEventFor maps every SlotState (§3.4)", () => {
+describe("exported session seams (pure)", () => {
+  test("sessionEventFor maps every SlotState (§3.4)", () => {
     const cases: Array<[SlotState, string | null, string, string | null]> = [
       ["STARTING", null, "starting", null],
       ["RUNNING", "thinking", "running", null],
@@ -129,8 +129,8 @@ describe("exported channel seams (pure)", () => {
       ["TIMEOUT", null, "timeout", null],
     ];
     for (const [state, activity, event, tool] of cases) {
-      expect(channelEventFor({ state, activity }), `${state}/${activity}`).toEqual({
-        event: event as ReturnType<typeof channelEventFor>["event"],
+      expect(sessionEventFor({ state, activity }), `${state}/${activity}`).toEqual({
+        event: event as ReturnType<typeof sessionEventFor>["event"],
         tool,
       });
     }

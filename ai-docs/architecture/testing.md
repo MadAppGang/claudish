@@ -66,7 +66,7 @@ hosted catalog changed its answer.
 
 ## A gate must not also gate its own diagnostic
 
-`e2e-channel.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
+`e2e-sessions.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
 It gates on a genuine probe — one tiny headless prompt, treating a login/credential error as
 "not usable" — which is the right design. But the probe itself lived inside
 `if (!SKIP_LIVE_E2E) { … }`.
@@ -75,7 +75,7 @@ So running with `CLAUDISH_SKIP_LIVE_E2E=1` — which is the normal, recommended 
 suite — meant the probe never executed, `claudeUsable` stayed `false`, and Group 2 reported:
 
 ```
-[e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated
+[e2e-sessions] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated
 ```
 
 **That message is a claim about the environment that the environment was never asked.** It is

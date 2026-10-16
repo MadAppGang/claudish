@@ -509,7 +509,7 @@ if (!SKIP_LIVE_E2E) {
 
 if (!claudeUsable) {
   console.warn(
-    "[e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated " +
+    "[e2e-sessions] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated " +
       "(needs ANTHROPIC_API_KEY or a headless-usable claude.ai login)."
   );
 }

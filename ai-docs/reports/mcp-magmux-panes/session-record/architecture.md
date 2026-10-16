@@ -1876,7 +1876,7 @@ and the per-test hermetic env (§12.1), keeping its assertions:
 
 | Consumer | Action |
 |---|---|
-| `channel/channel-wire-format.test.ts` (FR10) | repoint; every frame assertion kept; `awaiting_permission` case added |
+| `mcp-session/session-wire-format.test.ts` (FR10) | repoint; every frame assertion kept; `awaiting_permission` case added |
 | `team-cancel.test.ts`, `team-heartbeat-survival.test.ts`, `team-liveness-exited-slot.test.ts`, `team-multibyte-answer.test.ts` | repoint; rewritten per §12.4 |
 | `channel/session-create-options.test.ts` | repoint; `keepUnrecognizedJson` case deleted |
 | `mcp-e2e/runner.ts` | repoint its child to `CLAUDISH_BIN=<fake>`; the runner sets the hermetic env (10.4.0's `userHomeFrom` sessions path kept) |
@@ -1980,7 +1980,7 @@ behaviour; it is recorded in `ROADMAP.md` with this trigger, and R15 verifies th
   `pane/pane-session.integration.test.ts`, `pane/pane-registry.test.ts`, `team-orchestrator.test.ts`,
   `team-cancel.test.ts`, `team-heartbeat-survival.test.ts`, `team-liveness-exited-slot.test.ts`,
   `team-multibyte-answer.test.ts`, `team-mcp-shape-contract.e2e.test.ts`, `team-cli-signal.test.ts`,
-  `channel/session-manager.test.ts`, `channel/channel-wire-format.test.ts`,
+  `channel/session-manager.test.ts`, `mcp-session/session-wire-format.test.ts`,
   `channel/session-create-options.test.ts`, `mcp-contract.e2e.test.ts`, r2's
   `pane/pane-child-real-claudish.integration.test.ts`, and **[r-base]** the ported session-records suites
   (`channel/host-pid.contract.test.ts`, `channel/session-state-records.contract.test.ts`,
@@ -2138,9 +2138,9 @@ reaches the status-line path (F3); `CLAUDE_CODE_CHILD_SESSION` stripped (F4); a 
 | `team-result-card.test.ts`, `team-status-payload.test.ts` | CANCELLED, new reasons, `blocked` listing, `run` row, `contract_version`/`capabilities`, derived `*_by_slot` maps; note ordering kept |
 | `channel/session-manager.test.ts` | Lifecycle on panes. G1/G2 timeout stays timeout in memory, meta and wire, **sending while RUNNING (queued)**. G4 uses the new flag check. G7: promptless → send while STARTING (queued) → answer. D1–D5 disk recovery with the new artifact set. G3 and the 585 mapping kept. |
 | `channel/session-create-options.test.ts` | `sessionId`, `sessionDir`, `tokenFile` reach the child (`env_probe`) |
-| `channel/channel-wire-format.test.ts` | Every assertion kept (FR10); fake swapped; `awaiting_permission` added; **[r-base]** the SEP-1686 table loses 10.4.0's `finishing` row, keeps its `timeout: failed` row |
+| `mcp-session/session-wire-format.test.ts` | Every assertion kept (FR10); fake swapped; `awaiting_permission` added; **[r-base]** the SEP-1686 table loses 10.4.0's `finishing` row, keeps its `timeout: failed` row |
 | `channel/session-manager.test.ts` (10.4.0 edits) **[r-base]** | 10.4.0's expectations are restated for panes: a one-shot session's events are `["running", "completed"]` (no `finishing`; STARTING is the initial state, not a transition); a promptless session is `waiting_for_input` once boot is ready (STARTING before), not at creation |
-| `channel/e2e-channel.test.ts` | Pinned lists become **14** tools and **7** channel tools (`capture_session`); low-level stays 4 |
+| `mcp-session/e2e-sessions.test.ts` | Pinned lists become **14** tools and **7** channel tools (`capture_session`); low-level stays 4 |
 | `mcp-preflight-not-a-precondition.test.ts` | Re-run (it greps tool descriptions) |
 | `process-tree.test.ts` | Kept |
 
@@ -2207,7 +2207,7 @@ the built entry. Each takes a `ps` + listing (`ls /tmp/claudish-mux-$(id -u)/ /t
 | R9 | Transcript saving off | grep every capture for "Transcript saving is off": absent; transcript at the derived path | V6 |
 | R10 | Channel parity | prompt → COMPLETED + `get_output`; promptless + `send_input` **sent while STARTING** → answer; `cancel_session`; `list_sessions` rows with B fields and CA-12 keys | V7 |
 | R11 | `list` visibility | `team list` while running and after settle: `ACTIVE` → `SETTLED`, `finished_at`, `outcome`, CA-12 keys | V8 |
-| R12 | Channel frames | `channel-wire-format.test.ts` green + one traced live frame (`CLAUDISH_CHANNEL_TRACE_FILE`) | V9 |
+| R12 | Channel frames | `session-wire-format.test.ts` green + one traced live frame (`CLAUDISH_CHANNEL_TRACE_FILE`) | V9 |
 | R13 | Concurrent `~/.claude.json` writes | 5-slot run with the 300 ms boot stagger (r2 mitigation, X-L8); `jq . ~/.claude.json` before and after | extra |
 | R14 | `run` latency | 3 slots: expected 12–20 s; fail the design check above 60 s | extra |
 | R15 | First-run dialog on a fresh config | `create_session` with `CLAUDE_CONFIG_DIR=<empty>` → FAILED `first_run_dialog`/`boot_blocked` with the text; no model call | extra |

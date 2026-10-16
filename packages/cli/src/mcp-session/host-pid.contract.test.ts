@@ -1,4 +1,4 @@
-// packages/cli/src/channel/host-pid.contract.test.ts
+// packages/cli/src/mcp-session/host-pid.contract.test.ts
 /**
  * Black-box contract tests for `hostPid`, `launcherPid` and `mcpPid` in spawn.json, against
  * real entry points (design §3.5 "hostPid, computed once at startup"; §8.1 tests 9a, 9b).

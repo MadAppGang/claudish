@@ -34,7 +34,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { projectDirNameFor } from "../../channel/home-dir.js";
+import { projectDirNameFor } from "../../mcp-session/home-dir.js";
 
 /* ───────────────────────────── argv and env ───────────────────────────── */
 

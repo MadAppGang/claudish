@@ -332,7 +332,7 @@ answers the session's current 160×50 screen `{seq, cols, rows, cursor, lines, f
 at about 1 Hz. Their errors are a JSON `ContractError`. `team` gains the same verbs as modes
 (`list`, `status`, `capture`, `cancel`).
 
-The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-channel.test.ts`, so
+The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
 it is a wire contract, and an accidental change to the tool surface should be loud.
 
@@ -503,12 +503,12 @@ not checked". `testing.md` has the rules.
   on-disk records the monitor reads. These were written blind from the 10.4.0 specification; the
   pane port changed only the adapters and the fake, and every replaced assertion cites its RB/D
   number.
-- `channel-wire-format.test.ts` — the capability declaration: no `experimental` for any tool mode.
+- `session-wire-format.test.ts` — the capability declaration: no `experimental` for any tool mode.
 - `../mcp-contract.e2e.test.ts` — the mod contract v1 through a real MCP server over JSON-RPC;
   `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
   and a live team run.
 
-**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-channel.test.ts` freezes the full 14-name list, the session-only 7 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` and `capture_session` each broke both pins on the way in, which is the guard working.
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 14-name list, the session-only 7 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` and `capture_session` each broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 

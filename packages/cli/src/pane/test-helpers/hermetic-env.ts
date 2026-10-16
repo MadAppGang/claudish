@@ -25,8 +25,8 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../../channel/home-dir.js";
 import { findMagmuxBinaryOrNull } from "../../launcher/magmux-binary.js";
+import { projectDirNameFor } from "../../mcp-session/home-dir.js";
 import { readProcessTable } from "../process-identity.js";
 
 export const FAKE_CHILD = join(import.meta.dir, "fake-interactive-child.ts");
