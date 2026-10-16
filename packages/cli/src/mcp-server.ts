@@ -26,6 +26,7 @@ import { SessionManager } from "./channel/index.js";
 import { parentSessionForCall } from "./channel/parent-session.js";
 import type { ChannelEventType } from "./channel/types.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
 import {
   type HeartbeatHandle,
   NOOP_HEARTBEAT,
@@ -33,6 +34,9 @@ import {
   startHeartbeat,
 } from "./mcp/progress-heartbeat.js";
 import { type RecommendedModelsDoc, getRecommendedModels } from "./model-loader.js";
+// Imported for the predicate only. child-env's import-time bootstrap is a no-op here:
+// a claudish MCP server is never the pane child (it carries no CLAUDISH_PANE_CWD).
+import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
@@ -817,9 +821,14 @@ type ChannelNotifier = (params: {
 
 function defineTools(
   sessionManager: SessionManager,
-  notifyChannel: ChannelNotifier
+  notifyChannel: ChannelNotifier,
+  nested: boolean
 ): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
+
+  // A nested server does not register `report_error` (mcp/nested-mode.ts), so an
+  // error text must not point at it.
+  const reportHint = (text: string): string => (nested ? "" : text);
 
   // ── Low-Level Tools ──────────────────────────────────────────────────
 
@@ -883,7 +892,7 @@ function defineTools(
             {
               type: "text" as const,
               text: withOpFailureContext(
-                `Error: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+                `Error: ${errMsg}${reportHint(`\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`)}`,
                 `while routing ${args.model}`
               ),
             },
@@ -1118,8 +1127,9 @@ function defineTools(
       }
       const failed = results.filter((r) => r.error);
       if (failed.length > 0) {
-        output +=
-          '---\n**To report failed model(s)**, use the `report_error` tool with `error_type: "provider_failure"` and the model ID(s) above.\n';
+        output += reportHint(
+          '---\n**To report failed model(s)**, use the `report_error` tool with `error_type: "provider_failure"` and the model ID(s) above.\n'
+        );
       }
       return { content: [{ type: "text" as const, text: output }] };
     },
@@ -2267,17 +2277,23 @@ export function mapEventToTaskStatus(event: string): TaskStatus {
 
 async function main() {
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
+  // Inside a session a claudish owner started, one level of nesting is the limit:
+  // only the one-shot tools of NESTED_MCP_TOOL_NAMES, intersected with the groups
+  // CLAUDISH_MCP_TOOLS enables (never widened), no channel capability, and the
+  // nested instructions. See pane-session.md § One level of nesting.
+  const nested = inMcpSession();
   const enabledGroups = resolveToolGroups(toolMode);
+  const channelEnabled = !nested && enabledGroups.has("channel");
 
   // Create server with channel capability
   const server = new Server(
     { name: "claudish", version: "9.0.0" },
     {
       capabilities: {
-        ...(enabledGroups.has("channel") ? { experimental: { "claude/channel": {} } } : {}),
+        ...(channelEnabled ? { experimental: { "claude/channel": {} } } : {}),
         tools: {},
       },
-      instructions: INSTRUCTIONS,
+      instructions: nested ? NESTED_INSTRUCTIONS : INSTRUCTIONS,
     }
   );
 
@@ -2331,7 +2347,6 @@ async function main() {
   // actually being declared — emitting a channel frame the client never
   // registered for is silently dropped, and `team` still writes status.txt
   // regardless, so there is always a visible path.
-  const channelEnabled = enabledGroups.has("channel");
   const notifyChannel: ChannelNotifier = (p) => {
     if (!channelEnabled) return;
     try {
@@ -2364,11 +2379,16 @@ async function main() {
   const progressIntervalMs = resolveProgressIntervalMs();
 
   // Build tool registry
-  const allTools = defineTools(sessionManager, notifyChannel);
-  const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
+  const allTools = defineTools(sessionManager, notifyChannel, nested);
+  const nestedNames: readonly string[] = NESTED_MCP_TOOL_NAMES;
+  const enabledTools = allTools.filter(
+    (t) => enabledGroups.has(t.group) && (!nested || nestedNames.includes(t.name))
+  );
   const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
 
-  console.error(`[claudish] MCP server started (tools: ${toolMode}, ${enabledTools.length} tools)`);
+  console.error(
+    `[claudish] MCP server started (tools: ${nested ? "nested" : toolMode}, ${enabledTools.length} tools)`
+  );
 
   // Register ListTools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
