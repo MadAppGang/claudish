@@ -47,9 +47,16 @@
  *   borrowed copy, then removes it.
  * - A process that finds a LIVE lock does not spawn. It waits for the lock to
  *   clear (bounded by its own deadline), then reads the borrowed copy the
- *   holder wrote. When the lock clears and no copy appeared (the holder was
- *   denied, or its mint failed), it reads for itself — if its role allows.
- * - A lock whose pid is dead is removed and the read proceeds.
+ *   holder wrote DURING the wait (by mtime; an older copy is the one that
+ *   sent it here). When the lock clears and no new copy appeared (the holder
+ *   was denied, or its mint failed), it reads for itself — if its role allows.
+ * - A lock whose pid is dead is removed and the read proceeds; the lock is
+ *   re-read right before the `rm`, so a fresh lock is never removed. A lock
+ *   naming this process's own pid that this process does not hold is stale.
+ * - Only EEXIST means "held". Any other failure to create the lock ends the
+ *   call with `failed`; every pass of the loop sleeps and honours the deadline.
+ * - A token the user approved whose mint then failed TRANSIENTLY is kept in
+ *   memory, so the retry mints again without a second dialog.
  *
  * `CLAUDISH_DISABLE_KEYCHAIN=1` disables every Keychain touch here (the suite's
  * escape hatch). `CLAUDISH_MUSE_KEYCHAIN_FILE` points both reads at a THROWAWAY
@@ -65,7 +72,7 @@ import {
   findGenericPasswordPresence,
   startGenericPasswordRead,
 } from "../keychain.js";
-import { defaultMuseStoreDir, readMuseStore } from "./muse-store.js";
+import { defaultMuseStoreDir, museStorePath, readMuseStore } from "./muse-store.js";
 
 export const MUSE_KEYCHAIN_SERVICE = "ai.meta.dev.credentials";
 export const MUSE_KEYCHAIN_ACCOUNT = "meta";
@@ -141,6 +148,8 @@ export function setMuseKeychainTestDeps(next: Partial<MuseKeychainDeps> | null):
   presenceMemo = null;
   inFlight = null;
   lateResult = null;
+  holdsLock = false;
+  retainedToken = null;
 }
 
 function disabled(): boolean {
@@ -232,15 +241,42 @@ function lockIsLive(lock: LockRecord): boolean {
   return age < LOCK_MAX_AGE_MS && deps.isAlive(lock.pid);
 }
 
-/** Create the lock exclusively. False when another process holds it. */
-function tryAcquireLock(): boolean {
-  mkdirSync(deps.dir(), { recursive: true, mode: 0o700 });
+/** Whether THIS process holds the lock file (between acquire and release). */
+let holdsLock = false;
+
+/**
+ * A `dca:` token this process read from the Keychain whose `use` (the mint)
+ * failed TRANSIENTLY after the user approved the dialog. Kept in memory only,
+ * so the retry mints again without a second read and a second dialog. Dropped
+ * on success and on a terminal failure (the login itself was rejected).
+ */
+let retainedToken: string | null = null;
+
+type AcquireResult = "acquired" | "held" | { error: string };
+
+function errorCode(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code ?? (err as Error)?.message ?? String(err);
+}
+
+/**
+ * Create the lock exclusively. `held` ONLY for EEXIST — another holder. Any
+ * other failure (ENOSPC, EACCES, EROFS) is an error the caller reports: read
+ * as "held", it made the loop retry forever.
+ */
+function tryAcquireLock(): AcquireResult {
+  try {
+    mkdirSync(deps.dir(), { recursive: true, mode: 0o700 });
+  } catch (err) {
+    return { error: errorCode(err) };
+  }
   const record: LockRecord = { pid: deps.pid(), holder: "claudish", startedAt: deps.now() };
   try {
     writeFileSync(lockPath(), JSON.stringify(record), { flag: "wx", mode: 0o600 });
-    return true;
-  } catch {
-    return false;
+    holdsLock = true;
+    return "acquired";
+  } catch (err) {
+    return errorCode(err) === "EEXIST" ? "held" : { error: errorCode(err) };
   }
 }
 
@@ -255,9 +291,30 @@ function rewriteLock(pid: number, holder: LockRecord["holder"]): void {
 }
 
 function releaseLock(): void {
-  const lock = readLock();
-  // Only our own lock: never remove one a later holder created.
-  if (lock && (lock.pid === deps.pid() || !lockIsLive(lock))) rmSync(lockPath(), { force: true });
+  if (!holdsLock) return;
+  holdsLock = false;
+  rmSync(lockPath(), { force: true });
+}
+
+/**
+ * Remove a stale lock only if it is still the one we judged stale: re-read
+ * right before the `rm`, so a lock another process created in between is left
+ * alone (its `wx` then decides, not our `rm`).
+ */
+function removeStaleLock(seen: LockRecord): void {
+  const now = readLock();
+  if (now && now.pid === seen.pid && now.startedAt === seen.startedAt) {
+    rmSync(lockPath(), { force: true });
+  }
+}
+
+/** The borrowed copy's mtime, or 0 when there is none. */
+function borrowedCopyStamp(): number {
+  try {
+    return statSync(museStorePath("borrowed-copy", deps.dir())).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -265,7 +322,9 @@ function releaseLock(): void {
  * (which mints, confirms and writes the borrowed copy) while this process still
  * holds the per-machine lock. Returns what the read produced.
  *
- * `deadlineMs` bounds THIS caller only; `security` is never killed.
+ * `deadlineMs` bounds THIS caller only; `security` is never killed. Every pass
+ * of the loop that does not return awaits a short sleep and re-checks the
+ * deadline, so it can neither spin nor outlive it.
  */
 export async function withMuseKeychainLogin<T>(
   use: (accessToken: string) => Promise<T>,
@@ -274,8 +333,11 @@ export async function withMuseKeychainLogin<T>(
   if (disabled()) return { kind: "absent" };
   if (credentialPromptRole() === "never") return { kind: "not-allowed" };
   const deadline = deps.now() + deadlineMs;
+  const pause = () => deps.sleep(Math.min(LOCK_POLL_MS, Math.max(0, deadline - deps.now())));
 
   for (;;) {
+    // The approved token from a read whose mint failed transiently.
+    if (retainedToken) return settleToken(retainedToken, use);
     // A value a previous, timed-out caller of THIS process left behind.
     if (lateResult) {
       const result = lateResult;
@@ -283,17 +345,39 @@ export async function withMuseKeychainLogin<T>(
       return settle(result, use);
     }
     if (inFlight) return raceJoin(inFlight, deadline, use);
+    if (deps.now() >= deadline) return { kind: "timeout" };
 
     const lock = readLock();
-    if (lock && lockIsLive(lock) && lock.pid !== deps.pid()) {
-      // Another process holds the dialog: wait for it, then take its copy.
-      const copy = await waitForLockThenCopy(deadline);
+    if (lock && lockIsLive(lock)) {
+      if (lock.pid === deps.pid()) {
+        // Our own pid. While we hold it, our read is settling: wait for it.
+        // Without holding it, it is a reused pid or a leftover: stale for us.
+        if (!holdsLock) removeStaleLock(lock);
+        await pause();
+        continue;
+      }
+      // Another process holds the dialog: wait for it, then take the copy it
+      // WROTE during the wait. An older copy is the one that sent us here.
+      const since = borrowedCopyStamp();
+      const copy = await waitForLockThenCopy(deadline, since);
       if (copy === "timeout") return { kind: "timeout" };
       if (copy) return { kind: "used", value: await use(copy), source: "borrowed-copy" };
-      continue; // cleared with no copy: read for ourselves (role already allows it)
+      await pause();
+      continue; // cleared with no new copy: read for ourselves (the role allows it)
     }
-    if (lock && !lockIsLive(lock)) rmSync(lockPath(), { force: true });
-    if (!tryAcquireLock()) continue; // lost the race to another process
+    if (lock) removeStaleLock(lock);
+
+    const acquired = tryAcquireLock();
+    if (acquired === "held") {
+      await pause(); // lost the race to another process
+      continue;
+    }
+    if (acquired !== "acquired") {
+      return {
+        kind: "failed",
+        detail: `could not create the Keychain read lock in ${deps.dir()} (${acquired.error})`,
+      };
+    }
 
     const spawn = deps.startRead(query());
     if (spawn.pid !== undefined) rewriteLock(spawn.pid, "security");
@@ -301,8 +385,7 @@ export async function withMuseKeychainLogin<T>(
       rewriteLock(deps.pid(), "claudish");
     });
     inFlight = done;
-    const outcome = await raceJoin(done, deadline, use);
-    return outcome;
+    return raceJoin(done, deadline, use);
   }
 }
 
@@ -348,17 +431,40 @@ async function settle<T>(
   const token = result.value ? parseMuseKeychainValue(result.value) : null;
   if (!token)
     return { kind: "failed", detail: "the Muse Code login item has no readable access token" };
-  return { kind: "used", value: await use(token), source: "keychain" };
+  return settleToken(token, use);
+}
+
+/** Hand a read token to `use`, keeping it in memory if `use` fails transiently. */
+async function settleToken<T>(
+  token: string,
+  use: (accessToken: string) => Promise<T>
+): Promise<{ kind: "used"; value: T; source: "keychain" }> {
+  retainedToken = token;
+  try {
+    const value = await use(token);
+    retainedToken = null;
+    return { kind: "used", value, source: "keychain" };
+  } catch (err) {
+    // A rejected login will not get better on retry; anything else keeps the
+    // approved token so the retry needs no second dialog.
+    if ((err as { terminal?: unknown })?.terminal === true) retainedToken = null;
+    throw err;
+  }
 }
 
 /**
  * Wait until another process's lock clears, then read the borrowed copy it
- * wrote. `null` when the lock cleared with no copy; `"timeout"` past the deadline.
+ * wrote — only one written after `sinceMtime`. `null` when the lock cleared with
+ * no new copy; `"timeout"` past the deadline.
  */
-async function waitForLockThenCopy(deadline: number): Promise<string | null | "timeout"> {
+async function waitForLockThenCopy(
+  deadline: number,
+  sinceMtime: number
+): Promise<string | null | "timeout"> {
   for (;;) {
     const lock = readLock();
     if (!lock || !lockIsLive(lock)) {
+      if (borrowedCopyStamp() <= sinceMtime) return null;
       const copy = readMuseStore("borrowed-copy", deps.dir());
       return copy ? copy.access_token : null;
     }
