@@ -3036,6 +3036,22 @@ export function getRecoveryHint(
     if (status === 403 && /access denied|accessdenied/i.test(lower)) {
       return "The provider accepted the credential but denied access to this model — check model access or activation for this account in the provider's console, not the key.";
     }
+    // A SUBSCRIPTION that signs with claudish's own login: the rejected
+    // credential is that login, so the fix is a new login, not a key audit.
+    // Only providers that declare `oauthLoginSlug` get the command (muse@,
+    // kc@, gk@, Antigravity); a subscription signed by a key or by another
+    // CLI's login (Devin, the Alibaba plans) keeps the generic advice below.
+    // `openai-codex` is not in SUBSCRIPTION_PROVIDERS (its arm is decided by
+    // the credential that signed), so a metered cx@ key is never told to log in.
+    const loginSlug = providerUid ? getProviderByName(providerUid)?.oauthLoginSlug : undefined;
+    if (
+      loginSlug &&
+      providerUid &&
+      isSubscriptionProvider(providerUid) &&
+      isCredentialRejection(status, errorText)
+    ) {
+      return `The ${providerName} login was rejected (HTTP ${status}). Run \`claudish login ${loginSlug}\` to sign in again.`;
+    }
     const siblingNote = providerUid ? describeSiblingKeys(getProviderByName(providerUid)) : "";
     if (siblingNote) {
       return `Check API key / OAuth credentials. This vendor sells several plans whose keys are isolated, so a ${status} can also mean the right key on the wrong plan's host.${siblingNote}`;
