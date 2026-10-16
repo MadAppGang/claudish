@@ -1,18 +1,24 @@
-> The 14-tool MCP surface, the channel sessions behind it, the channel wire format, client-side gating conditions, and the progress keepalive.
+> The 14-tool MCP surface and its four groups, the sessions behind it (panes, records, polling), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
-# Channel Mode (v6.4.0+)
+# MCP sessions and tool surface
 
-The MCP server supports a channel mode that enables async model sessions with push notifications.
+The MCP server runs async model sessions (`create_session` and the other session tools) that the
+host polls, plus `run_prompt` and `team`. The file keeps its old name, `mcp-channel.md`, because
+`CLAUDE.md` and the index link to it; the channel push it was named for is gone (see "Push
+notifications were removed").
 
 ## Architecture
 
-Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/sdk/server/index.js` to declare `experimental: { 'claude/channel': {} }` capability. The SDK's `assertNotificationCapability()` has no default case — custom notification methods like `notifications/claude/channel` pass through.
+Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/sdk/server/index.js`.
+`capabilities` is `{ tools: {} }` for every `CLAUDISH_MCP_TOOLS` value, with no `experimental` key,
+and `serverInfo.version` is `VERSION` from `version.ts` (generated from `packages/cli/package.json`;
+it said `9.0.0` until 10.7.0).
 
 ## Components (`packages/cli/src/channel/`)
 
-- **SessionManager** — the channel's policy and records: creates sessions, owns the queue of
+- **SessionManager** — the sessions' policy and records: creates sessions, owns the queue of
   `send_input`, decides a turn's verdict, writes the session records, enforces `timeout_seconds`
 - **PaneSession** (`packages/cli/src/pane/`) — the mechanism: one interactive Claude Code in its
   own headless magmux pane, with the transcript as its turn oracle. Team uses the same driver
@@ -31,7 +37,7 @@ interactive Claude Code is what users actually run.
 Everything about the pane — boot, the transcript turn oracle and its settle paths, prompt delivery
 by file with read coverage, the child's environment, the watcher and the identity-checked reap,
 the socket traps, the frozen mod contract — is in [`pane-session.md`](pane-session.md). This file
-covers what the channel adds on top.
+covers what the session tools add on top.
 
 **`claude_flags` are checked before anything starts** (`checkChildFlags`, shared with `team`):
 claudish's own pane argv, transport breakers (`-p`, `--output-format`, `--input-format`, `--stdin`,
@@ -56,8 +62,7 @@ fails.
 `classifyRunOutput` with no byte floor and no pattern (`api_error`, `prompt_not_read`, `refused`,
 `empty_output`), and the session is terminal at that verdict, before its pane is reaped. An
 interactive session continues after each turn and fails only on an API-error turn (D20); a turn
-whose task file was not fully read records the anomaly and `meta.prompt_not_read` on the next
-frame. A question or a permission dialog waits for `send_input` (team fails it instead).
+whose task file was not fully read records a `prompt_not_read` anomaly in `events.jsonl`. A question or a permission dialog waits for `send_input` (team fails it instead).
 Terminal states are absorbing: a late pane exit can never upgrade or overturn a CANCELLED or
 TIMEOUT already recorded.
 
@@ -104,17 +109,11 @@ per-pane watchers still remove every process and file.
 `{session_id, state:"CANCELLED", changed}` at once; the pane close and the process-group reap finish
 in the background (worst case ≈ 12 s). A second call returns the same state with `changed:false`.
 
-**`"timeout"` is a first-class wire event — the record and the channel agree.**
-They diverged until Phase 3: `EVENT_TO_TASK_STATUS` had no `"timeout"` key and fell
-through to `?? "working"`, so emitting the real event reported a *dead* session as still
-working. The timeout path therefore recorded `"timeout"` and emitted `"failed"`, and a
-consumer watching only the channel could not tell "ran out of time" from "errored".
-`["timeout", "failed"]` now exists in that map (SEP-1686 has no `timeout` member; `failed`
-is its only honest projection). The map is now built from a `Record<ChannelEventType, TaskStatus>`
-over the runtime list `CHANNEL_EVENT_TYPES`, so an event type without a projection is a compile
-error, and `awaiting_permission` (a dialog only `send_input` can move on) projects to
-`input_required` instead of falling through to `working`. **Mutation-proven**: remove the timeout
-key and a timed-out session goes back to `status: "working"` on the wire.
+**`timeout` is its own state, never `failed`.** A session killed by its own `timeout_seconds` is
+TIMEOUT in memory, `meta.json` `status: "timeout"`, and `to: "timeout"` in `waits.jsonl`. Until
+Phase 3 of the channel work the channel wire said `failed` for it, because the SEP-1686 projection
+had no `timeout` key and fell through to `working`; that projection (`mapEventToTaskStatus`) was
+deleted with the push in 10.7.0, and the records never had the split.
 
 **Session shape follows the prompt.** `create_session` WITH a prompt is one-shot: it is terminal
 at the verdict of the turn that prompt started. WITHOUT a prompt it is interactive: it waits in
@@ -126,7 +125,7 @@ at the verdict of the turn that prompt started. WITHOUT a prompt it is interacti
 an empty input box between turns, or a turn is blocked on a question; `awaiting_permission` iff a
 permission or plan-approval dialog is open. A one-shot session is terminal at its verdict, so there
 is no "answered but still exiting" state for a wait to be confused with — 10.4.0's `finishing`
-channel event is gone with the transport (RB1). The wait for Claude Code's end-of-turn record after
+event is gone with the transport (RB1). The wait for Claude Code's end-of-turn record after
 the model's message ends survives only as `activity:"finishing"` on a RUNNING session. A
 promptless session's first wait opens at boot-ready, not at creation: before boot a send is queued,
 not answered (RB2).
@@ -142,14 +141,15 @@ not answered (RB2).
 ```
 
 `since` keys the wait (the `closed` line repeats it); `turns` is `turnsCompleted` at the
-open; `to` is the channel event of the new state, never another wait (the phase table has no
-wait-to-wait edge). It is append-only because an observer polling the directory (the magus
+open; `to` is the channel event of the new state (`channelEventFor`: `running`, `tool_executing`,
+`completed`, `failed`, `cancelled`, `timeout`, …), never another wait (the phase table has no
+wait-to-wait edge). The vocabulary outlived the push it was named for: the field is a record
+contract the monitor reads, so it keeps those words. It is append-only because an observer polling the directory (the magus
 `claudish` plugin monitor) must see a wait that opened and closed between two of its reads — a
 marker file that exists only during the wait cannot give it that.
 
 The writer is the pane's `onTransition` hook: synchronous, every wire-state change, never
-coalesced, and called BEFORE the channel frame, so the line is on disk by the time anyone hears of
-the wait. It reports the net change of one event-processing step, so a turn that settles with a
+coalesced. It reports the net change of one event-processing step, so a turn that settles with a
 send already queued (RUNNING → IDLE → ADMITTING in one step) opens no wait. The terminal transition
 closes any open wait before `meta.json` is written, so a live writer never leaves an open wait
 beside a `meta.json`. One `appendFileSync` of < 200 bytes per line; a write failure goes to stderr
@@ -295,7 +295,7 @@ a missing diagnostic: it is a session that never sees its own witness.
 ### `CLAUDISH_UPSTREAM_ERROR_LOG` is set per session
 
 `captureUpstreamError` (`handlers/composed-handler.ts`) is a no-op when that env var is
-unset, and it was unset for every channel child. Its own comment states the cost: `log()`
+unset, and it was unset for every session child. Its own comment states the cost: `log()`
 only persists under `--debug`, so the body distinguishing a retryable rate limit from a hard
 quota wall is gone the moment it is classified. Each session now points its child at
 `<sessionDir>/upstream-errors.jsonl` — set unconditionally, overriding any inherited value,
@@ -306,10 +306,11 @@ and `get_diagnostics` hands these records to an agent.
 
 ## MCP Tools (14 total)
 
-- **Low-level** (4): `run_prompt`, `list_models`, `search_models`, `compare_models`
+- **Low-level** (3): `run_prompt`, `list_models`, `search_models`
 - **Agentic** (3): `preflight`, `team`, `report_error`
-- **Channel** (7): `create_session`, `send_input`, `get_output`, `cancel_session`,
+- **Session** (7): `create_session`, `send_input`, `get_output`, `cancel_session`,
   `list_sessions`, `get_diagnostics`, `capture_session`
+- **Debug** (1): `compare_models`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
 check its models before committing to them, so it either shelled out to the CLI or
@@ -335,7 +336,110 @@ The tool list is pinned by an EXACT frozen array in `channel/e2e-channel.test.ts
 adding or removing a tool without updating that test fails CI. That is deliberate:
 it is a wire contract, and an accidental change to the tool surface should be loud.
 
-Tool gating via `CLAUDISH_MCP_TOOLS` env var: `all` (default), `low-level`, `agentic`, `channel`.
+Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroups` in
+`mcp-server.ts`):
+
+| Value | Tools |
+|---|---|
+| unset, `all` | all 14 |
+| `low-level` | `run_prompt`, `list_models`, `search_models` |
+| `agentic` | `preflight`, `team`, `report_error` |
+| `session` | the 7 session tools |
+| `debug` | `compare_models` |
+| `channel`, or any other value | all 14 |
+
+`session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
+thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
+stderr startup line shows `tools: channel, 14 tools`, but an MCP host does not show stderr.
+`compare_models` moved to `debug` at the same time: it sends one prompt to several models in
+sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
+
+## `run_prompt`: two paths
+
+`run_prompt` (and each entry of `compare_models`) is one quick prompt to one model: one request,
+one answer, no tools, no session. `runPrompt` in `mcp-server.ts` picks the path with
+`nativeRouteFor()` (`providers/native-route.ts`) FIRST — the proxy's own gate, so the tool cannot
+disagree with the proxy (the CLAUDE.md invariant about bare Claude names):
+
+| Model | Path |
+|---|---|
+| a bare Claude name: `claude-*`, `opus`, `sonnet`, `haiku`, `opusplan`, `internal`, `default` | `runPromptViaClaudeCode` (`mcp/run-prompt-claude-code.ts`): one Claude Code print-mode call through claudish |
+| everything else, including `anthropic@claude-*` (metered), `dv@claude-*` and `anthropic/claude-*` | `runPromptViaProxy`: one Anthropic Messages request to the in-process proxy, which routes it like any request |
+
+**Why a Claude name cannot use the proxy.** Until 10.7.0 every model took the proxy path, and
+`run_prompt {model: "claude-opus-5-5"}` answered `Proxy error: 401 … x-api-key header is
+required`: the proxy's native route forwards the CALLER's credential, and an MCP tool call has
+none. claudish must never read the Claude Code OAuth token or its Keychain item, so the only way
+onto the user's subscription is the unmodified `claude` binary signing in on its own login.
+
+**The Claude Code print call.** `resolveClaudishLaunch` (`CLAUDISH_BIN`, else `claudish` on PATH —
+the same claudish the panes start) runs:
+
+```
+<claudish> -p --model <model> --output-format json --tools "" --strict-mcp-config
+  --setting-sources "" --disable-slash-commands --no-session-persistence
+  (--system-prompt-file <file> | --system-prompt "")
+```
+
+The original model string is passed; claudish's CLI owns alias normalisation. Measured on Claude
+Code 2.1.301 (session `dev-feature-mcp-run-prompt-claude-20261016-a7c3`):
+
+| Choice | Why |
+|---|---|
+| prompt on stdin, system prompt in a file | claudish's passthrough parser takes a flag value only when it does not start with `-` (`cli.ts` `passthroughFlagTakesValue`), so a prompt or value starting with `-` would be misparsed. stdin reaches `claude -p` unchanged (`- Say OK` answered correctly), and keeps the prompt out of `ps` |
+| `--system-prompt ""` when none is given | omitting it loads Claude Code's default system prompt (3 232 input tokens against 586); the proxy path sends no system prompt either |
+| a new empty working directory | `--setting-sources ""` does NOT stop CLAUDE.md and memory loading: 8 718 input tokens in this repo, 580–597 in an empty directory. The cwd is `<tmp>/claudish-run-prompt-*/cwd`; the system prompt file sits beside it, so the cwd is empty even then. Both are removed after the call |
+| `--setting-sources ""` | still authenticates: `apiKeySource: "none"`, the Keychain login. The login is not a settings source |
+| `--strict-mcp-config`, `--tools ""` | without them the child loads the user's plugins and starts another `claudish --mcp`; with them the init frame shows `mcp_servers: []`, `tools: []` |
+| no `--bare` | `--bare` reads only `ANTHROPIC_API_KEY`/`apiKeyHelper`, never the login, and 401s again |
+
+**The environment.** `claudeCodePrintEnv` is the server's environment minus
+`isStrippedFromChildEnv` (`pane/pane-launch.ts`, the list the pane spawner uses: `CLAUDECODE`,
+`CLAUDE_CODE_CHILD_SESSION`, `MAGMUX_*`, terminal identity, `CLAUDE_CODE_SESSION_ID` and the launcher
+pids), minus `PANE_MARKER_VARS` (a marker would make the child a pane child, which refuses `-p`
+and exits 64), minus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`.
+`ANTHROPIC_API_KEY` goes unconditionally, not only claudish's placeholder: a bare Claude name in
+`run_prompt` runs on the Claude Code login, and a user who wants the metered Anthropic API names
+it as `anthropic@claude-*`.
+
+**Process handling.** All three stdio streams are pipes: this process's stdin and stdout are the
+JSON-RPC transport, and an inherited one would eat the host's requests or corrupt the stream. The
+child is `detached` and stopped by its process group (SIGTERM, SIGKILL 5 s later), because
+`claudish` on PATH may be the `bin/claudish.cjs` launcher, which orphans the real process on a
+plain SIGTERM. There is no wall-clock deadline, as on the proxy path: the child stops on the call's
+`AbortSignal` (`ToolCallContext.signal`, from the SDK's `extra.signal`: `notifications/cancelled`
+or the host's own timeout) or at server shutdown (`stopAllClaudeCodePrintChildren` in
+`installMcpShutdown`). Measured end to end: 1.3 s for a 404, 2.4 s for a Haiku answer.
+
+**The answer.** Claude Code 2.1.301 `--output-format json` prints a JSON ARRAY of frames
+(`system/init`, `assistant`, `rate_limit_event`, `result`); older releases printed one result
+object. `parseClaudeCodePrintOutput` accepts both and reads the last `type: "result"` frame and the
+`system/init` frame. `result` is the answer; `usage.input_tokens + cache_creation_input_tokens +
+cache_read_input_tokens` is the input (a cached prefix is context the model saw); the init frame's
+`apiKeySource` becomes the `Auth:` line (`"none"` → `Auth: Claude Code login (subscription)`).
+`total_cost_usd` is not shown: on a subscription it is a list-price equivalent
+(`costBasis: "list"`), not money spent. Exit 0 proves nothing; the verdict is the result frame:
+
+| Condition | Error text |
+|---|---|
+| `is_error: true` (API error, "Not logged in") | `Claude Code: <result>` plus ` (HTTP <api_error_status>)` when it is a number |
+| the executable cannot start | `cannot start claudish (<command>): <code>` |
+| no result frame | `claudish -p exited <code>: <stderr tail, sanitized>` (the missing-`claude` case lands here) |
+| empty `result` | `Model returned empty response` |
+| the call's signal fired | `cancelled` |
+
+**No `max_tokens` on either path.** `run_prompt` and `compare_models` have no output-limit
+parameter, and `runPromptViaProxy`'s body has no `max_tokens`. Step 5w strips every limit field the
+adapters write and adds the wire's `tokenParam` only when the request carries a limit, so the
+upstream applies its own default and no number is pinned ([`wire.md`](wire.md)). Measured 200 with
+no limit on chat-completions (`mm@MiniMax-M3`, `kimi-k3`), responses (`gpt-6.1-sol`) and
+anthropic-messages (`mmc@MiniMax-M3`). The one known host that REQUIRES `max_tokens` is
+`api.anthropic.com`, reached now only by the explicit metered `anthropic@claude-*`; if it 400s,
+the fix belongs in step 5w (write the connection's catalog `maxOutputTokens` for
+`anthropic-messages`), never in the MCP server.
+
+Why `-p` is acceptable for this one call, when the session tools refuse it:
+[`headless-vs-interactive.md`](headless-vs-interactive.md) "The one `-p` the MCP server starts".
 
 ## Tool Registration Pattern
 
@@ -343,101 +447,33 @@ Uses a `ToolDefinition[]` registry with raw JSON Schema (not Zod). Two `setReque
 - `ListToolsRequestSchema` → returns filtered tool list
 - `CallToolRequestSchema` → dispatches to handler by name
 
-## Channel Notifications
+## Push notifications were removed (10.7.0)
 
-`server.notification({ method: "notifications/claude/channel", params: { content, meta } })` — pushed by SessionManager's `onStateChange` callback when a session's channel event changes, plus a coalesced `tool_executing` repeat (at most one per second) when the tool or the tool count changes. The method, capability, and params shape match Anthropic's [Channels reference](https://code.claude.com/docs/en/channels-reference) byte-for-byte.
+Until 10.7.0 the server declared `experimental: {"claude/channel": {}}` and pushed a
+`notifications/claude/channel` frame on every session state change (plus a coalesced
+`tool_executing` repeat at most once a second) and on every `team` progress tick, with SEP-1686
+forward-compatibility fields (`task_id`, `status`, `created_at`, `last_updated_at`). Removed with
+it: the capability, the `onStateChange` bridge and `SessionManager.emitFrame`, `notifyChannel`,
+the SEP-1686 projection (`mapEventToTaskStatus`), the `ChannelEvent` type, and the
+`CLAUDISH_CHANNEL_TRACE` diagnostics (`channel/diagnostics.ts`).
 
-The wire format is contractually pinned by `channel-wire-format.test.ts`:
+Why: Claude Code rendered those frames only for an interactive host started with `--channels` (or
+`--dangerously-load-development-channels`) and the server in project `.mcp.json` or
+`~/.claude.json` — `--mcp-config` is not consulted by the channel resolver, and `-p` never
+registers channels. Every other host dropped every frame, and a host polling `list_sessions` gets
+the same facts from the records. The frames were never a keepalive either (next section).
 
-```json
-{
-  "method": "notifications/claude/channel",
-  "params": {
-    "content": "<string>",
-    "meta": {
-      "session_id": "<8-char hex>",
-      "event": "starting|running|tool_executing|waiting_for_input|awaiting_permission|completed|failed|cancelled|timeout",
-      "model": "<model-id>",
-      "elapsed_seconds": "<numeric string>",
-      "task_id": "<same as session_id>",
-      "status": "working|input_required|completed|failed|cancelled",
-      "created_at": "<ISO 8601 from session start>",
-      "last_updated_at": "<ISO 8601 at notification time>"
-    }
-  },
-  "jsonrpc": "2.0"
-}
-```
+Where the facts are now: `list_sessions` rows (`state`, `activity`, `idle_seconds`, accounting),
+`get_output`, `get_diagnostics`, `capture_session`, and the session records (`spawn.json`,
+`waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which the magus monitor reads and which
+are byte-identical to before. `waits.jsonl` keeps the channel-event vocabulary in its `to` field.
+`team` progress is `team(mode:"status")`. The `notifications/progress` keepalive stays.
 
-The event is derived from the session's state by `channelEventFor` (`session-manager.ts`):
-STARTING → `starting`; RUNNING → `tool_executing` when its activity is a tool name, else `running`;
-AWAITING_INPUT → `waiting_for_input`; AWAITING_PERMISSION → `awaiting_permission`; COMPLETED,
-CANCELLED, TIMEOUT → their own event; FAILED and EMPTY → `failed`. Frames may add `tool` and
-`tool_count`, `activity` (whenever it is non-null), `prompt_not_read` and `send_rejected`. The
-content is claudish's own short text per event: the question or dialog text when the session is
-blocked, the reason and detail on `failed`.
+The trigger to reconsider is in `ROADMAP.md`: Claude Code delivering `notifications/tasks/status`
+(SEP-1686) into the agent's context without `--channels`.
 
-When rendered by Claude Code, each notification arrives in the agent's context as:
-
-```
-<channel source="claudish" session_id="…" event="…" model="…" elapsed_seconds="…">
-<content here>
-</channel>
-```
-
-`meta` keys must match `[a-zA-Z0-9_]+` — Claude Code silently drops keys with hyphens or other characters. Our schema uses underscore-only keys (`session_id`, `elapsed_seconds`, etc.); when adding new `extraMeta` keys in `SessionManager.emitFrame`, keep this constraint.
-
-The `task_id` / `status` / `created_at` / `last_updated_at` fields are SEP-1686 (MCP Tasks) forward-compatibility — additive only, no current consumer behavior change. The 9-value `event` collapses to the 5-value `status` per `EVENT_TO_TASK_STATUS` in `mcp-server.ts`; **every member of `ChannelEventType` must have a key there** — enforced at compile time now, because `mapEventToTaskStatus` falls through to `?? "working"` and a missing key silently reports a finished session as running. When Claude Code ships `notifications/tasks/status` receiver support, the migration is a method-name swap + payload restructure; see `ROADMAP.md` (Channel notifications → Phase 2) and `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md` (write-up lost — predates the ai-docs tracking fix) for the full plan.
-
-## Enabling channel rendering in Claude Code
-
-The Claudish MCP server emits the documented wire format, but Claude Code gates channel **registration** behind several conditions that have nothing to do with the wire contract. All of these must be satisfied for `<channel>` blocks to surface in the agent's context:
-
-| Requirement | Why |
-|---|---|
-| Claude Code v2.1.80 or later | Channels feature minimum version |
-| Anthropic auth via claude.ai OR Console API key | Channels are NOT supported on Bedrock, Vertex, or Foundry |
-| Interactive session (no `-p` / `--print`) | Channel registration is bound to the interactive event loop. Empirically verified: in `-p` mode the registration codepath never runs and frames are silently dropped |
-| Server defined in project `.mcp.json` or `~/.claude.json` | `--mcp-config` is NOT consulted by the channel resolver. Tools loaded via `--mcp-config` work; channels declared by the same server do not register |
-| Server explicitly named in `--channels` OR `--dangerously-load-development-channels` | Being in MCP config alone is not enough. Per Anthropic docs: *"a server also has to be named in `--channels`"* |
-| Org policy `channelsEnabled: true` (Team/Enterprise only) | Pro/Max users without an org skip this check |
-
-**Launch command — bare server**:
-
-```bash
-# in a directory with .mcp.json containing a "claudish" entry
-claude --dangerously-load-development-channels server:claudish
-```
-
-**Launch command — via the Magus `code-analysis` plugin** (Claudish is bundled there as an MCP server):
-
-```bash
-claude --dangerously-load-development-channels plugin:code-analysis@magus
-```
-
-The `--dangerously-load-development-channels` flag triggers a one-time confirmation prompt per session. To remove that prompt, the plugin would need to be added to Anthropic's curated channel allowlist (security review required) or to your org's `allowedChannelPlugins` managed setting.
-
-## Diagnostic tracing — `CLAUDISH_CHANNEL_TRACE=1`
-
-When the channel pipeline appears broken (e.g., client never renders `<channel>` blocks), set `CLAUDISH_CHANNEL_TRACE=1` before starting the MCP server. The diagnostics module (`packages/cli/src/channel/diagnostics.ts`) then emits `[channel-trace] …` lines to stderr at three checkpoints:
-
-1. `fired sid=… type=… model=… elapsed=…s` — onStateChange callback entered (producer side fires)
-2. `callback returned sid=… type=…` — bridge invoked `server.notification()` without throwing
-3. `WIRE-OUT {…json…}` — the JSON-RPC frame literally hit stdout
-
-If you see (1) but not (2): the bridge is throwing or rejecting silently.
-If you see (1)+(2) but not (3): the SDK's transport is dropping the frame.
-If you see all three but the client doesn't render the notification: the issue is client-side — most often one of the gating conditions in "Enabling channel rendering in Claude Code" above is unmet.
-
-Off by default. Zero overhead in production.
-
-When the MCP server is spawned by a host that captures stderr (e.g. Claude Code), set `CLAUDISH_CHANNEL_TRACE_FILE=/path/to/log` alongside `CLAUDISH_CHANNEL_TRACE=1` to mirror trace lines to a file you can `tail` from outside the host process. The file is opened with `appendFileSync` so multiple sessions append safely.
-
-Diagnostic scripts:
-- `packages/cli/src/channel/test-helpers/channel-diagnostic.ts` — drives the MCP server with raw JSON-RPC against the OpenRouter free model. Confirms the producer→bridge→wire pipeline.
-- `packages/cli/src/channel/test-helpers/client-diagnostic.ts` — spawns `claude -p` against the instrumented MCP server and compares what the server sent vs. what the client surfaced. Useful for diagnosing client-side gating.
-- `packages/cli/src/channel/test-helpers/claudish-mock.ts` — a standalone mock MCP server that exposes a single `start_mock_session` tool, then emits a scripted sequence of 6 channel notifications over ~9 seconds. Decouples channel-rendering tests from real-model behavior.
-- `scripts/pane-drive.ts` — drives one pane session from the command line (`--fake <scenario>` for the hermetic fake child).
+Diagnostic script: `scripts/pane-drive.ts` drives one pane session from the command line
+(`--fake <scenario>` for the hermetic fake child).
 
 ## Testing
 
@@ -445,7 +481,7 @@ Diagnostic scripts:
 bun test ./packages/cli/src/channel/
 ```
 
-Channel sessions are panes, so the suites that start one run a REAL headless magmux with the pane
+Sessions are panes, so the suites that start one run a REAL headless magmux with the pane
 fake child (`pane/test-helpers/fake-interactive-child.ts`) as `CLAUDISH_BIN`, under a per-test
 `CLAUDISH_PANE_ROOT` and an allowlisted environment, and assert after each test that no process,
 socket, record or launcher directory is left. Without magmux they skip with "magmux not installed —
@@ -453,22 +489,21 @@ not checked". `testing.md` has the rules.
 
 - `session-manager.test.ts` — the pure seams (`channelEventFor` over every `SlotState`,
   `toMetaRecord`, `sessionRowOf`, `normaliseTimeoutSeconds`), the two-generation disk reader, the
-  hostile-id and bounded-read guards, live pane sessions (one-shot and promptless frames, a send
-  queued while STARTING (G7) or RUNNING, the timeout staying TIMEOUT in memory, `meta.json` and on
-  the wire (G1/G2), cancel, recovery from disk), and the module-load signal exit codes (G3). G4 is
-  the flag check.
+  hostile-id and bounded-read guards, live pane sessions (one-shot and promptless `waits.jsonl`
+  transitions, a send queued while STARTING (G7) or RUNNING, the timeout staying TIMEOUT in memory,
+  `meta.json` and `waits.jsonl` (G1/G2), cancel, recovery from disk), and the module-load signal
+  exit codes (G3). G4 is the flag check.
 - `session-records.contract.test.ts`, `session-state-records.contract.test.ts`,
   `spawn-record.contract.test.ts`, `host-pid.contract.test.ts`, `session-timeout.test.ts` — the
   on-disk records the monitor reads. These were written blind from the 10.4.0 specification; the
   pane port changed only the adapters and the fake, and every replaced assertion cites its RB/D
   number.
-- `channel-wire-format.test.ts`, `event-task-status.test.ts` — the wire format and the SEP-1686
-  projection, including `awaiting_permission` and the absence of `finishing`.
+- `channel-wire-format.test.ts` — the capability declaration: no `experimental` for any tool mode.
 - `../mcp-contract.e2e.test.ts` — the mod contract v1 through a real MCP server over JSON-RPC;
   `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
   and a live team run.
 
-**The tool list is pinned twice, and adding a tool must break both.** `e2e-channel.test.ts` freezes the full 14-name list and the channel-only 7, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` and `capture_session` each broke both pins on the way in, which is the guard working.
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-channel.test.ts` freezes the full 14-name list, the session-only 7 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` and `capture_session` each broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 
@@ -493,11 +528,13 @@ Claude Code aborts a tool call that puts nothing on the transport for its idle w
 | `notifications/progress` | survived 90s |
 | `notifications/claude/channel` | aborted at 30s |
 
-Channel and progress are **complementary, not alternatives**: channel is the visible surface with no keepalive, progress is the invisible keepalive — it still renders nowhere. A tool that blocks for minutes needs both.
+**Progress is the keepalive**, and the only one: a channel frame never reset the idle timer (the
+row above is kept as the measurement that showed it; the channel push itself was removed in
+10.7.0). Progress still renders nowhere.
 
-**`heartbeat: true` is set on exactly four tools**: `team`, `run_prompt`, `compare_models`, `preflight`. `team(mode:"run")` itself returns once every slot's prompt is accepted (at most 90 s + 30 s), but `run-and-judge` holds the call for the whole run. `create_session` deliberately does NOT carry it — it returns `{session_id, state}` as soon as the pane exists, without waiting for boot, and cannot reach the idle timer; the session's own long life is reported over channel frames, which is a different question.
+**`heartbeat: true` is set on exactly four tools**: `team`, `run_prompt`, `compare_models`, `preflight`. `team(mode:"run")` itself returns once every slot's prompt is accepted (at most 90 s + 30 s), but `run-and-judge` holds the call for the whole run. `create_session` deliberately does NOT carry it — it returns `{session_id, state}` as soon as the pane exists, without waiting for boot, and cannot reach the idle timer; the session's own long life is read by polling `list_sessions`, which is a different question.
 
-**The emitter is TIME-driven, not event-driven**, and that is the load-bearing choice. `team` already emitted a channel frame on every state change and still died at exactly 1800s, because a model that thinks for 30 minutes produces no state changes — an event-driven emitter goes silent precisely while the idle timer is counting.
+**The emitter is TIME-driven, not event-driven**, and that is the load-bearing choice. `team` once emitted a channel frame on every state change and still died at exactly 1800s, because a model that thinks for 30 minutes produces no state changes — an event-driven emitter goes silent precisely while the idle timer is counting.
 
 Interval defaults to 10s (the measured-working value), overridable with `CLAUDISH_MCP_PROGRESS_INTERVAL_MS`, clamped to `[1000, 60000]`, garbage → default. Resolved once per server, not per call, so a long session cannot change cadence mid-flight. The first frame lands at t+interval, so a 200ms call stays completely silent.
 

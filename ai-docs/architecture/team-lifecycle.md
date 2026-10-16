@@ -192,10 +192,9 @@ eviction, or after a server restart, `status` still answers from `status.json`
 
 ### The run's record in the sessions directory, ended exactly once
 
-Returning early has a cost: the run's completion reaches the caller only through
-a channel frame, and Claude Code drops channel frames unless the session named
-claudish in `--channels`. The run's own `status.json` sits wherever the caller
-pointed `path`, which no outside observer knows. Review panels finished unseen
+Returning early has a cost: the run's completion is not pushed to the caller at
+all. The run's own `status.json` sits wherever the caller pointed `path`, which
+no outside observer knows. Review panels finished unseen
 for days this way. So `team(mode:"run")` also writes a record into the sessions
 directory the magus `claudish` plugin monitor already watches:
 
