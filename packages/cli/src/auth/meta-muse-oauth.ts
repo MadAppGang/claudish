@@ -64,6 +64,11 @@ const DEFAULT_INTERVAL_S = 5;
 const DEFAULT_EXPIRES_S = 600;
 /** RFC 8628 §3.5: `slow_down` raises the interval by 5 s, for good. */
 const SLOW_DOWN_STEP_MS = 5000;
+/**
+ * Ceiling on one device-flow request, body included (a rule): a stalled
+ * request must not outlive the device code it polls for.
+ */
+const DEVICE_REQUEST_TIMEOUT_MS = 15_000;
 
 interface DeviceAuthorization {
   device_code: string;
@@ -187,11 +192,17 @@ export class MuseCodeOAuth {
     }
   }
 
+  /** A poll's ceiling: the per-request one, or less when the device code expires sooner. */
+  private requestTimeout(deadline: number): number {
+    return Math.max(1000, Math.min(DEVICE_REQUEST_TIMEOUT_MS, deadline - this.deps.now()));
+  }
+
   private async requestDeviceCode(): Promise<DeviceAuthorization> {
     const response = await this.deps.fetch(DEVICE_AUTHORIZATION_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ client_id: MUSE_OIDC_CLIENT_ID }),
+      signal: AbortSignal.timeout(DEVICE_REQUEST_TIMEOUT_MS),
     });
     const parsed = (await response.json().catch(() => ({}))) as Partial<DeviceAuthorization> &
       TokenAnswer;
@@ -226,7 +237,10 @@ export class MuseCodeOAuth {
       await this.deps.sleep(intervalMs);
       let response: Response;
       let answer: TokenAnswer;
+      let text: string;
       try {
+        // Each poll, body included, is bounded by the shorter of the per-request
+        // ceiling and what is left of the device code's life.
         response = await this.deps.fetch(DEVICE_TOKEN_URL, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -235,10 +249,23 @@ export class MuseCodeOAuth {
             device_code: auth.device_code,
             client_id: MUSE_OIDC_CLIENT_ID,
           }),
+          signal: AbortSignal.timeout(this.requestTimeout(deadline)),
         });
-        answer = (await response.json().catch(() => ({}))) as TokenAnswer;
+        text = await response.text();
       } catch (error) {
         log(`[MuseCodeOAuth] poll failed, retrying: ${(error as Error).message}`);
+        continue;
+      }
+      // A 5xx, or an answer that is not JSON, is the token host blinking, not
+      // a verdict on the login: keep waiting, as for a network blip.
+      try {
+        answer = JSON.parse(text) as TokenAnswer;
+      } catch {
+        log(`[MuseCodeOAuth] poll answered HTTP ${response.status} without JSON, retrying`);
+        continue;
+      }
+      if (response.status >= 500) {
+        log(`[MuseCodeOAuth] poll answered HTTP ${response.status}, retrying`);
         continue;
       }
 
