@@ -1497,7 +1497,10 @@ export class ComposedHandler implements ModelHandler {
     // default-preserving: a transport that leaves `serializeBody` undefined
     // yields `undefined` here and every expression below collapses to exactly
     // what it was before this hook existed.
-    const serialized = this.provider.serializeBody?.(requestPayload);
+    // Always the encoding of the CURRENT `requestPayload`: parameter recovery
+    // replaces the payload and re-encodes it here, so the 401 auth retry below
+    // never resends bytes the provider already rejected.
+    let serialized = this.provider.serializeBody?.(requestPayload);
     headers["Content-Type"] = serialized?.contentType ?? "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
@@ -1722,7 +1725,8 @@ export class ComposedHandler implements ModelHandler {
           requestPayload = recovery.payload;
           // Re-serialize: a transport that owns its own encoding (Devin) must
           // re-encode the changed payload rather than resend the stale bytes.
-          const retrySerialized = this.provider.serializeBody?.(requestPayload);
+          serialized = this.provider.serializeBody?.(requestPayload);
+          const retrySerialized = serialized;
           // This re-fetch had NO `try` at all. A connection throw therefore
           // escaped handle() entirely and landed in `fallback-handler.ts`'s
           // catch, which pushes `{ status: 0 }` and advances the chain
@@ -1785,6 +1789,22 @@ export class ComposedHandler implements ModelHandler {
             retryResp = outcome.value;
           }
           if (retryResp.ok) {
+            response = retryResp;
+          } else if (
+            isCredentialRejection(retryResp.status, await retryResp.clone().text())
+          ) {
+            // The re-fetch's credential was REJECTED (401/403 that is not a
+            // model, quota or region answer). That is the newer, decisive fact:
+            // the parameter is fixed and the login is what is wrong now. It
+            // replaces the original 400 and takes the normal error path, so a
+            // 401 still gets the forced refresh, and a subscription's rejection
+            // answers the terminal 400 with the verdict and the
+            // `claudish login …` line (D10). Reporting the parameter 400
+            // instead dropped both, and a metered key could not advance.
+            log(
+              `[${this.provider.displayName}] Retry after ${recovery.note} was rejected ` +
+                `(HTTP ${retryResp.status}); reporting the credential rejection`
+            );
             response = retryResp;
           } else {
             // Fall through to the normal error path with the ORIGINAL response,
