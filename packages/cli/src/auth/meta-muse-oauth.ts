@@ -238,6 +238,10 @@ export class MuseCodeOAuth {
 
     while (this.deps.now() < deadline) {
       await this.deps.sleep(intervalMs);
+      // Re-checked AFTER the sleep: the guard above ran one interval ago, so
+      // without this the last poll went out at exactly `expires_in` with a
+      // device code that had already expired (RFC 8628).
+      if (this.deps.now() >= deadline) break;
       let response: Response;
       let answer: TokenAnswer;
       let text: string;
