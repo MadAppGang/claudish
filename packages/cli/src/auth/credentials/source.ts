@@ -42,6 +42,10 @@
 
 import { isLocalProviderEnabled } from "../../profile-config.js";
 import { hasDevinCredentials } from "../../providers/devin/devin-credentials.js";
+import {
+  isMuseCredentialConfigured,
+  museCredentialStatus,
+} from "../../providers/meta-muse/muse-credentials.js";
 import { hasSharedAntigravityToken } from "../antigravity-token.js";
 import { hasOAuthCredentials } from "../oauth-registry.js";
 import { peekVertexProjectOrigin } from "../vertex-auth.js";
@@ -111,6 +115,14 @@ export interface SourceConfig {
  */
 export function describeSourceSync(p: SourceClassifiable, config: SourceConfig): CredentialSource {
   if (p.isLocal) return isLocalProviderEnabled(p.catalogName, config) ? "local" : null;
+  // Muse Code BEFORE the generic OAuth branch: its login is claudish's own file,
+  // the borrowed copy, or the Muse Code CLI's Keychain item, none of which
+  // `hasOAuthCredentials` reads. `"oauth"` for the same wire-contract reason as
+  // Devin below. Sync: two file checks plus the Keychain PRESENCE memo, which
+  // an async caller refreshes (`refreshMuseCredentialStatus`); no dialog.
+  if (p.catalogName === "meta-muse-code") {
+    return isMuseCredentialConfigured(museCredentialStatus()) ? "oauth" : null;
+  }
   // OAuth wins for OAuth-capable providers when credentials exist.
   if (p.oauthSlug && hasOAuthCredentials(p.catalogName)) return "oauth";
   // Antigravity's OAuth token lives in the SHARED keychain store (populated by

@@ -47,6 +47,7 @@ import {
   pingLocalProvider,
   pingLocalProviders,
 } from "../providers/local-liveness.js";
+import { refreshMuseCredentialStatus } from "../providers/meta-muse/muse-credentials.js";
 // 1Password CONFIG persistence (sync, no SDK). Reads/writes the global +
 // project config files for the account / imports / environments fields.
 import {
@@ -535,6 +536,22 @@ export function App({ requestLogin }: AppProps = {}) {
       cancelled = true;
     };
   }, [keychainSupported, refreshKeychainVars, refreshConfig]);
+
+  // The Muse Code row reads one cached status (`museCredentialStatus`): two
+  // file checks plus the Keychain PRESENCE memo. Fill that memo once at mount
+  // (attributes only; no item data is read) and re-derive the rows, so a
+  // Keychain-only Muse login does not render as unconfigured.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshMuseCredentialStatus()
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) refreshConfig();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshConfig]);
 
   // Drop the cached test badge for one provider (keyed by TUI name, as
   // runProbeTest stores it). Call on any credential change — save/remove key or

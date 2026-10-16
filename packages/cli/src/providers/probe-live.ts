@@ -88,7 +88,7 @@ export interface ProbeTiming {
  * token-related failure, we surface a login hint instead of masking the link
  * as "skipped".
  */
-const OAUTH_PROVIDERS = new Set(["vertex", "antigravity", "devin"]);
+const OAUTH_PROVIDERS = new Set(["vertex", "antigravity", "devin", "meta-muse-code"]);
 // Ask for a short paragraph so we can sample streaming throughput (tokens/sec).
 // Capped to keep probes quick while leaving room for reasoning models that
 // spend hidden reasoning tokens BEFORE any visible text: at 64 tokens, models
@@ -335,6 +335,17 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
   if (!isOAuth) return result;
   if (result.state === "live") return result;
 
+  // Muse Code's entitlement failure: the login works but the account is not
+  // subscribed. Logging in again changes nothing, so the hint is the subscribe
+  // link the message names — never a login command.
+  if (provider === "meta-muse-code") {
+    const subscribe = /no active Muse Code subscription[^:]*: subscribe at (\S+?)\.?$/i.exec(
+      result.errorMessage || ""
+    );
+    if (subscribe)
+      return { ...result, state: "auth-failed", actionHint: `subscribe at ${subscribe[1]}` };
+  }
+
   const loginCommand =
     provider === "antigravity"
       ? "claudish login antigravity"
@@ -345,7 +356,9 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
           // would send the user to a command that does not exist.
           provider === "devin"
           ? "devin login"
-          : undefined;
+          : provider === "meta-muse-code"
+            ? "claudish login muse"
+            : undefined;
 
   if (!loginCommand) return result;
 

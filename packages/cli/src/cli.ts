@@ -1750,6 +1750,10 @@ async function probeModelRouting(
       // --probe exists to prevent.
       formatAdapterName = "DevinAPIFormat";
       declaredStreamFormat = "connect-proto";
+    } else if (providerName === "meta-muse-code") {
+      // `museCodeProfile`: Responses only, so --probe muse@… names that path.
+      formatAdapterName = "CodexAPIFormat";
+      declaredStreamFormat = "openai-responses-sse";
     } else {
       formatAdapterName = "OpenAIAPIFormat";
       declaredStreamFormat = "openai-sse";

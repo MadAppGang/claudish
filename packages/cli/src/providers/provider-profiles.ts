@@ -45,6 +45,7 @@ import { DevinProviderTransport } from "./transport/devin.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
 import { GrokSubscriptionProviderTransport } from "./transport/grok-subscription.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
+import { MuseCodeTransport } from "./transport/meta-muse-code.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
@@ -215,6 +216,27 @@ export const grokSubscriptionProfile: ProviderProfile = {
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created Grok subscription handler (composed): ${ctx.modelName}`);
+    return handler;
+  },
+};
+
+/**
+ * Muse Code subscription (`muse@`): OpenAI Responses at api.meta.ai, signed with
+ * a key minted from the Muse Code login. Responses ONLY — the one API on which
+ * subscription billing was verified (muse-wire.md §2) — so the adapter is the
+ * Responses format and the transport adds the CLI's `store: false` body.
+ * The empty api key is intentional: `MuseCodeTransport` signs per request.
+ */
+export const museCodeProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new MuseCodeTransport(ctx.provider, ctx.modelName, "");
+    const adapter = new CodexAPIFormat(ctx.modelName);
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      tokenStrategy: "delta-aware",
+      ...ctx.sharedOpts,
+    });
+    log(`[Proxy] Created Muse Code handler (composed): ${ctx.modelName}`);
     return handler;
   },
 };

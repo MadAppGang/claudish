@@ -33,6 +33,7 @@ export type TransportType =
   | "antigravity"
   | "devin"
   | "grok-subscription"
+  | "meta-muse-code"
   | "openrouter"
   | "ollamacloud"
   | "kimi-coding"
@@ -335,6 +336,7 @@ const geminiHandler = lazyHandler((m) => m.geminiProfile);
 const antigravityHandler = lazyHandler((m) => m.antigravityProfile);
 const devinHandler = lazyHandler((m) => m.devinProfile);
 const grokSubscriptionHandler = lazyHandler((m) => m.grokSubscriptionProfile);
+const museCodeHandler = lazyHandler((m) => m.museCodeProfile);
 const openaiHandler = lazyHandler((m) => m.openaiProfile);
 const openaiCodexHandler = lazyHandler((m) => m.openaiCodexProfile);
 const anthropicCompatHandler = lazyHandler((m) => m.anthropicCompatProfile);
@@ -693,6 +695,37 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     isDirectApi: true,
     description: "Grok on your SuperGrok or X Premium+ plan (gk@)",
+  },
+
+  // ── Muse Code (Meta subscription) ──────────────────────────────────
+  // Meta's flat-rate Muse Code plan, signed with an `LLM|` key MINTED from a
+  // Meta `dca:` login (claudish's own, its borrowed copy, or — interactive only —
+  // the Muse Code CLI's Keychain item). The mint's entitlement answer is what
+  // permits SUB billing. Wire: OpenAI Responses, `store: false`. The metered
+  // Meta API on META_API_KEY is the separate `meta` provider.
+  // Write-up: ai-docs/sessions/…/research/muse-wire.md (§8: mint and login).
+  {
+    createHandler: museCodeHandler,
+    tier: "subscription",
+    name: "meta-muse-code",
+    displayName: "Muse Code (subscription)",
+    transport: "meta-muse-code",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.meta.ai",
+    baseUrlEnvVars: ["MUSE_CODE_BASE_URL"],
+    apiPath: "/v1/responses",
+    // MUST stay empty, as for gk@/ag@/dv@: a non-empty value makes the generic
+    // loop register an api-key provider and lets proxy-server cache a minted
+    // key past its life. META_API_KEY is never aliased (metered `meta`).
+    apiKeyEnvVar: "",
+    apiKeyDescription:
+      "Muse Code login (`claudish login muse`, or `muse login` in an interactive session)",
+    apiKeyUrl: "https://dev.meta.ai",
+    shortcuts: ["muse"],
+    shortestPrefix: "muse",
+    legacyPrefixes: [],
+    isDirectApi: true,
+    description: "Muse Code on your Meta subscription (muse@)",
   },
 
   // ── MiniMax (Anthropic-compatible) ─────────────────────────────────

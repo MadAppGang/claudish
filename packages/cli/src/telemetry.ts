@@ -64,6 +64,7 @@ const PUBLIC_PROVIDERS = new Set([
   "qwen-coding",
   "qwen-payg",
   "meta",
+  "meta-muse-code",
 ]);
 
 // ─── Module-Level State ───────────────────────────────────────────────────────
