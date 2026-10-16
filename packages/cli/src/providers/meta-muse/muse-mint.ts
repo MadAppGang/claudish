@@ -174,9 +174,28 @@ export async function mintMuseApiKey(
     );
   }
 
+  // Two different failures, read apart. `fetch` resolves on the HEADERS, so a
+  // connection reset or our own timeout can still fail the BODY read: that is
+  // a network fault and keeps its cause, timeout mark and endpoint, exactly as
+  // the fetch catch above, so connection recovery sees it. Only a body that
+  // arrived and does not parse is a protocol error (terminal).
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    throw Object.assign(
+      new Error(
+        `Lost the connection to ${url} while reading the Muse Code key: ${(error as Error).message}`,
+        {
+          cause: markOwnTimeout(error),
+        }
+      ),
+      { claudishEndpoint: url }
+    );
+  }
   let body: Record<string, unknown>;
   try {
-    const parsed: unknown = await response.json();
+    const parsed: unknown = JSON.parse(text);
     if (!parsed || typeof parsed !== "object") throw new Error("not an object");
     body = parsed as Record<string, unknown>;
   } catch {
