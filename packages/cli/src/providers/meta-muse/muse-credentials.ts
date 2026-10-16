@@ -98,6 +98,15 @@ let generation = 0;
 const deadKeys = new Set<string>();
 let inFlightResolve: Promise<MuseState> | null = null;
 let lastFailure: string | undefined;
+/**
+ * The invalidation epoch. A reset (login, logout, `credentials.invalidate`)
+ * bumps it; a resolve that started in an older epoch may finish, but it never
+ * installs its result: the login it resolved may be the one just replaced.
+ */
+let epoch = 0;
+/** Which resolve `inFlightResolve` names, so a finishing one clears only itself. */
+let resolveSeq = 0;
+let inFlightId = 0;
 
 /** Replace the seam (`null` restores it) and forget all state. */
 export function setMuseCoreTestDeps(next: Partial<MuseCoreDeps> | null): void {
@@ -107,6 +116,7 @@ export function setMuseCoreTestDeps(next: Partial<MuseCoreDeps> | null): void {
 
 /** Forget the minted key and every in-flight resolve (after a login or logout). */
 export function resetMuseCredentialState(): void {
+  epoch++;
   state = undefined;
   deadKeys.clear();
   inFlightResolve = null;
@@ -118,7 +128,25 @@ export function currentMuseState(): MuseState | undefined {
   return state;
 }
 
-function install(source: MuseSource, accessToken: string, mint: MuseMint): MuseState {
+function install(
+  source: MuseSource,
+  accessToken: string,
+  mint: MuseMint,
+  startEpoch: number
+): MuseState {
+  if (startEpoch !== epoch) {
+    // Fenced: the credential state was reset while this resolve ran. Answer
+    // the caller that asked, but leave the state to the newer resolve.
+    log("[MuseCode] a resolve that began before a credential reset finished; not installing it");
+    return {
+      source,
+      accessToken,
+      key: mint.apiKey,
+      confirmedAt: deps.now(),
+      ...(mint.subsTierName ? { subsTierName: mint.subsTierName } : {}),
+      generation,
+    };
+  }
   if (state && (state.source !== source || state.subsTierName !== mint.subsTierName)) {
     log(
       `[MuseCode] signing source ${state.source} (${state.subsTierName ?? "tier unknown"}) → ` +
@@ -148,7 +176,8 @@ function isLoginRejection(err: unknown): boolean {
 
 /** Mint from one file source. null when the source is absent or its login was rejected. */
 async function tryFileSource(
-  source: "claudish-login" | "borrowed-copy"
+  source: "claudish-login" | "borrowed-copy",
+  startEpoch: number
 ): Promise<MuseState | null> {
   const record = deps.readStore(
     source === "claudish-login" ? "own-login" : "borrowed-copy",
@@ -156,7 +185,7 @@ async function tryFileSource(
   );
   if (!record) return null;
   try {
-    return install(source, record.access_token, await deps.mint(record.access_token));
+    return install(source, record.access_token, await deps.mint(record.access_token), startEpoch);
   } catch (err) {
     if (isLoginRejection(err)) {
       log(`[MuseCode] ${source} login rejected by the key service; trying the next source`);
@@ -166,10 +195,10 @@ async function tryFileSource(
   }
 }
 
-async function resolveFromSources(prompt: boolean): Promise<MuseState> {
-  const own = await tryFileSource("claudish-login");
+async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<MuseState> {
+  const own = await tryFileSource("claudish-login", startEpoch);
   if (own) return own;
-  const borrowed = await tryFileSource("borrowed-copy");
+  const borrowed = await tryFileSource("borrowed-copy", startEpoch);
   if (borrowed) return borrowed;
 
   const role = credentialPromptRole();
@@ -188,7 +217,8 @@ async function resolveFromSources(prompt: boolean): Promise<MuseState> {
       return install(
         result.source === "borrowed-copy" ? "borrowed-copy" : "keychain",
         result.value.accessToken,
-        result.value.mint
+        result.value.mint,
+        startEpoch
       );
     }
     if (result.kind === "timeout") {
@@ -222,7 +252,9 @@ export async function ensureMuseCredentialReady(opts: { prompt: boolean }): Prom
   }
   if (inFlightResolve) return inFlightResolve;
   const previous = state;
-  inFlightResolve = (async () => {
+  const startEpoch = epoch;
+  const resolveId = ++resolveSeq;
+  const resolving: Promise<MuseState> = (async () => {
     try {
       // A TTL re-mint first re-confirms the token already in use, so a lapse is
       // caught and a working source is not abandoned for an earlier one.
@@ -231,21 +263,25 @@ export async function ensureMuseCredentialReady(opts: { prompt: boolean }): Prom
           return install(
             previous.source,
             previous.accessToken,
-            await deps.mint(previous.accessToken)
+            await deps.mint(previous.accessToken),
+            startEpoch
           );
         } catch (err) {
           if (!isLoginRejection(err)) throw err;
         }
       }
-      return await resolveFromSources(opts.prompt);
+      return await resolveFromSources(opts.prompt, startEpoch);
     } catch (err) {
-      lastFailure = (err as Error).message;
+      if (startEpoch === epoch) lastFailure = (err as Error).message;
       throw err;
     } finally {
-      inFlightResolve = null;
+      // Only our own reference: a reset may have started a newer resolve.
+      if (inFlightId === resolveId) inFlightResolve = null;
     }
   })();
-  return inFlightResolve;
+  inFlightResolve = resolving;
+  inFlightId = resolveId;
+  return resolving;
 }
 
 /**
