@@ -295,7 +295,7 @@ export interface ProviderDefinition {
    * Single source of truth: keep this in sync with AUTH_PROVIDERS in
    * src/auth/auth-commands.ts.
    */
-  oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok";
+  oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok" | "muse";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -721,6 +721,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyDescription:
       "Muse Code login (`claudish login muse`, or `muse login` in an interactive session)",
     apiKeyUrl: "https://dev.meta.ai",
+    // `claudish login muse`: Meta device code, claudish's own login file.
+    oauthLoginSlug: "muse",
     shortcuts: ["muse"],
     shortestPrefix: "muse",
     legacyPrefixes: [],
