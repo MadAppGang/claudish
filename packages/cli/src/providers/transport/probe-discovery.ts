@@ -14,6 +14,7 @@
 
 import { log } from "../../logger.js";
 import { readAllModelsCache } from "../all-models-cache.js";
+import { isOptInWireId } from "../content-use.js";
 
 /**
  * In-memory cache. Stores the FULL ranked list of candidates so the probe
@@ -453,8 +454,12 @@ export function rankProbeCandidates(names: string[]): string[] {
   // containing `*` is a LiteLLM ROUTE PATTERN (`gemini/*`), not a model id, so
   // there is nothing to send it. Dropping it is rejecting a non-identifier, not
   // guessing what it can do — which is why it stays after the name rules went.
+  //
+  // The other is not a capability judgement either: a content-use opt-in wire
+  // id is never a probe pick, because a probe is a request claudish chose to
+  // send (`content-use.ts`). Every endpoint probe pick is ranked here.
   return names
-    .filter((name) => !name.includes("*"))
+    .filter((name) => !name.includes("*") && !isOptInWireId(name))
     .sort((a, b) => {
       const aStd = isStandardName(a);
       const bStd = isStandardName(b);
@@ -719,7 +724,9 @@ interface OllamaModel {
  * the fall-through list the probe loop depends on.
  */
 function orderByCost(models: OllamaModel[]): string[] {
-  const sized = models.filter((m) => typeof m.size === "number");
+  // The opt-in exclusion `rankProbeCandidates` applies, for the sized half that
+  // does not pass through it.
+  const sized = models.filter((m) => typeof m.size === "number" && !isOptInWireId(m.name));
   const unsized = models.filter((m) => typeof m.size !== "number");
   const bySize = [...sized]
     .sort((a, b) => (a.size ?? Number.POSITIVE_INFINITY) - (b.size ?? Number.POSITIVE_INFINITY))

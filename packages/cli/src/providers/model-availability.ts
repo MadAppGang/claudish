@@ -45,9 +45,10 @@ import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
  */
 
 import { getCatalogEntries } from "./catalog-client.js";
+import { allConnections } from "./content-use.js";
 import {
   type DiscoveredModel,
-  discoverProviderModels,
+  discoverProviderServedIds,
   getDiscoveryFailure,
 } from "./model-discovery.js";
 import { expandSelection } from "./model-resolvers/registry.js";
@@ -118,7 +119,11 @@ export async function providerServesModel(
   //    than what the vendor offers in general.
   const def = getProviderByName(provider);
   if (def?.modelDiscovery) {
-    const models = await discoverProviderModels(provider);
+    // BOTH lists: this answers whether the id the request carries is entitled,
+    // and an explicitly typed content-use opt-in id is entitled when the account
+    // serves it. Nothing here offers a model, so nothing here can choose one.
+    const { served, optIn } = await discoverProviderServedIds(provider);
+    const models = [...served, ...optIn];
     if (models.length > 0) {
       return modelsCatalogHas(
         models.map((m) => m.id),
@@ -159,11 +164,12 @@ export async function providerServesModel(
     (e) =>
       e.modelId.toLowerCase() === needle ||
       e.aliases.some((a) => a.toLowerCase() === needle) ||
-      (e.aggregators ?? []).some((a) => a.externalModelId?.toLowerCase() === needle)
+      allConnections(e).some((a) => a.externalModelId?.toLowerCase() === needle)
   );
   if (!row) return "unknown";
 
-  return (row.aggregators ?? []).some(
+  // Exact reverse lookup, opt-in rows included: it confirms, it never chooses.
+  return allConnections(row).some(
     (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
   )
     ? "serves"

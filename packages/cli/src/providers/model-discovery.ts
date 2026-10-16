@@ -30,6 +30,7 @@ import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import { resolveRouteProfile } from "./connection-resolver.js";
+import { isOptInWireId } from "./content-use.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -290,7 +291,17 @@ export interface DiscoveryFailure {
  *   fault the user can fix, so it is `failed{unreachable}` naming the variable.
  */
 export type ModelsCatalogOutcome =
-  | { kind: "served"; models: DiscoveredModel[] }
+  | {
+      kind: "served";
+      /** The models claudish may offer or pick: content-use opt-in ids excluded. */
+      models: DiscoveredModel[];
+      /**
+       * Opt-in wire ids the account also serves (`content-use.ts`). Never offered
+       * or picked; read only to confirm an id the user typed exactly. Absent when
+       * there are none.
+       */
+      optInIds?: string[];
+    }
   | { kind: "failed"; failure: DiscoveryFailure }
   | { kind: "unsupported"; reason: "no-descriptor" | "no-fetcher" };
 
@@ -644,6 +655,37 @@ async function discoverViaFetcher(
 export async function discoverProviderModelsCatalog(
   providerName: string
 ): Promise<ModelsCatalogOutcome> {
+  const outcome = await discoverEveryServedModel(providerName);
+  if (outcome.kind !== "served") return outcome;
+  // The single discovery entry, so this is the choke point for dynamic models
+  // catalogs: everything that offers or picks a model reads `models`, and a
+  // content-use opt-in id is never one of them (`content-use.ts`).
+  const models = outcome.models.filter((model) => !isOptInWireId(model.id));
+  if (models.length === outcome.models.length) return outcome;
+  const optInIds = outcome.models.filter((model) => isOptInWireId(model.id)).map((m) => m.id);
+  return { kind: "served", models, optInIds };
+}
+
+/**
+ * Every model the account serves, opt-in ids included, for the EXACT-id readers:
+ * whether a typed id is entitled (`providerServesModel`) and its served window
+ * (`discoverContextWindow`). `optIn` holds the content-use opt-in ids, which
+ * nothing may offer or pick. Fail-soft like {@link discoverProviderModels}: both
+ * lists are empty on any failure. Shares the one discovery cache.
+ */
+export async function discoverProviderServedIds(
+  providerName: string
+): Promise<{ served: DiscoveredModel[]; optIn: DiscoveredModel[] }> {
+  const outcome = await discoverEveryServedModel(providerName);
+  if (outcome.kind !== "served") return { served: [], optIn: [] };
+  return {
+    served: outcome.models.filter((model) => !isOptInWireId(model.id)),
+    optIn: outcome.models.filter((model) => isOptInWireId(model.id)),
+  };
+}
+
+/** The discovery itself: the full list the provider returned, cached unsplit. Never rejects. */
+async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
   const cached = _cache.get(providerName);
   if (cached && cached.expiresAt > Date.now()) return { kind: "served", models: cached.models };
 
@@ -833,8 +875,9 @@ export async function discoverContextWindow(
   providerName: string,
   modelId: string
 ): Promise<number | undefined> {
-  const models = await discoverProviderModels(providerName);
-  const match = models.find((m) => m.id.toLowerCase() === modelId.toLowerCase());
+  // Exact-id lookup: an opt-in id the user typed still gets its served window.
+  const { served, optIn } = await discoverProviderServedIds(providerName);
+  const match = [...served, ...optIn].find((m) => m.id.toLowerCase() === modelId.toLowerCase());
   return match?.contextWindow;
 }
 

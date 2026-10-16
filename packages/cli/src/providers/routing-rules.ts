@@ -20,6 +20,8 @@ import { type RouteTier, getProviderByName } from "./provider-definitions.js";
 import {
   type RouteCandidate,
   catalogDeniesProvider,
+  catalogMapsOnlyOptIn,
+  compareRouteCandidates,
   gatherRouteCandidates,
 } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
@@ -284,7 +286,7 @@ export function buildRoutingChain(
   cachePath?: string
 ): Route[] {
   return resolveRoutingEntries(entries, originalModelName, cachePath)
-    .filter((resolved) => !resolved.excludedByMembership)
+    .filter((resolved) => !resolved.exclusion)
     .map((resolved) => resolved.route);
 }
 
@@ -292,11 +294,23 @@ export function buildRoutingChain(
 interface ResolvedEntry {
   route: Route;
   /**
-   * The entry's subscription plan publishes a membership that does not include
-   * the model. `route` then carries the name it would have been asked by, since
-   * no wire id was resolved for it.
+   * Set when the entry is excluded before any credential is read. `route` then
+   * carries the name it would have been asked by, since no wire id was resolved.
+   *
+   * - `excluded-by-membership`: the entry's subscription plan publishes a
+   *   membership that does not include the model.
+   * - `excluded-by-content-use`: the provider maps the model only through a
+   *   content-use opt-in wire id, which claudish never chooses (`content-use.ts`).
    */
-  excludedByMembership: boolean;
+  exclusion?: PreFilterExclusion;
+}
+
+/** The outcomes that remove a candidate before the credential filter runs. */
+type PreFilterExclusion = "excluded-by-membership" | "excluded-by-content-use";
+
+/** Whether a candidate was removed before the credential filter, i.e. never reaches it. */
+function isPreFilterExclusion(outcome: CandidateOutcome): boolean {
+  return outcome === "excluded-by-membership" || outcome === "excluded-by-content-use";
 }
 
 /**
@@ -338,7 +352,21 @@ function resolveRoutingEntries(
     if (atIdx === -1) {
       const routing = resolveSubscriptionRouting(modelName, provider, cachePath);
       if (routing.kind === "not-served") {
-        resolved.push({ route: routeFor(provider, modelName), excludedByMembership: true });
+        resolved.push({
+          route: routeFor(provider, modelName),
+          exclusion: "excluded-by-membership",
+        });
+        continue;
+      }
+      // The provider publishes this model ONLY through a content-use opt-in
+      // wire id. Sending the plain name would ask a route for an id it never
+      // published, and sending the opt-in id would choose it for the user
+      // (`content-use.ts`). A `["zgo"]` rule for `gemini-4-argon` lands here.
+      if (routing.kind !== "serves" && catalogMapsOnlyOptIn(provider, modelName, cachePath)) {
+        resolved.push({
+          route: routeFor(provider, modelName),
+          exclusion: "excluded-by-content-use",
+        });
         continue;
       }
       if (routing.kind === "serves") {
@@ -358,7 +386,7 @@ function resolveRoutingEntries(
       modelName = resolveExternalId(modelName, provider, cachePath) ?? modelName;
     }
 
-    resolved.push({ route: routeFor(provider, modelName), excludedByMembership: false });
+    resolved.push({ route: routeFor(provider, modelName) });
   }
 
   return resolved;
@@ -469,7 +497,12 @@ export type CandidateOutcome =
   /** The account's dynamic models catalog denies the model. */
   | "not-served"
   /** The subscription plan's published membership does not include the model. */
-  | "excluded-by-membership";
+  | "excluded-by-membership"
+  /**
+   * The provider maps the model only through a content-use opt-in wire id, which
+   * claudish never chooses; typed exactly (`provider@<id>`), it is sent.
+   */
+  | "excluded-by-content-use";
 
 /** One route candidate, where the chain placed it, and what became of it. */
 export interface ExplainedCandidate {
@@ -638,7 +671,7 @@ function explainCandidate(
 
 /** The outcome of a resolved routing entry before any credential is read. */
 function entryOutcome(resolved: ResolvedEntry): CandidateOutcome {
-  return resolved.excludedByMembership ? "excluded-by-membership" : "kept";
+  return resolved.exclusion ?? "kept";
 }
 
 /**
@@ -680,7 +713,7 @@ async function explainExplicitSpec(
     return explanation;
   }
 
-  if (resolved.excludedByMembership) {
+  if (resolved.exclusion) {
     explanation.outcome = {
       kind: "no-route",
       cause: "explicit-unbuildable",
@@ -790,7 +823,7 @@ export function buildCatalogChain(
   const chain = explainCatalogChain(model, defaultProvider, cachePath);
   return {
     routes: chain.candidates
-      .filter((candidate) => candidate.outcome !== "excluded-by-membership")
+      .filter((candidate) => !isPreFilterExclusion(candidate.outcome))
       .map(routeOf),
     catalogReadable: chain.catalog !== "unreadable",
   };
@@ -823,8 +856,15 @@ function explainCatalogChain(
   ensureEndpointsRegistered();
 
   const gathering = gatherRouteCandidates(model, cachePath);
-  const candidates = gathering.candidates.map((candidate) =>
-    explainCandidate(routeFor(candidate.provider, candidate.wireId), "candidate", "kept", candidate)
+  // The gatherer's excluded candidates join the explanation with THEIR outcome,
+  // never `kept`, at the position the chain order gives them. They are shown by
+  // `--probe` and never become a hop: every filter below skips them.
+  const ordered: Array<{ gathered: RouteCandidate; outcome: CandidateOutcome }> = [
+    ...gathering.candidates.map((gathered) => ({ gathered, outcome: "kept" as const })),
+    ...gathering.excluded.map(({ candidate, outcome }) => ({ gathered: candidate, outcome })),
+  ].sort((a, b) => compareRouteCandidates(a.gathered, b.gathered));
+  const candidates = ordered.map(({ gathered, outcome }) =>
+    explainCandidate(routeFor(gathered.provider, gathered.wireId), "candidate", outcome, gathered)
   );
   const catalog = !gathering.catalogReadable
     ? "unreadable"
@@ -841,7 +881,11 @@ function explainCatalogChain(
     // published is a metered request billed for its own 404, and a name the
     // backend has since RENAMED looks identical.
     fallbackWithheld = "catalog-unreadable";
-  } else if (candidates.some((candidate) => candidate.provider === fallback)) {
+  } else if (
+    candidates.some((candidate) => candidate.provider === fallback && candidate.outcome === "kept")
+  ) {
+    // A KEPT candidate only: an excluded one is not in the chain, so the fallback
+    // still gets its own say (and the catalog's denial, or its own exclusion).
     fallbackWithheld = "already-gathered";
   } else if (catalogDeniesProvider(fallback, model, cachePath)) {
     fallbackWithheld = "catalog-denies";
@@ -997,7 +1041,7 @@ async function explainBareName(
   }
 
   const remaining = explanation.candidates.filter(
-    (candidate) => candidate.outcome !== "excluded-by-membership"
+    (candidate) => !isPreFilterExclusion(candidate.outcome)
   );
 
   // NO CATALOG MEANS LOCAL ONLY. With nothing readable, claudish knows no
@@ -1590,6 +1634,7 @@ const DROPPED_FALLBACK_PHRASE: Record<Exclude<CandidateOutcome, "kept">, string>
   "credential-unreadable": "has a credential that could not be read",
   "not-served": "does not serve it",
   "excluded-by-membership": "is outside its plan's membership",
+  "excluded-by-content-use": "maps it only through a contributor (content-use opt-in) id",
 };
 
 /**

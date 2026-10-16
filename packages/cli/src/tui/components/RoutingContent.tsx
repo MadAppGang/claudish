@@ -30,6 +30,7 @@ const DROPPED_TEXT: Record<DroppedOutcome, string> = {
   "credential-unreadable": "credential could not be read",
   "not-served": "the account does not serve it",
   "excluded-by-membership": "not in the plan's membership",
+  "excluded-by-content-use": "contributor id: content-use opt-in, type it exactly to use it",
 };
 
 /**
