@@ -135,7 +135,14 @@ accepting one on the user's behalf (trusting a folder, enabling a project's MCP 
 decision claudish has no standing to make. The bypass-permissions dialog is the one that `-y`
 itself would cause, so it is suppressed instead: a pane child's `--settings` overlay carries
 `skipDangerousModePermissionPrompt: true`, gated on `CLAUDISH_PANE_CHILD=1` so no other launch
-gets it (D5). The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
+gets it (D5). The same overlay, on the same marker, carries `editorMode: "normal"`: a user
+`editorMode: "vim"` leaves the box in `-- INSERT --`, the submit Enter is swallowed, the typed
+prompt sits unsent, and every slot fails `prompt_not_accepted` with anomaly `resent_enter`
+(measured 2026-10-16, Claude Code 2.1.301, magmux 0.15.1). Claude Code merges settings per key, so
+the user's other settings still apply. Claude Code keeps only the LAST `--settings` flag, so a
+caller's `claude_flags --settings` is merged into claudish's temp file (`mergeUserSettingsIfPresent`)
+and one `--settings <path>` is emitted; in a pane `editorMode` is forced over the caller's. magmux 0.16.0 forces the same value for its panes; once it
+is the minimum, this key can go. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
 `ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
