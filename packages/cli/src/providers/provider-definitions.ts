@@ -712,6 +712,9 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     transport: "meta-muse-code",
     tokenStrategy: "delta-aware",
     baseUrl: "https://api.meta.ai",
+    // The mint and the model list honour MUSE_CODE_BASE_URL only on
+    // https://api.meta.ai unless CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST=1: the
+    // login is never sent to a host a cwd `.env` named (`museTrustedBaseUrl`).
     baseUrlEnvVars: ["MUSE_CODE_BASE_URL"],
     apiPath: "/v1/responses",
     // MUST stay empty, as for gk@/ag@/dv@: a non-empty value makes the generic

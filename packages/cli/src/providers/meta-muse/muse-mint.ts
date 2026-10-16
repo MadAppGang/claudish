@@ -112,10 +112,54 @@ export class MuseMintTransientError extends Error {
   }
 }
 
-/** The mint endpoint for the configured base host. */
+/** The only host the Muse Code login is sent to without an explicit opt-in. */
+export const MUSE_CODE_TRUSTED_HOST = "api.meta.ai";
+
+/** The env var that permits a `MUSE_CODE_BASE_URL` on any other host (a test rig, a proxy you run). */
+export const MUSE_CODE_ALLOW_CUSTOM_HOST_ENV = "CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST";
+
+/**
+ * The base URL the `dca:` login (the mint) and the minted key (the model list)
+ * may be sent to.
+ *
+ * WHY THIS REFUSES. The `dca:` token is the account's durable login, possibly
+ * the one copied from the Muse Code CLI's Keychain item, and it mints keys until
+ * Meta revokes it. `MUSE_CODE_BASE_URL` can come from a `.env` in whatever
+ * directory claudish runs in (index.ts loads one), so a cloned repository could
+ * redirect the login to its own host. So an override is honoured only when it
+ * is `https://api.meta.ai…`; anything else needs
+ * `CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST=1`, and even then plain `http://` is
+ * accepted only for loopback (a local test server). Every refusal is terminal
+ * and names the variable.
+ */
+export function museTrustedBaseUrl(env: Record<string, string | undefined> = process.env): string {
+  const raw = env.MUSE_CODE_BASE_URL?.trim();
+  if (!raw) return MUSE_CODE_DEFAULT_BASE_URL;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new MuseMintProtocolError(`MUSE_CODE_BASE_URL is not a URL: ${raw}`);
+  }
+  const base = raw.replace(/\/+$/, "");
+  if (url.protocol === "https:" && url.hostname === MUSE_CODE_TRUSTED_HOST) return base;
+  if (env[MUSE_CODE_ALLOW_CUSTOM_HOST_ENV] !== "1") {
+    throw new MuseMintProtocolError(
+      `MUSE_CODE_BASE_URL points at ${url.protocol}//${url.host}, not https://${MUSE_CODE_TRUSTED_HOST}: claudish will not send your Muse Code login there. Unset it, or set ${MUSE_CODE_ALLOW_CUSTOM_HOST_ENV}=1 if you run that host yourself.`
+    );
+  }
+  const loopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new MuseMintProtocolError(
+      `MUSE_CODE_BASE_URL must be https:// (plain http:// only for a loopback test server): ${raw}`
+    );
+  }
+  return base;
+}
+
+/** The mint endpoint for the configured base host (see {@link museTrustedBaseUrl}). */
 export function museMintUrl(env: Record<string, string | undefined> = process.env): string {
-  const base = (env.MUSE_CODE_BASE_URL?.trim() || MUSE_CODE_DEFAULT_BASE_URL).replace(/\/+$/, "");
-  return `${base}/muse-code/key`;
+  return `${museTrustedBaseUrl(env)}/muse-code/key`;
 }
 
 /** Injectable `fetch`, so the mint is testable without a network. */
