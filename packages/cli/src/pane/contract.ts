@@ -129,6 +129,11 @@ export interface SlotRow {
   /** set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). One exception: a
    * pre-contract state read from disk is FAILED with null (§B) */
   reason: FailureReason | null;
+  /** [additive] one line (≤ 160 chars) saying why `reason`: for api_error the provider's
+   * `error.message` from the last upstream-error record, else the child's API-error text;
+   * for any other reason the first line of its detail. null on non-terminal states, on
+   * COMPLETED, and when nothing readable exists. Never the upstream body. `reasonDetail()` */
+  reason_detail: string | null;
   /** billed input incl. cache reads/writes, main conversation + subagents; null = no source yet */
   tokens_in: number | null;
   tokens_out: number | null;

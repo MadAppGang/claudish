@@ -325,7 +325,7 @@ what a caller cannot see from the model id.
 
 **The polling verbs are the frozen mod contract v1** (`pane/contract.ts`, summarised in
 `pane-session.md`): `list_sessions` answers `{contract_version, capabilities, sessions}` with one
-`SessionRow` per session (state, reason, tokens, `cost_usd`, tool calls, turns, `idle_seconds`,
+`SessionRow` per session (state, reason, `reason_detail`, tokens, `cost_usd`, tool calls, turns, `idle_seconds`,
 `activity`, `pane`); `cancel_session` answers `{session_id, state, changed}`; `capture_session`
 answers the session's current 160×50 screen `{seq, cols, rows, cursor, lines, final, spans?}`, or
 `{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant for polling

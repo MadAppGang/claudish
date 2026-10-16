@@ -508,6 +508,17 @@ type and new fields may only be added.
   pricing, fictional spend for a subscription user; D12), tool calls, turns completed,
   `last_activity_at`, `idle_seconds`, `activity` (`thinking`, `background`, `finishing`, a tool name,
   `AskUserQuestion`; unknown values mean busy) and `pane`.
+- `reason_detail` (added within v1, 2026-10-16) is one line, at most 160 characters, saying why
+  `reason`: for `api_error` the provider's `error.message` from the LAST record of the upstream-error
+  capture (`errors/<slot>-upstream.jsonl` for team, `upstream-errors.jsonl` for a session), else the
+  child's API-error text with claudish's "The turn ended in an API error (status N): API Error: N"
+  boilerplate stripped; for every other reason, the first line of the verdict's detail (the dialog or
+  screen text of `boot_blocked` / `first_run_dialog`, the question of `blocked`, the exit line of
+  `child_exited`, the refusal of `agent_rejected`). Null on every non-terminal state, on COMPLETED,
+  and when nothing readable exists. Only `error.message` is ever lifted from an upstream body —
+  bodies carry `user_id`. One pure function, `reasonDetail()` in `pane/reason-detail.ts`, computes
+  it for both row builders (`toSlotRow` / `teamRunRowFromDisk` and `sessionRowOf`); the capture file
+  is read (16 KB tail) only for a terminal `api_error` row.
 - Verbs: `team(mode="list")` → `{contract_version, capabilities, runs}`; `team(mode="status")` adds
   `contract_version`, `capabilities` and a `run` row to its payload; `team(mode="cancel")` and
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`

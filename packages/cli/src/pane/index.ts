@@ -6,6 +6,7 @@
 
 export * from "./contract.js";
 export { toSlotRow } from "./slot-row.js";
+export { REASON_DETAIL_MAX_CHARS, reasonDetail, upstreamRecordsFor } from "./reason-detail.js";
 export { deliveryRefusal } from "./prompt-delivery.js";
 export {
   type Accounting,

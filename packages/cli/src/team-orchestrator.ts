@@ -33,12 +33,14 @@ import {
   livePaneCount,
   mergeAccounting,
   readTokenFileCached,
+  reasonDetail,
   releasePaneReservations,
   reservePanes,
   resolveProvider,
   sockRootFor,
   startPaneSession,
   toSlotRow,
+  upstreamRecordsFor,
 } from "./pane/index.js";
 import { redactSecrets } from "./redact.js";
 import { projectsDir, transcriptPathFor } from "./session/session-discovery.js";
@@ -429,6 +431,11 @@ function notableAnomalies(snap: PaneSnapshot): string[] {
   );
 }
 
+/** `errors/<slot>-upstream.jsonl`: the child proxy's upstream-error capture for one slot. */
+function upstreamLogPath(path: string, id: string): string {
+  return join(path, "errors", `${id}-upstream.jsonl`);
+}
+
 function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
   return {
     slot: e.id,
@@ -436,6 +443,11 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     provider: e.acct.provider,
     state: m?.state ?? "FAILED",
     reason: m?.error?.reason ?? "pane_lost",
+    reason_detail: reasonDetail({
+      state: m?.state ?? "FAILED",
+      reason: m?.error?.reason ?? "pane_lost",
+      detail: m?.error?.detail,
+    }),
     tokens_in: null,
     tokens_out: null,
     cost_usd: null,
@@ -454,7 +466,9 @@ function liveSlotRow(run: LiveTeamRun, e: SlotEntry): SlotRow {
   return toSlotRow(
     { slot: e.id, model: e.model, spawnModel: e.spawnModel },
     snap,
-    refreshAccounting(e, snap)
+    refreshAccounting(e, snap),
+    Date.now(),
+    upstreamRecordsFor(snap, upstreamLogPath(run.path, e.id))
   );
 }
 
@@ -513,12 +527,16 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
     .map(([id, m]) => {
       const { state, known } = closedState(m?.state);
       const terminal = isTerminalState(state);
+      const reason =
+        !known || !terminal || state === "COMPLETED" ? null : (m?.error?.reason ?? null);
+      const why = { state, reason, detail: m?.error?.detail };
       return {
         slot: id,
         model: m?.model ?? manifest?.models[id]?.model ?? "unknown",
         provider: m?.provider ?? null,
         state,
-        reason: !known || !terminal || state === "COMPLETED" ? null : (m?.error?.reason ?? null),
+        reason,
+        reason_detail: reasonDetail(why, upstreamRecordsFor(why, upstreamLogPath(path, id))),
         tokens_in: m?.tokensIn ?? null,
         tokens_out: m?.tokensOut ?? null,
         cost_usd: m?.costUsd ?? null,
@@ -1242,7 +1260,7 @@ async function startModelsIn(
   const entries = new Map<string, SlotEntry>();
   let run: LiveTeamRun | null = null;
   const errorLogPathOf = (id: string) => join(path, "errors", `${id}.log`);
-  const upstreamLogOf = (id: string) => join(path, "errors", `${id}-upstream.jsonl`);
+  const upstreamLogOf = (id: string) => upstreamLogPath(path, id);
   const commandOf = (e: SlotEntry) =>
     ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...claudeFlags].join(
       " "

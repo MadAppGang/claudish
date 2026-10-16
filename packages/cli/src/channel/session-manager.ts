@@ -62,11 +62,13 @@ import {
   isTerminalState,
   mergeAccounting,
   readTokenFileCached,
+  reasonDetail,
   releasePaneReservations,
   reservePanes,
   resolveProvider,
   sockRootFor,
   startPaneSession,
+  upstreamRecordsFor,
 } from "../pane/index.js";
 import { redactSecrets } from "../redact.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
@@ -340,7 +342,11 @@ export function channelEventFor(snap: { state: SlotState; activity: string | nul
 }
 
 /** One `list_sessions` row (§8 B): exactly the SlotRow keys plus the four session keys. */
-export function sessionRowOf(info: SessionInfo): SessionRow {
+export function sessionRowOf(
+  info: SessionInfo,
+  /** the session's upstream-error records (`upstreamRecordsFor`); [] = none read */
+  upstreamRecords: readonly string[] = []
+): SessionRow {
   const terminal = isTerminalState(info.state);
   return {
     slot: info.sessionId,
@@ -348,6 +354,7 @@ export function sessionRowOf(info: SessionInfo): SessionRow {
     provider: info.provider,
     state: info.state,
     reason: info.state === "COMPLETED" || !terminal ? null : info.reason,
+    reason_detail: reasonDetail(info, upstreamRecords),
     tokens_in: info.tokensIn,
     tokens_out: info.tokensOut,
     cost_usd: info.costUsd,
@@ -1362,7 +1369,14 @@ export class SessionManager {
 
   /** `list_sessions` rows (§8 B). */
   listSessionRows(includeCompleted = false): SessionRow[] {
-    return this.listSessions(includeCompleted).map(sessionRowOf);
+    const rows: SessionRow[] = [];
+    for (const entry of this.sessions.values()) {
+      this.refresh(entry);
+      if (!includeCompleted && isTerminalState(entry.info.state)) continue;
+      const info = { ...entry.info };
+      rows.push(sessionRowOf(info, upstreamRecordsFor(info, entry.upstreamErrorLogPath)));
+    }
+    return rows;
   }
 
   /** A single session's info; falls back to `<sessionsDir>/<id>/meta.json`. */

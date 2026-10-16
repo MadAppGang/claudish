@@ -2159,7 +2159,9 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
       "finished ones. Each row reports `state`, `activity` and `idle_seconds`: how long since " +
       "the session's screen or transcript last changed. Nothing kills a session for being " +
       "idle — a child inside a long Bash call is silent and working — so this is yours to " +
-      "judge against the task you set, and `cancel_session` is yours to call if the answer is no.",
+      "judge against the task you set, and `cancel_session` is yours to call if the answer is no. " +
+      "A failed row's `reason_detail` is one line saying why (for api_error, the provider's " +
+      "own error message); it is null while the session is live and on COMPLETED.",
     inputSchema: {
       type: "object",
       properties: {

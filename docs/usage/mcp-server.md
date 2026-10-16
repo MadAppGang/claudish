@@ -187,7 +187,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 | Mode | What it does |
 |------|-------------|
 | `run` | Start the models and return once every slot has taken its prompt (at most about two minutes, usually seconds) — it does not wait for answers. Outputs are written anonymized to the session directory. The result carries `run_id` and `monitor_record`, the run's record under `~/.claudish/sessions/` (see "Session records on disk") |
-| `status` | Progress of a run: per-slot rows under `run.slots` (state, reason, tokens, idle seconds, activity), plus `contract_version` and `capabilities` |
+| `status` | Progress of a run: per-slot rows under `run.slots` (state, reason, reason_detail, tokens, idle seconds, activity), plus `contract_version` and `capabilities` |
 | `list` | Every run this server holds: `{contract_version, capabilities, runs}`. Finished runs stay listed for 30 minutes |
 | `capture` | One slot's current terminal screen (same shape as `capture_session`) |
 | `cancel` | Stop one slot (`slot`) or every slot of the run; answers each slot's `{state, changed}` |
@@ -384,9 +384,12 @@ List the sessions this server holds.
 - `include_completed` (optional) - Include completed, failed, and cancelled sessions (default: false)
 
 **Returns:** `{ contract_version: 1, capabilities: [...], sessions: [...] }`. Each row has `session_id`,
-`model`, `provider`, `state`, `reason`, `tokens_in`, `tokens_out`, `cost_usd` (null for native Claude
-models), `tool_calls`, `turns_completed`, `last_activity_at`, `idle_seconds`, `activity`, `started_at`,
-`completed_at` and `elapsed_seconds`. Nothing stops a session for being idle; `idle_seconds` is for
+`model`, `provider`, `state`, `reason`, `reason_detail`, `tokens_in`, `tokens_out`, `cost_usd` (null
+for native Claude models), `tool_calls`, `turns_completed`, `last_activity_at`, `idle_seconds`, `activity`, `started_at`,
+`completed_at` and `elapsed_seconds`. `reason_detail` is one line (at most 160 characters) saying
+why a failed session failed — for `api_error`, the provider's own error message (`no-such-model-zz9
+is not a valid model ID`) — and null while the session is live, on COMPLETED, and when nothing
+readable exists. Team status rows carry the same field. Nothing stops a session for being idle; `idle_seconds` is for
 you to judge.
 
 ---
