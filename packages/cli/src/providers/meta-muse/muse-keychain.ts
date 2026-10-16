@@ -143,6 +143,18 @@ let inFlight: Promise<GenericPasswordResult> | null = null;
 let lateResult: GenericPasswordResult | null = null;
 
 /** Replace the side-effect seam; `null` restores the real one. */
+/**
+ * Forget every token this module holds for the process: the approved token
+ * kept after a transient mint failure and an answer a timed-out caller left
+ * behind. Called by `resetMuseCredentialState()` (login, logout,
+ * `credentials.invalidate`), so a logout leaves nothing a later Test could mint
+ * from without asking again. An outstanding `security` is left alone.
+ */
+export function resetMuseKeychainState(): void {
+  retainedToken = null;
+  lateResult = null;
+}
+
 export function setMuseKeychainTestDeps(next: Partial<MuseKeychainDeps> | null): void {
   deps = next ? { ...defaultDeps, ...next } : defaultDeps;
   presenceMemo = null;

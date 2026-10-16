@@ -39,6 +39,7 @@ import {
   MUSE_KEYCHAIN_READ_DEADLINE_MS,
   museKeychainPresence,
   museKeychainPresenceCached,
+  resetMuseKeychainState,
   withMuseKeychainLogin,
 } from "./muse-keychain.js";
 import { MuseLoginExpiredError, type MuseMint, mintMuseApiKey } from "./muse-mint.js";
@@ -118,6 +119,8 @@ export function setMuseCoreTestDeps(next: Partial<MuseCoreDeps> | null): void {
 export function resetMuseCredentialState(): void {
   epoch++;
   state = undefined;
+  // The Keychain module's held tokens too: a logout must leave nothing to mint from.
+  resetMuseKeychainState();
   deadKeys.clear();
   inFlightResolve = null;
   lastFailure = undefined;
