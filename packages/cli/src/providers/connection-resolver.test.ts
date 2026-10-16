@@ -236,6 +236,9 @@ describe("production connection resolution", () => {
           wire: published.wire!,
           profile: fixture.routeRegistry!.registry.routes[routeId!]!.profiles[routeProfileId!],
           generationId: fixture.catalogGenerationId,
+          ...(record.maxOutputTokens !== undefined && record.maxOutputTokens > 0
+            ? { maxOutputTokens: record.maxOutputTokens }
+            : {}),
           ...(owner?.wire?.status === "known" ? { ownerWire: owner.wire } : {}),
         },
       });
