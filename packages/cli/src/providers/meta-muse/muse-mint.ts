@@ -33,9 +33,11 @@
  * - 401/403 → `MuseLoginExpiredError` (`terminal`, `upstreamStatus`): the
  *   `dca:` login is dead; only a new login fixes it.
  * - 429 or 5xx → `{ upstreamStatus, transient: true }`: retrying works.
+ * - 2xx whose body is not a JSON object → transient too (upstreamStatus 502).
  * - network fault → rethrown with `{ cause }` (timeout marked as claudish's
  *   own) and `claudishEndpoint`, so connection recovery classifies it.
- * - 200 without a usable key, or any other status → terminal protocol error.
+ * - a readable 200 without a usable key, or any other status → terminal
+ *   protocol error.
  *
  * Nothing here caches, logs or persists a secret; the caller owns the state.
  */
@@ -110,12 +112,19 @@ export class MuseMintProtocolError extends Error {
   }
 }
 
-/** The mint failed in a way that retrying fixes (429 or 5xx). */
+/**
+ * The mint failed in a way that retrying fixes: a 429 or 5xx, or a 2xx whose
+ * body is not readable JSON (carried as 502, an invalid answer from upstream).
+ */
 export class MuseMintTransientError extends Error {
   readonly transient = true;
-  constructor(readonly upstreamStatus: number) {
+  constructor(
+    readonly upstreamStatus: number,
+    message?: string
+  ) {
     super(
-      `Muse Code key service unavailable (HTTP ${upstreamStatus}); retrying will usually work.`
+      message ??
+        `Muse Code key service unavailable (HTTP ${upstreamStatus}); retrying will usually work.`
     );
     this.name = "MuseMintTransientError";
   }
@@ -182,8 +191,9 @@ export async function mintMuseApiKey(
   // Two different failures, read apart. `fetch` resolves on the HEADERS, so a
   // connection reset or our own timeout can still fail the BODY read: that is
   // a network fault and keeps its cause, timeout mark and endpoint, exactly as
-  // the fetch catch above, so connection recovery sees it. Only a body that
-  // arrived and does not parse is a protocol error (terminal).
+  // the fetch catch above, so connection recovery sees it. A body that arrived
+  // and does not parse is TRANSIENT (D10): a proxy or gateway page answering
+  // for the host says nothing about the login, and the login is never deleted.
   let text: string;
   try {
     text = await response.text();
@@ -204,9 +214,9 @@ export async function mintMuseApiKey(
     if (!parsed || typeof parsed !== "object") throw new Error("not an object");
     body = parsed as Record<string, unknown>;
   } catch {
-    throw new MuseMintProtocolError(
-      "The Muse Code key service answered with a body claudish cannot read.",
-      response.status
+    throw new MuseMintTransientError(
+      502,
+      `The Muse Code key service answered HTTP ${response.status} with a body claudish cannot read; retrying will usually work.`
     );
   }
 
