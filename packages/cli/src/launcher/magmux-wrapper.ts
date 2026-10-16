@@ -47,7 +47,7 @@ import {
 } from "node:fs";
 import { type Socket, connect as netConnect } from "node:net";
 import { join } from "node:path";
-import { isPaneChild } from "../pane/child-env.js";
+import { inMcpSession } from "../pane/child-env.js";
 import { findMagmuxBinaryOrNull } from "./magmux-binary.js";
 
 /**
@@ -185,7 +185,11 @@ export function magmuxPaneCapability(
   // re-POSTs. The recovery overlay would also paint over the screen the MCP
   // server reads to classify the pane. What remains is tier 1's bounded hold
   // (`TIER1_DEADLINE_MS`) and, with no lease, an inline 400 at exhaustion.
-  if (isPaneChild(parentEnv)) return { kind: "none", reason: "pane-child" };
+  // The gate is `inMcpSession`, so it covers every process inside an MCP-started
+  // session, the pane child and anything it starts. Only the pane child reaches
+  // this in production (a nested launch is refused by `assertNotNested` first);
+  // the wider gate is kept for consistency with D22's reason, which holds for all.
+  if (inMcpSession(parentEnv)) return { kind: "none", reason: "pane-child" };
   if (!input.interactive) return { kind: "none", reason: "not-interactive" };
   // ALREADY INSIDE A MULTIPLEXER — do not nest one.
   //

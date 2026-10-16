@@ -3,7 +3,11 @@
 // FIRST import, on purpose: in an MCP pane child it restores the server's exact
 // environment and cwd at import time — before `.env` loading and before any module
 // below reads the environment while it is being evaluated. A no-op everywhere else.
-import { assertPaneChildInteractive, paneChildBootNotes } from "./pane/child-env.js";
+import {
+  assertNotNested,
+  assertPaneChildInteractive,
+  paneChildBootNotes,
+} from "./pane/child-env.js";
 
 // Load .env file before anything else (quiet mode to suppress verbose output)
 import { config } from "dotenv";
@@ -631,6 +635,12 @@ async function runCli() {
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
+
+    // One level of nesting is the limit: a model-running claudish started from
+    // inside an MCP-started session (anything but the pane child itself: its
+    // Bash tool, a hook, a script) would be a second level, so it exits 64 here.
+    // The `team` subcommand is dispatched before runCli and guards itself.
+    assertNotNested();
 
     // An MCP pane child must be an interactive REPL: a positional prompt, -p,
     // --stdin or --team that slipped past the server's flag check exits 64 here,

@@ -35,14 +35,16 @@ scenarios:
       The test in slugify.test.ts fails. Fix slugify.ts so that `bun test`
       passes. Do not change slugify.test.ts. Run `bun test` to confirm.
     checks:
-      # The outcome, with its anti-cheat in the same Check: `bun test` passes AND
-      # the four cases are still there. Apart, the anti-cheat half passes under
-      # a no-op agent and `madbench check` reports it WRONGLY PASSED.
+      # The work: `bun test` passes in the agent's tree.
       - type: exec
-        args:
-          cmd: [sh, -c, 'bun test && test "$(grep -c "expect(slugify" slugify.test.ts)" -ge 4']
-          expected_exit: 0
-          timeout: 60s
+        cmd: bun test
+        expected_exit: 0
+        timeout: 60s
+      # The boundary: the fix is in slugify.ts and the test file is untouched. A ban alone
+      # passes under an agent that did nothing; the exec Check above proves the work.
+      - type: file-changes
+        must: { update: slugify.ts }
+        must-not: { touch: slugify.test.ts }
       # The model drove tools through the proxy: it read the code...
       - type: any-of
         checks:

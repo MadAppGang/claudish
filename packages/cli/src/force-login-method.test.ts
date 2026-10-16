@@ -98,29 +98,50 @@ describe("buildClaudishSettingsOverlay", () => {
     ).toBe(false);
   });
 
-  test.each([true, false])("pane editorMode follows the marker (proxy=%p)", (proxyAuthMode) => {
-    const saved = process.env.CLAUDISH_PANE_CHILD;
+  test.each([true, false])("pane editorMode needs the flag and cwd (proxy=%p)", (proxyAuthMode) => {
+    const savedFlag = process.env.CLAUDISH_PANE_CHILD;
+    const savedCwd = process.env.CLAUDISH_PANE_CWD;
     try {
-      for (const marker of ["1", undefined, "0", ""]) {
-        if (marker === undefined) delete process.env.CLAUDISH_PANE_CHILD;
-        else process.env.CLAUDISH_PANE_CHILD = marker;
-        const overlay = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
-        if (marker === "1") expect(overlay.editorMode).toBe("normal");
-        else expect(Object.hasOwn(overlay, "editorMode")).toBe(false);
-        expect(overlay.statusLine).toBe(statusLine);
-        if (proxyAuthMode) expect(overlay.forceLoginMethod).toBe("console");
-        else expect(Object.hasOwn(overlay, "forceLoginMethod")).toBe(false);
+      for (const cwd of ["/w", undefined, ""]) {
+        if (cwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+        else process.env.CLAUDISH_PANE_CWD = cwd;
+        for (const marker of ["1", undefined, "0", ""]) {
+          if (marker === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+          else process.env.CLAUDISH_PANE_CHILD = marker;
+          const overlay = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
+          if (marker === "1" && cwd) {
+            expect(overlay.editorMode).toBe("normal");
+            expect(overlay.skipDangerousModePermissionPrompt).toBe(true);
+          } else {
+            expect(Object.hasOwn(overlay, "editorMode")).toBe(false);
+            expect(Object.hasOwn(overlay, "skipDangerousModePermissionPrompt")).toBe(false);
+          }
+          expect(overlay.statusLine).toBe(statusLine);
+          if (proxyAuthMode) expect(overlay.forceLoginMethod).toBe("console");
+          else expect(Object.hasOwn(overlay, "forceLoginMethod")).toBe(false);
+        }
       }
     } finally {
-      if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
-      else process.env.CLAUDISH_PANE_CHILD = saved;
+      if (savedFlag === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = savedFlag;
+      if (savedCwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+      else process.env.CLAUDISH_PANE_CWD = savedCwd;
     }
   });
 
-  test("the default reads the CLAUDISH_PANE_CHILD marker", () => {
-    const saved = process.env.CLAUDISH_PANE_CHILD;
+  test("T-U-8: the default skips the prompt only with the flag and a pane cwd", () => {
+    const savedFlag = process.env.CLAUDISH_PANE_CHILD;
+    const savedCwd = process.env.CLAUDISH_PANE_CWD;
     try {
       process.env.CLAUDISH_PANE_CHILD = "1";
+      delete process.env.CLAUDISH_PANE_CWD;
+      expect(
+        "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
+      ).toBe(false);
+      process.env.CLAUDISH_PANE_CWD = "/w";
+      expect(
+        "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
+      ).toBe(true);
       expect(buildClaudishSettingsOverlay(statusLine, true).skipDangerousModePermissionPrompt).toBe(
         true
       );
@@ -129,8 +150,10 @@ describe("buildClaudishSettingsOverlay", () => {
         "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
       ).toBe(false);
     } finally {
-      if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
-      else process.env.CLAUDISH_PANE_CHILD = saved;
+      if (savedFlag === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = savedFlag;
+      if (savedCwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+      else process.env.CLAUDISH_PANE_CWD = savedCwd;
     }
   });
 });
@@ -166,9 +189,23 @@ describe("mergeUserSettingsIfPresent", () => {
     test.each([true, false])(
       `pane editorMode overrides caller vim in ${form} settings (proxy=%p)`,
       (proxyAuthMode) => {
-        const saved = process.env.CLAUDISH_PANE_CHILD;
+        const savedFlag = process.env.CLAUDISH_PANE_CHILD;
+        const savedCwd = process.env.CLAUDISH_PANE_CWD;
         try {
           process.env.CLAUDISH_PANE_CHILD = "1";
+          delete process.env.CLAUDISH_PANE_CWD;
+          expect(merged({ editorMode: "vim", x: 1 }, undefined, proxyAuthMode, form)).toMatchObject(
+            {
+              editorMode: "vim",
+              x: 1,
+              statusLine,
+            }
+          );
+          const nestedSettings = merged({ x: 1 }, undefined, proxyAuthMode, form);
+          expect(Object.hasOwn(nestedSettings, "editorMode")).toBe(false);
+          expect(Object.hasOwn(nestedSettings, "skipDangerousModePermissionPrompt")).toBe(false);
+
+          process.env.CLAUDISH_PANE_CWD = "/w";
           const settings = merged({ editorMode: "vim", x: 1 }, undefined, proxyAuthMode, form);
           expect(settings).toMatchObject({ editorMode: "normal", x: 1, statusLine });
           if (proxyAuthMode) expect(settings.forceLoginMethod).toBe("console");
@@ -186,8 +223,10 @@ describe("mergeUserSettingsIfPresent", () => {
             Object.hasOwn(merged({ x: 1 }, undefined, proxyAuthMode, form), "editorMode")
           ).toBe(false);
         } finally {
-          if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
-          else process.env.CLAUDISH_PANE_CHILD = saved;
+          if (savedFlag === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+          else process.env.CLAUDISH_PANE_CHILD = savedFlag;
+          if (savedCwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+          else process.env.CLAUDISH_PANE_CWD = savedCwd;
         }
       }
     );

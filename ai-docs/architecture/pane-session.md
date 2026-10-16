@@ -141,15 +141,16 @@ What blocks boot is decided by **"no input box"**, and named by a closed list:
 accepting one on the user's behalf (trusting a folder, enabling a project's MCP servers) is a
 decision claudish has no standing to make. The bypass-permissions dialog is the one that `-y`
 itself would cause, so it is suppressed instead: a pane child's `--settings` overlay carries
-`skipDangerousModePermissionPrompt: true`, gated on `CLAUDISH_PANE_CHILD=1` so no other launch
-gets it (D5). The same overlay, on the same marker, carries `editorMode: "normal"`: a user
-`editorMode: "vim"` leaves the box in `-- INSERT --`, the submit Enter is swallowed, the typed
-prompt sits unsent, and every slot fails `prompt_not_accepted` with anomaly `resent_enter`
-(measured 2026-10-16, Claude Code 2.1.301, magmux 0.15.1). Claude Code merges settings per key, so
-the user's other settings still apply. Claude Code keeps only the LAST `--settings` flag, so a
-caller's `claude_flags --settings` is merged into claudish's temp file (`mergeUserSettingsIfPresent`)
-and one `--settings <path>` is emitted; in a pane `editorMode` is forced over the caller's. magmux 0.16.0 forces the same value for its panes; once it
-is the minimum, this key can go. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
+`skipDangerousModePermissionPrompt: true`, gated on `isPaneChild()` (`CLAUDISH_PANE_CHILD=1` AND
+`CLAUDISH_PANE_CWD`) so no other launch gets it (D5). The same overlay, on the same gate, carries
+`editorMode: "normal"`: a user `editorMode: "vim"` leaves the box in `-- INSERT --`, the submit
+Enter is swallowed, the typed prompt sits unsent, and every slot fails `prompt_not_accepted` with
+anomaly `resent_enter` (measured 2026-10-16, Claude Code 2.1.301, magmux 0.15.1). Claude Code
+merges settings per key, so the user's other settings still apply. Claude Code keeps only the LAST
+`--settings` flag, so a caller's `claude_flags --settings` is merged into claudish's temp file
+(`mergeUserSettingsIfPresent`) and one `--settings <path>` is emitted; in a pane `editorMode` is
+forced over the caller's. magmux 0.16.0 forces the same value for its panes; once it is the
+minimum, this key can go. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
 `ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
@@ -390,11 +391,66 @@ run the user's profile.
   argv, and any positional token or `--`, by claudish's own value-consumption rule). After
   `parseArgs` the child asserts it is interactive, not a team run, with no positional prompt;
   otherwise it prints `claudish: pane child refused: <reason>` and exits 64 (FAILED `child_exited`).
-- The markers `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD` are deleted from
-  Claude Code's own environment, so a claudish started from a slot's Bash tool is an ordinary launch.
+- `CLAUDISH_PANE_ENV` and `CLAUDISH_PANE_CWD` (`PANE_LAUNCH_VARS`) are deleted from Claude Code's
+  own environment. `CLAUDISH_PANE_CHILD` is KEPT there; the next section says why.
+
+**One level of nesting.** A `create_session` child (gpt-6.1-sol) once called the claudish MCP
+`create_session` itself; that session (#969aa2) failed `prompt_not_accepted`. It was a claudish MCP
+session inside a claudish MCP session. claude-runner then deleted all three markers from Claude
+Code's environment, so the claudish MCP server that the child's plugins started saw no marker and
+registered every tool. Nothing checked depth anywhere.
+
+`CLAUDISH_PANE_CHILD=1` now means "this process runs inside a session a claudish owner started", and
+claude-runner keeps it, so it reaches everything the session starts: the Bash tool, hooks, plugin MCP
+servers. `scrubChildEnv` deletes only `PANE_LAUNCH_VARS`. Putting the flag back in that list
+silently re-enables the recursion. Two predicates in `pane/child-env.ts` read it:
+
+- `inMcpSession()`: the flag alone (exactly `"1"`). True for the pane child, its Claude Code and
+  everything below them.
+- `isPaneChild()`: the flag AND a non-empty `CLAUDISH_PANE_CWD`. True only for the claudish the pane
+  launcher started, because Claude Code's environment no longer has `CLAUDISH_PANE_CWD`. The pane
+  child's bootstrap, its REPL assertion and the `skipDangerousModePermissionPrompt` overlay gate on
+  this one.
+
+A process with `inMcpSession() && !isPaneChild()` is one level deep already. Two things act on it:
+
+- **A model-running CLI launch is refused.** `assertNotNested()` prints
+  `claudish: nested session refused: already inside a session started by the claudish MCP server; one level of nesting is the limit`
+  and exits 64. It has two call sites. The first is `index.ts`, right before
+  `assertPaneChildInteractive`, which covers `-p`, `--stdin`, interactive, `--team` and resume. The
+  second is `team-cli.ts`, for every `claudish team` subcommand except `status` (and `--help`):
+  `team` is dispatched before `runCli`, so the first site never sees it. A new model-running
+  subcommand dispatched before `runCli` needs its own call. Everything that exits inside `parseArgs`
+  (`--version`, `--help`, `--models`, `--probe`) and every non-model subcommand (`config`, `update`,
+  `login`, `stats`, …) still runs. The pane-child refusal (`pane child refused: …`) is a different
+  line and is not used for nesting.
+- **`claudish --mcp` is restricted, not refused.** It registers only `run_prompt`, `compare_models`,
+  `list_models` and `search_models`, declares no channel capability and uses the nested
+  instructions; see [`mcp-sessions.md`](mcp-sessions.md) § Nested mode. `compare_models`, and
+  `run_prompt` on a foreign model, start no child: they call a proxy in the MCP server's own
+  process (`runPromptViaProxy`). `run_prompt` on a Claude model starts one `claudish -p` with
+  `CLAUDISH_PANE_CHILD` dropped from its environment, so the nested refusal does not apply to it.
+  That child is a leaf: no tools, no MCP servers, no setting sources, no slash commands
+  (`mcp/run-prompt-claude-code.ts`), so it cannot start a session and the depth stays one.
+
+This stops ACCIDENTAL recursion, a model reaching for the tools it was given. It is not a
+containment boundary: `env -u CLAUDISH_PANE_CHILD claudish -p …` passes it, and so does anything
+that starts claudish with a fresh environment. Two such routes are known and accepted. madbench
+starts its MCP server through `env -i` with an explicit allowlist (`madbench/session.ts`), so the
+flag never reaches it; forwarding it would put every bench of `create_session` run from inside a
+session into nested mode. CLI `--grid` children (`team-grid.ts`) are print-mode children in a
+visible magmux and carry no markers, so a grid child's Claude Code can still start a claudish MCP
+session; that is one level below a human-visible grid, not below an MCP session.
+
+The rule relies on Claude Code passing its full environment to plugin MCP servers (verified: a
+running `claudish --mcp` showed `TMUX`, `CLAUDECODE` and `CLAUDE_CODE_SESSION_ID`). A Claude Code
+that passed only the MCP SDK's default allowlist would turn nested mode off silently; the live check
+is a `create_session` child listing its own `mcp__plugin_claudish_claudish__*` tools.
 
 **No recovery watchdog in a pane child (D22).** `magmuxPaneCapability()` answers
-`{kind:"none", reason:"pane-child"}` before its ambient branch, so a pane child exports no
+`{kind:"none", reason:"pane-child"}` for any process inside an MCP-started session
+(`inMcpSession()`), before its ambient branch. Only the pane child reaches it in production, since a
+nested launch is refused first. A pane child exports no
 `CLAUDE_CODE_RETRY_WATCHDOG`, installs no recovery UI and draws no overlay on the screen the
 classifier reads. `network-recovery.md` §7 accepts ~300 client attempts only where a person can see
 the banner; a headless pane has no viewer. Tier 1's hold still runs; an exhausted episode answers an
@@ -567,7 +623,8 @@ type and new fields may only be added.
 | `pane/pane-launch.ts` | root, ids, environment, launcher, shim, flag check, magmux check, spawns |
 | `pane/process-identity.ts` | the identity predicates and the generated watcher script |
 | `pane/pane-registry.ts` | records, the cross-process limit, shutdown hooks, the sweep |
-| `pane/child-env.ts` | the pane child: snapshot, cwd, refusal |
+| `pane/child-env.ts` | the pane child: snapshot, cwd, pane-child refusal; `inMcpSession`/`isPaneChild` and the nested refusal |
+| `mcp/nested-mode.ts` | the nested MCP tool list and instructions |
 | `pane/contract.ts` | the frozen mod contract v1 |
 | `pane/session-registry.ts` | the child's session-registry record, by session id (telemetry) |
 | `scripts/boot-canary.ts` | boot every spawn shape against one Claude Code binary; `.github/workflows/boot-canary.yml` runs it per release on macOS and Linux |

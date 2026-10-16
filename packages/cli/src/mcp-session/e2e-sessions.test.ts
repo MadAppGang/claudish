@@ -50,13 +50,16 @@ describe("Group 1: MCP Protocol — session tools", () => {
     transport = new StdioClientTransport({
       command: "bun",
       args: ["run", SERVER_ENTRY, "--mcp"],
-      env: {
-        ...process.env,
-        CLAUDISH_MCP_TOOLS: "all",
-        CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
-        // create_session children would otherwise resolve the installed binary through PATH.
-        CLAUDISH_BIN: SERVER_ENTRY,
-      },
+      env: Object.fromEntries(
+        Object.entries({
+          ...process.env,
+          CLAUDISH_PANE_CHILD: undefined,
+          CLAUDISH_MCP_TOOLS: "all",
+          CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+          // create_session children would otherwise resolve the installed binary through PATH.
+          CLAUDISH_BIN: SERVER_ENTRY,
+        }).filter((entry): entry is [string, string] => entry[1] !== undefined)
+      ),
       stderr: "pipe",
     });
     client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
@@ -231,11 +234,14 @@ describe("Group 1b: MCP Protocol — session-only tools", () => {
     transport = new StdioClientTransport({
       command: "bun",
       args: ["run", SERVER_ENTRY, "--mcp"],
-      env: {
-        ...process.env,
-        CLAUDISH_MCP_TOOLS: "session",
-        CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
-      },
+      env: Object.fromEntries(
+        Object.entries({
+          ...process.env,
+          CLAUDISH_PANE_CHILD: undefined,
+          CLAUDISH_MCP_TOOLS: "session",
+          CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+        }).filter((entry): entry is [string, string] => entry[1] !== undefined)
+      ),
       stderr: "pipe",
     });
     client = new Client({ name: "test-client-session", version: "1.0.0" }, { capabilities: {} });
@@ -271,11 +277,14 @@ describe("Group 1b: MCP Protocol — low-level-only tools", () => {
     transport = new StdioClientTransport({
       command: "bun",
       args: ["run", SERVER_ENTRY, "--mcp"],
-      env: {
-        ...process.env,
-        CLAUDISH_MCP_TOOLS: "low-level",
-        CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
-      },
+      env: Object.fromEntries(
+        Object.entries({
+          ...process.env,
+          CLAUDISH_PANE_CHILD: undefined,
+          CLAUDISH_MCP_TOOLS: "low-level",
+          CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+        }).filter((entry): entry is [string, string] => entry[1] !== undefined)
+      ),
       stderr: "pipe",
     });
     client = new Client({ name: "test-client-low-level", version: "1.0.0" }, { capabilities: {} });
@@ -325,11 +334,14 @@ for (const [toolMode, expected] of [
       transport = new StdioClientTransport({
         command: "bun",
         args: ["run", SERVER_ENTRY, "--mcp"],
-        env: {
-          ...process.env,
-          CLAUDISH_MCP_TOOLS: toolMode,
-          CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
-        },
+        env: Object.fromEntries(
+          Object.entries({
+            ...process.env,
+            CLAUDISH_PANE_CHILD: undefined,
+            CLAUDISH_MCP_TOOLS: toolMode,
+            CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+          }).filter((entry): entry is [string, string] => entry[1] !== undefined)
+        ),
         stderr: "pipe",
       });
       client = new Client(
@@ -419,7 +431,7 @@ async function runClaudeWithMcp(
           prompt,
         ],
         {
-          env: { ...process.env, ...opts?.extraEnv },
+          env: { ...process.env, ...opts?.extraEnv, CLAUDISH_PANE_CHILD: undefined },
           stdio: ["pipe", "pipe", "pipe"],
         }
       );

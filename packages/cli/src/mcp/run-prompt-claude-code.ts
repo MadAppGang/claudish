@@ -23,7 +23,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PANE_MARKER_VARS } from "../pane/child-env.js";
+import { ENV } from "../config.js";
+import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
 import { isStrippedFromChildEnv, resolveClaudishLaunch } from "../pane/pane-launch.js";
 import { sanitizeForReport } from "../redact.js";
 
@@ -83,9 +84,22 @@ export function claudeCodePrintArgv(model: string, systemPromptFile: string | un
 }
 
 /**
+ * The pane markers the print child must not inherit: the launch markers, and
+ * `CLAUDISH_PANE_CHILD`. Inside a session (a nested server) the flag would make
+ * `assertNotNested` refuse `-p` with exit 64, and `run_prompt` is one of the tools
+ * nested mode keeps. Dropping it does not open a second level of nesting: the
+ * child runs with no tools, no MCP servers, no setting sources and no slash
+ * commands (PRINT_FLAGS), so it cannot start a session, a pane or a claudish.
+ */
+const PRINT_CHILD_DROPPED_MARKERS: readonly string[] = [
+  ...PANE_LAUNCH_VARS,
+  ENV.CLAUDISH_PANE_CHILD,
+];
+
+/**
  * The print child's environment: the server's, minus the set no claudish child may
- * inherit (the same predicate the pane spawner uses), minus the pane markers (with
- * one set, the child would refuse `-p` and exit 64), minus the three `ANTHROPIC_*`
+ * inherit (the same predicate the pane spawner uses), minus the pane markers
+ * (PRINT_CHILD_DROPPED_MARKERS), minus the three `ANTHROPIC_*`
  * variables. `ANTHROPIC_API_KEY` goes unconditionally: a Claude model in `run_prompt`
  * runs on the Claude Code login; the metered Anthropic API is `anthropic@claude-*`,
  * which is not native and never reaches this module.
@@ -96,7 +110,7 @@ export function claudeCodePrintEnv(
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(parent)) {
     if (v === undefined || isStrippedFromChildEnv(k)) continue;
-    if ((PANE_MARKER_VARS as readonly string[]).includes(k)) continue;
+    if (PRINT_CHILD_DROPPED_MARKERS.includes(k)) continue;
     env[k] = v;
   }
   delete env.ANTHROPIC_API_KEY;

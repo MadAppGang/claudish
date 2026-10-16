@@ -24,6 +24,7 @@ import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js"
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import { SessionManager } from "./mcp-session/index.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
+import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
 import {
   type HeartbeatHandle,
   NOOP_HEARTBEAT,
@@ -35,16 +36,10 @@ import {
   runPromptViaClaudeCode,
   stopAllClaudeCodePrintChildren,
 } from "./mcp/run-prompt-claude-code.js";
-import {
-  type RecommendedModelGroup,
-  type RecommendedModelsDoc,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  formatListingPrice,
-  getRecommendedModels,
-  groupRecommendedModels,
-  normalizePricingDisplay,
-} from "./model-loader.js";
+import { type RecommendedModelsDoc, getRecommendedModels } from "./model-loader.js";
+// Imported for the predicate only. child-env's import-time bootstrap is a no-op here:
+// a claudish MCP server is never the pane child (it carries no CLAUDISH_PANE_CWD).
+import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
@@ -66,10 +61,9 @@ import { isLocalProviderName } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED, nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
-import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
-import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
+import { nativeShortcutForVendor, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
 import {
   type ModelStatus,
@@ -844,8 +838,12 @@ const sanitize = sanitizeForReport;
 
 // ─── Tool Definitions ────────────────────────────────────────────────────────
 
-function defineTools(sessionManager: SessionManager): ToolDefinition[] {
+function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
+
+  // A nested server does not register `report_error` (mcp/nested-mode.ts), so an
+  // error text must not point at it.
+  const reportHint = (text: string): string => (nested ? "" : text);
 
   // ── Low-Level Tools ──────────────────────────────────────────────────
 
@@ -914,7 +912,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
             {
               type: "text" as const,
               text: withOpFailureContext(
-                `Error: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+                `Error: ${errMsg}${reportHint(`\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`)}`,
                 `while routing ${args.model}`
               ),
             },
@@ -955,80 +953,14 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         };
       }
 
-      const { flagship, fast } = groupRecommendedModels(doc.models);
-
-      // Native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
-      const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
-      const getNativePrefix = (firebaseSlug: string): string | null => {
-        const canonical = nativeProviderForVendor(firebaseSlug);
-        if (!canonical) return null;
-        const def = providerByName.get(canonical);
-        if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
-        return def.shortcuts[0];
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: renderRecommendedMarkdown(doc, nativeShortcutForVendor),
+          },
+        ],
       };
-
-      const renderGroup = (group: RecommendedModelGroup): string => {
-        const m = group.primary;
-        const pricing = formatListingPrice(m);
-        const ctx = m.context || "N/A";
-        const caps: string[] = [];
-        if (m.supportsTools) caps.push("tools");
-        if (m.supportsReasoning) caps.push("reasoning");
-        if (m.supportsVision) caps.push("vision");
-        const capsLine = caps.length > 0 ? caps.join(", ") : "none";
-
-        const prefixes = collectRoutingPrefixes(group, getNativePrefix);
-        const accessLine =
-          prefixes.length > 0 ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ") : `\`${m.id}\``;
-
-        return [
-          `### ${m.id}`,
-          `- **Pricing**: ${pricing} avg · ${ctx} context`,
-          `- **Capabilities**: ${capsLine}`,
-          `- **Access**: ${accessLine}`,
-          "",
-        ].join("\n");
-      };
-
-      let output = "# Recommended Models\n\n";
-      output += `_Last updated: ${doc.lastUpdated || "unknown"}_\n\n`;
-
-      if (flagship.length > 0) {
-        output += "## Flagship models\n\n";
-        for (const group of flagship) output += renderGroup(group);
-      }
-
-      if (fast.length > 0) {
-        output += "## Fast variants\n\n";
-        for (const group of fast) output += renderGroup(group);
-      }
-
-      // Quick picks — over the deduped primaries
-      const primaries = [...flagship, ...fast].map((g) => g.primary);
-      const picks = computeQuickPicks(primaries);
-      const pickLines: string[] = [];
-      if (picks.budget)
-        pickLines.push(
-          `- **Budget**: \`${picks.budget.id}\` (${normalizePricingDisplay(
-            picks.budget.pricing?.average
-          )})`
-        );
-      if (picks.largeContext)
-        pickLines.push(
-          `- **Large context**: \`${picks.largeContext.id}\` (${
-            picks.largeContext.context || "N/A"
-          })`
-        );
-      if (picks.mostCapable) pickLines.push(`- **Most capable**: \`${picks.mostCapable.id}\``);
-      if (picks.visionCoding) pickLines.push(`- **Vision + coding**: \`${picks.visionCoding.id}\``);
-      if (picks.agentic) pickLines.push(`- **Agentic**: \`${picks.agentic.id}\``);
-
-      if (pickLines.length > 0) {
-        output += "## Quick picks\n\n";
-        output += `${pickLines.join("\n")}\n`;
-      }
-
-      return { content: [{ type: "text" as const, text: output }] };
     },
   });
 
@@ -1215,8 +1147,9 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
       }
       const failed = results.filter((r) => r.error);
       if (failed.length > 0) {
-        output +=
-          '---\n**To report failed model(s)**, use the `report_error` tool with `error_type: "provider_failure"` and the model ID(s) above.\n';
+        output += reportHint(
+          '---\n**To report failed model(s)**, use the `report_error` tool with `error_type: "provider_failure"` and the model ID(s) above.\n'
+        );
       }
       return { content: [{ type: "text" as const, text: output }] };
     },
@@ -2322,6 +2255,11 @@ function unknownToolModeWarning(mode: string): string | undefined {
 
 async function main() {
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
+  // Inside a session a claudish owner started, one level of nesting is the limit:
+  // only the one-shot tools of NESTED_MCP_TOOL_NAMES, intersected with the groups
+  // CLAUDISH_MCP_TOOLS enables (never widened), no channel capability, and the
+  // nested instructions. See pane-session.md § One level of nesting.
+  const nested = inMcpSession();
   const enabledGroups = resolveToolGroups(toolMode);
   const toolModeWarning = unknownToolModeWarning(toolMode);
   if (toolModeWarning) console.error(toolModeWarning);
@@ -2334,7 +2272,7 @@ async function main() {
     { name: "claudish", version: VERSION },
     {
       capabilities: { tools: {} },
-      instructions: INSTRUCTIONS,
+      instructions: nested ? NESTED_INSTRUCTIONS : INSTRUCTIONS,
     }
   );
 
@@ -2347,11 +2285,16 @@ async function main() {
   const progressIntervalMs = resolveProgressIntervalMs();
 
   // Build tool registry
-  const allTools = defineTools(sessionManager);
-  const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
+  const allTools = defineTools(sessionManager, nested);
+  const nestedNames: readonly string[] = NESTED_MCP_TOOL_NAMES;
+  const enabledTools = allTools.filter(
+    (t) => enabledGroups.has(t.group) && (!nested || nestedNames.includes(t.name))
+  );
   const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
 
-  console.error(`[claudish] MCP server started (tools: ${toolMode}, ${enabledTools.length} tools)`);
+  console.error(
+    `[claudish] MCP server started (tools: ${nested ? "nested" : toolMode}, ${enabledTools.length} tools)`
+  );
 
   // Register ListTools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

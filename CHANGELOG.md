@@ -2,6 +2,38 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.6.3] - 2026-10-16
+
+### Bug Fixes
+
+- register no session tools in a server inside an MCP session *(mcp)* ([`1b73e51`](https://github.com/MadAppGang/claudish/commit/1b73e51c02a6024407a34445b0e6de96a8a87b45))
+- refuse claudish -p and team run inside an MCP-started session *(pane)* ([`9c5cd84`](https://github.com/MadAppGang/claudish/commit/9c5cd84ffeeb07e43741d3585c9e098afeea1a91))
+
+### Documentation
+
+- record the one-level nesting rule and CLAUDISH_PANE_CHILD *(pane)* ([`6a19ee5`](https://github.com/MadAppGang/claudish/commit/6a19ee53bf058fdafdb38eefe66f015cf1981e91))
+- update CHANGELOG.md for v10.6.2([`8d3437b`](https://github.com/MadAppGang/claudish/commit/8d3437b6159e38d8d56b5fc5835d5b1460a98590))
+
+### Other Changes
+
+- v10.6.3 *(release)* ([`bb695f1`](https://github.com/MadAppGang/claudish/commit/bb695f13194b3272abecf8f2ce50cb6f9608ecb7))
+
+## [10.6.2] - 2026-10-16
+
+### Bug Fixes
+
+- show one recommended fallback row per model id *(picker)* ([`21a7837`](https://github.com/MadAppGang/claudish/commit/21a78370f6cda456f768610420a7dfe0f3bb7672))
+- list cost_efficient and luxury tiers as their own sections *(catalog)* ([`cfe7de0`](https://github.com/MadAppGang/claudish/commit/cfe7de0b5b2ad407d98ba3ce877f3541b676aff8))
+
+### Documentation
+
+- document recommendationTier in --models-top --json *(catalog)* ([`21d3f59`](https://github.com/MadAppGang/claudish/commit/21d3f59af77a42dc153b90d0bcb204a9b03eee05))
+- update CHANGELOG.md for v10.6.1([`086cf60`](https://github.com/MadAppGang/claudish/commit/086cf608e82124c5d92f13f2184575c091eb6723))
+
+### Other Changes
+
+- v10.6.2 *(release)* ([`206f96b`](https://github.com/MadAppGang/claudish/commit/206f96be8f88dadf11b33c6078411cb9b666c985))
+
 ## [10.6.1] - 2026-10-14
 
 ### Bug Fixes

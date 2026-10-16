@@ -260,6 +260,8 @@ The session tools are in the `session` group, which `all` (the default) includes
 | `debug` | `compare_models` |
 | any other value | all 14, with a warning on stderr |
 
+Inside a session that claudish itself started (a `create_session` or `team` pane), the server runs in nested mode. Whatever `CLAUDISH_MCP_TOOLS` says, it offers at most the four one-shot tools (`run_prompt`, `compare_models`, `list_models`, `search_models`) and no session tools. A model-running `claudish` launched from that session's shell (`-p`, interactive, `team run`) exits 64 with `nested session refused`. One level of nesting is the limit.
+
 Any other value still selects all 14 tools, and the server writes one line to stderr naming the
 value and the valid ones:
 

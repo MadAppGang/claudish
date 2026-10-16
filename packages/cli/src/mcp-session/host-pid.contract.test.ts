@@ -124,7 +124,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
           [
             `const child = Bun.spawn([process.execPath, ${JSON.stringify(SERVER_ENTRY)}, "--mcp"], {`,
             `  stdin: "inherit", stdout: "inherit", stderr: "inherit",`,
-            "  env: { ...process.env, CLAUDISH_LAUNCHER_PID: String(process.pid), CLAUDISH_LAUNCHER_PPID: String(process.ppid) },",
+            "  env: { ...process.env, CLAUDISH_PANE_CHILD: undefined, CLAUDISH_LAUNCHER_PID: String(process.pid), CLAUDISH_LAUNCHER_PPID: String(process.ppid) },",
             "});",
             `process.on("SIGTERM", () => { child.kill("SIGTERM"); });`,
             "process.exitCode = await child.exited;",

@@ -401,8 +401,9 @@ Code 2.1.301 (session `dev-feature-mcp-run-prompt-claude-20261016-a7c3`):
 **The environment.** `claudeCodePrintEnv` is the server's environment minus
 `isStrippedFromChildEnv` (`pane/pane-launch.ts`, the list the pane spawner uses: `CLAUDECODE`,
 `CLAUDE_CODE_CHILD_SESSION`, `MAGMUX_*`, terminal identity, `CLAUDE_CODE_SESSION_ID` and the launcher
-pids), minus `PANE_MARKER_VARS` (a marker would make the child a pane child, which refuses `-p`
-and exits 64), minus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`.
+pids), minus the pane markers (`PANE_LAUNCH_VARS` and `CLAUDISH_PANE_CHILD`: in a nested server
+the flag would make `assertNotNested` refuse `-p` with exit 64; the child is a leaf, so dropping
+it opens no second level), minus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`.
 `ANTHROPIC_API_KEY` goes unconditionally, not only claudish's placeholder: a bare Claude name in
 `run_prompt` runs on the Claude Code login, and a user who wants the metered Anthropic API names
 it as `anthropic@claude-*`.
@@ -445,6 +446,36 @@ the fix belongs in step 5w (write the connection's catalog `maxOutputTokens` for
 
 Why `-p` is acceptable for this one call, when the session tools refuse it:
 [`headless-vs-interactive.md`](headless-vs-interactive.md) "The one `-p` the MCP server starts".
+
+### Nested mode
+
+A claudish MCP server whose environment has `CLAUDISH_PANE_CHILD=1` (`inMcpSession()`) runs inside a
+session that a claudish owner started: Claude Code in a `create_session` or `team` pane started it
+as a plugin server. One level of nesting is the limit (why, and the CLI side of the rule:
+[`pane-session.md`](pane-session.md) § One level of nesting). Such a server:
+
+- registers only `NESTED_MCP_TOOL_NAMES` (`mcp/nested-mode.ts`): `run_prompt`, `compare_models`,
+  `list_models`, `search_models`. The rule is that a tool is kept only if it is a one-shot call that
+  starts no session, no pane and no claudish child that could start one. `team` and every session
+  tool start or act on sessions. `preflight` and `report_error` are out as well, so the nested
+  surface is the low-level group plus `compare_models` from the debug group. `run_prompt` on a
+  Claude model does start a `claudish -p`, a leaf with no tools and no MCP servers (see
+  § `run_prompt`: two paths, The environment);
+- INTERSECTS that list with the groups `CLAUDISH_MCP_TOOLS` enables and never widens them:
+  `all` or unset give 4 tools, `low-level` 3, `debug` 1 (`compare_models`), `agentic` or `session`
+  0. Any value still yields no session tool, which matters because madbench forces `all` and an env
+  snapshot can carry the variable;
+- filters by NAME and fails closed. A tool added later is absent in nested mode until someone lists
+  it, whereas a group filter would admit any future tool of its group;
+- declares only the `tools` capability, as every claudish MCP server now does;
+- answers `initialize` with `NESTED_INSTRUCTIONS` in place of the normal instructions, so the model
+  reads why the session tools are absent;
+- drops the "use the `report_error` tool" hint from `run_prompt`'s and `compare_models`' error
+  texts, since that tool is not registered;
+- logs `[claudish] MCP server started (tools: nested, 4 tools)`.
+
+A call to a removed tool takes the ordinary unknown-tool path:
+`isError: true`, `Error: Unknown tool "create_session"`.
 
 ## Tool Registration Pattern
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Write one Experiment per (recommended-list category × Bench) into experiments/.
+ * Write one Experiment per (recommendation tier × Bench) into experiments/.
  *
  *   bun scripts/gen-experiments.ts          (from the Bench folder)
  *
@@ -8,11 +8,14 @@
  * changes with every catalog generation, and a hand-kept copy is the hardcoded
  * model data CLAUDE.md forbids. Re-run this before a real run.
  *
- * The categories come from the list too (today `programming`, `fast`,
- * `subscription`), so a new category gets its own files without a code change.
- * A variant is one model spec:
+ * The recommendation tiers come from the list too (`models[].recommendationTier`:
+ * `flagship`, `cost_efficient`, `lightweight`, `luxury`, `subscription`), so a new
+ * tier gets its own files without a code change, and an empty tier gets none.
+ * A model in two tiers is a variant in both files. A variant is one model spec:
  *   - in a `subscription` row, each published command (`cx@gpt-6.1-sol`, `kc@k3`;
- *     a native-route row's command is the bare name, such as `claude-opus-5-5`);
+ *     a native-route row's command is the bare name, such as `claude-opus-5-5`).
+ *     Only subscription rows carry `subscriptions`, so every cost_efficient and
+ *     luxury variant is a bare id;
  *   - in any other row, the bare model id, so routing chooses the hop the user
  *     would get.
  * The first variant of each file is its baseline.
@@ -25,7 +28,7 @@ interface Subscription {
 }
 interface RecommendedModel {
   id: string;
-  category: string;
+  recommendationTier: string;
   subscriptions?: Subscription[];
 }
 interface RecommendedDoc {
@@ -36,37 +39,89 @@ interface RecommendedDoc {
 const BENCH_DIR = resolve(import.meta.dir, "..");
 const OUT_DIR = join(BENCH_DIR, "experiments");
 
-const proc = Bun.spawnSync(["claudish", "--models-top", "--json"], { stderr: "inherit" });
-if (proc.exitCode !== 0) {
-  console.error(`claudish --models-top --json exited ${proc.exitCode}`);
+function fail(message: string): never {
+  console.error(`gen-experiments: ${message}`);
+  console.error("No Experiment file was changed.");
   process.exit(1);
 }
-const doc = JSON.parse(proc.stdout.toString()) as RecommendedDoc;
 
-// Category → model specs, in list order, without repeats inside a category.
-const byCategory = new Map<string, string[]>();
+const proc = Bun.spawnSync(["claudish", "--models-top", "--json"], { stderr: "inherit" });
+if (proc.exitCode !== 0) fail(`claudish --models-top --json exited ${proc.exitCode}`);
+
+/**
+ * Validate the whole response BEFORE any file is touched: a claudish build older
+ * than the recommendation tiers prints `category` instead of `recommendationTier`,
+ * and grouping that would replace every Experiment with `undefined.*` files.
+ */
+function readDoc(stdout: string): RecommendedDoc {
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch (error) {
+    fail(`claudish --models-top --json did not print JSON (${(error as Error).message})`);
+  }
+  if (value === null || typeof value !== "object") fail("the response is not a JSON object");
+  const { generationId, models } = value as { generationId?: unknown; models?: unknown };
+  if (typeof generationId !== "string" || generationId.length === 0) {
+    fail("the response has no string `generationId`");
+  }
+  if (!Array.isArray(models) || models.length === 0) {
+    fail("the response's `models` is not a non-empty array");
+  }
+  models.forEach((row: unknown, i) => {
+    const r = row as { id?: unknown; recommendationTier?: unknown; subscriptions?: unknown } | null;
+    if (r === null || typeof r !== "object" || typeof r.id !== "string" || r.id.length === 0) {
+      fail(`models[${i}] has no string \`id\``);
+    }
+    if (typeof r.recommendationTier !== "string" || r.recommendationTier.length === 0) {
+      fail(
+        `models[${i}] (${r.id}) has no string \`recommendationTier\`. The \`claudish\` on PATH ` +
+          `(${Bun.which("claudish") ?? "not found"}) predates recommendation tiers: put this ` +
+          "branch's build first on PATH (`bun run build`) and re-run."
+      );
+    }
+    if (
+      r.subscriptions !== undefined &&
+      !(
+        Array.isArray(r.subscriptions) &&
+        r.subscriptions.every(
+          (s: unknown) =>
+            s !== null && typeof s === "object" && typeof (s as Subscription).command === "string"
+        )
+      )
+    ) {
+      fail(`models[${i}] (${r.id}) has a \`subscriptions\` entry without a string \`command\``);
+    }
+  });
+  return value as RecommendedDoc;
+}
+
+const doc = readDoc(proc.stdout.toString());
+
+// Recommendation tier → model specs, in list order, without repeats inside one.
+const byRecommendationTier = new Map<string, string[]>();
 for (const m of doc.models) {
-  const specs = byCategory.get(m.category) ?? [];
-  byCategory.set(m.category, specs);
+  const specs = byRecommendationTier.get(m.recommendationTier) ?? [];
+  byRecommendationTier.set(m.recommendationTier, specs);
   const candidates = m.subscriptions?.length ? m.subscriptions.map((s) => s.command) : [m.id];
   for (const spec of candidates) if (!specs.includes(spec)) specs.push(spec);
 }
 
-// A category that left the list must not leave a stale file behind.
+// A recommendation tier that left the list must not leave a stale file behind.
 mkdirSync(OUT_DIR, { recursive: true });
 for (const f of readdirSync(OUT_DIR)) if (f.endsWith(".experiment.yaml")) rmSync(join(OUT_DIR, f));
 
 const files: string[] = [];
 console.log(`Recommended list, catalog generation ${doc.generationId}\n`);
-for (const [category, specs] of byCategory) {
+for (const [recommendationTier, specs] of byRecommendationTier) {
   for (const bench of ["cli", "mcp"]) {
     const lines = [
-      `# GENERATED by scripts/gen-experiments.ts from \`claudish --models-top --json\`.`,
+      "# GENERATED by scripts/gen-experiments.ts from `claudish --models-top --json`.",
       // No write time here: a timestamp changes every file on every run, so a
       // regeneration over the same generation must leave the files byte-identical.
       `# Catalog generation ${doc.generationId}.`,
       `# Do not edit by hand: re-run the script. ${specs.length} variants.`,
-      `description: ${JSON.stringify(`${bench}: recommended ${category} models`)}`,
+      `description: ${JSON.stringify(`${bench}: recommended ${recommendationTier} models`)}`,
       `bench: ../${bench}.madbench.yaml`,
     ];
     // The CLI Bench passes the model as harness.model, so its variants differ
@@ -79,13 +134,16 @@ for (const [category, specs] of byCategory) {
     // exact spec that was sent.
     lines.push("variants:");
     for (const spec of specs) {
-      lines.push(`  - name: ${JSON.stringify(spec)}`, `    params: { model: ${JSON.stringify(spec)} }`);
+      lines.push(
+        `  - name: ${JSON.stringify(spec)}`,
+        `    params: { model: ${JSON.stringify(spec)} }`
+      );
     }
-    const file = `${category}.${bench}.experiment.yaml`;
+    const file = `${recommendationTier}.${bench}.experiment.yaml`;
     writeFileSync(join(OUT_DIR, file), `${lines.join("\n")}\n`);
     files.push(`experiments/${file}`);
   }
-  console.log(`${category} (${specs.length})`);
+  console.log(`${recommendationTier} (${specs.length})`);
   specs.forEach((spec, i) => console.log(`  ${String(i + 1).padStart(2)}. ${spec}`));
   console.log("");
 }

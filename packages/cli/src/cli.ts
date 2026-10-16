@@ -14,18 +14,12 @@ import { ENV } from "./config.js";
 import { setStderrQuiet } from "./logger.js";
 import {
   type ModelDoc,
-  type RecommendedModelGroup,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  formatListingPrice,
   getAvailableModels,
   getModelsByProvider,
   getProviderList,
   getRecommendedModels,
   getTop100Models,
-  groupRecommendedModels,
   loadModelInfo,
-  normalizePricingDisplay,
   searchModels,
 } from "./model-loader.js";
 import { parseModelParams } from "./model-params.js";
@@ -65,7 +59,6 @@ import {
   getProviderByName,
 } from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
-import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import {
   type RouteExplanation,
   type RouteWarning,
@@ -73,6 +66,7 @@ import {
   TIER_LABEL,
   explainRoute,
 } from "./providers/routing-rules.js";
+import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
 import { cliAnsi } from "./theme/ansi.js";
 import type { ClaudishConfig } from "./types.js";
@@ -107,13 +101,14 @@ export function getVersion(): string {
  * NOTE: We intentionally do NOT delete `cloud-models-catalog-v3.json`, the cloud
  * models catalog cache. Deleting it would force a cold re-warm on every
  * --models-refresh call. `all-models.json` is not ours to delete either: older
- * claudish builds still read it.
+ * claudish builds still read it. The same holds for `recommended-models-cache.json`,
+ * the pre-`-v2` recommended list that older builds still read and write.
  */
 function clearAllModelCaches(): void {
   const cacheDir = join(homedir(), ".claudish");
   if (!existsSync(cacheDir)) return;
 
-  const cachePatterns = ["pricing-cache.json", "recommended-models-cache.json"];
+  const cachePatterns = ["pricing-cache.json", "recommended-models-cache-v2.json"];
   let cleared = 0;
 
   try {
@@ -1478,105 +1473,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
     return;
   }
 
-  const lastUpdated = doc.lastUpdated || "unknown";
-  const { flagship, fast } = groupRecommendedModels(doc.models);
-
-  // Build a native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
-  const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
-  const getNativePrefix = (firebaseSlug: string): string | null => {
-    const canonical = nativeProviderForVendor(firebaseSlug);
-    if (!canonical) return null;
-    const def = providerByName.get(canonical);
-    if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
-    return def.shortcuts[0];
-  };
-
-  const renderGroup = (group: RecommendedModelGroup): void => {
-    const m = group.primary;
-    const rawId = m.id;
-    const modelId = rawId.length > 28 ? `${rawId.substring(0, 25)}...` : rawId;
-    const modelIdPadded = modelId.padEnd(28);
-
-    const pricing = formatListingPrice(m, { compact: true });
-    const pricingPadded = pricing.padEnd(10);
-
-    const context = m.context || "N/A";
-    const contextPadded = context.padEnd(6);
-
-    // Capability glyphs — omit (not blank) when false so the caps column
-    // naturally narrows for models without reasoning/vision.
-    const caps: string[] = [];
-    if (m.supportsTools) caps.push("🔧");
-    if (m.supportsReasoning) caps.push("🧠");
-    if (m.supportsVision) caps.push("👁️");
-    const capabilities = caps.join(" ");
-
-    console.log(`  ${modelIdPadded} ${pricingPadded} ${contextPadded} ${capabilities}`);
-
-    const prefixes = collectRoutingPrefixes(group, getNativePrefix);
-    if (prefixes.length > 0) {
-      const viaLine = prefixes.map((p) => `${p}@`).join(" · ");
-      console.log(`      via: ${viaLine}`);
-    }
-  };
-
-  console.log(`\nRecommended Models (last updated: ${lastUpdated}):\n`);
-
-  if (flagship.length > 0) {
-    console.log("Flagship models");
-    console.log(`  ${"─".repeat(70)}`);
-    for (let i = 0; i < flagship.length; i++) {
-      renderGroup(flagship[i]);
-      if (i < flagship.length - 1) console.log("");
-    }
-  }
-
-  if (fast.length > 0) {
-    if (flagship.length > 0) console.log("");
-    console.log("Fast variants");
-    console.log(`  ${"─".repeat(70)}`);
-    for (let i = 0; i < fast.length; i++) {
-      renderGroup(fast[i]);
-      if (i < fast.length - 1) console.log("");
-    }
-  }
-
-  console.log("");
-  console.log("  Capabilities: 🔧 Tools  🧠 Reasoning  👁️  Vision");
-
-  // Quick picks — compute over the deduped primaries across both buckets.
-  const primaries = [...flagship, ...fast].map((g) => g.primary);
-  const picks = computeQuickPicks(primaries);
-  const pickLines: string[] = [];
-  if (picks.budget)
-    pickLines.push(
-      `    Budget       → ${picks.budget.id} (${normalizePricingDisplay(
-        picks.budget.pricing?.average
-      )})`
-    );
-  if (picks.largeContext)
-    pickLines.push(
-      `    Large ctx    → ${picks.largeContext.id} (${picks.largeContext.context || "N/A"})`
-    );
-  if (picks.mostCapable) pickLines.push(`    Most capable → ${picks.mostCapable.id}`);
-  if (picks.visionCoding) pickLines.push(`    Vision+code  → ${picks.visionCoding.id}`);
-  if (picks.agentic) pickLines.push(`    Agentic      → ${picks.agentic.id}`);
-
-  if (pickLines.length > 0) {
-    console.log("");
-    console.log("  Quick picks:");
-    for (const line of pickLines) console.log(line);
-  }
-
-  console.log("");
-  console.log("  Set default:  export CLAUDISH_MODEL=<model>");
-  console.log("                 or:  claudish --model <model> ...");
-  console.log("");
-  console.log("  For more: claudish --models                     (browse full catalog)");
-  console.log("            claudish --providers                   (list all providers + counts)");
-  console.log("            claudish -s <query>                    (search by keyword)");
-  console.log("            claudish --models-top --models-refresh (refresh from Firebase)");
-  console.log("");
+  console.log(renderRecommendedText(doc, nativeShortcutForVendor));
 }
 
 // Legacy OpenRouter catalog updater was removed when claudish switched to

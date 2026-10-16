@@ -207,6 +207,15 @@ short, so socket paths stay under magmux's 100-byte limit, and never the user's
 `/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
 sessions.
 
+**Drop `CLAUDISH_PANE_CHILD` from any env spread from `process.env`.** The flag reaches everything a
+claudish-started session runs ([`pane-session.md`](pane-session.md) § One level of nesting), so a
+suite launched from inside one (a runner in a `create_session` pane) inherits it. A claudish child
+spawned with `...process.env` then refuses to run a model (exit 64, `nested session refused`), and
+an MCP server spawned that way lists 4 tools instead of 14. Build the env by allowlist, or set
+`CLAUDISH_PANE_CHILD: undefined` explicitly. `scripts/guard-real-config.ts` deletes the flag for
+`bun run test:safe` as a second layer; a hand-run `bun test <file>` from such a session gets no
+such help.
+
 **Every test asserts that nothing outlived it** (`assertNoOrphans`, `paneOrphans(layout)`): no
 process whose argv contains the test's root or a session uuid, no process left in any pane
 process group, and no socket, pane record or launcher directory in the root. That assertion is
