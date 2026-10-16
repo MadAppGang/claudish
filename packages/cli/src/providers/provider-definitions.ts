@@ -1275,6 +1275,39 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     description: "DeepSeek API (ds@)",
   },
 
+  // ── Meta (native API, metered) ─────────────────────────────────────
+  // Meta's own model API at api.meta.ai, billed per token on META_API_KEY. Not
+  // the Muse Code subscription, which is a separate claudish provider with its
+  // own login. Requests are built from the catalog's `meta/direct-api`
+  // connections (their wire is `responses`); `apiPath` is only the
+  // off-catalog default.
+  //
+  // NO `modelDiscovery`: `/v1/models` returns ids only, and a successful
+  // discovery replaces the catalog rows in the picker, which carry the
+  // windows, prices and modalities. The picker reads the catalog slug `meta`.
+  {
+    createHandler: openaiHandler,
+    tier: "native",
+    name: "meta",
+    displayName: "Meta",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.meta.ai",
+    baseUrlEnvVars: ["META_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "META_API_KEY",
+    apiKeyDescription: "Meta Model API key",
+    apiKeyUrl: "https://dev.meta.ai",
+    shortcuts: ["meta"],
+    shortestPrefix: "meta",
+    legacyPrefixes: [],
+    // parseModelSpec auto-detection only: a bare `muse-*` name is still routed
+    // by the catalog (`route()`), never pinned to this provider.
+    nativeModelPatterns: [{ pattern: /^muse-/i }],
+    isDirectApi: true,
+    description: "Meta Model API (meta@)",
+  },
+
   // ── Mistral (OpenAI-compatible direct API) ─────────────────────────
   // The catalog carries 13 mistralai-served models; 5 of them
   // (labs-leanstral-1-5, ministral-3-3b/3-8b-instruct, mistral-medium-3.5,

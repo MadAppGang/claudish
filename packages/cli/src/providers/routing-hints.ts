@@ -41,6 +41,7 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   glm: { apiKeyEnvVar: "ZHIPU_API_KEY" },
   "glm-coding": { apiKeyEnvVar: "GLM_CODING_API_KEY" },
   deepseek: { apiKeyEnvVar: "DEEPSEEK_API_KEY" },
+  meta: { apiKeyEnvVar: "META_API_KEY" },
   mistralai: { apiKeyEnvVar: "MISTRAL_API_KEY" },
   sakana: { apiKeyEnvVar: "SAKANA_API_KEY" },
   "sakana-subscription": { apiKeyEnvVar: "SAKANA_SUBSCRIPTION_API_KEY" },
