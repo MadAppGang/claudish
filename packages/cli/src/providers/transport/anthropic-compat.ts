@@ -7,8 +7,6 @@
  */
 
 import { credentials } from "../../auth/credentials/authority.js";
-import { isTransientCredentialError } from "../../auth/credentials/credential-error.js";
-import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
 import { getProviderByName } from "../provider-definitions.js";
@@ -91,16 +89,21 @@ export class AnthropicProviderTransport implements ProviderTransport {
         }
         Object.assign(headers, auth.headers);
       } catch (e: any) {
-        // Swallowing everything here was the transport-catch bug (CLAUDE.md):
-        // the producer's structured error never reached ComposedHandler, and the
-        // request went out with `x-api-key: ""`, whose 401 became a terminal
-        // 400. Rethrow what the auth site must classify: a network fault (it
-        // recovers), a token host's 429/5xx (it retries), and any failure when
-        // there is no coding-plan key to fall back to (a dead login then says
-        // `claudish login kimi`). Only with a KIMI_CODING_API_KEY — the same
-        // flat-rate plan — does the request fall back to it.
-        if (classifyConnectionError(e) || isTransientCredentialError(e) || !this.apiKey) throw e;
-        log(`[${this.displayName}] OAuth path failed, falling back to API key: ${e.message}`);
+        // Every failure is rethrown, for ComposedHandler's getHeaders site to
+        // classify: a network fault (recovered), a token host's 429/5xx
+        // (retried), a dead login ("run `claudish login kimi`", terminal).
+        // Swallowing here was the transport-catch bug (CLAUDE.md): the request
+        // went out with `x-api-key: ""` or a stale token.
+        //
+        // The fallback to the Coding Plan's own KIMI_CODING_API_KEY (the same
+        // flat-rate plan) is decided where the key lives: the kimi-coding
+        // composite falls through only when that key is present, and then
+        // returns its artifact without throwing (composite-credential.ts). A
+        // Moonshot key (MOONSHOT_API_KEY / KIMI_API_KEY, a metered product)
+        // belongs to the `kimi` composite and never signs kc@. `this.apiKey`
+        // is not consulted: for an OAuth user it is the construction-time token.
+        log(`[${this.displayName}] OAuth path failed: ${e.message}`);
+        throw e;
       }
     }
 

@@ -590,20 +590,20 @@ export class KimiOAuth {
     }
     this.credentials = null;
 
-    // FIX H4: Check for API key fallback (FR5 priority)
-    if (
-      process.env.MOONSHOT_API_KEY ||
-      process.env.KIMI_API_KEY ||
-      process.env.KIMI_CODING_API_KEY
-    ) {
-      log("[KimiOAuth] Falling back to API key mode");
-      throw new Error("OAuth_FALLBACK_TO_API_KEY");
-    }
-
-    // No API key available, throw error with instructions
-    throw terminalCredentialError(
-      `OAuth credentials invalid. Please re-login or set API key:\n  - Run: claudish login kimi\n  - Or set: export MOONSHOT_API_KEY='your-api-key'\n\nDetails: ${failure.message}`
-    );
+    // The fallback SIGNAL, always, carrying the login instruction as its cause.
+    // WHICH key may answer is not this login's decision: one KimiOAuth serves
+    // both kimi@ (Moonshot, metered) and kc@ (the Coding Plan), and each
+    // composite owns its own product's key (kimi-credential.ts). The composite
+    // falls back only when ITS key is present, and otherwise throws the cause:
+    // a kc@ user with no KIMI_CODING_API_KEY sees "run `claudish login kimi`",
+    // and MOONSHOT_API_KEY never signs kc@.
+    log("[KimiOAuth] Login rejected; the product's own API key may answer instead");
+    throw new Error("OAuth_FALLBACK_TO_API_KEY", {
+      cause: terminalCredentialError(
+        `Your Kimi login was rejected (${failure.message}). Run \`claudish login kimi\` to sign in again.`,
+        (failure as { upstreamStatus?: number }).upstreamStatus
+      ),
+    });
   }
 
   /**

@@ -4,8 +4,10 @@
  *
  * Used for OAuth-or-API-key providers (Codex, Kimi): the OAuth half is primary,
  * the API-key half is the fallback. A `fallbackSignal` lets the primary opt into
- * a fallback by throwing a sentinel error message (e.g. Kimi throws
- * "OAuth_FALLBACK_TO_API_KEY" when its refresh fails and an API key is present).
+ * a fallback by throwing a sentinel error message (Kimi throws
+ * "OAuth_FALLBACK_TO_API_KEY" when its login is rejected). The composite falls
+ * through only when its fallback half is available, and otherwise rethrows the
+ * sentinel's `cause` — the primary's own terminal error.
  */
 
 import type {
@@ -122,7 +124,15 @@ export class CompositeCredentialProvider implements CredentialProvider {
       } catch (e: any) {
         const signal = this.opts.fallbackSignal;
         if (signal && String(e?.message) === signal) {
-          return this.fallback.getRequestAuth(ctx);
+          // Fall through ONLY to a fallback that has a credential of its own:
+          // the api-key half always returns an artifact, so falling through
+          // without asking sent an empty key (`x-api-key: ""`) and lost the
+          // primary's message. With no key, the signal's cause (the primary's
+          // own terminal error) is what the caller gets.
+          if (await this.fallback.isAvailable({ allowOpPrompt: ctx.allowOpPrompt })) {
+            return this.fallback.getRequestAuth(ctx);
+          }
+          throw e?.cause ?? e;
         }
         throw e;
       }
