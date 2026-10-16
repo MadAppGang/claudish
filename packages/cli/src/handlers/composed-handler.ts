@@ -1548,7 +1548,19 @@ export class ComposedHandler implements ModelHandler {
       // host — check your network/DNS" instead of a mystifying 500. (A Tailscale
       // MagicDNS outage making chatgpt.com unresolvable is what motivated this.)
       const conn = classifyConnectionError(error);
-      if (!conn) throw error;
+      if (!conn) {
+        // Not a connection fault: answer it the way the other credential sites
+        // do. A transport's `enqueueRequest` can mint or refresh a credential
+        // here (`muse@` mints its key per request), so a dead login (terminal
+        // 400), a token host's 429/5xx (transient) or a SUBSCRIPTION's
+        // unclassified throw (transient 503) lands as a response. Escaping
+        // `handle()` instead is the five-sites bug: FallbackHandler records
+        // status 0 and advances a subscription onto a metered hop. A METERED
+        // unknown is still rethrown unchanged ("rethrow").
+        const answered = this.answerAuthFailure(c, error, "rethrow");
+        if (answered) return answered;
+        throw error;
+      }
 
       // Every construct below is built HERE, inside the catch, after
       // classification returned non-null. A successful request never executes
