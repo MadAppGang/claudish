@@ -562,7 +562,7 @@ export async function forceRefreshAntigravityToken(
     { ...original, expiry: new Date(deps.now() - 1000).toISOString() },
     deps
   );
-  deps.runAgyRefresh();
+  const outcome = deps.runAgyRefresh();
 
   const refreshed = parseRecord(deps.readStore());
   const token = refreshed?.token;
@@ -580,6 +580,20 @@ export async function forceRefreshAntigravityToken(
     writeSharedAntigravityToken(original, deps);
   }
   _resetAntigravityTokenState();
+  // The same distinctions as the expiry path: a slow or failing `agy` (mid
+  // self-update, most often) says nothing about the session, so it is
+  // retryable; only a CLI that ran and still produced nothing, or is missing,
+  // is a dead session (`credential-error.ts`).
+  if (outcome.kind === "timeout" || outcome.kind === "failed") {
+    const message = `[Antigravity] ${describeRefreshFailure(outcome)}`;
+    if (outcome.kind === "timeout") {
+      throw Object.assign(new Error(message), { transient: true as const });
+    }
+    throw new Error(message);
+  }
+  if (outcome.kind === "not-installed") {
+    throw terminalCredentialError(`[Antigravity] ${describeRefreshFailure(outcome)}`);
+  }
   throw terminalCredentialError(
     "[Antigravity] The Antigravity session was rejected upstream and could not be re-minted. " +
       "Run `claudish login antigravity` to sign in again."
