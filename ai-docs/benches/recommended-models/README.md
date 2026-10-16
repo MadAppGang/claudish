@@ -1,7 +1,7 @@
 # recommended-models: does every recommended model work through claudish?
 
 Two Benches, one question each, swept over the recommended list by one Experiment per
-list category and Bench.
+recommendation tier and Bench.
 
 | Bench | Path under test | The model must |
 |---|---|---|
@@ -22,19 +22,24 @@ Bench file, and the script writes into `experiments/` beside it.
 bun scripts/gen-experiments.ts
 ```
 
-reads `claudish --models-top --json` and writes one Experiment per list category and Bench:
+reads `claudish --models-top --json` and writes one Experiment per recommendation tier
+(`models[].recommendationTier`) and Bench:
 
-| Category | Variants (one model spec each) | Files |
+| Recommendation tier | Variants (one model spec each) | Files |
 |---|---|---|
-| `programming` | the recommended models by bare name; routing chooses the hop | `experiments/programming.cli.experiment.yaml`, `experiments/programming.mcp.experiment.yaml` |
-| `fast` | the same, for the fast models | `experiments/fast.cli.experiment.yaml`, `experiments/fast.mcp.experiment.yaml` |
+| `flagship` | the flagship models by bare name; routing chooses the hop | `experiments/flagship.cli.experiment.yaml`, `experiments/flagship.mcp.experiment.yaml` |
+| `cost_efficient` | the same, for the cost-efficient models | `experiments/cost_efficient.cli.experiment.yaml`, `experiments/cost_efficient.mcp.experiment.yaml` |
+| `lightweight` | the same, for the lightweight models | `experiments/lightweight.cli.experiment.yaml`, `experiments/lightweight.mcp.experiment.yaml` |
+| `luxury` | the same, for the luxury models | `experiments/luxury.cli.experiment.yaml`, `experiments/luxury.mcp.experiment.yaml` |
 | `subscription` | each published subscription command (`cx@gpt-6.1-sol`, `kc@k3`, ...); a native-route row is its bare name (`claude-opus-5-5`) | `experiments/subscription.cli.experiment.yaml`, `experiments/subscription.mcp.experiment.yaml` |
 
-The categories are read from the list, so a new one gets its own files. Each variant is named
-by its model spec; quote it on the command line: `--variant oc@glm-5.3`. The list changes
-with each catalog generation, so re-run the script before a real run. Each file names the
-generation it was written from, and the script deletes files for a category that left the
-list.
+The recommendation tiers are read from the list, so a new one gets its own files and an empty
+one (today `subscription`) gets none. A model in two tiers is a variant in both files. The
+luxury files are the most expensive run: those are the priciest models on the list. Each
+variant is named by its model spec; quote it on the command line: `--variant oc@glm-5.3`. The
+list changes with each catalog generation, so re-run the script before a real run. Each file
+names the generation it was written from, and the script deletes files for a recommendation
+tier that left the list.
 
 ## Running
 
@@ -47,12 +52,12 @@ madbench preflight mcp.madbench.yaml
 madbench check     mcp.madbench.yaml
 ```
 
-A real run, one category at a time, MCP first because it is cheaper:
+A real run, one recommendation tier at a time, MCP first because it is cheaper:
 
 ```
-madbench experiments/programming.mcp.experiment.yaml --report-json <path>
-madbench experiments/programming.cli.experiment.yaml --report-json <path>
-madbench experiments/programming.cli.experiment.yaml --variant kimi-k3 --report-json <path>
+madbench experiments/flagship.mcp.experiment.yaml --report-json <path>
+madbench experiments/flagship.cli.experiment.yaml --report-json <path>
+madbench experiments/flagship.cli.experiment.yaml --variant kimi-k3 --report-json <path>
 ```
 
 Both Benches run the `claudish` on `PATH`. Check `claudish --version` first: a stale global
