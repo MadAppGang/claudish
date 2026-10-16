@@ -128,6 +128,15 @@ const PANEL_SETTLE_MS = 500;
  * slots failed `prompt_not_accepted`. 3 s waits the reset out.
  */
 export const REPL_STABLE_MS = 3_000;
+/**
+ * After the nudge's ctrl-u, how long to keep reading frames for the box to stop showing the
+ * line before concluding ctrl-u did not take. The first frame after the key is not evidence:
+ * under load it can be a stale redraw still holding the line. Measured 2026-10-16 (report-F,
+ * three parallel slots): 810 ms from ctrl-u to the first frame with the empty box, and a
+ * single 500 ms frame wait read the stale box, sent a bare Enter on an emptied box and lost
+ * the prompt. 3 s is ~3.7x that latency and still ends well inside `ADMIT_TIMEOUT_MS`.
+ */
+export const NUDGE_CLEAR_DEADLINE_MS = 3_000;
 /** A dialog or choice screen static this long blocks boot. */
 const BOOT_STATIC_MS = 5_000;
 const TICK_MS = 250;
@@ -192,6 +201,7 @@ export interface PaneSessionOptions {
     corroborationMs?: number;
     bootStaticMs?: number;
     replStableMs?: number;
+    nudgeClearDeadlineMs?: number;
   };
 }
 
@@ -1099,6 +1109,29 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * on to submit it. Ctrl-U clears the box (phase2-captures keylog). The same line is
    * retyped, so the turn's witness and read coverage are unchanged.
    */
+  /**
+   * Read frames after the nudge's ctrl-u until the box no longer shows the line, or
+   * `NUDGE_CLEAR_DEADLINE_MS` passes. `empty`: ctrl-u took. `other`: the box holds
+   * something else (or is gone from the screen at the deadline). `line`: the line is still
+   * there at the deadline. `gone`: the admission ended meanwhile.
+   */
+  private async awaitClearedBox(
+    adm: Admission,
+    head: string
+  ): Promise<"empty" | "line" | "other" | "gone"> {
+    const end = Date.now() + this.t("nudgeClearDeadlineMs", NUDGE_CLEAR_DEADLINE_MS);
+    for (;;) {
+      if (this.admission !== adm || this.phase !== "ADMITTING") return "gone";
+      const box = inputBox(this.screen);
+      if (box && box.text === "") return "empty";
+      if (box && !box.text.startsWith(head)) return "other";
+      const left = end - Date.now();
+      if (left <= 0) return box ? "line" : "other";
+      // Resolves on the next frame (screen seq change) or at the deadline.
+      await this.nextFrame(left);
+    }
+  }
+
   private nudge(adm: Admission): void {
     const box = inputBox(this.screen);
     const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
@@ -1109,13 +1142,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       void (async () => {
         if (box.menuOpen) await this.key("escape");
         await this.key("ctrl-u");
-        await this.nextFrame(500);
-        const after = inputBox(this.screen);
-        if (after && after.text === "") {
+        const after = await this.awaitClearedBox(adm, head);
+        if (after === "gone") return; // accepted or ended meanwhile: nothing to resend
+        if (after === "empty") {
           this.anomaly("retyped_prompt");
           await this.typeAndSubmit(adm.plan);
-        } else if (after?.text.startsWith(head)) {
-          // Ctrl-U did not take: the old remedy, one more Enter. Never type a second copy.
+        } else if (after === "line") {
+          // Ctrl-U did not take within the deadline: the old remedy, one more Enter.
+          // Never type a second copy while the first could still be in the box.
           await this.key("enter");
         } else {
           this.anomaly("clear_failed");

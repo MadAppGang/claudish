@@ -329,9 +329,14 @@ only an empty box is typed again — a blind retry put the line in the box twice
 match. With no witness 10 s after delivery, a line still in the box is cleared with ctrl-u, retyped
 once and submitted (`resent_enter`, then `retyped_prompt`): a line typed into the startup stdin
 reset (Boot, above) may show in the box without the child holding it as input, so a bare
-second Enter cannot be relied on to submit it. If ctrl-u left the line in
-place the remedy is one more Enter, and a box left holding anything else is `clear_failed` — a
-second copy is never typed. The retyped line is the same line, so the witness and read coverage
+second Enter cannot be relied on to submit it. The first frame after ctrl-u is not evidence: under
+load it can be a stale redraw still holding the line (report-F, three parallel slots: ctrl-u at
++1020 ms, the empty box first drawn at +1830 ms; a single 500 ms frame wait read the stale box,
+pressed a bare Enter on a box ctrl-u had already emptied, and the prompt was lost). So frames are
+read until the box stops showing the line, for up to `NUDGE_CLEAR_DEADLINE_MS` (3 s, ~3.7x the
+measured 810 ms): an empty box is retyped, a box holding anything else is `clear_failed` and
+nothing is typed, and only a line STILL in the box at the deadline gets the old remedy, one more
+Enter. A second copy is never typed while the first could still be in the box. The retyped line is the same line, so the witness and read coverage
 are unchanged. A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
 input swallowed until Esc) gets an Esc 500 ms after delivery (`panel_dismissed`), and once the empty
 box is back its admission ends without a turn (`panel_command`); it used to wait the 30 s bound and
