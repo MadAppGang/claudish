@@ -447,7 +447,7 @@ scroll region, which garbled Claude Code's input box and stopped its turns from 
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
-- `cols` (required) - Columns, an integer; clamped to 80–500
+- `cols` (required) - Columns, an integer; clamped to 80–250
 - `rows` (required) - Rows, an integer; clamped to 24–200
 
 **Returns:** `{ session_id, cols, rows, changed, seq, pending? }`. `cols`/`rows` are the size actually

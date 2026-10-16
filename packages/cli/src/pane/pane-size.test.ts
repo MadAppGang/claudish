@@ -1,22 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { clampPaneSize, samePaneSize } from "./pane-size.js";
+import { MAX_PANE_COLS, clampPaneSize, samePaneSize } from "./pane-size.js";
 
 describe("clampPaneSize", () => {
   test.each([
     [80, 24, 80, 24],
     [120, 40, 120, 40],
     [250, 60, 250, 60],
-    [500, 200, 500, 200],
+    [500, 200, 250, 200],
     [1, 1, 80, 24],
-    [501, 201, 500, 200],
+    [501, 201, 250, 200],
     [79, 60, 80, 60],
-    [501, 60, 500, 60],
+    [501, 60, 250, 60],
     [250, 23, 250, 24],
     [250, 201, 250, 200],
     [79, 201, 80, 200],
-    [501, 23, 500, 24],
+    [501, 23, 250, 24],
   ])("%i × %i clamps to %i × %i", (cols, rows, expectedCols, expectedRows) => {
     expect(clampPaneSize(cols, rows)).toEqual({ cols: expectedCols, rows: expectedRows });
+  });
+});
+
+describe("M3: classifier-verified width cap", () => {
+  test("clamps 1000 columns to 250 and preserves 250 columns", () => {
+    expect(clampPaneSize(250, 50).cols).toBe(250);
+    expect(clampPaneSize(1000, 50).cols).toBe(250);
+  });
+
+  test("MAX_PANE_COLS is 250", () => {
+    expect(MAX_PANE_COLS).toBe(250);
   });
 });
 

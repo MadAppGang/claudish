@@ -330,7 +330,7 @@ what a caller cannot see from the model id.
 answers the session's current screen `{seq, cols, rows, cursor, lines, final, spans?}` (160×50 at
 launch), or `{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant
 for polling at about 1 Hz. `resize_session` answers `{session_id, cols, rows, changed, seq,
-pending?}`: the size actually set after clamping to 80–500 × 24–200, and the screen `seq` once the
+pending?}`: the size actually set after clamping to 80–250 × 24–200, and the screen `seq` once the
 redraw at that size has landed, so a capture with that `since_seq` already sees it. Their errors
 are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
 `resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or

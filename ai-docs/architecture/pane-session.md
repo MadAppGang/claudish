@@ -482,10 +482,12 @@ inline 400 and the slot is FAILED `api_error`.
 **The size is the viewer's, not ours.** Every pane used to be born 160×50 and stay there, so a
 docked viewer either showed empty rows below the screen or cut every line. 160×50 is now only the
 launch default (`pane/pane-size.ts`); `resize_session` and `team(mode:"resize")` set it at any time,
-mid-turn included, clamped to cols 80–500 × rows 24–200. The floor is not arbitrary: at 80 columns
+mid-turn included, clamped to cols 80–250 × rows 24–200. The floor is not arbitrary: at 80 columns
 every closed-list dialog marker still fits one row's width, and 24 rows still hold a full permission
 or trust dialog, so boot and blocked-screen detection keep working. magmux's own limits (≥ 20 × 3,
-≤ 10000 per side) are wider, so a clamped size can never earn its `too_small`/`too_large`.
+≤ 10000 per side) are wider, so a clamped size can never earn its `too_small`/`too_large`. The
+column cap is where the real classifier fixtures stop: above 250 columns `isBoxRule`'s cols − 1
+rule is unverified, and a box it misses is a screen that never classifies.
 
 **A resize is a real one.** claudish sends magmux's `resize` op (`{type:"resize", pane:0, cols,
 rows}` → `{rows, cols, changed, manual}`); magmux sets the PTY winsize, the child gets a genuine
@@ -502,8 +504,12 @@ produces a few requests, not one per intermediate size. The same-size short-circ
 no request) applies only when `appliedSize` is known, equal and nothing is in flight; otherwise
 magmux's `changed` decides. While the client is disconnected, or the pane is still starting, the
 size is stored and the call answers `changed:true, pending:true`; `attach()` re-applies it after
-`capabilities`, and a starting pane launches at it. After every await the phase is re-checked: a
-session that went terminal answers its final capture's size with `changed:false`.
+`capabilities`, and a starting pane launches at it. A size stored while the drain loop sits in its
+post-reply screen wait has no waiter, and the redial's kick finds the loop running, so the loop also
+runs while a size is OWED: connected, not terminal, applied ≠ desired, and desired ≠ the last size
+it sent on this connection. The last clause is what stops a refused size being resent forever; a
+redial resets it, so each connection retries a stored size once. After every await the phase is
+re-checked: a session that went terminal answers its final capture's size with `changed:false`.
 
 **A capture after a resize sees the new size.** On `changed:true`, `resize()` waits up to 1000 ms
 for the screen model to reach the set size and returns that screen's `seq`, so a caller passing it
@@ -515,8 +521,11 @@ against box text with row breaks removed, dialog markers match the dialog region
 string, and the working row tolerates a wrapped tail. They are validated on real Claude Code screens
 captured at 80, 120 and 250 columns. A resize redraw moves the above-box region, which only DELAYS
 settle and boot (it restarts their quiet clocks) and never completes them. Two places would have
-read a redraw as evidence and therefore ignore it for `RESIZE_QUIET_MS` (2 s) after a resize:
-degraded admission (`maybeDegradedAccept` counts only the echo there, so an undelivered prompt
+read a redraw as evidence and therefore ignore it inside the quiet window, an interval
+[from, until) opened at the SEND (the SIGWINCH redraw can land before the reply) and extended to
+`RESIZE_QUIET_MS` (2 s) past a `changed:true` or lost (`client_lost`/`client_timeout`) reply. It
+is never retracted: a lost reply may follow an applied resize, and moving the start to the reply
+would push an earlier redraw out of it. Ignored there are degraded admission (`maybeDegradedAccept` counts only the echo there, so an undelivered prompt
 still fails `prompt_not_accepted`), and the activity timestamp behind `idle_seconds` and
 `last_activity_at` (a separate activity clock; `screen.changedAt` still moves).
 

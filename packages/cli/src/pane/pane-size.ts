@@ -10,20 +10,21 @@
  * The bounds are tighter than magmux's on purpose (plan review H1, L4): at 80 columns every
  * closed-list dialog marker the classifier matches still fits one row, and 24 rows hold a
  * whole permission or trust dialog. A smaller screen would turn a dialog into "no input box,
- * no dialog" — an honest unknown that never settles.
+ * no dialog" — an honest unknown that never settles. The column cap is 250 because the
+ * real classifier fixtures stop there: above it, `isBoxRule`'s cols − 1 rule is unverified.
  */
 
 export const DEFAULT_PANE_COLS = 160;
 export const DEFAULT_PANE_ROWS = 50;
 
 export const MIN_PANE_COLS = 80;
-export const MAX_PANE_COLS = 500;
+export const MAX_PANE_COLS = 250;
 export const MIN_PANE_ROWS = 24;
 export const MAX_PANE_ROWS = 200;
 
 /**
- * After a resize the child redraws everything it shows (SIGWINCH reflow). For this long
- * that redraw is not evidence: degraded admission ignores a change above the box (H2), and
+ * After a resize the child redraws everything it shows (SIGWINCH reflow). From the send
+ * until this long after the reply (or the lost reply), that redraw is not evidence: degraded admission ignores a change above the box (H2), and
  * the activity timestamp behind `idle_seconds` / `last_activity_at` skips its frames (M4).
  */
 export const RESIZE_QUIET_MS = 2_000;

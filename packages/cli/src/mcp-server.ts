@@ -1497,7 +1497,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         cols: {
           type: "integer",
           description:
-            "For 'resize' (required): the terminal width in columns, clamped to 80–500. The " +
+            "For 'resize' (required): the terminal width in columns, clamped to 80–250. The " +
             "answer {run_id, path, slot, cols, rows, changed, seq} reports the size set.",
         },
         rows: {
@@ -2305,7 +2305,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     description:
       "Set a session's terminal size: the child gets a real SIGWINCH and Claude Code reflows. " +
       "Allowed at any time, mid-turn included; the last call wins. The size is clamped to " +
-      "cols 80–500, rows 24–200 and the answer {session_id, cols, rows, changed, seq, pending?} " +
+      "cols 80–250, rows 24–200 and the answer {session_id, cols, rows, changed, seq, pending?} " +
       "reports the size set. `seq` is the screen's seq after the resize: the next capture_session " +
       "shows the new cols/rows. `changed:false` = already that size. `pending:true` = the pane " +
       "is starting or its socket is reconnecting; the size is applied then. A finished session " +
@@ -2315,7 +2315,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       type: "object",
       properties: {
         session_id: { type: "string", description: "Session ID from create_session" },
-        cols: { type: "integer", description: "Terminal width in columns (clamped to 80–500)" },
+        cols: { type: "integer", description: "Terminal width in columns (clamped to 80–250)" },
         rows: { type: "integer", description: "Terminal height in rows (clamped to 24–200)" },
       },
       required: ["session_id", "cols", "rows"],
