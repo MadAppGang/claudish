@@ -23,6 +23,7 @@
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { forceRefreshMuseApiKey, requestPathMayPrompt } from "../meta-muse/muse-credentials.js";
+import { museTrustedBaseUrl } from "../meta-muse/muse-mint.js";
 import { discoverContextWindow } from "../model-discovery.js";
 import { OpenAIProviderTransport } from "./openai.js";
 
@@ -41,7 +42,20 @@ export class MuseCodeTransport extends OpenAIProviderTransport {
   private window = 0;
   private windowRetryAt = 0;
 
+  /**
+   * The base URL `/v1/responses` goes to, under the same host rule as the mint
+   * (`museTrustedBaseUrl`): the request carries the minted key and the prompt.
+   * Resolved in refreshAuth, so a refused host is a terminal answer at the auth
+   * site rather than a throw out of getEndpoint.
+   */
+  private trustedBase?: string;
+
+  override getEndpoint(): string {
+    return this.trustedBase ? `${this.trustedBase}/v1/responses` : super.getEndpoint();
+  }
+
   async refreshAuth(): Promise<void> {
+    this.trustedBase = museTrustedBaseUrl();
     this.auth = await credentials.getRequestAuth("meta-muse-code", { model: this.modelName });
     if (!this.window && Date.now() >= this.windowRetryAt) {
       this.window = (await discoverContextWindow("meta-muse-code", this.modelName)) ?? 0;

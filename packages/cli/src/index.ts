@@ -8,6 +8,9 @@ import {
   assertPaneChildInteractive,
   paneChildBootNotes,
 } from "./pane/child-env.js";
+// Before `.env` loading: the variables that decide where the Muse Code login may
+// be sent are read from the INHERITED environment only (env-snapshot.ts).
+import "./env-snapshot.js";
 
 // Load .env file before anything else (quiet mode to suppress verbose output)
 import { config } from "dotenv";

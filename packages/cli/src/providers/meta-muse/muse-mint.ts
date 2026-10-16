@@ -42,6 +42,7 @@
 
 import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { VERSION } from "../../version.js";
+import { inheritedMuseEnv } from "./muse-env-trust.js";
 
 /** The default base host. `MUSE_CODE_BASE_URL` overrides it (the provider's `baseUrlEnvVars`). */
 export const MUSE_CODE_DEFAULT_BASE_URL = "https://api.meta.ai";
@@ -119,18 +120,24 @@ export const MUSE_CODE_TRUSTED_HOST = "api.meta.ai";
 export const MUSE_CODE_ALLOW_CUSTOM_HOST_ENV = "CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST";
 
 /**
- * The base URL the `dca:` login (the mint) and the minted key (the model list)
- * may be sent to.
+ * The base URL the `dca:` login (the mint) and the minted key (the model list
+ * and `/v1/responses`) may be sent to.
  *
  * WHY THIS REFUSES. The `dca:` token is the account's durable login, possibly
  * the one copied from the Muse Code CLI's Keychain item, and it mints keys until
- * Meta revokes it. `MUSE_CODE_BASE_URL` can come from a `.env` in whatever
- * directory claudish runs in (index.ts loads one), so a cloned repository could
- * redirect the login to its own host. So an override is honoured only when it
- * is `https://api.meta.ai…`; anything else needs
- * `CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST=1`, and even then plain `http://` is
- * accepted only for loopback (a local test server). Every refusal is terminal
- * and names the variable.
+ * Meta revokes it. `index.ts` loads a `.env` from whatever directory claudish
+ * runs in, so a cloned repository could set `MUSE_CODE_BASE_URL` (and the
+ * opt-in) and redirect the login to its own host. The rules:
+ *
+ * - `https://api.meta.ai`, with no userinfo, query or fragment, is honoured
+ *   from anywhere; the result is the URL's origin plus its path, nothing else.
+ * - Any other host needs `CLAUDISH_MUSE_CODE_ALLOW_CUSTOM_HOST=1` in the
+ *   environment the process INHERITED (`muse-env-trust.ts`, snapshotted before
+ *   dotenv runs), AND the base URL itself must be the inherited value: a `.env`
+ *   can supply neither. Plain `http://` is then accepted only for loopback.
+ *
+ * Every refusal is terminal and names the variable. When `env` is not
+ * `process.env` (the injected test seam), it is treated as inherited.
  */
 export function museTrustedBaseUrl(env: Record<string, string | undefined> = process.env): string {
   const raw = env.MUSE_CODE_BASE_URL?.trim();
@@ -141,11 +148,26 @@ export function museTrustedBaseUrl(env: Record<string, string | undefined> = pro
   } catch {
     throw new MuseMintProtocolError(`MUSE_CODE_BASE_URL is not a URL: ${raw}`);
   }
-  const base = raw.replace(/\/+$/, "");
-  if (url.protocol === "https:" && url.hostname === MUSE_CODE_TRUSTED_HOST) return base;
-  if (env[MUSE_CODE_ALLOW_CUSTOM_HOST_ENV] !== "1") {
+  if (url.username || url.password || url.search || url.hash) {
     throw new MuseMintProtocolError(
-      `MUSE_CODE_BASE_URL points at ${url.protocol}//${url.host}, not https://${MUSE_CODE_TRUSTED_HOST}: claudish will not send your Muse Code login there. Unset it, or set ${MUSE_CODE_ALLOW_CUSTOM_HOST_ENV}=1 if you run that host yourself.`
+      "MUSE_CODE_BASE_URL may not carry credentials, a query or a fragment."
+    );
+  }
+  const base = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  if (url.protocol === "https:" && url.hostname === MUSE_CODE_TRUSTED_HOST) return base;
+
+  const inherited =
+    env === process.env
+      ? inheritedMuseEnv()
+      : { baseUrl: env.MUSE_CODE_BASE_URL, allowCustomHost: env[MUSE_CODE_ALLOW_CUSTOM_HOST_ENV] };
+  const fromDotenv = inherited?.baseUrl?.trim() !== raw;
+  if (inherited?.allowCustomHost !== "1" || fromDotenv) {
+    throw new MuseMintProtocolError(
+      `MUSE_CODE_BASE_URL points at ${url.protocol}//${url.host}, not https://${MUSE_CODE_TRUSTED_HOST}: claudish will not send your Muse Code login there. ${
+        fromDotenv
+          ? "It was not set by your shell (a .env in the current directory may not redirect the login)."
+          : `Unset it, or export ${MUSE_CODE_ALLOW_CUSTOM_HOST_ENV}=1 in your shell (a .env does not count) if you run that host yourself.`
+      }`
     );
   }
   const loopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
