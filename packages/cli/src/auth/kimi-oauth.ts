@@ -532,8 +532,15 @@ export class KimiOAuth {
       // A token host that is down or busy (429, 5xx) says nothing about the
       // login: keep it, and let the request retry.
       if (isTransientCredentialError(failure)) throw failure;
-      // A CLASSIFIED rejection of the grant (400/401/403): the only case that
-      // deletes the stored login.
+      // A CLASSIFIED rejection of the grant is the only case that deletes the
+      // stored login: 401/403, or a 400 whose body names `invalid_grant` (the
+      // grok-oauth.ts rule). Any other status (a 404/405/407/408 from a proxy
+      // in front of the token host, a 400 about something else) is terminal
+      // for this request but proves nothing about the login, so it stays.
+      const status = response.status;
+      const grantRejected =
+        status === 401 || status === 403 || (status === 400 && text.includes("invalid_grant"));
+      if (!grantRejected) throw failure;
       return this.rejectLogin(failure);
     }
 
@@ -578,7 +585,7 @@ export class KimiOAuth {
   }
 
   /**
-   * The token host REJECTED the grant (a classified 400/401/403): the stored
+   * The token host REJECTED the grant (401/403, or 400 `invalid_grant`): the stored
    * login cannot recover, so it is deleted, and the caller gets the fallback
    * signal or the login instruction.
    */
