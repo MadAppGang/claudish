@@ -100,6 +100,9 @@ export interface MuseOAuthDeps {
 }
 
 function openInBrowser(url: string): Promise<void> {
+  // The URL is the server's; `open`/`xdg-open` would also launch file: or
+  // custom-scheme handlers. Only https is opened; anything else stays printed.
+  if (!/^https:\/\//i.test(url)) return Promise.resolve();
   const command =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
   // execFile, not a shell: the URL is the vendor's and is passed as one argument.
