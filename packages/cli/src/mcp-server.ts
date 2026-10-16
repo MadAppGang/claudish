@@ -324,11 +324,17 @@ export function parseAnthropicSse(raw: string): {
   return { text, usage: hasUsage ? { input: inputTokens, output: outputTokens } : undefined };
 }
 
+/**
+ * One request through the in-process proxy, for every model that is not a bare
+ * Claude name. The body carries NO `max_tokens`: step 5w strips every output-limit
+ * field the adapters write and adds the wire's own only when the request has one, so
+ * the upstream applies its own default and no model limit is pinned here
+ * (ai-docs/architecture/wire.md).
+ */
 export async function runPromptViaProxy(
   model: string,
   prompt: string,
-  systemPrompt?: string,
-  maxTokens?: number
+  systemPrompt?: string
 ): Promise<RunPromptResult> {
   const proxy = await getProxy();
 
@@ -336,7 +342,6 @@ export async function runPromptViaProxy(
   const body: Record<string, unknown> = {
     model,
     messages: [{ role: "user", content: prompt }],
-    max_tokens: maxTokens || 4096,
     stream: true,
   };
   if (systemPrompt) {
@@ -377,13 +382,12 @@ export async function runPrompt(
   model: string,
   prompt: string,
   systemPrompt?: string,
-  signal?: AbortSignal,
-  maxTokens?: number
+  signal?: AbortSignal
 ): Promise<RunPromptResult> {
   if (nativeRouteFor(model) !== null) {
     return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
   }
-  return runPromptViaProxy(model, prompt, systemPrompt, maxTokens);
+  return runPromptViaProxy(model, prompt, systemPrompt);
 }
 
 /** `run_prompt`'s success text: the answer, then a footer of token and auth lines. */
@@ -924,7 +928,6 @@ function defineTools(
         },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
-        max_tokens: { type: "number", description: "Maximum tokens in response (default: 4096)" },
       },
       required: ["model", "prompt"],
     },
@@ -938,8 +941,7 @@ function defineTools(
           args.model as string,
           args.prompt as string,
           args.system_prompt as string | undefined,
-          ctx.signal,
-          args.max_tokens as number | undefined
+          ctx.signal
         );
         return { content: [{ type: "text" as const, text: formatRunPromptResult(result) }] };
       } catch (error) {
@@ -1190,10 +1192,6 @@ function defineTools(
         },
         prompt: { type: "string", description: "The prompt to send to all models" },
         system_prompt: { type: "string", description: "Optional system prompt" },
-        max_tokens: {
-          type: "number",
-          description: "Maximum tokens in response (omit to let model decide)",
-        },
       },
       required: ["models", "prompt"],
     },
@@ -1206,7 +1204,6 @@ function defineTools(
       const modelIds = args.models as string[];
       const prompt = args.prompt as string;
       const systemPrompt = args.system_prompt as string | undefined;
-      const maxTokens = args.max_tokens as number | undefined;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
       // and reads the comparison against it, so the repo-wide newest-first
@@ -1219,7 +1216,7 @@ function defineTools(
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPrompt(model, prompt, systemPrompt, ctx.signal, maxTokens);
+          const result = await runPrompt(model, prompt, systemPrompt, ctx.signal);
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
