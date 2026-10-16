@@ -205,11 +205,19 @@ async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<
   if (prompt && role !== "never") {
     const result = await deps.keychainLogin(async (accessToken) => {
       const mint = await deps.mint(accessToken);
-      // Confirmed: keep a copy so a process that may never prompt can sign too.
-      try {
-        deps.writeBorrowedCopy(accessToken, mint.subsTierName, deps.dir());
-      } catch (err) {
-        log(`[MuseCode] could not write the borrowed copy: ${(err as Error).message}`);
+      // Confirmed: keep a copy so a process that may never prompt can sign too —
+      // unless a credential reset happened while the read and the mint ran (a
+      // logout deletes the copy; this resolve must not write it back).
+      if (startEpoch === epoch) {
+        try {
+          deps.writeBorrowedCopy(accessToken, mint.subsTierName, deps.dir());
+        } catch (err) {
+          log(`[MuseCode] could not write the borrowed copy: ${(err as Error).message}`);
+        }
+      } else {
+        log(
+          "[MuseCode] a credential reset happened during the Keychain read; not writing the copy"
+        );
       }
       return { accessToken, mint };
     }, MUSE_KEYCHAIN_READ_DEADLINE_MS);
