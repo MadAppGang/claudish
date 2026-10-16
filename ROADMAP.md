@@ -6,38 +6,29 @@ For shipped features see `CLAUDE.md`; for the engineering rationale behind them 
 
 ---
 
-## Channel notifications
+## Session push notifications — removed 2026-10-16
 
-### Phase 1 — SEP-1686 forward-compat fields ✅ Shipped
+Status: **removed** (10.7.0). The server no longer declares `experimental: {"claude/channel": {}}`
+and sends no `notifications/claude/channel` frame; hosts poll `list_sessions` and read the session
+records. Rationale and what replaced each fact: `ai-docs/architecture/mcp-channel.md` ("Push
+notifications were removed").
 
-Status: complete (this branch).
+The old phases are closed with it: Phase 1 (the SEP-1686 forward-compat fields `task_id`,
+`status`, `created_at`, `last_updated_at` on the channel frame) was deleted with the frame, and
+Phase 2 (`notifications/tasks/status` behind `CLAUDISH_NOTIFY_VIA_TASKS`) and Phase 3 (flip the
+default, drop the legacy method) have no legacy method left to migrate from.
 
-The channel bridge now emits `task_id`, `status` (5-value SEP-1686 enum), `created_at`, `last_updated_at` alongside our existing fields. Wire format pinned by `channel-wire-format.test.ts` (8 tests, perturbation-verified). No consumer behavior change.
+**Trigger to reconsider a push** (all must hold):
+- Claude Code delivers `notifications/tasks/status` (SEP-1686) into the **agent's context** — not
+  only the CLI UI — WITHOUT `--channels`, `.mcp.json` registration or an interactive-only host.
+  Those three gates are why the channel push reached almost no one.
+- The TypeScript MCP SDK ships a server-side helper for emitting it
+  (`modelcontextprotocol/typescript-sdk#1041`).
+- A live `create_session` run shows the completion arriving in the orchestrator agent's context.
 
-See: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md`
-
-### Phase 2 — `notifications/tasks/status` behind a flag
-
-Status: blocked on upstream. Not started.
-
-When ready, we add a `CLAUDISH_NOTIFY_VIA_TASKS=1` env var. When set, the bridge emits `notifications/tasks/status` with a restructured payload (flatten `meta.task_id → params.taskId`, etc.) alongside the existing `notifications/claude/channel`. Add a parallel test fixture pinning the new wire format.
-
-**Trigger conditions** (all must hold):
-- Claude Code ships a release whose CHANGELOG mentions SEP-1686 / `notifications/tasks/status` receiver support, AND the new method surfaces task notifications into the **agent's context** (not just CLI UI).
-- The TypeScript MCP SDK ships a server-side helper for emitting `notifications/tasks/status`. Reference impl is `modelcontextprotocol/typescript-sdk#1041` (currently OPEN as of 2026-05).
-- We've manually verified per-child completion notifications surface in the orchestrator agent's context during a `team` run.
-
-**Effort**: small. Most work is already done in Phase 1 (the data is in `meta`); Phase 2 is mainly a payload-reshape function + new test fixture + env-var gate.
-
-Reference: same migration schema doc as Phase 1.
-
-### Phase 3 — Flip default + drop the legacy method
-
-Status: blocked on Phase 2.
-
-Default to `notifications/tasks/status`. Keep emitting `notifications/claude/channel` for one major version as a fallback for users still on older Claude Code versions. Then remove.
-
-**Trigger condition**: 6+ months after Phase 2 ships AND > ~80% of Claudish users are on Claude Code versions with Tasks receiver support (heuristic — measure via `--probe` telemetry if we ever add it, otherwise judgment call).
+**Effort if triggered**: small. The facts are already in `SessionManager` (`channelEventFor`, the
+`waits.jsonl` transitions); a push is one subscriber on the pane's `onTransition` and `onChange`
+hooks plus a payload builder and its wire-format test.
 
 ---
 
