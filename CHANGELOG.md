@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.6.2] - 2026-10-16
+
+### Bug Fixes
+
+- show one recommended fallback row per model id *(picker)* ([`21a7837`](https://github.com/MadAppGang/claudish/commit/21a78370f6cda456f768610420a7dfe0f3bb7672))
+- list cost_efficient and luxury tiers as their own sections *(catalog)* ([`cfe7de0`](https://github.com/MadAppGang/claudish/commit/cfe7de0b5b2ad407d98ba3ce877f3541b676aff8))
+
+### Documentation
+
+- document recommendationTier in --models-top --json *(catalog)* ([`21d3f59`](https://github.com/MadAppGang/claudish/commit/21d3f59af77a42dc153b90d0bcb204a9b03eee05))
+- update CHANGELOG.md for v10.6.1([`086cf60`](https://github.com/MadAppGang/claudish/commit/086cf608e82124c5d92f13f2184575c091eb6723))
+
+### Other Changes
+
+- v10.6.2 *(release)* ([`206f96b`](https://github.com/MadAppGang/claudish/commit/206f96be8f88dadf11b33c6078411cb9b666c985))
+
 ## [10.6.1] - 2026-10-14
 
 ### Bug Fixes
