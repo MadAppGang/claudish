@@ -50,9 +50,14 @@
  *   holder wrote DURING the wait (by mtime; an older copy is the one that
  *   sent it here). When the lock clears and no new copy appeared (the holder
  *   was denied, or its mint failed), it reads for itself — if its role allows.
- * - A lock whose pid is dead is removed and the read proceeds; the lock is
- *   re-read right before the `rm`, so a fresh lock is never removed. A lock
- *   naming this process's own pid that this process does not hold is stale.
+ * - A lock whose pid is dead is removed and the read proceeds. The lock is
+ *   re-read right before the `rm`, which NARROWS the window in which a fresh
+ *   lock could be removed but does not close it: two processes that both judged
+ *   the same stale lock can race, one acquiring a new lock that the other then
+ *   unlinks. The cost is one extra access dialog, and only when two launches
+ *   reclaim the same stale lock within microseconds; closing it would need an
+ *   OS-level lock around acquire and reclaim. A lock naming this process's own
+ *   pid that this process does not hold is stale.
  * - Only EEXIST means "held". Any other failure to create the lock ends the
  *   call with `failed`; every pass of the loop sleeps and honours the deadline.
  * - A token the user approved whose mint then failed TRANSIENTLY is kept in
@@ -310,8 +315,9 @@ function releaseLock(): void {
 
 /**
  * Remove a stale lock only if it is still the one we judged stale: re-read
- * right before the `rm`, so a lock another process created in between is left
- * alone (its `wx` then decides, not our `rm`).
+ * right before the `rm`, so a lock another process created before that re-read
+ * is left alone. One created between the re-read and the `rm` is not; see the
+ * module comment for that residual window and its cost.
  */
 function removeStaleLock(seen: LockRecord): void {
   const now = readLock();
