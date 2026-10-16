@@ -96,6 +96,7 @@ import {
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
+import { VERSION } from "./version.js";
 
 // Load environment variables.
 //
@@ -2409,7 +2410,9 @@ async function main() {
 
   // Create server with channel capability
   const server = new Server(
-    { name: "claudish", version: "9.0.0" },
+    // `version.ts` is generated from packages/cli/package.json, so serverInfo names
+    // the release the host is actually talking to.
+    { name: "claudish", version: VERSION },
     {
       capabilities: {
         ...(enabledGroups.has("session") ? { experimental: { "claude/channel": {} } } : {}),
