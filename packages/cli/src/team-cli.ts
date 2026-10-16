@@ -187,7 +187,8 @@ export async function teamCommand(args: string[]): Promise<void> {
         printStatus(runStatus);
       } else {
         const { runWithGrid } = await import("./team-grid.js");
-        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", {
+        // A missing --input stays undefined so setupSession keeps an existing input.md.
+        const gridStatus = await runWithGrid(sessionPath, models, input, {
           timeout,
           mode: effectiveMode === "interactive" ? "interactive" : "default",
         });
