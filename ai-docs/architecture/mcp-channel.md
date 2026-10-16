@@ -346,7 +346,11 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 | `agentic` | `preflight`, `team`, `report_error` |
 | `session` | the 7 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 14 |
+| `channel`, or any other value | all 14, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+
+Unknown values keep selecting everything, because a server that lists fewer tools than its host
+expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
+no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The

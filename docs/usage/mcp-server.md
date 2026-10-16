@@ -258,10 +258,17 @@ The session tools are in the `session` group, which `all` (the default) includes
 | `agentic` | `preflight`, `team`, `report_error` |
 | `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session` |
 | `debug` | `compare_models` |
-| any other value | all 14 |
+| any other value | all 14, with a warning on stderr |
+
+Any other value still selects all 14 tools, and the server writes one line to stderr naming the
+value and the valid ones:
+
+```
+[claudish] CLAUDISH_MCP_TOOLS="agentc" is not a tool mode; selecting all tools. Valid values: all, low-level, agentic, session, debug
+```
 
 `channel` was the old name of the `session` group. It is no longer a group, so it selects all 14
-tools.
+tools, and the warning says it was renamed to `session`.
 
 ### Polling workflow
 

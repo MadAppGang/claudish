@@ -2304,11 +2304,27 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
   }
 }
 
+/** Every value `CLAUDISH_MCP_TOOLS` recognises, in the order the docs list them. */
+const TOOL_MODES = ["all", "low-level", "agentic", "session", "debug"] as const;
+
+/**
+ * The stderr line for a `CLAUDISH_MCP_TOOLS` value that names no tool mode, or
+ * undefined for a recognised one. The value still selects every tool; the line
+ * exists so a typo, or the removed `channel`, is not silently read as `all`.
+ */
+function unknownToolModeWarning(mode: string): string | undefined {
+  if ((TOOL_MODES as readonly string[]).includes(mode)) return undefined;
+  const renamed = mode === "channel" ? " (`channel` was renamed to `session`)" : "";
+  return `[claudish] CLAUDISH_MCP_TOOLS=${JSON.stringify(mode)} is not a tool mode${renamed}; selecting all tools. Valid values: ${TOOL_MODES.join(", ")}`;
+}
+
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
 async function main() {
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   const enabledGroups = resolveToolGroups(toolMode);
+  const toolModeWarning = unknownToolModeWarning(toolMode);
+  if (toolModeWarning) console.error(toolModeWarning);
 
   // Tools only, for every tool mode. No `experimental: {"claude/channel": {}}`: the
   // server pushes nothing; a host polls `list_sessions` and reads the records.
