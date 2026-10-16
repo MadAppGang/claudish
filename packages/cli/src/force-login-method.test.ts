@@ -98,10 +98,19 @@ describe("buildClaudishSettingsOverlay", () => {
     ).toBe(false);
   });
 
-  test("the default reads the CLAUDISH_PANE_CHILD marker", () => {
-    const saved = process.env.CLAUDISH_PANE_CHILD;
+  test("T-U-8: the default skips the prompt only with the flag and a pane cwd", () => {
+    const savedFlag = process.env.CLAUDISH_PANE_CHILD;
+    const savedCwd = process.env.CLAUDISH_PANE_CWD;
     try {
       process.env.CLAUDISH_PANE_CHILD = "1";
+      delete process.env.CLAUDISH_PANE_CWD;
+      expect(
+        "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
+      ).toBe(false);
+      process.env.CLAUDISH_PANE_CWD = "/w";
+      expect(
+        "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
+      ).toBe(true);
       expect(buildClaudishSettingsOverlay(statusLine, true).skipDangerousModePermissionPrompt).toBe(
         true
       );
@@ -110,8 +119,10 @@ describe("buildClaudishSettingsOverlay", () => {
         "skipDangerousModePermissionPrompt" in buildClaudishSettingsOverlay(statusLine, true)
       ).toBe(false);
     } finally {
-      if (saved === undefined) delete process.env.CLAUDISH_PANE_CHILD;
-      else process.env.CLAUDISH_PANE_CHILD = saved;
+      if (savedFlag === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = savedFlag;
+      if (savedCwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+      else process.env.CLAUDISH_PANE_CWD = savedCwd;
     }
   });
 });

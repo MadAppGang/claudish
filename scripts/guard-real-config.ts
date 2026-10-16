@@ -228,15 +228,22 @@ for (const g of GUARDED) {
 // whose home directory never holds the file, stayed green. A fresh directory
 // per run means no run can read a sentinel an earlier run wrote either.
 const sentinelDir = mkdtempSync(join(tmpdir(), "claudish-guard-sentinel-"));
+const childEnv: Record<string, string | undefined> = {
+  ...process.env,
+  CLAUDISH_DISABLE_KEYCHAIN: "1",
+  CLAUDISH_DISABLE_OP: "1",
+  CLAUDISH_DISABLE_CATALOG_WARM: "1",
+  CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
+};
+// `CLAUDISH_PANE_CHILD` reaches everything a claudish-started session runs, a test
+// run included (a runner is often such a session). Inherited, it puts every
+// claudish child and MCP server the suite spawns with `...process.env` into nested
+// mode (four tools, model launches refused with exit 64). The tests drop it
+// themselves; this is the second layer.
+delete childEnv.CLAUDISH_PANE_CHILD;
 const child = spawn(cmd[0], cmd.slice(1), {
   stdio: "inherit",
-  env: {
-    ...process.env,
-    CLAUDISH_DISABLE_KEYCHAIN: "1",
-    CLAUDISH_DISABLE_OP: "1",
-    CLAUDISH_DISABLE_CATALOG_WARM: "1",
-    CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
-  },
+  env: childEnv,
 });
 
 /** Report one file's mutation, put the original bytes back, and explain the fix. */
