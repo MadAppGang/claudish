@@ -2480,7 +2480,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("CLAUDISH_DIAG_MODE")}              Diagnostic output: auto / logfile / off
   ${blue("CLAUDISH_DEBUG")}                  Always enable debug logging: 1 / true ${dim("(same as -d)")}
   ${blue("CLAUDISH_ANTHROPIC_API_BILLING")}  Bill native Claude to your API key ${dim("(see --anthropic-api-billing)")}
-  ${blue("CLAUDISH_MCP_TOOLS")}              MCP tool gating: all / low-level / agentic / session
+  ${blue("CLAUDISH_MCP_TOOLS")}              MCP tool gating: all / low-level / agentic / session / debug
   ${blue("CLAUDISH_MODEL_OPUS")}             Override model for Opus role
   ${blue("CLAUDISH_MODEL_SONNET")}           Override model for Sonnet role
   ${blue("CLAUDISH_MODEL_HAIKU")}            Override model for Haiku role

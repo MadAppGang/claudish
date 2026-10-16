@@ -157,7 +157,7 @@ The session_id in the channel tag's meta attributes is the key for all tool call
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ToolGroup = "low-level" | "agentic" | "session";
+type ToolGroup = "low-level" | "agentic" | "session" | "debug";
 
 /**
  * Per-call context handed to every tool handler. Built fresh in the CallTool
@@ -1181,21 +1181,26 @@ function defineTools(
 
   tools.push({
     name: "compare_models",
-    description: "Run the same prompt through multiple models and compare responses",
+    description:
+      "DEBUG. Send the same single prompt to several models, one after another, and show " +
+      "their answers side by side — to check that routes answer or to eyeball raw answers. " +
+      "Each model gets exactly what run_prompt sends: one request, no tools, no Claude Code " +
+      "session. Not for real work: use team for a blind-judged multi-model run, or " +
+      "create_session for one model doing a task.",
     inputSchema: {
       type: "object",
       properties: {
         models: {
           type: "array",
           items: { type: "string" },
-          description: "List of model IDs to compare",
+          description: "List of model names or model specs to compare, in the order to run them",
         },
         prompt: { type: "string", description: "The prompt to send to all models" },
         system_prompt: { type: "string", description: "Optional system prompt" },
       },
       required: ["models", "prompt"],
     },
-    group: "low-level",
+    group: "debug",
     // N models run SEQUENTIALLY below, so the total blocking time is the sum of
     // every model's latency — the easiest of the three tools to push past the
     // client's idle window.
@@ -2345,10 +2350,12 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
       return new Set(["agentic"]);
     case "session":
       return new Set(["session"]);
+    case "debug":
+      return new Set(["debug"]);
     default:
       // Every other value — `all`, unset, a typo, or the removed `channel` — is
       // everything. `channel` gets no alias: a rename removes the old name.
-      return new Set(["low-level", "agentic", "session"]);
+      return new Set(["low-level", "agentic", "session", "debug"]);
   }
 }
 
