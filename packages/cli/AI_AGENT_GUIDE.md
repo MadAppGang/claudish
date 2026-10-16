@@ -368,10 +368,10 @@ Or use npx (no installation needed):
 
 | Tool | Description | Example Use |
 |------|-------------|-------------|
-| `run_prompt` | Execute prompt on any model | Get a second opinion from Grok |
+| `run_prompt` | One quick prompt to one model's API; no tools, no session | Get a second opinion from Grok |
 | `list_models` | Show recommended models | Find models with tool support |
 | `search_models` | Fuzzy search all models | Find vision-capable models |
-| `compare_models` | Run same prompt on multiple models | Compare reasoning approaches |
+| `compare_models` | DEBUG tool (`debug` group): one prompt to several models, raw answers side by side | Check that routes answer |
 
 ### Using MCP Tools from Claude Code
 
@@ -384,8 +384,11 @@ Claude: [calls run_prompt tool with model="x-ai/grok-code-fast-1"]
 User: "What models support vision?"
 Claude: [calls search_models tool with query="vision"]
 
-User: "Compare how GPT-5 and Gemini explain this concept"
+User: "Check that GPT-5 and Gemini both answer"
 Claude: [calls compare_models tool with models=["openai/gpt-5.3", "google/gemini-3-pro-preview"]]
+
+User: "Have GPT-5 and Gemini both review this design"
+Claude: [calls team tool with mode="run-and-judge" — a real multi-model task, not compare_models]
 ```
 
 ### MCP vs CLI Mode
@@ -404,10 +407,15 @@ Claude: [calls compare_models tool with models=["openai/gpt-5.3", "google/gemini
 {
   model: string,        // e.g., "x-ai/grok-code-fast-1"
   prompt: string,       // The prompt to send
-  system_prompt?: string,  // Optional system prompt
-  max_tokens?: number   // Default: 4096
+  system_prompt?: string   // Optional system prompt
 }
 ```
+
+No output-limit parameter: the request carries no `max_tokens`, and the provider applies its
+own default. A bare Claude name (`claude-*`, `opus`, `sonnet`, `haiku`) runs as one Claude Code
+print-mode call (`claudish -p`) on the user's own Claude Code login, with tools, MCP servers and
+settings off; its answer ends with `Auth: Claude Code login (subscription)`. The explicit
+`anthropic@claude-*` is the metered Anthropic API.
 
 **list_models**
 ```typescript

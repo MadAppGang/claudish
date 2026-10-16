@@ -87,7 +87,7 @@ Then just ask Claude:
 | Full coding session with different model | CLI | Replace Claude entirely |
 | Quick second opinion mid-conversation | MCP | Tool call, stay in Claude |
 | Batch automation/scripts | CLI | Single-shot mode |
-| Multi-model comparison | MCP | `compare_models` tool |
+| Multi-model comparison | MCP | `team` tool |
 | Cost-sensitive simple tasks | Either | Pick cheap model |
 
 **TL;DR:** CLI when you want a different brain. MCP when you want Claude + friends.

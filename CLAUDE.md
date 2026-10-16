@@ -20,19 +20,19 @@ lives in `ROADMAP.md`.
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux,
-  and why the MCP server starts no child with `-p`
+  and the one `-p` the MCP server does start (`run_prompt` on a Claude model)
 - `pane-session.md` — MCP and CLI `team` slots and `create_session` as interactive Claude Code in
   headless magmux panes: transcript turn oracle, settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
   the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
-  in-child mod or argv prompt). Read before editing `pane/`, team spawn or channel spawn
+  in-child mod or argv prompt). Read before editing `pane/`, team spawn or MCP session spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-channel.md` — the 14-tool MCP surface and the 4-tool nested mode, channel sessions on panes (`send_input` queueing,
-  `capture_session`, the session records the magus monitor reads), channel wire format
-  (`awaiting_permission`, no `finishing`), progress keepalive
+- `mcp-sessions.md` — the 14-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, the session records the magus monitor reads),
+  `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every
@@ -235,7 +235,7 @@ for rationale. Three write-ups already died this way.
 
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->
-- Don't run claudish directly in main bash — use dedicated channel sessions or `/delegate`
+- Don't run claudish directly in main bash — use dedicated MCP sessions (`create_session`) or `/delegate`
 <!-- learned: 2026-09-02 source: near_miss -->
 - NEVER `git stash` from a worktree. The stash stack is shared with the main checkout and
   every sibling worktree, and concurrent sessions push and pop it. A bare push/pop pair is

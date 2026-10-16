@@ -1,4 +1,4 @@
-// packages/cli/src/channel/session-state-records.contract.test.ts
+// packages/cli/src/mcp-session/session-state-records.contract.test.ts
 /**
  * Black-box contract tests for the state model as it reaches disk: the wait log
  * `waits.jsonl` (design §3.2, §3.3 "waits.jsonl"; §8.1 tests 1-4).
@@ -13,7 +13,7 @@
  *
  * The records on disk are the primary evidence: `waits.jsonl` gains an `open` line on every
  * transition into a wait, so its absence proves a session never waited.
- * INFERRED: get_diagnostics reports the live channel event in an `event` field (adapter
+ * INFERRED: get_diagnostics reports the live session event in an `event` field (adapter
  * `sessionStatus` in contract-mcp.ts, RB7).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";

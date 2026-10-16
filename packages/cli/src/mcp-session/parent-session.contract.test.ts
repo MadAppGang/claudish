@@ -1,6 +1,6 @@
-// packages/cli/src/channel/parent-session.contract.test.ts
+// packages/cli/src/mcp-session/parent-session.contract.test.ts
 /**
- * Contract tests for channel/parent-session.ts: `hostPid`, and the `parentClaudeSessionId` a
+ * Contract tests for mcp-session/parent-session.ts: `hostPid`, and the `parentClaudeSessionId` a
  * call records.
  *
  * The parent contract, as measured on Claude Code 2.1.290: the host session record

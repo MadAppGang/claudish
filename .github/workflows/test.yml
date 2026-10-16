@@ -94,7 +94,7 @@ jobs:
         run: bun run lint
 
       # CLAUDISH_SKIP_LIVE_E2E is REQUIRED here, and not just an optimisation.
-      # channel/e2e-channel.test.ts probes for a usable Claude Code at MODULE
+      # mcp-session/e2e-sessions.test.ts probes for a usable Claude Code at MODULE
       # LOAD by spawning `claude --version` and awaiting only its `exit` event.
       # A runner has no `claude` binary, so spawn emits `error` instead, the
       # promise never settles, and the whole suite hangs until the job is

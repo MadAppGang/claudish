@@ -1,11 +1,12 @@
 /**
- * The pane module's public surface (architecture §2, D1). Team and the channel import
+ * The pane module's public surface (architecture §2, D1). Team and the MCP sessions import
  * from here only; internal files are imported directly only by their own tests.
  * `child-env.ts` runs in the pane child and is imported by the CLI entry, not here.
  */
 
 export * from "./contract.js";
 export { toSlotRow } from "./slot-row.js";
+export { REASON_DETAIL_MAX_CHARS, reasonDetail, upstreamRecordsFor } from "./reason-detail.js";
 export { deliveryRefusal } from "./prompt-delivery.js";
 export {
   type Accounting,

@@ -1,5 +1,5 @@
 /**
- * Unit and process-level regression tests for the channel's interactive pane transport
+ * Unit and process-level regression tests for the session's interactive pane transport
  * (architecture §7, §12.4).
  *
  * Process-level tests drive `SessionManager` directly: every session is the fake
@@ -26,7 +26,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { mapEventToTaskStatus } from "../mcp-server.js";
 import { ContractErrorException, type SlotState, checkChildFlags } from "../pane/index.js";
 import {
   MAGMUX,
@@ -38,18 +37,19 @@ import {
 } from "../pane/test-helpers/hermetic-env.js";
 import { transcriptRecords } from "../pane/test-helpers/transcript-fixtures.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
+import { readWaitLines } from "../test-helpers/contract-records.js";
 import {
   SessionManager,
-  channelEventFor,
   normaliseTimeoutSeconds,
+  sessionEventFor,
   sessionRowOf,
   toMetaRecord,
 } from "./session-manager.js";
-import type { ChannelEvent, SessionInfo, SessionManagerOptions } from "./types.js";
+import type { SessionInfo, SessionManagerOptions } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIGNAL_CHILD_TS = join(__dirname, "test-helpers", "stats-buffer-signal-child.ts");
-const TERMINAL_EVENTS = ["completed", "failed", "cancelled", "timeout"];
+const TERMINAL_STATES = ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "EMPTY"];
 const T_PANE = 30_000;
 
 function waitUntil(predicate: () => boolean, timeoutMs = 10_000, intervalMs = 25): Promise<void> {
@@ -110,22 +110,8 @@ function sampleInfo(over: Partial<SessionInfo> = {}): SessionInfo {
 
 // ─── pure ────────────────────────────────────────────────────────────────────
 
-describe("exported channel seams (pure)", () => {
-  test("timeout projects to SEP-1686 failed instead of falling through to working", () => {
-    expect(mapEventToTaskStatus("timeout")).toBe("failed");
-    expect(mapEventToTaskStatus("timeout")).not.toBe("working");
-    expect(mapEventToTaskStatus("genuinely_unknown_event")).toBe("working");
-    for (const [event, status] of [
-      ["completed", "completed"],
-      ["failed", "failed"],
-      ["cancelled", "cancelled"],
-      ["awaiting_permission", "input_required"],
-    ] as const) {
-      expect(mapEventToTaskStatus(event)).toBe(status);
-    }
-  });
-
-  test("channelEventFor maps every SlotState (§3.4)", () => {
+describe("exported session seams (pure)", () => {
+  test("sessionEventFor maps every SlotState (§3.4)", () => {
     const cases: Array<[SlotState, string | null, string, string | null]> = [
       ["STARTING", null, "starting", null],
       ["RUNNING", "thinking", "running", null],
@@ -143,8 +129,8 @@ describe("exported channel seams (pure)", () => {
       ["TIMEOUT", null, "timeout", null],
     ];
     for (const [state, activity, event, tool] of cases) {
-      expect(channelEventFor({ state, activity }), `${state}/${activity}`).toEqual({
-        event: event as ReturnType<typeof channelEventFor>["event"],
+      expect(sessionEventFor({ state, activity }), `${state}/${activity}`).toEqual({
+        event: event as ReturnType<typeof sessionEventFor>["event"],
         tool,
       });
     }
@@ -210,6 +196,7 @@ describe("exported channel seams (pure)", () => {
         "provider",
         "state",
         "reason",
+        "reason_detail",
         "tokens_in",
         "tokens_out",
         "cost_usd",
@@ -229,12 +216,16 @@ describe("exported channel seams (pure)", () => {
     expect(row.idle_seconds).toBeNull();
     expect(row.activity).toBeNull();
     expect(row.reason).toBe("shape_mismatch");
+    expect(row.reason_detail).toBe("no match");
     const live = sessionRowOf(
       sampleInfo({ state: "RUNNING", reason: null, idleSeconds: 5, activity: "Bash" })
     );
     expect(live.idle_seconds).toBe(5);
     expect(live.activity).toBe("Bash");
-    expect(sessionRowOf(sampleInfo({ state: "COMPLETED", reason: null })).reason).toBeNull();
+    expect(live.reason_detail).toBeNull();
+    const completed = sessionRowOf(sampleInfo({ state: "COMPLETED", reason: null }));
+    expect(completed.reason).toBeNull();
+    expect(completed.reason_detail).toBeNull();
   });
 
   test("G4: transport-owned, print-only and positional flags are refused before anything starts", async () => {
@@ -544,6 +535,17 @@ describe.skipIf(!MAGMUX)(
         JSON.parse(readFileSync(join(sessionsDir, id, "meta.json"), "utf-8"))
       );
 
+    const stateTargets = (id: string): SlotState[] => {
+      const path = join(sessionsDir, id, "events.jsonl");
+      if (!existsSync(path)) return [];
+      return readFileSync(path, "utf-8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { type: string; to: SlotState })
+        .filter((line) => line.type === "state")
+        .map((line) => line.to);
+    };
+
     test(
       "createSession returns unique ids; a promptless session is STARTING, then AWAITING_INPUT once booted",
       async () => {
@@ -725,24 +727,20 @@ describe.skipIf(!MAGMUX)(
     );
 
     test(
-      "a credential on the child's final screen reaches no record: meta.json, output.log, frame, diagnostics",
+      "a credential on the child's final screen reaches no record: meta.json, output.log, diagnostics",
       async () => {
         const secret = "redaction-probe-not-a-real-credential"; // what the fake's exit_secret prints
-        const frames: string[] = [];
-        const manager = makeManager({
-          onStateChange: (_sid, e) => frames.push(JSON.stringify(e)),
-        });
+        const manager = makeManager();
         const id = await create(manager, { model: "fake-exit_secret", prompt: "go" });
         await waitForState(manager, id, ["FAILED"]);
         const meta = await waitForMeta(id);
         expect(meta.terminalReason).toBe("child_exited");
         expect(String(meta.detail)).toContain("MY_SERVICE_TOKEN=***REDACTED***");
-        await waitUntil(() => frames.some((f) => f.includes('"failed"')));
+        await waitUntil(() => existsSync(join(sessionsDir, id, "output.log")));
         const outputLog = readFileSync(join(sessionsDir, id, "output.log"), "utf-8");
         for (const text of [
           JSON.stringify(meta),
           outputLog,
-          frames.join("\n"),
           JSON.stringify(manager.getDiagnostics(id)),
           JSON.stringify(manager.getSession(id)),
         ])
@@ -787,43 +785,39 @@ describe.skipIf(!MAGMUX)(
     );
 
     test(
-      "10.4.0 edit: a one-shot session's frames are exactly running → completed",
+      "10.4.0 edit: a one-shot session's events.jsonl state transitions are exactly RUNNING → COMPLETED",
       async () => {
-        const events: Array<{ sessionId: string; event: ChannelEvent }> = [];
-        const manager = makeManager({
-          onStateChange: (sessionId, event) => events.push({ sessionId, event }),
-        });
+        const manager = makeManager();
         const id = await create(manager, { prompt: "trigger events" });
         await waitForState(manager, id, ["COMPLETED"]);
-        expect(events.map(({ event }) => event.type)).toEqual(["running", "completed"]);
-        for (const observed of events) {
-          expect(observed.sessionId).toBe(id);
-          expect(observed.event.model).toBe("fake-answer");
-        }
+        const meta = await waitForMeta(id);
+        expect(stateTargets(id)).toEqual(["RUNNING", "COMPLETED"]);
+        expect(meta.sessionId).toBe(id);
+        expect(meta.model).toBe("fake-answer");
       },
       T_PANE
     );
 
     test(
-      "10.4.0 edit: a promptless session's first frame is waiting_for_input, after boot",
+      "10.4.0 edit: a promptless session's first events.jsonl state transition is AWAITING_INPUT, after boot",
       async () => {
-        const events: string[] = [];
-        const manager = makeManager({ onStateChange: (_sid, e) => events.push(e.type) });
+        const manager = makeManager();
         const id = await create(manager);
-        expect(events).not.toContain("waiting_for_input");
+        expect(stateTargets(id)).not.toContain("AWAITING_INPUT");
         await waitForState(manager, id, ["AWAITING_INPUT"]);
-        await waitUntil(() => events.length > 0);
-        expect(events[0]).toBe("waiting_for_input");
-        expect(events).not.toContain("starting");
+        await waitUntil(() => stateTargets(id).length > 0);
+        const targets = stateTargets(id);
+        expect(targets[0]).toBe("AWAITING_INPUT");
+        expect(targets).not.toContain("STARTING");
+        expect(readWaitLines(join(sessionsDir, id))?.map((line) => line.wait)).toEqual(["open"]);
       },
       T_PANE
     );
 
     test(
-      "G1/G2: a timeout stays TIMEOUT in memory, meta and on the wire, with a send queued while RUNNING",
+      "G1/G2: a timeout stays TIMEOUT in memory, meta and events.jsonl, with a send queued while RUNNING",
       async () => {
-        const events: ChannelEvent[] = [];
-        const manager = makeManager({ onStateChange: (_sid, event) => events.push(event) });
+        const manager = makeManager();
         const id = await create(manager, {
           model: "contract-fake-model",
           prompt: "work forever @@HANG@@",
@@ -838,9 +832,7 @@ describe.skipIf(!MAGMUX)(
         await waitForState(manager, id, ["TIMEOUT"], 15_000);
         const meta = await waitForMeta(id);
         const info = manager.getSession(id);
-        const terminalWireEvents = events
-          .map((e) => e.type)
-          .filter((x) => TERMINAL_EVENTS.includes(x));
+        const terminalStateTargets = stateTargets(id).filter((to) => TERMINAL_STATES.includes(to));
 
         expect(info.state).toBe("TIMEOUT");
         expect(info.reason).toBe("timeout");
@@ -850,7 +842,7 @@ describe.skipIf(!MAGMUX)(
         // RB4: claudish ended the pane, so there is no child exit code.
         expect(info.exitCode).toBeNull();
         expect(meta.exitCode).toBeNull();
-        expect(terminalWireEvents).toEqual(["timeout"]);
+        expect(terminalStateTargets).toEqual(["TIMEOUT"]);
       },
       T_PANE
     );

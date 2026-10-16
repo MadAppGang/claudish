@@ -29,7 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { userHomeFrom } from "../channel/home-dir.js";
+import { userHomeFrom } from "../mcp-session/home-dir.js";
 import { redactSecrets } from "../redact.js";
 import { REAL_CONFIG_PATH, buildArmConfig, buildArmEnv, checkPreconditions } from "./env.js";
 import { driveServer } from "./jsonrpc-client.js";
@@ -41,7 +41,7 @@ const SERVER_ENTRY = resolve(REPO_ROOT, "packages/cli/src/index.ts");
 const LOG_ROOT = resolve(REPO_ROOT, "logs/mcp-e2e");
 // Where the server under test writes: env.ts passes HOME through and strips
 // CLAUDISH_SESSIONS_DIR, so the server resolves `$HOME/.claudish/sessions` by
-// the shared rule in channel/home-dir.ts. `os.homedir()` would ignore HOME.
+// the shared rule in mcp-session/home-dir.ts. `os.homedir()` would ignore HOME.
 const SESSIONS_DIR = join(userHomeFrom(process.env), ".claudish", "sessions");
 
 // ── args ─────────────────────────────────────────────────────────────────────

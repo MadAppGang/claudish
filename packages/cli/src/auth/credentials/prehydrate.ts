@@ -11,7 +11,7 @@
  *   "Denied authorization for SDK client"
  *
  * claudish already serializes SDK calls WITHIN a process (`runSdkExclusive` in
- * op-source.ts — the -4 IPC fix), but `team` and channel `create_session` spawn
+ * op-source.ts — the -4 IPC fix), but `team` and `create_session` spawn
  * N sibling PROCESSES, and no in-process queue can span those. Each child
  * constructs its own SDK client and they all race.
  *
@@ -57,7 +57,7 @@
  * (`rescueRoutableResolutions` only runs on a "missing" verdict). The child,
  * handed that same bare name, re-walks the WHOLE chain and asks 1Password about
  * every candidate the parent short-circuited past — so it builds its own SDK
- * client after all. Measured: 17 channel children logged
+ * client after all. Measured: 17 MCP session children logged
  * "Denied authorization for SDK client" on runs where pre-hydration had already
  * succeeded (see baseline-evidence.md in this feature's session dir).
  *

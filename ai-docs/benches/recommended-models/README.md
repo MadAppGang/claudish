@@ -6,11 +6,25 @@ recommendation tier and Bench.
 | Bench | Path under test | The model must |
 |---|---|---|
 | `cli.madbench.yaml` | `claudish --model <spec>`: Claude Code through the proxy, interactive | fix `slugify.ts` with real tool calls (Read or Bash, then Edit or Write) until `bun test` passes |
-| `mcp.madbench.yaml` | native Claude Code → claudish MCP `run_prompt` → `runPromptViaProxy` | answer `4817 + 2906` inside the MCP tool result |
+| `mcp.madbench.yaml` | native Claude Code → the claudish MCP server, three Scenarios (below) | answer `4817 + 2906` inside an MCP or Read tool result |
 
 The CLI Bench is the stronger test: it exercises the wire, streaming tool calls and the
-Claude Code TUI. `run_prompt` sends one text request with no tools, so the MCP Bench proves
-that a route answers, not that the model can use tools.
+Claude Code TUI. The MCP Bench sends one text task with no tools, so it proves that each
+MCP path reaches the model and returns its answer, not that the model can use tools.
+
+The MCP Bench's three Scenarios each send the same task (`What is 4817 + 2906?`) by a
+different tool, and each grades the same three things: the server came up, the call named
+the model under test letter for letter (`session:tool-args-match` on `{{model}}`), and
+`7723` appears in a `tool_result` the host did not write.
+
+| Scenario | The host | Where `7723` must appear |
+|---|---|---|
+| `run-prompt` | calls `run_prompt` once | `run_prompt`'s own result |
+| `create-session` | calls `create_session` once, polls `list_sessions` with `sleep 10` between polls, then calls `get_output` | `get_output`'s result |
+| `team` | calls `team` mode `run` with `models: ["{{model}}"]`, polls mode `status`, then reads `team-sum/response-<slot>.md` | the Read of the slot's response file |
+
+`run-prompt` and `create-session` also require exactly one call (`eq: 1`), and `team`'s
+`models` list is matched exactly, so a second model cannot supply the answer.
 
 ## The variants come from the catalog
 
@@ -82,8 +96,16 @@ A graded miss exits 0. Add `--fail-on-failure` where a miss must go red.
 - **The MCP detector reads the tool result.** The host Claude can compute 7723 itself; it
   cannot write an MCP `tool_result`. `session:match` with `type: tool_result` reads only
   what claudish returned, and a failed route returns `Error: ...` with no number.
-- **Exactly one `run_prompt` call.** A retry with a second model could supply the answer
-  the first model failed to give.
+- **Exactly one `run_prompt` or `create_session` call.** A retry with a second model could
+  supply the answer the first model failed to give.
+- **`--allowedTools "Bash(sleep:*)"`.** The server pushes no session events, so the host
+  polls `create_session` and `team`. Under `--print` with no permission mode an un-allowed
+  Bash call is denied, and polling with no wait burns the host's turns. madbench appends
+  `args:` last and pipes the prompt on stdin, so the variadic flag swallows nothing.
+  `run-prompt` makes no Bash call and is unaffected.
+- **Check keys are written flat, beside `type:`** (`eq:`, `tool_args:`, `event_type:`,
+  `regex:`). madbench 0.46.0 refuses a nested `args:` map on these Checks at preflight
+  (`unknown key "args"`).
 - **The MCP server is declared inline in `args:`, not with `config.dirs`.** `config.dirs`
   needs sandbox level `home`, and claudish needs `workspace`. madbench 0.43.2 refuses that
   pair only at run time ("harness.config.dirs cannot apply at sandbox level workspace"),

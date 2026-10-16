@@ -96,7 +96,7 @@ process.on("exit", () => {
  * Why: the old eager hydration ran the SDK (DesktopAuth prompt) at the top of
  * EVERY process launch whenever a config environment existed — so `--update`,
  * `--version`, `--help`, and OAuth-only (codex) sessions all prompted, and every
- * spawned team/channel child re-prompted (the "storm"). Point-of-need touches
+ * spawned team/MCP session child re-prompted (the "storm"). Point-of-need touches
  * 1Password only when a key is actually needed; no-key runs never prompt. This
  * also changes precedence: environments are now a lazy op source (env/config
  * already set wins), not a startup overwrite.
@@ -271,7 +271,7 @@ async function applyConfigOverride(): Promise<void> {
   setConfigFileOverride(plan.path);
 
   // Propagate to the whole process tree via the (absolute) env fallback: team
-  // mode and channel sessions spawn CHILD `claudish` processes, which re-read
+  // mode and MCP sessions spawn CHILD `claudish` processes, which re-read
   // CLAUDISH_CONFIG here and apply the same override. The child `claude` ignores
   // it. Absolute so a child with a different cwd still resolves the same file.
   process.env.CLAUDISH_CONFIG = plan.path;
@@ -280,7 +280,7 @@ async function applyConfigOverride(): Promise<void> {
 // `--default-provider <name>`: strip it from argv and export it as
 // CLAUDISH_DEFAULT_PROVIDER before parseArgs and every subcommand dispatch. The env
 // variable is the ONE place the flag lives after this: route(), the proxy, `--probe`
-// and every child claudish (team, channel sessions) read it through
+// and every child claudish (team, MCP sessions) read it through
 // `resolveDefaultProvider`. `--probe` is why this cannot wait for parseArgs: it
 // runs and exits inside parseArgs's argv loop, so a flag read there or after it
 // never reached it, in either argv order.

@@ -70,6 +70,7 @@ const SLOT_ROW_KEYS = [
   "pane",
   "provider",
   "reason",
+  "reason_detail",
   "slot",
   "state",
   "tokens_in",
@@ -156,9 +157,13 @@ function expectSessionRowTyped(row: Json): void {
   } else {
     expect(row.completed_at).toBeNull();
   }
-  if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string))
+  if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
     expect(row.reason).not.toBeNull();
-  else expect(row.reason).toBeNull();
+    expect(row.reason_detail === null || typeof row.reason_detail === "string").toBe(true);
+  } else {
+    expect(row.reason).toBeNull();
+    expect(row.reason_detail).toBeNull();
+  }
 }
 
 async function sessionRow(id: string): Promise<Json | undefined> {
@@ -358,9 +363,9 @@ describe.skipIf(!MAGMUX_AVAILABLE)("failure and timeout states (FR7)", () => {
   );
 });
 
-describe.skipIf(!MAGMUX_AVAILABLE)("diagnostics, channel frames, error forms", () => {
+describe.skipIf(!MAGMUX_AVAILABLE)("diagnostics, no channel notifications, error forms", () => {
   test(
-    "get_diagnostics names the state and the capture/turn source; channel frames fire for the session",
+    "get_diagnostics names the state and the capture/turn source; no channel notifications are sent",
     async () => {
       const id = await create({ prompt: "Reply with exactly PEAR" });
       await waitState(id, TERMINAL_STATES);
@@ -374,18 +379,11 @@ describe.skipIf(!MAGMUX_AVAILABLE)("diagnostics, channel frames, error forms", (
       for (const k of ["captureSource", "turnSource", "pane", "anomalies", "transcriptPath"])
         expect(findField(diag.json, k)).not.toBeUndefined();
 
-      // FR10/E: notifications/claude/channel frames fire on state transitions
-      const frames = await waitFor(
-        () => {
-          const f = server.notifications.filter(
-            (n) =>
-              n.method === "notifications/claude/channel" && JSON.stringify(n.params).includes(id)
-          );
-          return f.length > 0 ? f : undefined;
-        },
-        { what: "a channel frame for the session", timeoutMs: 5_000 }
-      );
-      expect(frames.length).toBeGreaterThan(0);
+      // No notifications/claude/channel message is sent, including during server teardown.
+      await server.close();
+      expect(
+        server.notifications.filter((n) => n.method === "notifications/claude/channel")
+      ).toEqual([]);
     },
     T_TEST
   );

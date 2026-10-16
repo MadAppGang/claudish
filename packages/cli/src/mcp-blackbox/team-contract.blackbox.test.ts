@@ -73,6 +73,7 @@ const SLOT_ROW_KEYS = [
   "pane",
   "provider",
   "reason",
+  "reason_detail",
   "slot",
   "state",
   "tokens_in",
@@ -191,9 +192,11 @@ function expectSlotRowTyped(row: Json): void {
   }
   if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
     expect(row.reason).not.toBeNull();
+    expect(isStrOrNull(row.reason_detail)).toBe(true);
   } else {
     // "null otherwise (incl. COMPLETED)"
     expect(row.reason).toBeNull();
+    expect(row.reason_detail).toBeNull();
   }
 }
 

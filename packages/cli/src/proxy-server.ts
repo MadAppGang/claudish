@@ -129,7 +129,7 @@ export interface ProxyServerOptions {
   servedSlotIds?: string[];
   /**
    * An ordered, already-credential-filtered candidate list pinned by a PARENT
-   * claudish process (`team` / channel `create_session`), parsed from a `--model`
+   * claudish process (`team` / `create_session`), parsed from a `--model`
    * chain value. Element 0 is also the `model` argument, so a chain is opt-in and
    * additive: absent it, routing behaves exactly as before.
    *
@@ -782,7 +782,7 @@ export async function createProxyServer(
 
     // 2a-chain. A PINNED CHAIN from a parent process.
     //
-    // `team` / channel `create_session` resolve the route in the parent and spawn
+    // `team` / `create_session` resolve the route in the parent and spawn
     // the child with explicit specs, because a bare name would make the child
     // re-resolve credentials and open its own 1Password client — one dialog per
     // child instead of one per run (auth/credentials/prehydrate.ts). The cost used

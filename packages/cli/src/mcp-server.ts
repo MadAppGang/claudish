@@ -4,7 +4,7 @@
  * Claudish MCP Server
  *
  * Exposes all claudish models (OpenRouter, Kimi, GLM, Qwen, MiniMax, Gemini, OpenAI,
- * local models, etc.) and channel sessions as MCP tools for Claude Code.
+ * local models, etc.) and sessions as MCP tools for Claude Code.
  * Routes through the same proxy engine as the CLI — same auto-routing, fallback chains,
  * custom routing rules, and provider transports.
  *
@@ -21,11 +21,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
-import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
-import { SessionManager } from "./channel/index.js";
-import { parentSessionForCall } from "./channel/parent-session.js";
-import type { ChannelEventType } from "./channel/types.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { SessionManager } from "./mcp-session/index.js";
+import { parentSessionForCall } from "./mcp-session/parent-session.js";
 import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
 import {
   type HeartbeatHandle,
@@ -33,6 +31,11 @@ import {
   resolveProgressIntervalMs,
   startHeartbeat,
 } from "./mcp/progress-heartbeat.js";
+import {
+  type RunPromptResult,
+  runPromptViaClaudeCode,
+  stopAllClaudeCodePrintChildren,
+} from "./mcp/run-prompt-claude-code.js";
 import { type RecommendedModelsDoc, getRecommendedModels } from "./model-loader.js";
 // Imported for the predicate only. child-env's import-time bootstrap is a no-op here:
 // a claudish MCP server is never the pane child (it carries no CLAUDISH_PANE_CWD).
@@ -85,6 +88,7 @@ import {
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
+import { VERSION } from "./version.js";
 
 // Load environment variables.
 //
@@ -110,43 +114,36 @@ const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
 const OPENROUTER_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "openrouter-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 
-/** Instructions added to Claude's system prompt when channel mode is active. */
-const INSTRUCTIONS = `Claudish MCP server provides access to external AI models (OpenRouter, Ollama, LM Studio, etc.) for coding tasks.
+/** The server's `instructions`, which the host adds to its system prompt. */
+const INSTRUCTIONS = `Claudish MCP server gives you access to external AI models (OpenRouter, Ollama, LM Studio and every claudish provider), and to Claude models on the user's own Claude Code login.
 
-## Channel Mode — External Model Sessions
+## Which tool
 
-When channel mode is active, you receive <channel source="claudish" ...> notifications about running external model sessions. Each session is an interactive Claude Code running the model in its own headless terminal pane.
+- run_prompt: one quick prompt to one model's API. One request, one answer; no tools, no files, no session.
+- create_session: one model doing a task as a full Claude Code session (tools, files, several turns).
+- team: several models on the same task, each a full Claude Code session, with optional blind judging.
 
-### Events
+## Sessions
 
-- running: The session's turn is running (its prompt was accepted). Note the session_id for future calls.
-- tool_executing: The model is using a tool (Read, Write, Bash, etc.). Carries tool and tool_count.
-- input_required (event waiting_for_input): The session waits for send_input: an interactive session between turns, or a session stopped on a question (meta activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
-- input_required (event awaiting_permission): A permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
-- completed: The session finished successfully. Call get_output to retrieve the full output.
-- failed: The session failed (boot, prompt not accepted or not read, child exited, API error, pane lost). Call get_diagnostics for the cause.
-- timeout: The session hit its timeout_seconds; the pane was closed. Call get_diagnostics to see how far it got.
-- cancelled: The session was cancelled via cancel_session.
+Each session is an interactive Claude Code running the model in its own headless terminal pane. Nothing is pushed to you while it runs: poll.
 
-### Workflow
+1. create_session returns {session_id, state: "STARTING"} at once while Claude Code boots.
+2. Poll list_sessions (include_completed: true), about once every 10 seconds. Each row has state, activity, idle_seconds and accounting.
+   - STARTING: booting, or the first prompt is not yet accepted.
+   - RUNNING: a turn is in progress (activity names the tool in use).
+   - AWAITING_INPUT: waiting for send_input — an interactive session between turns, or a turn stopped on a question (activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
+   - AWAITING_PERMISSION: a permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
+   - COMPLETED, FAILED, TIMEOUT, CANCELLED, EMPTY: finished.
+3. send_input may be called at any time; it is queued until the session is idle.
+4. COMPLETED: call get_output for the answer.
+5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
+6. capture_session reads a session's current screen; cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
 
-1. Call create_session with a model and prompt to start an async session (state STARTING while Claude Code boots).
-2. Watch for <channel> notifications — they arrive automatically.
-3. send_input may be called at any time; it is queued until the session is idle. On input_required, call send_input with the answer.
-4. On completed: call get_output to get the full response.
-5. On failed or timeout — or on a completed session whose output is empty or
-   surprising — call get_diagnostics. It returns the child's final screen, the
-   upstream error bodies, the recent state records, the resolved model chain and the
-   paths to the full records. It needs no re-run and no debug flag.
-6. Use list_sessions to see sessions: each row has state, activity, idle_seconds and accounting.
-7. Use capture_session to read a session's current terminal screen.
-8. Use cancel_session to stop a running session.
-
-The session_id in the channel tag's meta attributes is the key for all tool calls.`;
+The session_id from create_session is the key for every session tool.`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ToolGroup = "low-level" | "agentic" | "channel";
+type ToolGroup = "low-level" | "agentic" | "session" | "debug";
 
 /**
  * Per-call context handed to every tool handler. Built fresh in the CallTool
@@ -165,6 +162,12 @@ interface ToolCallContext {
    * heartbeat has been stopped. Never throws.
    */
   reportProgress: (message?: string) => void;
+  /**
+   * Fires when the host cancels the call (`notifications/cancelled`) or gives up on it
+   * (its own request timeout). From the SDK's `RequestHandlerExtra.signal`. A tool that
+   * starts a child process stops it on this signal.
+   */
+  signal: AbortSignal;
 }
 
 interface ToolDefinition {
@@ -307,19 +310,25 @@ export function parseAnthropicSse(raw: string): {
   return { text, usage: hasUsage ? { input: inputTokens, output: outputTokens } : undefined };
 }
 
+/**
+ * One request through the in-process proxy, for every model that is not a bare
+ * Claude name. The body carries NO `max_tokens`: step 5w strips every output-limit
+ * field the adapters write and adds the wire's own only when the request has one,
+ * except on the Messages API, which requires one and gets the catalog's
+ * `maxOutputTokens`. No model limit is pinned here
+ * (ai-docs/architecture/wire.md "Output limit").
+ */
 export async function runPromptViaProxy(
   model: string,
   prompt: string,
-  systemPrompt?: string,
-  maxTokens?: number
-): Promise<{ content: string; usage?: { input: number; output: number } }> {
+  systemPrompt?: string
+): Promise<RunPromptResult> {
   const proxy = await getProxy();
 
   // Build Anthropic Messages API request
   const body: Record<string, unknown> = {
     model,
     messages: [{ role: "user", content: prompt }],
-    max_tokens: maxTokens || 4096,
     stream: true,
   };
   if (systemPrompt) {
@@ -345,6 +354,43 @@ export async function runPromptViaProxy(
   }
 
   return { content: parsed.text, usage: parsed.usage };
+}
+
+/**
+ * One `run_prompt` request, on the path its model needs. `nativeRouteFor` FIRST, as
+ * the proxy does (CLAUDE.md invariant): a bare Claude name (`claude-*`, `opus`,
+ * `sonnet`, `haiku`, `internal`, ...) runs as one Claude Code print-mode call on the
+ * user's own Claude Code login, because the proxy's native route forwards the
+ * caller's credential and an MCP call has none. Every other model, including the
+ * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
+ * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
+ */
+export async function runPrompt(
+  model: string,
+  prompt: string,
+  systemPrompt?: string,
+  signal?: AbortSignal
+): Promise<RunPromptResult> {
+  if (nativeRouteFor(model) !== null) {
+    return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
+  }
+  return runPromptViaProxy(model, prompt, systemPrompt);
+}
+
+/** `run_prompt`'s success text: the answer, then a footer of token and auth lines. */
+function formatRunPromptResult(result: RunPromptResult): string {
+  const footer: string[] = [];
+  if (result.usage) {
+    footer.push(`Tokens: ${result.usage.input} input, ${result.usage.output} output`);
+  }
+  if (result.auth !== undefined) {
+    footer.push(
+      result.auth === "subscription"
+        ? "Auth: Claude Code login (subscription)"
+        : `Auth: ${result.auth}`
+    );
+  }
+  return footer.length > 0 ? `${result.content}\n\n---\n${footer.join("\n")}` : result.content;
 }
 
 function fuzzyScore(text: string, query: string): number {
@@ -792,38 +838,7 @@ const sanitize = sanitizeForReport;
 
 // ─── Tool Definitions ────────────────────────────────────────────────────────
 
-/**
- * Pushes a live progress frame to the client, or is a no-op when the channel
- * capability is not enabled. `team` uses this to report per-model token/cost
- * stats while a multi-minute run is still in flight.
- *
- * Channels are the ONLY measured-working push mechanism FOR RENDERING:
- * `notifications/progress` renders nowhere on Claude Code 2.1.220 — verified empty
- * in both the agent's context and the interactive terminal UI. See
- * ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md.
- *
- * That says nothing about KEEPALIVE, which is the opposite result: a progress frame
- * resets the client's MCP idle timer and a channel frame does not (measured
- * 2026-08-14 on 2.1.231 — a real `team` run died at exactly 1800s while emitting
- * channel frames throughout). See
- * ai-docs/sessions/mcp-progress-idle-timeout-20260814-000000-b7e21f4a/findings.md.
- * The two mechanisms are complementary and both stay: channel is the visible
- * surface, `notifications/progress` (mcp/progress-heartbeat.ts) is the keepalive.
- */
-type ChannelNotifier = (params: {
-  content: string;
-  sessionId: string;
-  event: string;
-  model: string;
-  elapsedSeconds: number;
-  createdAt: string;
-}) => void;
-
-function defineTools(
-  sessionManager: SessionManager,
-  notifyChannel: ChannelNotifier,
-  nested: boolean
-): ToolDefinition[] {
+function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
 
   // A nested server does not register `report_error` (mcp/nested-mode.ts), so an
@@ -853,18 +868,27 @@ function defineTools(
   tools.push({
     name: "run_prompt",
     description:
-      "Run a prompt through any model — supports all providers (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, etc.) with auto-routing, fallback chains, and custom routing rules.",
+      "One quick prompt, straight to one model's API: a single request and its answer. No " +
+      "Claude Code session, no tools, no files, no conversation state — this is not subagent " +
+      "work. For a task that needs tools, files or more than one turn, use create_session " +
+      "(one model) or team (several models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, " +
+      "Gemini, GPT, Grok, …) go through claudish's routing straight to the provider's API. " +
+      "A Claude model name (claude-*, opus, sonnet, haiku) runs as one Claude Code " +
+      "print-mode call on the user's own Claude Code login, with tools, MCP servers and " +
+      "settings off.",
     inputSchema: {
       type: "object",
       properties: {
         model: {
           type: "string",
           description:
-            "Model name or ID. Short names auto-route to the best provider (e.g., 'kimi-k2.5', 'glm-5', 'gpt-5.4'). Provider prefix optional (e.g., 'google@gemini-3.1-pro-preview', 'or@x-ai/grok-3').",
+            "Model name or model spec. A bare name auto-routes to the best provider; " +
+            "'provider@model' pins the provider (e.g. 'google@gemini-4-argon', " +
+            "'or@x-ai/grok-4.7'). A bare Claude name (claude-*, opus, sonnet, haiku) runs on " +
+            "Claude Code's own login.",
         },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
-        max_tokens: { type: "number", description: "Maximum tokens in response (default: 4096)" },
       },
       required: ["model", "prompt"],
     },
@@ -872,19 +896,15 @@ function defineTools(
     // A single reasoning model can block for many minutes with nothing on the
     // wire. Handler body unchanged — the dispatch owns the keepalive.
     heartbeat: true,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
-        const result = await runPromptViaProxy(
+        const result = await runPrompt(
           args.model as string,
           args.prompt as string,
           args.system_prompt as string | undefined,
-          args.max_tokens as number | undefined
+          ctx.signal
         );
-        let response = result.content;
-        if (result.usage) {
-          response += `\n\n---\nTokens: ${result.usage.input} input, ${result.usage.output} output`;
-        }
-        return { content: [{ type: "text" as const, text: response }] };
+        return { content: [{ type: "text" as const, text: formatRunPromptResult(result) }] };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         return {
@@ -1056,25 +1076,26 @@ function defineTools(
 
   tools.push({
     name: "compare_models",
-    description: "Run the same prompt through multiple models and compare responses",
+    description:
+      "DEBUG. Send the same single prompt to several models, one after another, and show " +
+      "their answers side by side — to check that routes answer or to eyeball raw answers. " +
+      "Each model gets exactly what run_prompt sends: one request, no tools, no Claude Code " +
+      "session. Not for real work: use team for a blind-judged multi-model run, or " +
+      "create_session for one model doing a task.",
     inputSchema: {
       type: "object",
       properties: {
         models: {
           type: "array",
           items: { type: "string" },
-          description: "List of model IDs to compare",
+          description: "List of model names or model specs to compare, in the order to run them",
         },
         prompt: { type: "string", description: "The prompt to send to all models" },
         system_prompt: { type: "string", description: "Optional system prompt" },
-        max_tokens: {
-          type: "number",
-          description: "Maximum tokens in response (omit to let model decide)",
-        },
       },
       required: ["models", "prompt"],
     },
-    group: "low-level",
+    group: "debug",
     // N models run SEQUENTIALLY below, so the total blocking time is the sum of
     // every model's latency — the easiest of the three tools to push past the
     // client's idle window.
@@ -1083,7 +1104,6 @@ function defineTools(
       const modelIds = args.models as string[];
       const prompt = args.prompt as string;
       const systemPrompt = args.system_prompt as string | undefined;
-      const maxTokens = args.max_tokens as number | undefined;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
       // and reads the comparison against it, so the repo-wide newest-first
@@ -1096,7 +1116,7 @@ function defineTools(
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPromptViaProxy(model, prompt, systemPrompt, maxTokens);
+          const result = await runPrompt(model, prompt, systemPrompt, ctx.signal);
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
@@ -1484,9 +1504,8 @@ function defineTools(
     },
     group: "agentic",
     // The tool the whole keepalive exists for: a real run was aborted at exactly
-    // 1800s of channel-frame-only silence. NOT gated on `channelEnabled` — that
-    // failure happened in a session with channels unregistered, so gating the
-    // keepalive behind the channel group would reproduce the bug exactly.
+    // 1800s with no `notifications/progress` on the wire. A progress frame is the
+    // only notification measured to reset the client's MCP idle timer.
     //
     // Still needed even though `run` no longer blocks on answers: `run-and-judge` is
     // the pipeline mode and holds the call open for the whole run, and `run` itself
@@ -1529,36 +1548,15 @@ function defineTools(
 
         const resolved = validateSessionPath(path);
 
-        // Live per-model token/cost progress for the run modes. The session
-        // basename is a stable, human-recognisable id for the channel frames.
-        const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
-        const teamCreatedAt = new Date().toISOString();
         const runOpts = {
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
-          onProgress: (u: {
-            rendered: string;
-            phase: "running" | "settled";
-            allFailed: boolean;
-          }) => {
-            // Two mechanisms, deliberately both: the channel frame below is what
-            // the agent and the human SEE, and this one is what keeps the client
-            // from aborting the call. A state change is real news, so refresh the
-            // idle timer at that moment as well as on the periodic tick. Short
-            // phase string only — the rendered grid stays on the channel path.
+          onProgress: (u: { phase: "running" | "settled" }) => {
+            // A state change is real news, so refresh the client's idle timer at
+            // that moment as well as on the periodic tick. Short phase string only:
+            // the run's progress is read with `team(mode:"status")`, never pushed.
             ctx.reportProgress(`team: ${u.phase}`);
-            notifyChannel({
-              content: u.rendered,
-              sessionId: teamSessionId,
-              // A settled run must emit a TERMINAL event. Emitting "running"
-              // for the final frame leaves any status-tracking consumer
-              // believing the run never closed.
-              event: u.phase === "settled" ? (u.allFailed ? "failed" : "completed") : "running",
-              model: "team",
-              elapsedSeconds: (Date.now() - Date.parse(teamCreatedAt)) / 1000,
-              createdAt: teamCreatedAt,
-            });
           },
         };
 
@@ -1585,10 +1583,10 @@ function defineTools(
 
             // The run's record in the sessions directory, for observers outside
             // this process (the magus claudish plugin monitor): the run's own
-            // status.json lives wherever the caller pointed `path`, and its only
-            // completion push is a channel frame Claude Code drops without
-            // `--channels`. Written BEFORE any pane exists; a throw here fails
-            // the call with nothing started.
+            // status.json lives wherever the caller pointed `path`, and the record
+            // is how an observer outside this process learns the run ended.
+            // Written BEFORE any pane exists; a throw here fails the call with
+            // nothing started.
             const parentClaudeSessionId = await parentSessionForCall({
               hostPid: sessionManager.hostPid,
             });
@@ -1856,14 +1854,15 @@ function defineTools(
     },
   });
 
-  // ── Channel Tools ────────────────────────────────────────────────────
+  // ── Session Tools ────────────────────────────────────────────────────
 
   tools.push({
     name: "create_session",
     description:
       "Create a new claudish proxy session for an external model: an interactive Claude Code running " +
-      "it in its own headless magmux pane. Returns at once with state STARTING; the session produces " +
-      "channel notifications as it runs. With a prompt it is one-shot (it ends when that turn " +
+      "it in its own headless magmux pane. Returns at once with state STARTING; nothing is " +
+      "pushed while it runs: poll list_sessions (about once every 10 s) for its state, then " +
+      "call get_output once it is COMPLETED. With a prompt it is one-shot (it ends when that turn " +
       "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.14.0 " +
       "(darwin and linux).",
     inputSchema: {
@@ -1906,7 +1905,7 @@ function defineTools(
       },
       required: ["model"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
@@ -1938,7 +1937,7 @@ function defineTools(
         });
 
         // The conversation live in the calling window, from the host's session
-        // record: one read at call time, no wait. See channel/parent-session.ts.
+        // record: one read at call time, no wait. See mcp-session/parent-session.ts.
         const parentClaudeSessionId = await parentSessionForCall({
           hostPid: sessionManager.hostPid,
         });
@@ -2011,7 +2010,7 @@ function defineTools(
       },
       required: ["session_id", "text"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       const result = sessionManager.sendInput(args.session_id as string, args.text as string);
       return {
@@ -2024,7 +2023,8 @@ function defineTools(
     name: "get_output",
     description:
       "Get a session's answer prose (each settled turn's assistant text, from its transcript). " +
-      "Call after the 'completed' notification to get the full response.",
+      "Call once list_sessions shows the session COMPLETED (or between turns of an " +
+      "interactive session).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2036,7 +2036,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const output = sessionManager.getOutput(
@@ -2073,7 +2073,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const sessionId = optionalString(args.session_id, "session_id");
@@ -2089,11 +2089,13 @@ function defineTools(
   tools.push({
     name: "list_sessions",
     description:
-      "List channel sessions: {contract_version, capabilities, sessions}. Optionally include " +
+      "List sessions: {contract_version, capabilities, sessions}. Optionally include " +
       "finished ones. Each row reports `state`, `activity` and `idle_seconds`: how long since " +
       "the session's screen or transcript last changed. Nothing kills a session for being " +
       "idle — a child inside a long Bash call is silent and working — so this is yours to " +
-      "judge against the task you set, and `cancel_session` is yours to call if the answer is no.",
+      "judge against the task you set, and `cancel_session` is yours to call if the answer is no. " +
+      "A failed row's `reason_detail` is one line saying why (for api_error, the provider's " +
+      "own error message); it is null while the session is live and on COMPLETED.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2103,7 +2105,7 @@ function defineTools(
         },
       },
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const includeCompleted = optionalBoolean(args.include_completed, "include_completed");
@@ -2119,7 +2121,7 @@ function defineTools(
 
   // Diagnostics as API.
   //
-  // Two channel sessions once ran 900 seconds of genuine billed work — 241
+  // Two sessions once ran 900 seconds of genuine billed work — 241
   // assistant messages, ~94k output tokens, 150 tool calls — and reported
   // success with an empty output log. The cause was one line, written to
   // `~/.claudish/sessions/<id>/stderr.log` and left there:
@@ -2132,7 +2134,7 @@ function defineTools(
   tools.push({
     name: "get_diagnostics",
     description:
-      "Explain what a channel session actually did — its final screen, upstream error bodies, " +
+      "Explain what a session actually did — its final screen, upstream error bodies, " +
       "the recent state records, anomalies, the resolved model chain, accounting, and the paths " +
       "to the full records (transcript included). Call this FIRST whenever a session fails, times " +
       "out, or completes with empty or surprising output; it needs no re-run and no debug flag. " +
@@ -2152,7 +2154,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const diagnostics = sessionManager.getDiagnostics(
@@ -2198,7 +2200,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const sessionId = optionalString(args.session_id, "session_id");
@@ -2224,53 +2226,29 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
       return new Set(["low-level"]);
     case "agentic":
       return new Set(["agentic"]);
-    case "channel":
-      return new Set(["channel"]);
+    case "session":
+      return new Set(["session"]);
+    case "debug":
+      return new Set(["debug"]);
     default:
-      return new Set(["low-level", "agentic", "channel"]);
+      // Every other value — `all`, unset, a typo, or the removed `channel` — is
+      // everything. `channel` gets no alias: a rename removes the old name.
+      return new Set(["low-level", "agentic", "session", "debug"]);
   }
 }
 
-// ─── SEP-1686 status mapping ─────────────────────────────────────────────────
-// Maps Claudish's 9-value `event` enum to SEP-1686's 5-value `TaskStatus`.
-// See: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
-// Migration plan: ai-docs/sessions/.../sep-1686-migration-schema.md
-type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
+/** Every value `CLAUDISH_MCP_TOOLS` recognises, in the order the docs list them. */
+const TOOL_MODES = ["all", "low-level", "agentic", "session", "debug"] as const;
 
-// A `Record` over `ChannelEventType`, so an event type without a projection is a
-// compile error rather than a silent `"working"` from the fall-through below.
-const TASK_STATUS_BY_EVENT: Record<ChannelEventType, TaskStatus> = {
-  starting: "working",
-  running: "working",
-  tool_executing: "working",
-  waiting_for_input: "input_required",
-  // A permission dialog is open and only the caller's `send_input` moves the
-  // session on. It had no key, so it fell through to "working": a SEP-1686
-  // consumer polled a session that was waiting on it as if it were busy.
-  awaiting_permission: "input_required",
-  completed: "completed",
-  failed: "failed",
-  cancelled: "cancelled",
-  // The key whose ABSENCE forced the channel wire to lie. `mapEventToTaskStatus`
-  // falls through to `?? "working"`, so a session killed by its own timeout was
-  // reported to a SEP-1686 consumer as still working — which is why the timeout
-  // path once emitted `"failed"` on the wire while the record said `"timeout"`.
-  // With this key present the timeout emits its own event; SEP-1686 has no
-  // `timeout` member, and `failed` is the only honest projection of it.
-  timeout: "failed",
-};
-
-const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>(Object.entries(TASK_STATUS_BY_EVENT));
-
-// Exported ONLY so the regression guard can call it instead of grepping this
-// file's source text. The behaviour worth guarding is the fall-through below: a
-// key missing from EVENT_TO_TASK_STATUS does not throw, it silently yields
-// "working", so a dead session (e.g. one killed by its own timeout) reports to a
-// SEP-1686 consumer as still alive. Only a real call can catch that; a source
-// regex stays green if the entry moves to a dead map, is shadowed, or ends up in
-// a comment.
-export function mapEventToTaskStatus(event: string): TaskStatus {
-  return EVENT_TO_TASK_STATUS.get(event) ?? "working";
+/**
+ * The stderr line for a `CLAUDISH_MCP_TOOLS` value that names no tool mode, or
+ * undefined for a recognised one. The value still selects every tool; the line
+ * exists so a typo, or the removed `channel`, is not silently read as `all`.
+ */
+function unknownToolModeWarning(mode: string): string | undefined {
+  if ((TOOL_MODES as readonly string[]).includes(mode)) return undefined;
+  const renamed = mode === "channel" ? " (`channel` was renamed to `session`)" : "";
+  return `[claudish] CLAUDISH_MCP_TOOLS=${JSON.stringify(mode)} is not a tool mode${renamed}; selecting all tools. Valid values: ${TOOL_MODES.join(", ")}`;
 }
 
 // ─── Server Setup ────────────────────────────────────────────────────────────
@@ -2283,103 +2261,31 @@ async function main() {
   // nested instructions. See pane-session.md § One level of nesting.
   const nested = inMcpSession();
   const enabledGroups = resolveToolGroups(toolMode);
-  const channelEnabled = !nested && enabledGroups.has("channel");
+  const toolModeWarning = unknownToolModeWarning(toolMode);
+  if (toolModeWarning) console.error(toolModeWarning);
 
-  // Create server with channel capability
+  // Tools only, for every tool mode. No `experimental: {"claude/channel": {}}`: the
+  // server pushes nothing; a host polls `list_sessions` and reads the records.
   const server = new Server(
-    { name: "claudish", version: "9.0.0" },
+    // `version.ts` is generated from packages/cli/package.json, so serverInfo names
+    // the release the host is actually talking to.
+    { name: "claudish", version: VERSION },
     {
-      capabilities: {
-        ...(channelEnabled ? { experimental: { "claude/channel": {} } } : {}),
-        tools: {},
-      },
+      capabilities: { tools: {} },
       instructions: nested ? NESTED_INSTRUCTIONS : INSTRUCTIONS,
     }
   );
 
-  // Create session manager with channel notification bridge.
-  // The bridge translates SessionManager events into MCP notifications.
-  // When CLAUDISH_CHANNEL_TRACE=1 is set, the diagnostics module wraps the
-  // callback to log each step of the producer→bridge→wire pipeline.
-  //
-  // Wire format aligns with SEP-1686 (Tasks) for forward-compat: each
-  // notification carries both Claudish-specific fields (`session_id`, `event`)
-  // and SEP-1686-shaped fields (`task_id`, `status`, `created_at`,
-  // `last_updated_at`). When Claude Code ships notifications/tasks/status
-  // receiver support, the migration is a method-name swap + payload restructure
-  // (no semantic changes).
-  // See: ai-docs/sessions/.../sep-1686-migration-schema.md
-  const sessionManager = new SessionManager({
-    onStateChange: wrapStateChange((sessionId, event) => {
-      // `timeout` is here because it used to arrive AS `failed` — the wire had
-      // no timeout event until EVENT_TO_TASK_STATUS learned to project one — and
-      // dropping the hint when the event split in two would have been a silent
-      // regression. Both are terminal failures worth reporting, and both are now
-      // explainable without a re-run via get_diagnostics.
-      const notificationContent =
-        event.type === "failed" || event.type === "timeout"
-          ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the final screen, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
-          : event.content;
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: notificationContent,
-          meta: {
-            session_id: sessionId,
-            event: event.type,
-            model: event.model,
-            elapsed_seconds: String(event.elapsedSeconds),
-            // SEP-1686 forward-compat fields (additive, do not break consumers
-            // of the existing fields above):
-            task_id: sessionId,
-            status: mapEventToTaskStatus(event.type),
-            created_at: event.createdAt,
-            last_updated_at: new Date().toISOString(),
-            ...event.extraMeta,
-          },
-        },
-      });
-      watchNotificationResult(result, { sessionId, eventType: event.type });
-    }),
-  });
-
-  // Live-progress push for long-running tools. Gated on the channel capability
-  // actually being declared — emitting a channel frame the client never
-  // registered for is silently dropped, and `team` still writes status.txt
-  // regardless, so there is always a visible path.
-  const notifyChannel: ChannelNotifier = (p) => {
-    if (!channelEnabled) return;
-    try {
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: p.content,
-          meta: {
-            // meta keys must match [a-zA-Z0-9_]+ — Claude Code silently drops
-            // keys containing hyphens or other characters.
-            session_id: p.sessionId,
-            event: p.event,
-            model: p.model,
-            elapsed_seconds: String(Math.round(p.elapsedSeconds)),
-            task_id: p.sessionId,
-            status: mapEventToTaskStatus(p.event),
-            created_at: p.createdAt,
-            last_updated_at: new Date().toISOString(),
-          },
-        },
-      });
-      watchNotificationResult(result, { sessionId: p.sessionId, eventType: p.event });
-    } catch {
-      // Progress reporting must never fail the tool call it is describing.
-    }
-  };
+  // Sessions are observed by polling (`list_sessions`, `get_output`) and through
+  // their records on disk; nothing is pushed to the host.
+  const sessionManager = new SessionManager();
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
   const progressIntervalMs = resolveProgressIntervalMs();
 
   // Build tool registry
-  const allTools = defineTools(sessionManager, notifyChannel, nested);
+  const allTools = defineTools(sessionManager, nested);
   const nestedNames: readonly string[] = NESTED_MCP_TOOL_NAMES;
   const enabledTools = allTools.filter(
     (t) => enabledGroups.has(t.group) && (!nested || nestedNames.includes(t.name))
@@ -2407,7 +2313,7 @@ async function main() {
   // keepalive for as long as it runs: the client aborts a call that emits nothing
   // for its idle window (30 min on stdio by default — the exact 1800s a real
   // `team` run died at), and a progress frame is the ONLY notification measured to
-  // reset that timer. Channel frames do not.
+  // reset that timer.
   //
   // `extra.sendNotification` is preferred over `server.notification` because it is
   // the request-scoped sender; on non-stdio transports it is what correlates the
@@ -2440,6 +2346,7 @@ async function main() {
       : NOOP_HEARTBEAT;
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
+      signal: extra.signal,
     };
 
     try {
@@ -2459,11 +2366,8 @@ async function main() {
     }
   });
 
-  // Connect via stdio transport. installWireTap() is a no-op unless
-  // CLAUDISH_CHANNEL_TRACE=1 is set; when active it mirrors outbound channel
-  // notification frames to stderr so we can confirm wire-level delivery.
+  // Connect via stdio transport.
   const transport = new StdioServerTransport();
-  installWireTap();
   await server.connect(transport);
   installMcpShutdown(sessionManager);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
@@ -2474,7 +2378,7 @@ async function main() {
 
 /**
  * Shutdown (D15 layer 3, §20.3 item 8): stdin EOF, transport close, SIGINT, SIGTERM and
- * SIGHUP settle every team run and channel session CANCELLED — so their records end
+ * SIGHUP settle every team run and session CANCELLED — so their records end
  * (`meta.json`, the closing wait line) — then reap every pane in parallel and exit.
  * Installed before any pane exists, so `startPaneSession`'s own default hooks never
  * replace these options. A SIGKILL of this process ends no record; the per-pane
@@ -2482,6 +2386,9 @@ async function main() {
  */
 function installMcpShutdown(sessionManager: SessionManager): void {
   const before = async (): Promise<void> => {
+    // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
+    // their process groups here, or they outlive the server.
+    stopAllClaudeCodePrintChildren();
     await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
   };
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the

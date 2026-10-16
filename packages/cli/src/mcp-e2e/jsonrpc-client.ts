@@ -211,7 +211,7 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
     params: {
       protocolVersion: "2024-11-05",
       clientInfo: { name: "mcp-e2e", version: "1.0.0" },
-      capabilities: { experimental: { "claude/channel": {} } },
+      capabilities: {},
     },
   });
   await sleep(600);

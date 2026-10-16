@@ -15,8 +15,11 @@ import {
   type PaneBlock,
   type PaneSession,
   type PaneSessionOptions,
+  REPL_STABLE_MS,
   startPaneSession,
 } from "./pane-session.js";
+import { inputBox, readBoot } from "./screen-classifier.js";
+import type { ScreenState } from "./screen-model.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
@@ -67,7 +70,7 @@ async function start(
   const transitions: Array<[SlotState, SlotState]> = [];
   const turns: SettledTurn[] = [];
   const blocks: PaneBlock[] = [];
-  const { env: _e, decide, onBlocked, ...rest } = over;
+  const { env: _e, decide, onBlocked, timings, ...rest } = over;
   const s = await startPaneSession({
     kind: "t",
     label: "01",
@@ -95,7 +98,7 @@ async function start(
       replStableMs: 200,
       bootStaticMs: 800,
       corroborationMs: 200,
-      ...(rest.timings ?? {}),
+      ...timings,
     },
     ...rest,
   });
@@ -153,11 +156,92 @@ async function until(
   }
 }
 
+function screenOf(r: Run): ScreenState {
+  const capture = r.s.capture(undefined, { spans: true });
+  if (!("lines" in capture)) throw new Error("expected a full capture");
+  return {
+    ...capture,
+    spans: capture.spans ?? [],
+    alt: false,
+    changedAt: 0,
+    aboveBoxChangedAt: 0,
+  };
+}
+
+type Request = (m: Record<string, unknown>, ms?: number) => Promise<unknown>;
+interface InputSend {
+  message: Record<string, unknown>;
+  box: string | null;
+  at: number;
+}
+
+/** Observe actual sends; optionally make ctrl-u leave the old line or a different draft. */
+function traceInput(r: Run, clear: "normal" | "ignored" | "different" = "normal"): InputSend[] {
+  const sends: InputSend[] = [];
+  const client = (r.s as unknown as { client: { request: Request } }).client;
+  const real = client.request.bind(client);
+  client.request = async (message, ms) => {
+    if (message.type === "send") {
+      sends.push({
+        message: { ...message },
+        box: inputBox(screenOf(r))?.text ?? null,
+        at: Date.now(),
+      });
+      if (Array.isArray(message.keys) && message.keys.includes("ctrl-u")) {
+        if (clear === "ignored") return { ok: true };
+        const reply = await real(message, ms);
+        if (clear === "different") {
+          await real(
+            { type: "send", pane: 0, text: "Different unsent draft", typed: true, enter: false },
+            ms
+          );
+          await until(r, () => inputBox(screenOf(r))?.text === "Different unsent draft");
+        }
+        return reply;
+      }
+    }
+    return real(message, ms);
+  };
+  return sends;
+}
+
 const T = 40_000;
 
 describe.skipIf(!MAGMUX)(
   `PaneSession, real magmux + fake child (${MAGMUX ? "" : NO_MAGMUX_MESSAGE})`,
   () => {
+    describe("production boot stability", () => {
+      test("the production REPL_STABLE_MS is 3000 ms", () => {
+        expect(REPL_STABLE_MS).toBe(3000);
+      });
+
+      test(
+        "production boot does not type until the empty REPL has been stable for three seconds",
+        async () => {
+          // Explicit undefined removes the helper's short test seam: exercise the production default.
+          const r = await start("answer", { timings: { replStableMs: undefined } });
+          const sends = traceInput(r);
+          try {
+            await until(r, () => readBoot(screenOf(r)).kind === "repl");
+            const firstEmptyBox = Date.now();
+            expect(r.s.snapshot().state).toBe("STARTING");
+            await r.s.ready;
+            const snap = await finish(r);
+            expect(snap.state).toBe("COMPLETED");
+            // Measure actual typing, not a sleep that can overshoot under concurrent process tests.
+            // The screen polling above can observe the first frame up to 50 ms late.
+            expect((sends[0]?.at ?? 0) - firstEmptyBox).toBeGreaterThanOrEqual(2850);
+            expect(sends[0]?.message.text).toBe("Reply with exactly PEAR.");
+            expect(sends[0]?.message).toMatchObject({ typed: true, enter: true });
+            expect(sends).toHaveLength(1);
+          } finally {
+            if (open.has(r)) await close(r);
+          }
+        },
+        T
+      );
+    });
+
     describe.concurrent("happy path and delivery", () => {
       test(
         "answer: STARTING → RUNNING → COMPLETED on turn_duration, the typed line's hash, all reaped",
@@ -247,12 +331,77 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
-        "menu_eats_enter: the line still in the box at +resend → Enter again (resent_enter)",
+        "menu_eats_enter: clear the stuck prompt, retype once, submit (retyped_prompt), never duplicate",
         async () => {
+          const prompt = "Reply with exactly PEAR.";
           const r = await start("menu_eats_enter", { timings: { resendAfterMs: 800 } });
+          const sends = traceInput(r);
           const snap = await finish(r);
           expect(snap.state).toBe("COMPLETED");
           expect(snap.anomalies).toContain("resent_enter");
+          expect(snap.anomalies.filter((a) => a === "retyped_prompt")).toHaveLength(1);
+          expect(snap.anomalies).not.toContain("clear_failed");
+          expect(sends).toHaveLength(3);
+          expect(sends.map(({ message }) => message)).toMatchObject([
+            { text: prompt, typed: true, enter: true },
+            { keys: ["ctrl-u"], enter: false },
+            { text: prompt, typed: true, enter: true },
+          ]);
+          const typed = sends.filter(({ message }) => typeof message.text === "string");
+          expect(typed.every(({ message }) => message.typed === true)).toBe(true);
+          expect(typed.map(({ box }) => box)).toEqual(["", ""]);
+          expect(sends[1]?.box).toBe(prompt);
+          expect(r.turns).toHaveLength(1);
+          expect(r.turns[0]?.answer).toBe(`ANSWER fake-menu_eats_enter ${sha8(prompt)}`);
+          expect(snap.turnsCompleted).toBe(1);
+        },
+        T
+      );
+
+      test(
+        "nudge: ctrl-u leaving different text records clear_failed and never types or submits a second copy",
+        async () => {
+          const r = await start("menu_eats_enter", {
+            admitTimeoutMs: 5000,
+            timings: { resendAfterMs: 800 },
+          });
+          const sends = traceInput(r, "different");
+          await until(r, (s) => s.anomalies.includes("clear_failed"));
+          expect(inputBox(screenOf(r))?.text).toBe("Different unsent draft");
+          const snap = await finish(r);
+          expect(snap.reason).toBe("prompt_not_accepted");
+          expect(snap.anomalies).toContain("resent_enter");
+          expect(snap.anomalies).not.toContain("retyped_prompt");
+          expect(sends).toHaveLength(2);
+          expect(sends.map(({ message }) => message)).toMatchObject([
+            { text: "Reply with exactly PEAR.", typed: true, enter: true },
+            { keys: ["ctrl-u"], enter: false },
+          ]);
+          expect(r.turns).toHaveLength(0);
+        },
+        T
+      );
+
+      test(
+        "nudge: ctrl-u leaving the original line uses one more Enter without retyping",
+        async () => {
+          const r = await start("menu_eats_enter", { timings: { resendAfterMs: 800 } });
+          const sends = traceInput(r, "ignored");
+          const snap = await finish(r);
+          expect(snap.state).toBe("COMPLETED");
+          expect(snap.anomalies).toContain("resent_enter");
+          expect(snap.anomalies).not.toContain("retyped_prompt");
+          expect(snap.anomalies).not.toContain("clear_failed");
+          expect(sends).toHaveLength(3);
+          expect(sends.map(({ message }) => message)).toMatchObject([
+            { text: "Reply with exactly PEAR.", typed: true, enter: true },
+            { keys: ["ctrl-u"], enter: false },
+            { keys: ["enter"] },
+          ]);
+          expect(r.turns).toHaveLength(1);
+          expect(r.turns[0]?.answer).toBe(
+            `ANSWER fake-menu_eats_enter ${sha8("Reply with exactly PEAR.")}`
+          );
         },
         T
       );
@@ -478,21 +627,21 @@ describe.skipIf(!MAGMUX)(
         "a /compact that outlasts the admission bound stays admitted; the prompt queued behind it is answered",
         async () => {
           // 2.1.291 writes <command-name>/compact only when compaction FINISHES; a real one
-          // takes minutes. Compaction here outlasts the admission bound by 2.5 s.
+          // takes minutes. Compaction here outlasts the admission bound by 5 s.
           const r = await start("answer", {
             shape: "interactive",
             initialPrompt: undefined,
             decide: () => "continue",
-            admitTimeoutMs: 1500,
-            env: { FAKE_GAP_MS_COMPACT: "4000" },
+            admitTimeoutMs: 4000,
+            env: { FAKE_GAP_MS_COMPACT: "9000" },
           });
           await r.s.ready;
           expect(r.s.send("/compact").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
-          await until(r, (s) => s.state === "RUNNING");
-          await Bun.sleep(2500); // past the admission bound, mid-compaction
+          await until(r, (s) => s.phase === "RUNNING"); // accepted, not merely admitting
+          await Bun.sleep(5000); // past the admission bound, mid-compaction
           expect(r.s.snapshot()).toMatchObject({ state: "RUNNING", pendingInputs: 1 });
-          await until(r, (s) => s.turnsCompleted === 2 && s.state === "AWAITING_INPUT", 20_000);
+          await until(r, (s) => s.turnsCompleted === 2 && s.state === "AWAITING_INPUT", 25_000);
           expect(r.turns.map((t) => t.settledBy)).toEqual(["local_command", "turn_duration"]);
           expect(r.turns[0]?.answer).toBe("Compacted (ctrl+o to see full summary)");
           expect(r.turns[1]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`);
@@ -566,7 +715,7 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
-        "ask_user_send (channel): AWAITING_INPUT; a send presses Esc → path I settles; the text is turn 2",
+        "ask_user_send (session): AWAITING_INPUT; a send presses Esc → path I settles; the text is turn 2",
         async () => {
           const r = await start("ask_user_send", {
             shape: "interactive",

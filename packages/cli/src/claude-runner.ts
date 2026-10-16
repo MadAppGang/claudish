@@ -815,7 +815,7 @@ export function createTempSettingsFile(
   const tempPath = join(claudishDir, `settings-${timestamp}.json`);
 
   // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
-  // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
+  // MCP session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
   // An enclosing claudish session's PUBLISHED file (inherited by a claudish run from its
   // Bash tool) is not an assignment — see assignedTokenFile. Resolved by the same
   // function as the tracker and the summary, so the status line can never be pointed at
@@ -1019,6 +1019,15 @@ export function scrubChildEnv(
  *   "No, exit": nobody is at a headless pane to answer it, so every slot would fail at
  *   boot. Verified to suppress the dialog at this tier. Gated on `isPaneChild()`, not
  *   the session flag alone, so no other launch changes.
+ * - `editorMode: "normal"` is added ONLY in an MCP pane child, for the same reason
+ *   and on the same gate. A user `editorMode: "vim"` puts the REPL box in vim
+ *   INSERT mode, where the Enter claudish sends to submit the typed prompt is
+ *   swallowed: the prompt sits in the box and the slot fails `prompt_not_accepted`.
+ *   Interactive use outside a pane keeps the user's editorMode. magmux 0.16.0 forces
+ *   the same value for its panes; once that is the minimum, this key can go.
+ *
+ * Claude Code merges settings sources per key, so every other key of the user's
+ * settings files still applies; this overlay only wins on the keys it sets.
  *
  * (The OS *managed* tier can't be overridden — that case aborts before we get here.)
  */
@@ -1033,6 +1042,7 @@ export function buildClaudishSettingsOverlay(
   }
   if (paneChild) {
     settings.skipDangerousModePermissionPrompt = true;
+    settings.editorMode = "normal";
   }
   return settings;
 }
@@ -1092,6 +1102,13 @@ export function mergeUserSettingsIfPresent(
     // buildClaudishSettingsOverlay) unless the caller's --settings decides it.
     if (paneChild && !("skipDangerousModePermissionPrompt" in userSettings)) {
       userSettings.skipDangerousModePermissionPrompt = true;
+    }
+
+    // In an MCP pane child, keep the REPL box out of vim mode so the submit Enter
+    // reaches it (see buildClaudishSettingsOverlay). Forced over the caller's
+    // --settings: a pane child in vim mode cannot accept a prompt at all.
+    if (paneChild) {
+      userSettings.editorMode = "normal";
     }
 
     // Overwrite the temp settings file with the merged result
@@ -2259,10 +2276,10 @@ function setupSignalHandlers(
       // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
       //
       // This one line manufactured the 900-second silent success. A supervisor
-      // (the channel session manager's timeout, `team`'s deadline, a CI runner)
+      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
       // would SIGTERM the process group, this handler would run its cleanup and
       // exit 0, and every layer above read that 0 as "the run succeeded". The
-      // channel manager then let the exit UPGRADE a state its timeout handler
+      // session manager then let the exit UPGRADE a state its timeout handler
       // had already recorded as failed, and wrote `status: "completed"` to
       // meta.json for a session that had been killed. A graceful shutdown is
       // still a shutdown: the process did not finish its work, and its exit

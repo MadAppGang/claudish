@@ -1,7 +1,7 @@
 /**
  * The claudish MCP server's surface inside a session that a claudish owner started
  * (`CLAUDISH_PANE_CHILD=1`, read by `inMcpSession()`), where one level of nesting is
- * the limit. See `ai-docs/architecture/mcp-channel.md` § Nested mode and
+ * the limit. See `ai-docs/architecture/mcp-sessions.md` § Nested mode and
  * `pane-session.md` § One level of nesting.
  *
  * A leaf module that imports nothing, so a test can read the list without importing
@@ -10,9 +10,10 @@
 
 /**
  * The tools a nested server registers, by NAME. The rule: keep a tool only if it is a
- * one-shot call that starts no session, no pane and no claudish child. `run_prompt` and
- * `compare_models` answer through an in-process proxy; the two catalog reads start
- * nothing. The list fails closed: a tool added later is absent in nested mode until
+ * one-shot call that starts no session, no pane and no claudish child that could start
+ * one. `run_prompt` and `compare_models` answer through an in-process proxy, except
+ * `run_prompt` on a Claude model: that starts one `claudish -p` leaf with no tools and
+ * no MCP servers (mcp/run-prompt-claude-code.ts). The two catalog reads start nothing. The list fails closed: a tool added later is absent in nested mode until
  * someone lists it here, which a group filter would not guarantee.
  *
  * Nested mode INTERSECTS this list with the groups `CLAUDISH_MCP_TOOLS` enables; it

@@ -1,4 +1,4 @@
-description: "claudish MCP: does run_prompt get an answer from a recommended model?"
+description: "claudish MCP: do run_prompt, create_session and team get an answer from a recommended model?"
 
 # One model spec per run. `mcp.experiment.yaml` sweeps it over the recommended
 # list; `gen-experiments.ts` writes that file from `claudish --models-top --json`.
@@ -16,17 +16,25 @@ harness:
   # pair at run time, after preflight and check both pass). Inline JSON, not a
   # file path, because a path would resolve in the workspace.
   # --strict-mcp-config keeps the user's installed claudish plugin server out.
+  # --allowedTools "Bash(sleep:*)": create_session and team are polled (the
+  # server pushes no session events), and in --print with no permission mode
+  # an un-allowed Bash call is denied, so the host could not wait between
+  # polls. madbench appends args last and pipes the prompt on stdin, so the
+  # variadic --allowedTools swallows nothing.
   args:
     - --mcp-config
     - '{"mcpServers":{"claudish":{"command":"claudish","args":["--mcp"]}}}'
     - --strict-mcp-config
+    - --allowedTools
+    - "Bash(sleep:*)"
 
 defaults:
   # workspace, not home: the MCP server is `claudish --mcp`, and it needs the
   # real ~/.claudish for its config, credentials and catalog cache.
   sandbox: workspace
-  # One request through the proxy, no tools: --print is enough and needs no
-  # permission mode.
+  # The host only calls MCP tools and `sleep`, so --print is enough. The
+  # interactive Claude Code a session or team slot runs in is claudish's own
+  # pane, not this Harness.
   interactive: false
   timeout: 360s
   capture: log
@@ -56,15 +64,87 @@ scenarios:
       # the answer the first model failed to give.
       - type: session:tool-used
         value: mcp__claudish__run_prompt
-        args: { eq: 1 }
+        eq: 1
       # The call named the model under test, letter for letter.
       - type: session:tool-args-match
         value: mcp__claudish__run_prompt
-        args:
-          args: { model: "{{model}}" }
+        tool_args: { model: "{{model}}" }
       # THE detector: the answer is in the MCP tool's own result. The host can
       # compute 7723 itself, but it cannot write a tool_result. A failed route
       # returns "Error: ..." and no number.
       - type: session:match
         value: '\b7723\b'
-        args: { type: tool_result, regex: true }
+        event_type: tool_result
+        regex: true
+
+  - name: create-session
+    description: "The host runs the model under test as a one-shot session and relays its answer"
+    timeout: 600s
+    prompt: |
+      Use the claudish MCP tools to run one session with the model under test.
+
+      1. Call `create_session` exactly once, with these arguments:
+         - model: {{model}}
+         - prompt: What is 4817 + 2906? Reply with the number only.
+      2. Poll `list_sessions` with include_completed: true. Between polls run
+         `sleep 10` with Bash. Stop when that session's state is COMPLETED,
+         FAILED, TIMEOUT, CANCELLED or EMPTY.
+      3. Call `get_output` once with that session_id.
+
+      Use the model string exactly as written. Then reply with the text
+      get_output returned, verbatim. Do not compute the sum yourself and do
+      not call run_prompt, team or compare_models.
+    checks:
+      - type: environment:mcp-reachable
+        value: claudish
+      - type: environment:mcp-connected
+        value: claudish
+      # One session: a second session on another model could supply the answer.
+      - type: session:tool-used
+        value: mcp__claudish__create_session
+        eq: 1
+      - type: session:tool-args-match
+        value: mcp__claudish__create_session
+        tool_args: { model: "{{model}}" }
+      # The answer is in get_output's tool_result, which only the session wrote.
+      - type: session:match
+        value: '\b7723\b'
+        event_type: tool_result
+        regex: true
+
+  - name: team
+    description: "The host runs a one-slot team on the model under test and relays the slot's answer"
+    timeout: 600s
+    prompt: |
+      Use the claudish MCP tool `team` to run the model under test on one task.
+
+      1. Call `team` with mode "run" exactly once, with these arguments:
+         - mode: run
+         - path: team-sum
+         - models: ["{{model}}"]
+         - input: What is 4817 + 2906? Reply with the number only.
+      2. Poll `team` with mode "status", the same path and the run_id the run
+         returned. Between polls run `sleep 10` with Bash. Stop when the slot's
+         state is COMPLETED, FAILED, CANCELLED or EMPTY.
+      3. Read the file team-sum/response-<slot id>.md, where the slot id is the
+         one key of the `slots` map the run returned.
+
+      Use the model string exactly as written. Then reply with the file's
+      content, verbatim. Do not compute the sum yourself and do not call
+      run_prompt, create_session or compare_models.
+    checks:
+      - type: environment:mcp-reachable
+        value: claudish
+      - type: environment:mcp-connected
+        value: claudish
+      # The run named the model under test, and only it: a list expectation
+      # is matched exactly, so a second model in the run fails this Check.
+      - type: session:tool-args-match
+        value: mcp__claudish__team
+        tool_args: { mode: run, models: ["{{model}}"] }
+      # The slot's answer reaches the host only through the response file the
+      # slot wrote; the host cannot author a Read tool_result.
+      - type: session:match
+        value: '\b7723\b'
+        event_type: tool_result
+        regex: true

@@ -43,6 +43,12 @@ export interface ResolvedConnection {
   profile: RouteProfile;
   generationId: string;
   /**
+   * The catalog's published output ceiling for this model, when it has one.
+   * The slim catalog publishes it per model, not per connection. Absent means
+   * unknown, never zero and never unlimited.
+   */
+  maxOutputTokens?: number;
+  /**
    * The known wire of the model OWNER's own direct connection (the `direct`
    * profile whose `nativeModelProviders` names the model's vendor), when the
    * catalog publishes one and it is not this connection. Used only to TRY a
@@ -147,6 +153,9 @@ export function resolveConnection(
       wire: found.connection.wire,
       profile,
       generationId: cache.routeRegistry.generationId,
+      ...(typeof found.entry.maxOutputTokens === "number" && found.entry.maxOutputTokens > 0
+        ? { maxOutputTokens: found.entry.maxOutputTokens }
+        : {}),
       ...(ownerWire ? { ownerWire } : {}),
     },
   };

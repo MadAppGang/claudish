@@ -192,10 +192,9 @@ eviction, or after a server restart, `status` still answers from `status.json`
 
 ### The run's record in the sessions directory, ended exactly once
 
-Returning early has a cost: the run's completion reaches the caller only through
-a channel frame, and Claude Code drops channel frames unless the session named
-claudish in `--channels`. The run's own `status.json` sits wherever the caller
-pointed `path`, which no outside observer knows. Review panels finished unseen
+Returning early has a cost: the run's completion is not pushed to the caller at
+all. The run's own `status.json` sits wherever the caller pointed `path`, which
+no outside observer knows. Review panels finished unseen
 for days this way. So `team(mode:"run")` also writes a record into the sessions
 directory the magus `claudish` plugin monitor already watches:
 
@@ -276,8 +275,8 @@ the mapping — `status.txt` prints model names beside slot ids.
 
 ## One driver, two owners
 
-`team` and the channel once had two implementations of one job: team drove a
-stream-json capture and hand-rolled everything around it, while the channel
+`team` and the MCP sessions once had two implementations of one job: team drove a
+stream-json capture and hand-rolled everything around it, while the session manager
 wrapped the same capture in a reducer with a state machine. Both went with print
 mode. Both owners now drive the same `PaneSession` (`pane/`), which owns the
 MECHANISM — boot, delivery, the transcript turn oracle, settle, the reap — and asks
@@ -285,11 +284,11 @@ its owner for POLICY at exactly two points:
 
 - `decide(turn)` when a turn settles. Team's answer writes `response-<slot>.md`
   (byte-exact, once) and returns `classifyRunOutput` with the caller's
-  `require_pattern` and `min_output_bytes` (`team-capture.md`); the channel's
+  `require_pattern` and `min_output_bytes` (`team-capture.md`); the session manager's
   classifies a one-shot turn with no floor and no pattern, or continues an
   interactive one.
 - `onBlocked(block)` when a turn stops on a question or a dialog. Team fails the
-  slot `blocked`; the channel waits for `send_input`.
+  slot `blocked`; an MCP session waits for `send_input`.
 
 So nothing team-specific leaks into the pane module, and nothing pane-specific into
 the policy. Two details that used to need explicit rules now follow from the
@@ -301,7 +300,7 @@ pane is reaped.
 ## Spawn plumbing: what was shared, and what was deliberately not
 
 The obvious next step looked like making `team` a client of
-`SessionManager.createSession`, so each slot would be a channel session
+`SessionManager.createSession`, so each slot would be an MCP session
 addressable by `get_output`, `get_diagnostics` and `cancel_session`. That was
 evaluated and rejected. Reading what `createSession` actually does shows why:
 
@@ -312,7 +311,7 @@ evaluated and rejected. Reading what `createSession` actually does shows why:
   session manager would also need team's whole-answer handling.
 - `session-manager.ts` already imports `classifyRunOutput` FROM
   `team-orchestrator.ts`. Adding team's options would complete the inversion: a
-  channel session manager that knows what a blind-vote panel is.
+  session manager that knows what a blind-vote panel is.
 
 The addressability was also worth less than it looked. `team` already answers the
 same questions through `mode:"status"`, `mode:"capture"` and `mode:"cancel"`, so

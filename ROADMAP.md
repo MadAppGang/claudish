@@ -6,38 +6,29 @@ For shipped features see `CLAUDE.md`; for the engineering rationale behind them 
 
 ---
 
-## Channel notifications
+## Session push notifications — removed 2026-10-16
 
-### Phase 1 — SEP-1686 forward-compat fields ✅ Shipped
+Status: **removed** (10.7.0). The server no longer declares `experimental: {"claude/channel": {}}`
+and sends no `notifications/claude/channel` frame; hosts poll `list_sessions` and read the session
+records. Rationale and what replaced each fact: `ai-docs/architecture/mcp-sessions.md` ("Push
+notifications were removed").
 
-Status: complete (this branch).
+The old phases are closed with it: Phase 1 (the SEP-1686 forward-compat fields `task_id`,
+`status`, `created_at`, `last_updated_at` on the channel frame) was deleted with the frame, and
+Phase 2 (`notifications/tasks/status` behind `CLAUDISH_NOTIFY_VIA_TASKS`) and Phase 3 (flip the
+default, drop the legacy method) have no legacy method left to migrate from.
 
-The channel bridge now emits `task_id`, `status` (5-value SEP-1686 enum), `created_at`, `last_updated_at` alongside our existing fields. Wire format pinned by `channel-wire-format.test.ts` (8 tests, perturbation-verified). No consumer behavior change.
+**Trigger to reconsider a push** (all must hold):
+- Claude Code delivers `notifications/tasks/status` (SEP-1686) into the **agent's context** — not
+  only the CLI UI — WITHOUT `--channels`, `.mcp.json` registration or an interactive-only host.
+  Those three gates are why the channel push reached almost no one.
+- The TypeScript MCP SDK ships a server-side helper for emitting it
+  (`modelcontextprotocol/typescript-sdk#1041`).
+- A live `create_session` run shows the completion arriving in the orchestrator agent's context.
 
-See: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md`
-
-### Phase 2 — `notifications/tasks/status` behind a flag
-
-Status: blocked on upstream. Not started.
-
-When ready, we add a `CLAUDISH_NOTIFY_VIA_TASKS=1` env var. When set, the bridge emits `notifications/tasks/status` with a restructured payload (flatten `meta.task_id → params.taskId`, etc.) alongside the existing `notifications/claude/channel`. Add a parallel test fixture pinning the new wire format.
-
-**Trigger conditions** (all must hold):
-- Claude Code ships a release whose CHANGELOG mentions SEP-1686 / `notifications/tasks/status` receiver support, AND the new method surfaces task notifications into the **agent's context** (not just CLI UI).
-- The TypeScript MCP SDK ships a server-side helper for emitting `notifications/tasks/status`. Reference impl is `modelcontextprotocol/typescript-sdk#1041` (currently OPEN as of 2026-05).
-- We've manually verified per-child completion notifications surface in the orchestrator agent's context during a `team` run.
-
-**Effort**: small. Most work is already done in Phase 1 (the data is in `meta`); Phase 2 is mainly a payload-reshape function + new test fixture + env-var gate.
-
-Reference: same migration schema doc as Phase 1.
-
-### Phase 3 — Flip default + drop the legacy method
-
-Status: blocked on Phase 2.
-
-Default to `notifications/tasks/status`. Keep emitting `notifications/claude/channel` for one major version as a fallback for users still on older Claude Code versions. Then remove.
-
-**Trigger condition**: 6+ months after Phase 2 ships AND > ~80% of Claudish users are on Claude Code versions with Tasks receiver support (heuristic — measure via `--probe` telemetry if we ever add it, otherwise judgment call).
+**Effort if triggered**: small. The facts are already in `SessionManager` (`sessionEventFor`, the
+`waits.jsonl` transitions); a push is one subscriber on the pane's `onTransition` and `onChange`
+hooks plus a payload builder and its wire-format test.
 
 ---
 
@@ -88,7 +79,7 @@ The conclusion drawn at the time — that this would both fire into a void and d
 
 ### Re-measured 2026-07-29 against Claude Code **2.1.220** — one blocker is gone, one is confirmed harder
 
-Probes: `packages/cli/src/channel/test-helpers/capability-probe.ts` (agent context, `-p`) and
+Probes: `packages/cli/src/mcp-session/test-helpers/capability-probe.ts` (agent context, `-p`) and
 `progress-regression-mock.ts` driven through an interactive tmux session (terminal UI).
 Full findings: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`.
 
@@ -133,7 +124,7 @@ that reaches a reader. It is not, however, a substitute on the *liveness* axis, 
 - Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md` (lost — same)
 - Idle-timeout measurement against 2.1.231 (the three-arm probe): `ai-docs/reports/mcp-progress-keepalive/findings.md`
 - Keepalive implementation design: `ai-docs/reports/mcp-progress-keepalive/architecture.md`
-- Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
+- Test artifacts: `packages/cli/src/mcp-session/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
 - Field evidence of the transport-kill bug the latch defends against: <https://github.com/GLips/Figma-Context-MCP/issues/362>
 - Stale `progressToken` claim: <https://github.com/anthropics/claude-code/issues/58687>
 
@@ -300,7 +291,7 @@ If a trigger condition has been met, move the item to *In Progress* and create t
 
 ## Consolidate the two channel test-helper stand-ins
 
-`packages/cli/src/channel/test-helpers/` now holds **two** helpers that can echo argv:
+`packages/cli/src/mcp-session/test-helpers/` now holds **two** helpers that can echo argv:
 
 - `fake-claudish.ts` — the original; consumed by BOTH `channel/session-manager.test.ts` and
   `team-orchestrator.test.ts`, the latter via `--print-argv` to assert the exact spawn
@@ -633,6 +624,30 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
 - **`proxy-server.test.ts` "keyless custom endpoint" timed out at 5 s in CI** (once, on PR #288; it
   passes 3/3 locally; main's own CI also failed once on 2026-09-26, cause not checked). Trigger: a second
   CI failure of that test.
+
+---
+
+## Pane sessions: follow-ups from the 10.7.0 MCP update
+
+Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation.md`.
+
+- **A turn whose child launched background agents never settles.** Claude Code 2.1.301 delivers a
+  background agent's `<task-notification>` that arrives mid-turn as an `attachment/queued_command`
+  record; `applyRecord` (`pane/transcript-follower.ts`) counts a completion only from a `user`
+  record, so `agentsLaunched` never balances and `pathPrimary` (`pane/settle-rule.ts`) refuses.
+  The session stays RUNNING until `cancel_session`. Reproduction, cause and offline replay:
+  `ai-docs/reports/2026-10-16-session-unsettled-background-agents.md` and its `-replay.ts`.
+  Trigger: now (claudish-owned, reproducible offline); fix on its own branch.
+- **Adopt magmux 0.16.0 `--controller claude-code`.** Pass it before `-e` in `spawnPaneMagmux`
+  (`pane/pane-launch.ts`) behind a version check. The request timeout around magmux `send` must
+  cover ~18 s (readyTimeoutMs default 10 s, max 60 s, plus typing, pre-Enter verify and
+  acceptance), or pass a smaller readyTimeoutMs. Map the new replies: `busy`
+  (terminal_not_ready, dialog:permission, dialog:question, vim_mode) and `not_accepted`
+  (text_mismatch: Enter not pressed; still_in_box: do not retype; unconfirmed: caller decides;
+  empty_box). On a controller pane claudish's own ctrl-u/retype nudge (`PaneSession.nudge`) must
+  yield to magmux, and slash commands may come back `unconfirmed`. Once 0.16.0 is the minimum, the
+  `editorMode: "normal"` overlay key can go. Trigger: magmux 0.16.0 released with final field
+  names, and `.github/magmux.env` bumped to it.
 
 ---
 

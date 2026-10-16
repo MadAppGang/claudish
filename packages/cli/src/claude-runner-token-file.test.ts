@@ -1,5 +1,5 @@
 /**
- * F3: a parent that hands a child `CLAUDISH_TOKEN_FILE` (team, the channel, a pane)
+ * F3: a parent that hands a child `CLAUDISH_TOKEN_FILE` (team, the session, a pane)
  * names the file the child's proxy writes. `createTempSettingsFile` used to ignore it
  * and point the status line at `~/.claudish/tokens-<port>.json`, then publish THAT
  * path as `CLAUDISH_TOKEN_FILE` to Claude Code, so the status line read a file nobody
@@ -63,7 +63,7 @@ describe("resolveTokenFilePath", () => {
     const env = { HOME: home, CLAUDISH_TOKEN_FILE: parent, CLAUDISH_PUBLISHED_TOKEN_FILE: parent };
     expect(assignedTokenFile(env)).toBeNull();
     expect(resolveTokenFilePath(4000, env)).toBe(join(home, ".claudish", "tokens-4000.json"));
-    // a team slot / channel session sets a path of its own, which still wins
+    // a team slot / session sets a path of its own, which still wins
     expect(
       resolveTokenFilePath(4000, { ...env, CLAUDISH_TOKEN_FILE: "/run/stats/slot.json" })
     ).toBe("/run/stats/slot.json");

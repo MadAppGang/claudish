@@ -1,6 +1,6 @@
 // ─── SessionManager ──────────────────────────────────────────────────────────
 //
-// Lifecycle owner for channel sessions. Each session is one INTERACTIVE Claude Code,
+// Lifecycle owner for MCP sessions. Each session is one INTERACTIVE Claude Code,
 // launched through claudish (`claudish -i --model X -y --quiet --session-id <uuid>
 // --add-dir <turnDir> [caller flags]`) inside its own headless magmux pane and driven
 // over the pane's socket (packages/cli/src/pane/, architecture §2). There is no `-p`,
@@ -62,11 +62,13 @@ import {
   isTerminalState,
   mergeAccounting,
   readTokenFileCached,
+  reasonDetail,
   releasePaneReservations,
   reservePanes,
   resolveProvider,
   sockRootFor,
   startPaneSession,
+  upstreamRecordsFor,
 } from "../pane/index.js";
 import { redactSecrets } from "../redact.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
@@ -76,9 +78,8 @@ import { sessionsDirFrom } from "./home-dir.js";
 import { hostPidFrom } from "./parent-session.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import type {
-  ChannelEvent,
-  ChannelEventType,
   SessionCreateOptions,
+  SessionEventType,
   SessionInfo,
   SessionManagerOptions,
 } from "./types.js";
@@ -104,8 +105,8 @@ export interface DiagnosticEvent {
 export interface SessionDiagnostics {
   sessionId: string;
   state: SlotState;
-  /** The current channel event (10.4.0's `status` key, RB7). */
-  event: ChannelEventType;
+  /** The current session event (10.4.0's `status` key, RB7). */
+  event: SessionEventType;
   reason: FailureReason | null;
   detail: string | null;
   /** The model as the caller asked for it. */
@@ -220,19 +221,9 @@ interface SessionEntry {
   /** The terminal transition was handled (records written). */
   ended: boolean;
   evictHandle: ReturnType<typeof setTimeout> | null;
-  /** The last channel event emitted; STARTING is the initial state, never a frame. */
-  lastEvent: ChannelEventType;
-  lastFrameTool: string | null;
-  lastFrameToolCount: number;
-  lastToolFrameAt: number;
   lastLoggedTool: string | null;
   assistantIdsLogged: number;
   anomaliesLogged: Set<string>;
-  sendRejectedSeen: number;
-  /** Optional frame meta for the next frame (`prompt_not_read`, `send_rejected`). */
-  pendingMeta: Record<string, string>;
-  /** The question or permission text of the current block, for the frame content. */
-  blockText: string | null;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
@@ -319,11 +310,11 @@ const STATE_OF_10_4_STATUS: Record<string, SlotState> = {
 };
 
 /**
- * The channel event for a session state (architecture §3.4). Pure; the wire, the
+ * The event for a session state (architecture §3.4). Pure; the wire, the
  * wait log's `to` and `get_diagnostics.event` all read it.
  */
-export function channelEventFor(snap: { state: SlotState; activity: string | null }): {
-  event: ChannelEventType;
+export function sessionEventFor(snap: { state: SlotState; activity: string | null }): {
+  event: SessionEventType;
   tool: string | null;
 } {
   switch (snap.state) {
@@ -351,7 +342,11 @@ export function channelEventFor(snap: { state: SlotState; activity: string | nul
 }
 
 /** One `list_sessions` row (§8 B): exactly the SlotRow keys plus the four session keys. */
-export function sessionRowOf(info: SessionInfo): SessionRow {
+export function sessionRowOf(
+  info: SessionInfo,
+  /** the session's upstream-error records (`upstreamRecordsFor`); [] = none read */
+  upstreamRecords: readonly string[] = []
+): SessionRow {
   const terminal = isTerminalState(info.state);
   return {
     slot: info.sessionId,
@@ -359,6 +354,7 @@ export function sessionRowOf(info: SessionInfo): SessionRow {
     provider: info.provider,
     state: info.state,
     reason: info.state === "COMPLETED" || !terminal ? null : info.reason,
+    reason_detail: reasonDetail(info, upstreamRecords),
     tokens_in: info.tokensIn,
     tokens_out: info.tokensOut,
     cost_usd: info.costUsd,
@@ -426,15 +422,6 @@ function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(value, null, 2), "utf-8");
   renameSync(tmp, path);
-}
-
-/** The count of one anomaly key in a snapshot's `anomalies` (`key` or `key ×n`). */
-function anomalyCount(anomalies: readonly string[], key: string): number {
-  for (const a of anomalies) {
-    if (a === key) return 1;
-    if (a.startsWith(`${key} ×`)) return Number(a.slice(key.length + 2)) || 1;
-  }
-  return 0;
 }
 
 /** An anomaly entry without its `×n` count suffix. */
@@ -643,7 +630,6 @@ export class SessionManager {
   private scrollbackCapacity: number;
   private sessionsDir: string;
   private terminalRetentionMs: number;
-  private onStateChange?: (sessionId: string, event: ChannelEvent) => void;
   private readonly parentEnv: Record<string, string | undefined>;
   private readonly paneTimings: SessionManagerOptions["paneTimings"];
   /** createSession calls past their checks whose entry is not in the map yet. */
@@ -672,7 +658,6 @@ export class SessionManager {
     // `$HOME` before `os.homedir()`, by the rule the plugin monitor shares —
     // see home-dir.ts. Diverging here makes every run invisible to it.
     this.sessionsDir = options?.sessionsDir ?? sessionsDirFrom(process.env);
-    this.onStateChange = options?.onStateChange;
     this.parentEnv = options?.parentEnv ?? process.env;
     this.paneTimings = options?.paneTimings;
   }
@@ -957,16 +942,9 @@ export class SessionManager {
       waitSince: null,
       ended: false,
       evictHandle: null,
-      lastEvent: "starting",
-      lastFrameTool: null,
-      lastFrameToolCount: 0,
-      lastToolFrameAt: 0,
       lastLoggedTool: null,
       assistantIdsLogged: 0,
       anomaliesLogged: new Set(),
-      sendRejectedSeen: 0,
-      pendingMeta: {},
-      blockText: null,
     };
   }
 
@@ -1026,7 +1004,6 @@ export class SessionManager {
     info.elapsedSeconds = elapsedSecondsBetween(info.startedAt, Date.parse(at));
     this.appendEvent(entry, { type: "state", from: "STARTING", to: "FAILED", at });
     this.endRecords(entry, null);
-    this.emitFrame(entry, { state: "FAILED", activity: null, toolCalls: 0 });
   }
 
   // ─── Pane policy (D8) ──────────────────────────────────────────────────
@@ -1053,10 +1030,9 @@ export class SessionManager {
       const v = classifyRunOutput({ answer: turn.answer, apiError: turn.apiError });
       return { state: "FAILED", reason: "api_error", detail: v?.detail ?? "API error" };
     }
-    // An interactive turn whose task file was not fully read continues; the caller is
-    // told on the next frame (r2, X-M4).
+    // An interactive turn whose task file was not fully read continues; the anomaly is
+    // in the session's event log (r2, X-M4).
     if (turn.delivery.complete === false) {
-      entry.pendingMeta.prompt_not_read = "true";
       this.appendEvent(entry, {
         type: "anomaly",
         key: "prompt_not_read",
@@ -1069,15 +1045,14 @@ export class SessionManager {
     return "continue";
   }
 
-  /** A question or a permission dialog waits for `send_input` (the channel can answer). */
-  private onBlocked(entry: SessionEntry, b: PaneBlock): "wait" {
-    entry.blockText = b.text;
+  /** A question or a permission dialog waits for `send_input` (the caller can answer). */
+  private onBlocked(_entry: SessionEntry, _b: PaneBlock): "wait" {
     return "wait";
   }
 
   // ─── Pane callbacks ────────────────────────────────────────────────────
 
-  /** `onTransition`: every wire-state change, synchronously, before any frame. */
+  /** `onTransition`: every wire-state change, synchronously. */
   private onPaneTransition(
     entry: SessionEntry,
     t: { from: SlotState; to: SlotState; at: string; snap: PaneSnapshot }
@@ -1085,13 +1060,10 @@ export class SessionManager {
     if (entry.ended) return;
     const { snap } = t;
     this.applySnapshot(entry, snap);
-    // Before the frame, so the wait line is on disk by the time anyone hears of it.
     this.recordWaitTransition(entry, t.from, t.to, t.at, snap);
     this.appendEvent(entry, { type: "state", from: t.from, to: t.to, at: t.at });
     this.logPaneFacts(entry, snap);
-    if (!isWaiting(t.to)) entry.blockText = null;
     if (isTerminalState(t.to)) this.onTerminal(entry, snap);
-    this.emitFrame(entry, snap);
   }
 
   /** `onChange` (coalesced): activity and accounting changes within a state. */
@@ -1099,7 +1071,6 @@ export class SessionManager {
     if (entry.ended) return;
     this.applySnapshot(entry, snap);
     this.logPaneFacts(entry, snap);
-    this.emitFrame(entry, snap);
   }
 
   /** The terminal transition: answer, records and eviction, before the reap starts. */
@@ -1145,7 +1116,7 @@ export class SessionManager {
         wait: "closed",
         since: entry.waitSince,
         at: entry.info.completedAt ?? new Date().toISOString(),
-        to: channelEventFor(entry.info).event,
+        to: sessionEventFor(entry.info).event,
       });
       entry.waitSince = null;
     }
@@ -1205,7 +1176,7 @@ export class SessionManager {
         at,
       });
     }
-    const { tool } = channelEventFor(snap);
+    const { tool } = sessionEventFor(snap);
     if (tool && tool !== entry.lastLoggedTool)
       this.appendEvent(entry, { type: "tool", name: tool, at });
     entry.lastLoggedTool = tool;
@@ -1214,80 +1185,6 @@ export class SessionManager {
       if (entry.anomaliesLogged.has(key)) continue;
       entry.anomaliesLogged.add(key);
       this.appendEvent(entry, { type: "anomaly", key, at });
-    }
-    const rejected = anomalyCount(snap.anomalies, "send_not_accepted");
-    if (rejected > entry.sendRejectedSeen) {
-      entry.sendRejectedSeen = rejected;
-      entry.pendingMeta.send_rejected = "true";
-    }
-  }
-
-  /**
-   * One channel frame when the derived event changes, plus a coalesced `tool_executing`
-   * repeat (≤ 1 frame/s) when the tool or the tool count changes.
-   */
-  private emitFrame(
-    entry: SessionEntry,
-    snap: Pick<PaneSnapshot, "state" | "activity" | "toolCalls">
-  ): void {
-    const { event, tool } = channelEventFor(snap);
-    const now = Date.now();
-    const changed = event !== entry.lastEvent;
-    const toolRepeat =
-      !changed &&
-      event === "tool_executing" &&
-      (tool !== entry.lastFrameTool || snap.toolCalls !== entry.lastFrameToolCount) &&
-      now - entry.lastToolFrameAt >= 1000;
-    if (!changed && !toolRepeat) return;
-    entry.lastEvent = event;
-    if (event === "tool_executing") {
-      entry.lastFrameTool = tool;
-      entry.lastFrameToolCount = snap.toolCalls;
-      entry.lastToolFrameAt = now;
-    }
-    const extraMeta: Record<string, string> = {
-      ...(tool ? { tool, tool_count: String(snap.toolCalls) } : {}),
-      ...(snap.activity ? { activity: snap.activity } : {}),
-      ...entry.pendingMeta,
-    };
-    entry.pendingMeta = {};
-    try {
-      this.onStateChange?.(entry.info.sessionId, {
-        type: event,
-        model: entry.info.model,
-        content: this.frameContent(entry, event, tool),
-        elapsedSeconds: entry.info.elapsedSeconds,
-        createdAt: entry.info.startedAt,
-        extraMeta,
-      });
-    } catch {
-      // a notification consumer must never break the session
-    }
-  }
-
-  private frameContent(entry: SessionEntry, event: ChannelEventType, tool: string | null): string {
-    const info = entry.info;
-    switch (event) {
-      case "running":
-        return "The turn is running.";
-      case "tool_executing":
-        return `Using ${tool}.`;
-      case "waiting_for_input":
-        return entry.blockText
-          ? `The model asked a question; send_input declines it and becomes the next prompt.\n${entry.blockText}`
-          : "The turn finished; waiting for send_input.";
-      case "awaiting_permission":
-        return `A permission dialog is open for ${info.activity ?? "a tool"}; send_input declines it and becomes the next prompt.${entry.blockText ? `\n${entry.blockText}` : ""}`;
-      case "completed":
-        return `Session completed (${info.turnsCompleted} turn(s)). Call get_output for the answer.`;
-      case "cancelled":
-        return "Session cancelled.";
-      case "timeout":
-        return `Timeout after ${info.timeoutSeconds}s; the pane was closed.`;
-      case "failed":
-        return `${info.state} ${info.reason ?? ""}${info.detail ? `: ${info.detail}` : ""}`.trim();
-      default:
-        return "";
     }
   }
 
@@ -1343,7 +1240,7 @@ export class SessionManager {
     return {
       sessionId,
       state: info.state,
-      event: channelEventFor(info).event,
+      event: sessionEventFor(info).event,
       reason: isTerminalState(info.state) && info.state !== "COMPLETED" ? info.reason : null,
       detail: info.detail,
       // The resolved chain, both halves: what the caller asked for, and the pinned
@@ -1472,7 +1369,14 @@ export class SessionManager {
 
   /** `list_sessions` rows (§8 B). */
   listSessionRows(includeCompleted = false): SessionRow[] {
-    return this.listSessions(includeCompleted).map(sessionRowOf);
+    const rows: SessionRow[] = [];
+    for (const entry of this.sessions.values()) {
+      this.refresh(entry);
+      if (!includeCompleted && isTerminalState(entry.info.state)) continue;
+      const info = { ...entry.info };
+      rows.push(sessionRowOf(info, upstreamRecordsFor(info, entry.upstreamErrorLogPath)));
+    }
+    return rows;
   }
 
   /** A single session's info; falls back to `<sessionsDir>/<id>/meta.json`. */
@@ -1619,7 +1523,7 @@ export class SessionManager {
     return {
       sessionId: info.sessionId,
       state: info.state,
-      event: channelEventFor(info).event,
+      event: sessionEventFor(info).event,
       reason: info.reason,
       detail: info.detail,
       model: info.model,
@@ -1776,7 +1680,7 @@ export class SessionManager {
         wait: "closed",
         since: entry.waitSince ?? at,
         at,
-        to: channelEventFor(snap).event,
+        to: sessionEventFor(snap).event,
       });
       entry.waitSince = null;
     }
@@ -1791,7 +1695,7 @@ export class SessionManager {
     entry: SessionEntry,
     line:
       | { wait: "open"; since: string; turns: number }
-      | { wait: "closed"; since: string; at: string; to: ChannelEventType }
+      | { wait: "closed"; since: string; at: string; to: SessionEventType }
   ): void {
     if (entry.waitLogBytes >= WAIT_LOG_LIMIT) return;
     const payload = `${JSON.stringify(line)}\n`;

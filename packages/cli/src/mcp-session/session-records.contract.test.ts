@@ -1,4 +1,4 @@
-// packages/cli/src/channel/session-records.contract.test.ts
+// packages/cli/src/mcp-session/session-records.contract.test.ts
 /**
  * The record half that the 10.4.0 suites assume and pane sessions must now produce
  * (architecture §12.3, §20.1): `meta.json` keeps every 10.4.0 key with its 10.4.0 type,
@@ -297,7 +297,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live records", () => {
   );
 
   test(
-    "RB3 a question in a channel session opens one wait; send_input declines it and closes it to running",
+    "RB3 a question in a session opens one wait; send_input declines it and closes it to running",
     async () => {
       const id = await created({ model: "fake-ask_user_send", prompt: "ask me something" });
       const blocked = await waitRow(id, (r) => r.state === "AWAITING_INPUT", "the question");

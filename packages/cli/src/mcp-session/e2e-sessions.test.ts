@@ -1,9 +1,9 @@
 /**
- * E2E tests for channel mode using real Claude Code.
+ * E2E tests for session tools using real Claude Code.
  *
  * Spawns `claude -p` with `--mcp-config` pointing at our MCP server and
  * validates the full flow: Claude Code connects to our server, discovers
- * tools, calls them, and receives channel notifications.
+ * tools, calls them, and polls session output.
  *
  * Tests are grouped by what they validate:
  *   Group 1: MCP server protocol (capabilities, tools) — via SDK client
@@ -42,7 +42,7 @@ const hasOpenRouterKey = SKIP_LIVE_E2E ? false : await hasCredential("openrouter
 // ─── Group 1: MCP Protocol Tests (SDK Client) ───────────────────────────────
 // Validates the MCP server itself works correctly at the protocol level.
 
-describe("Group 1: MCP Protocol — channel capability", () => {
+describe("Group 1: MCP Protocol — session tools", () => {
   let client: Client;
   let transport: StdioClientTransport;
 
@@ -72,16 +72,18 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     } catch {}
   });
 
-  test("declares experimental claude/channel capability", () => {
+  test("does not declare an experimental capability", () => {
     const caps = client.getServerCapabilities();
-    expect(caps?.experimental?.["claude/channel"]).toBeDefined();
+    expect(caps).toHaveProperty("tools");
+    expect(caps).not.toHaveProperty("experimental");
   });
 
-  test("provides instructions containing channel event docs", () => {
+  test("provides polling instructions without channel or notification docs", () => {
     const instructions = client.getInstructions();
-    expect(instructions).toContain("session_id");
-    expect(instructions).toContain("input_required");
-    expect(instructions).toContain("completed");
+    expect(instructions).toContain("list_sessions");
+    expect(instructions).toContain("get_output");
+    expect(instructions).not.toContain("<channel");
+    expect(instructions).not.toContain("notification");
   });
 
   test("lists the exact public tool list", async () => {
@@ -169,11 +171,6 @@ describe("Group 1: MCP Protocol — channel capability", () => {
   test.skipIf(!hasOpenRouterKey)(
     "create_session → poll → get_output lifecycle",
     async () => {
-      const notifications: any[] = [];
-      client.fallbackNotificationHandler = async (n: any) => {
-        if (n.method === "notifications/claude/channel") notifications.push(n.params);
-      };
-
       const res = await client.callTool({
         name: "create_session",
         arguments: {
@@ -220,28 +217,6 @@ describe("Group 1: MCP Protocol — channel capability", () => {
       const out = await client.callTool({ name: "get_output", arguments: { session_id: sid } });
       const output = JSON.parse((out.content as any)[0].text);
       expect(output.output.length).toBeGreaterThan(0);
-      expect(notifications.length).toBeGreaterThan(0);
-
-      // All notifications must carry required meta fields
-      for (const n of notifications) {
-        expect(n.meta.session_id).toBe(sid);
-        expect(n.meta.event).toBeDefined();
-        expect(n.meta.model).toBeDefined();
-        expect(n.meta.elapsed_seconds).toBeDefined();
-      }
-
-      // At least one "running" event (first output triggers starting → running)
-      const events = notifications.map((n: any) => n.meta.event as string);
-      expect(events).toContain("running");
-
-      // Last event must be a terminal state
-      const lastEvent = events[events.length - 1];
-      expect(["completed", "failed"]).toContain(lastEvent);
-
-      // No terminal event before a "running" event
-      const firstRunningIdx = events.indexOf("running");
-      const firstTerminalIdx = events.findIndex((e: string) => e === "completed" || e === "failed");
-      expect(firstTerminalIdx).toBeGreaterThan(firstRunningIdx);
     },
     150_000
   );
@@ -251,7 +226,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
 // Validates that CLAUDISH_MCP_TOOLS env var correctly limits which tools are
 // exposed by the MCP server.
 
-describe("Group 1b: MCP Protocol — channel-only tools", () => {
+describe("Group 1b: MCP Protocol — session-only tools", () => {
   let client: Client;
   let transport: StdioClientTransport;
 
@@ -263,13 +238,13 @@ describe("Group 1b: MCP Protocol — channel-only tools", () => {
         Object.entries({
           ...process.env,
           CLAUDISH_PANE_CHILD: undefined,
-          CLAUDISH_MCP_TOOLS: "channel",
+          CLAUDISH_MCP_TOOLS: "session",
           CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
         }).filter((entry): entry is [string, string] => entry[1] !== undefined)
       ),
       stderr: "pipe",
     });
-    client = new Client({ name: "test-client-channel", version: "1.0.0" }, { capabilities: {} });
+    client = new Client({ name: "test-client-session", version: "1.0.0" }, { capabilities: {} });
     await client.connect(transport);
   }, 15000);
 
@@ -279,7 +254,7 @@ describe("Group 1b: MCP Protocol — channel-only tools", () => {
     } catch {}
   });
 
-  test("lists only the 7 channel tools when CLAUDISH_MCP_TOOLS=channel", async () => {
+  test("lists only the 7 session tools when CLAUDISH_MCP_TOOLS=session", async () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -322,12 +297,72 @@ describe("Group 1b: MCP Protocol — low-level-only tools", () => {
     } catch {}
   });
 
-  test("lists only the 4 low-level tools when CLAUDISH_MCP_TOOLS=low-level", async () => {
+  test("lists only the 3 low-level tools when CLAUDISH_MCP_TOOLS=low-level", async () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["compare_models", "list_models", "run_prompt", "search_models"]);
+    expect(names).toEqual(["list_models", "run_prompt", "search_models"]);
   });
 });
+
+for (const [toolMode, expected] of [
+  [
+    "channel",
+    [
+      "cancel_session",
+      "capture_session",
+      "compare_models",
+      "create_session",
+      "get_diagnostics",
+      "get_output",
+      "list_models",
+      "list_sessions",
+      "preflight",
+      "report_error",
+      "run_prompt",
+      "search_models",
+      "send_input",
+      "team",
+    ],
+  ],
+  ["debug", ["compare_models"]],
+] as const) {
+  describe(`Group 1b: MCP Protocol — CLAUDISH_MCP_TOOLS=${toolMode}`, () => {
+    let client: Client;
+    let transport: StdioClientTransport;
+
+    beforeAll(async () => {
+      transport = new StdioClientTransport({
+        command: "bun",
+        args: ["run", SERVER_ENTRY, "--mcp"],
+        env: Object.fromEntries(
+          Object.entries({
+            ...process.env,
+            CLAUDISH_PANE_CHILD: undefined,
+            CLAUDISH_MCP_TOOLS: toolMode,
+            CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+          }).filter((entry): entry is [string, string] => entry[1] !== undefined)
+        ),
+        stderr: "pipe",
+      });
+      client = new Client(
+        { name: `test-client-${toolMode}`, version: "1.0.0" },
+        { capabilities: {} }
+      );
+      await client.connect(transport);
+    }, 15000);
+
+    afterAll(async () => {
+      try {
+        await transport.close();
+      } catch {}
+    });
+
+    test(`lists the exact tools for CLAUDISH_MCP_TOOLS=${toolMode}`, async () => {
+      const result = await client.listTools();
+      expect(result.tools.map((tool) => tool.name).sort()).toEqual([...expected]);
+    });
+  });
+}
 
 // ─── Group 2: Real Claude Code Integration ───────────────────────────────────
 // Spawns `claude -p` with our MCP server registered via --mcp-config.
@@ -486,7 +521,7 @@ if (!SKIP_LIVE_E2E) {
 
 if (!claudeUsable) {
   console.warn(
-    "[e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated " +
+    "[e2e-sessions] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated " +
       "(needs ANTHROPIC_API_KEY or a headless-usable claude.ai login)."
   );
 }
@@ -538,7 +573,7 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
   );
 
   test.skipIf(!claudeUsable)(
-    "claude discovers channel tools (create_session, list_sessions)",
+    "claude discovers session tools (create_session, list_sessions)",
     async () => {
       const { stdout, exitCode } = await runClaudeWithMcp(
         "Call the list_sessions tool from the claudish MCP server with include_completed=true. Output the raw JSON result.",

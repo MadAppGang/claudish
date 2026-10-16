@@ -1,4 +1,4 @@
-// packages/cli/src/channel/team-run-record.contract.test.ts
+// packages/cli/src/mcp-session/team-run-record.contract.test.ts
 /**
  * Black-box contract tests for the team-run record and its exactly-once end
  * (design §3.3 "Team record", `finishTeamRun`; §8.1 tests 15, 17b; amendment 4).

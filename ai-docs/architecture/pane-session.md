@@ -6,7 +6,7 @@ Every MCP `team` slot (`run`, `run-and-judge` and the judge children), every CLI
 over that pane's socket. There is no `-p`, no `--stdin`, no stream-json and no positional prompt
 anywhere in that path. The driver is `packages/cli/src/pane/`; its public surface is
 `pane/index.ts` and its live object is `PaneSession`. Team (`team-orchestrator.ts`) and the
-channel (`channel/session-manager.ts`) are its two owners.
+MCP sessions (`mcp-session/session-manager.ts`) are its two owners.
 
 One exception: CLI `--grid` (`team-grid.ts`) still launches `claudish --model X -y --quiet
 '<prompt>'` print-mode children in a VISIBLE magmux with `-w`. It is a viewer for a human, not
@@ -115,12 +115,19 @@ route: a pane child receives every prompt the way a user gives it — typed, pas
 ## Boot: read from screen content, and never accept a dialog
 
 Boot is ready when the screen shows the REPL input box — a full-width `─` rule, a row starting
-`❯` + U+00A0, a second rule — with nothing typed, for 500 ms. Placeholder text in the box carries
+`❯` + U+00A0, a second rule — with nothing typed, for 3 s (`REPL_STABLE_MS`). Placeholder text in the box carries
 magmux attribute 2 (faint) and does not count as typed. Under `--agent` the top rule carries the
 agent's name at its right end (`──── dev:reviewer ─`); `isBoxRule` accepts that one label, and
 until 10.4.2 it did not, so every slot given an `agent` failed `boot_timeout` at 90 s with a ready
 box on screen (fixture `repl-boot-agent`). Measured spawn → empty box: 0.67–1.97 s
 with catalog warm-up off; the ≈11 s of earlier research included claudish's 4–7 s catalog warm-up.
+
+**Why 3 s and not 500 ms.** Claude Code draws the box and then, 1–2 s later, resets stdin (a
+termios cooked→raw blip). A line typed into that window is lost or sits in the box unsubmitted, in
+normal editor mode as well as vim. Measured 2026-10-16 (Claude Code 2.1.301, magmux 0.15.1, magmux
+owner): with the box stable for 500 ms and `--settings {"editorMode":"normal"}`, 2/2 team slots
+failed `prompt_not_accepted`, the retry failed one, and the third try got through. A stable box is
+not proof the child reads its input, so boot waits the reset out; the cost is ≈2.5 s per boot.
 
 What blocks boot is decided by **"no input box"**, and named by a closed list:
 
@@ -135,7 +142,15 @@ accepting one on the user's behalf (trusting a folder, enabling a project's MCP 
 decision claudish has no standing to make. The bypass-permissions dialog is the one that `-y`
 itself would cause, so it is suppressed instead: a pane child's `--settings` overlay carries
 `skipDangerousModePermissionPrompt: true`, gated on `isPaneChild()` (`CLAUDISH_PANE_CHILD=1` AND
-`CLAUDISH_PANE_CWD`) so no other launch gets it (D5). The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
+`CLAUDISH_PANE_CWD`) so no other launch gets it (D5). The same overlay, on the same gate, carries
+`editorMode: "normal"`: a user `editorMode: "vim"` leaves the box in `-- INSERT --`, the submit
+Enter is swallowed, the typed prompt sits unsent, and every slot fails `prompt_not_accepted` with
+anomaly `resent_enter` (measured 2026-10-16, Claude Code 2.1.301, magmux 0.15.1). Claude Code
+merges settings per key, so the user's other settings still apply. Claude Code keeps only the LAST
+`--settings` flag, so a caller's `claude_flags --settings` is merged into claudish's temp file
+(`mergeUserSettingsIfPresent`) and one `--settings <path>` is emitted; in a pane `editorMode` is
+forced over the caller's. magmux 0.16.0 forces the same value for its panes; once it is the
+minimum, this key can go. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
 `ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
@@ -251,7 +266,7 @@ dialog also needs the screen: `hasChoiceDialog` is a CLOSED list (R3-H1) — a n
 below the last `⏺` block, and no input box. An unrecognised layout is "not a dialog", an honest
 unknown, never `blocked`: numbered prose with a `No, …(esc)` line over a running Bash is a captured
 negative fixture. The owner decides what a block means: team fails the slot `blocked` with the
-question as its detail (D19, team has no answering verb); the channel waits in AWAITING_INPUT or
+question as its detail (D19, team has no answering verb); an MCP session waits in AWAITING_INPUT or
 AWAITING_PERMISSION. A caller reaches a permission dialog only through `--permission-mode plan`:
 `-y` beats `--permission-mode default`, and `--no-auto-approve` is reserved.
 
@@ -312,8 +327,18 @@ magmux refused it (`busy`, `pane_*`) or it was never written; when the REPLY was
 (`client_timeout`, `client_lost`) magmux may already have typed it, so the next frame decides: the
 line in the box (or, for an Enter send, its witness or echo) means it landed (`send_reply_lost`), and
 only an empty box is typed again — a blind retry put the line in the box twice and no witness could
-match. With no witness 10 s after delivery, a line still in the box gets one more Enter
-(`resent_enter`). A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
+match. With no witness 10 s after delivery, a line still in the box is cleared with ctrl-u, retyped
+once and submitted (`resent_enter`, then `retyped_prompt`): a line typed into the startup stdin
+reset (Boot, above) may show in the box without the child holding it as input, so a bare
+second Enter cannot be relied on to submit it. The first frame after ctrl-u is not evidence: under
+load it can be a stale redraw still holding the line (report-F, three parallel slots: ctrl-u at
++1020 ms, the empty box first drawn at +1830 ms; a single 500 ms frame wait read the stale box,
+pressed a bare Enter on a box ctrl-u had already emptied, and the prompt was lost). So frames are
+read until the box stops showing the line, for up to `NUDGE_CLEAR_DEADLINE_MS` (3 s, ~3.7x the
+measured 810 ms): an empty box is retyped, a box holding anything else is `clear_failed` and
+nothing is typed, and only a line STILL in the box at the deadline gets the old remedy, one more
+Enter. A second copy is never typed while the first could still be in the box. The retyped line is the same line, so the witness and read coverage
+are unchanged. A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
 input swallowed until Esc) gets an Esc 500 ms after delivery (`panel_dismissed`), and once the empty
 box is back its admission ends without a turn (`panel_command`); it used to wait the 30 s bound and
 was then taken as a degraded acceptance. The prompt a session was CREATED with must be accepted
@@ -401,9 +426,12 @@ A process with `inMcpSession() && !isPaneChild()` is one level deep already. Two
   line and is not used for nesting.
 - **`claudish --mcp` is restricted, not refused.** It registers only `run_prompt`, `compare_models`,
   `list_models` and `search_models`, declares no channel capability and uses the nested
-  instructions; see [`mcp-channel.md`](mcp-channel.md) § Nested mode. `run_prompt` and
-  `compare_models` start no child: they call a proxy in the MCP server's own process
-  (`runPromptViaProxy`), so no `claudish -p` exists to be refused.
+  instructions; see [`mcp-sessions.md`](mcp-sessions.md) § Nested mode. `compare_models`, and
+  `run_prompt` on a foreign model, start no child: they call a proxy in the MCP server's own
+  process (`runPromptViaProxy`). `run_prompt` on a Claude model starts one `claudish -p` with
+  `CLAUDISH_PANE_CHILD` dropped from its environment, so the nested refusal does not apply to it.
+  That child is a leaf: no tools, no MCP servers, no setting sources, no slash commands
+  (`mcp/run-prompt-claude-code.ts`), so it cannot start a session and the depth stays one.
 
 This stops ACCIDENTAL recursion, a model reaching for the tools it was given. It is not a
 containment boundary: `env -u CLAUDISH_PANE_CHILD claudish -p …` passes it, and so does anything
@@ -521,7 +549,7 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   300 ms apart, so N REPLs do not write `~/.claude.json` in the same instant.
 - **No claudish timer ends a team slot after its prompt was accepted.** Boot and admission bound
   only the time before any work exists. Stop hooks and background agents are waited for without a
-  bound. A channel session's `timeout_seconds` is the caller's own deadline and the only
+  bound. An MCP session's `timeout_seconds` is the caller's own deadline and the only
   post-acceptance timer. See [`team-lifecycle.md`](team-lifecycle.md).
 
 ## The phase table
@@ -560,6 +588,17 @@ type and new fields may only be added.
   pricing, fictional spend for a subscription user; D12), tool calls, turns completed,
   `last_activity_at`, `idle_seconds`, `activity` (`thinking`, `background`, `finishing`, a tool name,
   `AskUserQuestion`; unknown values mean busy) and `pane`.
+- `reason_detail` (added within v1, 2026-10-16) is one line, at most 160 characters, saying why
+  `reason`: for `api_error` the provider's `error.message` from the LAST record of the upstream-error
+  capture (`errors/<slot>-upstream.jsonl` for team, `upstream-errors.jsonl` for a session), else the
+  child's API-error text with claudish's "The turn ended in an API error (status N): API Error: N"
+  boilerplate stripped; for every other reason, the first line of the verdict's detail (the dialog or
+  screen text of `boot_blocked` / `first_run_dialog`, the question of `blocked`, the exit line of
+  `child_exited`, the refusal of `agent_rejected`). Null on every non-terminal state, on COMPLETED,
+  and when nothing readable exists. Only `error.message` is ever lifted from an upstream body —
+  bodies carry `user_id`. One pure function, `reasonDetail()` in `pane/reason-detail.ts`, computes
+  it for both row builders (`toSlotRow` / `teamRunRowFromDisk` and `sessionRowOf`); the capture file
+  is read (16 KB tail) only for a terminal `api_error` row.
 - Verbs: `team(mode="list")` → `{contract_version, capabilities, runs}`; `team(mode="status")` adds
   `contract_version`, `capabilities` and a `run` row to its payload; `team(mode="cancel")` and
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`

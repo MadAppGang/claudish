@@ -1,4 +1,4 @@
-// packages/cli/src/channel/spawn-record.contract.test.ts
+// packages/cli/src/mcp-session/spawn-record.contract.test.ts
 /**
  * Black-box contract tests for the start-time record `spawn.json` and its parent
  * conversation, end to end through a real claudish MCP server over stdio

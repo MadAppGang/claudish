@@ -393,7 +393,7 @@ sessions only.
 | `SessionInfo` | Additive. `turnsCompleted`/`tokensUsed` finally get real values; add `costUsd`, `toolCallCount`, `terminalReason`, `claudeSessionId`. Existing consumers unaffected. |
 | `get_output` | **Breaking if done naively.** Today it returns raw stdout. Fix: `output` keeps returning **prose** — `AnswerBuffer` (all assistant text, concatenated, exactly `team-stream-capture`'s contract), which is *strictly better* than today's final-message-only text. Add `format: "text" \| "events"` (default `"text"`) and an `events` array behind the opt-in. Callers see more content in the same field, never JSON they did not ask for. |
 | `list_sessions` | Unchanged shape. |
-| channel notifications | Unchanged wire format. The 7-value `event` enum is preserved; every value becomes *reachable* for the first time. `channel-wire-format.test.ts` stays green. |
+| channel notifications | Unchanged wire format. The 7-value `event` enum is preserved; every value becomes *reachable* for the first time. `session-wire-format.test.ts` stays green. |
 | `EVENT_TO_TASK_STATUS` | Unchanged. Add `["timeout","failed"]` for completeness once `"timeout"` can actually be emitted (§6.1). |
 
 ---
