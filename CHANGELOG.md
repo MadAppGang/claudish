@@ -2,6 +2,50 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.7.0] - 2026-10-16
+
+### ⚠ BREAKING CHANGES
+
+- hosts started with `--channels` no longer receive *(mcp)* ([`753a3c3`](https://github.com/MadAppGang/claudish/commit/753a3c3e87ba611afd7609394a4f58a69bf98ff9))
+- CLAUDISH_MCP_TOOLS=channel now selects all tools. Set *(mcp)* ([`46ad7b7`](https://github.com/MadAppGang/claudish/commit/46ad7b787c27ca5d969e8217b614d326ecb772b3))
+
+### Bug Fixes
+
+- wait for the cleared input box before retyping the prompt *(team)* ([`62c58b5`](https://github.com/MadAppGang/claudish/commit/62c58b5962738414d80b383c23d8628db0c5ea85))
+- warn on an unknown CLAUDISH_MCP_TOOLS value *(mcp)* ([`29b0b23`](https://github.com/MadAppGang/claudish/commit/29b0b230216f981f6328596fbf84b285984c565b))
+- fill a missing max_tokens from the catalog, not 4096 *(adapters)* ([`ebed28e`](https://github.com/MadAppGang/claudish/commit/ebed28e3f220f5b214821ce0a037c534bb180887))
+- wait out Claude Code's stdin reset before typing the prompt *(team)* ([`b119b54`](https://github.com/MadAppGang/claudish/commit/b119b54803ca7ee862a43dd5ffb287225a7b137a))
+- force editorMode normal in pane children *(team)* ([`87d3194`](https://github.com/MadAppGang/claudish/commit/87d31943fb03e5d1c8af822be80c6a7b2b3af1e4))
+- report the package version instead of 9.0.0 in serverInfo *(mcp)* ([`6280236`](https://github.com/MadAppGang/claudish/commit/6280236938c9382a29176d22ce03e8b455d219e1))
+- remove max_tokens from run_prompt and compare_models *(mcp)* ([`bfc6857`](https://github.com/MadAppGang/claudish/commit/bfc685705817b4238950c185277c678675302588))
+- send Claude models in run_prompt to claudish -p, not the proxy *(mcp)* ([`a8ea269`](https://github.com/MadAppGang/claudish/commit/a8ea269a5c4722fb2fa61472b12d8af51c948987))
+
+### Documentation
+
+- record the 10.7.0 validation and the pane follow-ups *(mcp)* ([`903c1f4`](https://github.com/MadAppGang/claudish/commit/903c1f4360523aa3a84964e56fbbd3aa369a8482))
+- update CHANGELOG.md for v10.6.3([`2f005e2`](https://github.com/MadAppGang/claudish/commit/2f005e20107377c2810b96c0897f1f9fb1425d14))
+- add the magus handoff for this branch's MCP surface changes *(mcp)* ([`1f9f83b`](https://github.com/MadAppGang/claudish/commit/1f9f83b9826ce5a72c9f3113ee4529e6128470de))
+- record why a session with background agents never settles *(reports)* ([`e027f11`](https://github.com/MadAppGang/claudish/commit/e027f11a0805fec72b3df61ece679679c89d78f8))
+- close the channel notification phases as removed *(roadmap)* ([`e932e61`](https://github.com/MadAppGang/claudish/commit/e932e6162c88375abef96644a9e29d06cbb0bb63))
+- record run_prompt's Claude Code path and the push removal *(mcp)* ([`3fe4980`](https://github.com/MadAppGang/claudish/commit/3fe49800059a45f57774c2878ddff5bc370b98d5))
+- document run_prompt's Claude path and session polling *(mcp)* ([`4aec497`](https://github.com/MadAppGang/claudish/commit/4aec4975fdafdfb3de2a50bcba450a4cc10a2920))
+
+### New Features
+
+- add reason_detail to SlotRow *(team)* ([`059cb25`](https://github.com/MadAppGang/claudish/commit/059cb2535271206209746e294abbf39339afe97f))
+- stop sending notifications/claude/channel *(mcp)* ([`753a3c3`](https://github.com/MadAppGang/claudish/commit/753a3c3e87ba611afd7609394a4f58a69bf98ff9))
+- add the debug tool group and move compare_models into it *(mcp)* ([`0a28db6`](https://github.com/MadAppGang/claudish/commit/0a28db6862cf528a8e6f343c0467f068eb0902cf))
+- rename the channel tool group to session *(mcp)* ([`46ad7b7`](https://github.com/MadAppGang/claudish/commit/46ad7b787c27ca5d969e8217b614d326ecb772b3))
+
+### Other Changes
+
+- v10.7.0 *(release)* ([`d38fba8`](https://github.com/MadAppGang/claudish/commit/d38fba803070d27021135455a9f66ec0b7e5606b))
+
+### Refactoring
+
+- rename the channel module and vocabulary to session *(session)* ([`a13d7e4`](https://github.com/MadAppGang/claudish/commit/a13d7e4caf8b17c4428641663522c92868a324a0))
+- delete the frame emitter and the trace diagnostics *(channel)* ([`7751901`](https://github.com/MadAppGang/claudish/commit/7751901c1e1e0e9d1c9927b7e7e5868faa6d0cd4))
+
 ## [10.6.3] - 2026-10-16
 
 ### Bug Fixes
