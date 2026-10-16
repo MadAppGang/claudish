@@ -337,6 +337,34 @@ it is a wire contract, and an accidental change to the tool surface should be lo
 
 Tool gating via `CLAUDISH_MCP_TOOLS` env var: `all` (default), `low-level`, `agentic`, `channel`.
 
+### Nested mode
+
+A claudish MCP server whose environment has `CLAUDISH_PANE_CHILD=1` (`inMcpSession()`) runs inside a
+session that a claudish owner started: Claude Code in a `create_session` or `team` pane started it
+as a plugin server. One level of nesting is the limit (why, and the CLI side of the rule:
+[`pane-session.md`](pane-session.md) § One level of nesting). Such a server:
+
+- registers only `NESTED_MCP_TOOL_NAMES` (`mcp/nested-mode.ts`): `run_prompt`, `compare_models`,
+  `list_models`, `search_models`. The rule is that a tool is kept only if it is a one-shot call that
+  starts no session, no pane and no claudish child. `team` and every channel tool start or act on
+  sessions. `preflight` and `report_error` are out as well, so the nested surface is exactly the
+  low-level group;
+- INTERSECTS that list with the groups `CLAUDISH_MCP_TOOLS` enables and never widens them:
+  `all`, unset or `low-level` give 4 tools, `agentic` or `channel` give 0. Any value still yields no
+  session tool, which matters because madbench forces `all` and an env snapshot can carry the
+  variable;
+- filters by NAME and fails closed. A tool added later is absent in nested mode until someone lists
+  it, whereas a group filter would admit any future tool of its group;
+- declares no `claude/channel` capability and sends no channel frames (`channelEnabled` is false);
+- answers `initialize` with `NESTED_INSTRUCTIONS` in place of the channel-mode text, so the model
+  reads why the session tools are absent;
+- drops the "use the `report_error` tool" hint from `run_prompt`'s and `compare_models`' error
+  texts, since that tool is not registered;
+- logs `[claudish] MCP server started (tools: nested, 4 tools)`.
+
+A call to a removed tool takes the ordinary unknown-tool path:
+`isError: true`, `Error: Unknown tool "create_session"`.
+
 ## Tool Registration Pattern
 
 Uses a `ToolDefinition[]` registry with raw JSON Schema (not Zod). Two `setRequestHandler` calls replace McpServer's ergonomic API:
