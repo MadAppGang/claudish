@@ -25,13 +25,13 @@ Cycle de surveillance local au workspace `claudish` pour la migration envisagée
 ## Arbitrages user en vigueur (31 août 2026)
 
 - **ai-01** : le bypass du sidecar est délibéré, car son relai avait été constaté défaillant. Le client reste direct sur l'IP du hub. Aucun repointage vers `localhost:3002` avant une batterie de tests renforcée : image à jour, NOMINAL prouvé par absence de `[Request]` locale, egress depuis le conteneur, attribution hub préservée, tour Opus natif réel depuis Claude Code, failover AUTONOMOUS + hystérésis, never-hang mid-stream et cascade locale armée.
-- **po-2026** : corriger le sidecar oublié selon **stop & repair, never workaround**. Une éventuelle décommission complète doit être proposée explicitement au user, jamais décidée silencieusement.
+- **po-2026** : corriger le sidecar oublié selon **stop & repair, never workaround** — **gelé : machine HS matériel depuis le 10/10 (Maintenance#91)**, aucune demande de réparation ne lui est adressée tant qu'elle est hors service. Une éventuelle décommission complète doit être proposée explicitement au user, jamais décidée silencieusement.
 - **RAM po-2025** : réglages délégués à l'agent local. Mesurer avant de proposer. Réglage de travail : `memory=16GB`, `swap=16GB`, `autoMemoryReclaim=gradual`, `vmIdleTimeout=-1`. Gates : GO si RAM libre ≥4 Go et commit <90 % ; no-go si RAM ≤2 Go ou commit ≥92 %. Ne jamais appliquer sans fenêtre et validation explicites.
 
 ## Matrice P0 à maintenir
 
 - Ancrages directs ai-01 et preuve du futur chemin de bascule/rollback.
-- Réparation du sidecar po-2026.
+- Réparation du sidecar po-2026 — **gelée : machine HS matériel depuis le 10/10** (dead record, cf. `docs/deployment/relay-sidecar-deployment.md`).
 - Baselines RAM active et calme sur po-2025, puis réglages proposés.
 - Exports formels IIS/DNS/XML.
 - Audit `localhost` / `customEndpoints`, notamment vLLM.
