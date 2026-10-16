@@ -121,6 +121,23 @@ export class FallbackHandler implements ModelHandler {
           return response;
         }
 
+        // A CREDENTIAL VERDICT leaves this handler untouched too, for the
+        // recovery hold's second reason: folded into `formatCombinedError`, a
+        // transient 503 behind an earlier candidate's 404 became a terminal 400
+        // (`exhaustedChainStatus` is 503 only when EVERY error is transient), so
+        // Claude Code stopped instead of retrying the same hop, and the verdict
+        // header was dropped. A terminal verdict keeps its exact message and
+        // `upstream_status` the same way (`auth-failure.ts`).
+        const verdict = authVerdict(response.headers);
+        if (verdict) {
+          if (errors.length > 0) {
+            logStderr(
+              `[Fallback] ${name}: credential ${verdict === "terminal" ? "rejected" : "temporarily unavailable"} — stopping the chain here.`
+            );
+          }
+          return response;
+        }
+
         // Clone before reading body so we can still return the original if needed
         const errorBody = await response.clone().text();
 
