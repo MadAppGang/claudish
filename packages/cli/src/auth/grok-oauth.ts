@@ -29,6 +29,7 @@
  */
 
 import { log } from "../logger.js";
+import { credentialHttpError, terminalCredentialError } from "./credentials/credential-error.js";
 import { type BaseCredentials, OAuthManager } from "./oauth-manager.js";
 
 /** OIDC issuer for the Grok CLI's identity provider. */
@@ -164,7 +165,9 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   protected async doRefreshToken(): Promise<string> {
     const current = this.credentials;
     if (!current) {
-      throw new Error(`No Grok credentials found. Please run \`${this.loginHint}\` first.`);
+      throw terminalCredentialError(
+        `No Grok credentials found. Please run \`${this.loginHint}\` first.`
+      );
     }
 
     const body = new URLSearchParams({
@@ -183,8 +186,16 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
     if (!response.ok || !parsed.access_token) {
       const detail = parsed.error_description ?? parsed.error ?? `HTTP ${response.status}`;
       // `invalid_grant` means the refresh token is dead — only a new login
-      // fixes it, so say that rather than leaving the user to guess.
-      throw new Error(
+      // fixes it, so say that rather than leaving the user to guess. A 429 or
+      // 5xx from the token host is NOT that: it is marked transient, so the
+      // request retries instead of stopping on a login instruction.
+      if (!response.ok) {
+        throw credentialHttpError(
+          `Grok token refresh failed: ${detail}. Run \`${this.loginHint}\` to sign in.`,
+          response.status
+        );
+      }
+      throw terminalCredentialError(
         `Grok token refresh failed: ${detail}. Run \`${this.loginHint}\` to sign in.`
       );
     }

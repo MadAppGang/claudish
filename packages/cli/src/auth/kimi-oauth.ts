@@ -21,8 +21,14 @@ import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeSync } 
 import { homedir, hostname, platform, release } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { classifyConnectionError } from "../handlers/shared/connection-error.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
+import {
+  credentialHttpError,
+  isTransientCredentialError,
+  terminalCredentialError,
+} from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
 
@@ -449,7 +455,9 @@ export class KimiOAuth {
 
     // Check if we have credentials
     if (!this.credentials) {
-      throw new Error("No Kimi OAuth credentials found. Please run `claudish login kimi` first.");
+      throw terminalCredentialError(
+        "No Kimi OAuth credentials found. Please run `claudish login kimi` first."
+      );
     }
 
     // Check if token is still valid (with 5-minute buffer)
@@ -481,7 +489,9 @@ export class KimiOAuth {
    */
   private async doRefreshToken(): Promise<string> {
     if (!this.credentials) {
-      throw new Error("No Kimi OAuth credentials found. Please run `claudish login kimi` first.");
+      throw terminalCredentialError(
+        "No Kimi OAuth credentials found. Please run `claudish login kimi` first."
+      );
     }
 
     log("[KimiOAuth] Refreshing access token");
@@ -507,7 +517,10 @@ export class KimiOAuth {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Token refresh failed: ${response.status} - ${errorText}`);
+        throw credentialHttpError(
+          `Token refresh failed: ${response.status} - ${errorText}`,
+          response.status
+        );
       }
 
       const tokens = (await response.json()) as TokenResponse;
@@ -532,6 +545,11 @@ export class KimiOAuth {
     } catch (e: any) {
       log(`[KimiOAuth] Refresh failed: ${e.message}`);
 
+      // A token host that is down or busy (network fault, 429, 5xx) says
+      // nothing about the login. Keep the credentials and let the request
+      // retry; deleting them here turned a blip into a forced re-login.
+      if (isTransientCredentialError(e) || classifyConnectionError(e)) throw e;
+
       // Delete invalid credentials
       const credPath = this.getCredentialsPath();
       if (existsSync(credPath)) {
@@ -548,7 +566,7 @@ export class KimiOAuth {
       }
 
       // No API key available, throw error with instructions
-      throw new Error(
+      throw terminalCredentialError(
         `OAuth credentials invalid. Please re-login or set API key:\n  - Run: claudish login kimi\n  - Or set: export MOONSHOT_API_KEY='your-api-key'\n\nDetails: ${e.message}`
       );
     }

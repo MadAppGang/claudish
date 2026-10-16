@@ -34,6 +34,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log, logStderr } from "../logger.js";
+import { terminalCredentialError } from "./credentials/credential-error.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -413,7 +414,7 @@ let inFlight: Promise<string> | null = null;
 
 async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   if (process.platform !== "darwin") {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] The shared Antigravity token store is macOS-only for now. " +
         "Use g@<model> with GEMINI_API_KEY on this platform."
     );
@@ -421,7 +422,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
 
   const rec = parseRecord(deps.readStore());
   if (!rec) {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
         "or use g@<model> with GEMINI_API_KEY " +
         "(get one at https://aistudio.google.com/app/apikey)."
@@ -447,7 +448,14 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   // these four is fixed by signing in again. Reporting them all as "session
   // expired, re-login" sent users through an OAuth flow that could not help,
   // most often while agy was simply mid-self-update.
-  throw new Error(`[Antigravity] ${describeRefreshFailure(outcome)}`);
+  // What the outcome says about the login decides the error's class: a slow or
+  // failing `agy` is not a dead session (retryable), a missing CLI or a revoked
+  // session is (terminal). `credential-error.ts`.
+  const message = `[Antigravity] ${describeRefreshFailure(outcome)}`;
+  if (outcome.kind === "timeout")
+    throw Object.assign(new Error(message), { transient: true as const });
+  if (outcome.kind === "failed") throw new Error(message);
+  throw terminalCredentialError(message);
 }
 
 /** Turn a refresh outcome into the remediation that actually applies to it. */
@@ -529,7 +537,7 @@ export async function forceRefreshAntigravityToken(
   deps: AntigravityTokenDeps = defaultDeps
 ): Promise<string> {
   if (process.platform !== "darwin") {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] The shared Antigravity token store is macOS-only for now. " +
         "Use g@<model> with GEMINI_API_KEY on this platform."
     );
@@ -541,7 +549,7 @@ export async function forceRefreshAntigravityToken(
 
   const rec = parseRecord(deps.readStore());
   if (!rec) {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
         "or use g@<model> with GEMINI_API_KEY " +
         "(get one at https://aistudio.google.com/app/apikey)."
@@ -572,7 +580,7 @@ export async function forceRefreshAntigravityToken(
     writeSharedAntigravityToken(original, deps);
   }
   _resetAntigravityTokenState();
-  throw new Error(
+  throw terminalCredentialError(
     "[Antigravity] The Antigravity session was rejected upstream and could not be re-minted. " +
       "Run `claudish login antigravity` to sign in again."
   );

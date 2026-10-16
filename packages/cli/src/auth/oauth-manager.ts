@@ -25,6 +25,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
+import { terminalCredentialError } from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
 
@@ -129,7 +130,7 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
     }
 
     if (!this.credentials) {
-      throw new Error(
+      throw terminalCredentialError(
         `No ${this.providerName} credentials found. Please run \`${this.loginHint}\` first.`
       );
     }
@@ -147,7 +148,7 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
 
   async refreshToken(): Promise<void> {
     if (!this.credentials) {
-      throw new Error(
+      throw terminalCredentialError(
         `No ${this.providerName} credentials found. Please run \`${this.loginHint}\` first.`
       );
     }

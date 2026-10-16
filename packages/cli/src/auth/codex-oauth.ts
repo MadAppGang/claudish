@@ -22,6 +22,11 @@ import { promisify } from "node:util";
 import { markOwnTimeout } from "../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../handlers/shared/transient-retry.js";
 import { log } from "../logger.js";
+import {
+  credentialHttpError,
+  isTransientCredentialError,
+  terminalCredentialError,
+} from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
 
@@ -295,7 +300,10 @@ export class CodexOAuth {
     try {
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Token refresh failed: ${response.status} - ${errorText}`);
+        throw credentialHttpError(
+          `Token refresh failed: ${response.status} - ${errorText}`,
+          response.status
+        );
       }
 
       const tokens = (await response.json()) as TokenResponse;
@@ -323,10 +331,15 @@ export class CodexOAuth {
       return updatedCredentials.access_token;
     } catch (e: any) {
       log(`[CodexOAuth] Refresh failed: ${e.message}`);
+      // A 429/5xx from the token host is retryable and keeps its fields; it is
+      // not "credentials invalid" (`credential-error.ts`).
+      if (isTransientCredentialError(e)) throw e;
       // `{ cause }` here too: a connection reset while reading the response body
       // is a network fault that arrives after the fetch resolved.
-      throw new Error(
-        `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: ${e.message}`,
+      throw Object.assign(
+        terminalCredentialError(
+          `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: ${e.message}`
+        ),
         { cause: e }
       );
     }

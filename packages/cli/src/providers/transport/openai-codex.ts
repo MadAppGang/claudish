@@ -25,6 +25,7 @@ import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
 import { lookupModelForProvider } from "../../adapters/model-catalog.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
+import { isTransientCredentialError } from "../../auth/credentials/credential-error.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { conversationKey } from "./conversation-key.js";
@@ -54,6 +55,9 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
       // it and holds the request (CLAUDE.md: a connection failure wearing an
       // auth status, the five sites; this catch was a sixth that swallowed).
       if (classifyConnectionError(err)) throw err;
+      // A token host's 429/5xx is the same kind of fact: the subscription is
+      // there and busy, so the request retries rather than moving to metered.
+      if (isTransientCredentialError(err)) throw err;
       // The refresh was REJECTED (or no OAuth) → use the api-key path below.
       this.cachedAuth = null;
     }

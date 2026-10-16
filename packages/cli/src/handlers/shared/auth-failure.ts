@@ -28,13 +28,14 @@
  *
  * connection → terminal → transient → unknown. A connection fault is never
  * answered here at all: the caller runs connection recovery first, and only a
- * failure recovery could not place comes back. `unknown` on a SUBSCRIPTION is
- * answered as terminal, not transient: connection faults are classified first
- * and real transients carry `upstreamStatus` or `transient`, so what is left is
- * overwhelmingly a credential or configuration fault — Kimi's "No Kimi OAuth
- * credentials found. Please run `claudish login kimi` first." is a plain
- * `Error`. Answered 503 it would hide behind about two minutes of Claude Code's
- * silent retries; answered 400 it is read on the first attempt.
+ * failure recovery could not place comes back.
+ *
+ * The producers say what their failure is (`auth/credentials/credential-error.ts`):
+ * a missing login or a rejected grant is `terminal`, a token host's 429/5xx is
+ * `transient` with its status. What is left — `unknown` — is a failure nobody
+ * classified, and on a SUBSCRIPTION it is answered as RETRYABLE (503, verdict
+ * transient), never fatal: stopping a working subscription with a login
+ * instruction because a token host blinked is the worse error of the two.
  */
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -173,7 +174,8 @@ export function classifyAuthFailure(err: unknown): AuthFailure {
  *   is kept for probes.
  * - transient → 429 for a 429, 503 for any 5xx, verdict `transient`: Claude
  *   Code's own retry re-sends to the same hop. Never 401.
- * - unknown on a subscription → as terminal (see the module comment).
+ * - unknown on a subscription → as transient: 503 and the transient verdict (see
+ *   the module comment).
  * - unknown on a metered provider → 401 `authentication_error`, unchanged from
  *   before, so the chain may try a provider holding another credential. Only
  *   the two sites that already answered 401 (refreshAuth, forceRefreshAuth)
@@ -204,7 +206,17 @@ export function respondAuthFailure(
       );
     }
     case "unknown":
-      if (opts.isSubscription) return terminalResponse(c, failure.message);
+      if (opts.isSubscription) {
+        return c.json(
+          wrapAnthropicError(
+            503,
+            `${opts.providerDisplayName} could not confirm the credential: ${failure.message}`,
+            "overloaded_error"
+          ),
+          503,
+          authVerdictHeaders("transient")
+        );
+      }
       return c.json(wrapAnthropicError(401, failure.message, "authentication_error"), 401);
   }
 }

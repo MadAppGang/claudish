@@ -42,8 +42,12 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  credentialHttpError,
+  isTransientCredentialError,
+} from "../../auth/credentials/credential-error.js";
 import { GROK_PUBLIC_CLIENT_ID, GrokOAuth } from "../../auth/grok-oauth.js";
-import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
+import { classifyConnectionError, markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../../handlers/shared/transient-retry.js";
 
 /** Base-URL override, the same variable the Grok CLI installer honours. */
@@ -464,7 +468,12 @@ async function performRefresh(cred: GrokCredential): Promise<string> {
     // `invalid_grant` means the refresh token is dead — only a new login fixes
     // it. Terminal, so ComposedHandler renders it inline instead of sending
     // Claude Code into ~11 rounds of "API error · Retrying".
-    throw terminal(`Grok token refresh failed (${response.status}): ${detail}. ${SIGN_IN_HINT}`);
+    // 429/5xx from the token host is transient (retry the same hop); anything
+    // else is a dead grant and terminal (`credential-error.ts`).
+    throw credentialHttpError(
+      `Grok token refresh failed (${response.status}): ${detail}. ${SIGN_IN_HINT}`,
+      response.status
+    );
   }
 
   const parsed = JSON.parse(text) as {
@@ -513,7 +522,12 @@ export async function resolveGrokAccessToken(): Promise<string> {
       // Fall through to the CLI credential rather than failing outright: a
       // user who has BOTH should not be blocked by one being broken. If there
       // is no CLI credential either, the throw below carries the real message.
-      if (!readGrokCredential()) throw terminal(`${(error as Error).message}`);
+      // A transient or network failure keeps its own classification: wrapping
+      // it terminal would stop a working subscription on a token-host blip.
+      if (!readGrokCredential()) {
+        if (isTransientCredentialError(error) || classifyConnectionError(error)) throw error;
+        throw terminal(`${(error as Error).message}`);
+      }
     }
   }
 
