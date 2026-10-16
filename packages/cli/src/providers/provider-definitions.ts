@@ -911,7 +911,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyEnvVar: "OLLAMA_API_KEY",
     apiKeyDescription: "OllamaCloud API Key",
     apiKeyUrl: "https://ollama.com/account",
-    shortcuts: ["oc", "llama", "lc", "meta"],
+    shortcuts: ["oc", "llama", "lc"],
     shortestPrefix: "oc",
     legacyPrefixes: [{ prefix: "oc/", stripPrefix: true }],
     nativeModelPatterns: [

@@ -640,7 +640,7 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `qcode@` | Alibaba Coding Plan | `QWEN_CODING_PLAN_API_KEY` | `qcode@qwen3.7-plus` |
 | `qtoken@` | Alibaba Token Plan | `QWEN_TOKEN_PLAN_API_KEY` | `qtoken@qwen3.7-plus` |
 | `qpay@` | Alibaba PAYG | `DASHSCOPE_API_KEY` | `qpay@qwen3.7-plus` |
-| `llama@`, `lc@`, `meta@` | OllamaCloud | `OLLAMA_API_KEY` | `llama@llama-3.1-70b` |
+| `llama@`, `lc@` | OllamaCloud | `OLLAMA_API_KEY` | `llama@llama-3.1-70b` |
 | `oc@` | OllamaCloud | `OLLAMA_API_KEY` | `oc@llama-3.1-70b` |
 | `zen@` | OpenCode Zen | `OPENCODE_API_KEY` | `zen@gpt-5-nano` |
 | `zgo@`, `zengo@` | OpenCode Zen Go plan | `OPENCODE_GO_API_KEY` | `zgo@glm-5` |
