@@ -627,6 +627,30 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
 
 ---
 
+## Pane sessions: follow-ups from the 10.7.0 MCP update
+
+Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation.md`.
+
+- **A turn whose child launched background agents never settles.** Claude Code 2.1.301 delivers a
+  background agent's `<task-notification>` that arrives mid-turn as an `attachment/queued_command`
+  record; `applyRecord` (`pane/transcript-follower.ts`) counts a completion only from a `user`
+  record, so `agentsLaunched` never balances and `pathPrimary` (`pane/settle-rule.ts`) refuses.
+  The session stays RUNNING until `cancel_session`. Reproduction, cause and offline replay:
+  `ai-docs/reports/2026-10-16-session-unsettled-background-agents.md` and its `-replay.ts`.
+  Trigger: now (claudish-owned, reproducible offline); fix on its own branch.
+- **Adopt magmux 0.16.0 `--controller claude-code`.** Pass it before `-e` in `spawnPaneMagmux`
+  (`pane/pane-launch.ts`) behind a version check. The request timeout around magmux `send` must
+  cover ~18 s (readyTimeoutMs default 10 s, max 60 s, plus typing, pre-Enter verify and
+  acceptance), or pass a smaller readyTimeoutMs. Map the new replies: `busy`
+  (terminal_not_ready, dialog:permission, dialog:question, vim_mode) and `not_accepted`
+  (text_mismatch: Enter not pressed; still_in_box: do not retype; unconfirmed: caller decides;
+  empty_box). On a controller pane claudish's own ctrl-u/retype nudge (`PaneSession.nudge`) must
+  yield to magmux, and slash commands may come back `unconfirmed`. Once 0.16.0 is the minimum, the
+  `editorMode: "normal"` overlay key can go. Trigger: magmux 0.16.0 released with final field
+  names, and `.github/magmux.env` bumped to it.
+
+---
+
 ## Pane children: an in-child mod as a state channel
 
 Status: parked. Decided 2026-10-13 from the UI-independent-signals research
