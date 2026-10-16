@@ -157,7 +157,7 @@ The session_id in the channel tag's meta attributes is the key for all tool call
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ToolGroup = "low-level" | "agentic" | "channel";
+type ToolGroup = "low-level" | "agentic" | "session";
 
 /**
  * Per-call context handed to every tool handler. Built fresh in the CallTool
@@ -1975,7 +1975,7 @@ function defineTools(
     },
   });
 
-  // ── Channel Tools ────────────────────────────────────────────────────
+  // ── Session Tools ────────────────────────────────────────────────────
 
   tools.push({
     name: "create_session",
@@ -2025,7 +2025,7 @@ function defineTools(
       },
       required: ["model"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
@@ -2130,7 +2130,7 @@ function defineTools(
       },
       required: ["session_id", "text"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       const result = sessionManager.sendInput(args.session_id as string, args.text as string);
       return {
@@ -2155,7 +2155,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const output = sessionManager.getOutput(
@@ -2192,7 +2192,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const sessionId = optionalString(args.session_id, "session_id");
@@ -2208,7 +2208,7 @@ function defineTools(
   tools.push({
     name: "list_sessions",
     description:
-      "List channel sessions: {contract_version, capabilities, sessions}. Optionally include " +
+      "List sessions: {contract_version, capabilities, sessions}. Optionally include " +
       "finished ones. Each row reports `state`, `activity` and `idle_seconds`: how long since " +
       "the session's screen or transcript last changed. Nothing kills a session for being " +
       "idle — a child inside a long Bash call is silent and working — so this is yours to " +
@@ -2222,7 +2222,7 @@ function defineTools(
         },
       },
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const includeCompleted = optionalBoolean(args.include_completed, "include_completed");
@@ -2251,7 +2251,7 @@ function defineTools(
   tools.push({
     name: "get_diagnostics",
     description:
-      "Explain what a channel session actually did — its final screen, upstream error bodies, " +
+      "Explain what a session actually did — its final screen, upstream error bodies, " +
       "the recent state records, anomalies, the resolved model chain, accounting, and the paths " +
       "to the full records (transcript included). Call this FIRST whenever a session fails, times " +
       "out, or completes with empty or surprising output; it needs no re-run and no debug flag. " +
@@ -2271,7 +2271,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const diagnostics = sessionManager.getDiagnostics(
@@ -2317,7 +2317,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const sessionId = optionalString(args.session_id, "session_id");
@@ -2343,10 +2343,12 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
       return new Set(["low-level"]);
     case "agentic":
       return new Set(["agentic"]);
-    case "channel":
-      return new Set(["channel"]);
+    case "session":
+      return new Set(["session"]);
     default:
-      return new Set(["low-level", "agentic", "channel"]);
+      // Every other value — `all`, unset, a typo, or the removed `channel` — is
+      // everything. `channel` gets no alias: a rename removes the old name.
+      return new Set(["low-level", "agentic", "session"]);
   }
 }
 
@@ -2403,7 +2405,7 @@ async function main() {
     { name: "claudish", version: "9.0.0" },
     {
       capabilities: {
-        ...(enabledGroups.has("channel") ? { experimental: { "claude/channel": {} } } : {}),
+        ...(enabledGroups.has("session") ? { experimental: { "claude/channel": {} } } : {}),
         tools: {},
       },
       instructions: INSTRUCTIONS,
@@ -2460,7 +2462,7 @@ async function main() {
   // actually being declared — emitting a channel frame the client never
   // registered for is silently dropped, and `team` still writes status.txt
   // regardless, so there is always a visible path.
-  const channelEnabled = enabledGroups.has("channel");
+  const channelEnabled = enabledGroups.has("session");
   const notifyChannel: ChannelNotifier = (p) => {
     if (!channelEnabled) return;
     try {
