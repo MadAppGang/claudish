@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.6.3] - 2026-10-16
+
+### Bug Fixes
+
+- register no session tools in a server inside an MCP session *(mcp)* ([`1b73e51`](https://github.com/MadAppGang/claudish/commit/1b73e51c02a6024407a34445b0e6de96a8a87b45))
+- refuse claudish -p and team run inside an MCP-started session *(pane)* ([`9c5cd84`](https://github.com/MadAppGang/claudish/commit/9c5cd84ffeeb07e43741d3585c9e098afeea1a91))
+
+### Documentation
+
+- record the one-level nesting rule and CLAUDISH_PANE_CHILD *(pane)* ([`6a19ee5`](https://github.com/MadAppGang/claudish/commit/6a19ee53bf058fdafdb38eefe66f015cf1981e91))
+- update CHANGELOG.md for v10.6.2([`8d3437b`](https://github.com/MadAppGang/claudish/commit/8d3437b6159e38d8d56b5fc5835d5b1460a98590))
+
+### Other Changes
+
+- v10.6.3 *(release)* ([`bb695f1`](https://github.com/MadAppGang/claudish/commit/bb695f13194b3272abecf8f2ce50cb6f9608ecb7))
+
 ## [10.6.2] - 2026-10-16
 
 ### Bug Fixes
