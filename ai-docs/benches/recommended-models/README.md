@@ -43,6 +43,8 @@ tier that left the list.
 
 ## Running
 
+The Benches need madbench 0.46.0 or later: a Check's keys sit beside `type:`.
+
 The free gates (no spend):
 
 ```
@@ -71,9 +73,12 @@ A graded miss exits 0. Add `--fail-on-failure` where a miss must go red.
   (config, 1Password and Keychain references, catalog cache). madbench's own example
   `local-agent-orchestration` measured 20/20 Scenarios failing as "agent never started"
   under `home`. The cost: the run shares this machine's `HOME`.
-- **The CLI anti-cheat is inside the outcome Check.** "The four cases are still in the test
-  file" passes against an agent that did nothing, so on its own it fails `madbench check`
-  as WRONGLY PASSED. `bun test && grep ...` passes only for a real fix. It counts lines, so it is weak; MadAppGang/madbench#131 asks for a `file-changes` Check to replace it.
+- **The CLI anti-cheat is a `file-changes` Check.** `exec: bun test` proves the work;
+  `file-changes` with `must: {update: slugify.ts}` and `must-not: {touch: slugify.test.ts}`
+  proves it stayed inside its boundary. A ban alone passes against an agent that did
+  nothing, and `madbench check` reports it WRONGLY PASSED, so it sits beside the exec Check.
+  It replaces a `grep -c` line count (MadAppGang/madbench#131). Needs madbench 0.46.0 or
+  later: a Check's keys sit beside `type:`.
 - **The MCP detector reads the tool result.** The host Claude can compute 7723 itself; it
   cannot write an MCP `tool_result`. `session:match` with `type: tool_result` reads only
   what claudish returned, and a failed route returns `Error: ...` with no number.
