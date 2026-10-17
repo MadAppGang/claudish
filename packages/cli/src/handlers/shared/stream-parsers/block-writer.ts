@@ -116,6 +116,16 @@ type SendFn = (event: string, data: any) => void;
 /**
  * Build a writer over one stream's `send`. All index allocation for the turn
  * goes through it — there is no second counter.
+ *
+ * #497 — the no-gap invariant, at the emit seam. Internal indices
+ * (allocations, reservations, caller-supplied explicit indices) NEVER reach
+ * the wire directly: every `content_block_start` takes the next CLIENT index
+ * in emission order, and deltas/stops translate through the same map. A
+ * reserved index that never reaches start() never enters the map, so the
+ * client cannot see a hole from ANY leak site — and the `-1` suppressed
+ * sentinel is equally invisible (it maps like any internal index). The
+ * `BlockRef.index` callers hold stays internal, so append/close bookkeeping
+ * is unchanged.
  */
 export function createBlockWriter(send: SendFn): BlockWriter {
   let nextIndex = 0;
@@ -124,12 +134,30 @@ export function createBlockWriter(send: SendFn): BlockWriter {
   const emittedToolRefs: BlockRef[] = [];
   /** Indices whose `content_block_stop` has been emitted. Makes close() idempotent. */
   const stopped = new Set<number>();
+  /** internal index → client index, assigned at start() in emission order. */
+  const clientIndexOf = new Map<number, number>();
+  let emittedCount = 0;
+  const clientIndexFor = (internal: number): number => {
+    let c = clientIndexOf.get(internal);
+    if (c === undefined) {
+      c = emittedCount++;
+      clientIndexOf.set(internal, c);
+    }
+    return c;
+  };
+  /** A start always takes a FRESH client index: a re-started internal index
+   *  is a new block on the wire, never a resurrection of the old one. */
+  const freshClientIndexFor = (internal: number): number => {
+    const c = emittedCount++;
+    clientIndexOf.set(internal, c);
+    return c;
+  };
 
   const describe = (ref: BlockRef | null) => (ref ? `${ref.kind}@${ref.index}` : "none");
 
   const closeCurrent = (): void => {
     if (!openRef) return;
-    send("content_block_stop", { type: "content_block_stop", index: openRef.index });
+    send("content_block_stop", { type: "content_block_stop", index: clientIndexFor(openRef.index) });
     stopped.add(openRef.index);
     openRef = null;
   };
@@ -137,7 +165,7 @@ export function createBlockWriter(send: SendFn): BlockWriter {
   const start = (ref: BlockRef, contentBlock: Record<string, any>): BlockRef => {
     send("content_block_start", {
       type: "content_block_start",
-      index: ref.index,
+      index: freshClientIndexFor(ref.index),
       content_block: contentBlock,
     });
     openRef = ref;
@@ -190,7 +218,7 @@ export function createBlockWriter(send: SendFn): BlockWriter {
           : ref.kind === "thinking"
             ? { type: "thinking_delta", thinking: payload }
             : { type: "input_json_delta", partial_json: payload };
-      send("content_block_delta", { type: "content_block_delta", index: ref.index, delta });
+      send("content_block_delta", { type: "content_block_delta", index: clientIndexFor(ref.index), delta });
       return true;
     },
 

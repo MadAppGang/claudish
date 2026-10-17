@@ -139,7 +139,25 @@ describe("S4-b lot C: BlockWriter transition table (ccca029)", () => {
     const first = w.openText({ index: 5 });
     const again = w.openText({ index: 9 }); // text already open — reuse
     expect(again).toBe(first);
-    expect(starts(frames)).toEqual([5]);
+    // #497 renumbering: the wire shows the CLIENT index (0 for the first
+    // start); internal 5 never reaches the client, and unspent 9 never does.
+    expect(starts(frames)).toEqual([0]);
+  });
+
+  test("#497/#484: an explicit index of -1 (the suppressed sentinel) never reaches the wire", () => {
+    const { frames, send } = collect();
+    const w = createBlockWriter(send);
+    const ref = w.openTool({ id: "t", name: "Bash", index: -1 });
+    w.append(ref, "{}");
+    w.close(ref);
+    // Internal bookkeeping keeps the sentinel — callers key maps on it.
+    expect(ref.index).toBe(-1);
+    // But every frame the client sees carries a valid, contiguous index.
+    expect(starts(frames)).toEqual([0]);
+    const delta = frames.find((f) => f.event === "content_block_delta");
+    expect(delta?.data.index).toBe(0);
+    expect(stops(frames)).toEqual([0]);
+    expect(nestingViolations(frames)).toEqual([]);
   });
 
   test("the writer NEVER THROWS — an illegal sequence corrects state and continues", () => {
