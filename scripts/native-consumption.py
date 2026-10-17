@@ -86,14 +86,59 @@ KNOWN_ROOTS = [
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--captures-dir", default=r"D:\claudish-captures")
-    ap.add_argument("--since", default="", help="YYYY-MM-DDTHH (UTC), inclusive")
-    ap.add_argument("--until", default="", help="YYYY-MM-DDTHH (UTC), exclusive")
+    ap.add_argument("--since", default="",
+                    help="YYYY-MM-DD, YYYY-MM-DDTHH or full ISO like "
+                         "2026-10-15T23:00:00Z (UTC, truncated to the hour, inclusive)")
+    ap.add_argument("--until", default="", help="same shapes as --since, exclusive")
     ap.add_argument("--top", type=int, default=12)
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the fname_dt parsing checks and exit")
     return ap.parse_args()
 
 
+# Accepted --since/--until shapes: date-only, date-hour (canonical, matches the
+# capture filename stamp) and full ISO (:MM, :MM:SS, optional trailing Z) —
+# anything else exits with a clean message instead of a strptime traceback.
+_DATE_BOUND_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:T(\d{2}))?(?::(\d{2}))?(?::(\d{2}))?$")
+
+
 def fname_dt(date_h, minutes):
-    return datetime.strptime(date_h + minutes, "%Y-%m-%dT%H%M")
+    s = date_h.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1]
+    m = _DATE_BOUND_RE.match(s)
+    if not m:
+        raise SystemExit(f"unparseable date bound {date_h!r}: expected YYYY-MM-DD, "
+                         "YYYY-MM-DDTHH or ISO (e.g. 2026-10-15T23:00:00Z)")
+    hh = m.group(2) or "00"
+    # minute/second components are truncated — bounds are hour-granular by design
+    try:
+        return datetime.strptime(m.group(1) + "T" + hh + minutes, "%Y-%m-%dT%H%M")
+    except ValueError:
+        # right digit count, impossible date (e.g. 2026-13-45T99) — same clean exit
+        raise SystemExit(f"unparseable date bound {date_h!r}: expected YYYY-MM-DD, "
+                         "YYYY-MM-DDTHH or ISO (e.g. 2026-10-15T23:00:00Z)")
+
+
+def selftest():
+    ok = datetime(2026, 10, 15, 23, 0)
+    for shape in ("2026-10-15T23", "2026-10-15T23:00", "2026-10-15T23:00:00",
+                  "2026-10-15T23:00:00Z", "2026-10-15T23:00:00z"):
+        got = fname_dt(shape, "00")
+        assert got == ok, f"{shape} -> {got}, expected {ok}"
+    day = datetime(2026, 10, 15, 0, 0)
+    got = fname_dt("2026-10-15", "00")
+    assert got == day, f"date-only -> {got}, expected {day}"
+    until = fname_dt("2026-10-15T23:59:59Z", "59")
+    assert until == datetime(2026, 10, 15, 23, 59), f"until -> {until}"
+    for bad in ("2026-10-15T23:00:00+02:00", "yesterday", "2026-10-15T2"):
+        try:
+            fname_dt(bad, "00")
+        except SystemExit as e:
+            assert "unparseable" in str(e), f"{bad}: odd message {e}"
+        else:
+            raise AssertionError(f"{bad} accepted, should have exited")
+    print("selftest OK: 6 shapes parsed, 3 rejected cleanly")
 
 
 def workspace_of(body_text):
@@ -105,6 +150,9 @@ def workspace_of(body_text):
 
 def main():
     a = parse_args()
+    if a.selftest:
+        selftest()
+        return
     since = fname_dt(a.since, "00") if a.since else None
     until = fname_dt(a.until, "00") if a.until else None
 
