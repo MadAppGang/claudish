@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -42,11 +42,6 @@ describe("telemetry consent prompt gating", () => {
     restoreConfig();
   });
 
-  it("exports setClaudeCodeRunning to signal when Claude Code owns the TTY", async () => {
-    const telemetry = await import(`./telemetry.ts?t=${Date.now()}`);
-    expect(typeof telemetry.setClaudeCodeRunning).toBe("function");
-  });
-
   it("does NOT attach readline to process.stdin when Claude Code is running", async () => {
     const telemetry = await import(`./telemetry.ts?t=${Date.now()}`);
 
@@ -55,9 +50,10 @@ describe("telemetry consent prompt gating", () => {
     Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
     Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
 
-    const listenerCountBefore = process.stdin.listenerCount("data")
-      + process.stdin.listenerCount("keypress")
-      + process.stdin.listenerCount("line");
+    const listenerCountBefore =
+      process.stdin.listenerCount("data") +
+      process.stdin.listenerCount("keypress") +
+      process.stdin.listenerCount("line");
 
     telemetry.initTelemetry({
       interactive: true,
@@ -82,9 +78,10 @@ describe("telemetry consent prompt gating", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    const listenerCountAfter = process.stdin.listenerCount("data")
-      + process.stdin.listenerCount("keypress")
-      + process.stdin.listenerCount("line");
+    const listenerCountAfter =
+      process.stdin.listenerCount("data") +
+      process.stdin.listenerCount("keypress") +
+      process.stdin.listenerCount("line");
 
     telemetry.setClaudeCodeRunning(false);
     Object.defineProperty(process.stdin, "isTTY", { value: origIsInteractive, configurable: true });

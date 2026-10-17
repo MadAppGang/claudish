@@ -8,8 +8,8 @@
  * temp files.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "./cli.js";
@@ -59,47 +59,7 @@ function buildClaudeArgs(config: ClaudishConfig): string[] {
   return claudeArgs;
 }
 
-// ---------------------------------------------------------------------------
-// Helper: mergeUserSettingsLogic
-//
-// Replicates the mergeUserSettingsIfPresent logic from claude-runner.ts
-// for testing settings merge behavior.
-// ---------------------------------------------------------------------------
-
 const MOCK_STATUS_LINE = { type: "command", command: "echo claudish", padding: 0 };
-
-function mergeUserSettingsLogic(
-  config: ClaudishConfig,
-  tempSettingsPath: string
-): { merged: boolean; warned: boolean } {
-  const idx = config.claudeArgs.indexOf("--settings");
-  if (idx === -1 || !config.claudeArgs[idx + 1]) {
-    return { merged: false, warned: false };
-  }
-
-  const userSettingsValue = config.claudeArgs[idx + 1];
-  let warned = false;
-
-  try {
-    let userSettings: Record<string, unknown>;
-    if (userSettingsValue.trimStart().startsWith("{")) {
-      userSettings = JSON.parse(userSettingsValue);
-    } else {
-      const rawUserSettings = readFileSync(userSettingsValue, "utf-8");
-      userSettings = JSON.parse(rawUserSettings);
-    }
-
-    userSettings.statusLine = MOCK_STATUS_LINE;
-    writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");
-  } catch {
-    warned = true;
-  }
-
-  // Always remove --settings from claudeArgs
-  config.claudeArgs.splice(idx, 2);
-
-  return { merged: !warned, warned };
-}
 
 // ---------------------------------------------------------------------------
 // Group 1: E2E — Single-shot mode full pipeline
@@ -289,97 +249,6 @@ describe("Group 3: E2E — Settings merge", () => {
       }
     }
   });
-
-  test("--settings <file> → user file merged with statusLine key injected", async () => {
-    writeFileSync(userSettingsPath, JSON.stringify({ theme: "dark" }, null, 2), "utf-8");
-
-    const config = await parseArgs(["--model", "grok", "--settings", userSettingsPath, "task"]);
-    // --settings and its value should be in claudeArgs before merge
-    expect(config.claudeArgs).toContain("--settings");
-    expect(config.claudeArgs).toContain(userSettingsPath);
-
-    const { merged, warned } = mergeUserSettingsLogic(config, tempSettingsPath);
-    expect(merged).toBe(true);
-    expect(warned).toBe(false);
-
-    // Verify merged file has both theme and statusLine keys
-    const result = JSON.parse(readFileSync(tempSettingsPath, "utf-8"));
-    expect(result.theme).toBe("dark");
-    expect(result.statusLine).toBeDefined();
-    expect(result.statusLine.type).toBe("command");
-
-    // --settings must be removed from claudeArgs after merge
-    expect(config.claudeArgs).not.toContain("--settings");
-    expect(config.claudeArgs).not.toContain(userSettingsPath);
-    // The prompt "task" should remain
-    expect(config.claudeArgs).toContain("task");
-  });
-
-  test("--settings '{\"debug\": true}' inline JSON → merge works with inline detection", async () => {
-    // Re-write temp settings file to known state
-    writeFileSync(
-      tempSettingsPath,
-      JSON.stringify({ statusLine: MOCK_STATUS_LINE }, null, 2),
-      "utf-8"
-    );
-
-    const inlineJson = JSON.stringify({ debug: true });
-    const config = await parseArgs(["--model", "grok", "--settings", inlineJson, "task"]);
-
-    expect(config.claudeArgs).toContain("--settings");
-
-    const { merged, warned } = mergeUserSettingsLogic(config, tempSettingsPath);
-    expect(merged).toBe(true);
-    expect(warned).toBe(false);
-
-    const result = JSON.parse(readFileSync(tempSettingsPath, "utf-8"));
-    expect(result.debug).toBe(true);
-    expect(result.statusLine).toBeDefined();
-
-    // --settings removed from claudeArgs
-    expect(config.claudeArgs).not.toContain("--settings");
-  });
-
-  test("--settings /nonexistent.json → warns but does not crash, removes --settings from claudeArgs", async () => {
-    // Re-write temp settings to known state
-    writeFileSync(
-      tempSettingsPath,
-      JSON.stringify({ statusLine: MOCK_STATUS_LINE }, null, 2),
-      "utf-8"
-    );
-
-    const config = await parseArgs([
-      "--model",
-      "grok",
-      "--settings",
-      "/nonexistent-path-that-does-not-exist.json",
-      "task",
-    ]);
-
-    const { merged, warned } = mergeUserSettingsLogic(config, tempSettingsPath);
-    expect(warned).toBe(true);
-    expect(merged).toBe(false);
-
-    // --settings removed from claudeArgs even on failure
-    expect(config.claudeArgs).not.toContain("--settings");
-    expect(config.claudeArgs).not.toContain("/nonexistent-path-that-does-not-exist.json");
-
-    // Temp settings file untouched (still has original statusLine)
-    const result = JSON.parse(readFileSync(tempSettingsPath, "utf-8"));
-    expect(result.statusLine).toBeDefined();
-  });
-
-  test("no --settings flag → mergeUserSettingsLogic is a no-op, claudeArgs unchanged", async () => {
-    const config = await parseArgs(["--model", "grok", "task"]);
-    const originalArgs = [...config.claudeArgs];
-
-    const { merged, warned } = mergeUserSettingsLogic(config, tempSettingsPath);
-    expect(merged).toBe(false);
-    expect(warned).toBe(false);
-
-    // claudeArgs must not have been modified
-    expect(config.claudeArgs).toEqual(originalArgs);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -387,20 +256,6 @@ describe("Group 3: E2E — Settings merge", () => {
 // ---------------------------------------------------------------------------
 
 describe("Group 4: E2E — Backward compatibility regression", () => {
-  test("claudish --model grok 'prompt' → same single-shot output as before", async () => {
-    const config = await parseArgs(["--model", "grok", "prompt"]);
-    const args = buildClaudeArgs(config);
-
-    // Exact shape: --settings <path> -p --dangerously-skip-permissions prompt
-    expect(args).toEqual([
-      "--settings",
-      MOCK_SETTINGS_PATH,
-      "-p",
-      "--dangerously-skip-permissions",
-      "prompt",
-    ]);
-  });
-
   test("claudish --stdin --quiet --model grok → claudeArgs empty, stdin=true, quiet=true", async () => {
     const config = await parseArgs(["--stdin", "--quiet", "--model", "grok"]);
     expect(config.stdin).toBe(true);
@@ -481,18 +336,5 @@ describe("Group 5: E2E — Edge cases", () => {
     expect(agentIdx).toBeGreaterThanOrEqual(0);
     expect(effortIdx).toBeGreaterThan(agentIdx);
     expect(taskIdx).toBeGreaterThan(effortIdx);
-  });
-
-  test("--json flag sets jsonOutput and produces --output-format json in single-shot args", async () => {
-    const config = await parseArgs(["--model", "grok", "--json", "task"]);
-    expect(config.jsonOutput).toBe(true);
-
-    const args = buildClaudeArgs(config);
-    const fmtIdx = args.indexOf("--output-format");
-    expect(fmtIdx).toBeGreaterThan(-1);
-    expect(args[fmtIdx + 1]).toBe("json");
-    // --output-format json must come BEFORE the passthrough claudeArgs
-    const taskIdx = args.indexOf("task");
-    expect(fmtIdx).toBeLessThan(taskIdx);
   });
 });

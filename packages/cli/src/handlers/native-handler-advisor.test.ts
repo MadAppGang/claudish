@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { parseAdvisorFlag } from "../cli.js";
 import {
   _debug_getTrackedAdvisorIds,
   _debug_resetTrackedAdvisorIds,
@@ -12,7 +13,6 @@ import {
   stubAdvisorAdvice,
   swapAdvisorToolInBody,
 } from "./native-handler-advisor.js";
-import { parseAdvisorFlag } from "../cli.js";
 
 afterEach(() => {
   _debug_resetTrackedAdvisorIds();
@@ -61,7 +61,7 @@ describe("swapAdvisorToolInBody", () => {
 describe("stripAdvisorBeta", () => {
   it("removes advisor-tool-2026-03-01 from a comma list", () => {
     const { stripped, changed } = stripAdvisorBeta(
-      "claude-code-20250219,advisor-tool-2026-03-01,effort-2025-11-24",
+      "claude-code-20250219,advisor-tool-2026-03-01,effort-2025-11-24"
     );
     expect(changed).toBe(true);
     expect(stripped).toBe("claude-code-20250219,effort-2025-11-24");
@@ -75,7 +75,7 @@ describe("stripAdvisorBeta", () => {
 
   it("handles whitespace around entries", () => {
     const { stripped, changed } = stripAdvisorBeta(
-      "claude-code-20250219, advisor-tool-2026-03-01 , effort-2025-11-24",
+      "claude-code-20250219, advisor-tool-2026-03-01 , effort-2025-11-24"
     );
     expect(changed).toBe(true);
     expect(stripped).toBe("claude-code-20250219,effort-2025-11-24");
@@ -134,7 +134,7 @@ describe("rewriteAdvisorToolResults", () => {
     // First seed the tracker so rewrite recognises the id
     recordAdvisorEventsFromChunk(
       { enabled: true, logPath: undefined },
-      '"content_block":{"type":"tool_use","id":"toolu_known","name":"advisor","input":{}}',
+      '"content_block":{"type":"tool_use","id":"toolu_known","name":"advisor","input":{}}'
     );
 
     const body = {
@@ -142,9 +142,7 @@ describe("rewriteAdvisorToolResults", () => {
         { role: "user", content: "build a rate limiter" },
         {
           role: "assistant",
-          content: [
-            { type: "tool_use", id: "toolu_known", name: "advisor", input: {} },
-          ],
+          content: [{ type: "tool_use", id: "toolu_known", name: "advisor", input: {} }],
         },
         {
           role: "user",
@@ -153,8 +151,7 @@ describe("rewriteAdvisorToolResults", () => {
               type: "tool_result",
               tool_use_id: "toolu_known",
               is_error: true,
-              content:
-                "<tool_use_error>Error: No such tool available: advisor</tool_use_error>",
+              content: "<tool_use_error>Error: No such tool available: advisor</tool_use_error>",
             },
           ],
         },
@@ -194,7 +191,7 @@ describe("rewriteAdvisorToolResults", () => {
   it("leaves non-advisor tool_results untouched even when ids exist in tracker", () => {
     recordAdvisorEventsFromChunk(
       { enabled: true, logPath: undefined },
-      '"content_block":{"type":"tool_use","id":"toolu_adv","name":"advisor","input":{}}',
+      '"content_block":{"type":"tool_use","id":"toolu_adv","name":"advisor","input":{}}'
     );
     const body = {
       messages: [
@@ -224,8 +221,8 @@ describe("rewriteAdvisorToolResults", () => {
     expect(
       rewriteAdvisorToolResults(
         { messages: [{ role: "user", content: "plain text" }] },
-        stubAdvisorAdvice,
-      ),
+        stubAdvisorAdvice
+      )
     ).toEqual([]);
   });
 });
@@ -323,7 +320,7 @@ describe("findPendingAdvisorToolResults", () => {
     // Seed the tracker
     recordAdvisorEventsFromChunk(
       cfg,
-      '"content_block":{"type":"tool_use","id":"toolu_pending1","name":"advisor","input":{}}',
+      '"content_block":{"type":"tool_use","id":"toolu_pending1","name":"advisor","input":{}}'
     );
     const payload = {
       messages: [
@@ -376,9 +373,7 @@ describe("extractBlocksAsText", () => {
   });
 
   it("represents tool_use blocks with name and truncated input", () => {
-    const blocks = [
-      { type: "tool_use", name: "Bash", input: { command: "ls -la" } },
-    ];
+    const blocks = [{ type: "tool_use", name: "Bash", input: { command: "ls -la" } }];
     const result = extractBlocksAsText(blocks);
     expect(result).toContain("[Called tool: Bash");
     expect(result).toContain("ls -la");
@@ -433,9 +428,7 @@ describe("convertToOpenAIMessages", () => {
     const messages = [
       {
         role: "user",
-        content: [
-          { type: "text", text: "please help" },
-        ],
+        content: [{ type: "text", text: "please help" }],
       },
       {
         role: "assistant",

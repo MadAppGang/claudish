@@ -12,6 +12,9 @@ import { BridgeServer } from "./server.js";
  */
 
 const BASE_URL = "http://127.0.0.1";
+// These hooks touch real certificate, server, and process resources, which can
+// exceed Bun's 5s default hook timeout under full-suite contention.
+const LIFECYCLE_HOOK_TIMEOUT_MS = 30_000;
 let serverPort: number;
 let authToken: string;
 let server: BridgeServer;
@@ -21,11 +24,11 @@ beforeAll(async () => {
   const result = await server.start(0);
   serverPort = result.port;
   authToken = result.token;
-});
+}, LIFECYCLE_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
   await server.stop();
-});
+}, LIFECYCLE_HOOK_TIMEOUT_MS);
 
 describe("Health Endpoint", () => {
   test("returns status ok", async () => {
@@ -229,7 +232,7 @@ describe("CertificateManager", () => {
     // Create temporary directory for test certificates
     testCertDir = path.join(os.tmpdir(), `claudish-test-certs-${Date.now()}`);
     manager = new CertificateManager(testCertDir);
-  });
+  }, LIFECYCLE_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     // Clean up test certificates
@@ -238,7 +241,7 @@ describe("CertificateManager", () => {
     } catch (err) {
       // Ignore cleanup errors
     }
-  });
+  }, LIFECYCLE_HOOK_TIMEOUT_MS);
 
   test("generates CA certificate on initialize", async () => {
     await manager.initialize();

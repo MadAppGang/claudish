@@ -5,9 +5,9 @@
  * not implementation internals.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { buildSummary } from "./smoke/reporter.js";
-import type { ProviderResult, ProbeResult } from "./smoke/types.js";
+import type { ProbeResult, ProviderResult } from "./smoke/types.js";
 
 // ─────────────────────────────────────────────────────────────
 // Helpers

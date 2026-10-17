@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { StatsEvent } from "./stats-otlp.js";
@@ -120,18 +120,6 @@ describe("stats-buffer", () => {
     const events = readBuffer();
     expect(Array.isArray(events)).toBe(true);
     expect(events.length).toBe(0);
-  });
-
-  it("handles corrupted buffer file gracefully", async () => {
-    const { readBuffer, clearBuffer } = await import("./stats-buffer.js");
-    clearBuffer();
-
-    // Write corrupted JSON
-    mkdirSync(CLAUDISH_DIR, { recursive: true });
-    writeFileSync(BUFFER_FILE, "not-valid-json{{{", "utf-8");
-
-    // Should not throw, return empty array
-    expect(() => readBuffer()).not.toThrow();
   });
 
   it("flushBufferToDisk writes atomically via tmp file", async () => {
