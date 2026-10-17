@@ -259,8 +259,12 @@ export function buildClaudishSettingsOverlay(
  *
  * Mutates: config.claudeArgs (removes --settings and path if found)
  * Mutates: tempSettingsPath file content (replaces with merged JSON)
+ *
+ * Exported for its pin (claude-runner-settings-merge.test.ts) — the fork
+ * modified this function and it had no direct test (the 160 lines the
+ * upstream test adoption removed covered an in-file replica, not this).
  */
-function mergeUserSettingsIfPresent(
+export function mergeUserSettingsIfPresent(
   config: ClaudishConfig,
   tempSettingsPath: string,
   statusLine: { type: string; command: string; padding: number },
