@@ -63,7 +63,7 @@ After the sidecar is installed, repoint `ANTHROPIC_BASE_URL` to the **local** si
 | myia-po-2026 | `http://192.168.0.50:3000` | — | yes | LAN — **HS matériel, hors service** (user declaration, 10/10 per Maintenance#91); the `.46` drift below is a dead record, no longer to correct |
 
 - **web1**: no sidecar — stays on `https://models.myia.io` directly.
-- **po-2023**: no longer the hub; it runs a relay sidecar like the others.
+- **po-2023**: no longer the hub; it runs a relay sidecar like the others — yet has **no matrix row above**. Its config (`-Upstream` / `-Compress` / `-NoAnthropic`, plus the live `CLAUDISH_RELAY_UPSTREAM` from the container env) has never been measured into this doc; the row must be filled from that seat, not guessed from here. Noted 2026-10-16 during the per-seat LAN/WAN re-read (every other seat's row carries a live-path measurement date).
 
 ### A hub migration does not propagate to a sidecar's upstream
 
