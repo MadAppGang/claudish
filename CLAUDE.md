@@ -210,7 +210,7 @@ Async model sessions with push notifications, built on the low-level `Server` cl
 - **Emitting a correct frame is not enough.** Rendering is gated client-side: CC ≥ v2.1.80; Anthropic auth via claude.ai or Console key (not Bedrock/Vertex/Foundry); an **interactive** session (in `-p` mode registration never runs and frames are silently dropped); the server declared in `.mcp.json` / `~/.claude.json` (**`--mcp-config` is not consulted by the channel resolver**); and the server **named in `--channels`** or `--dangerously-load-development-channels`.
 - `CLAUDISH_CHANNEL_TRACE=1` (+ `CLAUDISH_CHANNEL_TRACE_FILE` when the host swallows stderr) traces producer → bridge → wire, so a server-side drop is distinguishable from client-side gating. Off by default, zero production overhead.
 
-Full contract, launch commands, diagnostic scripts: `docs/reference/channel-mode.md`. Tests: `bun test --cwd . ./packages/cli/src/channel/*.test.ts` (65 across 5 files).
+Full contract, launch commands, diagnostic scripts: `docs/reference/channel-mode.md`. Tests: `bun test --cwd . ./packages/cli/src/channel/*.test.ts` (67 across 5 files on win32, bun 1.4.2 — 31 env-gated skips, `posix-path-shim` class cannot run on win32).
 
 ## Debugging & Tests
 
