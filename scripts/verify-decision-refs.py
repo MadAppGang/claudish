@@ -80,6 +80,9 @@ EXTERNAL_ALLOWLIST = {
                                         # ~/.claude/projects/<hash>/ -- cited by
                                         # the global harness rules, not this repo
     "MEMORY.md",               # index of the same per-workspace memory dir
+    "migration-hub-to-po-2025.md",  # project memory of the claudish-migration-watch
+                                    # cycle (per-workspace, same class as the two
+                                    # above) -- kept live by the skill, never a repo file
     "baseRefName",             # GitHub GraphQL schema field (gh pr view)
     "mergeStateStatus",        # GitHub GraphQL schema field (gh pr view)
     "CronList",               # Claude Code built-in tool (session scheduler)
