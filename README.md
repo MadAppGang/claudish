@@ -5,7 +5,7 @@
 ### Claude Code. Any Model.
 
 [![npm version](https://img.shields.io/npm/v/claudish.svg?style=flat-square&color=00D4AA)](https://www.npmjs.com/package/claudish)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./package.json)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Compatible-d97757?style=flat-square)](https://claude.ai/claude-code)
 
 **Use your existing AI subscriptions with Claude Code.** Works with Anthropic Max, Gemini Advanced, ChatGPT Plus/Codex, Kimi, GLM, OllamaCloud — plus 580+ models via OpenRouter and local models for complete privacy.
@@ -255,7 +255,6 @@ claudish --help-ai > claudish-agent-guide.md
 **Resources:**
 - Full AI agent guide: `claudish --help-ai`
 - Skill document: `skills/claudish-usage/SKILL.md` (in repository root)
-- Model integration: `skills/claudish-integration/SKILL.md` (in repository root)
 
 ## Usage
 
@@ -1087,11 +1086,7 @@ Claudish implements the Anthropic Messages API's `interleaved-thinking` protocol
 
 ### Documentation
 
-For complete protocol documentation, see:
-- [STREAMING_PROTOCOL.md](./STREAMING_PROTOCOL.md) - Complete SSE protocol spec
-- [PROTOCOL_FIX_V2.md](./PROTOCOL_FIX_V2.md) - Critical V2 protocol fix (event ordering)
-- [COMPREHENSIVE_UX_ISSUE_ANALYSIS.md](./COMPREHENSIVE_UX_ISSUE_ANALYSIS.md) - Technical analysis
-- [THINKING_BLOCKS_IMPLEMENTATION.md](./THINKING_BLOCKS_IMPLEMENTATION.md) - Implementation summary
+Protocol documentation lives in `docs/` (see `docs/reference/proxy-pipeline-notes.md` for the SSE pipeline).
 
 ## Dynamic Reasoning Support (NEW in v1.4.0)
 
@@ -1237,12 +1232,6 @@ bun tests/debug-snapshot.ts
 - ✅ Usage metrics (present in message_start and message_delta)
 - ✅ Stop reasons (always present and valid)
 - ✅ Cache metrics (creation and read tokens)
-
-**Documentation:**
-- [Quick Start Guide](./QUICK_START_TESTING.md) - Get started with testing
-- [Snapshot Testing Guide](./SNAPSHOT_TESTING.md) - Complete testing documentation
-- [Implementation Details](./ai_docs/IMPLEMENTATION_COMPLETE.md) - Technical implementation summary
-- [Protocol Compliance Plan](./ai_docs/PROTOCOL_COMPLIANCE_PLAN.md) - Detailed compliance roadmap
 
 ### Install Globally
 

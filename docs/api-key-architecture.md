@@ -5,8 +5,8 @@ This document describes the centralized API key validation system implemented in
 ## Overview
 
 All API key validation flows through a single source of truth: the `ProviderResolver` module located at:
-- `src/providers/provider-resolver.ts` (source)
-- `packages/core/src/providers/provider-resolver.ts` (core package)
+
+- `packages/cli/src/providers/provider-resolver.ts` (cli package — the only package since the monorepo collapse)
 
 ## Provider Categories
 

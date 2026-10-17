@@ -83,6 +83,9 @@ EXTERNAL_ALLOWLIST = {
     "migration-hub-to-po-2025.md",  # project memory of the claudish-migration-watch
                                     # cycle (per-workspace, same class as the two
                                     # above) -- kept live by the skill, never a repo file
+    ".claude/skills/claudish-usage/SKILL.md",  # --init INSTALL target (per-project,
+                                            # source lives at packages/cli/skills/) -- a
+                                            # runtime install path, never committed here
     "baseRefName",             # GitHub GraphQL schema field (gh pr view)
     "mergeStateStatus",        # GitHub GraphQL schema field (gh pr view)
     "CronList",               # Claude Code built-in tool (session scheduler)
