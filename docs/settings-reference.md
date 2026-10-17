@@ -769,7 +769,7 @@ This reference does NOT cover:
 1. **Claude Code flags**: The full list of flags that can be passed through to Claude Code (use `claude --help`). Claudish forwards any unrecognized flag automatically.
 2. **Cost tracking internals**: The detailed algorithm for cost accumulation and the format of cost data files.
 3. **MCP server protocol**: The specific MCP tool definitions and protocol details when running in `--mcp` mode.
-4. **Smoke test configuration**: The `scripts/smoke/` configuration for provider smoke tests.
+4. **Smoke test configuration**: The `packages/cli/scripts/smoke/` configuration for provider smoke tests.
 5. **Token file format**: The internal token counting files used by `writeTokenFile` for the status line display.
 
 ---
