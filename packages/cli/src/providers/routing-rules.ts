@@ -196,6 +196,13 @@ export function describeRoutingRuleProblem(problem: RoutingRuleProblem): string 
         `provider "${ruleEntryProvider(entry)}" exists, so that entry never routes.`
       );
     }
+    default: {
+      // Exhaustiveness guard (review #471): a new RoutingRuleProblem kind that
+      // reaches this switch without a wording is a COMPILE error here, not a
+      // silent `undefined` line at proxy startup.
+      const unhandled: never = problem.problem;
+      return `routing rule problem of unhandled kind "${String(unhandled)}" (${problem.scope})`;
+    }
   }
 }
 
