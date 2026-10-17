@@ -24,7 +24,7 @@ When ready, we add a `CLAUDISH_NOTIFY_VIA_TASKS=1` env var. When set, the bridge
 
 **Trigger conditions** (all must hold):
 - Claude Code ships a release whose CHANGELOG mentions SEP-1686 / `notifications/tasks/status` receiver support, AND the new method surfaces task notifications into the **agent's context** (not just CLI UI).
-- The TypeScript MCP SDK ships a server-side helper for emitting `notifications/tasks/status`. Reference impl is `modelcontextprotocol/typescript-sdk#1041` (currently OPEN as of 2026-05).
+- The TypeScript MCP SDK ships a server-side helper for emitting `notifications/tasks/status`. Reference impl is `modelcontextprotocol/typescript-sdk#1041` — merged 2025-11-27, so **this trigger is MET** (verified 2026-10-16). The two remaining gates below still block the item.
 - We've manually verified per-child completion notifications surface in the orchestrator agent's context during a `team` run.
 
 **Effort**: small. Most work is already done in Phase 1 (the data is in `meta`); Phase 2 is mainly a payload-reshape function + new test fixture + env-var gate.
