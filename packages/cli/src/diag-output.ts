@@ -1,7 +1,7 @@
-import { createWriteStream, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { createWriteStream, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import type { WriteStream } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { WriteStream } from "node:fs";
 
 /**
  * DiagOutput separates claudish diagnostic messages from Claude Code's TUI.

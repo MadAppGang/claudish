@@ -3,11 +3,12 @@
  *
  * After commit 5 of the model-catalog and routing redesign, this file is no
  * longer the home of the routing chain logic — that lives in
- * `providers/routing-rules.ts` (`route()`) and ships defaults via
- * `providers/default-routing-rules.ts`. What remains here are the two derived
- * lookup tables (canonical name → shortest @ prefix, canonical name → display
- * name) that the routing engine still needs, plus a `FallbackRoute` type alias
- * preserved for callers that imported it from here pre-commit-5.
+ * `providers/routing-rules.ts` (`route()`), which gathers its candidates from
+ * the cloud models catalog (`providers/route-candidates.ts`). What remains here
+ * are the two derived lookup tables (canonical name → shortest @ prefix,
+ * canonical name → display name) that the routing engine still needs, plus a
+ * `FallbackRoute` type alias preserved for callers that imported it from here
+ * pre-commit-5.
  *
  * Kept at the same path for import-stability across the codebase.
  */

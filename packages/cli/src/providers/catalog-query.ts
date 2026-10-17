@@ -1,6 +1,6 @@
 /**
  * Read-only accessor module over the slim model catalog cache
- * (`~/.claudish/all-models.json`).
+ * (`~/.claudish/cloud-models-catalog-v3.json`).
  *
  * Used by feature code that needs to look up catalog entries without going
  * through the full `OpenRouterCatalogResolver` resolution chain. The resolver
@@ -31,12 +31,12 @@
  */
 
 import { statSync } from "node:fs";
+import type { AggregatorEntry } from "../model-loader.js";
 import {
-  readAllModelsCache,
   ALL_MODELS_CACHE_PATH,
   type SlimModelEntry,
+  readAllModelsCache,
 } from "./all-models-cache.js";
-import type { AggregatorEntry } from "../model-loader.js";
 
 /**
  * Minimal projection of a slim catalog entry for query consumers.
@@ -54,6 +54,17 @@ export interface CatalogEntryQueryResult {
   /** Context window in tokens. Optional — may be absent on older entries. */
   contextWindow?: number;
   /**
+   * ISO release date (`YYYY-MM-DD`) the catalog publishes for this model.
+   *
+   * Surfaced for Vertex probe discovery: Vertex's publisher listing reports no
+   * date at all, so a dynamic models catalog built from it would rank by the
+   * version digits in the id alone and put a 2-year-old `gemma`-style row above
+   * the newest Gemini. The date is a property of the MODEL, which the catalog
+   * already publishes, so reading it here asserts nothing about the project.
+   * Optional — older cache files and unlisted models carry none.
+   */
+  releaseDate?: string;
+  /**
    * Multi-aggregator routing index. Each entry is `{provider, externalId, confidence}`.
    * Surfaced for the pricing-cache lookup (item 6.2) which needs to find the
    * `openrouter` aggregator's `externalId` to consult `pricingMap`. Optional —
@@ -68,6 +79,7 @@ function project(entry: SlimModelEntry): CatalogEntryQueryResult {
     aliases: entry.aliases,
     supportsVision: entry.supportsVision,
     contextWindow: entry.contextWindow,
+    releaseDate: entry.releaseDate,
     aggregators: entry.aggregators,
   };
 }
@@ -77,7 +89,7 @@ function project(entry: SlimModelEntry): CatalogEntryQueryResult {
 // ---------------------------------------------------------------------------
 //
 // The pricing-cache lookup runs on every proxied request. Re-reading and
-// JSON-parsing `~/.claudish/all-models.json` each call adds non-trivial
+// JSON-parsing `~/.claudish/cloud-models-catalog-v3.json` each call adds non-trivial
 // overhead (the slim catalog can hold hundreds of entries). We cache the
 // parsed entries in module scope and invalidate whenever the file's `mtimeMs`
 // changes — that catches both writes from `OpenRouterCatalogResolver`'s

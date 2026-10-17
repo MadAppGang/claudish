@@ -12,7 +12,15 @@
 
 import { exec } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -184,6 +192,106 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
       console.log(url);
       console.log("");
     }
+  }
+
+  // ── Auth URL presentation ──────────────────────────────────────────────
+
+  /**
+   * Copy text to the system clipboard. Returns false when no clipboard tool is
+   * available, so the caller can say so rather than silently appearing to work.
+   */
+  protected async copyToClipboard(text: string): Promise<boolean> {
+    const commands =
+      process.platform === "darwin"
+        ? ["pbcopy"]
+        : process.platform === "win32"
+          ? ["clip"]
+          : // Wayland first, then X11 — a Wayland session usually has neither
+            // DISPLAY nor a working xclip.
+            ["wl-copy", "xclip -selection clipboard", "xsel --clipboard --input"];
+
+    for (const command of commands) {
+      try {
+        const child = (await import("node:child_process")).spawn(command, {
+          shell: true,
+          stdio: ["pipe", "ignore", "ignore"],
+        });
+        child.stdin.write(text);
+        child.stdin.end();
+        const ok = await new Promise<boolean>((resolve) => {
+          child.on("close", (code) => resolve(code === 0));
+          child.on("error", () => resolve(false));
+        });
+        if (ok) return true;
+      } catch {
+        // Try the next candidate.
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Print the auth URL and arm a "press c to copy" affordance.
+   *
+   * Returns a DISPOSER, which the caller must invoke when the wait is over —
+   * the listener has to stay armed for the whole authorization wait (a device
+   * poll can run for 30 minutes), so it cannot be scoped to the print itself.
+   *
+   * Raw mode is entered only when stdin is a TTY. Under an MCP host, a `team`
+   * fan-out or CI, stdin is a pipe: there is no one to press a key, and putting
+   * a pipe into raw mode would be a no-op at best. In that case the URL is
+   * printed plainly and no listener is armed.
+   *
+   * Ctrl-C is handled explicitly. Raw mode suppresses the terminal's own SIGINT
+   * translation, so without this the login would become unkillable — the
+   * failure mode is much worse than the feature is valuable.
+   */
+  protected presentAuthUrl(url: string): () => void {
+    const stdin = process.stdin;
+    const interactive = Boolean(stdin.isTTY && typeof stdin.setRawMode === "function");
+
+    if (!interactive) {
+      console.log(`  URL:  ${url}\n`);
+      return () => {};
+    }
+
+    console.log(`  URL:  ${url}`);
+    console.log("  (press c to copy the URL, or open it manually)\n");
+
+    const onKey = (chunk: Buffer): void => {
+      const key = chunk.toString();
+      if (key === "") {
+        // Ctrl-C: restore the terminal before exiting, or the user is left in a
+        // shell with echo disabled.
+        cleanup();
+        process.exit(130);
+      }
+      if (key.toLowerCase() === "c") {
+        void this.copyToClipboard(url).then((ok) => {
+          console.log(ok ? "  ✓ URL copied to clipboard" : "  ✗ No clipboard tool available");
+        });
+      }
+    };
+
+    let disposed = false;
+    const cleanup = (): void => {
+      if (disposed) return;
+      disposed = true;
+      stdin.off("data", onKey);
+      try {
+        stdin.setRawMode(false);
+      } catch {
+        // Terminal already restored / stdin closed.
+      }
+      // Only pause a stdin WE resumed — leaving it flowing keeps the process
+      // alive after login completes.
+      stdin.pause();
+    };
+
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onKey);
+    return cleanup;
   }
 
   // ── Logout ─────────────────────────────────────────────────────────────

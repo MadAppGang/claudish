@@ -201,7 +201,7 @@ export class GeminiRequestQueue {
         const delayStr = quotaDetail.quotaResetDelay;
         const match = delayStr.match(/(\d+(?:\.\d+)?)/);
         if (match) {
-          const delaySeconds = parseFloat(match[1]);
+          const delaySeconds = Number.parseFloat(match[1]);
           const suggestedDelayMs = Math.ceil(delaySeconds * 1000);
 
           // Use the larger of suggested delay or current delay
@@ -218,7 +218,7 @@ export class GeminiRequestQueue {
       }
     } catch {
       // JSON parse failed, just increment error counter
-      log(`[GeminiQueue] Failed to parse rate limit response, using backoff`);
+      log("[GeminiQueue] Failed to parse rate limit response, using backoff");
     }
 
     // Apply exponential backoff

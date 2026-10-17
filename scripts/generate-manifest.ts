@@ -85,5 +85,5 @@ const checksums = Object.entries(PLATFORM_MAP)
   .map(([file, platform]) => `${manifest.platforms[platform].checksum}  ${file}`)
   .join("\n");
 
-writeFileSync(checksumsPath, checksums + "\n");
+writeFileSync(checksumsPath, `${checksums}\n`);
 console.log("\nGenerated checksums.txt");

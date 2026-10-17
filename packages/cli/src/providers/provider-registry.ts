@@ -8,7 +8,30 @@
  * Legacy syntax: prefix/model or prefix:model (with deprecation warnings)
  */
 
-import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
+import { getApiKey, getEndpoint as getConfigEndpoint } from "../profile-config.js";
+import { isLocalProviderName, parseModelSpec } from "./model-parser.js";
+
+/**
+ * Config-first URL resolution. ~/.claudish/config.json's `endpoints` map
+ * wins over the env var, which wins over the static default. Same precedence
+ * the TUI's URL editor expects, and matches the apiKeys behavior.
+ */
+function resolveBaseUrl(envVar: string, fallbackEnvVars: string[], staticDefault: string): string {
+  for (const v of [envVar, ...fallbackEnvVars]) {
+    const fromConfig = getConfigEndpoint(v);
+    if (fromConfig) return fromConfig;
+  }
+  for (const v of [envVar, ...fallbackEnvVars]) {
+    const fromEnv = process.env[v];
+    if (fromEnv) return fromEnv;
+  }
+  return staticDefault;
+}
+
+function resolveApiKey(envVar: string): string | undefined {
+  // Config wins (set via `s` key in TUI). Env is fallback.
+  return getApiKey(envVar) || process.env[envVar] || undefined;
+}
 
 export interface LocalProvider {
   name: string;
@@ -16,6 +39,10 @@ export interface LocalProvider {
   apiPath: string;
   envVar: string;
   prefixes: string[]; // Legacy prefixes for backwards compatibility
+  /** Optional API key — sent as Bearer if set. Empty/undefined skips auth.
+   *  Useful for LM Studio with "Reachable on local network" + auth enabled,
+   *  vLLM started with --api-key, or remote Ollama via reverse proxy. */
+  apiKey?: string;
 }
 
 export interface ResolvedProvider {
@@ -34,31 +61,35 @@ export interface UrlParsedModel {
 const getProviders = (): LocalProvider[] => [
   {
     name: "ollama",
-    baseUrl: process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434",
+    baseUrl: resolveBaseUrl("OLLAMA_BASE_URL", ["OLLAMA_HOST"], "http://localhost:11434"),
     apiPath: "/v1/chat/completions",
     envVar: "OLLAMA_BASE_URL",
     prefixes: ["ollama/", "ollama:"],
+    apiKey: resolveApiKey("OLLAMA_API_KEY"),
   },
   {
     name: "lmstudio",
-    baseUrl: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234",
+    baseUrl: resolveBaseUrl("LMSTUDIO_BASE_URL", [], "http://localhost:1234"),
     apiPath: "/v1/chat/completions",
     envVar: "LMSTUDIO_BASE_URL",
     prefixes: ["lmstudio/", "lmstudio:", "mlstudio/", "mlstudio:"], // mlstudio alias for common typo
+    apiKey: resolveApiKey("LMSTUDIO_API_KEY"),
   },
   {
     name: "vllm",
-    baseUrl: process.env.VLLM_BASE_URL || "http://localhost:8000",
+    baseUrl: resolveBaseUrl("VLLM_BASE_URL", [], "http://localhost:8000"),
     apiPath: "/v1/chat/completions",
     envVar: "VLLM_BASE_URL",
     prefixes: ["vllm/", "vllm:"],
+    apiKey: resolveApiKey("VLLM_API_KEY"),
   },
   {
     name: "mlx",
-    baseUrl: process.env.MLX_BASE_URL || "http://127.0.0.1:8080",
+    baseUrl: resolveBaseUrl("MLX_BASE_URL", [], "http://127.0.0.1:8080"),
     apiPath: "/v1/chat/completions",
     envVar: "MLX_BASE_URL",
     prefixes: ["mlx/", "mlx:"],
+    apiKey: resolveApiKey("MLX_API_KEY"),
   },
 ];
 
@@ -105,7 +136,7 @@ export function resolveProvider(modelId: string): ResolvedProvider | null {
         const concurrencyMatch = modelName.match(/^(.+):(\d+)$/);
         if (concurrencyMatch) {
           modelName = concurrencyMatch[1];
-          concurrency = parseInt(concurrencyMatch[2], 10);
+          concurrency = Number.parseInt(concurrencyMatch[2], 10);
         }
 
         return {
@@ -171,7 +202,7 @@ export function parseUrlModel(modelId: string): UrlParsedModel | null {
     if (pathParts.length > 1) {
       // Check if second-to-last is "v1" or similar API version
       const prefix = pathParts.slice(0, -1).join("/");
-      if (prefix) basePath = "/" + prefix;
+      if (prefix) basePath = `/${prefix}`;
     }
 
     const baseUrl = `${url.protocol}//${url.host}${basePath}`;

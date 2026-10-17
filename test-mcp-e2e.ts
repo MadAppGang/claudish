@@ -43,12 +43,17 @@ try {
 
   // 3. search_models (requires network — may fail in sandbox)
   try {
-    const searchResult = await client.callTool({ name: "search_models", arguments: { query: "grok", limit: 3 } });
+    const searchResult = await client.callTool({
+      name: "search_models",
+      arguments: { query: "grok", limit: 3 },
+    });
     const searchText = (searchResult.content as any)[0]?.text || "";
     const found = searchText.includes("grok");
-    console.log(`✓ search_models("grok"): ${found ? "found grok models" : "no results"} (${searchText.length} chars)`);
+    console.log(
+      `✓ search_models("grok"): ${found ? "found grok models" : "no results"} (${searchText.length} chars)`
+    );
   } catch (e: any) {
-    console.log(`⚠ search_models: ${e.message?.slice(0, 60) || "failed"}`);
+    console.log(`! search_models: ${e.message?.slice(0, 60) || "failed"}`);
   }
 
   // 4. team — status on nonexistent path (should error)
@@ -58,7 +63,9 @@ try {
   });
   const teamStatusText = (teamStatusResult.content as any)[0]?.text || "";
   const isErr = (teamStatusResult as any).isError;
-  console.log(`✓ team(status, bad path): ${isErr ? "correctly errored" : "unexpected"} — ${teamStatusText.slice(0, 70)}`);
+  console.log(
+    `✓ team(status, bad path): ${isErr ? "correctly errored" : "unexpected"} — ${teamStatusText.slice(0, 70)}`
+  );
 
   // 5. team — run with fake models (tests session setup + spawn + timeout)
   const testPath = `./test-mcp-e2e-${Date.now()}`;
@@ -108,9 +115,10 @@ try {
   }
 
   // Cleanup test session
-  const { rmSync } = await import("fs");
-  try { rmSync(testPath, { recursive: true, force: true }); } catch {}
-
+  const { rmSync } = await import("node:fs");
+  try {
+    rmSync(testPath, { recursive: true, force: true });
+  } catch {}
 } catch (err: any) {
   console.error(`✗ Error: ${err.message}`);
 } finally {

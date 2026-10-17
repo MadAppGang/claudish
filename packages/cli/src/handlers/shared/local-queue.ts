@@ -33,6 +33,29 @@ interface QueuedRequest {
   resolve: (response: Response) => void;
   reject: (error: Error) => void;
   providerId: string; // For debugging/stats (e.g., "ollama", "lmstudio")
+  /**
+   * Set when the caller can be cancelled while still QUEUED — a connection
+   * retry bounded by a per-attempt clamp, or a client that went away.
+   *
+   * This is the only queue whose ACTIVE request may legally run for ten
+   * minutes (local inference), so it is the only one where an admission wait
+   * can outlive the caller's own budget. Without it an aborted attempt's entry
+   * stayed in the queue and its `fetchFn` fired later, against a provider
+   * nobody was waiting on.
+   */
+  signal?: AbortSignal;
+  /** Detaches the abort listener. Always called, on every exit path. */
+  detach?: () => void;
+  /** True once the abort listener has rejected this entry. */
+  abandoned?: boolean;
+}
+
+/** Normalise an abort reason into an Error the queue's `reject` accepts. */
+function toAbortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  const err = new Error("Request aborted while queued");
+  err.name = "AbortError";
+  return err;
 }
 
 /**
@@ -126,8 +149,13 @@ export class LocalModelQueue {
   async enqueue(
     fetchFn: () => Promise<Response>,
     providerId: string,
-    concurrencyOverride?: number
+    concurrencyOverride?: number,
+    signal?: AbortSignal
   ): Promise<Response> {
+    // Already cancelled before we even got here: never occupy a slot for it.
+    if (signal?.aborted) {
+      throw toAbortError(signal.reason);
+    }
     // Handle concurrency override
     if (concurrencyOverride !== undefined) {
       if (concurrencyOverride === 0) {
@@ -169,7 +197,24 @@ export class LocalModelQueue {
         resolve,
         reject,
         providerId,
+        signal,
       };
+
+      if (signal) {
+        const onAbort = () => {
+          queuedRequest.abandoned = true;
+          queuedRequest.detach?.();
+          queuedRequest.detach = undefined;
+          // Splice it OUT. Leaving it in and merely rejecting the promise
+          // still lets processQueue invoke its fetchFn later, firing a request
+          // whose caller is already gone.
+          const i = this.queue.indexOf(queuedRequest);
+          if (i !== -1) this.queue.splice(i, 1);
+          reject(toAbortError(signal.reason));
+        };
+        queuedRequest.detach = () => signal.removeEventListener("abort", onAbort);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
 
       this.queue.push(queuedRequest);
       if (getLogLevel() === "debug") {
@@ -195,6 +240,14 @@ export class LocalModelQueue {
       const request = this.queue.shift();
       if (!request) break;
 
+      // Aborted while it waited. The listener has already rejected the caller;
+      // all that is left is to not run its fetchFn.
+      if (request.abandoned || request.signal?.aborted) {
+        request.detach?.();
+        request.detach = undefined;
+        continue;
+      }
+
       if (getLogLevel() === "debug") {
         log(
           `[LocalQueue] Processing request for ${request.providerId} (${this.queue.length} remaining in queue, ${this.activeRequests + 1}/${this.maxParallel} active)`
@@ -218,6 +271,10 @@ export class LocalModelQueue {
    */
   private async executeRequest(request: QueuedRequest): Promise<void> {
     this.activeRequests++;
+    // Past admission, the caller's signal is the fetch's business, not the
+    // queue's — the fetch was handed the same signal and will end itself.
+    request.detach?.();
+    request.detach = undefined;
 
     try {
       const response = await request.fetchFn();
@@ -243,7 +300,7 @@ export class LocalModelQueue {
             if (this.isOOMError(retryErrorBody)) {
               // OOM persisted after retry - fail with helpful message
               throw new Error(
-                `GPU out-of-memory error persisted after retry. Try setting CLAUDISH_LOCAL_MAX_PARALLEL=1 for sequential processing.`
+                "GPU out-of-memory error persisted after retry. Try setting CLAUDISH_LOCAL_MAX_PARALLEL=1 for sequential processing."
               );
             }
           }

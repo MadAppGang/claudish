@@ -13,10 +13,10 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { loadConfig, saveConfig } from "./profile-config.js";
-import { VERSION } from "./version.js";
 import { log } from "./logger.js";
+import { loadConfig, saveConfig } from "./profile-config.js";
 import type { ClaudishConfig } from "./types.js";
+import { VERSION } from "./version.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,6 @@ const KNOWN_PUBLIC_HOSTS = new Set([
 const PUBLIC_PROVIDERS = new Set([
   "openrouter",
   "gemini",
-  "gemini-codeassist",
   "openai",
   "vertex",
   "ollamacloud",
@@ -56,10 +55,14 @@ const PUBLIC_PROVIDERS = new Set([
   "minimax",
   "kimi",
   "glm",
-  "zai",
+  "z-ai",
+  "x-ai",
   "minimax-coding",
   "kimi-coding",
   "glm-coding",
+  "qwen-token-plan",
+  "qwen-coding",
+  "qwen-payg",
 ]);
 
 // ─── Module-Level State ───────────────────────────────────────────────────────
@@ -274,7 +277,7 @@ export function sanitizeMessage(msg: string): string {
   s = s.replace(/https?:\/\/([a-zA-Z0-9.-]+)(:\d+)?/g, (match, host) => {
     const lowerHost = host.toLowerCase();
     for (const pub of KNOWN_PUBLIC_HOSTS) {
-      if (lowerHost === pub || lowerHost.endsWith("." + pub)) {
+      if (lowerHost === pub || lowerHost.endsWith(`.${pub}`)) {
         return match; // Keep known public hosts intact
       }
     }
@@ -303,7 +306,7 @@ export function sanitizeMessage(msg: string): string {
 
   // 14. Truncate to max 500 characters
   if (s.length > 500) {
-    s = s.slice(0, 497) + "...";
+    s = `${s.slice(0, 497)}...`;
   }
 
   return s;
@@ -321,7 +324,7 @@ export function sanitizeModelId(modelId: string, providerName: string): string {
   // For local/litellm/custom providers, redact the model name
   const atIdx = modelId.indexOf("@");
   if (atIdx !== -1) {
-    return modelId.slice(0, atIdx + 1) + "<custom>";
+    return `${modelId.slice(0, atIdx + 1)}<custom>`;
   }
   return "<local-model>";
 }
@@ -478,7 +481,7 @@ export function enforceReportSize(report: TelemetryReport): string | null {
   let msg = report.error_message_template;
   while (serialized.length > MAX_REPORT_BYTES && msg.length > 0) {
     msg = msg.slice(0, Math.max(0, msg.length - 50));
-    const trimmed = { ...report, error_message_template: msg + "..." };
+    const trimmed = { ...report, error_message_template: `${msg}...` };
     serialized = JSON.stringify(trimmed);
   }
 
@@ -552,7 +555,7 @@ export async function runConsentPrompt(ctx: ErrorContext): Promise<void> {
 
   const errorSummary = classifyError(ctx.error, ctx.httpStatus);
 
-  process.stderr.write("\n[claudish] An error occurred: " + errorSummary.error_code + "\n");
+  process.stderr.write(`\n[claudish] An error occurred: ${errorSummary.error_code}\n`);
   process.stderr.write(
     "Help improve claudish by sending an anonymous error report?\n" +
       "  Sends: version, error type, provider, model, platform.\n" +
@@ -617,7 +620,7 @@ export async function runConsentPrompt(ctx: ErrorContext): Promise<void> {
  *
  * @param config - The parsed CLI config. Used to read the interactive flag.
  */
-export function initTelemetry(config: ClaudishConfig): void {
+export function initTelemetry(_config: ClaudishConfig): void {
   if (initialized) return;
   initialized = true;
 
@@ -719,6 +722,7 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
       saveConfig(cfg);
       process.stderr.write("[claudish] Telemetry enabled. Anonymous error reports will be sent.\n");
       process.exit(0);
+      break;
     }
 
     case "off": {
@@ -731,6 +735,7 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
       saveConfig(cfg);
       process.stderr.write("[claudish] Telemetry disabled. No error reports will be sent.\n");
       process.exit(0);
+      break;
     }
 
     case "status": {
@@ -764,6 +769,7 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
       process.stderr.write("  - Your name, email, or IP address\n");
       process.stderr.write("\nManage: claudish telemetry on|off|reset\n");
       process.exit(0);
+      break;
     }
 
     case "reset": {
@@ -777,12 +783,12 @@ export async function handleTelemetryCommand(subcommand: string): Promise<void> 
         "[claudish] Telemetry consent reset. You will be asked again on the next error.\n"
       );
       process.exit(0);
+      break;
     }
 
     default:
       process.stderr.write(
-        `[claudish] Unknown telemetry subcommand: "${subcommand}"\n` +
-          "Usage: claudish telemetry on|off|status|reset\n"
+        `[claudish] Unknown telemetry subcommand: "${subcommand}"\nUsage: claudish telemetry on|off|status|reset\n`
       );
       process.exit(1);
   }

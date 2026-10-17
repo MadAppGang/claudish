@@ -168,7 +168,8 @@ function extractTextContent(content: any): string {
     // Handle object content
     if (content.text) {
       return content.text;
-    } else if (content.content) {
+    }
+    if (content.content) {
       return extractTextContent(content.content);
     }
   }
@@ -184,7 +185,7 @@ export function transformMessages(req: any): void {
   if (!req.messages || !Array.isArray(req.messages)) return;
 
   const transformedMessages: any[] = [];
-  let systemMessages: string[] = [];
+  const systemMessages: string[] = [];
 
   for (const msg of req.messages) {
     // Handle developer messages (o3 specific) - treat as system messages
@@ -344,16 +345,42 @@ export function removeUriFormat(schema: any): any {
 }
 
 /**
+ * Claude Code prepends a billing header to the system prompt as its own text
+ * block:
+ *
+ *   x-anthropic-billing-header: cc_version=2.1.107.3d9; cc_entrypoint=cli; cch=74943;
+ *
+ * `cch=` is a PER-TURN hash, so the first bytes of a ~31k-token system prompt
+ * differ on every single request. Any backend doing prefix caching therefore
+ * re-reads the entire prefix each turn. @mtparet measured it against vLLM in
+ * #101: 48 tokens cached before, 31,728 after.
+ *
+ * Stripped HERE rather than in filterIdentity() because filterIdentity is only
+ * honoured by the OpenAI-shaped adapters and Gemini. AnthropicApiFormat ignores
+ * its filter argument entirely, and CodexAPIFormat assigns `system` straight to
+ * `payload.instructions` — so MiniMax, Kimi, GLM, Z.AI, vertex-anthropic, Codex
+ * and OllamaCloud would all keep leaking the hash.
+ *
+ * transformOpenAIToClaude runs once per ComposedHandler request and NEVER for
+ * NativeHandler, which is what makes this safe without an `instanceof` guard:
+ * native Anthropic traffic keeps the header, and Anthropic is the party the
+ * header is actually for.
+ */
+const BILLING_HEADER_RE = /x-anthropic-billing-header:[^\n]*\n?/gi;
+
+export function stripBillingHeader(text: string): string {
+  if (!text || !text.includes("x-anthropic-billing-header")) return text;
+  return text.replace(BILLING_HEADER_RE, "");
+}
+
+/**
  * Main transformation function from OpenAI to Claude format
  */
 export function transformOpenAIToClaude(claudeRequestInput: any): {
   claudeRequest: any;
   droppedParams: string[];
-  isO3Model?: boolean;
 } {
   const req = JSON.parse(JSON.stringify(claudeRequestInput));
-  const isO3Model =
-    typeof req.model === "string" && (req.model.includes("o3") || req.model.includes("o1"));
 
   if (Array.isArray(req.system)) {
     // Extract text content from each system message item
@@ -361,23 +388,33 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
       .map((item: any) => {
         if (typeof item === "string") {
           return item;
-        } else if (item && typeof item === "object") {
+        }
+        if (item && typeof item === "object") {
           // Handle content blocks
           if (item.type === "text" && item.text) {
             return item.text;
-          } else if (item.type === "text" && item.content) {
+          }
+          if (item.type === "text" && item.content) {
             return item.content;
-          } else if (item.text) {
+          }
+          if (item.text) {
             return item.text;
-          } else if (item.content) {
+          }
+          if (item.content) {
             return typeof item.content === "string" ? item.content : JSON.stringify(item.content);
           }
         }
         // Fallback
         return JSON.stringify(item);
       })
+      // Strip before the empty-filter below, so a block that held ONLY the
+      // billing header is dropped rather than left as an empty string. An
+      // empty text block is a 400 on Anthropic-compat endpoints.
+      .map((text: string) => stripBillingHeader(text))
       .filter((text: string) => text && text.trim() !== "")
       .join("\n\n");
+  } else if (typeof req.system === "string") {
+    req.system = stripBillingHeader(req.system);
   }
 
   if (!Array.isArray(req.messages)) {
@@ -388,7 +425,7 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
   if (!Array.isArray(req.tools)) req.tools = [];
 
   for (const t of req.tools) {
-    if (t && t.input_schema) {
+    if (t?.input_schema) {
       t.input_schema = removeUriFormat(t.input_schema);
     }
   }
@@ -398,6 +435,5 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
   return {
     claudeRequest: req,
     droppedParams: dropped,
-    isO3Model,
   };
 }

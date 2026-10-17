@@ -8,10 +8,9 @@
  * - gemini-sse stream format
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
-import { log } from "../../logger.js";
+import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 export class GeminiProviderTransport implements ProviderTransport {
   readonly name = "gemini";

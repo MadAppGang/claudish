@@ -6,12 +6,12 @@
  */
 
 import type {
-  SmokeProviderConfig,
-  ProbeResult,
-  ProbeFn,
   AnthropicResponse,
   OllamaResponse,
   OpenAIResponse,
+  ProbeFn,
+  ProbeResult,
+  SmokeProviderConfig,
 } from "./types.js";
 
 // 32x32 solid red PNG, base64-encoded (no filesystem dependency)
@@ -53,11 +53,11 @@ function buildHeaders(config: SmokeProviderConfig): Record<string, string> {
       headers["anthropic-version"] = "2023-06-01";
       break;
     case "bearer":
-      headers["Authorization"] = `Bearer ${config.apiKey}`;
+      headers.Authorization = `Bearer ${config.apiKey}`;
       headers["anthropic-version"] = "2023-06-01";
       break;
     case "openai":
-      headers["Authorization"] = `Bearer ${config.apiKey}`;
+      headers.Authorization = `Bearer ${config.apiKey}`;
       break;
   }
 
@@ -265,7 +265,8 @@ export const runToolCallingProbe: ProbeFn = async (
       reason: `no tool_use block (stop_reason was: ${resp.stop_reason})`,
       excerpt: JSON.stringify(resp.content).slice(0, 200),
     };
-  } else if (config.wireFormat === "ollama") {
+  }
+  if (config.wireFormat === "ollama") {
     const resp = raw as OllamaResponse;
     const toolCalls = resp.message?.tool_calls;
 
@@ -291,37 +292,36 @@ export const runToolCallingProbe: ProbeFn = async (
       reason: `no tool_calls (done_reason was: ${resp.done_reason ?? "unknown"})`,
       excerpt: JSON.stringify(resp.message).slice(0, 200),
     };
-  } else {
-    const resp = raw as OpenAIResponse;
-    const choice = resp.choices?.[0];
-    const toolCalls = choice?.message?.tool_calls;
+  }
+  const resp = raw as OpenAIResponse;
+  const choice = resp.choices?.[0];
+  const toolCalls = choice?.message?.tool_calls;
 
-    // Some providers (e.g. opencode-zen) return finish_reason: null even when
-    // tool_calls is present. Check tool_calls presence first; finish_reason is
-    // informational only.
-    if (
-      toolCalls &&
-      toolCalls.length > 0 &&
-      toolCalls[0].function.name === "get_weather" &&
-      toolCalls[0].function.arguments.length > 0
-    ) {
-      return {
-        capability: "tool_calling",
-        status: "pass",
-        durationMs: elapsed,
-        reason: "tool_calls detected",
-        excerpt: `tool: ${toolCalls[0].function.name}, args: ${toolCalls[0].function.arguments.slice(0, 100)}`,
-      };
-    }
-
+  // Some providers (e.g. opencode-zen) return finish_reason: null even when
+  // tool_calls is present. Check tool_calls presence first; finish_reason is
+  // informational only.
+  if (
+    toolCalls &&
+    toolCalls.length > 0 &&
+    toolCalls[0].function.name === "get_weather" &&
+    toolCalls[0].function.arguments.length > 0
+  ) {
     return {
       capability: "tool_calling",
-      status: "fail",
+      status: "pass",
       durationMs: elapsed,
-      reason: `no tool_calls (finish_reason was: ${choice?.finish_reason ?? "unknown"})`,
-      excerpt: JSON.stringify(choice?.message).slice(0, 200),
+      reason: "tool_calls detected",
+      excerpt: `tool: ${toolCalls[0].function.name}, args: ${toolCalls[0].function.arguments.slice(0, 100)}`,
     };
   }
+
+  return {
+    capability: "tool_calling",
+    status: "fail",
+    durationMs: elapsed,
+    reason: `no tool_calls (finish_reason was: ${choice?.finish_reason ?? "unknown"})`,
+    excerpt: JSON.stringify(choice?.message).slice(0, 200),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -387,7 +387,8 @@ export const runReasoningProbe: ProbeFn = async (
       durationMs: elapsed,
       reason: "empty response",
     };
-  } else if (config.wireFormat === "anthropic-compat") {
+  }
+  if (config.wireFormat === "anthropic-compat") {
     const resp = raw as AnthropicResponse;
     const thinkingBlock = resp.content?.find((b) => b.type === "thinking") as
       | { type: "thinking"; thinking: string }
@@ -438,65 +439,64 @@ export const runReasoningProbe: ProbeFn = async (
       durationMs: elapsed,
       reason: "empty response",
     };
-  } else {
-    const resp = raw as OpenAIResponse;
-    const msg = resp.choices?.[0]?.message;
+  }
+  const resp = raw as OpenAIResponse;
+  const msg = resp.choices?.[0]?.message;
 
-    if (!msg) {
-      return {
-        capability: "reasoning",
-        status: "fail",
-        durationMs: elapsed,
-        reason: "no choices in response",
-      };
-    }
+  if (!msg) {
+    return {
+      capability: "reasoning",
+      status: "fail",
+      durationMs: elapsed,
+      reason: "no choices in response",
+    };
+  }
 
-    if (isReasoning) {
-      if (msg.reasoning_content && msg.reasoning_content.length > 0) {
-        return {
-          capability: "reasoning",
-          status: "pass",
-          durationMs: elapsed,
-          reason: "reasoning_content tokens detected",
-          excerpt: msg.reasoning_content.slice(0, 200),
-        };
-      }
-      if (msg.content && msg.content.length > 0) {
-        return {
-          capability: "reasoning",
-          status: "pass",
-          durationMs: elapsed,
-          reason: "text response (reasoning not surfaced as tokens)",
-          excerpt: msg.content.slice(0, 200),
-        };
-      }
-      return {
-        capability: "reasoning",
-        status: "fail",
-        durationMs: elapsed,
-        reason: "empty response for reasoning model",
-      };
-    }
-
-    // Non-reasoning model: any non-empty content or reasoning_content is a pass
-    // Some providers (e.g. opencode-zen-go) put all output in reasoning_content
-    // even for models not classified as "reasoning".
-    const textOut = msg.content || msg.reasoning_content || "";
-    if (textOut.length > 0) {
+  if (isReasoning) {
+    if (msg.reasoning_content && msg.reasoning_content.length > 0) {
       return {
         capability: "reasoning",
         status: "pass",
         durationMs: elapsed,
-        excerpt: textOut.slice(0, 200),
+        reason: "reasoning_content tokens detected",
+        excerpt: msg.reasoning_content.slice(0, 200),
+      };
+    }
+    if (msg.content && msg.content.length > 0) {
+      return {
+        capability: "reasoning",
+        status: "pass",
+        durationMs: elapsed,
+        reason: "text response (reasoning not surfaced as tokens)",
+        excerpt: msg.content.slice(0, 200),
       };
     }
     return {
       capability: "reasoning",
       status: "fail",
       durationMs: elapsed,
-      reason: "empty response",
+      reason: "empty response for reasoning model",
     };
   }
+
+  // Non-reasoning model: any non-empty content or reasoning_content is a pass
+  // Some providers (e.g. opencode-zen-go) put all output in reasoning_content
+  // even for models not classified as "reasoning".
+  const textOut = msg.content || msg.reasoning_content || "";
+  if (textOut.length > 0) {
+    return {
+      capability: "reasoning",
+      status: "pass",
+      durationMs: elapsed,
+      excerpt: textOut.slice(0, 200),
+    };
+  }
+  return {
+    capability: "reasoning",
+    status: "fail",
+    durationMs: elapsed,
+    reason: "empty response",
+  };
 };
 
 // ─────────────────────────────────────────────────────────────

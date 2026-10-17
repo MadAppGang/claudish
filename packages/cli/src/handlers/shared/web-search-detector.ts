@@ -6,11 +6,7 @@
 
 import { log, logStderr } from "../../logger.js";
 
-const WEB_SEARCH_NAMES = new Set([
-  "web_search",
-  "brave_web_search",
-  "tavily_search",
-]);
+const WEB_SEARCH_NAMES = new Set(["web_search", "brave_web_search", "tavily_search"]);
 
 /**
  * Check if a parsed tool call name indicates a web search request.
@@ -25,7 +21,6 @@ export function isWebSearchToolCall(toolName: string): boolean {
 export function warnWebSearchUnsupported(toolName: string, modelName: string): void {
   log(`[WebSearch] Tool call '${toolName}' detected from model '${modelName}' — not yet supported`);
   logStderr(
-    `Warning: Model requested web search ('${toolName}') but server-side web search is not yet implemented. ` +
-    `The tool call will pass through to the client as-is.`
+    `Warning: Model requested web search ('${toolName}') but server-side web search is not yet implemented. The tool call will pass through to the client as-is.`
   );
 }

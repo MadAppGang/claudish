@@ -1,6 +1,6 @@
-import { writeFileSync, appendFile, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { appendFile, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { DiagOutput } from "./diag-output.js";
 
 let logFilePath: string | null = null;
@@ -144,8 +144,25 @@ function redactDeep(val: any, key?: string): any {
 function isStructuralLogWorthy(msg: string): boolean {
   return (
     msg.startsWith("[SSE:") ||
+    // Output the terminal firewall kept off the TTY. This is the ONLY durable
+    // record of it: the diag file is unlinked on session cleanup, so without
+    // this entry a suppressed dependency crash would vanish entirely. Matched
+    // explicitly rather than relying on the generic "error" substring below —
+    // a suppressed stdout line need not contain the word.
+    msg.startsWith("[Suppressed]") ||
     msg.startsWith("[Proxy]") ||
+    // How the spawned Claude Code process ended: its exit code, or the signal
+    // that killed it. The [Proxy] lines above cannot record a child that died
+    // before its first request, which is exactly the session whose log looks
+    // empty and whose failure the user most needs named.
+    msg.startsWith("[Claude Code]") ||
     msg.startsWith("[Fallback]") ||
+    // Connection-recovery episodes: which target, which attempt, how long the
+    // next gap is, and how the episode ended. Without this entry the ladder's
+    // only trace is behind `-d`, and the one thing a user reports about an
+    // outage is that the session hung — a report nobody can check against a
+    // log that was never written.
+    msg.startsWith("[Recovery]") ||
     msg.startsWith("[Streaming] ===") || // HANDLER STARTED
     msg.startsWith("[Streaming] Chunk:") ||
     msg.startsWith("[Streaming] Received") ||
@@ -178,26 +195,48 @@ function redactLogLine(message: string, timestamp: string): string {
 }
 
 /**
+ * The per-session part of a log filename: a UTC timestamp plus this process id.
+ *
+ * The PID is load-bearing, not decoration. The timestamp has one-second
+ * resolution and the file is opened with `writeFileSync`, which TRUNCATES. Any
+ * two claudish processes that start in the same second therefore compute the
+ * same path and each wipes what the other wrote.
+ *
+ * That is not a rare race: `team` and `create_session` spawn their
+ * children together, so a three-model run reliably lands three processes inside
+ * one second. Measured 2026-09-16 on exactly such a run, the surviving file held
+ * three interleaved `[Proxy] Server started` lines on three different ports and
+ * was missing the handler-creation lines for one of the children entirely —
+ * during an investigation into why that child produced no output.
+ *
+ * A concurrent run is precisely when the logs matter most, and it was the case
+ * that destroyed them.
+ */
+function logFileStamp(): string {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .split("T")
+    .join("_")
+    .slice(0, -5);
+  return `${timestamp}_${process.pid}`;
+}
+
+/**
  * Initialize file logging for this session
  */
 export function initLogger(
   debugMode: boolean,
   level: "debug" | "info" | "minimal" = "info",
-  noLogs: boolean = false
+  noLogs = false
 ): void {
-  // Tier 1: Always-on structural logging (unless --no-logs)
+  // Tier 1: Always-on structural logging (unless --log-off)
   if (!noLogs) {
     const logsDir = join(homedir(), ".claudish", "logs");
     if (!existsSync(logsDir)) {
       mkdirSync(logsDir, { recursive: true });
     }
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .split("T")
-      .join("_")
-      .slice(0, -5);
-    alwaysOnLogPath = join(logsDir, `claudish_${timestamp}.log`);
+    alwaysOnLogPath = join(logsDir, `claudish_${logFileStamp()}.log`);
     writeFileSync(
       alwaysOnLogPath,
       `Claudish Session Log - ${new Date().toISOString()}\nMode: structural (content redacted)\n${"=".repeat(60)}\n\n`
@@ -207,20 +246,14 @@ export function initLogger(
     scheduleFlush();
   }
 
-  // Tier 2: Debug verbose logging (existing behavior, only with --debug)
+  // Tier 2: Debug verbose logging (existing behavior, only with --debug-claudish)
   if (debugMode) {
     logLevel = level;
     const logsDir = join(process.cwd(), "logs");
     if (!existsSync(logsDir)) {
       mkdirSync(logsDir, { recursive: true });
     }
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .split("T")
-      .join("_")
-      .slice(0, -5);
-    logFilePath = join(logsDir, `claudish_${timestamp}.log`);
+    logFilePath = join(logsDir, `claudish_${logFileStamp()}.log`);
     writeFileSync(
       logFilePath,
       `Claudish Debug Log - ${new Date().toISOString()}\nLog Level: ${level}\n${"=".repeat(80)}\n\n`
@@ -284,6 +317,36 @@ export function logStderr(message: string): void {
     process.stderr.write(`[claudish] ${message}\n`);
   }
   log(message); // always write to debug log
+}
+
+/**
+ * A network-recovery episode's own account of itself: opened, each attempt,
+ * each wait, the outcome.
+ *
+ * ── WHY THIS IS STRUCTURAL OUTPUT AND NOT A DEBUG AID ───────────────────────
+ *
+ * These lines were on `log()`, which writes to two FILES — the `--debug` log
+ * and the always-on structural log under `~/.claudish/logs/`. That satisfies
+ * "it is written down" and fails the thing it was written down for. Recovery
+ * holds an inbound request for up to the derived deadline (~4.5 minutes at the
+ * default), and in a run with no pane — `-p`, CI, a pipe, any machine without
+ * magmux, which is EVERY headless run — nothing at all reaches the user while
+ * it does. A silent multi-minute hold with the reason legible nowhere is the
+ * state this feature's own design calls "strictly worse than the bug it exists
+ * to remove"; a file the user does not know to open is not a surface.
+ *
+ * The noise objection is real and is already answered by the channel: in an
+ * interactive session `logStderr` routes to `DiagOutput` (a file) rather than
+ * to the client's TUI, and in quiet mode it is suppressed. So the lines land on
+ * a terminal exactly where a terminal is the only surface there is, which is
+ * the case that needed them.
+ *
+ * Fine-grained plumbing — pane connect/disconnect, socket paths, a skipped
+ * ladder — stays on `log()`. This is for the episode's LIFECYCLE only: the six
+ * or so lines from which a reader can reconstruct the ladder.
+ */
+export function logRecovery(message: string): void {
+  logStderr(message);
 }
 
 /**
@@ -359,7 +422,7 @@ export function getLogLevel(): "debug" | "info" | "minimal" {
 /**
  * Truncate content for logging (keeps first N chars + "...")
  */
-export function truncateContent(content: string | any, maxLength: number = 200): string {
+export function truncateContent(content: string | any, maxLength = 200): string {
   if (content === undefined || content === null) return "[empty]";
   const str = typeof content === "string" ? content : (JSON.stringify(content) ?? "[empty]");
   if (str.length <= maxLength) {
