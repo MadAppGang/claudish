@@ -2,19 +2,19 @@
 
 **Deferred from `CLAUDE.md` (v7.1+ section).** The decisional summary stays in `CLAUDE.md`; this file holds the detail.
 
-When providers emit web search tool calls (`web_search`, `brave_web_search`, `tavily_search`) or GLM's `<searchWeb>` tags, claudish intercepts them instead of forwarding to the provider (which would fail for non-Anthropic providers).
+When providers emit web search tool calls (`web_search`, `brave_web_search`, `tavily_search`) or GLM's `<searchWeb>` tags, claudish dispositions them **three ways**: forward verbatim when the client declared the provider's exact tool name, remap when the client declared `WebSearch`, suppress-and-inject otherwise. A bare forward to a provider tool would fail on non-Anthropic providers — and suppressing a tool the client itself declared is the same stall in reverse.
 
 **HARD constraint**: a failed search/fetch must NEVER stop the agent. Every path degrades gracefully to well-formed text — no throws, no hung streams.
 
 ## Three interception paths
 
-1. **Structured tool_call** (`openai-sse.ts`): provider web search tool calls are detected via `web-search-detector.ts`. **If the client declared a `WebSearch` tool in the request** (checked against `toolSchemas`), the call is **remapped** to a synthetic `WebSearch` tool_use block with `stop_reason: "tool_use"` — Claude Code then executes its own WebSearch (which arrives as a sub-agent request, path 3) and the agentic loop continues. If WebSearch is NOT declared (e.g. sub-agents without web tools), the call is `suppressed` and results are injected as a text block with `end_turn` (legitimate there).
+1. **Structured tool_call** (`openai-sse.ts`) — three-way disposition (`clientDeclaresToolExactly` / `clientDeclaresWebSearch`, detected via `web-search-detector.ts`): **(1) exact name declared** (the client declared a web tool under the provider's own name, e.g. `web_search` — the Hermes bot shape) → the call **forwards verbatim**: `tool_use` under the client's own name, arguments intact, buffered and validated like any declared tool, `stop_reason: "tool_use"`, and it owns a real contiguous `content_block_start` index (the suppressed sentinel `-1` follows the `suppressWebSearch` disposition, never the tool name — #498 CR, #484 index-hole class). **(2) `WebSearch` declared** (not the exact name) → **remapped** to a synthetic `WebSearch` tool_use block with `stop_reason: "tool_use"` — Claude Code then executes its own WebSearch (which arrives as a sub-agent request, path 3) and the agentic loop continues. **(3) Nothing web-capable declared** (e.g. sub-agents without web tools) → the call is `suppressed` and results are injected as a text block with `end_turn` (legitimate there). Corner case: a client declaring **both** `WebSearch` and `web_search` takes lane 1 (forward) — the loop must never stall either way.
 
-2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, same remap logic: WebSearch declared → synthetic tool_use; otherwise SearXNG is called and results are appended as a text block.
+2. **GLM `<searchWeb>` tags** (`openai-sse.ts`): GLM models emit `<searchWeb><query>...</query></searchWeb>` in text content. At finalize, same remap logic: WebSearch declared → synthetic tool_use; otherwise SearXNG is called and results are appended as a text block. A tag has no called name, so lane 1 has no subject here — tags keep lanes 2/3 only.
 
 3. **Sub-agent requests** (`proxy-server.ts`): Claude Code's own WebSearch/WebFetch tools send a single user message ("Perform a web search for the query: X" / "Perform a web fetch for the URL: X"). Intercepted at the proxy level before handler selection; results returned as text with `end_turn` (correct — the sub-agent's job is to return text).
 
-**Why the remap matters (CoursIA incident 2026-06-10)**: suppress + inject-text + `end_turn` ends the assistant turn on raw search results — the agent stalls instead of using them. Remapping to the client's WebSearch keeps `stop_reason: "tool_use"`, so results come back as a tool_result and the loop continues. Regression tests: `format-translation.test.ts` ("web search remap").
+**Why the disposition matters (CoursIA incident 2026-06-10 + Hermes SEARCH-DUMP 2026-10-15)**: suppress + inject-text + `end_turn` ends the assistant turn on raw search results — the agent stalls instead of using them. Remapping to the client's WebSearch keeps `stop_reason: "tool_use"`, so results come back as a tool_result and the loop continues; and forwarding a tool the client declared under the provider's own name serves the loop the same way — the Hermes bot declared `web_search` and got its run dumped as raw results instead. Regression tests: `format-translation.test.ts` ("three-way lane 1/2/3" — lane 1 pins the forwarded `tool_use`, its args, `stop_reason` AND its contiguous index; "web search remap" pins lanes 2/3).
 
 ## Execution backends (fallback chains)
 
@@ -37,7 +37,7 @@ The MCP client (`handlers/shared/mcp-searxng-client.ts`) is a minimal JSON-RPC s
 - `handlers/shared/mcp-searxng-client.ts` — MCP streamable-http JSON-RPC client (non-throwing)
 - `handlers/shared/web-search-executor.ts` — fallback chains, result formatting, query extraction
 - `handlers/shared/web-search-detector.ts` — provider web-search tool name detection
-- `handlers/shared/stream-parsers/openai-sse.ts` — remap/suppression + `<searchWeb>` tag detection
+- `handlers/shared/stream-parsers/openai-sse.ts` — three-way disposition (forward/remap/suppress) + `<searchWeb>` tag detection
 - `proxy-server.ts` — sub-agent request interception
 
 ---
@@ -80,9 +80,9 @@ gate.
 
 ## Web Search Interception (v7.1+)
 
-Provider web-search tool calls (`web_search`, `brave_web_search`, `tavily_search`) and GLM `<searchWeb>` tags are intercepted, never forwarded (they would fail on non-Anthropic providers).
+Provider web-search tool calls (`web_search`, `brave_web_search`, `tavily_search`) and GLM `<searchWeb>` tags are dispositioned **three ways** — a bare forward to a provider tool would fail on non-Anthropic providers, but a tool the client itself declared under that exact name is the client's to serve.
 
-**The decision that matters**: if the client declared a `WebSearch` tool, **remap** the call to a synthetic `WebSearch` tool_use block with `stop_reason: "tool_use"`, so Claude Code runs its own search and the loop continues. Only when WebSearch is *not* declared (sub-agents without web tools) do we suppress and inject results as a text block with `end_turn`. Suppress-and-inject in the declared case ends the assistant turn on raw search results and **stalls the agent** — the CoursIA incident, 2026-06-10. Regression: `format-translation.test.ts` ("web search remap").
+**The decision that matters — three lanes, in order**: (1) the client declared a web tool under the **provider's exact name** (`web_search` — the Hermes bot shape) → **forward verbatim**: `tool_use` under the client's own name, arguments intact, validation applies, `stop_reason: "tool_use"`, and the forwarded call MUST own a real contiguous `content_block_start` index — the suppressed sentinel `-1` follows the disposition (`suppressWebSearch`), never the tool name (#498 CR, the #484 index-hole class). (2) `WebSearch` declared but not the exact name → **remap** to a synthetic `WebSearch` tool_use so Claude Code runs its own search and the loop continues. (3) Nothing web-capable declared (sub-agents without web tools) → suppress and inject results as a text block with `end_turn`. Lanes 2/3 exist because suppress-and-inject on a declared tool stalls the agent (CoursIA incident, 2026-06-10); lane 1 exists because suppressing a tool the client declared under its own name is the same stall. A client declaring both `WebSearch` and `web_search` takes lane 1 (forward) — the loop must never stall either way. The `<searchWeb>` TAG path has no called name, so it keeps lanes 2/3 only. Regression: `format-translation.test.ts` ("three-way lane 1/2/3", lane-1 index pin included).
 
 **On the Z.AI wire, `server_tool_use` comes with two siblings** (live capture 2026-08-11, `regression-zai-server-tool-use-live.sse`): the tool **input arrives whole in `content_block_start`** (zero `input_json_delta` — delta-based accumulation left `rawInput` empty on every real stream), and the provider also emits a **`tool_result` block assistant-side** after executing the tool server-side. `tool_result` is user-turn-only on the Anthropic wire, so it must be suppressed exactly like `server_tool_use` (the same results arrive as the preceding text block) — and because that removes a second block, the parser must remap the following deltas/stops down or indices desync ("Content block not found"). Regression: `format-translation.test.ts` ("Chantier D", structural asserts).
 

@@ -191,6 +191,21 @@ function clientDeclaresWebSearch(toolSchemas?: any[]): boolean {
 }
 
 /**
+ * Whether the client declared a tool under this EXACT name (Hermes fix #2,
+ * lane 1 of the three-way disposition). A provider web-tool call the client
+ * declared verbatim (`web_search`, `brave_web_search`, …) is the client's
+ * OWN tool: the client can execute it itself, so the call forwards like any
+ * declared tool instead of being intercepted. Interception (remap or
+ * suppress-and-inject) only applies when the exact name is NOT declared —
+ * measured 15/10 on Hermes (ai-01): its declared `web_search` tool was
+ * suppressed, results injected as text with end_turn, and the run dumped
+ * raw search results instead of continuing its loop.
+ */
+function clientDeclaresToolExactly(name: string, toolSchemas?: any[]): boolean {
+  return !!toolSchemas?.some((s) => s?.name === name);
+}
+
+/**
  * Validate tool call arguments against the tool schema
  * Now includes automatic repair of missing parameters
  */
@@ -1221,30 +1236,55 @@ export function createStreamingResponseHandler(
                           // (S4-b ccca029)
                           // Restore truncated tool name to original if mapping exists.
                           const isWebSearch = isWebSearchToolCall(restoredName);
-                          const remapToWebSearch = isWebSearch && clientDeclaresWebSearch(toolSchemas);
+                          // Three-way disposition (Hermes fix #2): lane 1 —
+                          // exact-name declaration wins, the call forwards like
+                          // any declared tool. Lanes 2/3 (remap to WebSearch,
+                          // suppress-and-inject) only when the exact name is
+                          // not declared.
+                          const declaredExactly =
+                            isWebSearch && clientDeclaresToolExactly(restoredName, toolSchemas);
+                          const remapToWebSearch =
+                            isWebSearch && !declaredExactly && clientDeclaresWebSearch(toolSchemas);
+                          const suppressWebSearch = isWebSearch && !remapToWebSearch && !declaredExactly;
                           if (isWebSearch) {
-                            log(`[Stream] Web search tool call detected: "${restoredName}" — ${remapToWebSearch ? "remapping to client WebSearch tool_use" : `intercepting via SearXNG (available=${SEARXNG_AVAILABLE})`}`);
+                            log(
+                              `[Stream] Web search tool call detected: "${restoredName}" — ${
+                                declaredExactly
+                                  ? "forwarding verbatim (client declared this exact tool)"
+                                  : remapToWebSearch
+                                    ? "remapping to client WebSearch tool_use"
+                                    : `intercepting via SearXNG (available=${SEARXNG_AVAILABLE})`
+                              }`
+                            );
                           }
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
                             name: restoredName,
                             // Reserved, not opened: a buffered tool keeps its place
                             // in the index order and emits at finish_reason time.
-                            // A suppressed web-search call never emits a block, so
-                            // it reserves nothing (-1): its index would otherwise
-                            // leak a hole to the client when the turn ends without
-                            // the finish_reason="tool_calls" spend path.
-                            blockIndex: isWebSearch && !remapToWebSearch ? -1 : writer.reserve(),
+                            // Only a SUPPRESSED web-search call never emits a
+                            // block, so it reserves nothing (-1): its index would
+                            // otherwise leak a hole to the client when the turn
+                            // ends without the finish_reason="tool_calls" spend
+                            // path. The sentinel follows the disposition, not the
+                            // name: lane 1 (exact-name declared) forwards and
+                            // MUST own a real index (#498 CR, #484 class).
+                            blockIndex: suppressWebSearch ? -1 : writer.reserve(),
                             started: false,
                             closed: false,
-                            suppressed: isWebSearch && !remapToWebSearch,
+                            suppressed: suppressWebSearch,
                             remapped: remapToWebSearch,
                             arguments: "", // Initialize arguments accumulator
                             ref: null,
                             // Buffer if we have schemas to validate, OR if a behavior
                             // rule wants to rewrite this call — repair is only
                             // possible while the arguments are still withheld.
-                            buffered: !!toolSchemas && toolSchemas.length > 0 && !isWebSearch,
+                            // Lane 1 (exact-name declared) buffers like any
+                            // declared tool — validation applies to it too.
+                            buffered:
+                              !!toolSchemas &&
+                              toolSchemas.length > 0 &&
+                              (!isWebSearch || declaredExactly),
                           };
                           // Seeded, not empty (S4-b baf19ef): fragments that
                           // arrived for this index before the name did are

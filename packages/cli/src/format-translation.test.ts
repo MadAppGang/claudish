@@ -2606,6 +2606,142 @@ describe("Regression: empty-response cause classification", () => {
     expect(text).not.toMatch(/\/compact/);
     expect(extractStopReason(events)).toBe("end_turn");
   });
+
+  // ─── Three-way web-tool disposition (Hermes fix #2, 16/10) ────────────────
+  // Lane 1: the client declared the tool under the EXACT name the model
+  // called → the call forwards like any declared tool (the client executes
+  // it itself, the loop continues). Lane 2: only `WebSearch` declared →
+  // remap (pinned by the tests above). Lane 3: nothing declared →
+  // suppress-and-inject (pinned by the tests above). Pre-fix, lane 1 fell
+  // into lane 3: Hermes' declared `web_search` tool was suppressed, results
+  // injected as text with end_turn — the run dumped raw search results
+  // instead of continuing its loop (measured 15/10, ai-01).
+
+  const WEB_SEARCH_SCHEMA = {
+    name: "web_search",
+    description: "Search the web",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  };
+
+  test("three-way lane 1: web_search declared exactly → forwarded tool_use, stop_reason=tool_use, no injection", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const raw = [
+      `data: {"id":"c9","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ws_fwd","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"shapley 1967 balanced sets\\"}"}}]},"finish_reason":null}]}`,
+      ``,
+      `data: {"id":"c9","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":6}}`,
+      ``,
+      `data: [DONE]`,
+      ``,
+    ].join("\n");
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(raw),
+      adapter,
+      "glm-5.3",
+      null,
+      undefined,
+      [WEB_SEARCH_SCHEMA] // the EXACT name is declared — lane 1
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // The client's own tool_use ships under its own name, arguments intact
+    expect(extractToolNames(events)).toContain("web_search");
+    const input = events
+      .filter((e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "input_json_delta")
+      .map((e) => e.data?.delta?.partial_json ?? "")
+      .join("");
+    expect(input).toContain("shapley 1967");
+
+    // No interception: nothing injected, and the loop continues
+    expect(extractText(events)).not.toContain("[Web search");
+    expect(extractStopReason(events)).toBe("tool_use");
+
+    // #498 CR: the forwarded call must own a real, contiguous index. The
+    // naive merge onto #485's main gave lane 1 the suppressed sentinel (-1)
+    // and the wire carried content_block_start at index -1 — the #484 class.
+    const startIndices = events
+      .filter((e) => e.data?.type === "content_block_start")
+      .map((e) => e.data?.index);
+    expect(startIndices).toEqual([0]);
+  });
+
+  test("three-way lane 2 twin: only WebSearch declared → remapped, not forwarded verbatim", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const raw = [
+      `data: {"id":"c9","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ws_rmp","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"bondareva 1963\\"}"}}]},"finish_reason":null}]}`,
+      ``,
+      `data: {"id":"c9","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":6}}`,
+      ``,
+      `data: [DONE]`,
+      ``,
+    ].join("\n");
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(raw),
+      adapter,
+      "glm-5.3",
+      null,
+      undefined,
+      [{ name: "WebSearch", description: "Web search", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }] // WebSearch only — NOT the exact name
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // Remap wins: the synthetic WebSearch tool_use ships, not a verbatim web_search
+    const names = extractToolNames(events);
+    expect(names).toContain("WebSearch");
+    expect(names).not.toContain("web_search");
+    expect(extractStopReason(events)).toBe("tool_use");
+  });
+
+  test("three-way lane 3 twin: nothing declared → suppressed, injected, end_turn", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const ctx = createMockContext();
+
+    const raw = [
+      `data: {"id":"c9","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ws_sup","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"core 1962\\"}"}}]},"finish_reason":null}]}`,
+      ``,
+      `data: {"id":"c9","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":6}}`,
+      ``,
+      `data: [DONE]`,
+      ``,
+    ].join("\n");
+
+    const response = createStreamingResponseHandler(
+      ctx,
+      sseToResponse(raw),
+      adapter,
+      "glm-5.3",
+      null,
+      undefined,
+      [
+        // a tool is declared, but no web tool — lane 3
+        { name: "Read", description: "Read a file", input_schema: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] } },
+      ]
+    );
+
+    const events = await parseClaudeSseStream(response);
+
+    // Suppressed and injected (SearXNG unavailable here → the degradation
+    // notice carries the query), the turn ends — subagent semantics unchanged
+    expect(extractToolNames(events)).toHaveLength(0);
+    expect(extractText(events)).toContain("core 1962");
+    expect(extractStopReason(events)).toBe("end_turn");
+  });
 });
 
 // ─── OpenAI SSE: cache accounting (G2, jsboige/claudish#99) ─────────────────
