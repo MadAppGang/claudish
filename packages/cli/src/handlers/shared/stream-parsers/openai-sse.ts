@@ -155,6 +155,13 @@ export interface StreamingState {
 export interface ToolState {
   id: string;
   name: string;
+  /**
+   * The client content-block index this tool holds, or -1 when it holds none.
+   * -1 is the suppressed-web-search case: a call that will never emit a block
+   * must not reserve an index — a reserved-but-unspent index leaks an index
+   * hole to the client (measured 15/10, msg_1792076842247: blocks 0,1,3 —
+   * the Anthropic Python SDK dies on the gap with IndexError).
+   */
   blockIndex: number;
   started: boolean; // Whether content_block_start has been sent
   closed: boolean;
@@ -373,7 +380,12 @@ export function createStreamingResponseHandler(
         // the client's own WebSearch tool so the agentic loop continues
         // (stop_reason "tool_use") instead of ending the turn on raw results.
         const emitWebSearchToolUse = (query: string, t?: ToolState) => {
-          const blockIndex = t?.blockIndex ?? writer.reserve();
+          // -1 = suppressed at creation, holds no client index (review #485):
+          // it is not nullish, so without this guard a -1 reaching the remap
+          // path would emit content_block_start index:-1. Unreachable today
+          // (a suppressed call never reaches the remap), but the sentinel
+          // gets its guard at its one consumer.
+          const blockIndex = t && t.blockIndex >= 0 ? t.blockIndex : writer.reserve();
           const id = t?.id ?? `tool_websearch_${Date.now()}_${blockIndex}`;
           const ref = writer.openTool({ id, name: "WebSearch", index: blockIndex });
           writer.append(ref, JSON.stringify({ query }));
@@ -583,6 +595,29 @@ export function createStreamingResponseHandler(
             const ref = writer.openText();
             writer.append(ref, searchWebResults);
             writer.close(ref);
+          }
+
+          // Suppressed web-search tool calls on a NON-tool_calls ending (the
+          // model asked to search but finished with "stop"): the finish_reason
+          // spend path never ran, so pre-fix the search was silently dropped
+          // AND its reserved index leaked a hole (Hermes IndexError, 15/10).
+          // Same injection, same wording as the tool_calls path.
+          for (const t of Array.from(state.tools.values())) {
+            if (t.suppressed && !t.closed) {
+              const query = extractSearchQuery(t.arguments);
+              let resultText: string;
+              if (query && SEARXNG_AVAILABLE) {
+                resultText = await executeWebSearch(query);
+              } else {
+                resultText = query
+                  ? `[Web search for "${query}" could not be executed. The search service (SearXNG) is not configured. Set SEARXNG_URL env var to enable.]`
+                  : `[Web search was requested but no query was provided.]`;
+              }
+              const ref = writer.openText();
+              writer.append(ref, resultText);
+              writer.close(ref);
+              t.closed = true;
+            }
           }
 
           // Whatever is still open — thinking, text, or a tool — closes here.
@@ -1195,7 +1230,11 @@ export function createStreamingResponseHandler(
                             name: restoredName,
                             // Reserved, not opened: a buffered tool keeps its place
                             // in the index order and emits at finish_reason time.
-                            blockIndex: writer.reserve(),
+                            // A suppressed web-search call never emits a block, so
+                            // it reserves nothing (-1): its index would otherwise
+                            // leak a hole to the client when the turn ends without
+                            // the finish_reason="tool_calls" spend path.
+                            blockIndex: isWebSearch && !remapToWebSearch ? -1 : writer.reserve(),
                             started: false,
                             closed: false,
                             suppressed: isWebSearch && !remapToWebSearch,
@@ -1337,7 +1376,10 @@ export function createStreamingResponseHandler(
                         }
                         // The suppressed tool never opened its block, so its
                         // reserved index is unspent — the text takes it.
-                        const ref = writer.openText({ index: t.blockIndex });
+                        // (-1 = suppressed at creation, nothing held: bare
+                        // openText takes the next free index.)
+                        const ref =
+                          t.blockIndex >= 0 ? writer.openText({ index: t.blockIndex }) : writer.openText();
                         writer.append(ref, resultText);
                         writer.close(ref);
                         t.closed = true;
