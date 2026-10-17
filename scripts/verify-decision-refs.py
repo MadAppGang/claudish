@@ -54,6 +54,9 @@ CODE_GLOBS = [
     "package.json",
     "scripts/**/*.py",
     "scripts/**/*.ps1",
+    "scripts/**/*.psm1",   # claudish-engine.psm1 holds the drain/watchdog pure
+                           # logic -- a doc citing Get-FailoverLineFingerprint
+                           # must verify against the module itself
     ".env.sidecar.example",
 ]
 
@@ -263,8 +266,10 @@ def run(paths: list[str]) -> int:
 FIXTURE = """## Fixture section
 
 - Real flag `CLAUDISH_FIRST_EVENT_TIMEOUT_MS` and real symbol `withFirstUsefulEventWatchdog`.
+- Real .psm1-only symbol `Get-FailoverLineFingerprint` (defined in scripts/lib/claudish-engine.psm1, cited by NO .ps1 — verifies only through the psm1 corpus glob).
 - False symbol `resolveEverythingMagically` and false flag `CLAUDISH_IMAGINARY_FLAG_XYZ`.
 - False flag `CLAUDISH_CHANNEL_IMAGINARY_XYZ` (contains NN: must be checked, not skipped).
+- False .psm1 symbol `Get-ImaginaryPsm1Symbol` (must be flagged, not waved through by the new glob).
 """
 
 
@@ -280,9 +285,10 @@ def selftest() -> int:
             token: verdict
             for _line, token, _cls, verdict in verify_doc(fixture, code, "", set())
         }
-    must_pass = ["CLAUDISH_FIRST_EVENT_TIMEOUT_MS", "withFirstUsefulEventWatchdog"]
+    must_pass = ["CLAUDISH_FIRST_EVENT_TIMEOUT_MS", "withFirstUsefulEventWatchdog",
+                 "Get-FailoverLineFingerprint"]
     must_fail = ["resolveEverythingMagically", "CLAUDISH_IMAGINARY_FLAG_XYZ",
-                 "CLAUDISH_CHANNEL_IMAGINARY_XYZ"]
+                 "CLAUDISH_CHANNEL_IMAGINARY_XYZ", "Get-ImaginaryPsm1Symbol"]
     ok = True
     for token in must_pass:
         if results.get(token) != "ok":
