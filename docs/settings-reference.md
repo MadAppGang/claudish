@@ -331,6 +331,7 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 |-------------|-------------------|-------|
 | `g`, `gemini` | `google` | Direct Google Gemini API (`GEMINI_API_KEY`) |
 | `oai` | `openai` | Direct OpenAI API (`OPENAI_API_KEY`) |
+| `cx`, `codex` | `openai-codex` | OpenAI Codex — Responses API (`OPENAI_CODEX_API_KEY` or OAuth via `claudish login codex`; `OPENAI_API_KEY` is accepted as an auth-header alias but does **not** make the lane routable — plain OpenAI keys get 400 on `/v1/responses`; `OPENAI_CODEX_BASE_URL` overrides) |
 | `or`, `openrouter` | `openrouter` | OpenRouter (`OPENROUTER_API_KEY`) |
 | `mm`, `mmax` | `minimax` | MiniMax direct API (`MINIMAX_API_KEY`) |
 | `mmc` | `minimax-coding` | MiniMax Coding Plan (`MINIMAX_CODING_API_KEY`) |
