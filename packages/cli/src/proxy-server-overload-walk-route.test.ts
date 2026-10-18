@@ -43,6 +43,12 @@
  *    wall on the route()-primary bucket is invisible to providerBucketOf;
  *  - drop the nominal-bucket skip (#348 part 3) ⇒ W18 red — the walk re-pays
  *    the same bucket whose capacity the 529 just refused.
+ *
+ * #28 Groupe A — characterization (G1/G2 + P7): bare 502/504 on the nominal
+ * are OUTSIDE the walk class today, so no walk, no arm, the bare status
+ * surfaces. Widen the class to 502/504 (pending coordinator decision) and
+ * these three go RED — that is their job: the widening must land as a
+ * deliberate choice, not as predicate drift.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -461,6 +467,43 @@ describe("#299 B — nominal transient overload walks the cascade once, zero fai
     expect(failoverLog.some((l) => l.includes("WALK sonnet one-shot"))).toBe(false);
   }, 60_000);
 
+  // #28 Groupe A — CHARACTERIZATION, not a fix: a BARE 502/504 from the
+  // nominal is outside isOverloadWalkClass (503/429-worded/529/400-conn only),
+  // so today the walk never fires, nothing arms, and the client eats the bare
+  // status. A gateway 502/504 is exactly the "infrastructure died between us
+  // and the provider" shape (nginx up, backend down; LB timeout), but unlike
+  // 503/529 it carries no provider-authored signal — widening the class is a
+  // policy decision (#28, coordinator pending), and these pins document the
+  // current edge so a widening shows up as a deliberate red here, forced to
+  // choose walk-vs-arm explicitly, instead of drifting in silently.
+  test("G1 (#28 A): bare 502 on the nominal does NOT walk — the client sees the 502, zero state", async () => {
+    await spin();
+    resetWalk();
+    endpointStatus.nm = 502; // stub branch `status >= 400`: bare JSON, no overload wording
+    const r1 = await postMessage("claude-sonnet-5");
+    expect(r1.status).toBe(502); // surfaced as-is
+    expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(0); // never walked
+    expect(calls.s1).toBe(0);
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(isBucketWalled(bucketOfNominal())).toBe(false);
+    expect(failoverLog.some((l) => l.includes("WALK sonnet one-shot"))).toBe(false);
+  }, 30_000);
+
+  test("G2 (#28 A): bare 504 on the nominal does NOT walk — same shape, timeout tier", async () => {
+    await spin();
+    resetWalk();
+    endpointStatus.nm = 504;
+    const r1 = await postMessage("claude-sonnet-5");
+    expect(r1.status).toBe(504);
+    expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(0);
+    expect(calls.s1).toBe(0);
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(isBucketWalled(bucketOfNominal())).toBe(false);
+    expect(failoverLog.some((l) => l.includes("WALK sonnet one-shot"))).toBe(false);
+  }, 30_000);
+
   test("W8: a NATIVE-lane 529 does NOT walk — the client's own credential, announced substitutions only", async () => {
     // EMPTY modelMap (not undefined — `map ?? default` would restore it): bare
     // claude-sonnet-5 resolves to NativeHandler, whose bucket is
@@ -860,5 +903,15 @@ describe("#299 B — isOverloadWalkClass pins every clause the walk answers to",
   test("P6: any other 400 is NOT the walk class (it is the user's own bad request)", () => {
     expect(isOverloadWalkClass(400, '{"type":"error","error":{"type":"invalid_request_error"}}')).toBe(false);
     expect(isOverloadWalkClass(400, "")).toBe(false);
+  });
+
+  test("P7 (#28 A): bare 502/504 are NOT the walk class — by status AND by body", () => {
+    expect(isOverloadWalkClass(502, "")).toBe(false);
+    expect(isOverloadWalkClass(504, "")).toBe(false);
+    // No provider-authored signal on these tiers: even overload-style wording
+    // cannot rescue them — the wording branch only exists at 429, the
+    // status branch only at 503/529. See G1/G2 for the end-to-end shape.
+    expect(isOverloadWalkClass(502, "The server cluster is overloaded")).toBe(false);
+    expect(isOverloadWalkClass(504, "gateway timeout — try again later")).toBe(false);
   });
 });
