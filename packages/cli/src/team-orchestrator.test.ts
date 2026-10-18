@@ -14,7 +14,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   mkdtempSync,
-  mkdirSync,
   writeFileSync,
   existsSync,
   readFileSync,
@@ -22,7 +21,7 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32, posix } from "node:path";
 import type { VoteResult } from "./team-orchestrator.js";
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
@@ -433,6 +432,72 @@ describe("team-orchestrator", () => {
       const { validateSessionPath } = await getOrchestrator();
 
       expect(() => validateSessionPath("../../etc/hosts")).toThrow();
+    });
+  });
+
+  // ── isWithinDir: #504 containment pins, both platform semantics ─────────
+
+  describe("isWithinDir — #504 pins (path.win32)", () => {
+    it("inside a subdir is within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "D:\\dev\\app\\sessions", win32)).toBe(true);
+    });
+
+    it("equal to base is within (empty relative)", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "D:\\dev\\app", win32)).toBe(true);
+    });
+
+    it("sibling directory is NOT within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "D:\\dev\\elsewhere", win32)).toBe(false);
+    });
+
+    it("explicit .. traversal is NOT within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "D:\\dev\\app\\..\\..\\etc", win32)).toBe(false);
+    });
+
+    it("other drive is NOT within (absolute relative)", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "C:\\Windows\\System32", win32)).toBe(false);
+    });
+
+    it("drive-letter case difference stays within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "d:\\dev\\app\\sessions", win32)).toBe(true);
+    });
+
+    it("a dir named ..cache is NOT a parent hop", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("D:\\dev\\app", "D:\\dev\\app\\..cache", win32)).toBe(true);
+    });
+  });
+
+  describe("isWithinDir — #504 pins (path.posix)", () => {
+    it("inside a subdir is within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("/home/u/app", "/home/u/app/sessions", posix)).toBe(true);
+    });
+
+    it("equal to base is within (empty relative)", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("/home/u/app", "/home/u/app", posix)).toBe(true);
+    });
+
+    it("sibling directory is NOT within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("/home/u/app", "/home/u/elsewhere", posix)).toBe(false);
+    });
+
+    it("explicit .. traversal is NOT within", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("/home/u/app", "/home/u/app/../../etc/hosts", posix)).toBe(false);
+    });
+
+    it("a dir named ..cache is NOT a parent hop", async () => {
+      const { isWithinDir } = await getOrchestrator();
+      expect(isWithinDir("/home/u/app", "/home/u/app/..cache", posix)).toBe(true);
     });
   });
 

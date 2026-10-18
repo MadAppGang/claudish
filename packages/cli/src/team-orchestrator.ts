@@ -7,7 +7,7 @@ import {
   readdirSync,
   createWriteStream,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import path, { join, resolve } from "node:path";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -67,13 +67,34 @@ export interface TeamVerdict {
 // ─── Path Validation ──────────────────────────────────────────────────────────
 
 /**
+ * Minimal path-module surface for isWithinDir — satisfied by `path`, `path.win32`
+ * and `path.posix`, so both platform semantics can be pinned on any host (#504).
+ */
+export interface PathModuleLike {
+  relative(from: string, to: string): string;
+  isAbsolute(p: string): boolean;
+  sep: string;
+}
+
+/**
+ * Pure containment check: is `target` inside `base` (or equal to it)?
+ * Uses relative() so separators and drive-letter case follow the injected
+ * path module instead of a hardcoded "/" prefix. A sibling named `..cache`
+ * stays inside — only a real parent hop (`..` or `..<sep>…`) or a jump to
+ * another absolute root is rejected.
+ */
+export function isWithinDir(base: string, target: string, p: PathModuleLike): boolean {
+  const rel = p.relative(base, target);
+  return rel !== ".." && !rel.startsWith(".." + p.sep) && !p.isAbsolute(rel);
+}
+
+/**
  * Validate that sessionPath is within cwd (prevents path traversal in MCP tools).
  * Returns the resolved absolute path.
  */
 export function validateSessionPath(sessionPath: string): string {
   const resolved = resolve(sessionPath);
-  const cwd = process.cwd();
-  if (!resolved.startsWith(cwd + "/") && resolved !== cwd) {
+  if (!isWithinDir(process.cwd(), resolved, path)) {
     throw new Error(`Session path must be within current directory: ${sessionPath}`);
   }
   return resolved;
