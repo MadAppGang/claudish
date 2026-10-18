@@ -44,10 +44,9 @@ skill **`worker-issues`**.
 
 ## Pièges du périmètre hub — décisions (preuves : `reference.md` §« Pièges »)
 
-- **Traces proxy live** → MCP `claudish_traffic` (#72), PAS `traffic-live.ps1` (verdicts
-  faux sur corpus roté) ; le script garde la cadence 6 h, aucun nouvel appelant.
-- **`traffic-live.ps1 -Container`** : défaut = `claudish-proxy` (hub) — sidecar ⇒
-  `-Container claudish-sidecar`, sinon exit 1.
+- **Lecture trafic** (instrument live, `-Container` sidecar, verdicts leak, grepper
+  `cc_is_subagent`) : `CLAUDE.md` §« Traffic Analysis & Anthropic Policy » (doublon
+  vérifié, chargé dans ce workspace).
 - **`docker logs --since` sur po-203** : tronque la fin, `--tail` instable → **filtrage
   timestamp** (`docker logs -t | awk`) + croiser `/captures` ; 1 seule invocation
   `--since` par fenêtre.
@@ -55,38 +54,27 @@ skill **`worker-issues`**.
   horodatage de marche (tout le fichier = fausse alerte).
 - **Panne machine** (gel, docker mort) : Event Log System AVANT le proxy (Id 26 commit
   charge, Kernel-Processor-Power). Leviers : pagefile, cap WSL2.
-- **Déploiement** : `Invoke-ClaudishDrainedRestart -Recreate -EnvFile <chemin>`
-  (`-EnvFile` **obligatoire**), **détaché** + poll `drain.log` jusqu'à `OUTCOME` (grep
-  SANS ancre — préfixe `[ts] `), **jamais inline** (pire cas 12,5 min). Jumeau
-  `<id>_<nom>` Created ⇒ `docker rm` avant retry. Bind-mount seul changé ⇒ `compose up
-  -d` no-op silencieux : drain à zéro + `--force-recreate`, ou `docker restart` drainé
-  si ni image ni `.env` ne changent (relit le bind, préserve l'env).
-  **JAMAIS de handle bloquant sur `drain.log`** (`tail -f` : verrouille l'écriture,
-  7 h mesuré) : surveiller `docker inspect`/`/health`.
+- **Déploiement** : règles d'appel (`Invoke-ClaudishDrainedRestart -Recreate -EnvFile`
+  obligatoire, détaché + poll `OUTCOME` — grep **sans ancre**, préfixe `[ts]`, détail
+  dans `ops-scripts.md` §drain `-Detach` — jamais inline, jamais de handle bloquant sur
+  `drain.log`) : `CLAUDE.md` §« Never-Hang Constraints » + `reference.md` §« Pièges ».
+  Spécificités absentes du CLAUDE.md : jumeau `<id>_<nom>` Created ⇒ `docker rm`
+  avant retry ; bind-mount seul changé ⇒ `compose up -d` no-op silencieux → drain à
+  zéro + `--force-recreate`, ou `docker restart` drainé si ni image ni `.env` ne
+  changent (relit le bind, préserve l'env).
 - **Clé z.ai, fenêtre 5 h épuisée** : un **1308** (quota, reset horodaté) prouve la clé
   ACCEPTÉE (401 = morte) ; même reset sur les deux lanes (`gc@`/`zai@`) ⇒ même compte.
 - **Pénurie flotte** : latence headers du hub gonflée par la MARCHE DE CASCADE — un
   canary > 90 s ≠ hub en panne (`/health` 200) ; flap du relais = instrument de l'état
   des lanes du hub, pas un défaut local.
-- **Failover** : `roleFromModelName()` ne matche que `opus|sonnet|haiku|fable` — un
-  client nommant `glm-5.2` rate la cascade sans `CLAUDISH_FAILOVER_ROLE_MODELS`. Ne pas
-  config-armer un failover correct ; **JAMAIS config-armer au mur** (tue l'auto-recovery).
-- **Leak policy** : Opus/Fable/Sonnet = ai-01 uniquement. `traffic-anthropic.ps1` exige
-  `pwsh` ; ne jamais grepper `cc_is_subagent` à la main.
+- **Failover** : `roleFromModelName()` et `CLAUDISH_FAILOVER_ROLE_MODELS` :
+  `CLAUDE.md` §« Budget Failover ». **JAMAIS config-armer au mur** (tue
+  l'auto-recovery) — absent du CLAUDE.md, garde ici.
 
 ## Protocole affermi (mandat user 2026-09-12 — non négociable)
 
-1. **Issue à moitié traitée = issue en échec.** Pas de grain suivant tant que le DoD de
-   l'issue en cours n'est pas atteint, ou re-scope explicite enregistré.
-2. **Tout « FAIT » flotte exige un artefact de vérification MESURÉ, par consommateur,
-   dans la même session** — lu sur le chemin vivant (web.config ARR,
-   `ANTHROPIC_BASE_URL`, `docker inspect`), pas sur l'intention.
-3. **Une panne détectée se escalade dans LE cycle qui la détecte** (DM URGENT +
-   dashboard). Les seuils « chronique » ne s'appliquent jamais à une panne totale.
-4. **Une vérification doit détecter les REVERTS silencieux** : re-lire l'artefact
-   (ex. backend ARR de models.myia.io), pas la mémoire qu'il fut vérifié.
-5. **Un revert de config partagée non loggé = incident** (GitHub issue + escalade),
-   jamais une anomalie à absorber.
+Les 5 règles dures : `CLAUDE.md` §« Fleet-Rollout Verification » — quasi
+verbatim, chargé dans ce workspace.
 
 ## Harness partagé
 
