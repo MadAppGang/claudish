@@ -2,7 +2,7 @@
 
 Planned-but-unimplemented work for Claudish. Items here are deliberately scoped, with explicit **trigger conditions** — what needs to be true upstream or in our codebase before each item moves to active development. If a trigger condition isn't met, leave the item parked.
 
-For shipped features and current architecture, see `CLAUDE.md`. For ad-hoc research and validation sessions, see `ai-docs/sessions/`.
+For shipped features and current architecture, see `CLAUDE.md`. For ad-hoc research and validation sessions, see `ai-docs/sessions/` (`ai-docs/` is a gitignored local research-session dir — every citation to it below is provenance, not a repo path).
 
 ---
 
@@ -14,7 +14,7 @@ Status: complete (this branch).
 
 The channel bridge now emits `task_id`, `status` (5-value SEP-1686 enum), `created_at`, `last_updated_at` alongside our existing fields. Wire format pinned by `channel-wire-format.test.ts` (8 tests, perturbation-verified). No consumer behavior change.
 
-See: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md`
+See: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md` (gitignored local session dir — provenance, not a repo path)
 
 ### Phase 2 — `notifications/tasks/status` behind a flag
 
@@ -57,8 +57,8 @@ So implementing this not only adds code that fires into a void — it would acti
 2. Claude Code ships UI/agent rendering for progress notifications from custom MCP servers (issue `anthropics/claude-code#4157`).
 
 **References**:
-- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`
-- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/`
+- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/` (gitignored local session dir — provenance, not a repo path)
+- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/` (gitignored local session dir — provenance, not a repo path)
 - Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`
 - Field evidence of the still-active bug: <https://github.com/GLips/Figma-Context-MCP/issues/362>
 
@@ -76,7 +76,7 @@ Anthropic's [official plugin marketplace](https://github.com/anthropics/claude-p
 
 **Counter-consideration**: submitting to Anthropic's allowlist invites security review and ties our release cadence partially to theirs. Not worth doing for a small team's internal use.
 
-Reference: research findings under `ai-docs/sessions/dev-research-channel-config-alternatives-20260508-233443-3f43f254/` confirm this is the only documented path to remove the dev flag for individual users.
+Reference: research findings under `ai-docs/sessions/dev-research-channel-config-alternatives-20260508-233443-3f43f254/` (gitignored local session dir — provenance, not a repo path) confirm this is the only documented path to remove the dev flag for individual users.
 
 ---
 
