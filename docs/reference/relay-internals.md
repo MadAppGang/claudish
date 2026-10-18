@@ -16,6 +16,18 @@ Historically every cluster machine pointed Claude Code's `ANTHROPIC_BASE_URL` di
 
 The relay branch sits in the `/v1/messages` route **before** `interceptWebTools` / `getHandlerForRequest` / `logRequest` — so nominal forwards bypass local capture automatically (mode-aware capture for free). `standalone-proxy.ts` reads the env, builds `RelayState`, passes it in `ProxyServerOptions.relay`, and starts the prober.
 
+## Which routes relay, which stay local (Refs #291)
+
+Only the two serving routes forward (`forwardToUpstream` has exactly two call sites, `proxy-server.ts:2218` inside `/v1/messages` `:2186` and `:2350` inside `/v1/chat/completions` `:2329`):
+
+| Route | Nominal relay mode |
+| --- | --- |
+| `POST /v1/messages` | forwarded raw to the hub (`:2218`) |
+| `POST /v1/chat/completions` | forwarded raw to the hub (`:2350`) |
+| `POST /v1/messages/count_tokens` | **never relayed** — always local |
+
+`/v1/messages/count_tokens` (`:2013`) resolves a handler locally through `getHandlerForRequest` (`:2031`) and counts on this node even when the relay is NOMINAL — only the native case fetches `api.anthropic.com/v1/messages/count_tokens` directly (`:2123`). Consequence: in NOMINAL, `CLAUDISH_NO_ANTHROPIC` **acts on `count_tokens`** (a `claude-*` count is rerouted to the budget sonnet and counted locally) while forwarded `/v1/messages` traffic never reaches the guard — the local policy sees only the routes that stay home. Measured 18/10 on po-2024: 7 `[Proxy] NO_ANTHROPIC: rerouting native 'claude-opus-4-8' → budget 'glm-5.2'` lines during a fully NOMINAL window (route attribution of those specific events: unproven from the log line alone — the coordinator's `count_tokens` hypothesis is the candidate, po-2023 owns the pairing).
+
 ## Leak-policy backstop (defense in depth)
 
 `CLAUDISH_NO_ANTHROPIC=1` (set on every machine ≠ ai-01) makes `getHandlerForRequest` reroute any bare native (`isNative`) target to the budget `modelMap.sonnet` instead of real `api.anthropic.com`. Depth-guarded recursion + a fail-closed refusal handler prevent both infinite loops and leaks on a misconfigured mapping. See memory `leak-policy-binary-by-machine`.
