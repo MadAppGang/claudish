@@ -97,6 +97,41 @@ describe("mergeUserSettingsIfPresent (real function pin)", () => {
     }
   });
 
+  test("inline JSON --settings: parsed and merged, not treated as a file path", () => {
+    const dir = tempDir();
+    try {
+      const temp = join(dir, "temp-settings.json");
+      writeFileSync(temp, '{"statusLine":{"type":"command","command":"original"}}', "utf-8");
+      // The value is JSON itself (leading '{'), not a path — if the inline
+      // detection ever regresses to readFileSync-only, this looks like a
+      // nonexistent file named '{"model":...}' and the merge silently no-ops.
+      const config = makeConfig(["--settings", '{"model":"glm-5.3","env":{"A":"1"}}', "-p"]);
+      mergeUserSettingsIfPresent(config, temp, STATUS_LINE, false);
+      const merged = JSON.parse(readFileSync(temp, "utf-8"));
+      expect(merged.model).toBe("glm-5.3");
+      expect(merged.env).toEqual({ A: "1" });
+      expect(merged.statusLine).toEqual(STATUS_LINE);
+      expect(config.claudeArgs).toEqual(["-p"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("malformed inline JSON: catch branch — temp keeps its content, --settings still spliced, never throws", () => {
+    const dir = tempDir();
+    try {
+      const temp = join(dir, "temp-settings.json");
+      const original = '{"statusLine":{"type":"command","command":"original"}}';
+      writeFileSync(temp, original, "utf-8");
+      const config = makeConfig(["--settings", '{"model":', "-p"]);
+      expect(() => mergeUserSettingsIfPresent(config, temp, STATUS_LINE, false)).not.toThrow();
+      expect(readFileSync(temp, "utf-8")).toBe(original);
+      expect(config.claudeArgs).toEqual(["-p"]); // splice happens on every path
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("unreadable settings path: temp file keeps its own content, --settings still spliced, never throws", () => {
     const dir = tempDir();
     try {

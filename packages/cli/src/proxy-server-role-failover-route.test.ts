@@ -571,9 +571,15 @@ describe("#367 — owner-side buckets of concrete delegation targets", () => {
     // nm walls by default (beforeEach) — the delegated refusal surface.
 
     // Request 1: opus (config-armed) → role:sonnet → sonnet's nominal (nm)
-    // walls 402. opus[0] is the last step, so the 402 surfaces.
+    // walls 402. opus[0] is the last step, so the wall surfaces — as a 429
+    // rate_limit_error since #409 (a walled LAST step is relabeled into the
+    // vocabulary the client already retries; the body names the original 402,
+    // role and concrete). Pre-#409 this surfaced the provider's 402 verbatim,
+    // which this pin originally asserted.
     const r1 = await postMessage("claude-opus-5");
-    expect(r1.status).toBe(402);
+    expect(r1.status).toBe(429);
+    const r1Body = await r1.json();
+    expect(JSON.stringify(r1Body)).toContain("402"); // the original status is named, wall not silent
     expect(calls.nm).toBe(1);
     expect(calls.mm).toBe(0); // the default model is never CALLED — only mis-bucketed
 

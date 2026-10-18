@@ -2217,6 +2217,21 @@ describe("Regression: web search remap to client WebSearch tool_use", () => {
   // Anthropic Python SDK died on the gap with IndexError: list index out
   // of range. The search itself was also silently dropped on this ending.
   test("web_search call + <searchWeb> tag + finish=stop → contiguous indices, no hole (Hermes IndexError 15/10)", async () => {
+    // Network hermeticity: the injections go through the REAL executeWebSearch
+    // chain. On seats whose .env SEARXNG_URL is reachable this pin waited out
+    // the 5s attempt timeout per query (measured ai-01/po-2025, review of
+    // queue 20261018T0000Z grain 3). Pin the backend to an unreachable
+    // loopback with a short attempt budget: degradation text still carries the
+    // query, which is what the assertions below discriminate on.
+    const SAVED_ENV = {
+      url: process.env.SEARXNG_URL,
+      mcp: process.env.SEARXNG_MCP_URL,
+      timeout: process.env.SEARXNG_ATTEMPT_TIMEOUT_MS,
+    };
+    process.env.SEARXNG_URL = "http://127.0.0.1:1";
+    process.env.SEARXNG_MCP_URL = "";
+    process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = "200";
+    try {
     const createStreamingResponseHandler = await getParser();
     const adapter = await getDefaultAdapter();
     const ctx = createMockContext();
@@ -2266,6 +2281,11 @@ describe("Regression: web search remap to client WebSearch tool_use", () => {
     expect(starts).toEqual([0, 1, 2]);
 
     expect(extractStopReason(events)).toBe("end_turn");
+    } finally {
+      process.env.SEARXNG_URL = SAVED_ENV.url;
+      process.env.SEARXNG_MCP_URL = SAVED_ENV.mcp;
+      process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = SAVED_ENV.timeout;
+    }
   });
 
   // The coordinator's discriminating probe (review #485, table row 1):
