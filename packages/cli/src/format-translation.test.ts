@@ -2282,9 +2282,15 @@ describe("Regression: web search remap to client WebSearch tool_use", () => {
 
     expect(extractStopReason(events)).toBe("end_turn");
     } finally {
-      process.env.SEARXNG_URL = SAVED_ENV.url;
-      process.env.SEARXNG_MCP_URL = SAVED_ENV.mcp;
-      process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = SAVED_ENV.timeout;
+      // delete-idiom: under bun, `process.env.K = undefined` stores the STRING
+      // "undefined", leaking it into every test file that runs after this one
+      // (follow-up to #513 review). Same shape as the dialect-test restores.
+      if (SAVED_ENV.url === undefined) delete process.env.SEARXNG_URL;
+      else process.env.SEARXNG_URL = SAVED_ENV.url;
+      if (SAVED_ENV.mcp === undefined) delete process.env.SEARXNG_MCP_URL;
+      else process.env.SEARXNG_MCP_URL = SAVED_ENV.mcp;
+      if (SAVED_ENV.timeout === undefined) delete process.env.SEARXNG_ATTEMPT_TIMEOUT_MS;
+      else process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = SAVED_ENV.timeout;
     }
   });
 
@@ -3129,4 +3135,25 @@ describe("Regression: Responses-lane cache visibility (#115)", () => {
     expect(seed.cache_read_input_tokens).toBe(0);
     expect(seed.cache_creation_input_tokens).toBe(0);
   });
+});
+
+// Post-file env probe (follow-up to #513 review): bun stores
+// `process.env.K = undefined` as the STRING "undefined" — the naive restore in
+// the hermetic #485 pin above leaked exactly that into every test file that
+// ran after this one. The restore now uses the delete-idiom; this probe,
+// placed last in the file so it observes the post-test state, pins the
+// restored env: each var back to its file-load value (undefined stays
+// undefined), never the literal "undefined" string.
+const FILE_LOAD_ENV = {
+  url: process.env.SEARXNG_URL,
+  mcp: process.env.SEARXNG_MCP_URL,
+  timeout: process.env.SEARXNG_ATTEMPT_TIMEOUT_MS,
+};
+test("env restored after the hermetic #485 pin: no \"undefined\" string leak", () => {
+  expect(process.env.SEARXNG_URL).toBe(FILE_LOAD_ENV.url);
+  expect(process.env.SEARXNG_MCP_URL).toBe(FILE_LOAD_ENV.mcp);
+  expect(process.env.SEARXNG_ATTEMPT_TIMEOUT_MS).toBe(FILE_LOAD_ENV.timeout);
+  expect(process.env.SEARXNG_URL).not.toBe("undefined");
+  expect(process.env.SEARXNG_MCP_URL).not.toBe("undefined");
+  expect(process.env.SEARXNG_ATTEMPT_TIMEOUT_MS).not.toBe("undefined");
 });

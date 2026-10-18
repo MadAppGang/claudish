@@ -53,6 +53,15 @@ describe("TUI JSX intrinsics are in the opentui catalogue", () => {
       visit(sf);
     }
 
+    // Positive control (follow-up to #511 review): without it, a mutant that
+    // stops collecting paired-element tags — e.g. reading `(node as any).tagName`
+    // (undefined on JsxElement in TS 5.9, the first-push #511 bug) — leaves the
+    // unknown-filter vacuously green. "text" is used only in paired form
+    // (84 sites, all in App.tsx; zero self-closing), so it disappears entirely
+    // under that mutant and this line goes red.
+    expect(used.has("text")).toBe(true);
+    expect(used.size).toBeGreaterThan(0);
+
     const catalogue = new Set(Object.keys(getComponentCatalogue()));
     const unknown = [...used.entries()].filter(([tag]) => !catalogue.has(tag));
     if (unknown.length > 0) {
