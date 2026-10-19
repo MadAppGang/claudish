@@ -66,6 +66,8 @@ export interface ProbeDroppedLink {
   outcome: DroppedOutcome;
   /** The remedy, for a candidate the credential filter dropped. */
   credentialHint?: string;
+  /** A no-credential candidate whose credential is not an env var (`effectiveLabel`). */
+  provenance?: KeyProvenance;
 }
 
 /** Where `--probe` reads a provider's credential remedy and key provenance from. */
@@ -132,6 +134,11 @@ function droppedLinkOf(
   credentials: CredentialLookup
 ): ProbeDroppedLink {
   const hint = outcome === "no-credential" ? credentials.hintFor(candidate.provider) : undefined;
+  // Only a credential that is not an env var (`effectiveLabel`: Muse Code's
+  // login, Vertex's project) says something an env-var name would not, so only
+  // that provenance rides on a dropped row, for the Key line when nothing was kept.
+  const provenance =
+    outcome === "no-credential" ? credentials.provenanceFor(candidate.provider) : undefined;
   return {
     provider: candidate.provider,
     displayName: candidate.displayName,
@@ -141,6 +148,7 @@ function droppedLinkOf(
     label: hopLabel(candidate),
     outcome,
     ...(hint ? { credentialHint: hint } : {}),
+    ...(provenance?.effectiveLabel ? { provenance } : {}),
   };
 }
 
@@ -224,6 +232,7 @@ export function resultLinksFrom(
         hasCredentials: entry.outcome === "not-served",
         ...(entry.credentialHint ? { credentialHint: entry.credentialHint } : {}),
         dropped: entry.outcome,
+        ...withKeyLine(entry.provenance),
       })
     ),
   ];

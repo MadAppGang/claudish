@@ -1646,6 +1646,8 @@ async function probeModelRouting(
   const probeCredentials: CredentialLookup = {
     hintFor(provider) {
       if (getProviderByName(provider)?.isLocal) return "enable local provider in global config";
+      // A dropped no-login muse@ row names the login fix, not an env var it has none of.
+      if (provider === "meta-muse-code") return describeMuseSigningSource().detail;
       const keyInfo = API_KEY_MAP[provider];
       if (!keyInfo?.envVar) return undefined;
       return credentialHintFrom(
