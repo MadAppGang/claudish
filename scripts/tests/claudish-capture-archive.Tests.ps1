@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
     Capture-archive namespace policy (compress-captures.ps1 + claudish-engine).
 

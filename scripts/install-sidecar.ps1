@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Idempotently installs (or updates) a claudish relay sidecar on this machine.
 

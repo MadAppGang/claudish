@@ -1,4 +1,4 @@
-<#
+﻿<#
 session-watch.ps1 — Session surveillance organ (detector-first, journal-only by default).
 
 Background replacement for the interactive tripwire cron (#362-P4 reconciled; user 07/10:

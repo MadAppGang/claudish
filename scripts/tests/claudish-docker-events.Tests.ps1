@@ -1,4 +1,4 @@
-<#
+﻿<#
     Pester 5 suite for the docker-events collector (jsboige/claudish#169).
 
     Run:  bun run test:scripts        (pwsh 7)

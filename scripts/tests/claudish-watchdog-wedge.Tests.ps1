@@ -1,4 +1,4 @@
-<#
+﻿<#
     Integration tests for the wedge glue inside claudish-watchdog.ps1.
 
     The library suite proves the decision table. This one proves the WIRING: that

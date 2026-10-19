@@ -1,4 +1,4 @@
-<#
+﻿<#
     Pester 5/6 suite for the failover-events collector (jsboige/claudish#347).
 
     Run:  bun run test:scripts        (pwsh 7)

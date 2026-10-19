@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 #
 # ⚠ DEPRECATED (2026-10-04, #72) — prefer the MCP tool `claudish_traffic`.
 #

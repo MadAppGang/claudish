@@ -1,4 +1,4 @@
-<#
+﻿<#
     Pester 5 suite for scripts/lib/claudish-engine.psm1.
 
     Run:  pwsh -NoProfile -Command "Invoke-Pester ./scripts/tests -Output Detailed"

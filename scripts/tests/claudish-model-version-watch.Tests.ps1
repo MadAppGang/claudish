@@ -1,4 +1,4 @@
-# claudish-model-version-watch.Tests.ps1 — pins for the version-watch organ
+﻿# claudish-model-version-watch.Tests.ps1 — pins for the version-watch organ
 #
 # Run under BOTH interpreters (bun run test:scripts / test:scripts:win51) —
 # production runs 5.1. Pure logic: no network, no docker, no scheduled task.

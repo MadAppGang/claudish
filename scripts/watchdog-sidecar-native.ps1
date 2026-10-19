@@ -1,4 +1,4 @@
-# Claudish sidecar watchdog — NATIVE-PROCESS variant (po-204 pattern)
+﻿# Claudish sidecar watchdog — NATIVE-PROCESS variant (po-204 pattern)
 #
 # For a sidecar that is a bare OS process (bun launched by ~/.start-claudish-sidecar.ps1),
 # not a docker container. The fleet watchdog (claudish-watchdog.ps1) closes a different

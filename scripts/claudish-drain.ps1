@@ -1,4 +1,4 @@
-# Claudish — drain-then-restart (shared)
+﻿# Claudish — drain-then-restart (shared)
 #
 # A bare `docker restart` kills every in-flight SSE stream mid-body. Each client
 # then reports:

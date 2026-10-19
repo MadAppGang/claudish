@@ -1,4 +1,4 @@
-# Claudish docker-events collector — writes down container lifecycle events
+﻿# Claudish docker-events collector — writes down container lifecycle events
 # while they are happening, because `docker events` forgets them in ~35 min.
 #
 # WHY (jsboige/claudish#169). During the 2026-09-20 hub incident (5-6 restart

@@ -1,4 +1,4 @@
-# Claudish Watchdog — detects tool-call stream hangs and auto-restarts
+﻿# Claudish Watchdog — detects tool-call stream hangs and auto-restarts
 #
 # The proxy hangs on tool_call paths (WebSearch, GLM tool_use), not simple text.
 # This watchdog tests the EXACT code path that degrades:

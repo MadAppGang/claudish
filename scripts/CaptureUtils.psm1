@@ -1,4 +1,4 @@
-# CaptureUtils.psm1 — Shared functions for claudish traffic analysis scripts
+﻿# CaptureUtils.psm1 — Shared functions for claudish traffic analysis scripts
 
 $ErrorActionPreference = 'Stop'
 

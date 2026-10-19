@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Split-brain / ghost-session scan for a Claude Code host (read-only).
 

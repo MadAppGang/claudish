@@ -1,4 +1,4 @@
-# claudish — model version watch (runner)
+﻿# claudish — model version watch (runner)
 #
 # Watches the model versions the providers actually offer and keeps the hub's
 # ROUTING on the latest MINOR of each family, automatically:

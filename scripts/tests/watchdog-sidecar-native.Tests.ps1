@@ -1,4 +1,4 @@
-<#
+﻿<#
     Tests for watchdog-sidecar-native.ps1 (the process-native sidecar watchdog).
 
     Two layers, same split as the fleet watchdog:

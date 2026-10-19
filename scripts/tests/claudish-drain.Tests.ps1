@@ -1159,7 +1159,11 @@ Describe 'drain -Detach — quoted detached launch (#312)' {
         #                    class: nothing in the watch log, error in stderr
         $script:DetachDir = Join-Path $script:TestDir 'detach'
         New-Item -ItemType Directory -Path $script:DetachDir -Force | Out-Null
-        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        # #519: these fixtures are parsed by powershell.exe 5.1 (child
+        # processes), and one body carries an em-dash — no-BOM breaks the
+        # child's parse on CP1252 seats exactly like the engine module did.
+        # .ps1 fixtures get the BOM; data files elsewhere stay no-BOM.
+        $utf8 = New-Object System.Text.UTF8Encoding($true)
 
         # #338 review B2: the real child's contract is a `START pid <pid>`
         # handshake line BEFORE anything else — fixtures write it too, so the

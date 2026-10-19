@@ -1,4 +1,4 @@
-<#
+﻿<#
     Pester 5/6 suite for the session-watch organ (jsboige/claudish#362, CR 07/10 B1/B2).
 
     Run:  bun run test:scripts        (pwsh 7)

@@ -1,4 +1,4 @@
-# Claudish failover-events collector — writes the proxy's [Failover] lines to
+﻿# Claudish failover-events collector — writes the proxy's [Failover] lines to
 # a file, because a recreate destroys both the docker log and process memory.
 #
 # WHY (jsboige/claudish#347, from #331 Q2). The hub's failover markers (ARMED /

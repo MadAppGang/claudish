@@ -1,4 +1,4 @@
-<#
+﻿<#
     Pester 5/6 suite for the split-brain / ghost-session scanner (jsboige/claudish#341, review #342).
 
     Run:  bun run test:scripts        (pwsh 7)

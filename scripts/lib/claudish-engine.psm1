@@ -1,4 +1,4 @@
-<#
+﻿<#
     claudish-engine — shared, testable primitives for the watchdog and the drain.
 
     This module exists because of 2026-09-20. The Docker Desktop localhost

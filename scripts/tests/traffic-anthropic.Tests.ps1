@@ -1,4 +1,4 @@
-# traffic-anthropic.Tests.ps1 — pins for the #72 g2 sonnet split
+﻿# traffic-anthropic.Tests.ps1 — pins for the #72 g2 sonnet split
 #
 # Run under BOTH interpreters (bun run test:scripts / test:scripts:win51) —
 # production runs 5.1. Pure logic: temp corpus, no network, no docker.

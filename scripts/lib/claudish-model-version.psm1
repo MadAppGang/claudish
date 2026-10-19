@@ -1,4 +1,4 @@
-# claudish-model-version.psm1 — model version watch (pure logic, no network, no
+﻿# claudish-model-version.psm1 — model version watch (pure logic, no network, no
 # docker — the ONE exception is Invoke-DrainDetachedRestart, which runs the
 # drain's own -Detach parent synchronously; every path it touches is passed in)
 #
