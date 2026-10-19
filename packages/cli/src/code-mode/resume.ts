@@ -46,12 +46,14 @@ import { extractSessionId } from "../behavior/harness.js";
 import type { ClaudeToolChoice } from "../handlers/shared/format/openai-tools.js";
 import { log } from "../logger.js";
 import type { AuthBinding } from "../providers/transport/types.js";
+import type { ClaudeToolLike } from "./exec-tool.js";
 import { type BatchResultEntry, batchHash, completionKey } from "./hashes.js";
 import { accountKeyFromBinding, decodeNestedId, sessionKeyFor } from "./ids.js";
 import { LOST_SCRIPT_NOTE, MOVED_ON_NOTE, reconstructExecSource } from "./input-builder.js";
 import type { ExecOutput, OutputPart } from "./output.js";
 import type { CodeModeSetting } from "./policy.js";
 import { nestedBlocksFor, settleDone, suspendBlocked } from "./relay.js";
+import { replayLostScript } from "./replay.js";
 import type { NestedResult } from "./sandbox/script-runtime.js";
 import type { ExecRecord, ScriptStore } from "./script-store.js";
 import type { CodeModeStores } from "./stores.js";
@@ -87,6 +89,8 @@ interface RequestView {
   toolUses: Map<string, ClaudeContentBlock>;
   /** tool_use id → its tool_result (first occurrence, user messages), as the input builder reads them. */
   results: Map<string, ClaudeContentBlock>;
+  /** Claude Code's tools in this request (a replayed script calls them). */
+  tools: ClaudeToolLike[];
 }
 
 function blocksOf(message: ClaudeMessage | undefined): ClaudeContentBlock[] {
@@ -236,6 +240,11 @@ class Resume {
     interrupted: boolean
   ): ResumeOutcome {
     const record = this.scripts.get(this.view.accountKey, execKey);
+    // An evicted runtime whose source is kept: re-run it against history first.
+    if (record?.state === "lost" && record.sessionKey === this.view.sessionKey) {
+      const replayed = this.replay(execKey, record);
+      if (replayed) return replayed;
+    }
     // Restart, another account's record, eviction or a poisoned module: the
     // script state is gone; the model gets Script failed and the results.
     if (!record || record.state === "lost")
@@ -344,6 +353,23 @@ class Resume {
       log(`[CodeMode] exec call_${execKey}: storing the Script failed answer failed: ${err}`);
       return { kind: "none" };
     }
+  }
+
+  /** C6: replay a lost script from history when this request answers its LAST round. */
+  private replay(execKey: string, record: ExecRecord): ResumeOutcome | undefined {
+    const rounds = this.historyRounds(execKey);
+    const answered = rounds.findIndex((r) => r.ids.some((id) => this.view.results.has(id)));
+    if (answered < 0 || answered !== rounds.length - 1) return undefined;
+    const replayed = replayLostScript({
+      scripts: this.scripts,
+      record,
+      rounds,
+      results: this.view.results,
+      tools: this.view.tools,
+      sessionKey: this.view.sessionKey,
+    });
+    if (!replayed) return undefined;
+    return replayed.kind === "reply" ? replayed : { kind: "continue" };
   }
 
   /** A duplicate of a request already answered: the memoised step. */
@@ -469,7 +495,7 @@ class Resume {
  * failure loses the script, never the request.
  */
 export function resumeFromToolResults(
-  req: { messages?: unknown; metadata?: unknown },
+  req: { messages?: unknown; metadata?: unknown; tools?: unknown },
   binding: AuthBinding | undefined,
   stores: CodeModeStores | undefined,
   toolChoice: ClaudeToolChoice | null | undefined,
@@ -490,6 +516,7 @@ export function resumeFromToolResults(
         sessionKey,
         toolUses: indexToolUses(messages),
         results: indexToolResults(messages),
+        tools: Array.isArray(req.tools) ? (req.tools as ClaudeToolLike[]) : [],
       },
       stores
     );

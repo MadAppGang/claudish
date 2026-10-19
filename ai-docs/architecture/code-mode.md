@@ -183,7 +183,8 @@ created them.
 | consumed batch, same `batchHash` (a duplicate request) | the memoised step: the same synthetic reply, or the stored completion |
 | consumed batch, different `batchHash` (a rewind that re-ran tools) | lost path, tombstone under the new completion key |
 | suspended, owned by ANOTHER session (a fork) | untouched; the fork gets `Script failed` "this script belongs to the session this one was forked from; claudish cannot run it twice"; the owner's later run output wins every lookup |
-| record lost (eviction, poisoned module) or none (restart, another account) | `Script failed` "claudish lost this script's state (proxy restart or eviction); the nested tool results it was waiting for follow" + the results, stored as a TOMBSTONE (a minimal record when none) |
+| record lost, source kept, owned by this session, the request answers its LAST round | **replay** (`replay.ts`): the source re-runs in a fresh runtime and each batch is answered from history, provided batch k is exactly the k-th round (same ids, names and canonical inputs); then as the first row. `Math.random` is seeded by the call id; a script that branches on `Date` diverges |
+| record lost (eviction, poisoned module, or a replay that diverged) or none (restart, another account) | `Script failed` "claudish lost this script's state (proxy restart or eviction); the nested tool results it was waiting for follow" + the results, stored as a TOMBSTONE (a minimal record when none) |
 | late results for a settled record | nothing; history renders its output |
 
 For every OTHER suspended record of the session: a pending batch the conversation moved past
