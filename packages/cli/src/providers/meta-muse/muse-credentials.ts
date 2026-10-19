@@ -69,9 +69,17 @@ export interface MuseState {
 /** A terminal Muse Code credential failure with a message that names its fix. */
 export class MuseCredentialError extends Error {
   readonly terminal = true;
-  constructor(message: string) {
+  /**
+   * The status Meta answered when this error stands for a rejected login
+   * (401/403 from the mint). `classifyAuthFailure` carries it into the terminal
+   * 400 as `error.upstream_status`, so `extractUpstreamStatus` (and `--probe`)
+   * recover the real status instead of reading a plain 400.
+   */
+  readonly upstreamStatus?: number;
+  constructor(message: string, upstreamStatus?: number) {
     super(message);
     this.name = "MuseCredentialError";
+    if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
   }
 }
 
@@ -283,7 +291,7 @@ async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<
   if (rejections.length > 0) {
     const message = museLoginRejectedMessage(rejections[0]);
     if (startEpoch === epoch) lastRejection = message;
-    throw new MuseCredentialError(message);
+    throw new MuseCredentialError(message, rejections[0]);
   }
   if (role === "never") throw new MuseCredentialError(MUSE_NON_INTERACTIVE_MESSAGE);
   throw new MuseCredentialError(MUSE_NO_LOGIN_MESSAGE);
@@ -361,7 +369,8 @@ export async function forceRefreshMuseApiKey(opts: {
       (err instanceof MuseCredentialError && err.message === MUSE_NO_LOGIN_MESSAGE);
     if (noWorkingLogin) {
       throw new MuseCredentialError(
-        "Meta rejected a freshly minted Muse Code key (HTTP 401): run `claudish login muse` (or `muse login`)."
+        "Meta rejected a freshly minted Muse Code key (HTTP 401): run `claudish login muse` (or `muse login`).",
+        401
       );
     }
     throw err;
