@@ -39,7 +39,13 @@ import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
 import { accountKeyFromBinding } from "../code-mode/ids.js";
 import { type CodeModeSetting, DEFAULT_CODE_MODE_SETTING } from "../code-mode/policy.js";
-import { prepareCodeModeRequest } from "../code-mode/request.js";
+import {
+  type CodeModePayloadContext,
+  isLiteRejection,
+  prepareCodeModeRequest,
+  rebuildAsClassic,
+  withoutLiteHeader,
+} from "../code-mode/request.js";
 import {
   getLogLevel,
   log,
@@ -1431,6 +1437,13 @@ export class ComposedHandler implements ModelHandler {
     // request's header joins `wireHeaders`, so every header fetch below
     // carries it. Never throws: a failed decision or build leaves the request
     // exactly as 5c produced it.
+    //
+    // `codeModeShape` is the shape actually sent (`lite` falls back to
+    // `classic` in the 4xx block when the backend rejects it); the clone and
+    // context are what that fallback rebuilds from.
+    let codeModeShape: "lite" | "classic" | undefined;
+    let codeModePrePayload: any;
+    let codeModeContext: CodeModePayloadContext | undefined;
     if (this.provider.name === "openai-codex") {
       const prepared = await prepareCodeModeRequest({
         providerName: this.provider.name,
@@ -1447,6 +1460,9 @@ export class ComposedHandler implements ModelHandler {
       });
       if (prepared.request) {
         requestPayload = prepared.request.payload;
+        codeModeShape = prepared.request.shape;
+        codeModePrePayload = prepared.prePayload;
+        codeModeContext = prepared.context;
         wireHeaders = [...wireHeaders, ...prepared.request.headers];
         // 5a'. --model-params again, only for a code-mode payload: the user's
         // explicit fields still win over what 5d wrote (idempotent deep merge).
@@ -1703,16 +1719,40 @@ export class ComposedHandler implements ModelHandler {
           (a, i, all): a is BaseModelAdapter => !!a?.recoverFromRejection && all.indexOf(a) === i
         );
         const errorText =
-          candidates.length > 0 || wireBorrowed.length > 0 ? await response.clone().text() : "";
+          candidates.length > 0 || wireBorrowed.length > 0 || codeModeShape === "lite"
+            ? await response.clone().text()
+            : "";
+        let recovery: { payload: any; note: string } | null = null;
+        // A code-mode LITE request the backend rejects for the lite header or
+        // `reasoning.context` (the raw upstream status, before the terminal
+        // remap): resend it once in the code-mode CLASSIC shape — the same exec
+        // tool and input, never the non-code-mode function tools — without the
+        // header (a classic body with it is itself a 400, variant D). The model
+        // stays on classic for the discovery TTL. Checked first: nothing else
+        // in this request is suspect yet.
+        if (
+          codeModeShape === "lite" &&
+          codeModeContext &&
+          codeModePrePayload !== undefined &&
+          isLiteRejection(response.status, errorText)
+        ) {
+          wireHeaders = withoutLiteHeader(wireHeaders);
+          const classic = rebuildAsClassic(
+            codeModePrePayload,
+            codeModeContext,
+            typeof requestPayload?.model === "string" ? requestPayload.model : this.targetModel
+          );
+          codeModeShape = classic.shape;
+          if (this.options.modelParams) deepMergeParams(classic.payload, this.options.modelParams);
+          recovery = { payload: classic.payload, note: "lite request rejected; classic shape" };
+        }
         // Fields borrowed from the owner's connection (this connection's own
         // value is unknown) are the first suspects: tried in turn, dropped on the
         // 400 that names them. Only those fields — never one the wire published.
-        let recovery: { payload: any; note: string } | null = recoverBorrowedWireFields(
-          requestPayload,
-          wireBorrowed,
-          errorText
-        );
-        if (recovery) wireBorrowed = [];
+        if (!recovery) {
+          recovery = recoverBorrowedWireFields(requestPayload, wireBorrowed, errorText);
+          if (recovery) wireBorrowed = [];
+        }
         for (const candidate of recovery ? [] : candidates) {
           recovery = candidate.recoverFromRejection(requestPayload, errorText);
           if (recovery) break;

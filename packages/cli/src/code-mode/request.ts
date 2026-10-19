@@ -222,6 +222,35 @@ export interface PreparedCodeMode {
   request?: CodeModeRequest;
   /** A deep clone of the post-5c payload, for the lite → classic fallback. */
   prePayload?: any;
+  /** What the payload was built from; the lite → classic fallback rebuilds from it. */
+  context?: CodeModePayloadContext;
+}
+
+/** Does a 400 body name the lite header or `reasoning.context` (the lite shape's own rejections)? */
+export function isLiteRejection(status: number, body: string): boolean {
+  if (status !== 400) return false;
+  const text = body.toLowerCase();
+  return text.includes(LITE_HEADER_NAME) || text.includes("reasoning.context");
+}
+
+/**
+ * The lite → classic fallback: the classic code-mode shape built from the
+ * post-5c payload clone and the same context (the same exec tool and the same
+ * `buildCodeModeInput` output — never the non-code-mode function tools).
+ * `model` is remembered for the discovery TTL, so the next requests go classic.
+ */
+export function rebuildAsClassic(
+  prePayload: any,
+  context: CodeModePayloadContext,
+  model: string
+): CodeModeRequest {
+  markLiteFallback(model);
+  return applyCodeModeToPayload(structuredClone(prePayload), { ...context, shape: "classic" });
+}
+
+/** `headers` without the lite header (a classic body with it is itself a 400, variant D). */
+export function withoutLiteHeader(headers: WireHeader[]): WireHeader[] {
+  return headers.filter((h) => h.name.toLowerCase() !== LITE_HEADER_NAME);
 }
 
 /**
@@ -300,14 +329,15 @@ async function prepare(input: PrepareCodeModeInput): Promise<PreparedCodeMode> {
       { defaultMaxOutputTokens }
     );
     const prePayload = structuredClone(payload);
-    const request = applyCodeModeToPayload(structuredClone(payload), {
+    const context: CodeModePayloadContext = {
       shape: decision.shape,
       execTool: rendered.tool,
       input: codeModeInput,
       sessionKey,
       modelInfo,
-    });
-    return { decision, request, prePayload };
+    };
+    const request = applyCodeModeToPayload(structuredClone(payload), context);
+    return { decision, request, prePayload, context };
   } catch (err) {
     log(`[CodeMode] request build failed; sending this request non-code-mode: ${err}`);
     return { decision };
