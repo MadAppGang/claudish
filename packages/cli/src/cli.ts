@@ -1584,16 +1584,6 @@ async function probeModelRouting(
   type LiveProxy = { url: string; shutdown: () => Promise<void> };
 
   /**
-   * The remedy a credential-less row shows.
-   *
-   * Reads it off the PROVENANCE rather than naming providers here: a record that
-   * carries an `effectiveLabel` is one whose credential is not an environment
-   * variable at all (Vertex, whose Google Cloud project comes from the ADC file
-   * or `gcloud config`), and for those the variable name is the wrong
-   * instruction — its `effectiveSource` is the sentence that names both
-   * remedies. Everyone else keeps the bare variable name they always had.
-   */
-  /**
    * The Muse Code credential as a provenance record, through `effectiveLabel`
    * (the channel for a credential that is not an env var). Present:
    * `Key  Muse Code borrowed copy · Muse Code Power Usage  (signed the probe request)`.
@@ -1611,6 +1601,16 @@ async function probeModelRouting(
     };
   }
 
+  /**
+   * The remedy a credential-less row shows.
+   *
+   * Reads it off the PROVENANCE rather than naming providers here: a record that
+   * carries an `effectiveLabel` is one whose credential is not an environment
+   * variable at all (Vertex, whose Google Cloud project comes from the ADC file
+   * or `gcloud config`), and for those the variable name is the wrong
+   * instruction — its `effectiveSource` is the sentence that names both
+   * remedies. Everyone else keeps the bare variable name they always had.
+   */
   function credentialHintFrom(
     provenance: KeyProvenance | undefined,
     envVar: string | undefined
