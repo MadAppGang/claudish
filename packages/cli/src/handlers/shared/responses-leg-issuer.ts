@@ -27,6 +27,7 @@
  */
 
 import { log } from "../../logger.js";
+import type { SerializedBody } from "../../providers/transport/types.js";
 import { classifyConnectionError } from "./connection-error.js";
 import { deadlineClamp, mergeSignalIntoInit } from "./transient-retry.js";
 
@@ -51,18 +52,18 @@ type StreamHeadSettle =
   | { kind: "ok"; response: Response }
   | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true };
 
-export interface LegIssuerDeps {
+export interface LegIssuerDeps<B extends LegAuthBinding = LegAuthBinding> {
   providerDisplayName: string;
   /** The turn's current binding (undefined on the no-binding path). */
-  getBinding: () => LegAuthBinding | undefined;
-  setBinding: (binding: LegAuthBinding) => void;
-  refreshAuth?: () => Promise<LegAuthBinding | undefined>;
-  forceRefreshAuth?: () => Promise<LegAuthBinding | undefined>;
-  getEndpoint: (binding: LegAuthBinding | undefined) => string;
+  getBinding: () => B | undefined;
+  setBinding: (binding: B) => void;
+  refreshAuth?: () => Promise<B | undefined>;
+  forceRefreshAuth?: () => Promise<B | undefined>;
+  getEndpoint: (binding: B | undefined) => string;
   /** The request's own header builder (wire headers merged). */
-  fetchHeaders: (binding: LegAuthBinding | undefined) => Promise<Record<string, string>>;
+  fetchHeaders: (binding: B | undefined) => Promise<Record<string, string>>;
   /** The serialized body for a leg: `undefined` → the primary request's bytes. */
-  serializeBody: (body: unknown | undefined) => { body: BodyInit; contentType: string };
+  serializeBody: (body: unknown | undefined) => { body: SerializedBody; contentType: string };
   getRequestInit?: () => Record<string, unknown>;
   enqueueRequest?: (
     fn: () => Promise<Response>,
@@ -96,14 +97,14 @@ function assertSameSilo(turn: LegAuthBinding | undefined, next: LegAuthBinding):
  * Build `issueLeg(body, signal)` for one request. Never throws; every failure
  * is a `LegResponse`.
  */
-export function createLegIssuer(
-  deps: LegIssuerDeps
+export function createLegIssuer<B extends LegAuthBinding = LegAuthBinding>(
+  deps: LegIssuerDeps<B>
 ): (body: unknown | undefined, signal: AbortSignal) => Promise<LegResponse> {
   const now = deps.now ?? Date.now;
   const doFetch = deps.fetchImpl ?? fetch;
   let legNumber = 1;
 
-  const adoptBinding = (next: LegAuthBinding | undefined) => {
+  const adoptBinding = (next: B | undefined) => {
     if (!next) return;
     assertSameSilo(deps.getBinding(), next);
     deps.setBinding(next);

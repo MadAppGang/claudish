@@ -5,7 +5,23 @@
  * Does NOT own: message conversion, tool format, pricing (those are ModelAdapter concerns).
  */
 
-import type { CredentialArm } from "../../auth/credentials/types.js";
+import type { RequestAuth } from "../../auth/credentials/types.js";
+
+/**
+ * The auth ONE request signs with, held in a request-local by ComposedHandler.
+ *
+ * A transport that mints a per-request artifact (`openai-codex`) returns it from
+ * `refreshAuth`/`forceRefreshAuth`, and ComposedHandler hands it back to
+ * `transformPayload`, `getEndpoint` and `getHeaders`. Every auth-dependent value
+ * of the request is then computed from this one artifact, never from a field on
+ * the transport instance, which concurrent requests on one handler share (one
+ * request's refresh could otherwise change what another request signs with).
+ *
+ * `auth === null` ⇒ the transport's base (api-key) path.
+ */
+export interface AuthBinding {
+  readonly auth: RequestAuth | null;
+}
 
 /** The wire format used for streaming responses */
 export type StreamFormat =
@@ -51,8 +67,14 @@ export interface ProviderTransport {
   /** Which stream parser to use for this provider's responses */
   readonly streamFormat: StreamFormat;
 
-  /** Get the full API endpoint URL for a request */
-  getEndpoint(model?: string): string;
+  /**
+   * Get the full API endpoint URL for a request.
+   *
+   * `binding` is the request's auth binding (from `refreshAuth`); a transport
+   * that returns one reads auth from it ONLY. Optional, so transports that bind
+   * nothing ignore it.
+   */
+  getEndpoint(model?: string, binding?: AuthBinding): string;
 
   /**
    * Get HTTP headers (may be async for OAuth token refresh).
@@ -65,8 +87,10 @@ export interface ProviderTransport {
    * serves overlapping requests from different conversations (the same race as
    * `classifyTerminalError` below). Optional, so existing implementers that
    * ignore it are untouched.
+   *
+   * `binding`: the request's auth binding, as for `getEndpoint`.
    */
-  getHeaders(claudeRequest?: unknown): Promise<Record<string, string>>;
+  getHeaders(claudeRequest?: unknown, binding?: AuthBinding): Promise<Record<string, string>>;
 
   /**
    * Override the adapter's stream format selection.
@@ -103,25 +127,22 @@ export interface ProviderTransport {
   /**
    * Optional auth refresh (e.g., OAuth token rotation).
    * Called once before each request if defined.
+   *
+   * A transport that returns an `AuthBinding` binds the request to that
+   * artifact: ComposedHandler passes it to every later auth-dependent call of
+   * the same request. `void` ⇒ a legacy transport with nothing to bind.
    */
-  refreshAuth?(): Promise<void>;
+  // biome-ignore lint/suspicious/noConfusingVoidType: legacy transports return Promise<void>, which `undefined` would reject
+  refreshAuth?(): Promise<AuthBinding | void>;
 
   /**
    * Force refresh auth credentials after a 401 response.
    * Used by OAuth providers (Vertex, CodeAssist) to handle token expiry.
    * ComposedHandler calls this automatically on 401 and retries the request.
+   * A returned binding REPLACES the request's binding for the retry.
    */
-  forceRefreshAuth?(): Promise<void>;
-
-  /**
-   * The credential arm of the auth artifact `getEndpoint`/`getHeaders` read
-   * right now (`RequestAuth.arm`). Read where the request's endpoint is
-   * computed, so it names the arm that signed this request. Absent or
-   * undefined ⇒ unknown, which every consumer treats as NOT the subscription.
-   * Only `openai-codex` implements it; the Responses stall guard is armed by
-   * default only on its `"oauth"` arm.
-   */
-  currentAuthArm?(): CredentialArm | undefined;
+  // biome-ignore lint/suspicious/noConfusingVoidType: legacy transports return Promise<void>, which `undefined` would reject
+  forceRefreshAuth?(): Promise<AuthBinding | void>;
 
   /**
    * Optional per-provider verdict on whether an error response is TERMINAL
@@ -161,8 +182,10 @@ export interface ProviderTransport {
    * `metadata`, so conversation identity (`metadata.user_id`) is unreachable
    * from `payload` alone. Optional and second, so the existing implementers
    * that ignore it are untouched.
+   *
+   * `binding`: the request's auth binding, as for `getEndpoint`.
    */
-  transformPayload?(payload: any, claudeRequest?: any): any;
+  transformPayload?(payload: any, claudeRequest?: any, binding?: AuthBinding): any;
 
   /**
    * Serialize the request payload to wire bytes.

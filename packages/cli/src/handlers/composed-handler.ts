@@ -27,7 +27,7 @@ import {
   type EffortLevel,
 } from "../adapters/base-api-format.js";
 import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
-import type { ProviderTransport, StreamFormat } from "../providers/transport/types.js";
+import type { AuthBinding, ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
@@ -37,6 +37,7 @@ import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
 import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
+import { accountKeyFromBinding } from "../code-mode/ids.js";
 import {
   getLogLevel,
   log,
@@ -135,6 +136,12 @@ import { captureUpstreamError } from "./shared/upstream-error-capture.js";
  * lasted minutes, so the useful attempts are the late ones.
  */
 const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
+
+/**
+ * A retry leg's binding: the request's `AuthBinding` plus the account it names
+ * (`accountKeyFromBinding`), which the leg issuer compares between legs.
+ */
+type LegBinding = AuthBinding & LegAuthBinding;
 
 /** What `handle()` builds for a Responses turn and `handleStream` hands the parser. */
 interface ResponsesTurnWiring {
@@ -1285,9 +1292,18 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5b. Refresh auth / health check (must happen before transformPayload, which may use auth state)
+    //
+    // `binding` is THIS request's auth: a transport that mints a per-request
+    // artifact (`openai-codex`) returns it, and every later auth-dependent call
+    // of this request (5c, the endpoint, every header fetch, the 401 retry, the
+    // retry legs) is handed it back, so a concurrent request's refresh on the
+    // same handler can never change what this one signs with. Undefined for a
+    // transport that returns nothing (every other one), which then behaves
+    // exactly as before.
+    let binding: AuthBinding | undefined;
     if (this.provider.refreshAuth) {
       try {
-        await this.provider.refreshAuth();
+        binding = (await this.provider.refreshAuth()) || undefined;
         // Quota is DELIBERATELY not fetched here.
         //
         // This used to await getQuotaRemaining with a 2s cap on every single
@@ -1334,7 +1350,9 @@ export class ComposedHandler implements ModelHandler {
             }
           );
           if (outcome.kind === "respond") return outcome.response;
-          // Recovered: fall through as if the first refresh had succeeded.
+          // Recovered: fall through as if the first refresh had succeeded,
+          // bound to the artifact the successful attempt minted.
+          binding = outcome.value || undefined;
         } else {
           log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
           logStderr(
@@ -1396,16 +1414,14 @@ export class ComposedHandler implements ModelHandler {
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
     if (this.provider.transformPayload) {
-      requestPayload = this.provider.transformPayload(requestPayload, claudeRequest);
+      requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
     }
 
     // (Middleware beforeRequest ran at step 3b, before buildPayload — see the
     // note there for why it cannot run at this point.)
 
-    const endpoint = this.provider.getEndpoint(this.targetModel);
-    // Read beside the endpoint, from the same artifact: the arm that signs THIS
-    // request. Decides the Responses stall guard's default scope below.
-    const authArm = this.provider.currentAuthArm?.();
+    // `let`: the 401 branch replaces `binding` and recomputes the endpoint from it.
+    let endpoint = this.provider.getEndpoint(this.targetModel, binding);
     // The ORIGINAL inbound body, not the normalized `claudeRequest` clone: a
     // header carrying conversation identity must see what Claude Code sent.
     //
@@ -1422,14 +1438,18 @@ export class ComposedHandler implements ModelHandler {
     // The touch is refresh-conditional, which makes this rare, not safe.
     // Every header fetch below goes through this, so a header the wire requires
     // (a beta token next to the field it wrote) survives the auth retries too.
-    const fetchHeaders = async (): Promise<Record<string, string>> => {
-      const fetched = await this.provider.getHeaders(payload);
+    //
+    // Signed by the binding passed, never by shared transport state: the
+    // primary fetch and parameter retry pass this request's `binding`, the 401
+    // retry the one `forceRefreshAuth` just returned, a retry leg its own.
+    const fetchHeaders = async (b: AuthBinding | undefined): Promise<Record<string, string>> => {
+      const fetched = await this.provider.getHeaders(payload, b);
       mergeWireHeaders(fetched, wireHeaders);
       return fetched;
     };
     let headers: Record<string, string>;
     try {
-      headers = await fetchHeaders();
+      headers = await fetchHeaders(binding);
     } catch (err: any) {
       const conn = classifyConnectionError(err);
       if (!conn) {
@@ -1441,7 +1461,7 @@ export class ComposedHandler implements ModelHandler {
         err,
         conn,
         this.connectionEndpointFor(err, endpoint),
-        fetchHeaders,
+        () => fetchHeaders(binding),
         {
           startTime,
           // An auth site with the unclamped primary fetch still ahead of it —
@@ -1679,7 +1699,7 @@ export class ComposedHandler implements ModelHandler {
           // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
           // out of here is untouched.
           const doParamRetry = async (sig?: AbortSignal): Promise<Response> => {
-            const retryHeaders = await fetchHeaders();
+            const retryHeaders = await fetchHeaders(binding);
             retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
             return fetch(
               endpoint,
@@ -1744,8 +1764,14 @@ export class ComposedHandler implements ModelHandler {
         // transiently, so a ladder that could only re-run one of them would
         // leave the other exactly as exposed as it was.
         const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
-          await this.provider.forceRefreshAuth!();
-          const retryHeaders = await fetchHeaders();
+          // A returned binding replaces this request's: the retry, and every
+          // retry leg after it, sign with the artifact just minted.
+          const refreshed = await this.provider.forceRefreshAuth!();
+          if (refreshed) {
+            binding = refreshed;
+            endpoint = this.provider.getEndpoint(this.targetModel, binding);
+          }
+          const retryHeaders = await fetchHeaders(binding);
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.
@@ -2231,31 +2257,28 @@ export class ComposedHandler implements ModelHandler {
     let legRetries = 0;
     let responsesTurn: ResponsesTurnWiring | undefined;
     if (this.resolveStreamFormat() === "openai-responses-sse") {
-      // No transport returns a binding yet: legs use the no-binding path, which
-      // is exactly the primary fetch's.
-      let legBinding: LegAuthBinding | undefined;
+      // Each leg is bound like the primary fetch: the issuer re-runs
+      // `refreshAuth`, refuses a binding whose arm or account differs from the
+      // turn's ("Codex sign-in changed during the turn"), and signs the leg
+      // with the binding it just checked. A transport that returns no binding
+      // keeps the no-binding path, which is exactly the primary fetch's.
+      const toLegBinding = (b: AuthBinding | void): LegBinding | undefined =>
+        b ? { auth: b.auth, accountKey: accountKeyFromBinding(b) } : undefined;
+      let legBinding = toLegBinding(binding);
       const refreshAuth = this.provider.refreshAuth?.bind(this.provider);
       const forceRefreshAuth = this.provider.forceRefreshAuth?.bind(this.provider);
-      const issueLeg = createLegIssuer({
+      const issueLeg = createLegIssuer<LegBinding>({
         providerDisplayName: this.provider.displayName,
         getBinding: () => legBinding,
         setBinding: (b) => {
           legBinding = b;
         },
-        refreshAuth: refreshAuth
-          ? async () => {
-              await refreshAuth();
-              return undefined;
-            }
-          : undefined,
+        refreshAuth: refreshAuth ? async () => toLegBinding(await refreshAuth()) : undefined,
         forceRefreshAuth: forceRefreshAuth
-          ? async () => {
-              await forceRefreshAuth();
-              return undefined;
-            }
+          ? async () => toLegBinding(await forceRefreshAuth())
           : undefined,
-        getEndpoint: () => this.provider.getEndpoint(this.targetModel),
-        fetchHeaders: () => fetchHeaders(),
+        getEndpoint: (b) => this.provider.getEndpoint(this.targetModel, b),
+        fetchHeaders: (b) => fetchHeaders(b),
         // `requestPayload` as it stands now: parameter recovery may have
         // dropped fields, and a leg re-sends the body that was accepted.
         serializeBody: (body) => {
@@ -2283,7 +2306,7 @@ export class ComposedHandler implements ModelHandler {
           stall: resolveStallPolicy({
             env: process.env,
             providerName: this.provider.name,
-            arm: authArm,
+            arm: binding?.auth?.arm,
           }),
           firstHeadersAt: responseHeadersAt,
         },

@@ -25,16 +25,19 @@ import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
 import { lookupModelForProvider } from "../../adapters/model-catalog.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
-import type { CredentialArm, RequestAuth } from "../../auth/credentials/types.js";
+import type { RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { conversationKey } from "./conversation-key.js";
 import { OpenAIProviderTransport } from "./openai.js";
+import type { AuthBinding } from "./types.js";
 
 export class OpenAICodexTransport extends OpenAIProviderTransport {
   /**
-   * The per-request auth artifact, populated by refreshAuth() (called before
-   * getEndpoint/getHeaders/transformPayload). Null when OAuth is unavailable —
-   * the transport then falls back to the OpenAI base transport's api-key path.
+   * The last auth artifact refreshAuth() minted. Shared by every request on this
+   * transport, so the request path never reads it: ComposedHandler passes the
+   * request's own `AuthBinding` instead. Read only by callers that pass no
+   * binding (probes, tests). Null when OAuth is unavailable — the transport then
+   * falls back to the OpenAI base transport's api-key path.
    */
   private cachedAuth: RequestAuth | null = null;
 
@@ -43,7 +46,7 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
    * cache the artifact. composed-handler calls this before getEndpoint/getHeaders.
    * The Codex credential ignores ctx.model, so "" is fine.
    */
-  async refreshAuth(): Promise<void> {
+  async refreshAuth(): Promise<AuthBinding> {
     try {
       this.cachedAuth = await credentials.getRequestAuth("openai-codex", { model: "" });
     } catch (err) {
@@ -83,27 +86,35 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
     // spend is the one error that costs them (remote-provider-types.ts).
     const signedWithOAuth = this.cachedAuth?.arm === "oauth";
     recordSignedArm("openai-codex", signedWithOAuth ? "subscription" : "metered");
+    // The artifact just minted, bound to THIS request. ComposedHandler passes it
+    // back to transformPayload/getEndpoint/getHeaders, so a concurrent request's
+    // refresh (which replaces `cachedAuth`) cannot change what this one signs with.
+    return { auth: this.cachedAuth };
   }
 
   /**
-   * The arm of the artifact `getEndpoint`/`getHeaders` read now: `"oauth"` for
-   * the ChatGPT subscription, `"api-key"` (or unknown) otherwise. Read from the
-   * artifact itself, never from its truthiness (see refreshAuth above).
+   * The artifact a call reads: the request's binding when one is passed (its
+   * `auth`, even when null), else `cachedAuth` for callers that pass none.
+   * Null ⇒ the OpenAI base transport's api-key path.
    */
-  currentAuthArm(): CredentialArm | undefined {
-    return this.cachedAuth?.arm;
+  private authFor(binding: AuthBinding | undefined): RequestAuth | null {
+    return binding ? binding.auth : this.cachedAuth;
   }
 
   /**
    * OAuth tokens only work with chatgpt.com/backend-api (endpoint comes from the
-   * cached auth artifact). API keys use the standard OpenAI endpoint (super).
+   * auth artifact). API keys use the standard OpenAI endpoint (super).
    */
-  override getEndpoint(_targetModel?: string): string {
-    return this.cachedAuth?.endpoint ?? super.getEndpoint();
+  override getEndpoint(_targetModel?: string, binding?: AuthBinding): string {
+    return this.authFor(binding)?.endpoint ?? super.getEndpoint();
   }
 
-  override async getHeaders(): Promise<Record<string, string>> {
-    if (this.cachedAuth) return { ...this.cachedAuth.headers };
+  override async getHeaders(
+    _claudeRequest?: unknown,
+    binding?: AuthBinding
+  ): Promise<Record<string, string>> {
+    const auth = this.authFor(binding);
+    if (auth) return { ...auth.headers };
     // Fall back to API key auth (Bearer <OPENAI_CODEX_API_KEY>).
     return super.getHeaders();
   }
@@ -116,7 +127,7 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
    * The auth-derived bits (store:false / include reasoning) come from the cached
    * auth artifact's transformPayload, applied only when OAuth is active.
    */
-  transformPayload(payload: any, claudeRequest?: any): any {
+  transformPayload(payload: any, claudeRequest?: any, binding?: AuthBinding): any {
     let normalizedPayload = payload;
     if (payload?.model) {
       const normalized = normalizeCodexModel(payload.model);
@@ -140,7 +151,7 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
       }
     }
     // Auth-derived store:false / include reasoning bits, only under OAuth.
-    return this.cachedAuth?.transformPayload?.(normalizedPayload) ?? normalizedPayload;
+    return this.authFor(binding)?.transformPayload?.(normalizedPayload) ?? normalizedPayload;
   }
 
   /**
