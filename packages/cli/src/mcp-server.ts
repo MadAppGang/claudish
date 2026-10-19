@@ -472,6 +472,26 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "count this slot as a vote",
 };
 
+/**
+ * The Details cell of a preflight "no route" row: the reason, then the remedy
+ * lines of the plan's credential hint (`buildCredentialHint`), the same login
+ * instruction `--probe` prints. Without them the row read only `No credentials
+ * configured for "meta-muse-code".`, which an agent cannot act on.
+ *
+ * One table cell, so the hint's header line (`No credentials found for …
+ * Options:`, which repeats the reason) is dropped, its option lines are joined
+ * with ` · `, whitespace runs collapse, and a `|` is escaped.
+ */
+export function noRouteCell(reason: string, hint?: string): string {
+  const options = (hint ?? "")
+    .split("\n")
+    .slice(1)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const cell = options.length > 0 ? `${reason} ${options.join(" · ")}` : reason;
+  return cell.replace(/\|/g, "\\|");
+}
+
 /** `18864` → `18.4KB`. */
 function fmtSize(n: number): string {
   if (n <= 0) return "0B";
@@ -1275,7 +1295,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           // rather than omitted, because "none of your credentials reaches this model" is the
           // single most useful thing to learn before the run rather than during it.
           failedModels.push(model);
-          rows.push(`| \`${model}\` | — | — | ❌ no route | ${plan.reason} |`);
+          rows.push(
+            `| \`${model}\` | — | — | ❌ no route | ${noRouteCell(plan.reason, plan.hint)} |`
+          );
           continue;
         }
 
