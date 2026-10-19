@@ -44,12 +44,6 @@ export const RECYCLE_WASM_BYTES = 256 * 1024 * 1024;
  * scripts need kilobytes.
  */
 export const WASM_CEILING_BYTES = 256 * 1024 * 1024;
-/**
- * Wasm memory summed over EVERY module still alive in the process (the
- * current one plus retired ones a running script still holds). A new runtime
- * is refused while the sum is over this, so retired modules can never pile up.
- */
-export const PROCESS_WASM_CEILING_BYTES = 2 * WASM_CEILING_BYTES;
 
 /** A runtime the lease tracks for the live cap and LRU eviction. */
 export interface LeasedRuntime {
@@ -72,7 +66,6 @@ export class QuickJSModuleLease {
 
   constructor(module: QuickJSWASMModule) {
     this.module = module;
-    liveLeases.add(this);
   }
 
   /** True once the module failed internally; no new runtime may be created in it. */
@@ -91,19 +84,16 @@ export class QuickJSModuleLease {
 
   /**
    * Register a new runtime. At the cap, the least recently active suspended
-   * runtime is evicted first. Returns why the runtime is refused — the wasm
-   * memory of every live module is over `PROCESS_WASM_CEILING_BYTES`, or no
-   * slot can be freed (every live runtime is running) — in which case the
-   * caller must not create one; undefined when admitted.
+   * runtime is evicted first. Returns why the runtime is refused (no slot can
+   * be freed: every live runtime is running), in which case the caller must
+   * not create one; undefined when admitted.
+   *
+   * No process-wide memory gate: a retired module never outlives the slice
+   * that retired it (`retire` evicts every suspended runtime, the running one
+   * releases it when its slice ends), so by the next `admit` only the current
+   * module is alive, and `WASM_CEILING_BYTES` already bounds it.
    */
   admit(runtime: LeasedRuntime): string | undefined {
-    const processBytes = processWasmBytes();
-    if (processBytes > PROCESS_WASM_CEILING_BYTES) {
-      log(
-        `[CodeMode] sandbox: ${processBytes} bytes of wasm memory across ${liveLeases.size} module(s); new script refused`
-      );
-      return "claudish: the sandbox is over its memory limit while other scripts finish; try again";
-    }
     while (this.live.size >= MAX_LIVE_RUNTIMES) {
       let oldest: LeasedRuntime | undefined;
       for (const candidate of this.live) {
@@ -134,7 +124,6 @@ export class QuickJSModuleLease {
       dropCurrent(this);
       log("[CodeMode] sandbox: idle module over 256 MiB of wasm memory; dropped for reload");
     }
-    if (this.live.size === 0 && !this.usable) liveLeases.delete(this);
   }
 
   /**
@@ -160,7 +149,6 @@ export class QuickJSModuleLease {
         return;
       }
     }
-    if (this.live.size === 0) liveLeases.delete(this);
   }
 
   /**
@@ -181,7 +169,6 @@ export class QuickJSModuleLease {
       }
     }
     dropCurrent(this);
-    liveLeases.delete(this);
   }
 
   /** Current wasm linear memory size; 0 when the library does not expose it. */
@@ -196,18 +183,6 @@ export class QuickJSModuleLease {
 }
 
 const SLOTS_BUSY = "claudish: every sandbox slot is running a script; try again";
-
-/**
- * Every lease still alive: the current one, plus a retired one until its last
- * runtime ends. Their wasm memory is summed for admission.
- */
-const liveLeases = new Set<QuickJSModuleLease>();
-
-function processWasmBytes(): number {
-  let bytes = 0;
-  for (const lease of liveLeases) bytes += lease.wasmBytes();
-  return bytes;
-}
 
 let current: QuickJSModuleLease | undefined;
 let loading: Promise<QuickJSModuleLease | undefined> | undefined;
@@ -277,7 +252,6 @@ export function resetQuickJSLoaderForTests(): void {
   loading = undefined;
   unavailable = undefined;
   wasmBytesUnreadableLogged = false;
-  liveLeases.clear();
 }
 
 /** Whether a sandbox can run in this process (loads the module on first call). */

@@ -316,10 +316,12 @@ limit (32 × 32 MiB) is deliberately NOT sized under the ceiling: the heap limit
 linear memory (one runaway alone reached 298 MiB under it), so no product of the two is a bound,
 and lowering either would refuse legitimate scripts (the 8 MiB result budget needs the heap). The
 ceiling plus retire-and-replay is the bound; what it costs a holder is one replay. An idle module
-over 256 MiB is dropped for reload when its last runtime ends. Admission is also gated process-wide: a new runtime is refused while the wasm memory summed
-over every module still alive exceeds `PROCESS_WASM_CEILING_BYTES = 512 MiB`, so the per-module
-ceiling is a per-process one too. 256 MiB, not the 1 GiB first shipped: linear memory never
-shrinks, so whatever one runaway script reaches stays resident in the proxy.
+over 256 MiB is dropped for reload when its last runtime ends. The per-module ceiling is a
+per-process one with no separate gate: a retired module never outlives the slice that retired it
+(retire evicts every suspended runtime; the running one releases the module when its slice ends;
+measured: the old lease holds 0 live runtimes right after), so only the current module is ever
+alive when a new script is admitted. 256 MiB, not the 1 GiB first shipped: linear memory never
+shrinks, so whatever one runaway script reaches stays resident until the module is dropped.
 
 **Settlement after every slice.** The top-level promise is read FIRST: fulfilled, or rejected with
 the `exit()` sentinel → completed, and every outstanding call is DISCARDED (in claudish an unawaited
@@ -331,7 +333,7 @@ promise that can never settle`). `blocked([])` is unrepresentable.
 |---|---|---|
 | QuickJS heap per runtime | 32 MiB | `failed` (out of memory) |
 | CPU per script, cumulative across slices | 2 s | `failed` (`interrupted: exceeded the 2 s CPU budget`) |
-| wasm linear memory per module / summed over live modules | 256 MiB / 512 MiB | slice stopped, module retired, its suspended scripts lost / new script refused |
+| wasm linear memory per module (the only module alive at admission) | 256 MiB | a slice that grew it past by more than its heap limit: stopped; any slice ending over it: module retired, its suspended scripts lost and replayed |
 | source | 256 KB | `failed` before running |
 | calls per batch / per script | 32 / 256 | the excess call rejects with a string, so `Promise.allSettled` still finishes |
 | one call input / one batch | 2 MiB / 8 MiB | that call rejects |
