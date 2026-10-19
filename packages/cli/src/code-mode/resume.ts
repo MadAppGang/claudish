@@ -273,6 +273,12 @@ class Resume {
     if (k < 0) return { kind: "none" };
     const batch = record.batches[k];
     const hash = batchHash(batchEntries(batch.ids, results));
+    // The script's state is a function of EVERY batch it consumed: a history
+    // whose earlier results differ (a rewind) cannot resume it or reuse a step.
+    if (!this.prefixMatches(record, k)) {
+      log(`[CodeMode] exec ${record.originalCallId}: earlier results changed; not resumable`);
+      return this.tombstone(execKey, record, LOST_SCRIPT_NOTE, results);
+    }
 
     if (batch.batchHash !== undefined) {
       return this.answerConsumed(execKey, record, k, batch.batchHash === hash, results);
@@ -293,6 +299,21 @@ class Resume {
       this.loseQuietly(record);
       return { kind: "none" };
     }
+  }
+
+  /**
+   * Batches 0..k-1 as consumed equal this request's results for them, so
+   * `keyThrough` (which copies their hashes from the record) names the key the
+   * input builder computes from this history.
+   */
+  private prefixMatches(record: ExecRecord, k: number): boolean {
+    for (let j = 0; j < k; j++) {
+      const consumed = record.batches[j];
+      if (consumed.batchHash !== batchHash(batchEntries(consumed.ids, this.view.results))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Results for batch `k`, which the script already consumed. */
