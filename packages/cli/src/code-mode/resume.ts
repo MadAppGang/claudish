@@ -260,13 +260,13 @@ class Resume {
     const record = this.scripts.get(this.view.accountKey, execKey);
     // An evicted runtime whose source is kept: re-run it against history first.
     if (record?.state === "lost" && record.sessionKey === this.view.sessionKey) {
-      const replayed = this.replay(execKey, record);
+      const replayed = this.replay(execKey, record, results);
       if (replayed) return replayed;
     }
     // Restart, another account's record, eviction or a poisoned module: the
     // script state is gone; the model gets Script failed and the results.
     if (!record || record.state === "lost")
-      return this.tombstone(execKey, record, LOST_SCRIPT_NOTE);
+      return this.tombstone(execKey, record, LOST_SCRIPT_NOTE, results);
     const k = record.batches.findIndex((b) => b.ids.some((id) => results.has(id)));
     if (k < 0) return { kind: "none" };
     const batch = record.batches[k];
@@ -275,14 +275,15 @@ class Resume {
     if (batch.batchHash !== undefined) {
       // Different results for a batch already consumed (a rewind that re-ran
       // the tools): not resumable; a tombstone under the new completion key.
-      if (batch.batchHash !== hash) return this.tombstone(execKey, record, LOST_SCRIPT_NOTE);
+      if (batch.batchHash !== hash)
+        return this.tombstone(execKey, record, LOST_SCRIPT_NOTE, results);
       return this.replayDuplicate(record, k);
     }
     if (record.state !== "suspended") return { kind: "none" };
     // A fork answering the original's pending batch: never resumed and never
     // touched; the owner's later answer resumes it and its run output wins.
     if (record.sessionKey !== this.view.sessionKey) {
-      return this.tombstone(execKey, record, FORKED_SCRIPT_NOTE);
+      return this.tombstone(execKey, record, FORKED_SCRIPT_NOTE, results);
     }
     if (k !== record.batches.length - 1 || !record.runtime) return { kind: "none" };
     batch.batchHash = hash;
@@ -294,6 +295,21 @@ class Resume {
       this.loseQuietly(record);
       return { kind: "none" };
     }
+  }
+
+  /**
+   * The round the LAST message answers: the last round carrying one of its
+   * tool_result ids. Never searched over the whole request's results, which
+   * hold every earlier round too and so always matched round 0.
+   */
+  private answeredRound(
+    rounds: ReadonlyArray<{ ids: string[] }>,
+    answered: ReadonlyMap<string, ClaudeContentBlock>
+  ): number {
+    for (let k = rounds.length - 1; k >= 0; k--) {
+      if (rounds[k].ids.some((id) => answered.has(id))) return k;
+    }
+    return -1;
   }
 
   /**
@@ -327,9 +343,14 @@ class Resume {
    * (→ failed); a live record owned by another session is not touched beyond
    * the tombstone, which only this session renders.
    */
-  private tombstone(execKey: string, record: ExecRecord | undefined, note: string): ResumeOutcome {
+  private tombstone(
+    execKey: string,
+    record: ExecRecord | undefined,
+    note: string,
+    lastResults: ReadonlyMap<string, ClaudeContentBlock>
+  ): ResumeOutcome {
     const rounds = this.historyRounds(execKey);
-    const answered = rounds.findIndex((r) => r.ids.some((id) => this.view.results.has(id)));
+    const answered = this.answeredRound(rounds, lastResults);
     if (answered < 0) return { kind: "none" };
     try {
       const key = completionKey(
@@ -374,9 +395,13 @@ class Resume {
   }
 
   /** C6: replay a lost script from history when this request answers its LAST round. */
-  private replay(execKey: string, record: ExecRecord): ResumeOutcome | undefined {
+  private replay(
+    execKey: string,
+    record: ExecRecord,
+    lastResults: ReadonlyMap<string, ClaudeContentBlock>
+  ): ResumeOutcome | undefined {
     const rounds = this.historyRounds(execKey);
-    const answered = rounds.findIndex((r) => r.ids.some((id) => this.view.results.has(id)));
+    const answered = this.answeredRound(rounds, lastResults);
     if (answered < 0 || answered !== rounds.length - 1) return undefined;
     const replayed = replayLostScript({
       scripts: this.scripts,
