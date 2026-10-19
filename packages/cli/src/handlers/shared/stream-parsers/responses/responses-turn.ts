@@ -457,6 +457,16 @@ class ResponsesTurn {
       this.reportUsage();
       return;
     }
+    if (this.sink.hasIncompleteToolBlock) {
+      // A classic block of this leg was cut off: the message ends with an SSE
+      // `error` (finishCompleted's rule), so Claude Code never sees this batch
+      // and its retry starts a new upstream turn — end the script now.
+      log(`[ResponsesTurn] exec ${outcome.callId} blocked beside a cut-off tool_use → error event`);
+      this.abandon(outcome.callId);
+      this.sink.endWithError("a tool call was cut off before the exec call");
+      this.reportUsage();
+      return;
+    }
     for (const block of blocks) {
       this.sink.emitToolUse(
         block.id,
@@ -564,8 +574,19 @@ class ResponsesTurn {
     return this.issue(this.currentBody);
   }
 
-  /** A completed turn: `message_delta` + `message_stop`, usage, then the turn hooks. */
+  /**
+   * A completed turn: `message_delta` + `message_stop`, usage, then the turn
+   * hooks. Never a `tool_use` finish over a cut-off block (the cut-off rule),
+   * whichever path got here: an SSE `error` instead, so Claude Code runs none
+   * of the message's tools and retries.
+   */
   private async finishCompleted(stopReason: string): Promise<void> {
+    if (stopReason === "tool_use" && this.sink.hasIncompleteToolBlock) {
+      log("[ResponsesTurn] tool_use finish over a cut-off tool block → error event");
+      this.sink.endWithError("a tool call was cut off mid-arguments");
+      this.reportUsage();
+      return;
+    }
     this.sink.endMessage(stopReason, this.wireUsage);
     this.reportUsage();
     if (this.opts.middlewareManager) {
