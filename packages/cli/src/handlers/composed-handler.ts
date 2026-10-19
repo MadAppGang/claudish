@@ -1905,6 +1905,8 @@ export class ComposedHandler implements ModelHandler {
         // re-issuable operation. Both are network calls and either can fail
         // transiently, so a ladder that could only re-run one of them would
         // leave the other exactly as exposed as it was.
+        /** Answers that never reached the upstream (another credential silo): reported as such. */
+        const notResentResponses = new WeakSet<Response>();
         const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
           // A returned binding replaces this request's: the retry, and every
           // retry leg after it, sign with the artifact just minted.
@@ -1923,9 +1925,12 @@ export class ComposedHandler implements ModelHandler {
               )
             ) {
               log(`[${this.provider.displayName}] sign-in changed during the request; not resent`);
-              return new Response("Codex sign-in changed during the request; it was not resent", {
-                status: response.status,
-              });
+              const notResent = new Response(
+                "Codex sign-in changed during the request; it was not resent",
+                { status: response.status }
+              );
+              notResentResponses.add(notResent);
+              return notResent;
             }
             binding = refreshed;
             endpoint = this.provider.getEndpoint(this.targetModel, binding);
@@ -1955,9 +1960,16 @@ export class ComposedHandler implements ModelHandler {
             response = retryResp; // fall through to stream handling below
           } else {
             const errorText = await retryResp.text();
-            log(`[${this.provider.displayName}] Retry failed: ${errorText}`);
+            // Not resent: the refresh signed in another account. No key is
+            // wrong and no retry went out, so neither message may say so.
+            const resent = !notResentResponses.has(retryResp);
+            log(
+              `[${this.provider.displayName}] ${resent ? "Retry failed" : "Not resent"}: ${errorText}`
+            );
             logStderr(
-              `Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`
+              resent
+                ? `Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`
+                : `Error [${this.provider.displayName}]: HTTP ${retryResp.status}; the sign-in changed to another account during the request, so it was not resent.`
             );
             reportError({
               error: new Error(errorText),
@@ -1967,7 +1979,7 @@ export class ComposedHandler implements ModelHandler {
               modelId: this.targetModel,
               httpStatus: retryResp.status,
               isStreaming: false,
-              retryAttempted: true,
+              retryAttempted: resent,
               isInteractive: this.isInteractive,
               authType: "oauth",
             });
