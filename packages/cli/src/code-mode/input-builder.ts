@@ -404,15 +404,20 @@ class InputBuilder {
 
   // ─── exec outputs ───────────────────────────────────────────────────
 
-  /** True when message `i` answers the group's LAST round (the script ended there). */
+  /**
+   * True when message `i` (which carries a result of this group) answers the
+   * group's LAST round. Usually the first user message after that round; a
+   * later one when a user message without its results came between —
+   * `closeMovedOnGroups` leaves the group open then (its results exist), so
+   * the output must land here or the `custom_tool_call` has none at all.
+   * `emitOutput` emits once, so a later duplicate result changes nothing.
+   */
   private completesAt(group: ExecGroup, i: number): boolean {
     const last = group.rounds[group.rounds.length - 1];
     if (!last || last.assistantIndex >= i) return false;
-    // Only the first user message after the last round answers it.
-    for (let j = last.assistantIndex + 1; j < i; j++) {
-      if (this.messages[j]?.role === "user") return false;
-    }
-    return true;
+    return blocksOf(this.messages[i]).some(
+      (b) => b.type === "tool_result" && last.blocks.some((use) => use.id === b.tool_use_id)
+    );
   }
 
   private maybeCompleteGroup(execKey: string, i: number): void {
