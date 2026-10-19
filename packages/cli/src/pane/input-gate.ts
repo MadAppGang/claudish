@@ -79,7 +79,7 @@ export interface GateInput {
   receivedAt: number;
 }
 
-/** How magmux bound pane 0 to a transcript. `unbound`: the field is absent or unknown. */
+/** How magmux bound pane 0 to a transcript. `unbound`: a field is absent, or `bound` is unknown. */
 export type GateBindingKind = "named" | "prompt" | "mtime" | "unbound";
 
 /**
@@ -136,19 +136,22 @@ export function gateBasisOf(listResult: unknown): "direct" | "declared" | null {
   return basis === "direct" || basis === "declared" ? basis : null;
 }
 
-/** null: no pane 0. Otherwise the binding, `unbound` when magmux published no binding. */
+/**
+ * null: no pane 0. Otherwise the binding: `unbound` when `bound`, `sessionId` or
+ * `transcriptPath` is missing, or `bound` is unknown (R1.8, U4). A row claiming
+ * `bound: "named"` without a session id or path binds nothing; `boundRaw` keeps the claim.
+ */
 export function parseGateBinding(listResult: unknown): GateBinding | null {
   const row = paneZero(listResult);
   if (!row) return null;
   const boundRaw = str(row.bound);
-  const bound: GateBindingKind =
-    boundRaw === "named" || boundRaw === "prompt" || boundRaw === "mtime" ? boundRaw : "unbound";
-  return {
-    bound,
-    boundRaw,
-    sessionId: str(row.sessionId),
-    transcriptPath: str(row.transcriptPath),
-  };
+  const sessionId = str(row.sessionId);
+  const transcriptPath = str(row.transcriptPath);
+  let bound: GateBindingKind = "unbound";
+  if (sessionId && transcriptPath) {
+    if (boundRaw === "named" || boundRaw === "prompt" || boundRaw === "mtime") bound = boundRaw;
+  }
+  return { bound, boundRaw, sessionId, transcriptPath };
 }
 
 // ── the send reply ───────────────────────────────────────────────────────────

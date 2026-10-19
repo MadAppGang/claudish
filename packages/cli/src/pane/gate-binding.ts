@@ -62,11 +62,14 @@ export function checkGateBinding(
   const ours = normaliseTranscriptPath(expected.transcriptPath);
   const theirs = b?.transcriptPath ? normaliseTranscriptPath(b.transcriptPath) : null;
   const differs: string[] = [];
-  if (b?.bound !== "named") differs.push(`bound ${b?.boundRaw ?? "none"}`);
+  // A `named` claim missing its session id or path parses `unbound`; the missing field is
+  // named below, so `bound named` is not listed as a difference of its own.
+  if (b?.bound !== "named" && b?.boundRaw !== "named")
+    differs.push(`bound ${b?.boundRaw ?? "none"}`);
   if (b?.sessionId !== expected.sessionUuid)
     differs.push(`sessionId ${b?.sessionId ?? "none"}, not ${expected.sessionUuid}`);
   if (theirs !== ours) differs.push(`transcriptPath ${theirs ?? "none"}, not ${ours}`);
-  if (differs.length === 0) return { ok: true };
+  if (b?.bound === "named" && differs.length === 0) return { ok: true };
   return {
     ok: false,
     detail: `input_gate_unbound: magmux ${v} bound pane 0 to ${theirs ?? "none"} (${b?.boundRaw ?? "none"}), not ${ours}: ${differs.join("; ")}`,
