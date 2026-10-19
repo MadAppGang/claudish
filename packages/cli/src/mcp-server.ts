@@ -473,23 +473,44 @@ export const NEXT_STEP: Record<FailureReason, string> = {
 };
 
 /**
- * The Details cell of a preflight "no route" row: the reason, then the remedy
- * lines of the plan's credential hint (`buildCredentialHint`), the same login
- * instruction `--probe` prints. Without them the row read only `No credentials
+ * The Details cell of a preflight "no route" row: the reason, then EVERY line
+ * of the plan's hint — for a missing credential that is the same login
+ * instruction `--probe` prints. Without it the row read only `No credentials
  * configured for "meta-muse-code".`, which an agent cannot act on.
  *
- * One table cell, so the hint's header line (`No credentials found for …
- * Options:`, which repeats the reason) is dropped, its option lines are joined
- * with ` · `, whitespace runs collapse, and a `|` is escaped.
+ * Hints come in two shapes. Most are one remedy sentence (explicit-not-served,
+ * catalog-unreadable, …), kept whole. `buildCredentialHint`'s is a header
+ * (`No credentials found for "<model>". Options:`) and one line per option.
+ * Only a line that REPEATS the reason is dropped, and that header is one: it
+ * restates the reason's "no credentials" before the options.
+ *
+ * One table cell, so the kept lines are joined with ` · ` (a space after a
+ * line ending in `:`), whitespace runs collapse, and a `|` is escaped.
  */
 export function noRouteCell(reason: string, hint?: string): string {
-  const options = (hint ?? "")
+  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+  const lines = (hint ?? "")
     .split("\n")
-    .slice(1)
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-  const cell = options.length > 0 ? `${reason} ${options.join(" · ")}` : reason;
+    .map(flat)
+    .filter((line) => line && !repeatsNoRouteReason(line, flat(reason)));
+  // A line ending in ":" introduces the next, so it joins with a space.
+  const joined = lines.reduce(
+    (acc, line, i) => (i === 0 ? line : `${acc}${lines[i - 1].endsWith(":") ? " " : " · "}${line}`),
+    ""
+  );
+  const cell = joined ? `${reason} ${joined}` : reason;
   return cell.replace(/\|/g, "\\|");
+}
+
+/** A hint line that restates the reason: the same text, or the credential hint's header. */
+function repeatsNoRouteReason(line: string, reason: string): boolean {
+  if (line === reason) return true;
+  return (
+    // "No credentials configured for …" and "No credentialed providers in …".
+    reason.startsWith("No credential") &&
+    line.startsWith("No credentials found for ") &&
+    line.endsWith("Options:")
+  );
 }
 
 /** `18864` → `18.4KB`. */
