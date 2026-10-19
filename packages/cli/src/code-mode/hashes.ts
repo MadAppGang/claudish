@@ -23,7 +23,19 @@ export interface BatchResultEntry {
   result?: { isError: boolean; content: unknown };
 }
 
-/** JSON with object keys sorted at every depth: a stable serialisation for hashing. */
+/**
+ * Per-request transport fields a key must not depend on. `cache_control` is a
+ * prompt-cache breakpoint Claude Code moves between requests: the message that
+ * carried it when a record was written no longer does when history is
+ * rendered, so a hash over it never matched again.
+ */
+const TRANSPORT_KEYS = new Set(["cache_control"]);
+
+/**
+ * JSON with object keys sorted at every depth, transport fields left out: a
+ * stable serialisation for hashing (`batchHash`, `turnAnchorFor`, replay's
+ * input comparison), never for sending.
+ */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value) ?? "null";
@@ -32,7 +44,7 @@ export function canonicalJson(value: unknown): string {
     return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
   }
   const keys = Object.keys(value as Record<string, unknown>)
-    .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
+    .filter((k) => (value as Record<string, unknown>)[k] !== undefined && !TRANSPORT_KEYS.has(k))
     .sort();
   const body = keys
     .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
