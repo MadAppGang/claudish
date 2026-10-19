@@ -33,6 +33,7 @@
  * writes the Muse Code CLI's own Keychain item.
  */
 
+import { homedir } from "node:os";
 import { credentialPromptRole } from "../../auth/credentials/prompt-role.js";
 import { log } from "../../logger.js";
 import {
@@ -43,7 +44,12 @@ import {
   withMuseKeychainLogin,
 } from "./muse-keychain.js";
 import { MuseLoginExpiredError, type MuseMint, mintMuseApiKey } from "./muse-mint.js";
-import { defaultMuseStoreDir, readMuseStore, writeBorrowedCopy } from "./muse-store.js";
+import {
+  defaultMuseStoreDir,
+  museStorePath,
+  readMuseStore,
+  writeBorrowedCopy,
+} from "./muse-store.js";
 
 /** Re-mint once the entitlement confirmation is older than this. */
 export const MUSE_ENTITLEMENT_TTL_MS = 30 * 60_000;
@@ -398,6 +404,63 @@ export async function refreshMuseCredentialStatus(): Promise<MuseCredentialStatu
 /** Projection: a status that means a login is there to use. */
 export function isMuseCredentialConfigured(status: MuseCredentialStatus): boolean {
   return status === "own-login" || status === "borrowed-copy" || status === "keychain";
+}
+
+/** How `--probe` names each signing source. */
+const SOURCE_LABELS: Record<MuseSource, string> = {
+  "claudish-login": "claudish login",
+  "borrowed-copy": "borrowed copy",
+  keychain: "Muse Code CLI Keychain login",
+};
+
+/** What `--probe`'s Key line says about the Muse Code credential. */
+export interface MuseSigningDescription {
+  /** False when no source is known: no state in this process and neither file. */
+  present: boolean;
+  /** `Muse Code <source> · <tier>`, or `no Muse Code login`. */
+  label: string;
+  /** Where that came from: the request that signed, the file, or the remedy. */
+  detail: string;
+}
+
+function displayPath(path: string): string {
+  const home = homedir();
+  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+/**
+ * The source and tier a muse@ request signs (or would sign) with, for
+ * `--probe` (contract §4.3 item 5 / R2-F28: a silent switch between the own
+ * login and a borrowed one must be visible).
+ *
+ * Files and process state ONLY — never a Keychain read of any kind, so it is
+ * safe in role `never`. The installed state wins: it is the source and tier
+ * the last request in THIS process actually signed with (the probe's own proxy
+ * runs in-process). Without one, the files are read in the order the resolve
+ * tries them, and the tier is the `subs_tier_name` the confirming mint wrote.
+ */
+export function describeMuseSigningSource(): MuseSigningDescription {
+  if (state) {
+    return {
+      present: true,
+      label: `Muse Code ${SOURCE_LABELS[state.source]} · ${state.subsTierName ?? "tier unknown"}`,
+      detail: "signed the probe request",
+    };
+  }
+  for (const [kind, source] of [
+    ["own-login", "claudish-login"],
+    ["borrowed-copy", "borrowed-copy"],
+  ] as const) {
+    const record = deps.readStore(kind, deps.dir());
+    if (!record) continue;
+    const tier = typeof record.subs_tier_name === "string" ? record.subs_tier_name : undefined;
+    return {
+      present: true,
+      label: `Muse Code ${SOURCE_LABELS[source]} · ${tier ?? "tier unknown"}`,
+      detail: `${displayPath(museStorePath(kind, deps.dir()))}, not yet confirmed in this process`,
+    };
+  }
+  return { present: false, label: "no Muse Code login", detail: MUSE_NO_LOGIN_MESSAGE };
 }
 
 /** The last resolve failure's message, for diagnostics. */

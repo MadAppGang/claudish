@@ -49,6 +49,7 @@ import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
@@ -1592,6 +1593,24 @@ async function probeModelRouting(
    * instruction — its `effectiveSource` is the sentence that names both
    * remedies. Everyone else keeps the bare variable name they always had.
    */
+  /**
+   * The Muse Code credential as a provenance record, through `effectiveLabel`
+   * (the channel for a credential that is not an env var). Present:
+   * `Key  Muse Code borrowed copy · Muse Code Power Usage  (signed the probe request)`.
+   * Absent: `Key  no Muse Code login  (<the §4.2 login instruction>)`.
+   */
+  function museKeyProvenance(): KeyProvenance {
+    const muse = describeMuseSigningSource();
+    return {
+      envVar: "",
+      hasValue: muse.present,
+      effectiveMasked: null,
+      effectiveSource: muse.detail,
+      effectiveLabel: muse.label,
+      layers: [],
+    };
+  }
+
   function credentialHintFrom(
     provenance: KeyProvenance | undefined,
     envVar: string | undefined
@@ -1617,6 +1636,10 @@ async function probeModelRouting(
       );
     },
     provenanceFor(provider) {
+      // muse@ signs with a login, never an env var: its Key line names the
+      // source and the tier (contract §4.3 item 5), from files and process
+      // state only, so a probe in role `never` asks no Keychain question.
+      if (provider === "meta-muse-code") return museKeyProvenance();
       const keyInfo = API_KEY_MAP[provider];
       return keyInfo?.envVar
         ? resolveCredentialProvenance(provider, keyInfo.envVar, keyInfo.aliases)
@@ -2017,6 +2040,12 @@ async function probeModelRouting(
     const printable: PrintableModelResult[] = [];
     const results: ProbeModelResult[] = [];
     for (const probe of modelProbes) {
+      // The chain's provenance was read BEFORE the live requests. A muse@ hop's
+      // is read again now, so its Key line names the source and tier the
+      // probe request actually signed with (the proxy is in this process).
+      for (const link of probe.chain) {
+        if (link.provider === "meta-muse-code") link.provenance = museKeyProvenance();
+      }
       const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
       const fields = routingFieldsFrom(probe.explanation);
       printable.push({
