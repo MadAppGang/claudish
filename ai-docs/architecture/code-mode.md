@@ -297,12 +297,26 @@ a fresh module.
 2048 MiB wasm maximum in 3.8 s before QuickJS reported out of memory; `a.push({i})` reached
 143 MiB. Linear memory never shrinks. So the interrupt handler also checks the module's
 `HEAPU8.byteLength` (private, guarded; a module where it reads 0 logs once that the ceilings are
-off): a slice that grows it past `WASM_CEILING_BYTES = 256 MiB` is stopped (`out of memory: the
-script grew the sandbox's memory past claudish's limit`) and the module is RETIRED: no new script
-is admitted, and every SUSPENDED runtime in it is evicted at once (its record goes `lost`; replay
-re-runs it in the next module), because a suspended runtime holds the whole module and may wait on
-Claude Code for hours. An idle module over 256 MiB is dropped for reload when its last runtime
-ends. Admission is also gated process-wide: a new runtime is refused while the wasm memory summed
+off) against `WASM_CEILING_BYTES = 256 MiB`, two ways:
+
+- a slice past the ceiling that grew the module by MORE than its own heap limit is stopped (`out of
+  memory: the script grew the sandbox's memory past claudish's limit`) — the runaway signature: the
+  string-push loop grew it 282 MiB in one slice;
+- after EVERY slice, a module over the ceiling is retired with no script blamed. Scripts that each
+  stay inside their heap limit still add up, and result delivery grows memory from the host,
+  outside any interrupt check (measured: 31 suspended scripts each holding 8 × 1 MiB results, the
+  per-script result cap, took the module to 298 MiB with no slice stopped). Blaming the slice that
+  happened to cross failed an innocent script (measured: a script allocating 56 MiB within a 64 MiB
+  heap, beside 26 holders at 248 MiB, failed "out of memory"; now it completes).
+
+Retiring admits no new script and evicts every SUSPENDED runtime in the module at once (its record
+goes `lost`; replay re-runs it in the next module, which 5r loads first: `needs-module`), because a
+suspended runtime holds the whole module and may wait on Claude Code for hours. Live cap × heap
+limit (32 × 32 MiB) is deliberately NOT sized under the ceiling: the heap limit does not bound
+linear memory (one runaway alone reached 298 MiB under it), so no product of the two is a bound,
+and lowering either would refuse legitimate scripts (the 8 MiB result budget needs the heap). The
+ceiling plus retire-and-replay is the bound; what it costs a holder is one replay. An idle module
+over 256 MiB is dropped for reload when its last runtime ends. Admission is also gated process-wide: a new runtime is refused while the wasm memory summed
 over every module still alive exceeds `PROCESS_WASM_CEILING_BYTES = 512 MiB`, so the per-module
 ceiling is a per-process one too. 256 MiB, not the 1 GiB first shipped: linear memory never
 shrinks, so whatever one runaway script reaches stays resident in the proxy.

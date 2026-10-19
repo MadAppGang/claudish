@@ -365,9 +365,13 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
         return true;
       }
       // The runtime's memory limit does not bound the module's linear memory
-      // (see WASM_CEILING_BYTES); a slice that grows it past the ceiling stops.
+      // (see WASM_CEILING_BYTES). A slice past the ceiling is stopped only when
+      // IT grew the module by more than its own heap limit — the runaway
+      // signature (measured: one string-push loop grew it 282 MiB in one
+      // slice). Memory other scripts hold is not this script's fault: that
+      // case retires the module after the slice instead (`slice()`).
       const wasm = this.lease.wasmBytes();
-      if (wasm > WASM_CEILING_BYTES && wasm > this.sliceWasmBytes) {
+      if (wasm > WASM_CEILING_BYTES && wasm - this.sliceWasmBytes > this.limits.memoryBytes) {
         this.wasmExceeded = true;
         return true;
       }
@@ -554,7 +558,21 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
       this.sliceStart = -1;
       this.running = false;
       this.lastActive = Date.now();
+      this.retireIfOverCeiling();
     }
+  }
+
+  /**
+   * After every slice: a module whose scripts TOGETHER hold more than the
+   * ceiling is retired, with no script blamed. Result delivery grows memory
+   * from the host, outside any interrupt check (measured: 31 scripts each
+   * holding 8 × 1 MiB results took the module to 298 MiB with no slice
+   * stopped). Retiring evicts every suspended runtime, this one included once
+   * its slice is over; each replays in a fresh module when its results come.
+   */
+  private retireIfOverCeiling(): void {
+    if (!this.lease.usable || this.lease.wasmBytes() <= WASM_CEILING_BYTES) return;
+    this.lease.retire("the scripts in it hold more memory than the ceiling");
   }
 
   private settleTop(): ScriptStep {
