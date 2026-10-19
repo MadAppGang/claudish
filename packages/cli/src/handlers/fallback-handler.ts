@@ -14,7 +14,12 @@ import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
-import { isClaudishConnectionVerdict, isRecoveryHoldResponse } from "./shared/recovery-marker.js";
+import {
+  hasStreamFailureMarker,
+  isClaudishConnectionVerdict,
+  isRecoveryHoldResponse,
+  isStreamFailureResponse,
+} from "./shared/recovery-marker.js";
 import type { ModelHandler } from "./types.js";
 
 export interface FallbackCandidate {
@@ -110,6 +115,19 @@ export class FallbackHandler implements ModelHandler {
             `[Fallback] ${name} is unreachable and claudish is still retrying it — ` +
               "holding the chain here rather than switching providers mid-outage."
           );
+          return response;
+        }
+
+        // ── THE STREAM-FAILURE MARKER, SAME PLACE AND SAME REASONS ────────────
+        //
+        // A non-streamed turn whose stream ended on an SSE `error` (the provider
+        // answered 200, then the stream failed) is answered by the JSON collector
+        // with an error response. In streaming mode the same failure never comes
+        // back through here as an error, so neither may this one: it is not the
+        // provider's verdict on the request, and its body can quote an upstream
+        // message containing quota wording. Returned verbatim, before the body is
+        // read, so it is neither advanced past nor folded with earlier errors.
+        if (isStreamFailureResponse(response)) {
           return response;
         }
 
@@ -233,6 +251,10 @@ export function isRetryableError(
   // predicate rather than either half is what stops chain-safety from being a
   // property of which arm happened to answer.
   if (isClaudishConnectionVerdict(headers)) return false;
+  // A stream that failed after a 200 is not a provider's verdict either; see
+  // `STREAM_FAILURE_HEADER` in recovery-marker.ts. Above the wording match for
+  // the same reason as the line above.
+  if (hasStreamFailureMarker(headers)) return false;
 
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.
