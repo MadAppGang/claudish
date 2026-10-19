@@ -11,6 +11,7 @@
  * unknown), never as `blocked` (R3-H1).
  */
 
+import { locateBox } from "./box-locate.js";
 import type { SpanRun } from "./contract.js";
 import { type ScreenState, boxTopRow, isBoxRule } from "./screen-model.js";
 
@@ -270,6 +271,15 @@ export function isWorking(s: ScreenState): boolean {
   const top = boxTopRow(s.lines, s.cols);
   const region = top >= 0 ? s.lines.slice(0, top) : s.lines;
   return region.some((l) => WORKING_ROW.test(l));
+}
+
+/**
+ * `isWorking` over the rows above the box located by the cursor (architecture-v2 §7.5);
+ * null when no box is located, which settle corroboration reads as "no veto".
+ */
+export function workingAboveBox(s: ScreenState): boolean | null {
+  const box = locateBox(s);
+  return box ? s.lines.slice(0, box.top).some((l) => WORKING_ROW.test(l)) : null;
 }
 
 /** A Stop hook is running: `· Processing… (running Stop hook · 2s …)`. */

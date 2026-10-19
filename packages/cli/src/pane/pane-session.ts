@@ -104,8 +104,6 @@ import {
   choiceDialog,
   dialogText,
   flatText,
-  hasChoiceDialog,
-  inputBox,
   isWorking,
   menuAbove,
   nameBootScreen,
@@ -114,6 +112,7 @@ import {
   screenText,
   stopHookRunning,
   transcriptSavingOff,
+  workingAboveBox,
 } from "./screen-classifier.js";
 import {
   type MagmuxCapture,
@@ -125,8 +124,8 @@ import {
 import { KNOWN_STATUSES, type RegistryRecord, SessionRegistry } from "./session-registry.js";
 import {
   CORROBORATION_MS,
+  type CorroborationFacts,
   SECONDARY_QUIET_MS,
-  type ScreenFacts,
   type SettleDecision,
   agentCountMismatch,
   decideSettle,
@@ -196,6 +195,11 @@ const GATE_POLL_MS = 250;
 const GATE_REPLY_MS = 1_000;
 /** A gate reading older than this, or any reading while disconnected, is unknown. */
 const GATE_STALE_MS = 1_000;
+/**
+ * The most gate corroboration may delay a transcript-closed turn (architecture-v2 §7.1,
+ * Jack's decision J2): after this much chat quiet it settles with `settle_gate_unconfirmed`.
+ */
+export const GATE_GRACE_MS = SECONDARY_QUIET_MS;
 /**
  * `list` showing pane 0 dead this long with no `exit` event: take the exit path anyway.
  * The event stays the primary path (it carries `lastLine`); this is its backstop.
@@ -280,6 +284,8 @@ export interface PaneSessionOptions {
      */
     resendAfterMs?: number;
     corroborationMs?: number;
+    /** GATE_GRACE_MS */
+    gateGraceMs?: number;
     bootStaticMs?: number;
     /** @deprecated ignored: boot readiness is magmux's `input.ready` (see `REPL_STABLE_MS`) */
     replStableMs?: number;
@@ -1965,15 +1971,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
-  private screenFacts(): ScreenFacts | null {
+  /**
+   * Settle corroboration (architecture-v2 §7.1, R1.5.1): the gate's fresh reading, plus the
+   * working row and the quiet ABOVE the box located by the cursor. Null while disconnected.
+   * An unlocated box yields nulls, never a veto.
+   */
+  private corroborationFacts(): CorroborationFacts | null {
     if (!this.client) return null;
-    const box = inputBox(this.screen);
+    const g = this.gateNow();
     return {
-      boxEmpty: !!box && box.text === "",
-      choiceDialog: hasChoiceDialog(this.screen),
-      working: isWorking(this.screen),
-      aboveBoxQuietMs: Date.now() - this.screen.aboveBoxChangedAt,
+      gate: g ? { ready: g.ready, dialog: g.dialog, reason: g.reason } : null,
+      working: workingAboveBox(this.screen),
+      aboveBoxQuietMs: this.aboveBoxQuietMs(),
     };
+  }
+
+  /** ms since a row above the located box changed; null when this frame locates no box. */
+  private aboveBoxQuietMs(): number | null {
+    return locateBox(this.screen) ? Date.now() - this.screen.aboveBoxChangedAt : null;
   }
 
   /**
@@ -2027,22 +2042,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
     if (this.detectBlocked(t)) return;
     const now = Date.now();
+    const transcriptQuietMs = now - (view.lastAppendAt ?? this.startedAtMs);
     const decision = decideSettle({
       turn: t,
       session: view.session,
-      transcriptQuietMs: now - (view.lastAppendAt ?? this.startedAtMs),
+      transcriptQuietMs,
       chatQuietMs: now - this.lastChatSeenAt,
-      screen: this.screenFacts(),
+      facts: this.corroborationFacts(),
       paneExited: false,
       secondaryQuietMs: this.secondaryQuietMs,
       corroborationMs: this.corroborationMs,
+      corroborationGraceMs: this.t("gateGraceMs", GATE_GRACE_MS),
     });
     if (decision.settled) {
       this.settle(t, decision, null);
       return;
     }
     this.activity = decision.activity;
-    this.checkTurnEndMissing();
+    this.checkTurnEndMissing(t, transcriptQuietMs);
     this.checkAgentCountMismatch(t);
   }
 
@@ -2056,15 +2073,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /**
    * R3-M4: `finishing` with a static screen and no Stop-hook UI for N secondary windows.
    * The condition is live (it clears the moment work resumes); the anomaly counts how often
-   * it began.
+   * it began. A turn whose end record WAS written (turn_duration, or an interrupt) is not
+   * missing one: "the turn ended and the gate disagrees" is `settle_gate_unconfirmed`.
+   * Quiet is measured above the located box, else from the transcript (architecture-v2 §7.2).
    */
-  private checkTurnEndMissing(): void {
-    if (this.activity !== "finishing") {
+  private checkTurnEndMissing(t: TurnView, transcriptQuietMs: number): void {
+    if (this.activity !== "finishing" || t.turnDurationAfterLast || t.interruptAfterLast) {
       this.turnEndMissing = false;
       return;
     }
     if (!this.client) return;
-    const quiet = Date.now() - this.screen.aboveBoxChangedAt;
+    const quiet = this.aboveBoxQuietMs() ?? transcriptQuietMs;
     const missing =
       quiet >= TURN_END_MISSING_FACTOR * this.secondaryQuietMs && !stopHookRunning(this.screen);
     if (missing && !this.turnEndMissing) this.anomaly("turn_end_record_missing");
@@ -2232,12 +2251,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return !!t && t.index === this.turnIndex && t.acceptedAt !== null;
   }
 
-  /** Degraded settle (§2.8): empty box, no dialog, not working, and an answer or error row gone quiet. */
+  /**
+   * Degraded settle (architecture-v2 §7.3): the gate ready (an empty box) and naming no
+   * dialog, no working row above the located box, and an answer or error row gone quiet.
+   * Quiet is above the located box, else the whole screen's (stricter: a ticking status line
+   * delays it), used only with no transcript witness.
+   */
   private screenSettleReady(view: TranscriptView, answer: string, apiError: unknown): boolean {
-    const box = inputBox(this.screen);
-    if (!box || box.text !== "" || hasChoiceDialog(this.screen) || isWorking(this.screen))
-      return false;
-    const quiet = Date.now() - this.screen.aboveBoxChangedAt;
+    const g = this.gateNow();
+    if (!g || !g.ready || g.dialog !== null || workingAboveBox(this.screen) === true) return false;
+    const quiet = this.aboveBoxQuietMs() ?? Date.now() - this.screen.changedAt;
     if (view.availability === "off" && quiet >= this.secondaryQuietMs) return true;
     return (
       (!!answer || !!apiError) && quiet >= 2 * this.t("screenSettleQuietMs", SCREEN_SETTLE_QUIET_MS)
@@ -2327,7 +2350,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       session: view.session,
       transcriptQuietMs: Number.MAX_SAFE_INTEGER,
       chatQuietMs: Number.MAX_SAFE_INTEGER,
-      screen: null,
+      facts: null,
       paneExited: true,
       secondaryQuietMs: this.secondaryQuietMs,
       corroborationMs: 0,
