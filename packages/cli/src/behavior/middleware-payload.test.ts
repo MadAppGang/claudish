@@ -52,6 +52,8 @@ describe("middleware mutations before adapter.buildPayload", () => {
 
     expect(serialized).toContain(MESSAGE_MARKER);
     expect(serialized).toContain(TOOL_MARKER);
-    expect(serialized).toContain(`"instructions":"${SYSTEM_MARKER}"`);
+    const payload = JSON.parse(serialized);
+    expect(payload.instructions).toContain(SYSTEM_MARKER);
+    expect(payload.instructions).not.toBe(SYSTEM_MARKER);
   });
 });
