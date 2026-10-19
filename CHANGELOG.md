@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [11.1.0] - 2026-10-19
+
+### Documentation
+
+- say recent rows reach the calling agent, not stay local *(team)* ([`34519f8`](https://github.com/MadAppGang/claudish/commit/34519f80c330f88613e91d45d3c2df9158713ea4))
+- record the live validation of SlotRow.recent *(reports)* ([`32415f7`](https://github.com/MadAppGang/claudish/commit/32415f7033631777519ed3f9b4e66746970ed07b))
+- remove the background-agent settle item fixed in 11.0.0 *(roadmap)* ([`fc9b476`](https://github.com/MadAppGang/claudish/commit/fc9b476f0e207ebe6c67d4b3e408f2ca601b8266))
+- record the double-typed prompt and the text-shaped API error *(roadmap)* ([`b9b2c7b`](https://github.com/MadAppGang/claudish/commit/b9b2c7b85f4d5d6aa533929c9b1db910a52b2c9c))
+- stamp the playbook verified at the v11.0.0 merge *(release)* ([`b8ce659`](https://github.com/MadAppGang/claudish/commit/b8ce6592ac015dd02c99a37294c78111614306bd))
+- update CHANGELOG.md for v11.0.0([`0065691`](https://github.com/MadAppGang/claudish/commit/006569193cfbe83e01dab22b2e2cce0c56da8c01))
+
+### New Features
+
+- add recent steps to SlotRow for team and session rows *(team)* ([`01b28bb`](https://github.com/MadAppGang/claudish/commit/01b28bb92ff1f792587e9110079251c91bc64727))
+
+### Other Changes
+
+- v11.1.0 *(release)* ([`adf58ea`](https://github.com/MadAppGang/claudish/commit/adf58eab8fcb8003985cb6c275bdc5fa9bad82f3))
+
 ## [11.0.0] - 2026-10-19
 
 ### ⚠ BREAKING CHANGES
