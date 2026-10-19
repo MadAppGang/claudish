@@ -313,7 +313,7 @@ export class SessionManager {
   /** Shut down all active sessions. */
   async shutdownAll(): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const [id, entry] of this.sessions) {
+    for (const entry of this.sessions.values()) {
       if (!entry.process.killed) {
         entry.process.kill("SIGTERM");
         promises.push(

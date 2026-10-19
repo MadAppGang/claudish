@@ -22,10 +22,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  extractToolCallsFromText,
-  type ToolSchema,
-} from "./tool-call-recovery.js";
+import { extractToolCallsFromText } from "./tool-call-recovery.js";
 import { createStreamingResponseHandler } from "./stream-parsers/openai-sse.js";
 
 // ── unit: extractToolCallsFromText gates ─────────────────────────────────

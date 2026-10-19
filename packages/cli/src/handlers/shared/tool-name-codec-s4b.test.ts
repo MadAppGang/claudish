@@ -30,11 +30,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  encodeToolName,
-  newToolNameBindings,
-  type ToolNameBindings,
-} from "../../adapters/tool-name-utils.js";
+import { encodeToolName, newToolNameBindings } from "../../adapters/tool-name-utils.js";
 import { OpenAIAPIFormat } from "../../adapters/openai-api-format.js";
 
 const LONG_MCP_NAME =

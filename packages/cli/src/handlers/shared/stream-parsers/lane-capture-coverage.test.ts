@@ -42,8 +42,6 @@ function upstreamResponse(raw: string): Response {
 /** Minimal Hono-context stand-in: only `req` is read (for the reqN correlation). */
 const ctx = { req: {} } as any;
 
-const passthroughBody = (s: ReadableStream, init?: any) => new Response(s, init);
-
 async function captureStdout(fn: () => Promise<void>): Promise<string[]> {
   const written: string[] = [];
   const realWrite = process.stdout.write.bind(process.stdout);
