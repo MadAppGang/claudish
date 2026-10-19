@@ -145,6 +145,7 @@ describe("EMPTY is a failure to the monitor (§20.1)", () => {
       state: "EMPTY",
       shape: "one-shot",
       pane: "p",
+      recent: null,
       panePid: 4242,
       startedAt: "2026-10-06T00:00:00.000Z",
       completedAt: "2026-10-06T00:00:05.000Z",

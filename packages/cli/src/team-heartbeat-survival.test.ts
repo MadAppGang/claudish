@@ -76,6 +76,7 @@ describe("offline team slot anomaly projection", () => {
       shape: "one-shot",
       turnEndRecordMissing: false,
       agentCountMismatch: true,
+      recent: null,
     };
     let onTransition: pane.PaneSessionOptions["onTransition"];
     const terminal = Promise.withResolvers<void>();

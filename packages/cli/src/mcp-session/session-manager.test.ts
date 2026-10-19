@@ -83,6 +83,7 @@ function sampleInfo(over: Partial<SessionInfo> = {}): SessionInfo {
     state: "EMPTY",
     shape: "one-shot",
     pane: "c1-x-sabcd1234-aaaaaa",
+    recent: null,
     panePid: 4242,
     startedAt: "2026-10-06T00:00:00.000Z",
     completedAt: "2026-10-06T00:00:10.000Z",
@@ -206,6 +207,7 @@ describe("exported session seams (pure)", () => {
         "idle_seconds",
         "activity",
         "pane",
+        "recent",
         "session_id",
         "started_at",
         "completed_at",
@@ -227,6 +229,17 @@ describe("exported session seams (pure)", () => {
     expect(completed.reason).toBeNull();
     expect(completed.reason_detail).toBeNull();
   });
+
+  test.each(["RUNNING", "COMPLETED"] as const)(
+    "sessionRowOf passes recent through for %s rows",
+    (state) => {
+      const recent = [
+        { at: "2026-10-06T01:16:16.646Z", kind: "text" as const, tool: null, summary: "KIWI" },
+      ];
+      expect(sessionRowOf(sampleInfo({ state, recent })).recent).toEqual(recent);
+      expect(sessionRowOf(sampleInfo({ state, recent: null })).recent).toBeNull();
+    }
+  );
 
   test("G4: transport-owned, print-only and positional flags are refused before anything starts", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudish-g4-"));
@@ -322,6 +335,12 @@ describe("SessionManager disk reader", () => {
     expect(cancelled.exitCode).toBe(143);
     expect(cancelled.elapsedSeconds).toBe(60);
     expect(cancelled.panePid).toBeNull();
+    expect(cancelled.recent).toBeNull();
+    const diskRows = ["old-cancelled", "old-completed", "old-timeout", "old-finishing"].map((id) =>
+      sessionRowOf(manager.getSession(id))
+    );
+    expect(diskRows).toHaveLength(4);
+    expect(diskRows.every((row) => row.recent === null)).toBe(true);
     expect(manager.getSession("old-completed")).toMatchObject({ state: "COMPLETED", reason: null });
     expect(manager.getSession("old-timeout")).toMatchObject({
       state: "TIMEOUT",
@@ -567,6 +586,36 @@ describe.skipIf(!MAGMUX)(
         expect(manager.listSessions(false).map((s) => s.sessionId)).toEqual(
           expect.arrayContaining([id1, id2])
         );
+      },
+      T_PANE
+    );
+
+    test(
+      "recent is null before a step, survives settle, and clears when the next turn opens",
+      async () => {
+        const manager = makeManager();
+        const id = await create(manager, { model: "contract-fake-model" });
+        await waitForState(manager, id, ["AWAITING_INPUT"]);
+        expect(sessionRowOf(manager.getSession(id)).recent).toBeNull();
+        expect(manager.sendInput(id, "first answer").success).toBe(true);
+        await waitUntil(
+          () =>
+            manager.getSession(id).turnsCompleted === 1 &&
+            manager.getSession(id).state === "AWAITING_INPUT",
+          15_000
+        );
+        const settled = sessionRowOf(manager.getSession(id)).recent;
+        expect(settled).not.toBeNull();
+        expect(
+          settled?.some(
+            (step) =>
+              step.kind === "text" && step.summary === manager.getOutput(id).output.split("\n")[0]
+          )
+        ).toBe(true);
+        expect(sessionRowOf(manager.getSession(id)).recent).toEqual(settled);
+        expect(manager.sendInput(id, "hold the next turn @@HANG@@").success).toBe(true);
+        await waitForState(manager, id, ["RUNNING"]);
+        expect(sessionRowOf(manager.getSession(id)).recent).toBeNull();
       },
       T_PANE
     );

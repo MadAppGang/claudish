@@ -77,6 +77,23 @@ describe("teamStatusNote", () => {
 });
 
 describe("teamRunRowFromDisk", () => {
+  test("disk rows have recent null in active and settled states", () => {
+    const dir = mkdtempSync(join(tmpdir(), "team-disk-recent-"));
+    try {
+      const status: TeamStatus = {
+        startedAt: "2026-10-06T00:00:00.000Z",
+        models: { "01": slot("RUNNING", 0), "02": slot("COMPLETED", 12) },
+      };
+      const rows = teamRunRowFromDisk(dir, status).slots;
+      expect(rows.map((row) => [row.slot, row.state, row.recent])).toEqual([
+        ["01", "RUNNING", null],
+        ["02", "COMPLETED", null],
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a SETTLED run whose rows carry no completedAt still has a finished_at", () => {
     const dir = mkdtempSync(join(tmpdir(), "team-disk-row-"));
     try {
@@ -170,6 +187,7 @@ describe("buildTeamStatusPayload", () => {
       shape: "one-shot",
       turnEndRecordMissing: false,
       agentCountMismatch: true,
+      recent: null,
     };
     const status: TeamStatus = {
       startedAt: snap.startedAt,

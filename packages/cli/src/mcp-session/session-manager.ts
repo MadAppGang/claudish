@@ -364,6 +364,7 @@ export function sessionRowOf(
     idle_seconds: terminal ? null : info.idleSeconds,
     activity: terminal ? null : info.activity,
     pane: info.pane,
+    recent: info.recent,
     session_id: info.sessionId,
     started_at: info.startedAt,
     completed_at: info.completedAt,
@@ -913,6 +914,7 @@ export class SessionManager {
         elapsedSeconds: 0,
         idleSeconds: null,
         activity: null,
+        recent: null,
         reason: null,
         detail: null,
         pendingInputs: opts.prompt ? 1 : 0,
@@ -1154,6 +1156,7 @@ export class SessionManager {
     info.lastActivityAt = snap.lastActivityAt;
     info.idleSeconds = snap.idleSeconds;
     info.activity = snap.activity;
+    info.recent = snap.recent;
     info.reason = snap.reason;
     info.detail = snap.detail;
     info.pendingInputs = snap.pendingInputs;
@@ -1816,6 +1819,7 @@ function diskInfo(d: {
     // Read from disk: no live process to be idle. Null, never 0.
     idleSeconds: null,
     activity: null,
+    recent: null,
     reason,
     detail: meta === null ? NO_TERMINAL_RECORD : metaString(meta.detail),
     pendingInputs: 0,

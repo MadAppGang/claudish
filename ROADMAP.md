@@ -629,15 +629,9 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
 
 ## Pane sessions: follow-ups from the 10.7.0 MCP update
 
-Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation.md`.
+Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation.md`. The turn
+that never settled after its background agents finished mid-turn was fixed in 11.0.0 (`a6739184`).
 
-- **A turn whose child launched background agents never settles.** Claude Code 2.1.301 delivers a
-  background agent's `<task-notification>` that arrives mid-turn as an `attachment/queued_command`
-  record; `applyRecord` (`pane/transcript-follower.ts`) counts a completion only from a `user`
-  record, so `agentsLaunched` never balances and `pathPrimary` (`pane/settle-rule.ts`) refuses.
-  The session stays RUNNING until `cancel_session`. Reproduction, cause and offline replay:
-  `ai-docs/reports/2026-10-16-session-unsettled-background-agents.md` and its `-replay.ts`.
-  Trigger: now (claudish-owned, reproducible offline); fix on its own branch.
 - **Adopt magmux 0.16.0 `--controller claude-code`.** Pass it before `-e` in `spawnPaneMagmux`
   (`pane/pane-launch.ts`) behind a version check. The request timeout around magmux `send` must
   cover ~18 s (readyTimeoutMs default 10 s, max 60 s, plus typing, pre-Enter verify and
@@ -648,6 +642,29 @@ Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation
   yield to magmux, and slash commands may come back `unconfirmed`. Once 0.16.0 is the minimum, the
   `editorMode: "normal"` overlay key can go. Trigger: magmux 0.16.0 released with final field
   names, and `.github/magmux.env` bumped to it.
+- **A prompt typed twice under load.** `pane-session.integration.test.ts` "a send whose reply is
+  lost after magmux typed it is not typed twice" failed inside a full `test:safe` run on
+  2026-10-17 with `Received: "Set model to \`haiku/model haiku\`"`, and passed alone (54/0). Two
+  sibling tests in that file timed out in the same run. The retype nudge (`PaneSession.nudge`,
+  `awaitClearedBox`) is the code that can type a line a second time; the 10.7.0 release review
+  also found a race there (ctrl-u lets degraded acceptance accept an empty box). Trigger: now;
+  reproduce with the loaded-run harness (3 parallel suites) before changing the nudge. Owner
+  since 2026-10-17: the `resize_session` redesign (branch `worktree-claudish-mcp-session-size`),
+  which rewrites box location and acceptance; the race is one of its requirements, with a test at
+  production timings, and the doubled-typing test runs in each of its loaded runs.
+- **An upstream stream error is shown as assistant text, so the turn reads COMPLETED.** A
+  `create_session` on `gpt-6.1-sol` (`cx@`, claudish 10.6.3) ended its only turn with the
+  assistant text `[API Error: server_is_overloaded Our servers are currently overloaded. Please
+  try again later.]`; `upstreamErrors` was `[]`, `reason` null, state COMPLETED, after 27 tool calls
+  and no work done. A caller reading only the state takes it for a finished task. Trigger: find
+  where the Responses stream converts a mid-stream `error` event into a text block, and check it
+  on 10.7.0 first.
+- **`redactSecrets` misses three credential shapes.** On 2026-10-20 `redact.ts` left these
+  unmasked: `x-api-key: <value>` in a header, `https://user:password@host`, and a lowercase
+  `?token=<value>` query (`Authorization: Bearer <value>` is masked). `SlotRow.recent` passes a
+  Bash command or WebFetch url through it; the same text is already on the child's screen via
+  `capture_session`, so `recent` adds no exposure, but every caller of `redactSecrets` shares
+  the gap. Trigger: next change to `redact.ts`, or a report of a leaked key.
 
 ---
 

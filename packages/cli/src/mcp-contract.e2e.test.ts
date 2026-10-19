@@ -37,6 +37,7 @@ const SLOT_ROW_KEYS = [
   "last_activity_at",
   "model",
   "pane",
+  "recent",
   "provider",
   "reason",
   "reason_detail",

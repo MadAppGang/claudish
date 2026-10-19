@@ -54,6 +54,7 @@ function snap(over: Partial<PaneSnapshot> = {}): PaneSnapshot {
     shape: "one-shot",
     turnEndRecordMissing: false,
     agentCountMismatch: false,
+    recent: null,
     ...over,
   };
 }
@@ -187,6 +188,7 @@ describe("toSlotRow (§8 B)", () => {
       idle_seconds: 7,
       activity: "Bash",
       pane: "c1-k0-t01-abcdef",
+      recent: null,
     });
     expect(Object.keys(row).sort()).toEqual(
       [
@@ -196,6 +198,7 @@ describe("toSlotRow (§8 B)", () => {
         "last_activity_at",
         "model",
         "pane",
+        "recent",
         "provider",
         "reason",
         "reason_detail",
@@ -272,12 +275,34 @@ describe("toSlotRow (§8 B)", () => {
     expect(toSlotRow(id, live, acct).activity).toBe("background: agent_count_mismatch");
   });
 
-  test("a pane that never spawned has pane null", () => {
+  test.each(["RUNNING", "COMPLETED"] as const)(
+    "%s rows pass recent through without dropping settled steps",
+    (state) => {
+      const recent = [
+        {
+          at: "2026-10-06T01:16:15.109Z",
+          kind: "tool" as const,
+          tool: "Read",
+          summary: "/Users/example/work/task.md",
+        },
+      ];
+      const snapshot = snap({ state, phase: state, recent });
+      const row = toSlotRow(
+        { slot: "06", model: "haiku", spawnModel: null },
+        snapshot,
+        mergeAccounting(snapshot, null)
+      );
+      expect(row.recent).toEqual(recent);
+    }
+  );
+
+  test("a pane that never spawned has pane and recent null", () => {
     const row = toSlotRow(
       { slot: "04", model: "m", spawnModel: null },
       snap({ paneId: "", state: "FAILED", phase: "FAILED", reason: "pane_lost" }),
       mergeAccounting(snap(), null)
     );
     expect(row.pane).toBeNull();
+    expect(row.recent).toBeNull();
   });
 });

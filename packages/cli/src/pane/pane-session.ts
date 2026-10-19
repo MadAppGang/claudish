@@ -1603,6 +1603,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.activity === "finishing" &&
         this.turnEndMissing,
       agentCountMismatch: !terminal && this.phase === "RUNNING" && this.agentMismatch !== null,
+      recent: cur && cur.recent.length > 0 ? cur.recent : null,
     };
   }
 

@@ -4,7 +4,7 @@
  * snapshot every polling verb reads.
  */
 
-import type { FailureReason, SlotState } from "./contract.js";
+import type { FailureReason, SlotState, SlotStep } from "./contract.js";
 import type { Delivery } from "./prompt-delivery.js";
 import type { SettledBy } from "./settle-rule.js";
 import type { Phase } from "./slot-state.js";
@@ -78,4 +78,6 @@ export interface PaneSnapshot {
    * the turn settles; the `agent_count_mismatch` anomaly stays in `anomalies` as history.
    */
   agentCountMismatch: boolean;
+  /** SlotRow.recent: the current turn's last steps; null before its first step */
+  recent: SlotStep[] | null;
 }

@@ -458,6 +458,7 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     idle_seconds: null,
     activity: null,
     pane: null,
+    recent: null,
   };
 }
 
@@ -547,6 +548,7 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
         idle_seconds: null,
         activity: null,
         pane: m?.pane ?? null,
+        recent: null,
       };
     });
   const settled = slots.length > 0 && slots.every((s) => isTerminalState(s.state));
