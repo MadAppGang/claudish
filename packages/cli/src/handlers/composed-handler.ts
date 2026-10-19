@@ -2433,6 +2433,7 @@ export class ComposedHandler implements ModelHandler {
       // turn's ("Codex sign-in changed during the turn"), and signs the leg
       // with the binding it just checked. A transport that returns no binding
       // keeps the no-binding path, which is exactly the primary fetch's.
+      // biome-ignore lint/suspicious/noConfusingVoidType: refreshAuth() and forceRefreshAuth() resolve to `AuthBinding | void`
       const toLegBinding = (b: AuthBinding | void): LegBinding | undefined =>
         b ? { auth: b.auth, accountKey: accountKeyFromBinding(b) } : undefined;
       let legBinding = toLegBinding(binding);
