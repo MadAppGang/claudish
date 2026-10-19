@@ -21,7 +21,7 @@
 
 import { createHash } from "node:crypto";
 import { log } from "../logger.js";
-import { canonicalJson } from "./hashes.js";
+import { canonicalJson, withoutCacheMarkers } from "./hashes.js";
 import type { ClaudeMessage, ResponsesItem } from "./types.js";
 
 export interface TurnRecord {
@@ -75,7 +75,9 @@ export function turnAnchorFor(
       : blocks
           .filter((b) => b.type === "text" && typeof b.text === "string")
           .map((b) => (b.text as string).trim());
-  const previous = previousMessage ? sha256Hex(canonicalJson(previousMessage)) : "";
+  const previous = previousMessage
+    ? sha256Hex(canonicalJson(withoutCacheMarkers(previousMessage)))
+    : "";
   return sha256Hex(`${sessionKey}\0${previous}\0${texts.join("\n")}`);
 }
 

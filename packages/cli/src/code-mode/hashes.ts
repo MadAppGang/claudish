@@ -24,18 +24,23 @@ export interface BatchResultEntry {
 }
 
 /**
- * Per-request transport fields a key must not depend on. `cache_control` is a
+ * A message, a content block or a content array without Claude Code's
+ * `cache_control` markers, at the message and content-block levels ONLY
+ * (recursing into `content`, e.g. a tool_result's blocks; never into a tool
+ * `input`, where `cache_control` is the tool's own data). The marker is a
  * prompt-cache breakpoint Claude Code moves between requests: the message that
  * carried it when a record was written no longer does when history is
  * rendered, so a hash over it never matched again.
  */
-const TRANSPORT_KEYS = new Set(["cache_control"]);
+export function withoutCacheMarkers(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutCacheMarkers);
+  if (value === null || typeof value !== "object") return value;
+  const { cache_control: _marker, ...rest } = value as Record<string, unknown>;
+  if (Array.isArray(rest.content)) rest.content = rest.content.map(withoutCacheMarkers);
+  return rest;
+}
 
-/**
- * JSON with object keys sorted at every depth, transport fields left out: a
- * stable serialisation for hashing (`batchHash`, `turnAnchorFor`, replay's
- * input comparison), never for sending.
- */
+/** JSON with object keys sorted at every depth: a stable serialisation for hashing, never for sending. */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value) ?? "null";
@@ -44,7 +49,7 @@ export function canonicalJson(value: unknown): string {
     return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
   }
   const keys = Object.keys(value as Record<string, unknown>)
-    .filter((k) => (value as Record<string, unknown>)[k] !== undefined && !TRANSPORT_KEYS.has(k))
+    .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
     .sort();
   const body = keys
     .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
@@ -73,7 +78,11 @@ export function batchHash(entries: readonly BatchResultEntry[]): string {
   const hash = createHash("sha256");
   for (const entry of ordered) {
     const canonical = entry.result
-      ? canonicalJson([entry.toolUseId, entry.result.isError === true, entry.result.content ?? ""])
+      ? canonicalJson([
+          entry.toolUseId,
+          entry.result.isError === true,
+          withoutCacheMarkers(entry.result.content ?? ""),
+        ])
       : canonicalJson([entry.toolUseId, "missing"]);
     hash.update(canonical);
     hash.update("\n");
