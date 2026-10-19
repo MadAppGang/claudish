@@ -1757,7 +1757,15 @@ export class ComposedHandler implements ModelHandler {
 
     if (!response.ok) {
       // 401: retry with forced auth refresh (OAuth token expiry)
-      if (response.status === 401 && this.provider.forceRefreshAuth) {
+      // Only for a request with no binding (every transport but `openai-codex`,
+      // unchanged) or one bound to the OAuth arm: a forced OAuth refresh cannot
+      // fix an API key, so an `openai-codex` api-key request takes the ordinary
+      // error path below.
+      if (
+        response.status === 401 &&
+        this.provider.forceRefreshAuth &&
+        (binding === undefined || binding.auth?.arm === "oauth")
+      ) {
         log(`[${this.provider.displayName}] Got 401, forcing auth refresh and retrying`);
         // The forced refresh AND the retry fetch that follows it, as one
         // re-issuable operation. Both are network calls and either can fail
@@ -2266,7 +2274,12 @@ export class ComposedHandler implements ModelHandler {
         b ? { auth: b.auth, accountKey: accountKeyFromBinding(b) } : undefined;
       let legBinding = toLegBinding(binding);
       const refreshAuth = this.provider.refreshAuth?.bind(this.provider);
-      const forceRefreshAuth = this.provider.forceRefreshAuth?.bind(this.provider);
+      // Same gate as the primary 401 branch; the arm cannot change mid-turn
+      // (the issuer refuses a leg on another arm), so it is decided once here.
+      const forceRefreshAuth =
+        binding === undefined || binding.auth?.arm === "oauth"
+          ? this.provider.forceRefreshAuth?.bind(this.provider)
+          : undefined;
       const issueLeg = createLegIssuer<LegBinding>({
         providerDisplayName: this.provider.displayName,
         getBinding: () => legBinding,

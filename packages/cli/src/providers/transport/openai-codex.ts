@@ -23,8 +23,10 @@
 
 import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
 import { lookupModelForProvider } from "../../adapters/model-catalog.js";
+import { CodexOAuth } from "../../auth/codex-oauth.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
+import { CodexOAuthHalf } from "../../auth/credentials/codex-credential.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { conversationKey } from "./conversation-key.js";
@@ -90,6 +92,30 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
     // back to transformPayload/getEndpoint/getHeaders, so a concurrent request's
     // refresh (which replaces `cachedAuth`) cannot change what this one signs with.
     return { auth: this.cachedAuth };
+  }
+
+  /**
+   * After a 401 on the subscription arm: rotate the Codex OAuth token and mint
+   * a fresh artifact from the OAuth half ONLY.
+   *
+   * The api-key half is never consulted, so a 401 retry can never change arm:
+   * an expired subscription token must not quietly re-sign the request with
+   * OPENAI_CODEX_API_KEY on the metered `api.openai.com`. ComposedHandler calls
+   * this only when the request's binding is the `"oauth"` arm.
+   *
+   * `refreshToken()` single-flights through CodexOAuth's refresh lock, so
+   * concurrent 401s on one login spend the (single-use) refresh token once.
+   * Every throw propagates unchanged: a connection failure reaches the
+   * `forceRefreshAuth` site in composed-handler, which classifies it (one of
+   * the five auth sites); swallowing it here would be a sixth site that hides
+   * an outage.
+   */
+  async forceRefreshAuth(): Promise<AuthBinding> {
+    await CodexOAuth.getInstance().refreshToken();
+    const auth = await new CodexOAuthHalf().getRequestAuth({ model: "" });
+    // Kept for callers that pass no binding; the request path uses the return.
+    this.cachedAuth = auth;
+    return { auth };
   }
 
   /**
