@@ -41,7 +41,7 @@ class FakeClient {
       } else if (msg.type === "capabilities") {
         reply({
           ok: true,
-          result: { protocol: 1, version: "0.15.1", verbs: ["watch", "list", "resize"] },
+          result: { protocol: 1, version: "0.17.0", verbs: ["watch", "list", "resize"] },
         });
       } else if (msg.type === "watch" || msg.type === "list") {
         reply({ ok: true, result: { panes: [] } });
