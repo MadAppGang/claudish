@@ -147,7 +147,7 @@ argument for pointing the WAN entry at a relay rather than straight at the hub
 
 ## Fleet deployment
 
-`scripts/install-sidecar.ps1` idempotently stands up a sidecar on a target machine (clone/pull, per-machine `.env`, `docker compose up --build`, end-to-end probe). Runbook + per-machine config table: `docs/deployment/relay-sidecar-deployment.md`. Sidecars go on every machine except po-2023 (hub) and web1 (stays on `models.myia.io`). The client prerequisite — the `x-proxy-key` custom header — is documented in memory `proxy-key-custom-header-auth`.
+`scripts/install-sidecar.ps1` idempotently stands up a sidecar on a target machine (clone/pull, per-machine `.env`, `docker compose up --build`, end-to-end probe). Runbook + per-machine config table: `docs/deployment/relay-sidecar-deployment.md`. Sidecars go on every machine except the hub (po-2025 since the 05/09 cutover) and web1 (stays on `models.myia.io`); po-2023 runs the relay + WAN edge instead. The client prerequisite — the `x-proxy-key` custom header — is documented in memory `proxy-key-custom-header-auth`.
 
 ## Compose environment surface
 
@@ -172,7 +172,7 @@ One binary, three modes, selected by `CLAUDISH_RELAY_UPSTREAM`. Each machine run
 
 | `CLAUDISH_RELAY_UPSTREAM` | Mode | Behavior |
 | --- | --- | --- |
-| **unset** | **HUB** (po-2023) | Always local. Zero change vs. before. |
+| **unset** | **HUB** (po-2025 since the 05/09 cutover — was po-2023) | Always local. Zero change vs. before. |
 | set + hub **alive** | **NOMINAL relay** | Forwards the raw request to the hub; response repiped through the never-hang passthrough. **No local capture** (hub captures centrally). |
 | set + hub **dead** (hysteresis) | **AUTONOMOUS** | Falls through to the normal local pipeline + local capture. |
 
