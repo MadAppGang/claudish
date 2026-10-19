@@ -243,7 +243,16 @@ assistant text blocks and knows nothing of scripts.
 - **Record gone**: evicted → reconstructed source + `Script completed` "claudish evicted this
   script's stored output under its memory limit"; gone for any other reason → the same with
   "output unavailable after a claudish restart". Never `Script failed` for a script that resolved
-  in the past.
+  in the past — and never `Script completed` for one that did not: that rendering requires every
+  call of the script's last round to carry a real result. A restart usually means the session
+  died with the script blocked, and `claude -c` then records each pending call as
+  `[Tool call interrupted: the session ended before this call's result was recorded…]`
+  (`is_error`), adds `No response requested.` and waits for the user (Phase 7 V7). Any such result
+  → `Script terminated` "the session ended before these calls' results were recorded, so this
+  script never received them and did not finish" (whether or not the record survived); a call
+  with no tool_result at all and no record → `Script terminated` "this script's outcome is
+  unknown". The review-round-1 premise that a resolved script always has a stored output holds
+  within one process only.
 - **Classic tool round** (a session that started classic, a `/model` switch, wrapper `_p<k>` ids,
   a stray classic call) → ONE synthetic exec (`transliterate.ts`): `call_` + 32 hex of
   sha256(first tool_use id), `Promise.allSettled([tools.Read({...}), …])` (`tools["name"]` for a

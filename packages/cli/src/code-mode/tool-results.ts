@@ -48,6 +48,24 @@ export function toolResultText(block: ClaudeContentBlock): string {
   return pieces.join("\n");
 }
 
+/**
+ * The start of the tool_result Claude Code writes, on resuming a session, for a
+ * call whose real result was never recorded (V7, 2.1.304): `[Tool call
+ * interrupted: the session ended before this call's result was recorded, so
+ * its outcome is unknown. …]`, `is_error: true`. Such a result never reached
+ * claudish: the session (and claudish with it) ended while the call ran.
+ */
+export const SESSION_ENDED_RESULT_MARKER = "[Tool call interrupted";
+
+/** True for a tool_result Claude Code synthesized because the session ended before the call's result. */
+export function isSessionEndedResult(block: ClaudeContentBlock): boolean {
+  // `is_error` too: a tool that merely printed the words is a real result.
+  return (
+    block.is_error === true &&
+    toolResultText(block).trimStart().startsWith(SESSION_ENDED_RESULT_MARKER)
+  );
+}
+
 /** The answer a script receives for nested call `seq` from Claude Code's tool_result. */
 export function nestedResultFromToolResult(seq: number, block: ClaudeContentBlock): NestedResult {
   const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";

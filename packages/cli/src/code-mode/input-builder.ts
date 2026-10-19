@@ -16,7 +16,10 @@
  *    ONCE, after the round that completed it, looked up by completion key. A
  *    script whose record is gone is reconstructed from history: an evicted one
  *    or one lost to a restart renders `Script completed` with a note saying
- *    which, never `Script failed` for a script that resolved in the past.
+ *    which, never `Script failed` for a script that resolved in the past —
+ *    but only when its last round's results all arrived. Results Claude Code
+ *    marked `[Tool call interrupted` (the session ended) render `Script
+ *    terminated`; a missing one renders `Script terminated`, outcome unknown.
  *  - user message: text and images as `input_text` / `input_image`; text beside
  *    tool results goes AFTER the outputs they sit beside, in arrival order.
  *  - orphan tool_result (its call is in no earlier assistant message, e.g.
@@ -51,7 +54,12 @@ import {
 } from "./output.js";
 import type { CodeModeStores } from "./stores.js";
 import { type ToolNameTable, normalizeToolIdent } from "./tool-names.js";
-import { imageUrlOf, toolResultImages, toolResultText } from "./tool-results.js";
+import {
+  imageUrlOf,
+  isSessionEndedResult,
+  toolResultImages,
+  toolResultText,
+} from "./tool-results.js";
 import { transliterateRound } from "./transliterate.js";
 import { turnAnchorFor } from "./turn-records.js";
 import {
@@ -91,6 +99,10 @@ export const RESTART_OUTPUT_NOTE =
 export const LOST_SCRIPT_NOTE =
   "claudish lost this script's state (proxy restart or eviction); the nested tool results it was waiting for follow";
 export const MOVED_ON_NOTE = "the conversation moved on without the tool results";
+export const SESSION_ENDED_NOTE =
+  "the session ended before these calls' results were recorded, so this script never received them and did not finish; the nested tool results follow";
+export const UNKNOWN_OUTCOME_NOTE =
+  "this script's outcome is unknown: claudish has no record of it and some of its nested calls have no tool_result; the nested tool results follow";
 
 interface Round {
   assistantIndex: number;
@@ -487,18 +499,47 @@ class InputBuilder {
       });
     } else if (movedOnNote) {
       output = this.notedOutput(group, "terminated", movedOnNote, maxOutputTokens);
-    } else if (!record && followedByAssistant) {
-      const evicted = this.stores.scripts.isEvicted(this.keys.accountKey, group.execKey);
-      output = this.notedOutput(
-        group,
-        "completed",
-        evicted ? EVICTED_OUTPUT_NOTE : RESTART_OUTPUT_NOTE,
-        maxOutputTokens
-      );
     } else {
-      output = this.notedOutput(group, "failed", LOST_SCRIPT_NOTE, maxOutputTokens);
+      const [status, note] = this.unstoredOutcome(group, record !== undefined, followedByAssistant);
+      output = this.notedOutput(group, status, note, maxOutputTokens);
     }
     this.push({ type: "custom_tool_call_output", call_id: callId, output });
+  }
+
+  /**
+   * Status and note of a group with no stored output, decided from history.
+   * `Script completed` only when every call of its last round has a real
+   * result and the conversation went on (the script resolved before its record
+   * was evicted or claudish restarted). A script never fed its last results —
+   * Claude Code's session ended first (V7), or a result is missing — did not
+   * complete, and is never called completed.
+   */
+  private unstoredOutcome(
+    group: ExecGroup,
+    hasRecord: boolean,
+    followedByAssistant: boolean
+  ): [ExecOutput["status"], string] {
+    const answers = this.lastRoundAnswers(group);
+    if (answers === "session-ended") return ["terminated", SESSION_ENDED_NOTE];
+    if (hasRecord || !followedByAssistant) return ["failed", LOST_SCRIPT_NOTE];
+    if (answers === "incomplete") return ["terminated", UNKNOWN_OUTCOME_NOTE];
+    const evicted = this.stores.scripts.isEvicted(this.keys.accountKey, group.execKey);
+    return ["completed", evicted ? EVICTED_OUTPUT_NOTE : RESTART_OUTPUT_NOTE];
+  }
+
+  /**
+   * How the group's last round was answered: a session-ended marker for any
+   * call, else a call with no tool_result at all, else every call answered.
+   */
+  private lastRoundAnswers(group: ExecGroup): "all" | "session-ended" | "incomplete" {
+    const last = group.rounds[group.rounds.length - 1];
+    let incomplete = false;
+    for (const block of last?.blocks ?? []) {
+      const result = this.results.get(block.id as string);
+      if (!result) incomplete = true;
+      else if (isSessionEndedResult(result)) return "session-ended";
+    }
+    return incomplete ? "incomplete" : "all";
   }
 
   /** `status` + `note` + one item per nested result (with its images), for a script with no output to show. */
