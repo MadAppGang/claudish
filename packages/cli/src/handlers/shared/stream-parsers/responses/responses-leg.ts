@@ -28,6 +28,7 @@ import {
   type CachedReasoningItem,
   rememberReasoningForCall,
 } from "../../../../adapters/reasoning-cache.js";
+import type { ResponsesItem } from "../../../../code-mode/types.js";
 import { getLogLevel, log } from "../../../../logger.js";
 import type { UsageCacheDetail } from "../../token-tracker.js";
 import { formatRawSseLogPayload } from "../openai-sse.js";
@@ -48,8 +49,30 @@ export interface Usage {
   cacheDetail?: UsageCacheDetail;
 }
 
+/**
+ * How long a leg keeps reading after its exec call completed, for the
+ * terminal event's usage (R1: it arrives milliseconds after the exec item).
+ */
+export const EXEC_DRAIN_MS = 10_000;
+
 export type LegOutcome =
-  | { kind: "done"; usage?: Usage; incomplete?: string }
+  | {
+      kind: "done";
+      usage?: Usage;
+      incomplete?: string;
+      /** Code mode only: this leg's assistant text and reasoning items, in order. */
+      items?: ResponsesItem[];
+    }
+  | {
+      /** Code mode: the leg ended on an exec call (never emitted as a block). */
+      kind: "exec";
+      callId: string;
+      input: string;
+      precedingItems: ResponsesItem[];
+      usage?: Usage;
+      /** `response.incomplete` cut the exec input: it is never run. */
+      truncated: boolean;
+    }
   | { kind: "stall"; afterMs: number }
   | {
       kind: "degenerate-wrapper";
@@ -81,7 +104,23 @@ export interface ResponsesLegContext {
    * output-bearing event arrived first. Absent or 0 ⇒ unarmed.
    */
   stall?: { thresholdMs: number; headersAt: number; clock?: StallClock };
+  /**
+   * Code mode is on for this turn: a `custom_tool_call` named `exec` is held
+   * (never a block) and ends the leg as an `exec` outcome. Off ⇒ such items are
+   * ignored, exactly as before code mode existed.
+   */
+  codeMode?: boolean;
 }
+
+/** A held exec call (code mode). */
+type HeldExec = {
+  callId: string;
+  itemId?: string;
+  acc: string;
+  doneInput?: string;
+  /** Set at `output_item.done`: the input is whole. */
+  final?: string;
+};
 
 type FnCall = {
   name: string;
@@ -152,8 +191,36 @@ class ResponsesLeg {
   // Tool blocks that have been started but not yet stopped, in emission order.
   private readonly openToolBlocks = new Set<FnCall>();
   private readonly heldWrappers = new Map<string, HeldWrapper>();
+  // Code mode only: the held exec call, and this leg's assistant text and
+  // reasoning items in order (an exec's precedingItems; a turn record's items).
+  private heldExec: HeldExec | undefined;
+  private readonly items: ResponsesItem[] = [];
+  private drainTimer: ReturnType<typeof setTimeout> | undefined;
+  private cancelReader: (() => void) | undefined;
 
   constructor(private readonly ctx: ResponsesLegContext) {}
+
+  /** The exec outcome for a held exec whose input is whole. */
+  private execOutcome(truncated: boolean): LegOutcome {
+    const held = this.heldExec as HeldExec;
+    return {
+      kind: "exec",
+      callId: held.callId,
+      input: held.final ?? held.doneInput ?? held.acc,
+      precedingItems: [...this.items],
+      usage: this.usage,
+      truncated,
+    };
+  }
+
+  /** The held exec's input is whole: stop reading at the terminal event, or after EXEC_DRAIN_MS. */
+  private startDrain(): void {
+    if (this.drainTimer) return;
+    this.drainTimer = setTimeout(() => {
+      log(`[ResponsesSSE] no terminal event ${EXEC_DRAIN_MS} ms after the exec call; using it`);
+      this.cancelReader?.();
+    }, EXEC_DRAIN_MS);
+  }
 
   private get sink(): ClaudeSseSink {
     return this.ctx.sink;
@@ -170,6 +237,9 @@ class ResponsesLeg {
     }
     const signal = this.sink.signal;
     const onAbort = () => {
+      reader.cancel().catch(() => {});
+    };
+    this.cancelReader = () => {
       reader.cancel().catch(() => {});
     };
     if (signal.aborted) onAbort();
@@ -241,6 +311,11 @@ class ResponsesLeg {
       if (signal.aborted) return { kind: "cancelled", usage: this.usage };
       const stalledOutcome = stalled();
       if (stalledOutcome) return stalledOutcome;
+      if (this.heldExec?.final !== undefined) {
+        // The exec call was whole before the socket died: run it.
+        this.closeAll();
+        return this.execOutcome(false);
+      }
       log(`[ResponsesSSE] Stream error: ${error}`);
       this.closeReasoning();
       this.closeText();
@@ -254,11 +329,27 @@ class ResponsesLeg {
     } finally {
       guard?.disarm();
       signal.removeEventListener("abort", onAbort);
+      if (this.drainTimer) clearTimeout(this.drainTimer);
     }
 
     if (signal.aborted) return { kind: "cancelled", usage: this.usage };
-    const stalledOutcome = stalled();
-    if (stalledOutcome) return stalledOutcome;
+    return stalled() ?? this.endOfBody();
+  }
+
+  /** The body ended without a stop: how the leg ended. */
+  private endOfBody(): LegOutcome {
+    if (this.heldExec) {
+      this.closeAll();
+      if (this.heldExec.final !== undefined) return this.execOutcome(false);
+      // The body ended inside the exec call: nothing whole to run.
+      log("[ResponsesSSE] stream ended inside the exec call");
+      return {
+        kind: "stream-error",
+        error: new Error("the stream ended inside the exec call"),
+        openToolBlock: false,
+        usage: this.usage,
+      };
+    }
 
     // The stream ended while a wrapper was still held: its arguments were never
     // completed, so there is nothing valid to expand.
@@ -273,6 +364,7 @@ class ResponsesLeg {
       kind: "done",
       usage: this.usage,
       ...(this.incompleteReason ? { incomplete: this.incompleteReason } : {}),
+      ...(this.ctx.codeMode ? { items: [...this.items] } : {}),
     };
   }
 
@@ -319,6 +411,10 @@ class ResponsesLeg {
       case "response.function_call_arguments.done":
         this.onArgumentsDone(event);
         return undefined;
+      case "response.custom_tool_call_input.delta":
+      case "response.custom_tool_call_input.done":
+        this.onExecInput(event);
+        return undefined;
       case "response.output_item.done":
         return this.onItemDone(event);
       case "response.incomplete":
@@ -326,6 +422,8 @@ class ResponsesLeg {
       case "response.completed":
       case "response.done":
         this.usage = readUsage(event.response?.usage ?? event.usage) ?? this.usage;
+        // A whole exec call needs nothing after the terminal event's usage.
+        if (this.heldExec?.final !== undefined) return { stop: this.execOutcome(false) };
         return undefined;
       case "error":
       case "response.failed": {
@@ -350,7 +448,72 @@ class ResponsesLeg {
     this.sink.delta(this.textIdx, { type: "text_delta", text: event.delta || "" });
   }
 
+  /** Code mode: the held exec's streamed input (`.delta`) or its whole input (`.done`). */
+  private onExecInput(event: ResponsesEvent): void {
+    const held = this.heldExec;
+    if (!held) return;
+    const id = event.item_id ?? event.call_id;
+    if (id !== undefined && id !== held.itemId && id !== held.callId) return;
+    if (event.type === "response.custom_tool_call_input.delta") held.acc += event.delta || "";
+    else if (typeof event.input === "string") held.doneInput = event.input;
+  }
+
+  /** Code mode: the held exec's `output_item.done` makes its input whole; other items are recorded. */
+  private onCodeModeItemDone(item: ResponsesEvent): boolean {
+    if (item?.type !== "custom_tool_call") {
+      this.recordItem(item);
+      return false;
+    }
+    const held = this.heldExec;
+    if (held && (item.call_id === held.callId || item.id === held.itemId)) {
+      const itemInput = typeof item.input === "string" ? item.input : undefined;
+      held.final = held.doneInput ?? itemInput ?? held.acc;
+      this.startDrain();
+    }
+    return true;
+  }
+
+  /** Code mode: hold the exec call. The text and reasoning before it are closed, never reopened. */
+  private onCustomToolCallAdded(item: ResponsesEvent): void {
+    if (item.name !== "exec" || this.heldExec) {
+      log(`[ResponsesSSE] ignoring custom_tool_call ${item.name ?? ""} (not the exec call)`);
+      return;
+    }
+    this.closeReasoning();
+    this.closeText();
+    this.heldExec = {
+      callId: item.call_id || item.id,
+      itemId: item.id,
+      acc: typeof item.input === "string" ? item.input : "",
+    };
+    log(`[ResponsesSSE] holding exec call ${this.heldExec.callId}`);
+  }
+
+  /** Code mode: an assistant message or reasoning item, kept verbatim for the turn's items. */
+  private recordItem(item: ResponsesEvent): void {
+    if (item?.type === "message" && item.role === "assistant" && Array.isArray(item.content)) {
+      const content = item.content
+        .filter((p: ResponsesEvent) => p?.type === "output_text" && typeof p.text === "string")
+        .map((p: ResponsesEvent) => ({ type: "output_text", text: p.text }));
+      if (content.length === 0) return;
+      const message: ResponsesItem = { type: "message", role: "assistant", content };
+      if (typeof item.phase === "string") message.phase = item.phase;
+      this.items.push(message);
+    } else if (item?.type === "reasoning" && item.encrypted_content) {
+      this.items.push({
+        type: "reasoning",
+        content: item.content ?? [],
+        encrypted_content: item.encrypted_content,
+        summary: item.summary ?? [],
+      });
+    }
+  }
+
   private onItemAdded(event: ResponsesEvent): void {
+    if (this.ctx.codeMode && event.item?.type === "custom_tool_call") {
+      this.onCustomToolCallAdded(event.item);
+      return;
+    }
     if (event.item?.type !== "function_call") return;
     const itemId = event.item.id;
     const openaiCallId = event.item.call_id || itemId;
@@ -467,6 +630,7 @@ class ResponsesLeg {
         summary: item.summary ?? [],
       });
     }
+    if (this.ctx.codeMode && this.onCodeModeItemDone(item)) return undefined;
     if (item?.type !== "function_call") return undefined;
 
     const callId = item.call_id || item.id;
@@ -508,6 +672,12 @@ class ResponsesLeg {
     log(`[ResponsesSSE] Response incomplete: ${this.incompleteReason}`);
     if (event.response?.usage) {
       this.usage = readUsage(event.response.usage, this.usage, true);
+    }
+    // Code mode: an exec whose input was still streaming is cut, and never run.
+    if (this.heldExec) {
+      const truncated = this.heldExec.final === undefined;
+      if (truncated) log("[ResponsesSSE] exec input cut by response.incomplete; not run");
+      return { stop: this.execOutcome(truncated) };
     }
     // A wrapper still held when the response is cut short never got its
     // arguments judged: degenerate by definition.

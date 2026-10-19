@@ -29,16 +29,44 @@
  * NOT done in 7b (the status is already flushed), NOT in FallbackHandler (a
  * model fault must never move a subscription user onto a metered hop), NOT in
  * the transport. After the flush every failure ends with an SSE `error`.
+ *
+ * ── CODE MODE (`openai-codex`, `codeMode` hooks present) ─────────────────────
+ *
+ * A leg can end on an exec call (never emitted as a block). The hooks run the
+ * script and answer with one of two steps:
+ *   - emit-tool-uses: the script blocked on nested tool calls → each becomes a
+ *     whole tool_use block, the turn's Responses items are stored, and the
+ *     message ends `tool_use` (Claude Code runs them; the next request resumes
+ *     the script);
+ *   - continue: the script finished without blocking → another leg whose body
+ *     is the previous leg's body with this leg's items and the exec call +
+ *     output appended to `input`.
+ * Bounded by MAX_LEGS_PER_TURN and MAX_INTERSTITIAL_EXECS. A retry inside a
+ * code-mode turn re-sends the CURRENT leg's body, not the first one.
  */
 
 /** Retries per leg position: 3 attempts in all. */
 export const MAX_LEG_RETRIES = 2;
 
+/**
+ * Code mode: upstream legs one downstream message may use (continuations
+ * after an exec that did not block, plus retries), and exec calls answered
+ * inside one message. Either bound ends the message with
+ * {@link CODE_MODE_STOP_TEXT}.
+ */
+export const MAX_LEGS_PER_TURN = 6;
+export const MAX_INTERSTITIAL_EXECS = 6;
+export const CODE_MODE_STOP_TEXT = `\n\n[claudish: stopped after ${MAX_INTERSTITIAL_EXECS} code-mode attempts]`;
+
 type RetryDecision =
   | { action: "finish" }
   | { action: "retry" }
   | { action: "end-tool-use" }
+  | { action: "stop-attempts" }
   | { action: "error"; message: string };
+
+/** The next leg's response, or undefined when the turn has ended instead. */
+type NextLeg = { response: Response; headersAt: number } | undefined;
 
 /** The trigger in words, for the log line and the exhaustion error. */
 function triggerLabel(outcome: LegOutcome): string {
@@ -58,6 +86,11 @@ function sum(values: number[]): number {
   return values.reduce((a, b) => a + b, 0);
 }
 
+import type {
+  CodeModeTurnHooks,
+  ExecTurnStep,
+  ResponsesItem,
+} from "../../../../code-mode/types.js";
 import { log } from "../../../../logger.js";
 import type { LegResponse } from "../../responses-leg-issuer.js";
 import type { UsageCacheDetail } from "../../token-tracker.js";
@@ -70,7 +103,9 @@ import {
 } from "./responses-leg.js";
 import { type StallClock, type StallPolicy, systemStallClock } from "./stall-guard.js";
 
-export interface ResponsesTurnOptions extends Omit<ResponsesLegContext, "sink"> {
+export interface ResponsesTurnOptions extends Omit<ResponsesLegContext, "sink" | "codeMode"> {
+  /** Code mode for this turn (architecture §5.11). Absent ⇒ exec calls are ignored, as before. */
+  codeMode?: CodeModeTurnHooks;
   /**
    * Real per-provider context window (tokens) for the model on THIS backend.
    * Used only to make the overflow message specific; omit/0 → left out.
@@ -111,6 +146,12 @@ export interface ResponsesRetryOptions {
   firstHeadersAt?: number;
   /** The stall guard's clock; tests inject a fake one. Default wall clock. */
   stallClock?: StallClock;
+  /**
+   * The primary request's upstream body (an object with an `input` array). A
+   * code-mode continuation leg appends to it; absent ⇒ no continuation leg can
+   * be built and an exec that did not block ends the message with an error.
+   */
+  primaryBody?: () => unknown;
 }
 
 /** The in-band text for an in-stream API error; context overflow gets an actionable message. */
@@ -162,8 +203,16 @@ function stopReasonFor(incomplete: string | undefined, hasToolUse: boolean): str
 class ResponsesTurn {
   /** One entry per leg, in order; undefined for a leg that reported no usage. */
   private readonly legUsages: Array<Usage | undefined> = [];
+  /** Retries in the whole turn (telemetry). */
   private legRetries = 0;
+  /** Retries at the current leg position (a code-mode continuation starts a new one). */
+  private positionRetries = 0;
   private usageReported = false;
+  /** The current leg's body; undefined ⇒ the primary request's (`issueLeg(undefined)`). */
+  private currentBody: unknown = undefined;
+  private interstitialExecs = 0;
+  /** Code mode: the Responses items of earlier legs of this message, interstitial execs included. */
+  private readonly turnItems: ResponsesItem[] = [];
 
   constructor(
     private readonly sink: ClaudeSseSink,
@@ -230,26 +279,11 @@ class ResponsesTurn {
           ...this.opts,
           sink: this.sink,
           stall: this.stallFor(headersAt),
+          codeMode: this.opts.codeMode !== undefined,
         });
         this.legUsages.push("usage" in outcome ? outcome.usage : undefined);
-        const decision = this.retryDecision(outcome);
-        if (decision.action === "finish") {
-          await this.finish(outcome);
-          return;
-        }
-        if (decision.action === "end-tool-use") {
-          // The calls already stopped stand; the trigger's leg is dropped.
-          log(`[ResponsesTurn] ${triggerLabel(outcome)} after tool_use blocks — ending tool_use`);
-          await this.finishCompleted("tool_use");
-          return;
-        }
-        if (decision.action === "error") {
-          log(`[ResponsesTurn] ${decision.message} → error event`);
-          this.sink.endWithError(decision.message);
-          this.reportUsage();
-          return;
-        }
-        const next = await this.issueRetry(outcome);
+        const next =
+          outcome.kind === "exec" ? await this.onExec(outcome) : await this.afterLeg(outcome);
         if (!next) return;
         response = next.response;
         headersAt = next.headersAt;
@@ -260,6 +294,33 @@ class ResponsesTurn {
     } finally {
       this.sink.close();
     }
+  }
+
+  /** A leg that did not end on an exec call: finish, retry, or end the message otherwise. */
+  private async afterLeg(outcome: LegOutcome): Promise<NextLeg> {
+    const decision = this.retryDecision(outcome);
+    if (decision.action === "finish") {
+      await this.finish(outcome);
+      return undefined;
+    }
+    if (decision.action === "end-tool-use") {
+      // The calls already stopped stand; the trigger's leg is dropped.
+      log(`[ResponsesTurn] ${triggerLabel(outcome)} after tool_use blocks — ending tool_use`);
+      this.recordTurn([]);
+      await this.finishCompleted("tool_use");
+      return undefined;
+    }
+    if (decision.action === "stop-attempts") {
+      await this.stopAttempts();
+      return undefined;
+    }
+    if (decision.action === "error") {
+      log(`[ResponsesTurn] ${decision.message} → error event`);
+      this.sink.endWithError(decision.message);
+      this.reportUsage();
+      return undefined;
+    }
+    return this.issueRetry(outcome);
   }
 
   private retryDecision(outcome: LegOutcome): RetryDecision {
@@ -277,10 +338,176 @@ class ResponsesTurn {
     }
     if (this.sink.hasCompletedToolBlock) return { action: "end-tool-use" };
     const max = retry.maxLegRetries ?? MAX_LEG_RETRIES;
-    if (this.legRetries >= max) {
-      return { action: "error", message: exhaustedMessage(outcome, this.legRetries + 1) };
+    if (this.positionRetries >= max) {
+      return { action: "error", message: exhaustedMessage(outcome, this.positionRetries + 1) };
+    }
+    if (this.opts.codeMode && this.legUsages.length >= MAX_LEGS_PER_TURN) {
+      return { action: "stop-attempts" };
     }
     return { action: "retry" };
+  }
+
+  // ─── code mode ──────────────────────────────────────────────────────
+
+  /** Store this message's Responses items (code mode); a throwing hook changes nothing. */
+  private recordTurn(finalItems: ResponsesItem[]): void {
+    const hooks = this.opts.codeMode;
+    if (!hooks) return;
+    const items = [...this.turnItems, ...finalItems];
+    if (items.length === 0) return;
+    try {
+      hooks.onTurnEnd({
+        anchor: this.sink.firstToolUseId,
+        items,
+        texts: this.sink.textBlocks(),
+      });
+    } catch (err) {
+      log(`[ResponsesTurn] storing the turn record failed: ${err}`);
+    }
+  }
+
+  /** The legs bound was reached: a visible note, then `end_turn`. */
+  private async stopAttempts(): Promise<void> {
+    log(`[ResponsesTurn] code-mode bound reached after ${this.legUsages.length} leg(s)`);
+    const idx = this.sink.nextIndex();
+    this.sink.startBlock(idx, { type: "text", text: "" });
+    this.sink.delta(idx, { type: "text_delta", text: CODE_MODE_STOP_TEXT });
+    this.sink.stopBlock(idx);
+    this.recordTurn([]);
+    await this.finishCompleted("end_turn");
+  }
+
+  /** The behavior layer's one chance to rewrite a buffered nested call. */
+  private repairNested(name: string, args: string): string {
+    if (this.opts.shouldBufferTool?.(name) !== true) return args;
+    try {
+      const repaired = this.opts.onToolCall?.(name, args);
+      if (typeof repaired === "string" && repaired !== args) {
+        log(`[ResponsesSSE] tool call repaired: ${name}`);
+        return repaired;
+      }
+    } catch (err) {
+      log(`[ResponsesSSE] onToolCall threw for ${name}: ${err}`);
+    }
+    return args;
+  }
+
+  private abandon(callId: string): void {
+    try {
+      this.opts.codeMode?.onTurnAbandoned(callId);
+    } catch (err) {
+      log(`[ResponsesTurn] abandoning exec ${callId} failed: ${err}`);
+    }
+  }
+
+  /** A leg ended on an exec call: run it through the hooks. */
+  private async onExec(outcome: Extract<LegOutcome, { kind: "exec" }>): Promise<NextLeg> {
+    const hooks = this.opts.codeMode;
+    if (!hooks || this.sink.signal.aborted) {
+      this.reportUsage();
+      return undefined;
+    }
+    let step: ExecTurnStep;
+    try {
+      step = await hooks.onExecCall({
+        callId: outcome.callId,
+        input: outcome.input,
+        precedingItems: outcome.precedingItems,
+        truncated: outcome.truncated,
+      });
+    } catch (err) {
+      log(`[ResponsesTurn] exec ${outcome.callId} failed in claudish: ${err}`);
+      this.sink.endWithError(`claudish could not run the exec call: ${err}`);
+      this.reportUsage();
+      return undefined;
+    }
+    if (step.kind === "emit-tool-uses") {
+      await this.emitNested(outcome, step.blocks);
+      return undefined;
+    }
+    return this.continueAfterExec(outcome, step.appendItems);
+  }
+
+  /** The script blocked: its calls become tool_use blocks and the message ends `tool_use`. */
+  private async emitNested(
+    outcome: Extract<LegOutcome, { kind: "exec" }>,
+    blocks: Extract<ExecTurnStep, { kind: "emit-tool-uses" }>["blocks"]
+  ): Promise<void> {
+    if (this.sink.signal.aborted) {
+      this.abandon(outcome.callId);
+      this.reportUsage();
+      return;
+    }
+    for (const block of blocks) {
+      this.sink.emitToolUse(
+        block.id,
+        block.name,
+        this.repairNested(block.name, JSON.stringify(block.input ?? {}))
+      );
+    }
+    log(`[ResponsesTurn] exec ${outcome.callId} relayed as ${blocks.length} tool_use block(s)`);
+    this.recordTurn(outcome.precedingItems);
+    if (this.sink.isCancelled) {
+      // Claude Code never saw the batch: its retry starts a new upstream turn.
+      this.abandon(outcome.callId);
+      this.reportUsage();
+      return;
+    }
+    await this.finishCompleted("tool_use");
+  }
+
+  /** The script finished without blocking: another leg carries its output to the model. */
+  private async continueAfterExec(
+    outcome: Extract<LegOutcome, { kind: "exec" }>,
+    appendItems: ResponsesItem[]
+  ): Promise<NextLeg> {
+    if (this.sink.hasToolUse) {
+      // A stray classic call already went out in this message: no further leg.
+      log(`[ResponsesTurn] exec ${outcome.callId} after a tool_use block — ending tool_use`);
+      this.recordTurn(outcome.precedingItems);
+      await this.finishCompleted("tool_use");
+      return undefined;
+    }
+    this.interstitialExecs++;
+    this.turnItems.push(...outcome.precedingItems, ...appendItems);
+    if (
+      this.interstitialExecs > MAX_INTERSTITIAL_EXECS ||
+      this.legUsages.length >= MAX_LEGS_PER_TURN
+    ) {
+      await this.stopAttempts();
+      return undefined;
+    }
+    const retry = this.opts.retry;
+    const base = (this.currentBody ?? retry?.primaryBody?.()) as
+      | { input?: unknown; [field: string]: unknown }
+      | undefined;
+    if (!retry || !base || typeof base !== "object" || !Array.isArray(base.input)) {
+      log("[ResponsesTurn] code-mode continuation has no request body → error event");
+      this.sink.endWithError("claudish: the code-mode continuation has no request body");
+      this.reportUsage();
+      return undefined;
+    }
+    const body = { ...base, input: [...base.input, ...outcome.precedingItems, ...appendItems] };
+    this.currentBody = body;
+    this.positionRetries = 0;
+    log(
+      `[ResponsesTurn] exec ${outcome.callId} finished without tool calls — leg ${this.legUsages.length + 1}`
+    );
+    return this.issue(body);
+  }
+
+  /** Issue a leg with `body` (undefined ⇒ the primary body); undefined when the turn ended instead. */
+  private async issue(body: unknown): Promise<NextLeg> {
+    const retry = this.opts.retry;
+    if (!retry || this.sink.signal.aborted) {
+      this.reportUsage();
+      return undefined;
+    }
+    const leg = await retry.issueLeg(body, this.sink.signal);
+    if (leg.kind === "ok") return { response: leg.response, headersAt: leg.headersAt };
+    if (leg.kind === "error") this.sink.endWithError(leg.message);
+    this.reportUsage();
+    return undefined;
   }
 
   /** Issue the next leg; undefined when the turn has ended instead. */
@@ -295,7 +522,7 @@ class ResponsesTurn {
     if (!retry || !policy || !("finalThresholdMs" in policy) || policy.thresholdMs <= 0) {
       return undefined;
     }
-    const isFinal = this.legRetries >= (retry.maxLegRetries ?? MAX_LEG_RETRIES);
+    const isFinal = this.positionRetries >= (retry.maxLegRetries ?? MAX_LEG_RETRIES);
     return {
       thresholdMs: isFinal ? policy.finalThresholdMs : policy.thresholdMs,
       headersAt,
@@ -303,23 +530,15 @@ class ResponsesTurn {
     };
   }
 
-  private async issueRetry(
-    outcome: LegOutcome
-  ): Promise<{ response: Response; headersAt: number } | undefined> {
+  /** Re-send the current leg's body (the primary one until a code-mode continuation). */
+  private async issueRetry(outcome: LegOutcome): Promise<NextLeg> {
     const retry = this.opts.retry;
     if (!retry) return undefined;
     this.legRetries++;
+    this.positionRetries++;
     const max = retry.maxLegRetries ?? MAX_LEG_RETRIES;
-    log(`[ResponsesTurn] ${triggerLabel(outcome)} — retry ${this.legRetries}/${max}`);
-    if (this.sink.signal.aborted) {
-      this.reportUsage();
-      return undefined;
-    }
-    const leg = await retry.issueLeg(undefined, this.sink.signal);
-    if (leg.kind === "ok") return { response: leg.response, headersAt: leg.headersAt };
-    if (leg.kind === "error") this.sink.endWithError(leg.message);
-    this.reportUsage();
-    return undefined;
+    log(`[ResponsesTurn] ${triggerLabel(outcome)} — retry ${this.positionRetries}/${max}`);
+    return this.issue(this.currentBody);
   }
 
   /** A completed turn: `message_delta` + `message_stop`, usage, then the turn hooks. */
@@ -344,6 +563,7 @@ class ResponsesTurn {
             `[ResponsesSSE] Truncated response (${outcome.incomplete}) → stop_reason=${stopReason}`
           );
         }
+        this.recordTurn(outcome.items ?? []);
         await this.finishCompleted(stopReason);
         return;
       }

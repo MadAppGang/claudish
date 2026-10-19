@@ -37,6 +37,7 @@ import type { AuthBinding } from "../providers/transport/types.js";
 import {
   DEFAULT_EXEC_MAX_OUTPUT_TOKENS,
   type ExecToolDefinition,
+  type ExecToolMeta,
   renderExecTool,
 } from "./exec-tool.js";
 import { accountKeyFromBinding, sessionKeyFor, uuidV5 } from "./ids.js";
@@ -50,6 +51,7 @@ import {
 } from "./policy.js";
 import { isSandboxAvailable } from "./sandbox/quickjs-loader.js";
 import { getCodeModeStores } from "./stores.js";
+import type { ToolNameTable } from "./tool-names.js";
 import type { ResponsesItem } from "./types.js";
 
 /** The header that marks a lite request (sent over HTTP; Codex's WebSocket uses client_metadata). */
@@ -224,6 +226,14 @@ export interface PreparedCodeMode {
   prePayload?: any;
   /** What the payload was built from; the lite → classic fallback rebuilds from it. */
   context?: CodeModePayloadContext;
+  /** What the turn's exec calls run with (`createCodeModeTurnHooks`). */
+  turn?: {
+    accountKey: string;
+    sessionKey: string;
+    names: ToolNameTable;
+    allTools: ExecToolMeta[];
+    defaultMaxOutputTokens: number;
+  };
 }
 
 /** Does a 400 body name the lite header or `reasoning.context` (the lite shape's own rejections)? */
@@ -337,7 +347,19 @@ async function prepare(input: PrepareCodeModeInput): Promise<PreparedCodeMode> {
       modelInfo,
     };
     const request = applyCodeModeToPayload(structuredClone(payload), context);
-    return { decision, request, prePayload, context };
+    return {
+      decision,
+      request,
+      prePayload,
+      context,
+      turn: {
+        accountKey,
+        sessionKey,
+        names: rendered.names,
+        allTools: rendered.allTools,
+        defaultMaxOutputTokens,
+      },
+    };
   } catch (err) {
     log(`[CodeMode] request build failed; sending this request non-code-mode: ${err}`);
     return { decision };

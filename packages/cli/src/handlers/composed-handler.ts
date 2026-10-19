@@ -39,13 +39,16 @@ import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
 import { accountKeyFromBinding } from "../code-mode/ids.js";
 import { type CodeModeSetting, DEFAULT_CODE_MODE_SETTING } from "../code-mode/policy.js";
+import { createCodeModeTurnHooks } from "../code-mode/relay.js";
 import {
   type CodeModePayloadContext,
+  type PreparedCodeMode,
   isLiteRejection,
   prepareCodeModeRequest,
   rebuildAsClassic,
   withoutLiteHeader,
 } from "../code-mode/request.js";
+import { getCodeModeStores } from "../code-mode/stores.js";
 import {
   getLogLevel,
   log,
@@ -120,6 +123,7 @@ import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import {
+  type CodeModeTurnHooks,
   type ResponsesRetryOptions,
   createResponsesStreamHandler,
   resolveStallPolicy,
@@ -155,6 +159,8 @@ type LegBinding = AuthBinding & LegAuthBinding;
 interface ResponsesTurnWiring {
   retry: ResponsesRetryOptions;
   onTurnSummary: (s: { legs: number; legRetries: number }) => void;
+  /** Code mode for this turn (`openai-codex`, decided at 5d). */
+  codeMode?: CodeModeTurnHooks;
 }
 
 /**
@@ -1444,6 +1450,7 @@ export class ComposedHandler implements ModelHandler {
     let codeModeShape: "lite" | "classic" | undefined;
     let codeModePrePayload: any;
     let codeModeContext: CodeModePayloadContext | undefined;
+    let codeModeTurn: PreparedCodeMode["turn"];
     if (this.provider.name === "openai-codex") {
       const prepared = await prepareCodeModeRequest({
         providerName: this.provider.name,
@@ -1463,6 +1470,7 @@ export class ComposedHandler implements ModelHandler {
         codeModeShape = prepared.request.shape;
         codeModePrePayload = prepared.prePayload;
         codeModeContext = prepared.context;
+        codeModeTurn = prepared.turn;
         wireHeaders = [...wireHeaders, ...prepared.request.headers];
         // 5a'. --model-params again, only for a code-mode payload: the user's
         // explicit fields still win over what 5d wrote (idempotent deep merge).
@@ -2399,10 +2407,29 @@ export class ComposedHandler implements ModelHandler {
             arm: binding?.auth?.arm,
           }),
           firstHeadersAt: responseHeadersAt,
+          // A code-mode continuation leg appends to the body that was accepted.
+          primaryBody: () => requestPayload,
         },
         onTurnSummary: (s) => {
           legRetries = s.legRetries;
         },
+        // Code mode (decided at 5d): exec calls run in the sandbox and their
+        // batches are relayed as tool_use blocks; `codeModeShape` is read at
+        // exec time because the lite → classic fallback may have changed it.
+        codeMode: codeModeTurn
+          ? createCodeModeTurnHooks({
+              stores: getCodeModeStores(),
+              accountKey: codeModeTurn.accountKey,
+              sessionKey: codeModeTurn.sessionKey,
+              shape: () => codeModeShape ?? "classic",
+              names: codeModeTurn.names,
+              allTools: codeModeTurn.allTools,
+              defaultMaxOutputTokens: codeModeTurn.defaultMaxOutputTokens,
+              previousMessage: Array.isArray(claudeRequest?.messages)
+                ? claudeRequest.messages[claudeRequest.messages.length - 1]
+                : undefined,
+            })
+          : undefined,
       };
     }
 
@@ -2829,6 +2856,7 @@ export class ComposedHandler implements ModelHandler {
           onExtraBilledInput: (input, detail) =>
             this.tokenTracker.addBilledInputTokens(input, detail),
           onTurnSummary: responsesTurn?.onTurnSummary,
+          codeMode: responsesTurn?.codeMode,
         });
 
       case "anthropic-sse":

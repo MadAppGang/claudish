@@ -11,12 +11,14 @@
  */
 
 import type { Context } from "hono";
+import type { CodeModeTurnHooks } from "../../../code-mode/types.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import type { UsageCacheDetail } from "../token-tracker.js";
 import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
 import { type ResponsesRetryOptions, runResponsesTurn } from "./responses/responses-turn.js";
 
 export type { ResponsesRetryOptions } from "./responses/responses-turn.js";
+export type { CodeModeTurnHooks, ExecTurnStep } from "../../../code-mode/types.js";
 export { resolveStallPolicy, type StallPolicy } from "./responses/stall-guard.js";
 
 export function createResponsesStreamHandler(
@@ -97,6 +99,11 @@ export function createResponsesStreamHandler(
      * values of `toolNameMap`.
      */
     declaredToolNames?: string[];
+    /**
+     * Code mode for this turn (`openai-codex`): exec calls are run through these
+     * hooks (responses/responses-turn.ts). Absent ⇒ exec calls are ignored.
+     */
+    codeMode?: CodeModeTurnHooks;
   }
 ): Response {
   if (!response.body) {
@@ -130,6 +137,7 @@ export function createResponsesStreamHandler(
         retry: opts.retry,
         onExtraBilledInput: opts.onExtraBilledInput,
         onTurnSummary: opts.onTurnSummary,
+        codeMode: opts.codeMode,
       });
     },
     // Downstream went away (client disconnect, abort, or timeout). The

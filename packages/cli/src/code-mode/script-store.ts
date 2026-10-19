@@ -38,7 +38,7 @@
 import { log } from "../logger.js";
 import type { ExecOutput } from "./output.js";
 import type { ScriptRuntime } from "./sandbox/script-runtime.js";
-import type { ResponsesItem } from "./types.js";
+import type { NestedToolUse, ResponsesItem } from "./types.js";
 
 export type ExecState = "running" | "suspended" | "completed" | "failed" | "terminated" | "lost";
 
@@ -94,6 +94,12 @@ export interface StoredOutput {
 export interface ExecBatch {
   ids: string[];
   batchHash?: string;
+  /**
+   * The tool_use blocks as relayed, kept only while the record is live, so a
+   * duplicate request can replay the same reply (dropped when it settles: the
+   * inputs are up to 8 MiB a batch and are not in the byte cap).
+   */
+  blocks?: NestedToolUse[];
 }
 
 export interface ExecRecord {
@@ -299,6 +305,7 @@ export class ScriptStore {
     record.state = to;
     record.lastTouched = this.now();
     const nowLive = isLive(to);
+    if (!nowLive) for (const batch of record.batches) batch.blocks = undefined;
     if (wasLive && !nowLive) this.settledBytes += record.bytes;
     else if (!wasLive && nowLive) this.settledBytes -= record.bytes;
     if (!nowLive) this.enforceCaps();

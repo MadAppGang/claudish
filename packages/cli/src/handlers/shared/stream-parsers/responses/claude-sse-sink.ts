@@ -41,6 +41,9 @@ export class ClaudeSseSink {
   private lastActivity = Date.now();
   private readonly toolBlocks = new Map<number, ToolBlockState>();
   private readonly abort = new AbortController();
+  private firstToolId: string | undefined;
+  /** Text blocks of the message by index, in order (code mode anchors a text-only turn by them). */
+  private readonly texts = new Map<number, string>();
 
   constructor(
     private readonly controller: ReadableStreamDefaultController<Uint8Array>,
@@ -120,6 +123,7 @@ export class ClaudeSseSink {
   }
 
   startBlock(index: number, contentBlock: Record<string, unknown>): void {
+    if (contentBlock.type === "text") this.texts.set(index, "");
     this.send("content_block_start", {
       type: "content_block_start",
       index,
@@ -128,7 +132,21 @@ export class ClaudeSseSink {
   }
 
   delta(index: number, delta: Record<string, unknown>): void {
+    if (delta.type === "text_delta" && typeof delta.text === "string") {
+      const text = this.texts.get(index);
+      if (text !== undefined) this.texts.set(index, text + delta.text);
+    }
     this.send("content_block_delta", { type: "content_block_delta", index, delta });
+  }
+
+  /** The id of the message's first tool_use block, if any. */
+  get firstToolUseId(): string | undefined {
+    return this.firstToolId;
+  }
+
+  /** The message's text blocks so far, in block order. */
+  textBlocks(): string[] {
+    return [...this.texts.entries()].sort((a, b) => a[0] - b[0]).map(([, text]) => text);
   }
 
   stopBlock(index: number): void {
@@ -138,6 +156,7 @@ export class ClaudeSseSink {
   /** A tool_use `content_block_start`; the observer fires here and nowhere else. */
   startToolBlock(index: number, id: string, name: string): void {
     this.toolBlocks.set(index, { name, argsComplete: false, stopped: false });
+    this.firstToolId ??= id;
     this.opts.onToolCallObserved?.(name);
     this.startBlock(index, { type: "tool_use", id, name, input: {} });
   }
@@ -152,6 +171,15 @@ export class ClaudeSseSink {
     const t = this.toolBlocks.get(index);
     if (t) t.stopped = true;
     this.stopBlock(index);
+  }
+
+  /** One whole tool_use block: start, its complete arguments as one delta, stop. */
+  emitToolUse(id: string, name: string, argsJson: string): void {
+    const index = this.nextIndex();
+    this.startToolBlock(index, id, name);
+    this.delta(index, { type: "input_json_delta", partial_json: argsJson });
+    this.markToolArgsComplete(index);
+    this.stopToolBlock(index);
   }
 
   /** `message_delta` + `message_stop`. */
