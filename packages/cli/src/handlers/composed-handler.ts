@@ -68,7 +68,7 @@ import {
   noteTargetReachable,
   uiLeaseValid,
 } from "../recovery/coordinator.js";
-import { resolveRecoveryEnabled } from "../recovery/settings.js";
+import { resolveRecoveryEnabled, resolveTier1DeadlineMs } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
@@ -104,12 +104,16 @@ import {
   isContextOverflowError,
   isRequestShapeError,
 } from "./shared/request-shape.js";
+import { type LegAuthBinding, createLegIssuer } from "./shared/responses-leg-issuer.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
-import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
+import {
+  type ResponsesRetryOptions,
+  createResponsesStreamHandler,
+} from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import {
@@ -130,6 +134,32 @@ import { captureUpstreamError } from "./shared/upstream-error-capture.js";
  * lasted minutes, so the useful attempts are the late ones.
  */
 const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
+
+/** What `handle()` builds for a Responses turn and `handleStream` hands the parser. */
+interface ResponsesTurnWiring {
+  retry: ResponsesRetryOptions;
+  onTurnSummary: (s: { legs: number; legRetries: number }) => void;
+}
+
+/**
+ * Wait `ms`, or less if `signal` aborts first. Resolves `true` when it was
+ * aborted. A retry leg passes its turn signal so a client that disconnects
+ * during a 7b backoff does not hold the leg open for up to 30 s.
+ */
+function sleepUnlessAborted(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * One request's running account of what network recovery cost it. Mutable, and
@@ -2179,6 +2209,66 @@ export class ComposedHandler implements ModelHandler {
     // parser reports them via onApiError; capture it here so the turn is recorded
     // as a failure, not a success. Per-request local — safe under concurrency.
     let streamApiError: { code: string; message: string } | null = null;
+
+    // Legs 2..n of a Responses turn: a degenerate `parallel` wrapper is retried
+    // inside the same downstream message (responses-turn.ts). Built from THIS
+    // request's header builder, body and transport hooks, so a leg is the
+    // primary fetch again, with its own ceiling and the turn's abort signal.
+    // Per-request locals — safe under concurrency on a shared handler.
+    let legRetries = 0;
+    let responsesTurn: ResponsesTurnWiring | undefined;
+    if (this.resolveStreamFormat() === "openai-responses-sse") {
+      // No transport returns a binding yet: legs use the no-binding path, which
+      // is exactly the primary fetch's.
+      let legBinding: LegAuthBinding | undefined;
+      const refreshAuth = this.provider.refreshAuth?.bind(this.provider);
+      const forceRefreshAuth = this.provider.forceRefreshAuth?.bind(this.provider);
+      const issueLeg = createLegIssuer({
+        providerDisplayName: this.provider.displayName,
+        getBinding: () => legBinding,
+        setBinding: (b) => {
+          legBinding = b;
+        },
+        refreshAuth: refreshAuth
+          ? async () => {
+              await refreshAuth();
+              return undefined;
+            }
+          : undefined,
+        forceRefreshAuth: forceRefreshAuth
+          ? async () => {
+              await forceRefreshAuth();
+              return undefined;
+            }
+          : undefined,
+        getEndpoint: () => this.provider.getEndpoint(this.targetModel),
+        fetchHeaders: () => fetchHeaders(),
+        // `requestPayload` as it stands now: parameter recovery may have
+        // dropped fields, and a leg re-sends the body that was accepted.
+        serializeBody: (body) => {
+          const b = body ?? requestPayload;
+          const s = this.provider.serializeBody?.(b);
+          return {
+            body: s?.body ?? JSON.stringify(b),
+            contentType: s?.contentType ?? "application/json",
+          };
+        },
+        getRequestInit: () => (this.provider.getRequestInit?.() || {}) as Record<string, unknown>,
+        enqueueRequest: this.provider.enqueueRequest
+          ? (fn, o) => this.provider.enqueueRequest!(fn, o)
+          : undefined,
+        settleStreamHead: (res, reissue, signal) =>
+          this.settleResponsesStreamHead(res, reissue, signal),
+        legDeadlineAt: () => recoveryClock().now() + resolveTier1DeadlineMs(),
+      });
+      responsesTurn = {
+        retry: { issueLeg },
+        onTurnSummary: (s) => {
+          legRetries = s.legRetries;
+        },
+      };
+    }
+
     const onStreamComplete = () => {
       try {
         const isFreeModel = this.tokenTracker.getTotalCost() === 0;
@@ -2201,6 +2291,8 @@ export class ComposedHandler implements ModelHandler {
           fallback_attempts: fallbackMeta?.attempts,
           invocation_mode: this.options.invocationMode ?? "auto-route",
           ...this.recoveryStats(recoveryTally),
+          // Absent on a turn that needed no retry, like the recovery fields.
+          ...(legRetries > 0 ? { leg_retries: legRetries } : {}),
         });
       } catch {
         // Stats must never crash claudish
@@ -2226,7 +2318,8 @@ export class ComposedHandler implements ModelHandler {
       (code, message) => {
         streamApiError = { code, message };
       },
-      behaviorSession
+      behaviorSession,
+      responsesTurn
     );
 
     // A client that did not ask for a stream gets the single JSON message the
@@ -2257,7 +2350,9 @@ export class ComposedHandler implements ModelHandler {
    */
   private async settleResponsesStreamHead(
     initial: Response,
-    reissue: () => Promise<Response>
+    reissue: () => Promise<Response>,
+    /** A retry leg's turn signal: an abort ends the backoff wait at once. */
+    signal?: AbortSignal
   ): Promise<
     | { kind: "ok"; response: Response }
     | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true }
@@ -2286,7 +2381,9 @@ export class ComposedHandler implements ModelHandler {
         `[${this.provider.displayName}] in-stream ${verdict.code} before any output — ` +
           `retry ${attempt + 1}/${STREAM_RETRY_DELAYS_MS.length} in ${delayMs / 1000}s`
       );
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (await sleepUnlessAborted(delayMs, signal)) {
+        return { kind: "exhausted", code: verdict.code, message: "aborted", attempts: attempt };
+      }
 
       let next: Response;
       try {
@@ -2473,7 +2570,8 @@ export class ComposedHandler implements ModelHandler {
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
     onApiError?: (code: string, message: string) => void,
-    behaviorSession?: BehaviorSession
+    behaviorSession?: BehaviorSession,
+    responsesTurn?: ResponsesTurnWiring
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -2588,6 +2686,12 @@ export class ComposedHandler implements ModelHandler {
           onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
           onToolCallObserved: observeToolCall,
           onTurnEnd: () => behaviorSession?.finishTurn(),
+          retry: responsesTurn?.retry,
+          // Earlier legs of a retried turn: cost only, before the stats snapshot
+          // that onTokenUpdate fires.
+          onExtraBilledInput: (input, detail) =>
+            this.tokenTracker.addBilledInputTokens(input, detail),
+          onTurnSummary: responsesTurn?.onTurnSummary,
         });
 
       case "anthropic-sse":

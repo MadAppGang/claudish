@@ -113,6 +113,14 @@ export interface StatsEvent {
   /** How the episode ended for this request. */
   recovery_outcome?: RecoveryOutcome;
 
+  /**
+   * Upstream legs this Responses turn RE-ISSUED inside the same downstream
+   * message (a degenerate `parallel` wrapper or a stalled leg; see
+   * `responses-turn.ts`). Absent on a turn that needed no retry. The earlier
+   * legs' billed input is already inside `estimated_cost`.
+   */
+  leg_retries?: number;
+
   // Invocation
   invocation_mode: string; // "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map"
 
@@ -303,6 +311,9 @@ export function eventToLogRecord(event: StatsEvent): OtlpLogRecord {
   }
   if (event.recovery_outcome !== undefined) {
     attributes.push(stringAttr("llm.recovery_outcome", event.recovery_outcome));
+  }
+  if (event.leg_retries !== undefined) {
+    attributes.push(intAttr("llm.leg_retries", event.leg_retries));
   }
 
   return {

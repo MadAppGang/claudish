@@ -199,7 +199,8 @@ class ResponsesLeg {
           }
           if (stop) {
             this.closeAll();
-            reader.cancel().catch(() => {});
+            // Awaited: the next leg is never issued while this stream is open.
+            await reader.cancel().catch(() => {});
             return stop.stop;
           }
         }

@@ -12,15 +12,31 @@
 
 import type { Context } from "hono";
 import { wrapAnthropicError } from "../anthropic-error.js";
+import type { UsageCacheDetail } from "../token-tracker.js";
 import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
-import { runResponsesTurn } from "./responses/responses-turn.js";
+import { type ResponsesRetryOptions, runResponsesTurn } from "./responses/responses-turn.js";
+
+export type { ResponsesRetryOptions } from "./responses/responses-turn.js";
 
 export function createResponsesStreamHandler(
   c: Context,
   response: Response,
   opts: {
     modelName: string;
+    /**
+     * Fires the request's stats record, LAST at turn end: the final leg's input
+     * (the context figure) and every leg's output.
+     */
     onTokenUpdate?: (input: number, output: number) => void;
+    /**
+     * Retry a degenerate leg inside the same downstream message (see
+     * responses/responses-turn.ts). Absent ⇒ one leg per turn, exactly as before.
+     */
+    retry?: ResponsesRetryOptions;
+    /** Fires FIRST at turn end: input of earlier legs that reported usage (cost only). */
+    onExtraBilledInput?: (inputTokens: number, detail?: UsageCacheDetail) => void;
+    /** Fires after onExtraBilledInput, before onTokenUpdate. */
+    onTurnSummary?: (s: { legs: number; legRetries: number }) => void;
     toolNameMap?: Map<string, string>;
     /**
      * Real per-provider context window (tokens) for the model on THIS backend,
@@ -110,6 +126,9 @@ export function createResponsesStreamHandler(
         onApiError: opts.onApiError,
         onTokenUpdate: opts.onTokenUpdate,
         onTurnEnd: opts.onTurnEnd,
+        retry: opts.retry,
+        onExtraBilledInput: opts.onExtraBilledInput,
+        onTurnSummary: opts.onTurnSummary,
       });
     },
     // Downstream went away (client disconnect, abort, or timeout). The

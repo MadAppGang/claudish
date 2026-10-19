@@ -299,6 +299,34 @@ export class TokenTracker {
   }
 
   /**
+   * Charge input that an EARLIER upstream leg of the current request already
+   * consumed: cost and the billed-input counter only.
+   *
+   * A Responses turn whose leg was retried (a stalled or degenerate leg, see
+   * `responses-turn.ts`) sent the same body more than once. The last leg is
+   * charged by the strategy as usual (`onTokenUpdate`); each earlier leg was a
+   * separate upstream request that the provider billed in full (minus cache),
+   * and nothing else in the session will ever charge it. Strategy-independent
+   * on purpose: under `delta-aware` the last leg is still charged only its
+   * growth over the session high-water, which is that strategy's model of the
+   * conversation, not of a retry.
+   *
+   * Never touches the context figures (`sessionInputTokens`, `lastInputTokens`)
+   * or output, and does not write the token file: the strategy update that
+   * follows does. The cache discount uses the same clamp as `update()`, so a
+   * retry that re-sent a cached body is charged as cached.
+   */
+  addBilledInputTokens(inputTokens: number, detail?: UsageCacheDetail): void {
+    if (!(inputTokens > 0)) return;
+    this.sessionBilledInputTokens += inputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    const pricing = this.getPricing();
+    this.sessionTotalCost +=
+      (inputTokens / 1_000_000) * pricing.inputCostPer1M -
+      this.cacheReadDiscount(pricing, inputTokens, detail);
+  }
+
+  /**
    * Delta-aware update with race-condition detection for concurrent conversations.
    * Used by OpenAI handler where multiple conversations may share one handler.
    *
