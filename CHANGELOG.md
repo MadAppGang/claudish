@@ -2,6 +2,31 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [11.0.0] - 2026-10-19
+
+### ⚠ BREAKING CHANGES
+
+- a bare `claudish team run` no longer opens the grid; *(team)* ([`3a35680`](https://github.com/MadAppGang/claudish/commit/3a356804b3a777d8a48249e60fbfdae4e4111ce9))
+
+### Bug Fixes
+
+- run `team run` as panes when --grid is not given *(team)* ([`3a35680`](https://github.com/MadAppGang/claudish/commit/3a356804b3a777d8a48249e60fbfdae4e4111ce9))
+- keep an existing input.md when `team run` has no --input *(team)* ([`b7a708a`](https://github.com/MadAppGang/claudish/commit/b7a708a2415e0f340909db1c795633929790b469))
+- settle turns whose background agents finish mid-turn *(pane)* ([`a673918`](https://github.com/MadAppGang/claudish/commit/a6739184392201892a5d8e853ed0181eade8bd8e))
+
+### Documentation
+
+- record how the 11.0.0 pane and team fixes were verified *(reports)* ([`e8d1f5b`](https://github.com/MadAppGang/claudish/commit/e8d1f5bd81b2cb884d88401b6adaea7146dd4e23))
+- update CHANGELOG.md for v10.7.1([`8d8a0ea`](https://github.com/MadAppGang/claudish/commit/8d8a0eaccca4a27958a9d1432fe258fbbf2f529d))
+
+### New Features
+
+- report agent_count_mismatch when agent counts disagree *(pane)* ([`de9366b`](https://github.com/MadAppGang/claudish/commit/de9366b49a538a72da6a1b0b0aa127be3a922fee))
+
+### Other Changes
+
+- v11.0.0 *(release)* ([`a9b98b0`](https://github.com/MadAppGang/claudish/commit/a9b98b0bab02e6c8937940c9509e4a872ec1ca32))
+
 ## [10.7.1] - 2026-10-16
 
 ### Bug Fixes
