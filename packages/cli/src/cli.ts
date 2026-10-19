@@ -10,6 +10,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
+import {
+  CODE_MODE_ENV_VAR,
+  CODE_MODE_SETTINGS,
+  DEFAULT_CODE_MODE_SETTING,
+  parseCodeModeSetting,
+} from "./code-mode/policy.js";
 import { ENV } from "./config.js";
 import { setStderrQuiet } from "./logger.js";
 import {
@@ -49,7 +55,7 @@ import type {
   ProbeStepState,
 } from "./probe/probe-tui-app.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import { getModelMapping, loadConfig, readProOnUltracode } from "./profile-config.js";
+import { getModelMapping, loadConfig, readCodeMode, readProOnUltracode } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
@@ -264,6 +270,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--effort-override": "value",
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
+  "--code-mode": "value",
   "--accept-served-model": "none",
   "--op-env": "value",
   "--op": "value",
@@ -767,6 +774,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--no-pro-on-ultracode") {
       // Escape hatch when it is enabled via config/env: off for this run.
       config.proOnUltracode = false;
+    } else if (arg === "--code-mode") {
+      // Code mode for `openai-codex`: Claude Code's tools offered as one
+      // freeform `exec` tool running a script. Precedence below.
+      const cmArg = args[++i];
+      const setting = parseCodeModeSetting(cmArg);
+      if (!setting) {
+        console.error(`--code-mode requires one of ${CODE_MODE_SETTINGS.join(", ")}`);
+        process.exit(1);
+      }
+      config.codeMode = setting;
     } else if (arg === "--accept-served-model") {
       // Some connections serve reasoning-off with a DIFFERENT model (Kimi Code
       // k3: thinking off is served by K2.8 Preview — the catalog's
@@ -1140,6 +1157,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else {
       config.proOnUltracode = readProOnUltracode() === true;
     }
+  }
+
+  // codeMode precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
+  // ./.claudish.json > global config.json > off. An env value other than
+  // auto/on/off states nothing and falls through to the config files.
+  if (config.codeMode === undefined) {
+    config.codeMode =
+      parseCodeModeSetting(process.env[CODE_MODE_ENV_VAR]) ??
+      readCodeMode() ??
+      DEFAULT_CODE_MODE_SETTING;
   }
 
   return config as ClaudishConfig;
@@ -2314,6 +2341,7 @@ ${h("OPTIONS")}
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
+  ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default off; env CLAUDISH_CODE_MODE)
   ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)

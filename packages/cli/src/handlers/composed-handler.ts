@@ -38,6 +38,7 @@ import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
 import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
 import { accountKeyFromBinding } from "../code-mode/ids.js";
+import type { CodeModeSetting } from "../code-mode/policy.js";
 import {
   getLogLevel,
   log,
@@ -243,6 +244,12 @@ export interface ComposedHandlerOptions {
    * layer is never consulted and does no filesystem work.
    */
   proOnUltracode?: boolean;
+  /**
+   * Code mode for `openai-codex` (`auto` | `on` | `off`), resolved by the CLI
+   * from `--code-mode` > `CLAUDISH_CODE_MODE` > `codeMode` config. Absent ⇒
+   * `off`. Read only on the `openai-codex` request path.
+   */
+  codeMode?: CodeModeSetting;
   /**
    * Test seam for the session-event registry. Defaults to the process-wide
    * singleton. Only tests should pass this.

@@ -12,6 +12,7 @@ import {
   isAutoModeClassifierRequest,
   rewriteClassifierForNative,
 } from "./classifier-passthrough.js";
+import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import {
   type AdvisorPresenceMonitor,
   createAdvisorPresenceMonitor,
@@ -162,6 +163,11 @@ export interface ProxyServerOptions {
    * no filesystem work at all.
    */
   proOnUltracode?: boolean;
+  /**
+   * `--code-mode`: code mode for `openai-codex` (`auto` | `on` | `off`).
+   * Absent ⇒ `off`.
+   */
+  codeMode?: CodeModeSetting;
 }
 
 /**
@@ -314,7 +320,7 @@ export async function createProxyServer(
    */
   const requestShapingOpts: Pick<
     ComposedHandlerOptions,
-    "effortOverride" | "modelParams" | "proOnUltracode"
+    "effortOverride" | "modelParams" | "proOnUltracode" | "codeMode"
   > = {
     // Narrowed HERE, not at the CLI: createProxyServer is also entered from
     // `serve` and `team`, so the boundary must validate whoever calls it.
@@ -323,6 +329,9 @@ export async function createProxyServer(
     effortOverride: isEffortLevel(options.effortOverride) ? options.effortOverride : undefined,
     modelParams: options.modelParams,
     proOnUltracode: options.proOnUltracode,
+    // Narrowed here for the same reason as effortOverride: `serve` and `team`
+    // enter too. Anything but auto/on/off is dropped, which reads as off.
+    codeMode: parseCodeModeSetting(options.codeMode),
   };
 
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler

@@ -1174,6 +1174,7 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          codeMode: cliConfig.codeMode,
         }
       )
     );
