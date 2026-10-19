@@ -38,7 +38,8 @@ import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
 import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
 import { accountKeyFromBinding } from "../code-mode/ids.js";
-import type { CodeModeSetting } from "../code-mode/policy.js";
+import { type CodeModeSetting, DEFAULT_CODE_MODE_SETTING } from "../code-mode/policy.js";
+import { prepareCodeModeRequest } from "../code-mode/request.js";
 import {
   getLogLevel,
   log,
@@ -1422,6 +1423,35 @@ export class ComposedHandler implements ModelHandler {
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
     if (this.provider.transformPayload) {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
+    }
+
+    // 5d. Code mode (`openai-codex` only; off unless `--code-mode` /
+    // CLAUDISH_CODE_MODE / `codeMode` turns it on). After 5c, so the Codex
+    // fields 5c added are kept; decided from THIS request's binding. A lite
+    // request's header joins `wireHeaders`, so every header fetch below
+    // carries it. Never throws: a failed decision or build leaves the request
+    // exactly as 5c produced it.
+    if (this.provider.name === "openai-codex") {
+      const prepared = await prepareCodeModeRequest({
+        providerName: this.provider.name,
+        setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING,
+        binding,
+        api:
+          wire?.status === "known"
+            ? wire.api
+            : this.resolveStreamFormat() === "openai-responses-sse"
+              ? "responses"
+              : undefined,
+        claudeRequest,
+        payload: requestPayload,
+      });
+      if (prepared.request) {
+        requestPayload = prepared.request.payload;
+        wireHeaders = [...wireHeaders, ...prepared.request.headers];
+        // 5a'. --model-params again, only for a code-mode payload: the user's
+        // explicit fields still win over what 5d wrote (idempotent deep merge).
+        if (this.options.modelParams) deepMergeParams(requestPayload, this.options.modelParams);
+      }
     }
 
     // (Middleware beforeRequest ran at step 3b, before buildPayload — see the
