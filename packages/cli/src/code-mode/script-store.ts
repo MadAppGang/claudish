@@ -200,6 +200,10 @@ function recordBytes(record: ExecRecord): number {
   let bytes = utf8Bytes(record.source);
   for (const stored of record.outputs.values()) bytes += outputBytes(stored.output);
   if (record.reasoningItems) bytes += utf8Bytes(JSON.stringify(record.reasoningItems));
+  for (const batch of record.batches) {
+    // Two 64-hex sha256 strings per repaired call, plus its nested id.
+    for (const id of Object.keys(batch.repairs ?? {})) bytes += utf8Bytes(id) + 128;
+  }
   return bytes;
 }
 
@@ -347,8 +351,12 @@ export class ScriptStore {
     record.lastTouched = this.now();
     const nowLive = isLive(to);
     if (!nowLive) for (const batch of record.batches) compactBatch(batch);
+    // Re-counted here: compaction adds the repair hashes the settled cap must see.
+    const before = record.bytes;
+    record.bytes = recordBytes(record);
     if (wasLive && !nowLive) this.settledBytes += record.bytes;
-    else if (!wasLive && nowLive) this.settledBytes -= record.bytes;
+    else if (!wasLive && nowLive) this.settledBytes -= before;
+    else if (!wasLive) this.settledBytes += record.bytes - before;
     if (!nowLive) this.enforceCaps();
     return to;
   }
