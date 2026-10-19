@@ -162,7 +162,9 @@ After the installer reports **SIDECAR INSTALLED … mode: NOMINAL relay**, edit 
 "ANTHROPIC_BASE_URL": "http://localhost:<HostPort>"
 ```
 
-Keep the selected authentication contract intact: an empty `ANTHROPIC_AUTH_TOKEN` for hybrid/OAuth pass-through, or both non-secret placeholders plus `forceLoginMethod: "console"` for proxy-only. In both cases, keep the `x-proxy-key` + `X-Claudish-Machine` custom header. Restart Claude Code.
+Keep the selected authentication contract intact: an empty `ANTHROPIC_AUTH_TOKEN` for hybrid/OAuth pass-through, or both non-secret placeholders plus `forceLoginMethod: "console"` for proxy-only. In both cases, keep the `x-proxy-key` + `X-Claudish-Machine` custom header.
+
+> **No restart needed for live sessions** (measured 19/10 on po-2024, #531): Claude Code re-reads `ANTHROPIC_BASE_URL` from `settings.json` **per request**, so sessions launched before the repoint migrate on their own within minutes — the #531 retirement gate is itself the proof (a cron session born before the switch kept working straight through the old endpoint being stopped). A rollback by editing the value back reaches live sessions just as fast.
 
 > **The repoint is the risky step, and it is the one that caused the 2026-08-10 ai-01 outage.** Stand the container up and validate it *before* touching `ANTHROPIC_BASE_URL`, so a failed install never costs the machine its agents. Keep the previous value at hand to roll back.
 
