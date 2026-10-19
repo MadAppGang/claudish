@@ -338,9 +338,8 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
   // ─── context setup ──────────────────────────────────────────────────
 
   private createContext(): void {
-    if (!this.lease.admit(this)) {
-      throw new GuestFault("claudish: every sandbox slot is running a script; try again");
-    }
+    const refused = this.lease.admit(this);
+    if (refused !== undefined) throw new GuestFault(refused);
     const rt = this.lease.module.newRuntime();
     this.rt = rt;
     rt.setMemoryLimit(this.limits.memoryBytes);

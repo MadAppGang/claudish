@@ -243,7 +243,7 @@ raise:
 
 | Store | Ceiling | Eviction |
 |---|---|---|
-| suspended runtimes | 32 per module (one running + ≤ 31 suspended) | LRU → record `lost` |
+| suspended runtimes | 32 (one running + ≤ 31 suspended), all in the current module | LRU → record `lost`; a retired module's at once |
 | suspended idle | 6 h | `expire` → `lost` |
 | exec records (settled) | ≤ 2,000 AND ≤ 32 MiB (source + output text + reasoning JSON; images are references) | LRU; id kept in `evictedExecs` |
 | turn records | ≤ 2,000 AND ≤ 32 MiB; one record > 8 MiB is never stored | LRU by last render; anchor kept in `evictedTurns` |
@@ -282,10 +282,16 @@ a fresh module.
 `setMemoryLimit`, `a.push("x".repeat(1024) + a.length)` grew the module's linear memory to the
 2048 MiB wasm maximum in 3.8 s before QuickJS reported out of memory; `a.push({i})` reached
 143 MiB. Linear memory never shrinks. So the interrupt handler also checks the module's
-`HEAPU8.byteLength` (private, guarded): a slice that grows it past `WASM_CEILING_BYTES = 1 GiB` is
-stopped (`out of memory: the script grew the sandbox's memory past claudish's limit`) and the module
-is RETIRED (its scripts finish, no new ones are admitted). An idle module over 256 MiB is dropped
-for reload when its last runtime ends.
+`HEAPU8.byteLength` (private, guarded; a module where it reads 0 logs once that the ceilings are
+off): a slice that grows it past `WASM_CEILING_BYTES = 256 MiB` is stopped (`out of memory: the
+script grew the sandbox's memory past claudish's limit`) and the module is RETIRED: no new script
+is admitted, and every SUSPENDED runtime in it is evicted at once (its record goes `lost`; replay
+re-runs it in the next module), because a suspended runtime holds the whole module and may wait on
+Claude Code for hours. An idle module over 256 MiB is dropped for reload when its last runtime
+ends. Admission is also gated process-wide: a new runtime is refused while the wasm memory summed
+over every module still alive exceeds `PROCESS_WASM_CEILING_BYTES = 512 MiB`, so the per-module
+ceiling is a per-process one too. 256 MiB, not the 1 GiB first shipped: linear memory never
+shrinks, so whatever one runaway script reaches stays resident in the proxy.
 
 **Settlement after every slice.** The top-level promise is read FIRST: fulfilled, or rejected with
 the `exit()` sentinel → completed, and every outstanding call is DISCARDED (in claudish an unawaited
@@ -297,7 +303,7 @@ promise that can never settle`). `blocked([])` is unrepresentable.
 |---|---|---|
 | QuickJS heap per runtime | 32 MiB | `failed` (out of memory) |
 | CPU per script, cumulative across slices | 2 s | `failed` (`interrupted: exceeded the 2 s CPU budget`) |
-| wasm linear memory per module | 1 GiB | slice stopped, module retired |
+| wasm linear memory per module / summed over live modules | 256 MiB / 512 MiB | slice stopped, module retired, its suspended scripts lost / new script refused |
 | source | 256 KB | `failed` before running |
 | calls per batch / per script | 32 / 256 | the excess call rejects with a string, so `Promise.allSettled` still finishes |
 | one call input / one batch | 2 MiB / 8 MiB | that call rejects |
@@ -305,8 +311,8 @@ promise that can never settle`). `blocked([])` is unrepresentable.
 | `text()` output | 1 MiB per exec, enforced by the HOST on what it receives (a tampered prelude can waste one bounded copy, never raise the total) | dropped, with a warning line |
 | output tokens | `max_output_tokens` pragma clamped to [1, 50,000]; default discovery's `truncation_policy.limit` in tokens, else 10,000 | Codex's truncation header, at 4 B/token |
 
-Why 32 MiB and 2 s: 32 runtimes × 32 MiB keeps the live set under the 1 GiB wasm ceiling, half the
-2 GiB wasm maximum. The interrupt handler can only TERMINATE a slice, never yield it (R2 §2:
+Why 32 MiB and 2 s: the heap limit stops one runtime's ordinary allocations; it bounds nothing
+process-wide (above), which is the wasm ceilings' job. The interrupt handler can only TERMINATE a slice, never yield it (R2 §2:
 `InternalError: interrupted`, 202 ms against a 200 ms budget), so the cumulative CPU budget is also
 the longest one script can block the event loop, and 2 s keeps one script from pausing every
 stream of a `serve` process for longer. Orchestration scripts need milliseconds. Neither value was
