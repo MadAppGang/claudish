@@ -11,7 +11,11 @@
  */
 
 import type { Context } from "hono";
-import type { CodeModeTurnHooks } from "../../../code-mode/types.js";
+import {
+  type CodeModeTurnHooks,
+  type NestedToolUse,
+  relayNestedInput,
+} from "../../../code-mode/types.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import type { UsageCacheDetail } from "../token-tracker.js";
 import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
@@ -30,7 +34,7 @@ export { resolveStallPolicy, type StallPolicy } from "./responses/stall-guard.js
  * request's input and 0 output; nothing was billed, so no usage callback fires.
  */
 export function createSyntheticToolUseReply(
-  blocks: ReadonlyArray<{ id: string; name: string; input: Record<string, unknown> }>,
+  blocks: ReadonlyArray<NestedToolUse>,
   opts: {
     modelName: string;
     priorInputTokens?: number;
@@ -61,7 +65,7 @@ export function createSyntheticToolUseReply(
       try {
         sink.start();
         for (const block of blocks) {
-          sink.emitToolUse(block.id, block.name, repair(block.name, JSON.stringify(block.input)));
+          sink.emitToolUse(block.id, block.name, relayNestedInput(block, repair));
         }
         sink.endMessage("tool_use", { input_tokens: opts.priorInputTokens ?? 0, output_tokens: 0 });
         if (opts.middlewareManager) {

@@ -86,10 +86,11 @@ function sum(values: number[]): number {
   return values.reduce((a, b) => a + b, 0);
 }
 
-import type {
-  CodeModeTurnHooks,
-  ExecTurnStep,
-  ResponsesItem,
+import {
+  type CodeModeTurnHooks,
+  type ExecTurnStep,
+  type ResponsesItem,
+  relayNestedInput,
 } from "../../../../code-mode/types.js";
 import { log } from "../../../../logger.js";
 import type { LegResponse } from "../../responses-leg-issuer.js";
@@ -442,7 +443,7 @@ class ResponsesTurn {
       this.sink.emitToolUse(
         block.id,
         block.name,
-        this.repairNested(block.name, JSON.stringify(block.input ?? {}))
+        relayNestedInput(block, (name, args) => this.repairNested(name, args))
       );
     }
     log(`[ResponsesTurn] exec ${outcome.callId} relayed as ${blocks.length} tool_use block(s)`);

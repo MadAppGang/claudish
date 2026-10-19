@@ -37,7 +37,38 @@ export interface NestedToolUse {
   id: string;
   /** Claude Code's own tool name. */
   name: string;
+  /** The input as relayed to Claude Code (after a Layer 4 repair, when one applied). */
   input: Record<string, unknown>;
+  /** The script's own input, set only when Layer 4 repaired what was relayed. */
+  scriptInput?: Record<string, unknown>;
+}
+
+/**
+ * The input JSON Claude Code gets for `block`: `repair` (Layer 4) applied ONCE
+ * to the script's input. A repaired input is written back onto the block — the
+ * exec record holds the same object — with the script's own kept as
+ * `scriptInput`, so a duplicate reply re-sends exactly what was relayed and a
+ * replay can tell a repair from a divergence. A pure function, safe for the
+ * turn driver to import (it loads no sandbox).
+ */
+export function relayNestedInput(
+  block: NestedToolUse,
+  repair: (name: string, argsJson: string) => string
+): string {
+  const args = JSON.stringify(block.input ?? {});
+  if (block.scriptInput !== undefined) return args;
+  const sent = repair(block.name, args);
+  if (sent === args) return args;
+  try {
+    const parsed: unknown = JSON.parse(sent);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      block.scriptInput = block.input;
+      block.input = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // An unparsable repair is sent as it is and not recorded.
+  }
+  return sent;
 }
 
 /**

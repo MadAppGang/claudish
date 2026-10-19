@@ -38,6 +38,7 @@
  */
 
 import { log } from "../logger.js";
+import { inputHash } from "./hashes.js";
 import type { ExecOutput } from "./output.js";
 import type { ScriptRuntime } from "./sandbox/script-runtime.js";
 import type { NestedToolUse, ResponsesItem } from "./types.js";
@@ -102,6 +103,25 @@ export interface ExecBatch {
    * inputs are up to 8 MiB a batch and are not in the byte cap).
    */
   blocks?: NestedToolUse[];
+  /**
+   * The Layer 4 repairs of this batch, by nested id: hashes of the script's
+   * own input and of the input relayed instead. Taken from `blocks` when they
+   * are dropped, so a replay can accept history's repaired input for a call.
+   */
+  repairs?: Record<string, { script: string; relayed: string }>;
+}
+
+/** Keep a batch's repairs as hashes, then drop its blocks. */
+function compactBatch(batch: ExecBatch): void {
+  for (const block of batch.blocks ?? []) {
+    if (block.scriptInput === undefined) continue;
+    batch.repairs ??= {};
+    batch.repairs[block.id] = {
+      script: inputHash(block.scriptInput),
+      relayed: inputHash(block.input),
+    };
+  }
+  batch.blocks = undefined;
 }
 
 export interface ExecRecord {
@@ -326,7 +346,7 @@ export class ScriptStore {
     record.state = to;
     record.lastTouched = this.now();
     const nowLive = isLive(to);
-    if (!nowLive) for (const batch of record.batches) batch.blocks = undefined;
+    if (!nowLive) for (const batch of record.batches) compactBatch(batch);
     if (wasLive && !nowLive) this.settledBytes += record.bytes;
     else if (!wasLive && nowLive) this.settledBytes -= record.bytes;
     if (!nowLive) this.enforceCaps();

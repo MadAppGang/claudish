@@ -40,6 +40,13 @@ export function canonicalJson(value: unknown): string {
   return `{${body}}`;
 }
 
+/** sha256 hex of a tool input's canonical JSON. */
+export function inputHash(input: unknown): string {
+  return createHash("sha256")
+    .update(canonicalJson(input ?? {}))
+    .digest("hex");
+}
+
 /** Nested-call order: by decoded seq, then by id for anything that does not decode. */
 function compareIds(a: string, b: string): number {
   const da = decodeNestedId(a);

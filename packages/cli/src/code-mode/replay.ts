@@ -18,7 +18,13 @@
 
 import { log } from "../logger.js";
 import { type ClaudeToolLike, renderExecTool } from "./exec-tool.js";
-import { type BatchResultEntry, batchHash, canonicalJson, completionKey } from "./hashes.js";
+import {
+  type BatchResultEntry,
+  batchHash,
+  canonicalJson,
+  completionKey,
+  inputHash,
+} from "./hashes.js";
 import { decodeNestedId, encodeNestedId } from "./ids.js";
 import type { ExecOutput } from "./output.js";
 import { nestedBlocksFor, settleDone, suspendBlocked } from "./relay.js";
@@ -30,7 +36,7 @@ import {
   type ScriptStep,
   createScriptRuntime,
 } from "./sandbox/script-runtime.js";
-import type { ExecRecord, ExecState, ScriptStore } from "./script-store.js";
+import type { ExecBatch, ExecRecord, ExecState, ScriptStore } from "./script-store.js";
 import { nestedResultFromToolResult } from "./tool-results.js";
 import type { ClaudeContentBlock, NestedToolUse } from "./types.js";
 
@@ -87,16 +93,28 @@ function entriesOf(
   });
 }
 
-/** The batch the script blocked on is exactly this history round. */
-function matchesRound(execKey: string, calls: readonly NestedCall[], round: HistoryRound): boolean {
+/**
+ * The batch the script blocked on is exactly this history round: the same
+ * ids and names, and each input either equal to history's or the one Layer 4
+ * repaired into history's (`repairs`, recorded when the batch was relayed).
+ */
+function matchesRound(
+  execKey: string,
+  calls: readonly NestedCall[],
+  round: HistoryRound,
+  repairs: ExecBatch["repairs"]
+): boolean {
   if (calls.length !== round.blocks.length) return false;
   return calls.every((call) => {
     const id = encodeNestedId(execKey, call.seq);
     const block = round.blocks.find((b) => b.id === id);
+    if (block === undefined || block.name !== call.name) return false;
+    if (canonicalJson(block.input ?? {}) === canonicalJson(call.input)) return true;
+    const repair = repairs?.[id];
     return (
-      block !== undefined &&
-      block.name === call.name &&
-      canonicalJson(block.input ?? {}) === canonicalJson(call.input)
+      repair !== undefined &&
+      repair.script === inputHash(call.input) &&
+      repair.relayed === inputHash(block.input)
     );
   });
 }
@@ -127,7 +145,8 @@ function runRounds(
   let step = runtime.start(record.source);
   const hashes: string[] = [];
   for (const [k, round] of rounds.entries()) {
-    if (step.kind !== "blocked" || !matchesRound(record.execCallId, step.calls, round)) {
+    const repairs = record.batches[k]?.repairs;
+    if (step.kind !== "blocked" || !matchesRound(record.execCallId, step.calls, round, repairs)) {
       log(`[CodeMode] exec ${record.originalCallId}: replay diverged from history; script lost`);
       runtime.dispose();
       return { kind: "stopped", result: undefined };
@@ -172,7 +191,11 @@ export function replayLostScript(input: ReplayInput): ReplayResult {
     const { step, hashes } = ran;
     scripts.transition(record, "replay");
     scripts.attachRuntime(record, runtime);
-    record.batches = rounds.map((round, k) => ({ ids: round.ids, batchHash: hashes[k] }));
+    record.batches = rounds.map((round, k) => ({
+      ids: round.ids,
+      batchHash: hashes[k],
+      repairs: record.batches[k]?.repairs,
+    }));
     if (step.kind === "blocked") {
       const blocks = nestedBlocksFor(record.execCallId, step.calls);
       suspendBlocked(scripts, record, blocks);
