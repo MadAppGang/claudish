@@ -320,6 +320,7 @@ for (const [toolMode, expected] of [
       "list_sessions",
       "preflight",
       "report_error",
+      "resize_session",
       "run_prompt",
       "search_models",
       "send_input",
