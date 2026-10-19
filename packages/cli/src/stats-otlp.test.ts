@@ -268,6 +268,7 @@ const OPTIONAL_WIRE = {
     sample: 5,
     value: { intValue: "5" },
   },
+  leg_retries: { attribute: "llm.leg_retries", sample: 2, value: { intValue: "2" } },
   recovery_ms: {
     attribute: "llm.recovery_ms",
     sample: 201_900,
