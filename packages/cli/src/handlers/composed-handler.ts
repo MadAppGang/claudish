@@ -49,6 +49,7 @@ import {
   withoutLiteHeader,
 } from "../code-mode/request.js";
 import { resumeFromToolResults } from "../code-mode/resume.js";
+import { loadQuickJSModule } from "../code-mode/sandbox/quickjs-loader.js";
 import { getCodeModeStores, peekCodeModeStores } from "../code-mode/stores.js";
 import {
   getLogLevel,
@@ -1449,16 +1450,26 @@ export class ComposedHandler implements ModelHandler {
     // last message answers nested ids — the first request after a restart —
     // so the lost script's tombstone exists before 5d builds the input.
     if (this.provider.name === "openai-codex") {
-      const resumed = resumeFromToolResults(
-        claudeRequest,
-        binding,
-        peekCodeModeStores(),
-        claudeRequest?.tool_choice,
-        {
-          setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING,
-          createStores: getCodeModeStores,
-        }
-      );
+      const resume = (mayRequestModule: boolean) =>
+        resumeFromToolResults(
+          claudeRequest,
+          binding,
+          peekCodeModeStores(),
+          claudeRequest?.tool_choice,
+          {
+            setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING,
+            createStores: getCodeModeStores,
+            mayRequestModule,
+          }
+        );
+      let resumed = resume(true);
+      if (resumed.kind === "needs-module") {
+        // A lost script can replay, but its module was dropped (retired,
+        // poisoned, recycled). 5r never awaits: load here, then run 5r once
+        // more — never a third time, so a failed load ends in the tombstone.
+        await loadQuickJSModule();
+        resumed = resume(false);
+      }
       if (resumed.kind === "reply") {
         const sse = createSyntheticToolUseReply(resumed.blocks, {
           modelName: this.bareModelName,

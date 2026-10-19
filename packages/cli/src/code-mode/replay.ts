@@ -10,7 +10,7 @@
  * canonical input. Only then are that round's tool_results fed in. A script is
  * deterministic enough for this: `Math.random` is seeded by its exec call id;
  * `Date` is not, and a script that branches on it mismatches. Any mismatch, or
- * no loaded sandbox module (this step is synchronous and never loads one),
+ * no loaded sandbox module (synchronous, never loads one; 5r asks its caller to load one first: `needs-module`),
  * leaves the record lost and the caller takes the lost path.
  *
  * The record is only ever replayed by its OWNER session (the caller checks).

@@ -55,6 +55,7 @@ import type { ExecOutput, OutputPart } from "./output.js";
 import type { CodeModeSetting } from "./policy.js";
 import { nestedBlocksFor, settleDone, suspendBlocked } from "./relay.js";
 import { replayLostScript } from "./replay.js";
+import { currentQuickJSModule } from "./sandbox/quickjs-loader.js";
 import type { NestedResult } from "./sandbox/script-runtime.js";
 import type { ExecRecord, ScriptStore } from "./script-store.js";
 import type { CodeModeStores } from "./stores.js";
@@ -75,7 +76,14 @@ export type ResumeOutcome =
   /** A script resolved or ended: the request continues to the upstream turn. */
   | { kind: "continue" }
   /** A script blocked again: answer with these tool_use blocks, no upstream call. */
-  | { kind: "reply"; blocks: [NestedToolUse, ...NestedToolUse[]] };
+  | { kind: "reply"; blocks: [NestedToolUse, ...NestedToolUse[]] }
+  /**
+   * Only with `mayRequestModule`: a lost script this request could replay, and
+   * no sandbox module is loaded (a retired, poisoned or recycled one was
+   * dropped). Nothing was touched; the caller awaits `loadQuickJSModule()` and
+   * calls 5r again without `mayRequestModule`, so 5r itself never awaits.
+   */
+  | { kind: "needs-module" };
 
 export interface ResumeOptions {
   /** The resolved code-mode setting; `off` turns matching suspended records lost. */
@@ -86,6 +94,8 @@ export interface ResumeOptions {
    * tombstone is stored before 5d builds the input. Default: never create.
    */
   createStores?: () => CodeModeStores;
+  /** May answer `needs-module` (see ResumeOutcome). Default false: replay without a module tombstones. */
+  mayRequestModule?: boolean;
 }
 
 /** True when the last message is a user message carrying a tool_result for a nested id. */
@@ -575,6 +585,26 @@ class Resume {
     }
   }
 
+  /**
+   * True when the last message answers a script this session owns whose
+   * runtime is gone but whose source is kept — the case `run()` replays.
+   * Read-only (`peek`, no transition), so a `needs-module` answer touches
+   * nothing.
+   */
+  wouldReplay(): boolean {
+    const { groups } = this.lastMessageResults();
+    for (const execKey of groups.keys()) {
+      const record = this.scripts.peek(this.view.accountKey, execKey);
+      if (!record || record.sessionKey !== this.view.sessionKey) continue;
+      if (!record.source || record.batches.length === 0) continue;
+      const runtimeGone =
+        record.state === "lost" ||
+        (record.state === "suspended" && (!record.runtime || !record.runtime.alive));
+      if (runtimeGone) return true;
+    }
+    return false;
+  }
+
   /** Setting `off`: every suspended record the last message answers is lost (runtime disposed). */
   loseAnswered(): void {
     const { groups } = this.lastMessageResults();
@@ -638,6 +668,10 @@ export function resumeFromToolResults(
     if (opts.setting === "off") {
       resume.loseAnswered();
       return { kind: "none" };
+    }
+    if (opts.mayRequestModule && !currentQuickJSModule() && resume.wouldReplay()) {
+      log("[CodeMode] a lost script can replay but no sandbox module is loaded; loading one first");
+      return { kind: "needs-module" };
     }
     return resume.run();
   } catch (err) {
