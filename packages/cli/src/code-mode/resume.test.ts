@@ -418,3 +418,158 @@ describe("T4 restart and replay", () => {
     expect(next(resume(round1, stores))[0].input).toEqual({ file_path: "f2" });
   }, 20000);
 });
+
+import { type ResponsesItem, conversationMessages } from "./types.js";
+
+describe("T6 D1 captured trailing system messages", () => {
+  const fixture = (name: string) =>
+    readFileSync(new URL(`../test-fixtures/code-mode/${name}`, import.meta.url), "utf8");
+  const rows = (name: string) =>
+    fixture(name)
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  const inbound = rows("cc-2.1.303-inbound-trailing-system.jsonl");
+  const upstream = rows("cc-2.1.303-upstream-exec.jsonl");
+  const deferred = rows("cc-2.1.304-deferred-tools-transcript.jsonl");
+  const system = inbound[1].body.messages.at(-1) as ClaudeMessage;
+
+  async function capturedExec(call: { call_id: string; input: string }) {
+    const stores = makeStores();
+    const module = await loadQuickJSModule();
+    const hooks = createCodeModeTurnHooks({
+      stores,
+      ...keys(),
+      shape: () => "classic",
+      names,
+      allTools: [],
+      defaultMaxOutputTokens: 10000,
+      previousMessage: undefined,
+      loadModule: async () => module,
+      limits: { cpuMs: 100 },
+    });
+    const step = await hooks.onExecCall({
+      callId: call.call_id,
+      input: call.input,
+      precedingItems: [],
+      truncated: false,
+    });
+    expect(step.kind).toBe("emit-tool-uses");
+    return stores;
+  }
+
+  test.each([1, 2])(
+    "2.1.303 request #%i resumes and completes all three captured results",
+    async (index) => {
+      const call = upstream[index].body.input
+        .filter((item: ResponsesItem) => item.type === "custom_tool_call")
+        .at(-1);
+      const stores = await capturedExec(call);
+      const messages: ClaudeMessage[] = inbound[index].body.messages;
+      expect(messages.at(-1)?.role).toBe("system");
+      expect(resume(messages, stores)).toEqual({ kind: "continue" });
+      const rendered = buildCodeModeInput(messages, stores, keys(), { toolNames: names }).find(
+        (item) => item.type === "custom_tool_call_output" && item.call_id === call.call_id
+      )!;
+      expect(rendered).toBeDefined();
+      const parts = rendered.output as { text: string }[];
+      expect(parts[0].text).toStartWith("Script completed");
+      const text = JSON.stringify(parts);
+      expect(text).toContain("Script completed");
+      expect(text).not.toContain("Script failed");
+      for (const block of conversationMessages(messages).at(-1)!.content as ClaudeContentBlock[]) {
+        expect(text).toContain(
+          String(block.content).includes("export const")
+            ? String(block.content).match(/export const [abc] = [123];/)![0]
+            : String(block.content)
+        );
+      }
+    },
+    20000
+  );
+
+  test("2.1.304 deferred-tools notice leaves the first captured exec resumable", async () => {
+    const eventLine = fixture("cc-2.1.304-deferred-tools-exec.txt")
+      .split("\n")
+      .find(
+        (line) =>
+          line.includes('"type":"response.output_item.done"') &&
+          line.includes('"call_id":"call_090de0e9250e497a82003cddf9976170"')
+      )!;
+    const call = JSON.parse(eventLine.slice(eventLine.indexOf('{"type"'))).item;
+    const stores = await capturedExec(call);
+    // Derived from V2a304-3: merge the three streamed assistant blocks and
+    // three user result rows into the request's two conversation messages.
+    const uses = deferred
+      .filter((row) => row.type === "assistant" && row.message.id === deferred[21].message.id)
+      .flatMap((row) => row.message.content);
+    const results = deferred
+      .slice(25, 30)
+      .filter((row) => row.type === "user")
+      .flatMap((row) => row.message.content);
+    const messages: ClaudeMessage[] = [
+      deferred[16].message,
+      deferred[17].message,
+      { role: "assistant", content: uses },
+      { role: "user", content: results },
+      deferred[33].message,
+    ];
+    expect(uses).toHaveLength(3);
+    expect(results).toHaveLength(3);
+    expect(JSON.stringify(messages.at(-1))).toContain("The following deferred tools");
+    expect(resume(messages, stores)).toEqual({ kind: "continue" });
+  }, 20000);
+
+  test("a pending assistant batch followed only by system remains suspended", async () => {
+    const { stores, messages } = await begin();
+    const prefill = [...messages.slice(0, -1), structuredClone(system)];
+    expect(resume(prefill, stores)).toEqual({ kind: "none" });
+    expect(stores.scripts.get(accountKey, execKeyFor(CALL))?.state).toBe("suspended");
+    expect(next(resume(messages, stores))).toHaveLength(1);
+  }, 20000);
+
+  test("a user message before trailing system terminates a moved-on batch", async () => {
+    const { stores, messages } = await begin();
+    // Derived from V2cap-3 user/text and system shapes; replace only user text.
+    const moved: ClaudeMessage[] = [
+      ...messages.slice(0, -1),
+      { role: "user", content: "Do something else instead" },
+      structuredClone(system),
+    ];
+    resume(moved, stores);
+    expect(output(moved, stores)).toContain("Script terminated");
+    expect(output(moved, stores)).toContain("the conversation moved on without the tool results");
+  }, 20000);
+
+  test("text-only relay record survives the captured system blocks-to-string change", () => {
+    const stores = makeStores();
+    const before: ClaudeMessage[] = inbound[1].body.messages;
+    const after: ClaudeMessage[] = inbound[2].body.messages;
+    const previous = conversationMessages(before).at(-1)!;
+    expect(previous.role).toBe("user");
+    const nextAssistant = after.findIndex(
+      (message, index) => index >= before.length && message.role === "assistant"
+    );
+    expect(conversationMessages(after.slice(0, nextAssistant)).at(-1)).toEqual(previous);
+    // Derived text-only turn uses V2a304-3's captured final answer and V2cap-3's
+    // next-request history. The stored items are verbatim captured Responses items.
+    const textMessage: ClaudeMessage = deferred[50].message;
+    const items: ResponsesItem[] = upstream[0].body.input.slice(0, 1);
+    const hooks = createCodeModeTurnHooks({
+      stores,
+      ...keys(),
+      shape: () => "classic",
+      names,
+      allTools: [],
+      defaultMaxOutputTokens: 10000,
+      previousMessage: previous,
+    });
+    hooks.onTurnEnd({
+      items,
+      texts: (textMessage.content as ClaudeContentBlock[]).map((block) => block.text!),
+    });
+    const nextMessages = [...after.slice(0, nextAssistant), textMessage];
+    const built = buildCodeModeInput(nextMessages, stores, keys(), { toolNames: names });
+    expect(built.slice(-items.length)).toEqual(items);
+  });
+});
