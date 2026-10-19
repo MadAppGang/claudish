@@ -97,6 +97,24 @@ export interface ProbeResultLink {
 }
 
 /**
+ * The Details tab's Key line, by the static printer's rule (`buildCardLayout`):
+ * the ACTIVE entry is the link that answered (`winner`), else the first kept
+ * credentialed hop, and only that entry's own credential is shown. Another
+ * provider's credential is never shown in its place: a muse@ line under a live
+ * metered meta@ would state a false billing fact. Only with no active entry
+ * does a dropped no-login candidate's line show. Only a credential that is not
+ * an env var has a line (Muse Code's login source and tier, Vertex's project).
+ */
+export function detailsKeyLine(
+  links: ProbeResultLink[],
+  winner: ProbeResultLink | undefined
+): string | undefined {
+  const active = winner ?? links.find((l) => !l.dropped && l.hasCredentials);
+  if (active) return active.keyLine;
+  return links.find((l) => l.dropped && l.keyLine)?.keyLine;
+}
+
+/**
  * Per-model results payload the Details tab consumes (built in cli.ts from
  * `explainRoute`). The parser's provider is deliberately absent: it is not a
  * routing decision, and it stays in `--probe --json` only.
@@ -1048,11 +1066,7 @@ function DetailModel({
       ? `wire (${winner.displayName}): ${wiring.wireSummary ?? `${wiring.effectiveStreamFormat} · ${wiring.modelTranslator}`} · ${formatContextWindow(wiring.contextWindow)} ctx`
       : "wire: —";
 
-  // Key line — the credential of the link that answered, else of the first link
-  // that carries one (a kept hop that failed, or a dropped no-login candidate).
-  // Only a credential that is not an env var has one (Muse Code's login source
-  // and tier, Vertex's project), the same text the static printer prints.
-  const keyLine = (winner?.keyLine ? winner : result.links.find((l) => l.keyLine))?.keyLine;
+  const keyLine = detailsKeyLine(result.links, winner);
 
   // ── Routing advisor ────────────────────────────────────────────────
   // Full route: the ordered chain of providers claudish would try — the kept
