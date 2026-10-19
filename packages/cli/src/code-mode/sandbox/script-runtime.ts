@@ -42,6 +42,7 @@ import type {
   QuickJSHandle,
   QuickJSRuntime,
 } from "quickjs-emscripten-core";
+import { log } from "../../logger.js";
 import type { ExecToolMeta } from "../exec-tool.js";
 import {
   type ExecOutput,
@@ -321,7 +322,16 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
   evict(): void {
     this.wasLost = true;
     this.dispose();
-    this.onEvicted?.();
+    this.notifyEvicted();
+  }
+
+  /** The owner's callback; its failure is the owner's, never the module's. */
+  private notifyEvicted(): void {
+    try {
+      this.onEvicted?.();
+    } catch (err) {
+      log(`[CodeMode] sandbox: the eviction callback threw: ${err}`);
+    }
   }
 
   /** LeasedRuntime: the module is poisoned; drop handles without touching wasm. */
@@ -332,7 +342,7 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
     this.topHandle = this.cutHandle = this.exitHandle = undefined;
     this.ctx = undefined;
     this.rt = undefined;
-    this.onEvicted?.();
+    this.notifyEvicted();
   }
 
   // ─── context setup ──────────────────────────────────────────────────

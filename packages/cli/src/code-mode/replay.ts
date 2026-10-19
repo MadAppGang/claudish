@@ -119,6 +119,7 @@ export function replayLostScript(input: ReplayInput): ReplayResult {
       allTools: rendered.allTools,
       seed: record.originalCallId,
       module: lease,
+      onEvicted: () => scripts.loseIfRuntimeGone(record),
     });
     let step = runtime.start(record.source);
     const hashes: string[] = [];

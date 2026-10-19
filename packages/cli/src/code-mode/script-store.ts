@@ -262,10 +262,20 @@ export class ScriptStore {
     const record = this.records.get(recordKey(accountKey, execCallId));
     if (!record) return undefined;
     record.lastTouched = this.now();
+    this.loseIfRuntimeGone(record);
+    return record;
+  }
+
+  /**
+   * A suspended record whose runtime is gone (evicted for the live cap, a
+   * retired or poisoned module) moves to `lost` NOW, so it leaves the
+   * suspended set and enters the settled caps. The runtime's `onEvicted`
+   * calls this; `get()` and the reaper catch any it missed.
+   */
+  loseIfRuntimeGone(record: ExecRecord): void {
     if (record.state === "suspended" && (!record.runtime || !record.runtime.alive)) {
       this.transition(record, "evict");
     }
-    return record;
   }
 
   /** The record without touching it or checking its runtime. */
@@ -379,10 +389,11 @@ export class ScriptStore {
 
   // ─── caps and reaping ───────────────────────────────────────────────
 
-  /** Expire idle suspended records and enforce the caps. */
+  /** Lose suspended records whose runtime is gone, expire idle ones, enforce the caps. */
   reap(): void {
     const now = this.now();
     for (const record of [...this.records.values()]) {
+      this.loseIfRuntimeGone(record);
       if (record.state === "suspended" && now - record.lastTouched > this.limits.suspendedTtlMs) {
         this.transition(record, "expire");
       }

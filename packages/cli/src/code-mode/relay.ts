@@ -219,6 +219,7 @@ class CodeModeTurn implements CodeModeTurnHooks {
       limits: this.ctx.limits,
       seed: record.originalCallId,
       module: lease,
+      onEvicted: () => this.scripts.loseIfRuntimeGone(record),
     });
     const step: ScriptStep = runtime.start(record.source);
     log(`[CodeMode] exec ${record.originalCallId}: ${describeStep(step)}`);
