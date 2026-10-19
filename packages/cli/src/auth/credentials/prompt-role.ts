@@ -17,8 +17,12 @@
  * looked like), and every review found another caller that raised it. So it is
  * decided ONCE, where the process starts, from facts about the process:
  *
- * - `isPaneChild()` — NOT `isatty`. A magmux pane has a real PTY, so a `team`
- *   slot looks interactive to every TTY test (`pane/child-env.ts`).
+ * - `inMcpSession()` — NOT `isatty`. A magmux pane has a real PTY, so a `team`
+ *   slot looks interactive to every TTY test (`pane/child-env.ts`). It is the
+ *   flag every process inside an MCP-started session carries (the pane child
+ *   and everything below it), not `isPaneChild()`, which since 9c5cd84f also
+ *   requires `CLAUDISH_PANE_CWD` and so is true only for the launched pane child.
+ *   Nothing inside a session may raise a Keychain dialog.
  * - stdin AND stderr are TTYs — a piped or CI launch is not a person.
  * - `--probe` exits inside `parseArgs`, before any launch code, and is a
  *   diagnostic: it never prompts.
@@ -37,7 +41,7 @@
  * `interactive-launch`, and the per-machine read lock bounds them to one dialog.
  */
 
-import { isPaneChild } from "../../pane/child-env.js";
+import { inMcpSession } from "../../pane/child-env.js";
 
 /**
  * - `never`: no credential dialog. Only claudish's own files are read.
@@ -84,7 +88,7 @@ export interface LaunchFacts {
  */
 export function decideLaunchRole(facts: LaunchFacts): CredentialPromptRole {
   if (facts.argv.includes("--probe")) return "never";
-  if (isPaneChild(facts.env ?? process.env)) return "never";
+  if (inMcpSession(facts.env ?? process.env)) return "never";
   if (!facts.stdinIsTTY || !facts.stderrIsTTY) return "never";
   return "interactive-launch";
 }
