@@ -150,8 +150,13 @@ export async function teamCommand(args: string[]): Promise<void> {
         printStatus(runStatus);
       } else {
         const { runWithGrid } = await import("./team-grid.js");
-        const interactive = effectiveMode === "interactive";
-        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", { timeout, interactive });
+        // G3 (#27): runWithGrid reads `mode` ("default" | "interactive"); the
+        // old `interactive: true` key was never read, so --interactive and
+        // --mode interactive silently ran the grid in default mode.
+        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", {
+          timeout,
+          mode: effectiveMode === "interactive" ? "interactive" : "default",
+        });
         printStatus(gridStatus);
       }
       break;
