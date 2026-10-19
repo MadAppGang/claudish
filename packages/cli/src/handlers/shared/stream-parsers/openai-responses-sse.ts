@@ -125,6 +125,14 @@ export function createResponsesStreamHandler(
     claudeId?: string;
     /** Withhold input_json_delta until the call completes so it can be repaired. */
     buffered?: boolean;
+    /**
+     * Bytes of `arguments` already sent downstream as `input_json_delta`. Zero
+     * for a buffered call until it completes, and zero for every call of a Codex
+     * multi-call turn, which streams no argument deltas at all.
+     */
+    forwardedBytes: number;
+    /** `response.function_call_arguments.done`'s complete argument string. */
+    doneArgs?: string;
   };
 
   /** Shared across every chunk hook in this stream; handed to afterStreamComplete. */
@@ -189,16 +197,58 @@ export function createResponsesStreamHandler(
           // fragments. What the client then DOES with malformed JSON is decided
           // by how the turn ends, not here: only an `error` event reliably stops
           // Claude Code executing the fragment (see the catch block below).
-          if (fnCall.buffered && fnCall.arguments) {
+          const accumulated = fnCall.doneArgs ?? fnCall.arguments;
+          if (fnCall.buffered && accumulated) {
             send("content_block_delta", {
               type: "content_block_delta",
               index: fnCall.index,
-              delta: { type: "input_json_delta", partial_json: fnCall.arguments },
+              delta: { type: "input_json_delta", partial_json: accumulated },
             });
           }
           send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
         }
         openToolBlocks.clear();
+      };
+
+      /**
+       * At `output_item.done` of a non-buffered call, send whatever part of the
+       * final arguments the deltas did not carry. The Codex backend sends every
+       * call of a multi-call turn with ZERO argument deltas: the arguments exist
+       * only in `function_call_arguments.done` and the done item, so forwarding
+       * from deltas alone handed Claude Code `{}` and it answered
+       * `InputValidationError: ... The required parameter 'file_path' is missing`.
+       * A native `openai@` call streams every byte as deltas, and its final string
+       * equals what was forwarded, so nothing more goes out for it.
+       */
+      const emitUnforwardedArguments = (fnCall: FnCall, final: string, source: "done" | "item") => {
+        const emit = (partial: string) => {
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index: fnCall.index,
+            delta: { type: "input_json_delta", partial_json: partial },
+          });
+          fnCall.forwardedBytes += partial.length;
+        };
+        if (fnCall.forwardedBytes === 0) {
+          if (final) {
+            emit(final);
+            log(
+              `[ResponsesSSE] zero-delta function_call ${fnCall.name}: emitted ${final.length} bytes from ${source}`
+            );
+          }
+          return;
+        }
+        const forwarded = fnCall.arguments;
+        if (final === forwarded) return;
+        if (final.startsWith(forwarded)) {
+          const suffix = final.slice(forwarded.length);
+          emit(suffix);
+          log(
+            `[ResponsesSSE] function_call ${fnCall.name}: emitted ${suffix.length}-byte suffix the deltas did not carry`
+          );
+          return;
+        }
+        log(`[ResponsesSSE] done arguments diverge from streamed deltas for ${fnCall.name}`);
       };
 
       /**
@@ -323,6 +373,7 @@ export function createResponsesStreamHandler(
                     index: curIdx++,
                     claudeId: callId,
                     buffered: opts.shouldBufferTool?.(fnName) === true,
+                    forwardedBytes: 0,
                   };
 
                   functionCalls.set(openaiCallId, fnCallData);
@@ -398,7 +449,16 @@ export function createResponsesStreamHandler(
                       index: fnCall.index,
                       delta: { type: "input_json_delta", partial_json: event.delta || "" },
                     });
+                    fnCall.forwardedBytes += (event.delta || "").length;
                   }
+                }
+              } else if (event.type === "response.function_call_arguments.done") {
+                // The complete argument string. The Codex backend sends a multi-call
+                // turn with NO argument deltas, so for those calls this (or the
+                // item at output_item.done) is the only copy of the arguments.
+                const fnCall = functionCalls.get(event.call_id) || functionCalls.get(event.item_id);
+                if (fnCall && typeof event.arguments === "string") {
+                  fnCall.doneArgs = event.arguments;
                 }
               } else if (event.type === "response.output_item.done") {
                 if (event.item?.type === "reasoning" && event.item.encrypted_content) {
@@ -415,10 +475,13 @@ export function createResponsesStreamHandler(
                   const callId = event.item.call_id || event.item.id;
                   const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                   if (fnCall && openToolBlocks.has(fnCall)) {
+                    const itemArgs =
+                      typeof event.item.arguments === "string" ? event.item.arguments : undefined;
+                    const final = fnCall.doneArgs ?? itemArgs ?? fnCall.arguments;
                     if (fnCall.buffered) {
                       // Give the behavior layer its one chance to rewrite the call,
                       // then emit the complete argument object as a single delta.
-                      let finalArgs = fnCall.arguments;
+                      let finalArgs = final;
                       try {
                         const repaired = opts.onToolCall?.(fnCall.name, finalArgs);
                         if (typeof repaired === "string" && repaired !== finalArgs) {
@@ -435,6 +498,13 @@ export function createResponsesStreamHandler(
                         index: fnCall.index,
                         delta: { type: "input_json_delta", partial_json: finalArgs },
                       });
+                      fnCall.forwardedBytes = finalArgs.length;
+                    } else {
+                      emitUnforwardedArguments(
+                        fnCall,
+                        final,
+                        fnCall.doneArgs !== undefined ? "done" : "item"
+                      );
                     }
                     send("content_block_stop", { type: "content_block_stop", index: fnCall.index });
                     openToolBlocks.delete(fnCall);
