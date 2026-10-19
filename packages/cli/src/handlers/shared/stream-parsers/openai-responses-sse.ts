@@ -21,6 +21,70 @@ export type { ResponsesRetryOptions } from "./responses/responses-turn.js";
 export type { CodeModeTurnHooks, ExecTurnStep } from "../../../code-mode/types.js";
 export { resolveStallPolicy, type StallPolicy } from "./responses/stall-guard.js";
 
+/**
+ * A code-mode script blocked again at step 5r: answer with its next batch as
+ * tool_use blocks, with NO upstream call. Written by the same sink and the
+ * same hooks as a driver batch (repair for buffered tools, one
+ * `onToolCallObserved` per block, middleware `afterStreamComplete`,
+ * `onTurnEnd`). `message_start` and `message_delta` carry the previous
+ * request's input and 0 output; nothing was billed, so no usage callback fires.
+ */
+export function createSyntheticToolUseReply(
+  blocks: ReadonlyArray<{ id: string; name: string; input: Record<string, unknown> }>,
+  opts: {
+    modelName: string;
+    priorInputTokens?: number;
+    shouldBufferTool?: (name: string) => boolean;
+    onToolCall?: (name: string, argsJson: string) => string | null | undefined;
+    onToolCallObserved?: (name: string) => void;
+    onTurnEnd?: () => void;
+    // biome-ignore lint/suspicious/noExplicitAny: MiddlewareManager is untyped on every parser
+    middlewareManager?: any;
+  }
+): Response {
+  const repair = (name: string, args: string): string => {
+    if (opts.shouldBufferTool?.(name) !== true) return args;
+    try {
+      const repaired = opts.onToolCall?.(name, args);
+      return typeof repaired === "string" ? repaired : args;
+    } catch {
+      return args;
+    }
+  };
+  const stream = new ReadableStream<Uint8Array>({
+    start: async (controller) => {
+      const sink = new ClaudeSseSink(controller, {
+        modelName: opts.modelName,
+        priorInputTokens: opts.priorInputTokens,
+        onToolCallObserved: opts.onToolCallObserved,
+      });
+      try {
+        sink.start();
+        for (const block of blocks) {
+          sink.emitToolUse(block.id, block.name, repair(block.name, JSON.stringify(block.input)));
+        }
+        sink.endMessage("tool_use", { input_tokens: opts.priorInputTokens ?? 0, output_tokens: 0 });
+        if (opts.middlewareManager) {
+          await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
+        }
+        opts.onTurnEnd?.();
+      } catch (err) {
+        // A throwing hook must not leave the downstream open.
+        sink.endWithError(`claudish: the synthetic reply failed: ${err}`);
+      } finally {
+        sink.close();
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
 export function createResponsesStreamHandler(
   c: Context,
   response: Response,

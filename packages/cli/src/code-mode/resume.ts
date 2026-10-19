@@ -1,0 +1,391 @@
+/**
+ * Step 5r: resume a suspended exec script from the tool_results Claude Code
+ * sends back (architecture §5.9).
+ *
+ * Runs after 5b, so the account is THIS request's (its binding), and after 3c,
+ * so a synthetic reply gets the same Layer 4 hooks as a driver batch. It is
+ * synchronous from the record lookup to the state transition (no `await` in
+ * between), so two concurrent requests for one record serialise: the second
+ * sees the batch already consumed.
+ *
+ * Guard (else nothing is touched and the request continues): `openai-codex`
+ * (the caller's check), the binding's arm is `oauth`, an account key, a Claude
+ * Code session id, and `tool_choice` absent or `auto`. A named tool, `any` or
+ * `none` never resumes a script: such requests are Claude Code's internal
+ * one-shot calls, and consuming a batch there would run the script's next tools
+ * outside the turn that owns it; the next ordinary request resumes it.
+ *
+ * Entry: the last user message carries tool_results whose ids decode as nested
+ * ids. Only a suspended record owned by this session is resumed:
+ *
+ *   | situation                                       | behaviour                                  |
+ *   |-------------------------------------------------|--------------------------------------------|
+ *   | expected batch, no interrupt                    | resolve/reject by seq, resume: blocked →   |
+ *   |                                                 |   synthetic reply; done → output stored,   |
+ *   |                                                 |   the upstream turn continues              |
+ *   | a result missing for an emitted id              | that call rejects "no tool_result returned"|
+ *   | interrupt (`[Request interrupted by user…`)     | terminated: output so far + the results +  |
+ *   |                                                 |   "interrupted by the user"; continue      |
+ *   | consumed batch, same batchHash (duplicate)      | the memoised step: the same synthetic      |
+ *   |                                                 |   reply, or the stored completion          |
+ *   | late results for a settled record               | nothing (history renders its output)       |
+ *
+ * Then, for every OTHER suspended record this session owns: if a message
+ * follows the assistant message carrying its pending batch and nothing answers
+ * that batch, the conversation moved on → terminated. A pending batch on the
+ * LAST message (a prefill) or absent from this request (a subagent sharing the
+ * session id; compaction) is left alone: TTL and LRU end it.
+ */
+
+import { extractSessionId } from "../behavior/harness.js";
+import type { ClaudeToolChoice } from "../handlers/shared/format/openai-tools.js";
+import { log } from "../logger.js";
+import type { AuthBinding } from "../providers/transport/types.js";
+import { type BatchResultEntry, batchHash, completionKey } from "./hashes.js";
+import { accountKeyFromBinding, decodeNestedId, sessionKeyFor } from "./ids.js";
+import { MOVED_ON_NOTE } from "./input-builder.js";
+import type { ExecOutput, OutputPart } from "./output.js";
+import type { CodeModeSetting } from "./policy.js";
+import { nestedBlocksFor, settleDone, suspendBlocked } from "./relay.js";
+import type { NestedResult } from "./sandbox/script-runtime.js";
+import type { ExecRecord, ScriptStore } from "./script-store.js";
+import type { CodeModeStores } from "./stores.js";
+import { normalizeToolIdent } from "./tool-names.js";
+import { nestedResultFromToolResult, toolResultImages, toolResultText } from "./tool-results.js";
+import type { ClaudeContentBlock, ClaudeMessage, NestedToolUse } from "./types.js";
+
+/** Claude Code's interrupt marker (2.1.290: a user text block beside the results). */
+export const INTERRUPT_MARKER = "[Request interrupted by user";
+export const INTERRUPTED_NOTE = "interrupted by the user";
+
+/** What 5r decided for one request. */
+export type ResumeOutcome =
+  /** Nothing to resume (or the guard does not hold): the request continues unchanged. */
+  | { kind: "none" }
+  /** A script resolved or ended: the request continues to the upstream turn. */
+  | { kind: "continue" }
+  /** A script blocked again: answer with these tool_use blocks, no upstream call. */
+  | { kind: "reply"; blocks: [NestedToolUse, ...NestedToolUse[]] };
+
+export interface ResumeOptions {
+  /** The resolved code-mode setting; `off` turns matching suspended records lost. */
+  setting?: CodeModeSetting;
+}
+
+interface RequestView {
+  messages: ClaudeMessage[];
+  accountKey: string;
+  sessionKey: string;
+  /** tool_use id → its block (first occurrence, assistant messages). */
+  toolUses: Map<string, ClaudeContentBlock>;
+}
+
+function blocksOf(message: ClaudeMessage | undefined): ClaudeContentBlock[] {
+  return message && Array.isArray(message.content) ? message.content : [];
+}
+
+function isAutoToolChoice(choice: ClaudeToolChoice | null | undefined): boolean {
+  return !choice || choice.type === undefined || choice.type === "auto";
+}
+
+function indexToolUses(messages: ClaudeMessage[]): Map<string, ClaudeContentBlock> {
+  const out = new Map<string, ClaudeContentBlock>();
+  for (const message of messages) {
+    if (message?.role !== "assistant") continue;
+    for (const block of blocksOf(message)) {
+      if (block.type === "tool_use" && typeof block.id === "string" && !out.has(block.id)) {
+        out.set(block.id, block);
+      }
+    }
+  }
+  return out;
+}
+
+/** The batch's entries for hashing: each id with its tool_result, or missing. */
+function batchEntries(
+  ids: readonly string[],
+  results: ReadonlyMap<string, ClaudeContentBlock>
+): BatchResultEntry[] {
+  return ids.map((id) => {
+    const result = results.get(id);
+    return result
+      ? {
+          toolUseId: id,
+          result: { isError: result.is_error === true, content: result.content ?? "" },
+        }
+      : { toolUseId: id };
+  });
+}
+
+/** One text part per nested result (`tools.X({...}) returned:` …), images by reference. */
+export function resultParts(
+  ids: readonly string[],
+  results: ReadonlyMap<string, ClaudeContentBlock>,
+  toolUses: ReadonlyMap<string, ClaudeContentBlock>
+): OutputPart[] {
+  const parts: OutputPart[] = [];
+  for (const id of ids) {
+    const use = toolUses.get(id);
+    const name = typeof use?.name === "string" ? use.name : "";
+    const call = `tools.${normalizeToolIdent(name)}(${JSON.stringify(use?.input ?? {})})`;
+    const result = results.get(id);
+    if (!result) {
+      parts.push({ type: "text", text: `${call}: no tool_result returned` });
+      continue;
+    }
+    const verb = result.is_error === true ? "rejected" : "returned";
+    parts.push({ type: "text", text: `${call} ${verb}:\n${toolResultText(result)}` });
+    toolResultImages(result).forEach((_, index) => {
+      parts.push({ type: "image", ref: { toolUseId: id, index } });
+    });
+  }
+  return parts;
+}
+
+/** File a tool_result under its exec key when its id decodes as a nested id. */
+function addNestedResult(
+  groups: Map<string, Map<string, ClaudeContentBlock>>,
+  id: string,
+  block: ClaudeContentBlock
+): void {
+  const nested = decodeNestedId(id);
+  if (!nested) return;
+  let group = groups.get(nested.execKey);
+  if (!group) {
+    group = new Map();
+    groups.set(nested.execKey, group);
+  }
+  if (!group.has(id)) group.set(id, block);
+}
+
+/** The completion key of a record's batches 0..k, the last hashed from `lastHash`. */
+function keyThrough(record: ExecRecord, k: number, lastHash: string): string {
+  const hashes = record.batches.slice(0, k).map((b) => b.batchHash ?? "");
+  return completionKey([...hashes, lastHash]);
+}
+
+class Resume {
+  private readonly scripts: ScriptStore;
+
+  constructor(
+    private readonly view: RequestView,
+    stores: CodeModeStores
+  ) {
+    this.scripts = stores.scripts;
+  }
+
+  /** The last message's nested tool_results grouped by exec key, and whether it carries an interrupt. */
+  private lastMessageResults(): {
+    groups: Map<string, Map<string, ClaudeContentBlock>>;
+    interrupted: boolean;
+  } {
+    const groups = new Map<string, Map<string, ClaudeContentBlock>>();
+    let interrupted = false;
+    const last = this.view.messages[this.view.messages.length - 1];
+    if (last?.role !== "user") return { groups, interrupted };
+    for (const block of blocksOf(last)) {
+      if (block.type === "text" && typeof block.text === "string") {
+        if (block.text.trimStart().startsWith(INTERRUPT_MARKER)) interrupted = true;
+      } else if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        addNestedResult(groups, block.tool_use_id, block);
+      }
+    }
+    return { groups, interrupted };
+  }
+
+  run(): ResumeOutcome {
+    const { groups, interrupted } = this.lastMessageResults();
+    const replies: NestedToolUse[] = [];
+    let resolved = false;
+    for (const [execKey, results] of groups) {
+      const outcome = this.resumeOne(execKey, results, interrupted);
+      if (outcome.kind === "reply") replies.push(...outcome.blocks);
+      else if (outcome.kind === "continue") resolved = true;
+    }
+    this.terminateMovedOn(new Set(groups.keys()));
+    const [first, ...rest] = replies;
+    if (first) return { kind: "reply", blocks: [first, ...rest] };
+    return resolved ? { kind: "continue" } : { kind: "none" };
+  }
+
+  private resumeOne(
+    execKey: string,
+    results: Map<string, ClaudeContentBlock>,
+    interrupted: boolean
+  ): ResumeOutcome {
+    const record = this.scripts.get(this.view.accountKey, execKey);
+    if (!record) return { kind: "none" };
+    const k = record.batches.findIndex((b) => b.ids.some((id) => results.has(id)));
+    if (k < 0) return { kind: "none" };
+    const batch = record.batches[k];
+    const hash = batchHash(batchEntries(batch.ids, results));
+
+    if (batch.batchHash !== undefined) {
+      if (batch.batchHash !== hash) return { kind: "none" };
+      return this.replayDuplicate(record, k);
+    }
+    if (record.state !== "suspended") return { kind: "none" };
+    if (record.sessionKey !== this.view.sessionKey) return { kind: "none" };
+    if (k !== record.batches.length - 1 || !record.runtime) return { kind: "none" };
+    batch.batchHash = hash;
+    try {
+      return this.consume(record, k, results, interrupted);
+    } catch (err) {
+      // A store or sandbox failure: the script is lost, the request goes on.
+      log(`[CodeMode] exec ${record.originalCallId}: resume failed; script lost: ${err}`);
+      this.loseQuietly(record);
+      return { kind: "none" };
+    }
+  }
+
+  /** A duplicate of a request already answered: the memoised step. */
+  private replayDuplicate(record: ExecRecord, k: number): ResumeOutcome {
+    const [first, ...rest] = record.batches[k + 1]?.blocks ?? [];
+    if (first) {
+      log(`[CodeMode] exec ${record.originalCallId}: duplicate request; same reply replayed`);
+      return { kind: "reply", blocks: [first, ...rest] };
+    }
+    // The stored completion answers it; the upstream turn starts again (the
+    // first answer never reached Claude Code; the script is the idempotency
+    // boundary, not the upstream turn).
+    return { kind: "continue" };
+  }
+
+  /** Feed batch `k`'s results to the suspended script (or end it on an interrupt). */
+  private consume(
+    record: ExecRecord,
+    k: number,
+    results: ReadonlyMap<string, ClaudeContentBlock>,
+    interrupted: boolean
+  ): ResumeOutcome {
+    const runtime = record.runtime as NonNullable<ExecRecord["runtime"]>;
+    const batch = record.batches[k];
+    const key = keyThrough(record, k, batch.batchHash ?? "");
+    if (interrupted) {
+      const output = runtime.terminate("");
+      output.parts.push(...resultParts(batch.ids, results, this.view.toolUses));
+      output.parts.push({ type: "text", text: INTERRUPTED_NOTE });
+      this.scripts.storeOutput(record, key, output, "run", this.view.sessionKey);
+      this.scripts.transition(record, "terminate");
+      log(`[CodeMode] exec ${record.originalCallId}: interrupted by the user; terminated`);
+      return { kind: "continue" };
+    }
+    const nestedResults: NestedResult[] = [];
+    for (const id of batch.ids) {
+      const seq = decodeNestedId(id)?.seq;
+      const block = results.get(id);
+      // A missing result is left out: the runtime rejects that call "no tool_result returned".
+      if (seq !== undefined && block) nestedResults.push(nestedResultFromToolResult(seq, block));
+    }
+    this.scripts.transition(record, "resume");
+    const step = runtime.resume(nestedResults);
+    if (step.kind === "blocked") {
+      const blocks = nestedBlocksFor(record.execCallId, step.calls);
+      suspendBlocked(this.scripts, record, blocks);
+      log(`[CodeMode] exec ${record.originalCallId}: resumed; blocked on ${blocks.length} call(s)`);
+      return { kind: "reply", blocks };
+    }
+    settleDone(this.scripts, record, step.output, key, this.view.sessionKey);
+    log(`[CodeMode] exec ${record.originalCallId}: resumed; ${step.output.status}`);
+    return { kind: "continue" };
+  }
+
+  private loseQuietly(record: ExecRecord): void {
+    try {
+      if (record.state === "running") this.scripts.transition(record, "fail");
+      else if (record.state === "suspended") this.scripts.transition(record, "evict");
+    } catch {
+      // Lost either way.
+    }
+  }
+
+  /** The other-entry scan: a pending batch the conversation moved past is terminated. */
+  private terminateMovedOn(handled: ReadonlySet<string>): void {
+    const { messages } = this.view;
+    for (const record of this.scripts.suspendedOwnedBy(this.view.sessionKey)) {
+      if (handled.has(record.execCallId)) continue;
+      const pending = record.batches[record.batches.length - 1];
+      if (!pending || pending.batchHash !== undefined) continue;
+      const ids = new Set(pending.ids);
+      const at = messages.findIndex(
+        (m) =>
+          m?.role === "assistant" &&
+          blocksOf(m).some((b) => b.type === "tool_use" && ids.has(b.id as string))
+      );
+      // Absent (another thread, compaction) or the last message (a prefill): leave it.
+      if (at < 0 || at === messages.length - 1) continue;
+      const answered = messages
+        .slice(at + 1)
+        .some((m) =>
+          blocksOf(m).some((b) => b.type === "tool_result" && ids.has(b.tool_use_id as string))
+        );
+      if (answered) continue;
+      try {
+        const output: ExecOutput = record.runtime
+          ? record.runtime.terminate(MOVED_ON_NOTE)
+          : {
+              status: "terminated",
+              wallMs: undefined,
+              parts: [{ type: "text", text: MOVED_ON_NOTE }],
+            };
+        const key = keyThrough(
+          record,
+          record.batches.length - 1,
+          batchHash(pending.ids.map((id) => ({ toolUseId: id })))
+        );
+        this.scripts.storeOutput(record, key, output, "run", this.view.sessionKey);
+        this.scripts.transition(record, "terminate");
+        log(`[CodeMode] exec ${record.originalCallId}: the conversation moved on; terminated`);
+      } catch (err) {
+        log(`[CodeMode] exec ${record.originalCallId}: terminating failed; script lost: ${err}`);
+        this.loseQuietly(record);
+      }
+    }
+  }
+
+  /** Setting `off`: every suspended record the last message answers is lost (runtime disposed). */
+  loseAnswered(): void {
+    const { groups } = this.lastMessageResults();
+    for (const execKey of groups.keys()) {
+      const record = this.scripts.peek(this.view.accountKey, execKey);
+      if (record?.state === "suspended") {
+        log(`[CodeMode] exec ${record.originalCallId}: code mode is off; script dropped`);
+        this.scripts.transition(record, "evict");
+      }
+    }
+  }
+}
+
+/**
+ * Step 5r for one `openai-codex` request. Never throws and never awaits: a
+ * failure loses the script, never the request.
+ */
+export function resumeFromToolResults(
+  req: { messages?: unknown; metadata?: unknown },
+  binding: AuthBinding | undefined,
+  stores: CodeModeStores | undefined,
+  toolChoice: ClaudeToolChoice | null | undefined,
+  opts: ResumeOptions = {}
+): ResumeOutcome {
+  try {
+    if (!stores) return { kind: "none" };
+    if (binding?.auth?.arm !== "oauth") return { kind: "none" };
+    const accountKey = accountKeyFromBinding(binding);
+    const sessionKey = sessionKeyFor(extractSessionId(req), accountKey);
+    if (!accountKey || !sessionKey) return { kind: "none" };
+    if (!isAutoToolChoice(toolChoice)) return { kind: "none" };
+    const messages = Array.isArray(req.messages) ? (req.messages as ClaudeMessage[]) : [];
+    const resume = new Resume(
+      { messages, accountKey, sessionKey, toolUses: indexToolUses(messages) },
+      stores
+    );
+    if (opts.setting === "off") {
+      resume.loseAnswered();
+      return { kind: "none" };
+    }
+    return resume.run();
+  } catch (err) {
+    log(`[CodeMode] resume step failed; continuing without it: ${err}`);
+    return { kind: "none" };
+  }
+}

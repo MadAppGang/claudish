@@ -23,6 +23,14 @@ export function getCodeModeStores(): CodeModeStores {
   return stores;
 }
 
+/**
+ * The process's stores if a code-mode request already created them; never
+ * creates them (a process that never ran code mode has no record to find).
+ */
+export function peekCodeModeStores(): CodeModeStores | undefined {
+  return stores;
+}
+
 /** Drop the process's stores, disposing every runtime (tests; a process reset). */
 export function resetCodeModeStores(): void {
   if (!stores) return;

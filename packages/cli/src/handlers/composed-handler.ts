@@ -48,7 +48,8 @@ import {
   rebuildAsClassic,
   withoutLiteHeader,
 } from "../code-mode/request.js";
-import { getCodeModeStores } from "../code-mode/stores.js";
+import { resumeFromToolResults } from "../code-mode/resume.js";
+import { getCodeModeStores, peekCodeModeStores } from "../code-mode/stores.js";
 import {
   getLogLevel,
   log,
@@ -126,6 +127,7 @@ import {
   type CodeModeTurnHooks,
   type ResponsesRetryOptions,
   createResponsesStreamHandler,
+  createSyntheticToolUseReply,
   resolveStallPolicy,
 } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
@@ -1432,6 +1434,33 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
+    // 5r. Code-mode resume (`openai-codex`): tool_results answering a suspended
+    // exec script's batch feed the script. After 5b, so the account is THIS
+    // request's; after 3c, so a synthetic reply gets the same Layer 4 hooks.
+    // Synchronous from record lookup to state transition. A script that
+    // blocked again is answered here with its next batch — no upstream call,
+    // no further auth, no stats record (nothing was billed) — through the same
+    // exit as step 8. Anything else continues; a store that was never created
+    // (no code-mode request in this process) is never created here.
+    if (this.provider.name === "openai-codex") {
+      const resumed = resumeFromToolResults(
+        claudeRequest,
+        binding,
+        peekCodeModeStores(),
+        claudeRequest?.tool_choice,
+        { setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING }
+      );
+      if (resumed.kind === "reply") {
+        const sse = createSyntheticToolUseReply(resumed.blocks, {
+          modelName: this.bareModelName,
+          priorInputTokens: this.tokenTracker.getLastInputTokens(),
+          middlewareManager: this.middlewareManager,
+          ...this.responsesHooks(behaviorSession),
+        });
+        return payload?.stream === true ? sse : sseResponseToJson(sse, this.bareModelName);
+      }
+    }
+
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
     if (this.provider.transformPayload) {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
@@ -2726,6 +2755,27 @@ export class ComposedHandler implements ModelHandler {
     );
   }
 
+  /**
+   * The Layer 4 and tool-count hooks every Responses message is written with:
+   * driver legs (`createResponsesStreamHandler`) and 5r synthetic replies alike.
+   * `onToolCallObserved` counts the tool whether or not a behaviour session
+   * exists (see `observeToolCall` in handleStream).
+   */
+  private responsesHooks(behaviorSession?: BehaviorSession) {
+    return {
+      shouldBufferTool: (name: string) => behaviorSession?.interceptsTool(name) ?? false,
+      onToolCall: (name: string, argsJson: string) =>
+        behaviorSession?.repairToolCall(name, argsJson) ?? null,
+      onAssistantText: (text: string, kind?: "text" | "reasoning") =>
+        behaviorSession?.observeText(text, kind),
+      onToolCallObserved: (name: string): void => {
+        this.tokenTracker.recordToolUse(name);
+        behaviorSession?.observeToolCall(name);
+      },
+      onTurnEnd: () => behaviorSession?.finishTurn(),
+    };
+  }
+
   private handleStream(
     c: Context,
     response: Response,
@@ -2845,11 +2895,9 @@ export class ComposedHandler implements ModelHandler {
           onApiError,
           priorInputTokens,
           middlewareManager: this.middlewareManager,
-          shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
-          onToolCall: (name, argsJson) => behaviorSession?.repairToolCall(name, argsJson) ?? null,
-          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-          onToolCallObserved: observeToolCall,
-          onTurnEnd: () => behaviorSession?.finishTurn(),
+          // The same builder as a 5r synthetic reply, so a resumed batch gets
+          // exactly the hooks a driver batch gets.
+          ...this.responsesHooks(behaviorSession),
           retry: responsesTurn?.retry,
           // Earlier legs of a retried turn: cost only, before the stats snapshot
           // that onTokenUpdate fires.
