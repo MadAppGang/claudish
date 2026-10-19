@@ -94,7 +94,11 @@ Located in `handlers/shared/stream-parsers/`:
 - `anthropic-sse.ts` — Anthropic SSE passthrough (MiniMax, Kimi direct)
 - `gemini-sse.ts` — Gemini SSE → Claude SSE
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
-- `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex)
+- `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex). The module entry point
+  only; the work is under `responses/`: `claude-sse-sink.ts` (the one writer of Claude SSE for a
+  downstream message), `responses-leg.ts` (one upstream body → a `LegOutcome`), `responses-turn.ts`
+  (how the message ends, in-turn retry, usage), `parallel-wrapper.ts`, `stall-guard.ts`. See
+  "Codex tool calls" below.
 
 ## Gemini tool schemas are protobuf, not JSON Schema (`handlers/shared/gemini-schema.ts`)
 
@@ -281,6 +285,168 @@ models-index subagent `acd91c47262e06a7a`, `gpt-5.6-sol` via `openai-codex`, 202
 **VERIFIED against a real client (2026-09-10).** Claude Code does honour a mid-stream `error` event: it discards the partial `tool_use` and retries the turn. Measured before/after against one mock upstream — released v9.0.8 executed the truncated `Write` and returned `InputValidationError`, the fixed build executed no tool at all. This was measured rather than argued precisely because the `max_tokens` assumption above turned out to be false. Method, traps and raw logs: [`../reports/truncated-toolcall-live-verification.md`](../reports/truncated-toolcall-live-verification.md).
 
 **The fix:** when `openToolBlocks` is non-empty in the parser's catch block, end the turn with an SSE `error` event instead of `end_turn`. No completed `tool_use` reaches the client, and a dead socket is transient, so the client's own retry is the right remedy. `devin-connect.ts` ends a mid-stream fault the same way. With no tool call in flight the inline `[Stream error: ...]` text block is kept — partial prose is harmless and visible.
+
+Since the leg/turn split the catch block is `responses-leg.ts` (it reports `stream-error` with
+`openToolBlock`) and the ending is chosen in `responses-turn.ts`; the rule is unchanged.
+
+## Codex tool calls: zero-delta arguments, the `parallel` wrapper, retry within the turn
+
+`cx@` sessions (claudish provider `openai-codex`, the ChatGPT Codex backend) failed parallel tool
+calls with `InputValidationError: … The required parameter 'file_path' is missing`. Three
+mechanisms, each with its own evidence; the measurements are in
+`ai-docs/reports/codex-parallel-wrapper-degeneration-2026-10.md` and the session evidence it cites.
+
+### Zero-delta function calls
+
+Since 2026-07-29 the Codex backend sends every MULTI-call turn with zero
+`response.function_call_arguments.delta` events (100% of multi-call turns in the B replays). The
+arguments exist only in `response.function_call_arguments.done` and in the `output_item.done`
+item. The parser forwarded arguments only from deltas, so Claude Code got `{}`.
+
+Each call now counts the bytes it forwarded (`forwardedBytes`) and keeps the `.done` string. At
+`output_item.done` the final arguments are `.done ?? item.arguments ?? accumulator`:
+
+| what the deltas carried | what goes out at `output_item.done` |
+|---|---|
+| nothing (Codex multi-call) | the final string as ONE `input_json_delta`; log `zero-delta function_call <name>: emitted <n> bytes from <done\|item>` |
+| a strict prefix of the final string | the missing suffix only (logged) |
+| the whole final string (native `openai@`, single-call Codex) | nothing more |
+| something that is not a prefix | nothing more; log `done arguments diverge from streamed deltas for <name>` |
+
+A buffered call (plan-mode Write/Edit) hands the final string to `onToolCall`, then one delta.
+`BehaviorSession.repairToolCall` ignores an empty argument string: reading it as `{}` journalled
+false `tool_call/ignored` entries.
+
+### The `parallel` wrapper
+
+About 1% of turns end with a function_call named `parallel` (the model's built-in
+`multi_tool_use.parallel`), which no tool in the request declares. In every observed case its
+arguments are a degenerate 41–96 KB string (`a.ts.tsaaa.ts.ts…`) that arrives in ONE burst after a
+361–484 s keepalive-only stall, then `response.incomplete` `max_output_tokens`. The B experiment
+found no request factor (effort low/medium, 4 tools, `strict:false`) significantly better
+(Fisher p = 1.000), so the remedy is in claudish, not in the request.
+
+`isParallelWrapperName(name, declaredNames)` is true for `parallel` / `multi_tool_use.parallel`
+(optional `functions.` prefix) only when no tool Claude Code declared has that name, so a user tool
+really called `parallel` is untouched. Such a call is HELD (no `content_block_start`), and the
+pending reasoning moves into it. At `output_item.done`:
+
+- a valid `{tool_uses:[{recipient_name, parameters}]}` becomes one tool_use block per entry (name
+  `functions.`-stripped and decoded through `toolNameMap`, id `toolu_<call id>_p<k>`). The
+  reasoning is remembered under the `_p0` id ONLY, so the next request replays it exactly once.
+  No valid wrapper has ever been captured (the backend unpacks those itself), so this branch rests
+  on the documented shape, not on a capture;
+- anything else (unparseable, wrong shape, empty, or still held at `response.incomplete` or at the
+  end of the stream) is degenerate and never reaches Claude Code.
+
+There is no byte-level repetition detector: the degenerate string is never streamed, so a streaming
+detector has nothing to observe on the real failure, and its low-diversity condition is met by
+legitimate repetitive Write content.
+
+### Retry within the turn
+
+A degenerate leg is retried by re-sending the SAME body while the downstream message stays open
+(`responses-turn.ts`); the next leg continues at the next block index on the same `ClaudeSseSink`.
+`MAX_LEG_RETRIES = 2` (3 attempts). Tool blocks have three states on the sink (started, arguments
+complete, stopped), and a leg is issued only while no tool_use was emitted:
+
+| state of the message when the trigger fires | action |
+|---|---|
+| `message_start` + pings, or closed text/thinking only | retry (repeated commentary is possible, cosmetic, logged) |
+| ≥ 1 tool_use stopped with its arguments, none cut off | no retry: end `stop_reason: tool_use` for those calls — re-emitting could run a side-effecting Bash twice |
+| any tool_use started but cut off | no retry: SSE `error` (the cut-off rule above) |
+| retries exhausted | SSE `error`: `degenerate parallel tool wrapper after 3 attempts` / `no output for 300 s after 3 attempts` |
+
+Log: `[ResponsesTurn] <stall 150s|degenerate NB> — retry k/2`.
+
+**Why the parser layer, and nowhere else.** Not 7b: the status is already flushed. Not
+`FallbackHandler`: a model fault must never move a subscription user onto a metered hop. Not the
+transport. After the flush every failure ends with an SSE `error`; no status is invented, no
+network-recovery hold starts, and the five auth sites are untouched.
+
+**Legs 2..n** come from `createLegIssuer` (`handlers/shared/responses-leg-issuer.ts`), built in
+`handle()` from THIS request's header builder, current body (after parameter recovery) and
+transport hooks. Per leg: `refreshAuth`, and when a transport returns a binding whose arm or account
+differs from the turn's, stop ("Codex sign-in changed during the turn") rather than continue on
+another credential silo (no transport returns one yet, so legs take the no-binding path, identical
+to the primary fetch); its own `deadlineClamp` ceiling merged with the turn signal (the primary's
+clamp is disarmed at headers and bounds nothing later); one `forceRefreshAuth` re-fetch on 401; any
+other non-200 → SSE `error` carrying the status and the first 500 body bytes (`HTTP 429 on retry
+leg 2: …`), no parameter recovery; the 7b settle, abortable; a throw is classified for the log only.
+The previous leg's reader is cancelled (awaited) first, so two upstream streams never overlap.
+
+**Usage.** Each leg reads its own usage, including `input_tokens_details.cached_tokens`. At turn
+end, in this order: `onExtraBilledInput` (input of EARLIER legs that reported usage) →
+`TokenTracker.addBilledInputTokens` (cost and billed input only, never the context figures, same
+cache clamp as `update()`); `onTurnSummary`; then `onTokenUpdate(final leg's input, every leg's
+output)`, which fires the request's ONE stats record, so it already contains both. Each earlier leg
+was a separate request the provider billed in full; under `delta-aware` the last leg is still
+charged only its growth, which is that strategy's model of the conversation, not of a retry. On the
+default stall scope (subscription) this is $0. StatsEvent `leg_retries` (absent when 0) is pushed in
+`eventToLogRecord` as `llm.leg_retries`.
+
+### The stall guard (`stall-guard.ts`)
+
+The leak's keepalive-only wait (361–484 s) is not bounded by `API_TIMEOUT_MS`, which does not bound
+a flushed, pinging stream (the leak ran 472 s). A leg with no output-bearing event
+(`output_item.added` of any type, or any `*.delta`; NOT `created`, `in_progress`, keepalives,
+metadata) within the threshold after its RESPONSE HEADERS is cut off and retried like a degenerate
+leg.
+
+| sample (all `openai-codex`, ChatGPT backend) | n | headers → first output item |
+|---|---|---|
+| real sessions, 19 debug logs, 2026-07-15..10-16 | 8,239 | p50 1.2 s, p90 3.6 s, p99 8.5 s, p99.9 28.3 s, healthy max 61.7 s |
+| B experiment, healthy legs | 297 | max 7.38 s (from `response.created`) |
+| leaks | 4 | 361 s, 456 s, 484.5 s, > 150 s (aborted) |
+
+The clock starts at the headers, not at `response.created`: in the 61.7 s legs the backend held
+`response.created` until the first item. ComposedHandler stamps it where the 200 arrives and again
+on each 7b re-issue, so the 12 s sniff window counts against the guard. Thresholds: 150 s for
+attempts 1..n-1 (2.4× the healthy max, 2.4× below the fastest leak), 300 s for the final attempt
+(4.9× the healthy max, still below the fastest leak). Worst case 150 + 150 + 300 s, against an
+unbounded wait; a single stall costs ~150 s plus one healthy leg, against 361–484 s.
+
+**Scope.** The data is from the ChatGPT backend only, so the default is exactly that: claudish
+provider `openai-codex` AND the arm that signs this request is `oauth`
+(`ProviderTransport.currentAuthArm()`, read beside the endpoint). Native `openai@`, the
+`openai-codex` api-key arm and custom `responses` endpoints are unarmed unless
+`CLAUDISH_RESPONSES_STALL_MS` is set: > 0 arms it everywhere (final attempt 2×), `0` disarms it
+everywhere.
+
+### Downstream cancel
+
+`cancel()` on the downstream stream (Claude Code disconnected, aborted, timed out) used to stop only
+the ping, and the upstream response kept streaming to completion with nobody reading it. Now the
+sink aborts the turn's `AbortController`: the leg cancels its reader, the signal reaches
+`issueLeg` (a leg fetch or 7b backoff in progress is aborted), and the driver issues nothing more.
+Usage is recorded after a cancel only if a leg had already reported it (what was billed is billed).
+
+## A non-streamed turn that ends in an SSE error (`collect-sse-message.ts`)
+
+`sseResponseToJson` folds every ComposedHandler stream into one JSON message for a request with
+`stream` absent or false (`/compact`). It had no `error` case: a stream that ended on an SSE
+`error` came back as 200 with partial or empty-input content and an inferred `stop_reason`, while
+the streamed form of the same failure made Claude Code discard the message and retry.
+
+Now, when the folded stream carried an SSE `error`, every collected block is discarded and the
+answer is the Anthropic error body `{type:"error", error:{type, message}}` with the status the
+Messages API defines for that type (`invalid_request_error` 400, `api_error` 500,
+`overloaded_error` 529, any other 500) and the header `x-claudish-stream-failure: 1`. This is the
+error the event declares, not an upstream status claim, so `extractUpstreamStatus` does not apply.
+
+**Scope is every parser, deliberately.** openai-responses-sse, openai-sse, gemini-sse,
+ollama-jsonl, devin-connect and anthropic-sse all emit SSE `error` from their terminal failure path,
+so the contract reaches all of them: the non-streamed 200-with-partial-content was the
+inconsistent case, not the new one. The Responses parser's non-tool stream error (an inline text
+block, `end_turn`) emits no SSE `error` and still returns 200.
+
+**Why a marker.** A stream-failure answer is not a provider's verdict on the request and must never
+advance a routing chain. A status cannot hold it, because `isRetryableError` reads quota wording
+before any status and a retry leg's error quotes the upstream body. So `FallbackHandler.handle`
+returns it verbatim before reading the body (beside the recovery marker), and `isRetryableError`
+returns `false` for it above the wording match. Unforgeable for the recovery marker's reason: the
+collector builds a new `Response` whose headers start empty. See `network-recovery.md`, "A third
+marker".
 
 ## The remap has a downstream reader: `upstream_status` (v7.62.0, #148)
 
