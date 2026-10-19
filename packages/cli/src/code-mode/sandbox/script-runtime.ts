@@ -428,6 +428,13 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
         `claudish: tools.${ident} takes an object as its argument; this call was not run`
       );
     }
+    // `ctx.dump` renders a promise as `{type:"pending"}` / `{type:"fulfilled",
+    // value}`, an object, which would be relayed as the tool's input.
+    if (this.isPromise(argsH)) {
+      return this.rejected(
+        `claudish: tools.${ident} was given a promise; await it and pass the object. This call was not run`
+      );
+    }
     const input = ctx.dump(argsH) as unknown;
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       return this.rejected(
@@ -681,6 +688,19 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
     else deferred.reject(value);
     value.dispose();
     deferred.dispose();
+  }
+
+  /** True when `handle` is a QuickJS promise (any state); disposes the settled value it reads. */
+  private isPromise(handle: QuickJSHandle): boolean {
+    const state = this.requireCtx().getPromiseState(handle);
+    if (state.type === "fulfilled") {
+      // `notAPromise`: `value` IS `handle`, which the caller still owns.
+      if (state.notAPromise) return false;
+      state.value.dispose();
+    } else if (state.type === "rejected") {
+      state.error.dispose();
+    }
+    return true;
   }
 
   /** A promise handle already rejected with `message` (consumed by the library on return). */
