@@ -20,12 +20,14 @@ import { log } from "../logger.js";
 import { type ClaudeToolLike, renderExecTool } from "./exec-tool.js";
 import { type BatchResultEntry, batchHash, canonicalJson, completionKey } from "./hashes.js";
 import { decodeNestedId, encodeNestedId } from "./ids.js";
+import type { ExecOutput } from "./output.js";
 import { nestedBlocksFor, settleDone, suspendBlocked } from "./relay.js";
 import { type QuickJSModuleLease, currentQuickJSModule } from "./sandbox/quickjs-loader.js";
 import {
   type NestedCall,
   type NestedResult,
   type ScriptRuntime,
+  type ScriptStep,
   createScriptRuntime,
 } from "./sandbox/script-runtime.js";
 import type { ExecRecord, ExecState, ScriptStore } from "./script-store.js";
@@ -49,6 +51,12 @@ export interface ReplayInput {
   /** Claude Code's tools in this request (the identifiers the script calls). */
   tools: readonly ClaudeToolLike[];
   sessionKey: string;
+  /**
+   * The user interrupted (Esc) beside the last round's results: the script is
+   * re-run up to that round and ENDED there, never fed its results, so it can
+   * emit no further tool call — as the live path terminates on the same marker.
+   */
+  interrupted?: boolean;
   /** Test seam; default the loaded module, if any. */
   module?: QuickJSModuleLease;
 }
@@ -56,6 +64,12 @@ export interface ReplayInput {
 export type ReplayResult =
   | { kind: "reply"; blocks: [NestedToolUse, ...NestedToolUse[]] }
   | { kind: "done" }
+  /**
+   * Interrupted at the last round: `output` is what the script produced before
+   * it (the runtime is disposed, the record still `lost`); `key` is the
+   * completion key through that round. The caller adds the results and stores it.
+   */
+  | { kind: "interrupted"; output: ExecOutput; key: string }
   | undefined;
 
 function entriesOf(
@@ -101,12 +115,44 @@ function resultsFor(
 }
 
 /**
+ * Feed history's rounds to a freshly started script, checking each batch it
+ * blocks on against the round. `stopped` is a divergence (undefined) or an
+ * interrupt at the last round; otherwise the step after the last round.
+ */
+function runRounds(
+  runtime: ScriptRuntime,
+  input: ReplayInput
+): { kind: "ran"; step: ScriptStep; hashes: string[] } | { kind: "stopped"; result: ReplayResult } {
+  const { record, rounds, results } = input;
+  let step = runtime.start(record.source);
+  const hashes: string[] = [];
+  for (const [k, round] of rounds.entries()) {
+    if (step.kind !== "blocked" || !matchesRound(record.execCallId, step.calls, round)) {
+      log(`[CodeMode] exec ${record.originalCallId}: replay diverged from history; script lost`);
+      runtime.dispose();
+      return { kind: "stopped", result: undefined };
+    }
+    hashes.push(batchHash(entriesOf(round.ids, results)));
+    if (input.interrupted && k === rounds.length - 1) {
+      const output = runtime.terminate("");
+      log(`[CodeMode] exec ${record.originalCallId}: replayed to the interrupt; terminated`);
+      return {
+        kind: "stopped",
+        result: { kind: "interrupted", output, key: completionKey(hashes) },
+      };
+    }
+    step = runtime.resume(resultsFor(round, results));
+  }
+  return { kind: "ran", step, hashes };
+}
+
+/**
  * Re-run `record`'s script against history. A blocked step past the last
  * round is the script's next batch (reply); a finished one is stored. Undefined
  * when the script is not replayable or diverged: the record stays lost.
  */
 export function replayLostScript(input: ReplayInput): ReplayResult {
-  const { record, rounds, results, scripts } = input;
+  const { record, rounds, scripts } = input;
   if (record.state !== "lost" || record.batches.length === 0 || !record.source) return undefined;
   if (rounds.length === 0) return undefined;
   const lease = input.module ?? currentQuickJSModule();
@@ -121,17 +167,9 @@ export function replayLostScript(input: ReplayInput): ReplayResult {
       module: lease,
       onEvicted: () => scripts.loseIfRuntimeGone(record),
     });
-    let step = runtime.start(record.source);
-    const hashes: string[] = [];
-    for (const round of rounds) {
-      if (step.kind !== "blocked" || !matchesRound(record.execCallId, step.calls, round)) {
-        log(`[CodeMode] exec ${record.originalCallId}: replay diverged from history; script lost`);
-        runtime.dispose();
-        return undefined;
-      }
-      hashes.push(batchHash(entriesOf(round.ids, results)));
-      step = runtime.resume(resultsFor(round, results));
-    }
+    const ran = runRounds(runtime, input);
+    if (ran.kind !== "ran") return ran.result;
+    const { step, hashes } = ran;
     scripts.transition(record, "replay");
     scripts.attachRuntime(record, runtime);
     record.batches = rounds.map((round, k) => ({ ids: round.ids, batchHash: hashes[k] }));

@@ -17,7 +17,8 @@
  *     running:   block → suspended, finish → completed, fail → failed
  *     suspended: resume → running, terminate → terminated, abandon → terminated,
  *                evict → lost, expire → lost
- *     lost:      answer → failed (tombstone stored), replay → running
+ *     lost:      answer → failed (tombstone stored), replay → running,
+ *                terminate → terminated (replayed up to a user interrupt)
  *     completed / failed / terminated: answer → same state
  *
  * The catalog's table throws on an illegal transition. Here it is logged and
@@ -65,7 +66,7 @@ const TRANSITIONS: Record<ExecState, Partial<Record<ExecEvent, ExecState>>> = {
     evict: "lost",
     expire: "lost",
   },
-  lost: { answer: "failed", replay: "running" },
+  lost: { answer: "failed", replay: "running", terminate: "terminated" },
   completed: { answer: "completed" },
   failed: { answer: "failed" },
   terminated: { answer: "terminated" },

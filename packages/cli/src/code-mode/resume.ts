@@ -258,9 +258,10 @@ class Resume {
     interrupted: boolean
   ): ResumeOutcome {
     const record = this.scripts.get(this.view.accountKey, execKey);
-    // An evicted runtime whose source is kept: re-run it against history first.
+    // An evicted runtime whose source is kept: re-run it against history first
+    // (on an interrupt, only up to the answered round, then ended there).
     if (record?.state === "lost" && record.sessionKey === this.view.sessionKey) {
-      const replayed = this.replay(execKey, record, results);
+      const replayed = this.replay(execKey, record, results, interrupted);
       if (replayed) return replayed;
     }
     // Restart, another account's record, eviction or a poisoned module: the
@@ -398,7 +399,8 @@ class Resume {
   private replay(
     execKey: string,
     record: ExecRecord,
-    lastResults: ReadonlyMap<string, ClaudeContentBlock>
+    lastResults: ReadonlyMap<string, ClaudeContentBlock>,
+    interrupted: boolean
   ): ResumeOutcome | undefined {
     const rounds = this.historyRounds(execKey);
     const answered = this.answeredRound(rounds, lastResults);
@@ -410,8 +412,24 @@ class Resume {
       results: this.view.results,
       tools: this.view.tools,
       sessionKey: this.view.sessionKey,
+      interrupted,
     });
     if (!replayed) return undefined;
+    if (replayed.kind === "interrupted") {
+      // The live path's terminated output: what ran before the interrupt, the
+      // results it was waiting for, the note. No further tool call is emitted.
+      try {
+        const { output } = replayed;
+        output.parts.push(...resultParts(rounds[answered].ids, lastResults, this.view.toolUses));
+        output.parts.push({ type: "text", text: INTERRUPTED_NOTE });
+        this.scripts.storeOutput(record, replayed.key, output, "run", this.view.sessionKey);
+        this.scripts.transition(record, "terminate");
+        return { kind: "continue" };
+      } catch (err) {
+        log(`[CodeMode] exec ${record.originalCallId}: storing the interrupt failed: ${err}`);
+        return undefined;
+      }
+    }
     return replayed.kind === "reply" ? replayed : { kind: "continue" };
   }
 

@@ -183,7 +183,7 @@ for the same script.
 | Situation (the last user message answers nested ids) | Behaviour |
 |---|---|
 | suspended, owned by this session, expected batch | results resolve or reject by seq (`is_error` rejects with a plain string, as Codex); missing → "no tool_result returned"; blocked again → **synthetic reply**; done → output stored, the upstream turn continues and the input builder renders it |
-| `[Request interrupted by user` beside the results | terminated: output so far, the results, "interrupted by the user"; continue |
+| `[Request interrupted by user` beside the results | terminated: output so far, the results, "interrupted by the user"; continue. A LOST record is replayed only up to the answered round and terminated there (never fed its results), so Esc yields no further tool call |
 | consumed batch, same `batchHash` (a duplicate request) | the memoised step: the same synthetic reply, or the stored completion |
 | consumed batch, different `batchHash` (a rewind that re-ran tools) | lost path, tombstone under the new completion key |
 | suspended, owned by ANOTHER session (a fork) | untouched; the fork gets `Script failed` "this script belongs to the session this one was forked from; claudish cannot run it twice"; the owner's later run output wins every lookup |
