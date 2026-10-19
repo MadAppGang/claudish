@@ -32,6 +32,7 @@ Planned-but-unimplemented work — the SEP-1686 channel migration, optional `not
 - **An outage detected is an outage escalated — in the SAME cycle** (DM URGENT + dashboard). "Chronic" thresholds (#80-style counts) never apply to a total outage.
 - **An issue treated halfway is an issue in failure**: no next grain until the current issue's DoD is met or the rescope is explicitly recorded.
 - Rollback of a fleet change goes through the same channel as the change: an unlogged revert of shared infra (IIS web.config, .env, NAT) is an incident, not a fix.
+- The hub's entry form is the published container port (`.50:3000`); any change to the fleet-facing entry point (ARR rule, forwarder port, socket owner, published port) is announced on the `global` dashboard BEFORE it is applied — engagement 2026-10-03, approved 2026-10-19 (the 07/09 silent ARR revert and the 30/09 orphan socket each cut part of the fleet undetected). Detail: `docs/reference/relay-internals.md` §Stable entry form (roo-extensions#3963).
 
 ## Build, Release, Versioning
 

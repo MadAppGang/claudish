@@ -149,6 +149,20 @@ argument for pointing the WAN entry at a relay rather than straight at the hub
 
 `scripts/install-sidecar.ps1` idempotently stands up a sidecar on a target machine (clone/pull, per-machine `.env`, `docker compose up --build`, end-to-end probe). Runbook + per-machine config table: `docs/deployment/relay-sidecar-deployment.md`. Sidecars go on every machine except the hub (po-2025 since the 05/09 cutover) and web1 (stays on `models.myia.io`); po-2023 runs the relay + WAN edge instead. The client prerequisite — the `x-proxy-key` custom header — is documented in memory `proxy-key-custom-header-auth`.
 
+## Stable entry form & announcement convention (roo-extensions#3963)
+
+The hub lane guarantees ONE shape for its fleet-facing entry: **the published container port
+`.50:3000`** on po-2025. Everything in front of it (the ARR rule on po-203, the `:18182` host
+forwarder, `models.myia.io`) is the façade owner's infrastructure, not the hub's contract.
+
+**Engagement (2026-10-03, user-approved 2026-10-19): any change to the fleet-facing entry
+point — ARR rewrite target, forwarder port, socket owner, published port — is announced on the
+`global` dashboard BEFORE it is applied**, same channel discipline as side-effect announcements.
+Founding incidents: the 07/09 silent ARR revert (2 779 req / 263.6 M tokens served invisibly by
+the po-203 local cascade, 4 days undetected) and the 30/09 orphan `:3000` socket (502/reset for
+~80 min, fleet cut mid-afternoon). Both were shape changes nobody announced; the convention
+exists so the next one is at least visible before it bites.
+
 ## Compose environment surface
 
 `docker-compose.yml` carries a default for every relay variable, so the hub runs with **no `.env` at
