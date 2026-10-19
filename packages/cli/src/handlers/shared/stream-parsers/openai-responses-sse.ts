@@ -129,6 +129,23 @@ export function createResponsesStreamHandler(
   let lastActivity = Date.now();
   let pingInterval: ReturnType<typeof setInterval> | null = null;
   let isClosed = false;
+  // Set by cancel() (the client went away) and by a usage-bearing event.
+  let cancelledByClient = false;
+  let usageReported = false;
+
+  /**
+   * Hand the turn's usage to the caller, which fires the request's stats record.
+   * After a client disconnect it does so only if the upstream had already
+   * reported usage: what was billed is billed, but a turn cut off before any
+   * usage arrived has no figure worth recording.
+   */
+  const reportTokens = () => {
+    if (cancelledByClient && !usageReported) {
+      log("[ResponsesSSE] client disconnected before usage arrived; no token update");
+      return;
+    }
+    opts.onTokenUpdate?.(inputTokens, outputTokens);
+  };
 
   type FnCall = {
     name: string;
@@ -297,7 +314,7 @@ export function createResponsesStreamHandler(
           clearInterval(pingInterval);
           pingInterval = null;
         }
-        if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+        reportTokens();
         reader.cancel().catch(() => {});
         safeClose();
       };
@@ -656,6 +673,7 @@ export function createResponsesStreamHandler(
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || inputTokens;
                   outputTokens = event.response.usage.output_tokens || outputTokens;
+                  usageReported = true;
                 }
                 // A wrapper still held when the response is cut short never got
                 // its arguments judged: degenerate by definition.
@@ -671,9 +689,11 @@ export function createResponsesStreamHandler(
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || 0;
                   outputTokens = event.response.usage.output_tokens || 0;
+                  usageReported = true;
                 } else if (event.usage) {
                   inputTokens = event.usage.input_tokens || 0;
                   outputTokens = event.usage.output_tokens || 0;
+                  usageReported = true;
                 }
               } else if (event.type === "error" || event.type === "response.failed") {
                 const err = event.error || event.response?.error || {};
@@ -716,7 +736,7 @@ export function createResponsesStreamHandler(
                   clearInterval(pingInterval);
                   pingInterval = null;
                 }
-                if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+                reportTokens();
                 safeClose();
                 return;
               }
@@ -782,7 +802,7 @@ export function createResponsesStreamHandler(
         send("message_stop", { type: "message_stop" });
 
         isClosed = true;
-        if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+        reportTokens();
         if (opts.middlewareManager) {
           await opts.middlewareManager.afterStreamComplete(opts.modelName, streamMetadata);
         }
@@ -828,7 +848,7 @@ export function createResponsesStreamHandler(
           } catch {}
 
           isClosed = true;
-          if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+          reportTokens();
           safeClose();
         }
       }
@@ -841,12 +861,20 @@ export function createResponsesStreamHandler(
     // closed` from inside a timer callback, where nothing catches it, and the
     // proxy process dies (the next request then fails with ConnectionRefused).
     // Every sibling parser already has this handler; this one was missing it.
+    //
+    // The upstream reader is cancelled too. Without it a disconnected client
+    // left the upstream response streaming to completion (minutes, for a long
+    // reasoning turn or a stalled one) with nobody reading the result. The
+    // pending `reader.read()` in `start` then settles `done` (or throws), and
+    // every path out of `start` is a no-op on a closed stream.
     cancel() {
       isClosed = true;
+      cancelledByClient = true;
       if (pingInterval) {
         clearInterval(pingInterval);
         pingInterval = null;
       }
+      reader.cancel().catch(() => {});
     },
   });
 
