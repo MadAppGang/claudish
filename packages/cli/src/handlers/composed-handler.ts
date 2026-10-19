@@ -2927,24 +2927,6 @@ export class ComposedHandler implements ModelHandler {
 }
 
 /**
- * Return a human-readable recovery hint based on HTTP status and error body.
- *
- * `transportTerminal429` is the transport's own verdict on a 429 when it can
- * read its provider's structured errors (see
- * `ProviderTransport.classifyTerminalError`). It OVERRIDES the wording
- * heuristics below, which are pattern-matching prose and cannot tell a spent
- * plan from a per-minute throttle when the provider phrases both identically.
- * `undefined` — every transport without the hook — keeps the original behaviour.
- *
- * `providerUid` is the INTERNAL provider name (`ProviderTransport.name`, e.g.
- * `qwen-token-plan`), not the display name, because it is what the provider
- * catalog is keyed by. It is optional and every branch below is unchanged
- * without it: it only lets the auth branch look up whether this vendor ships a
- * SECOND, non-interchangeable key for another tier (`siblingKeyEnvVars`).
- * Nothing is inferred from the credential itself — see the branch for why the
- * key's own bytes are deliberately not read.
- */
-/**
  * Name the credential that signed THIS request on its response, as
  * `x-claudish-signed-with` (URI-encoded: a tier name need not be a valid
  * header byte string), for a provider with several login sources (muse@: own
@@ -2972,6 +2954,24 @@ function withSignerHeader(response: Response, signer: string | undefined): Respo
   }
 }
 
+/**
+ * Return a human-readable recovery hint based on HTTP status and error body.
+ *
+ * `transportTerminal429` is the transport's own verdict on a 429 when it can
+ * read its provider's structured errors (see
+ * `ProviderTransport.classifyTerminalError`). It OVERRIDES the wording
+ * heuristics below, which are pattern-matching prose and cannot tell a spent
+ * plan from a per-minute throttle when the provider phrases both identically.
+ * `undefined` — every transport without the hook — keeps the original behaviour.
+ *
+ * `providerUid` is the INTERNAL provider name (`ProviderTransport.name`, e.g.
+ * `qwen-token-plan`), not the display name, because it is what the provider
+ * catalog is keyed by. It is optional and every branch below is unchanged
+ * without it: it only lets the auth branch look up whether this vendor ships a
+ * SECOND, non-interchangeable key for another tier (`siblingKeyEnvVars`).
+ * Nothing is inferred from the credential itself — see the branch for why the
+ * key's own bytes are deliberately not read.
+ */
 export function getRecoveryHint(
   status: number,
   errorText: string,
