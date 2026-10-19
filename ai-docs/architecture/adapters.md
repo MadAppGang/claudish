@@ -337,7 +337,11 @@ pending reasoning moves into it. At `output_item.done`:
   No valid wrapper has ever been captured (the backend unpacks those itself), so this branch rests
   on the documented shape, not on a capture;
 - anything else (unparseable, wrong shape, empty, or still held at `response.incomplete` or at the
-  end of the stream) is degenerate and never reaches Claude Code.
+  end of the stream) is degenerate and never reaches Claude Code. A wrapper judged degenerate at its
+  `output_item.done` does not end the leg there: the leg keeps reading, emitting nothing, until the
+  terminal event (at most `EXEC_DRAIN_MS = 10 s`, the exec's drain), because that event carries the
+  usage the provider billed. In the V0-21 capture `response.incomplete` came six lines later with
+  39,429 input and 32,000 output tokens, which an immediate stop dropped from the accounting.
 
 There is no byte-level repetition detector: the degenerate string is never streamed, so a streaming
 detector has nothing to observe on the real failure, and its low-diversity condition is met by

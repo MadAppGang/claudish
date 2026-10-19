@@ -55,6 +55,9 @@ export interface Usage {
  */
 export const EXEC_DRAIN_MS = 10_000;
 
+/** Why a `parallel` wrapper was judged degenerate. */
+export type DegenerateReason = "unparseable" | "shape" | "empty" | "incomplete";
+
 export type LegOutcome =
   | {
       kind: "done";
@@ -77,7 +80,7 @@ export type LegOutcome =
   | {
       kind: "degenerate-wrapper";
       bytes: number;
-      reason: "unparseable" | "shape" | "empty" | "incomplete";
+      reason: DegenerateReason;
       usage?: Usage;
     }
   | { kind: "api-error"; code: string; message: string; usage?: Usage }
@@ -196,6 +199,8 @@ class ResponsesLeg {
   private heldExec: HeldExec | undefined;
   private readonly items: ResponsesItem[] = [];
   private drainTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A degenerate wrapper held until the terminal event (`holdDegenerate`). */
+  private heldDegenerate: { reason: DegenerateReason; bytes: number } | undefined;
   private cancelReader: (() => void) | undefined;
 
   constructor(private readonly ctx: ResponsesLegContext) {}
@@ -213,13 +218,58 @@ class ResponsesLeg {
     };
   }
 
-  /** The held exec's input is whole: stop reading at the terminal event, or after EXEC_DRAIN_MS. */
-  private startDrain(): void {
+  /**
+   * The leg's outcome is decided (a whole exec call, a degenerate wrapper):
+   * keep reading only for the terminal event's usage, at most EXEC_DRAIN_MS.
+   */
+  private startDrain(what: string): void {
     if (this.drainTimer) return;
     this.drainTimer = setTimeout(() => {
-      log(`[ResponsesSSE] no terminal event ${EXEC_DRAIN_MS} ms after the exec call; using it`);
+      log(`[ResponsesSSE] no terminal event ${EXEC_DRAIN_MS} ms after the ${what}; using it`);
       this.cancelReader?.();
     }, EXEC_DRAIN_MS);
+  }
+
+  /**
+   * A wrapper judged degenerate at its `output_item.done`: never emitted, and
+   * the leg ends degenerate — but only after the terminal event, which carries
+   * the usage the provider billed (V0-21.sse: `response.incomplete` six lines
+   * after the wrapper, 39,429 input tokens that an immediate stop discarded).
+   */
+  private holdDegenerate(reason: DegenerateReason, bytes: number): undefined {
+    log(
+      `[ResponsesSSE] degenerate parallel wrapper (${reason}, ${bytes} bytes); draining for usage`
+    );
+    this.heldDegenerate = { reason, bytes };
+    this.startDrain("degenerate wrapper");
+    return undefined;
+  }
+
+  /** The held degenerate wrapper is the leg's outcome (the body ended, or the drain gave up). */
+  private endHeldDegenerate(): LegOutcome {
+    const held = this.heldDegenerate as { reason: DegenerateReason; bytes: number };
+    this.closeAll();
+    return this.degenerate(held.reason, held.bytes);
+  }
+
+  /** While a degenerate wrapper is held: only the terminal event (and its usage) matters. */
+  private drainDegenerate(event: ResponsesEvent): Stop | undefined {
+    const held = this.heldDegenerate as { reason: DegenerateReason; bytes: number };
+    switch (event.type) {
+      case "response.completed":
+      case "response.done":
+        this.usage = readUsage(event.response?.usage ?? event.usage) ?? this.usage;
+        break;
+      case "response.incomplete":
+        if (event.response?.usage) this.usage = readUsage(event.response.usage, this.usage, true);
+        break;
+      case "error":
+      case "response.failed":
+        break;
+      default:
+        return undefined;
+    }
+    return { stop: this.degenerate(held.reason, held.bytes) };
   }
 
   private get sink(): ClaudeSseSink {
@@ -316,6 +366,8 @@ class ResponsesLeg {
         this.closeAll();
         return this.execOutcome(false);
       }
+      // The wrapper was already judged; the drain only waited for usage.
+      if (this.heldDegenerate) return this.endHeldDegenerate();
       log(`[ResponsesSSE] Stream error: ${error}`);
       this.closeReasoning();
       this.closeText();
@@ -338,6 +390,7 @@ class ResponsesLeg {
 
   /** The body ended without a stop: how the leg ended. */
   private endOfBody(): LegOutcome {
+    if (this.heldDegenerate) return this.endHeldDegenerate();
     if (this.heldExec) {
       this.closeAll();
       if (this.heldExec.final !== undefined) return this.execOutcome(false);
@@ -368,10 +421,7 @@ class ResponsesLeg {
     };
   }
 
-  private degenerate(
-    reason: "unparseable" | "shape" | "empty" | "incomplete",
-    bytes: number
-  ): LegOutcome {
+  private degenerate(reason: DegenerateReason, bytes: number): LegOutcome {
     log(`[ResponsesSSE] degenerate parallel wrapper (${reason}, ${bytes} bytes)`);
     return { kind: "degenerate-wrapper", reason, bytes, usage: this.usage };
   }
@@ -391,6 +441,7 @@ class ResponsesLeg {
     if (getLogLevel() === "debug" && event.type) {
       log(`[ResponsesSSE] Event: ${event.type}`);
     }
+    if (this.heldDegenerate) return this.drainDegenerate(event);
 
     switch (event.type) {
       case "response.output_text.delta":
@@ -468,7 +519,7 @@ class ResponsesLeg {
     if (held && (item.call_id === held.callId || item.id === held.itemId)) {
       const itemInput = typeof item.input === "string" ? item.input : undefined;
       held.final = held.doneInput ?? itemInput ?? held.acc;
-      this.startDrain();
+      this.startDrain("exec call");
     }
     return true;
   }
@@ -642,7 +693,7 @@ class ResponsesLeg {
       this.heldWrappers.delete(item.id);
       const final = held.doneArgs ?? itemArgs ?? held.arguments;
       const parsed = parseParallelWrapper(final, (n) => this.decodeToolName(n));
-      if (!parsed.ok) return { stop: this.degenerate(parsed.reason, final.length) };
+      if (!parsed.ok) return this.holdDegenerate(parsed.reason, final.length);
       this.emitExpandedWrapper(held, parsed.calls);
       return undefined;
     }
