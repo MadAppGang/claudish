@@ -39,7 +39,12 @@ import {
   isParallelWrapperName,
   parseParallelWrapper,
 } from "./parallel-wrapper.js";
-import { type StallClock, StallGuard, isOutputBearingEvent } from "./stall-guard.js";
+import {
+  type StallClock,
+  StallGuard,
+  isOutputBearingEvent,
+  systemStallClock,
+} from "./stall-guard.js";
 
 /** One leg's usage, read from `response.completed` / `.incomplete`. */
 export interface Usage {
@@ -120,6 +125,8 @@ export interface ResponsesLegContext {
    * ignored, exactly as before code mode existed.
    */
   codeMode?: boolean;
+  /** The clock of the EXEC_DRAIN_MS drain; tests inject a fake one. Default wall clock. */
+  drainClock?: StallClock;
 }
 
 /** A held exec call (code mode). */
@@ -205,7 +212,7 @@ class ResponsesLeg {
   // reasoning items in order (an exec's precedingItems; a turn record's items).
   private heldExec: HeldExec | undefined;
   private readonly items: ResponsesItem[] = [];
-  private drainTimer: ReturnType<typeof setTimeout> | undefined;
+  private drainTimer: unknown;
   /** A degenerate wrapper held until the terminal event (`holdDegenerate`). */
   private heldDegenerate: { reason: DegenerateReason; bytes: number } | undefined;
   private cancelReader: (() => void) | undefined;
@@ -230,8 +237,8 @@ class ResponsesLeg {
    * keep reading only for the terminal event's usage, at most EXEC_DRAIN_MS.
    */
   private startDrain(what: string): void {
-    if (this.drainTimer) return;
-    this.drainTimer = setTimeout(() => {
+    if (this.drainTimer !== undefined) return;
+    this.drainTimer = this.drainClock.setTimeout(() => {
       log(`[ResponsesSSE] no terminal event ${EXEC_DRAIN_MS} ms after the ${what}; using it`);
       this.cancelReader?.();
     }, EXEC_DRAIN_MS);
@@ -277,6 +284,10 @@ class ResponsesLeg {
         return undefined;
     }
     return { stop: this.degenerate(held.reason, held.bytes) };
+  }
+
+  private get drainClock(): StallClock {
+    return this.ctx.drainClock ?? systemStallClock;
   }
 
   private get sink(): ClaudeSseSink {
@@ -394,7 +405,7 @@ class ResponsesLeg {
     } finally {
       guard?.disarm();
       signal.removeEventListener("abort", onAbort);
-      if (this.drainTimer) clearTimeout(this.drainTimer);
+      if (this.drainTimer !== undefined) this.drainClock.clearTimeout(this.drainTimer);
     }
 
     if (signal.aborted) return { kind: "cancelled", usage: this.usage };

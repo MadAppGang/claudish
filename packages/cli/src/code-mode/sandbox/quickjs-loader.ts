@@ -267,6 +267,19 @@ export function currentQuickJSModule(): QuickJSModuleLease | undefined {
   return current?.usable ? current : undefined;
 }
 
+/**
+ * Forget the loaded module and every latch (tests only): a simulated import
+ * failure otherwise latches `unavailable` for the rest of the process.
+ * Runtimes still in a dropped lease are left to their owners.
+ */
+export function resetQuickJSLoaderForTests(): void {
+  current = undefined;
+  loading = undefined;
+  unavailable = undefined;
+  wasmBytesUnreadableLogged = false;
+  liveLeases.clear();
+}
+
 /** Whether a sandbox can run in this process (loads the module on first call). */
 export async function isSandboxAvailable(): Promise<boolean> {
   return (await loadQuickJSModule()) !== undefined;

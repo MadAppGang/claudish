@@ -29,9 +29,27 @@ import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
 import { CodexOAuthHalf } from "../../auth/credentials/codex-credential.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
+import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { conversationKey } from "./conversation-key.js";
 import { OpenAIProviderTransport } from "./openai.js";
 import type { AuthBinding } from "./types.js";
+
+/**
+ * What `forceRefreshAuth` uses of the Codex OAuth login. Injectable so a test
+ * never touches the real singleton (a test suite once deleted the real Codex
+ * login through a singleton reset); production passes nothing.
+ */
+export interface CodexOAuthRefresher {
+  /** Rotate the OAuth token (single-flight through CodexOAuth's refresh lock). */
+  refreshToken(): Promise<unknown>;
+  /** Mint a request artifact from the OAuth half ONLY. */
+  mintOAuthAuth(): Promise<RequestAuth | null>;
+}
+
+const defaultCodexOAuthRefresher: CodexOAuthRefresher = {
+  refreshToken: () => CodexOAuth.getInstance().refreshToken(),
+  mintOAuthAuth: () => new CodexOAuthHalf().getRequestAuth({ model: "" }),
+};
 
 export class OpenAICodexTransport extends OpenAIProviderTransport {
   /**
@@ -42,6 +60,18 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
    * falls back to the OpenAI base transport's api-key path.
    */
   private cachedAuth: RequestAuth | null = null;
+
+  private readonly oauthRefresher: CodexOAuthRefresher;
+
+  constructor(
+    provider: RemoteProvider,
+    modelName: string,
+    apiKey: string,
+    oauthRefresher: CodexOAuthRefresher = defaultCodexOAuthRefresher
+  ) {
+    super(provider, modelName, apiKey);
+    this.oauthRefresher = oauthRefresher;
+  }
 
   /**
    * Resolve OAuth (or fall through to api-key) via the credential authority and
@@ -111,8 +141,8 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
    * an outage.
    */
   async forceRefreshAuth(): Promise<AuthBinding> {
-    await CodexOAuth.getInstance().refreshToken();
-    const auth = await new CodexOAuthHalf().getRequestAuth({ model: "" });
+    await this.oauthRefresher.refreshToken();
+    const auth = await this.oauthRefresher.mintOAuthAuth();
     // Kept for callers that pass no binding; the request path uses the return.
     this.cachedAuth = auth;
     return { auth };

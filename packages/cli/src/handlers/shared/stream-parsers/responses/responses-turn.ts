@@ -104,7 +104,8 @@ import {
 } from "./responses-leg.js";
 import { type StallClock, type StallPolicy, systemStallClock } from "./stall-guard.js";
 
-export interface ResponsesTurnOptions extends Omit<ResponsesLegContext, "sink" | "codeMode"> {
+export interface ResponsesTurnOptions
+  extends Omit<ResponsesLegContext, "sink" | "codeMode" | "drainClock"> {
   /** Code mode for this turn (architecture §5.11). Absent ⇒ exec calls are ignored, as before. */
   codeMode?: CodeModeTurnHooks;
   /**
@@ -281,6 +282,8 @@ class ResponsesTurn {
           sink: this.sink,
           stall: this.stallFor(headersAt),
           codeMode: this.opts.codeMode !== undefined,
+          // The drain runs on the stall guard's clock, so one fake clock drives both.
+          drainClock: this.opts.retry?.stallClock,
         });
         this.legUsages.push("usage" in outcome ? outcome.usage : undefined);
         const next =

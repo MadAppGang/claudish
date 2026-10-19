@@ -84,6 +84,12 @@ export function isLiteFallbackActive(model: string, now: number = Date.now()): b
   return true;
 }
 
+/** Forget remembered lite rejections and logged decisions (tests only). */
+export function resetCodeModeRequestStateForTests(): void {
+  liteFallbackUntil.clear();
+  lastLogged.clear();
+}
+
 /** Remember that the backend rejected a lite request for `model`. */
 export function markLiteFallback(model: string, now: number = Date.now()): void {
   liteFallbackUntil.set(model.toLowerCase(), now + LITE_FALLBACK_TTL_MS);
