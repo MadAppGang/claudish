@@ -187,6 +187,7 @@ describe("buildTeamStatusPayload", () => {
       shape: "one-shot",
       turnEndRecordMissing: false,
       agentCountMismatch: true,
+      recent: null,
     };
     const status: TeamStatus = {
       startedAt: snap.startedAt,
