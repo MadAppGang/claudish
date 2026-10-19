@@ -29,6 +29,11 @@
  *   | consumed batch, same batchHash (duplicate)      | the memoised step: the same synthetic      |
  *   |                                                 |   reply, or the stored completion          |
  *   | late results for a settled record               | nothing (history renders its output)       |
+ *   | consumed batch, different batchHash (rewind)    | lost path: tombstone, new completion key   |
+ *   | suspended, owned by ANOTHER session (a fork)    | untouched; the fork gets a tombstone       |
+ *   | record lost (eviction, poisoned module) or none | lost path: `Script failed` + the results,  |
+ *   |   (restart, another account)                    |   stored as a tombstone (a minimal record  |
+ *   |                                                 |   when none), so later turns render it too |
  *
  * Then, for every OTHER suspended record this session owns: if a message
  * follows the assistant message carrying its pending batch and nothing answers
@@ -43,7 +48,7 @@ import { log } from "../logger.js";
 import type { AuthBinding } from "../providers/transport/types.js";
 import { type BatchResultEntry, batchHash, completionKey } from "./hashes.js";
 import { accountKeyFromBinding, decodeNestedId, sessionKeyFor } from "./ids.js";
-import { MOVED_ON_NOTE } from "./input-builder.js";
+import { LOST_SCRIPT_NOTE, MOVED_ON_NOTE, reconstructExecSource } from "./input-builder.js";
 import type { ExecOutput, OutputPart } from "./output.js";
 import type { CodeModeSetting } from "./policy.js";
 import { nestedBlocksFor, settleDone, suspendBlocked } from "./relay.js";
@@ -57,6 +62,8 @@ import type { ClaudeContentBlock, ClaudeMessage, NestedToolUse } from "./types.j
 /** Claude Code's interrupt marker (2.1.290: a user text block beside the results). */
 export const INTERRUPT_MARKER = "[Request interrupted by user";
 export const INTERRUPTED_NOTE = "interrupted by the user";
+export const FORKED_SCRIPT_NOTE =
+  "this script belongs to the session this one was forked from; claudish cannot run it twice";
 
 /** What 5r decided for one request. */
 export type ResumeOutcome =
@@ -78,6 +85,8 @@ interface RequestView {
   sessionKey: string;
   /** tool_use id → its block (first occurrence, assistant messages). */
   toolUses: Map<string, ClaudeContentBlock>;
+  /** tool_use id → its tool_result (first occurrence, user messages), as the input builder reads them. */
+  results: Map<string, ClaudeContentBlock>;
 }
 
 function blocksOf(message: ClaudeMessage | undefined): ClaudeContentBlock[] {
@@ -86,6 +95,19 @@ function blocksOf(message: ClaudeMessage | undefined): ClaudeContentBlock[] {
 
 function isAutoToolChoice(choice: ClaudeToolChoice | null | undefined): boolean {
   return !choice || choice.type === undefined || choice.type === "auto";
+}
+
+function indexToolResults(messages: ClaudeMessage[]): Map<string, ClaudeContentBlock> {
+  const out = new Map<string, ClaudeContentBlock>();
+  for (const message of messages) {
+    if (message?.role !== "user") continue;
+    for (const block of blocksOf(message)) {
+      const id = block.tool_use_id;
+      if (block.type === "tool_result" && typeof id === "string" && !out.has(id))
+        out.set(id, block);
+    }
+  }
+  return out;
 }
 
 function indexToolUses(messages: ClaudeMessage[]): Map<string, ClaudeContentBlock> {
@@ -214,18 +236,27 @@ class Resume {
     interrupted: boolean
   ): ResumeOutcome {
     const record = this.scripts.get(this.view.accountKey, execKey);
-    if (!record) return { kind: "none" };
+    // Restart, another account's record, eviction or a poisoned module: the
+    // script state is gone; the model gets Script failed and the results.
+    if (!record || record.state === "lost")
+      return this.tombstone(execKey, record, LOST_SCRIPT_NOTE);
     const k = record.batches.findIndex((b) => b.ids.some((id) => results.has(id)));
     if (k < 0) return { kind: "none" };
     const batch = record.batches[k];
     const hash = batchHash(batchEntries(batch.ids, results));
 
     if (batch.batchHash !== undefined) {
-      if (batch.batchHash !== hash) return { kind: "none" };
+      // Different results for a batch already consumed (a rewind that re-ran
+      // the tools): not resumable; a tombstone under the new completion key.
+      if (batch.batchHash !== hash) return this.tombstone(execKey, record, LOST_SCRIPT_NOTE);
       return this.replayDuplicate(record, k);
     }
     if (record.state !== "suspended") return { kind: "none" };
-    if (record.sessionKey !== this.view.sessionKey) return { kind: "none" };
+    // A fork answering the original's pending batch: never resumed and never
+    // touched; the owner's later answer resumes it and its run output wins.
+    if (record.sessionKey !== this.view.sessionKey) {
+      return this.tombstone(execKey, record, FORKED_SCRIPT_NOTE);
+    }
     if (k !== record.batches.length - 1 || !record.runtime) return { kind: "none" };
     batch.batchHash = hash;
     try {
@@ -234,6 +265,83 @@ class Resume {
       // A store or sandbox failure: the script is lost, the request goes on.
       log(`[CodeMode] exec ${record.originalCallId}: resume failed; script lost: ${err}`);
       this.loseQuietly(record);
+      return { kind: "none" };
+    }
+  }
+
+  /**
+   * The exec's rounds in THIS request's history: the assistant messages that
+   * carry its nested ids, in order (the input builder groups them the same way).
+   */
+  private historyRounds(execKey: string): Array<{ ids: string[]; blocks: ClaudeContentBlock[] }> {
+    const rounds: Array<{ ids: string[]; blocks: ClaudeContentBlock[] }> = [];
+    const seen = new Set<string>();
+    for (const message of this.view.messages) {
+      if (message?.role !== "assistant") continue;
+      const blocks = blocksOf(message).filter(
+        (b) =>
+          b.type === "tool_use" &&
+          typeof b.id === "string" &&
+          !seen.has(b.id) &&
+          decodeNestedId(b.id)?.execKey === execKey
+      );
+      for (const b of blocks) seen.add(b.id as string);
+      if (blocks.length > 0) rounds.push({ ids: blocks.map((b) => b.id as string), blocks });
+    }
+    return rounds;
+  }
+
+  /**
+   * The lost path: `Script failed` with `note` and the results it was waiting
+   * for, stored as a TOMBSTONE under the completion key this request's history
+   * gives, so the input builder renders it now and byte-identically on every
+   * later request. No record (restart, another account) → a minimal one is
+   * created under this account and session; a `lost` record is answered
+   * (→ failed); a live record owned by another session is not touched beyond
+   * the tombstone, which only this session renders.
+   */
+  private tombstone(execKey: string, record: ExecRecord | undefined, note: string): ResumeOutcome {
+    const rounds = this.historyRounds(execKey);
+    const answered = rounds.findIndex((r) => r.ids.some((id) => this.view.results.has(id)));
+    if (answered < 0) return { kind: "none" };
+    try {
+      const key = completionKey(
+        rounds.slice(0, answered + 1).map((r) => batchHash(batchEntries(r.ids, this.view.results)))
+      );
+      const target =
+        record ??
+        this.scripts.create({
+          accountKey: this.view.accountKey,
+          sessionKey: this.view.sessionKey,
+          execCallId: execKey,
+          originalCallId: `call_${execKey}`,
+          source: reconstructExecSource(
+            rounds.map((r) =>
+              r.blocks.map((b) => ({
+                name: typeof b.name === "string" ? b.name : "",
+                input: b.input,
+              }))
+            )
+          ),
+          shape: "classic",
+          state: "lost",
+        });
+      if (target.state === "lost") this.scripts.transition(target, "answer");
+      const output: ExecOutput = {
+        status: "failed",
+        wallMs: undefined,
+        parts: [
+          { type: "text", text: note },
+          ...resultParts(rounds[answered].ids, this.view.results, this.view.toolUses),
+        ],
+      };
+      this.scripts.storeOutput(target, key, output, "tombstone", this.view.sessionKey);
+      log(
+        `[CodeMode] exec ${target.originalCallId}: answered as Script failed (${note.split(";")[0]})`
+      );
+      return { kind: "continue" };
+    } catch (err) {
+      log(`[CodeMode] exec call_${execKey}: storing the Script failed answer failed: ${err}`);
       return { kind: "none" };
     }
   }
@@ -376,7 +484,13 @@ export function resumeFromToolResults(
     if (!isAutoToolChoice(toolChoice)) return { kind: "none" };
     const messages = Array.isArray(req.messages) ? (req.messages as ClaudeMessage[]) : [];
     const resume = new Resume(
-      { messages, accountKey, sessionKey, toolUses: indexToolUses(messages) },
+      {
+        messages,
+        accountKey,
+        sessionKey,
+        toolUses: indexToolUses(messages),
+        results: indexToolResults(messages),
+      },
       stores
     );
     if (opts.setting === "off") {
