@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
+import { locateBox } from "./box-locate.js";
 import {
   type CaptureResult,
   type CaptureUnchanged,
@@ -31,6 +32,12 @@ import {
   type SlotState,
 } from "./contract.js";
 import { checkGateBinding } from "./gate-binding.js";
+import {
+  BOOT_DIALOG_KINDS,
+  type GateDialogKind,
+  type GateInput,
+  parseGateInput,
+} from "./input-gate.js";
 import { MagmuxClient, type MagmuxConnectError, type MagmuxReply } from "./magmux-client.js";
 import {
   type ClaudishLaunch,
@@ -90,13 +97,14 @@ import {
   agentRejectedLine,
   boxStartsWith,
   choiceDialog,
+  dialogText,
   echoHead,
   flatText,
   hasChoiceDialog,
   hasEcho,
   inputBox,
   isWorking,
-  readBoot,
+  nameBootScreen,
   screenAnswer,
   screenErrorRows,
   screenText,
@@ -141,11 +149,11 @@ export const SCREEN_SETTLE_QUIET_MS = 3_000;
 /** A panel command's screen must have been up this long after delivery before Esc. */
 const PANEL_SETTLE_MS = 500;
 /**
- * The REPL box must read empty this long before boot is ready. Claude Code draws its
- * input box and then, 1–2 s later, resets stdin (a termios cooked→raw blip); a prompt
- * typed into that window is lost or never submitted, in vim and normal editor mode
- * alike. Measured 2026-10-16 (Claude Code 2.1.301, magmux 0.15.1): at 500 ms, 2/2 team
- * slots failed `prompt_not_accepted`. 3 s waits the reset out.
+ * @deprecated Nothing reads it: boot readiness is magmux's `input.ready` (architecture-v2
+ * §6.2), which waits for the box and a raw terminal both still for 1 s AND for Claude
+ * Code's boot stdin reset (or 3.5 s after the terminal first went raw) — the hazard this
+ * 3 s wait existed for. Kept only so the integration test that pins it still loads; delete
+ * it with that test.
  */
 export const REPL_STABLE_MS = 3_000;
 /**
@@ -168,10 +176,42 @@ const TURN_END_MISSING_FACTOR = 3;
 /** A resize reply, and the screen showing the new size after it. */
 const RESIZE_REPLY_MS = 10_000;
 const RESIZE_SCREEN_MS = 1_000;
+/**
+ * magmux's input gate is read by polling `list` (it publishes no readiness event and
+ * refreshes `input` at 4 Hz): one request in flight at a time, this often, while connected.
+ */
+const GATE_POLL_MS = 250;
+const GATE_REPLY_MS = 1_000;
+/** A gate reading older than this, or any reading while disconnected, is unknown. */
+const GATE_STALE_MS = 1_000;
+/**
+ * `list` showing pane 0 dead this long with no `exit` event: take the exit path anyway.
+ * The event stays the primary path (it carries `lastLine`); this is its backstop.
+ */
+const GATE_DEAD_BACKSTOP_MS = 1_000;
+/** Gate reasons that carry no dialog kind: a static screen under one is named from its words. */
+const GATE_KINDLESS_REASONS: ReadonlySet<string> = new Set([
+  "starting",
+  "terminal_not_ready",
+  "no_input_box",
+]);
+/** Dialogs a turn can open; a boot dialog kind is never one of them. */
+const RUNTIME_DIALOG_KINDS: ReadonlySet<GateDialogKind> = new Set<GateDialogKind>([
+  "permission",
+  "question",
+  "plan",
+  "select",
+]);
 /** The session registry is re-read at most this often (telemetry only). */
 const REGISTRY_READ_MS = 250;
 /** A registry/screen disagreement must hold this long before it is counted. */
 const REGISTRY_DISAGREE_MS = 2_000;
+/**
+ * `registry_idle_gate_starting` must hold this long: while it waits for Claude Code's boot
+ * reset the gate says `starting` for up to its 3.5 s floor plus 1 s of stillness, a window
+ * in which the registry can already read idle. Longer than that, it is the canary.
+ */
+const REGISTRY_GATE_BOOT_DISAGREE_MS = 5_000;
 /** No live registry record this long after boot was ready: `registry_record_missing`. */
 const REGISTRY_MISSING_MS = 5_000;
 const MAX_ANOMALY_KEYS = 64;
@@ -231,6 +271,7 @@ export interface PaneSessionOptions {
     resendAfterMs?: number;
     corroborationMs?: number;
     bootStaticMs?: number;
+    /** @deprecated ignored: boot readiness is magmux's `input.ready` (see `REPL_STABLE_MS`) */
     replStableMs?: number;
     nudgeClearDeadlineMs?: number;
   };
@@ -431,8 +472,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** the last screen change that is activity, i.e. not a resize redraw (M4) */
   private activityChangedAt = 0;
 
-  private bootKind: string | null = null;
-  private bootKindSince = 0;
+  /** the last `list` → pane 0 `input` reading; read through `gateNow()`, never directly */
+  private gate: GateInput | null = null;
+  /** this connection passed the binding check: its gate readings may be trusted */
+  private gateTrusted = false;
+  private gateInFlight = false;
+  private gateTimer: ReturnType<typeof setInterval> | null = null;
+  /** when `list` first showed pane 0 dead with no `exit` event yet; 0 = not dead */
+  private gateDeadSince = 0;
 
   private magmux: ChildProcess | null = null;
   private watcher: ChildProcess | null = null;
@@ -547,6 +594,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     proc.stderr?.on("data", (d: string) => this.onStderr(d));
     proc.on("exit", (code, sig) => this.onMagmuxExit(code, sig));
     this.ticker = setInterval(() => this.step(() => this.evaluate()), TICK_MS);
+    this.gateTimer = setInterval(() => this.pollGate(), GATE_POLL_MS);
     if (this.o.timeoutMs !== undefined)
       this.timeoutTimer = setTimeout(
         () => this.step(() => this.fire("timeout")),
@@ -607,6 +655,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     // dropped while asking: `disconnected` has already started the redial
     if (client.isClosed) return;
     this.client = client;
+    // no gate reading is trusted on this connection until its binding check passes
+    this.gateTrusted = false;
+    this.gate = null;
     const magmuxVersion = caps.ok ? String(caps.result.version ?? "") : "";
     if (caps.ok) {
       const v = magmuxVersion;
@@ -633,38 +684,95 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
       return;
     }
-    this.verifyGateBinding(client, list, magmuxVersion);
+    if (!this.verifyGateBinding(client, list, magmuxVersion) || !list.ok) return;
+    this.gateTrusted = true;
+    this.onGateList(client, list.result);
   }
 
   /**
    * The binding check (architecture-v2 R1.0), on every attach: magmux's input gate is
    * trusted only for a pane it bound BY NAME to this session's id and transcript. Anything
    * else fails the pane; claudish never falls back to magmux's transcript discovery.
-   * Nothing reads the gate yet: this only proves the declared launch took.
+   * True only when the gate of this connection may be read.
    */
   private verifyGateBinding(
     client: MagmuxClient,
     list: MagmuxReply<{ panes?: Array<Record<string, unknown>> }>,
     magmuxVersion: string
-  ): void {
+  ): boolean {
     // dropped while asking: the redial attaches again and re-checks
-    if (client.isClosed || isTerminalPhase(this.phase)) return;
+    if (client.isClosed || isTerminalPhase(this.phase)) return false;
     if (!list.ok) {
       this.step(() =>
         this.fire("pane_lost", {
           detail: `input_gate_unbound: magmux ${magmuxVersion || "?"} list failed (${list.code}: ${list.error}), so the binding of pane 0 is unknown`,
         })
       );
-      return;
+      return false;
     }
     // no pane 0: it is gone, and the exit path owns that
-    if (!list.result.panes?.some((p) => p.pane === 0)) return;
+    if (!list.result.panes?.some((p) => p.pane === 0)) return false;
     const check = checkGateBinding(list.result, {
       sessionUuid: this.o.sessionUuid,
       transcriptPath: this.o.transcriptPath,
       magmuxVersion,
     });
-    if (!check.ok) this.step(() => this.fire("pane_lost", { detail: check.detail }));
+    if (!check.ok) {
+      this.step(() => this.fire("pane_lost", { detail: check.detail }));
+      return false;
+    }
+    return true;
+  }
+
+  /* ───────────────────────────── the input gate ───────────────────────────── */
+
+  /**
+   * One `list` on the current connection, unless one is in flight (architecture-v2 §6.1).
+   * Only after this connection's binding check passed: a reading from an unbound pane could
+   * describe another session's dialog.
+   */
+  private pollGate(): void {
+    const c = this.client;
+    if (!c || !this.gateTrusted || this.gateInFlight) return;
+    if (this.reaping || isTerminalPhase(this.phase)) return;
+    this.gateInFlight = true;
+    void c
+      .request<{ panes?: Array<Record<string, unknown>> }>({ type: "list" }, GATE_REPLY_MS)
+      .then((r) => {
+        this.gateInFlight = false;
+        if (r.ok) this.onGateList(c, r.result);
+      });
+  }
+
+  /**
+   * A `list` reply: pane 0's `input` is the gate reading; its `pid`/`dead` back up the
+   * `exit` event. A reading that changed `ready` or `reason` is evaluated at once rather
+   * than at the next tick.
+   */
+  private onGateList(c: MagmuxClient, result: { panes?: Array<Record<string, unknown>> }): void {
+    if (c !== this.client || !this.gateTrusted || isTerminalPhase(this.phase)) return;
+    const now = Date.now();
+    const p0 = result.panes?.find((p) => p.pane === 0);
+    if (typeof p0?.pid === "number" && !this.panePidValue) this.setPanePid(p0.pid);
+    if (p0?.dead === true && !this.paneExited) {
+      if (this.gateDeadSince === 0) this.gateDeadSince = now;
+      else if (now - this.gateDeadSince >= GATE_DEAD_BACKSTOP_MS) {
+        this.anomaly("exit_event_missing");
+        void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
+        return;
+      }
+    } else this.gateDeadSince = 0;
+    const prev = this.gate;
+    this.gate = parseGateInput(result, now);
+    const g = this.gate;
+    if (prev?.ready !== g?.ready || prev?.reason !== g?.reason) this.step(() => this.evaluate());
+  }
+
+  /** The gate's latest reading, or null when unknown: disconnected, unbound, or stale. */
+  private gateNow(): GateInput | null {
+    const g = this.gate;
+    if (!g || !this.client || !this.gateTrusted) return null;
+    return Date.now() - g.receivedAt <= GATE_STALE_MS ? g : null;
   }
 
   /* ───────────────────────────── magmux events ───────────────────────────── */
@@ -702,7 +810,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   private onDisconnected(client: MagmuxClient): void {
-    if (this.client === client) this.client = null;
+    if (this.client === client) {
+      this.client = null;
+      // a reading from before the drop says nothing about now
+      this.gate = null;
+      this.gateTrusted = false;
+    }
     if (this.reaping || !alive(this.magmux)) return;
     if (isTerminalPhase(this.phase)) return;
     void this.reconnect();
@@ -896,9 +1009,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /**
-   * Telemetry only (pane-session.md, "The session registry"): compare Claude Code's own
-   * session record with what the screen says, and count each disagreement once at its onset.
-   * No decision reads the registry.
+   * Telemetry only (pane-session.md, "The session registry"; architecture-v2 §6.4): compare
+   * Claude Code's own session record with magmux's input gate (and, for working, the
+   * screen), and the gate with the screen readers it is replacing; count each disagreement
+   * once at its onset. No decision reads the registry; these counts decide, later, whether
+   * the screen cross-checks can go.
    */
   private checkRegistry(): void {
     const now = Date.now();
@@ -919,21 +1034,33 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.disagree(`registry_status_unknown:${status.slice(0, 32)}`, true, now, 0);
     if (!this.client) return; // a stale screen proves nothing
     const idle = status === "idle";
-    const dialog = hasChoiceDialog(this.screen);
-    this.disagree(
-      "registry_idle_screen_booting",
-      this.phase === "BOOTING" && idle && readBoot(this.screen).kind !== "repl",
-      now
-    );
     this.disagree(
       "registry_idle_screen_working",
       this.phase === "RUNNING" && idle && isWorking(this.screen),
       now
     );
-    this.disagree("registry_waiting_no_dialog", status === "waiting" && !dialog, now);
+    // an unknown gate reading is not a disagreement, and does not end one either
+    const g = this.gateNow();
+    if (!g) return;
+    // the `--agent` border signature, and the canary for magmux missing the box at a new width
     this.disagree(
-      "screen_dialog_registry_not_waiting",
-      dialog && (status === "idle" || status === "busy"),
+      "registry_idle_gate_starting",
+      this.phase === "BOOTING" && idle && (g.reason === "starting" || g.reason === "no_input_box"),
+      now,
+      REGISTRY_GATE_BOOT_DISAGREE_MS
+    );
+    this.disagree("registry_waiting_gate_no_dialog", status === "waiting" && g.ready, now);
+    this.disagree(
+      "gate_dialog_registry_not_waiting",
+      g.dialog !== null && RUNTIME_DIALOG_KINDS.has(g.dialog) && (idle || status === "busy"),
+      now
+    );
+    this.disagree("gate_ready_box_not_located", g.ready && locateBox(this.screen) === null, now);
+    // canary for magmux's dialog markers drifting from claudish's closed list
+    this.disagree(
+      "gate_dialog_screen_unrecognised",
+      (g.dialog === "permission" || g.dialog === "plan" || g.dialog === "question") &&
+        choiceDialog(this.screen) === null,
       now
     );
   }
@@ -972,34 +1099,65 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return this.o.timings?.[key] ?? dflt;
   }
 
+  /**
+   * Boot (architecture-v2 §6.2): ready is magmux's `input.ready`, which already requires the
+   * box and a raw terminal both still for 1 s and Claude Code's boot stdin reset seen (or
+   * 3.5 s since the terminal went raw). What blocks boot is the gate's dialog kind, named
+   * from the screen's words only where the gate has no kind for it. Nothing is ever
+   * accepted: no key is sent while booting.
+   */
   private evalBoot(): void {
     const now = Date.now();
-    const r = readBoot(this.screen);
-    if (r.kind !== this.bootKind) {
-      this.bootKind = r.kind;
-      this.bootKindSince = now;
-    }
-    const staticFor = this.screen.seq === 0 ? 0 : now - this.screen.changedAt;
-    const staticMs = this.t("bootStaticMs", BOOT_STATIC_MS);
-    if (r.kind === "repl" && now - this.bootKindSince >= this.t("replStableMs", REPL_STABLE_MS)) {
+    const g = this.gateNow();
+    if (g?.ready) {
       this.bootReady();
       return;
     }
-    if (r.kind === "dialog" && staticFor >= staticMs) {
-      this.fire("boot_dialog", { detail: r.text });
-      return;
-    }
-    if (r.kind === "choice" && staticFor >= staticMs) {
-      this.fire("boot_blocked", { detail: r.text });
+    const staticFor = this.screen.seq === 0 ? 0 : now - this.screen.changedAt;
+    const settled = staticFor >= this.t("bootStaticMs", BOOT_STATIC_MS);
+    const block = g && settled ? this.bootBlock(g) : null;
+    if (block) {
+      this.fire(block.ev, { detail: block.detail });
       return;
     }
     if (now - this.startedAtMs >= (this.o.bootTimeoutMs ?? BOOT_TIMEOUT_MS)) {
-      const blocked = this.screen.seq > 0 && staticFor >= staticMs && r.kind !== "booting";
+      const blocked =
+        this.screen.seq > 0 &&
+        settled &&
+        (g?.reason?.startsWith("dialog:") === true ||
+          nameBootScreen(this.screen).kind !== "booting");
+      const gate = g
+        ? `gate: ${g.reason ?? "ready"}${g.detail ? ` (${g.detail})` : ""}`
+        : "gate: unknown";
       this.fire("boot_deadline", {
         reason: blocked ? "boot_blocked" : "boot_timeout",
-        detail: screenTailOf(this.screen),
+        detail: `${screenTailOf(this.screen)}\n${gate}`,
       });
     }
+  }
+
+  /**
+   * A static boot screen the gate does not call ready: a boot dialog kind fails
+   * `first_run_dialog` with the dialog's words; otherwise the screen names it — a named
+   * first-run marker is `first_run_dialog` (magmux files a reworded boot dialog under
+   * `select`); vim mode, `select` or another dialog kind is `boot_blocked`; a reason with no
+   * kind (`starting`, `no_input_box`, …) blocks only on choice markers (`Press Enter to
+   * continue`, the unnamed MCP-server prompt), which magmux has no kind for.
+   * null: nothing names a blocking screen, so boot keeps waiting for its deadline.
+   */
+  private bootBlock(g: GateInput): { ev: "boot_dialog" | "boot_blocked"; detail: string } | null {
+    if (g.dialog && BOOT_DIALOG_KINDS.has(g.dialog))
+      return { ev: "boot_dialog", detail: dialogText(this.screen) };
+    const named = nameBootScreen(this.screen);
+    // the gate is not ready and the screen is static: a named first-run dialog is that dialog
+    if (named.kind === "dialog") return { ev: "boot_dialog", detail: named.text };
+    if (g.reason === "vim_mode")
+      return { ev: "boot_blocked", detail: "vim editing mode is on (-- INSERT -- under the box)" };
+    if (g.reason?.startsWith("dialog:"))
+      return { ev: "boot_blocked", detail: screenText(this.screen) };
+    if (named.kind === "choice" && g.reason !== null && GATE_KINDLESS_REASONS.has(g.reason))
+      return { ev: "boot_blocked", detail: named.text };
+    return null;
   }
 
   private bootReady(): void {
@@ -1429,18 +1587,28 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.agentMismatch = key;
   }
 
-  /** Blocked detection (H7): AskUserQuestion from the transcript; permission needs the dialog too. */
+  /**
+   * Blocked detection (architecture-v2 §6.3): a pending AskUserQuestion from the transcript
+   * alone; any other pending tool blocks only when magmux's input gate names the dialog
+   * (`dialog:permission`/`dialog:plan`, or `dialog:question`). Anything else, an unknown
+   * gate included, stays RUNNING: an honest unknown, never `blocked`.
+   */
   private detectBlocked(t: TurnView): boolean {
     const pending = t.pendingTool;
     if (!pending || this.phase !== "RUNNING") return false;
     let kind: PaneBlock["kind"] | null = null;
     if (pending.name === "AskUserQuestion") kind = "question";
-    else if (this.client && hasChoiceDialog(this.screen)) kind = "permission";
+    else {
+      const dialog = this.gateNow()?.dialog ?? null;
+      if (dialog === "permission" || dialog === "plan") kind = "permission";
+      else if (dialog === "question") kind = "question";
+    }
     if (!kind) return false;
     this.blockedToolId = pending.id;
     this.fire(kind === "question" ? "blocked_question" : "blocked_permission");
     this.activity = pending.name;
-    const text = blockText(pending, choiceDialog(this.screen)?.text ?? null);
+    // the screen supplies only the words; with no frame yet there are none to give
+    const text = blockText(pending, this.screen.seq > 0 ? dialogText(this.screen) || null : null);
     let v: FinalVerdict | "wait";
     try {
       v = this.o.onBlocked({ kind, tool: pending.name, text });
@@ -2047,6 +2215,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.reaping = true;
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = null;
+    if (this.gateTimer) clearInterval(this.gateTimer);
+    this.gateTimer = null;
     await this.captureGroupBeforeReap();
     const c = this.client;
     if (c && !c.isClosed && !this.paneClosed) {

@@ -246,6 +246,19 @@ export function hasChoiceDialog(s: ScreenState): boolean {
 }
 
 /**
+ * The words of the dialog magmux's input gate says is open: the non-empty rows below the
+ * last `⏺` block (the whole screen at boot, where there is none). No header test and no box
+ * test: the gate already decided a dialog is open, and only its text is read here
+ * (architecture-v2 §6.3).
+ */
+export function dialogText(s: ScreenState): string {
+  return s.lines
+    .slice(lastBulletRow(s.lines) + 1)
+    .filter((l) => l.trim())
+    .join("\n");
+}
+
+/**
  * "Claude Code is working" — defence in depth only (never required by any rule, M20).
  * 2.1.290 shows no `esc to interrupt`; the working row is `✶ Simmering… (3s · ↓ 154 tokens)`,
  * and the finished row (`✻ Baked for 15s · done 12:08 PM`) has no `…`.
@@ -356,13 +369,27 @@ function isUnnamedChoice(lines: readonly string[]): boolean {
   return lines.some((l) => /Press Enter to continue/.test(l) || SELECT_FOOTER.test(l));
 }
 
-/** Boot reading: alt and primary screens both read (2.1.290's dialogs are on the primary one). */
-export function readBoot(s: ScreenState): BootReading {
-  const text = screenText(s);
-  const box = inputBox(s);
+/**
+ * Names a screen that blocks boot, with no box test: whether boot is blocked is the input
+ * gate's call (`input.ready` false, static), and this only says WHICH screen it is — a
+ * named first-run dialog, an unnamed choice screen, or neither (architecture-v2 §6.2).
+ */
+export function nameBootScreen(s: ScreenState): Exclude<BootReading, { kind: "repl" }> {
   const named = namedDialog(flatText(s.lines));
-  if (box && !named) return box.text === "" ? { kind: "repl" } : { kind: "booting" };
-  if (named) return { kind: "dialog", name: named, text };
-  if (isUnnamedChoice(s.lines)) return { kind: "choice", text };
+  if (named) return { kind: "dialog", name: named, text: screenText(s) };
+  if (isUnnamedChoice(s.lines)) return { kind: "choice", text: screenText(s) };
   return { kind: "booting" };
+}
+
+/**
+ * Boot reading from the screen alone: alt and primary screens both read (2.1.290's dialogs
+ * are on the primary one). PaneSession reads boot from magmux's input gate; this stays for
+ * the boot canary and the fixture tests.
+ */
+export function readBoot(s: ScreenState): BootReading {
+  const box = inputBox(s);
+  const named = nameBootScreen(s);
+  if (box && named.kind !== "dialog")
+    return box.text === "" ? { kind: "repl" } : { kind: "booting" };
+  return named;
 }
