@@ -370,11 +370,13 @@ network-recovery hold starts, and the five auth sites are untouched.
 
 **Legs 2..n** come from `createLegIssuer` (`handlers/shared/responses-leg-issuer.ts`), built in
 `handle()` from THIS request's header builder, current body (after parameter recovery) and
-transport hooks. Per leg: `refreshAuth`, and when a transport returns a binding whose arm or account
-differs from the turn's, stop ("Codex sign-in changed during the turn") rather than continue on
-another credential silo (no transport returns one yet, so legs take the no-binding path, identical
-to the primary fetch); its own `deadlineClamp` ceiling merged with the turn signal (the primary's
-clamp is disarmed at headers and bounds nothing later); one `forceRefreshAuth` re-fetch on 401; any
+transport hooks. Per leg: `refreshAuth`, and when the returned binding's arm or account differs
+from the turn's (`isSameCredentialSilo`), stop ("Codex sign-in changed during the turn") rather
+than continue on another credential silo (`openai-codex` returns a binding from `refreshAuth` and
+`forceRefreshAuth`; a transport that returns none keeps the no-binding path, identical to the
+primary fetch, and the primary 401 retry applies the same check before it resends the body); its
+own `deadlineClamp` ceiling merged with the turn signal (the primary's clamp is disarmed at
+headers and bounds nothing later); one `forceRefreshAuth` re-fetch on 401; any
 other non-200 → SSE `error` carrying the status and the first 500 body bytes (`HTTP 429 on retry
 leg 2: …`), no parameter recovery; the 7b settle, abortable; a throw is classified for the log only.
 The previous leg's reader is cancelled (awaited) first, so two upstream streams never overlap.
@@ -411,8 +413,8 @@ attempts 1..n-1 (2.4× the healthy max, 2.4× below the fastest leak), 300 s for
 unbounded wait; a single stall costs ~150 s plus one healthy leg, against 361–484 s.
 
 **Scope.** The data is from the ChatGPT backend only, so the default is exactly that: claudish
-provider `openai-codex` AND the arm that signs this request is `oauth`
-(`ProviderTransport.currentAuthArm()`, read beside the endpoint). Native `openai@`, the
+provider `openai-codex` AND the arm that signs this request is `oauth` (the request's
+`binding.auth.arm`, from the binding `refreshAuth` returned at 5b). Native `openai@`, the
 `openai-codex` api-key arm and custom `responses` endpoints are unarmed unless
 `CLAUDISH_RESPONSES_STALL_MS` is set: > 0 arms it everywhere (final attempt 2×), `0` disarms it
 everywhere.
