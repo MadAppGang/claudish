@@ -38,6 +38,7 @@ import {
   isParallelWrapperName,
   parseParallelWrapper,
 } from "./parallel-wrapper.js";
+import { type StallClock, StallGuard, isOutputBearingEvent } from "./stall-guard.js";
 
 /** One leg's usage, read from `response.completed` / `.incomplete`. */
 export interface Usage {
@@ -74,6 +75,12 @@ export interface ResponsesLegContext {
   onToolCall?: (name: string, argsJson: string) => string | null | undefined;
   shouldBufferTool?: (name: string) => boolean;
   onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+  /**
+   * This leg's stall guard (stall-guard.ts): fires `thresholdMs` after
+   * `headersAt` (this leg's response headers, on `clock`) unless an
+   * output-bearing event arrived first. Absent or 0 ⇒ unarmed.
+   */
+  stall?: { thresholdMs: number; headersAt: number; clock?: StallClock };
 }
 
 type FnCall = {
@@ -168,6 +175,29 @@ class ResponsesLeg {
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
 
+    // A fired guard cancels the reader; the pending read then settles and the
+    // leg reports `stall` instead of how the cut-short stream looked.
+    let stalledAfterMs: number | undefined;
+    const stall = this.ctx.stall;
+    const guard =
+      stall && stall.thresholdMs > 0
+        ? new StallGuard(
+            stall.thresholdMs,
+            stall.headersAt,
+            (afterMs) => {
+              stalledAfterMs = afterMs;
+              log(`[ResponsesTurn] no output item ${Math.round(afterMs / 1000)}s after headers`);
+              reader.cancel().catch(() => {});
+            },
+            stall.clock
+          )
+        : undefined;
+    const stalled = (): LegOutcome | undefined => {
+      if (stalledAfterMs === undefined || signal.aborted) return undefined;
+      this.closeAll();
+      return { kind: "stall", afterMs: stalledAfterMs };
+    };
+
     const decoder = new TextDecoder();
     let buffer = "";
     try {
@@ -192,7 +222,9 @@ class ResponsesLeg {
           // event, costs that event only, never the turn.
           let stop: Stop | undefined;
           try {
-            stop = await this.dispatch(JSON.parse(data));
+            const event = JSON.parse(data);
+            if (guard?.armed && isOutputBearingEvent(event?.type)) guard.disarm();
+            stop = await this.dispatch(event);
           } catch (parseError) {
             log(`[ResponsesSSE] Parse error: ${parseError}`);
             continue;
@@ -207,6 +239,8 @@ class ResponsesLeg {
       }
     } catch (error) {
       if (signal.aborted) return { kind: "cancelled", usage: this.usage };
+      const stalledOutcome = stalled();
+      if (stalledOutcome) return stalledOutcome;
       log(`[ResponsesSSE] Stream error: ${error}`);
       this.closeReasoning();
       this.closeText();
@@ -218,10 +252,13 @@ class ResponsesLeg {
       this.closeTools();
       return { kind: "stream-error", error, openToolBlock, usage: this.usage };
     } finally {
+      guard?.disarm();
       signal.removeEventListener("abort", onAbort);
     }
 
     if (signal.aborted) return { kind: "cancelled", usage: this.usage };
+    const stalledOutcome = stalled();
+    if (stalledOutcome) return stalledOutcome;
 
     // The stream ended while a wrapper was still held: its arguments were never
     // completed, so there is nothing valid to expand.

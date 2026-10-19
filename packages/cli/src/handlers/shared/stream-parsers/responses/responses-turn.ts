@@ -10,7 +10,9 @@
  * ── RETRY WITHIN THE TURN ────────────────────────────────────────────────────
  *
  * About 1% of ChatGPT Codex turns end with a degenerate `parallel` wrapper
- * (parallel-wrapper.ts). When the caller passes `retry`, such a leg is retried
+ * (parallel-wrapper.ts), usually after a 361-484 s keepalive-only stall. With
+ * `retry.stall` armed (stall-guard.ts), a leg with no output item 150 s after
+ * its headers is cut off too. When the caller passes `retry`, such a leg is retried
  * by issuing the same body again while the downstream message stays open; the
  * next leg continues at the next block index. A leg is issued only while no
  * tool_use has been emitted in this message:
@@ -66,6 +68,7 @@ import {
   type Usage,
   parseResponsesLeg,
 } from "./responses-leg.js";
+import { type StallClock, type StallPolicy, systemStallClock } from "./stall-guard.js";
 
 export interface ResponsesTurnOptions extends Omit<ResponsesLegContext, "sink"> {
   /**
@@ -98,6 +101,16 @@ export interface ResponsesRetryOptions {
   issueLeg: (body: unknown | undefined, signal: AbortSignal) => Promise<LegResponse>;
   /** Retries per leg position. Default {@link MAX_LEG_RETRIES}. */
   maxLegRetries?: number;
+  /**
+   * Abort a leg with no output item for too long (stall-guard.ts): attempts
+   * 1..n-1 use `thresholdMs`, the final attempt `finalThresholdMs`. Absent or
+   * `thresholdMs: 0` ⇒ unarmed.
+   */
+  stall?: StallPolicy;
+  /** When the FIRST leg's response headers arrived (the stall clock's zero). */
+  firstHeadersAt?: number;
+  /** The stall guard's clock; tests inject a fake one. Default wall clock. */
+  stallClock?: StallClock;
 }
 
 /** The in-band text for an in-stream API error; context overflow gets an actionable message. */
@@ -210,8 +223,14 @@ class ResponsesTurn {
   async run(firstResponse: Response): Promise<void> {
     try {
       let response = firstResponse;
+      let headersAt =
+        this.opts.retry?.firstHeadersAt ?? (this.opts.retry?.stallClock ?? systemStallClock).now();
       while (true) {
-        const outcome = await parseResponsesLeg(response, { ...this.opts, sink: this.sink });
+        const outcome = await parseResponsesLeg(response, {
+          ...this.opts,
+          sink: this.sink,
+          stall: this.stallFor(headersAt),
+        });
         this.legUsages.push("usage" in outcome ? outcome.usage : undefined);
         const decision = this.retryDecision(outcome);
         if (decision.action === "finish") {
@@ -232,7 +251,8 @@ class ResponsesTurn {
         }
         const next = await this.issueRetry(outcome);
         if (!next) return;
-        response = next;
+        response = next.response;
+        headersAt = next.headersAt;
       }
     } catch (error) {
       // Only a throwing callback can land here; the leg itself never throws.
@@ -264,7 +284,28 @@ class ResponsesTurn {
   }
 
   /** Issue the next leg; undefined when the turn has ended instead. */
-  private async issueRetry(outcome: LegOutcome): Promise<Response | undefined> {
+  /**
+   * This leg's stall guard settings: the final attempt (no retry left) gets the
+   * longer threshold, so no attempt is unbounded and the last one still has
+   * room for a long reasoning phase.
+   */
+  private stallFor(headersAt: number): ResponsesLegContext["stall"] {
+    const retry = this.opts.retry;
+    const policy = retry?.stall;
+    if (!retry || !policy || !("finalThresholdMs" in policy) || policy.thresholdMs <= 0) {
+      return undefined;
+    }
+    const isFinal = this.legRetries >= (retry.maxLegRetries ?? MAX_LEG_RETRIES);
+    return {
+      thresholdMs: isFinal ? policy.finalThresholdMs : policy.thresholdMs,
+      headersAt,
+      clock: retry.stallClock,
+    };
+  }
+
+  private async issueRetry(
+    outcome: LegOutcome
+  ): Promise<{ response: Response; headersAt: number } | undefined> {
     const retry = this.opts.retry;
     if (!retry) return undefined;
     this.legRetries++;
@@ -275,7 +316,7 @@ class ResponsesTurn {
       return undefined;
     }
     const leg = await retry.issueLeg(undefined, this.sink.signal);
-    if (leg.kind === "ok") return leg.response;
+    if (leg.kind === "ok") return { response: leg.response, headersAt: leg.headersAt };
     if (leg.kind === "error") this.sink.endWithError(leg.message);
     this.reportUsage();
     return undefined;

@@ -5,6 +5,8 @@
  * Does NOT own: message conversion, tool format, pricing (those are ModelAdapter concerns).
  */
 
+import type { CredentialArm } from "../../auth/credentials/types.js";
+
 /** The wire format used for streaming responses */
 export type StreamFormat =
   | "openai-sse"
@@ -110,6 +112,16 @@ export interface ProviderTransport {
    * ComposedHandler calls this automatically on 401 and retries the request.
    */
   forceRefreshAuth?(): Promise<void>;
+
+  /**
+   * The credential arm of the auth artifact `getEndpoint`/`getHeaders` read
+   * right now (`RequestAuth.arm`). Read where the request's endpoint is
+   * computed, so it names the arm that signed this request. Absent or
+   * undefined ⇒ unknown, which every consumer treats as NOT the subscription.
+   * Only `openai-codex` implements it; the Responses stall guard is armed by
+   * default only on its `"oauth"` arm.
+   */
+  currentAuthArm?(): CredentialArm | undefined;
 
   /**
    * Optional per-provider verdict on whether an error response is TERMINAL

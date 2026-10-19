@@ -113,6 +113,7 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import {
   type ResponsesRetryOptions,
   createResponsesStreamHandler,
+  resolveStallPolicy,
 } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
@@ -1402,6 +1403,9 @@ export class ComposedHandler implements ModelHandler {
     // note there for why it cannot run at this point.)
 
     const endpoint = this.provider.getEndpoint(this.targetModel);
+    // Read beside the endpoint, from the same artifact: the arm that signs THIS
+    // request. Decides the Responses stall guard's default scope below.
+    const authArm = this.provider.currentAuthArm?.();
     // The ORIGINAL inbound body, not the normalized `claudeRequest` clone: a
     // header carrying conversation identity must see what Claude Code sent.
     //
@@ -2064,10 +2068,19 @@ export class ComposedHandler implements ModelHandler {
     // when all of them fail hand back a 503 the client will retry itself. Without
     // this, `server_is_overloaded` became an assistant text block with
     // stop_reason end_turn — a retryable failure frozen into the transcript.
+    // The stall guard's zero: when the response the parser will read had its
+    // headers. Stamped here (a 200 reaches this line the moment its fetch
+    // resolved) and again by each 7b re-issue, so the sniff window counts
+    // against the guard rather than adding to it.
+    let responseHeadersAt = Date.now();
     if (this.resolveStreamFormat() === "openai-responses-sse") {
-      const settled = await this.settleResponsesStreamHead(response, () =>
-        this.provider.enqueueRequest ? this.provider.enqueueRequest(doFetch) : doFetch()
-      );
+      const settled = await this.settleResponsesStreamHead(response, async () => {
+        const next = await (this.provider.enqueueRequest
+          ? this.provider.enqueueRequest(doFetch)
+          : doFetch());
+        responseHeadersAt = Date.now();
+        return next;
+      });
       if (settled.kind === "exhausted") {
         const waited = STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce(
           (sum, ms) => sum + ms,
@@ -2262,7 +2275,18 @@ export class ComposedHandler implements ModelHandler {
         legDeadlineAt: () => recoveryClock().now() + resolveTier1DeadlineMs(),
       });
       responsesTurn = {
-        retry: { issueLeg },
+        retry: {
+          issueLeg,
+          // Default scope: `openai-codex` on the subscription arm, the only
+          // backend the stall data comes from; CLAUDISH_RESPONSES_STALL_MS
+          // overrides it everywhere.
+          stall: resolveStallPolicy({
+            env: process.env,
+            providerName: this.provider.name,
+            arm: authArm,
+          }),
+          firstHeadersAt: responseHeadersAt,
+        },
         onTurnSummary: (s) => {
           legRetries = s.legRetries;
         },

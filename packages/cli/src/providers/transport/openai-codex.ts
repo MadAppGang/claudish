@@ -25,7 +25,7 @@ import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
 import { lookupModelForProvider } from "../../adapters/model-catalog.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
-import type { RequestAuth } from "../../auth/credentials/types.js";
+import type { CredentialArm, RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { conversationKey } from "./conversation-key.js";
 import { OpenAIProviderTransport } from "./openai.js";
@@ -83,6 +83,15 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
     // spend is the one error that costs them (remote-provider-types.ts).
     const signedWithOAuth = this.cachedAuth?.arm === "oauth";
     recordSignedArm("openai-codex", signedWithOAuth ? "subscription" : "metered");
+  }
+
+  /**
+   * The arm of the artifact `getEndpoint`/`getHeaders` read now: `"oauth"` for
+   * the ChatGPT subscription, `"api-key"` (or unknown) otherwise. Read from the
+   * artifact itself, never from its truthiness (see refreshAuth above).
+   */
+  currentAuthArm(): CredentialArm | undefined {
+    return this.cachedAuth?.arm;
   }
 
   /**

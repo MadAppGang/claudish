@@ -17,6 +17,7 @@ import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
 import { type ResponsesRetryOptions, runResponsesTurn } from "./responses/responses-turn.js";
 
 export type { ResponsesRetryOptions } from "./responses/responses-turn.js";
+export { resolveStallPolicy, type StallPolicy } from "./responses/stall-guard.js";
 
 export function createResponsesStreamHandler(
   c: Context,
