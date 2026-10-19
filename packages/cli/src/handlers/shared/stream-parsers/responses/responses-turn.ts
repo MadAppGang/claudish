@@ -41,22 +41,39 @@
  *   - continue: the script finished without blocking → another leg whose body
  *     is the previous leg's body with this leg's items and the exec call +
  *     output appended to `input`.
- * Bounded by MAX_LEGS_PER_TURN and MAX_INTERSTITIAL_EXECS. A retry inside a
- * code-mode turn re-sends the CURRENT leg's body, not the first one.
+ * Bounded by MAX_LEGS_PER_TURN. A retry inside a code-mode turn re-sends the
+ * CURRENT leg's body, not the first one.
  */
+
+import {
+  type CodeModeTurnHooks,
+  type ExecTurnStep,
+  type ResponsesItem,
+  relayNestedInput,
+} from "../../../../code-mode/types.js";
+import { log } from "../../../../logger.js";
+import type { LegResponse } from "../../responses-leg-issuer.js";
+import type { UsageCacheDetail } from "../../token-tracker.js";
+import type { ClaudeSseSink } from "./claude-sse-sink.js";
+import {
+  type LegOutcome,
+  type ResponsesLegContext,
+  type Usage,
+  parseResponsesLeg,
+} from "./responses-leg.js";
+import { type StallClock, type StallPolicy, systemStallClock } from "./stall-guard.js";
 
 /** Retries per leg position: 3 attempts in all. */
 export const MAX_LEG_RETRIES = 2;
 
 /**
- * Code mode: upstream legs one downstream message may use (continuations
- * after an exec that did not block, plus retries), and exec calls answered
- * inside one message. Either bound ends the message with
- * {@link CODE_MODE_STOP_TEXT}.
+ * Code mode: upstream legs one downstream message may use — continuations
+ * after an exec that did not block AND retries. It also bounds the execs
+ * answered inside one message, since each of those adds a leg. Reaching it
+ * ends the message with {@link CODE_MODE_STOP_TEXT}.
  */
 export const MAX_LEGS_PER_TURN = 6;
-export const MAX_INTERSTITIAL_EXECS = 6;
-export const CODE_MODE_STOP_TEXT = `\n\n[claudish: stopped after ${MAX_INTERSTITIAL_EXECS} code-mode attempts]`;
+export const CODE_MODE_STOP_TEXT = `\n\n[claudish: stopped after ${MAX_LEGS_PER_TURN} upstream requests in one code-mode turn]`;
 
 type RetryDecision =
   | { action: "finish" }
@@ -85,24 +102,6 @@ function exhaustedMessage(outcome: LegOutcome, attempts: number): string {
 function sum(values: number[]): number {
   return values.reduce((a, b) => a + b, 0);
 }
-
-import {
-  type CodeModeTurnHooks,
-  type ExecTurnStep,
-  type ResponsesItem,
-  relayNestedInput,
-} from "../../../../code-mode/types.js";
-import { log } from "../../../../logger.js";
-import type { LegResponse } from "../../responses-leg-issuer.js";
-import type { UsageCacheDetail } from "../../token-tracker.js";
-import type { ClaudeSseSink } from "./claude-sse-sink.js";
-import {
-  type LegOutcome,
-  type ResponsesLegContext,
-  type Usage,
-  parseResponsesLeg,
-} from "./responses-leg.js";
-import { type StallClock, type StallPolicy, systemStallClock } from "./stall-guard.js";
 
 export interface ResponsesTurnOptions
   extends Omit<ResponsesLegContext, "sink" | "codeMode" | "drainClock"> {
@@ -212,7 +211,6 @@ class ResponsesTurn {
   private usageReported = false;
   /** The current leg's body; undefined ⇒ the primary request's (`issueLeg(undefined)`). */
   private currentBody: unknown = undefined;
-  private interstitialExecs = 0;
   /** Code mode: the Responses items of earlier legs of this message, interstitial execs included. */
   private readonly turnItems: ResponsesItem[] = [];
 
@@ -498,12 +496,8 @@ class ResponsesTurn {
       await this.finishCompleted("tool_use");
       return undefined;
     }
-    this.interstitialExecs++;
     this.turnItems.push(...outcome.precedingItems, ...appendItems);
-    if (
-      this.interstitialExecs > MAX_INTERSTITIAL_EXECS ||
-      this.legUsages.length >= MAX_LEGS_PER_TURN
-    ) {
+    if (this.legUsages.length >= MAX_LEGS_PER_TURN) {
       await this.stopAttempts();
       return undefined;
     }
@@ -540,7 +534,6 @@ class ResponsesTurn {
     return undefined;
   }
 
-  /** Issue the next leg; undefined when the turn has ended instead. */
   /**
    * This leg's stall guard settings: the final attempt (no retry left) gets the
    * longer threshold, so no attempt is unbounded and the last one still has

@@ -157,8 +157,9 @@ downstream Claude message) — the same mechanism that retries a degenerate leg
     tool_use`. Claude Code runs the tools under its own permissions.
   - **finished** without blocking → its output is stored and another leg is issued: the current
     leg's body with this leg's items and the exec call + output appended to `input`.
-- `MAX_LEGS_PER_TURN = 6` and `MAX_INTERSTITIAL_EXECS = 6` (legs count continuations AND retries)
-  end the message with `[claudish: stopped after 6 code-mode attempts]`. A retry inside a code-mode
+- `MAX_LEGS_PER_TURN = 6` (legs count continuations AND retries; each exec answered inside the
+  message adds a leg, so it bounds those too) ends the message with `[claudish: stopped after 6
+  upstream requests in one code-mode turn]`. A retry inside a code-mode
   turn re-sends the CURRENT leg's body; retries count per leg position.
 - Usage stays honest: the context figure is the LAST leg's input, output is summed over legs, the
   earlier legs' input is billed once (cost only) before the one `onTokenUpdate` that fires the
