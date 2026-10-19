@@ -10,9 +10,13 @@ Codex client has driven these models this way since `tool_mode: code_mode_only`;
 only client still sending them classic parallel function calls.
 
 The default is `off` until the Phase 7 live validation passes; a separate change then makes `auto`
-the default (on where the account's dynamic models catalog reports `code_mode_only`). Every
-request with code mode off is byte-for-byte what it was before code mode existed, apart from one
-`[CodeMode] off (setting-off)` log line per session.
+the default (on where the account's dynamic models catalog reports `code_mode_only`). With code
+mode off, everything code mode added is skipped (5r returns at once, 5d returns at the
+`setting-off` gate, apart from one `[CodeMode] off (setting-off)` log line per session). The
+request is NOT byte-for-byte what it was before this work, for one deliberate reason: commit
+`d6629064` sends `filterIdentity(system)` as the Responses `instructions` of EVERY `cx@` and
+`openai@` request, where the raw "You are Claude Code" system prompt went before. Each existing
+session loses its prompt-cache prefix once after that upgrade.
 
 Design and evidence: `ai-docs/sessions/dev-feature-codex-tool-calls-20261016-143706-dc2c/`
 (`architecture.md`, `research-codemode.md`, `research-sandbox.md`, `evidence/r1/`, `evidence/r2/`)
@@ -318,7 +322,7 @@ promise that can never settle`). `blocked([])` is unrepresentable.
 | calls per batch / per script | 32 / 256 | the excess call rejects with a string, so `Promise.allSettled` still finishes |
 | one call input / one batch | 2 MiB / 8 MiB | that call rejects |
 | tool result into the script | 1 MiB each (truncated, marked) / 8 MiB per script | rejects |
-| `text()` output | 1 MiB per exec, enforced by the HOST on what it receives (a tampered prelude can waste one bounded copy, never raise the total); `text("")` adds no part; ≤ 1,024 parts (the store counts 64 bytes per part) | dropped, with a warning line; past 1,024 parts, text joins the last part |
+| `text()` output | 1,048,576 characters (UTF-16 code units, not bytes) per exec, enforced by the HOST on what it receives (a tampered prelude can waste one bounded copy, never raise the total); `text("")` adds no part; ≤ 1,024 parts (the store counts 64 bytes per part) | dropped, with a warning line; past 1,024 parts, text joins the last part |
 | output tokens | `max_output_tokens` pragma clamped to [1, 50,000]; default discovery's `truncation_policy.limit` in tokens, else 10,000 | Codex's truncation header, at 4 B/token |
 
 Why 32 MiB and 2 s: the heap limit stops one runtime's ordinary allocations; it bounds nothing

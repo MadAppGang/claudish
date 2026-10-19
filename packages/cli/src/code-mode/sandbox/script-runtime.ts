@@ -103,6 +103,7 @@ export interface SandboxLimits {
   batchInputBytes: number;
   resultBytes: number;
   resultBytesPerScript: number;
+  /** `text()` output per exec, counted in characters (UTF-16 code units), not UTF-8 bytes. */
   outputBytes: number;
   /** Output parts kept separate; past this, text joins the last text part. */
   outputParts: number;
@@ -605,7 +606,8 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
     if (this.outputDropped > 0) {
       parts.push({
         type: "text",
-        text: `Warning: output exceeded claudish's ${describeBytes(this.limits.outputBytes)} limit; ${this.outputDropped} bytes dropped`,
+        // `text()` output is counted in characters (UTF-16 code units), not bytes.
+        text: `Warning: output exceeded claudish's limit of ${this.limits.outputBytes.toLocaleString("en-US")} characters; ${this.outputDropped.toLocaleString("en-US")} characters dropped`,
       });
     }
     const output: ExecOutput = { status, wallMs: this.wallMs(), parts };
@@ -724,7 +726,9 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
       if (handle.alive) handle.dispose();
     }
     const text = describeGuestError(value);
-    if (/out of memory/i.test(text)) return "out of memory: the script exceeded its 32 MiB heap";
+    if (/out of memory/i.test(text)) {
+      return `out of memory: the script exceeded its ${describeBytes(this.limits.memoryBytes)} heap`;
+    }
     return text;
   }
 
