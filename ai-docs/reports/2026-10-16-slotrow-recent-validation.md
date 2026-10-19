@@ -36,8 +36,14 @@ What this shows:
 - A RUNNING row carries the steps so far; a caller does not wait for settle to see the turn move.
 - A COMPLETED row keeps the turn's steps (the field is not cleared at settle).
 - A tool step's summary is the ONE named target field (`file_path` for Read), never the whole
-  input and never the tool result. Paths keep the home directory, by design: the rows stay on
-  this machine and the path is the point.
+  input and never the tool result. Paths keep the home directory, by design: the rows go to
+  the calling agent, which already reads the same paths on the child's screen through
+  `capture_session`.
+- `redactSecrets` masks only the credential shapes it knows. On 2026-10-20 these passed through
+  unmasked: `x-api-key: <value>` in a header, `https://user:password@host`, and a lowercase
+  `?token=<value>` query. `Authorization: Bearer <value>` was masked. The same text is visible
+  on the screen through `capture_session`, so `recent` adds no new exposure; the gap is
+  `redact.ts`'s, recorded in `ROADMAP.md`.
 - `at` is the transcript record's own timestamp, so steps order by when Claude Code wrote them,
   not by when claudish polled.
 

@@ -5,8 +5,10 @@
  *
  * A summary is ONE line taken from ONE named field. A tool step never carries the
  * whole input and never anything from a tool result: a Bash command or a WebFetch url
- * can hold a token, so even the named field goes through `redactSecrets`. Paths keep
- * the home directory: the rows stay on this machine, and the path is the point.
+ * can hold a token, so even the named field goes through `redactSecrets`, which masks
+ * only the credential shapes it knows. Paths keep the home directory: the rows go to the
+ * calling agent, which reads the same paths on the child's screen through
+ * `capture_session`, and the path is the point.
  */
 
 import { redactSecrets } from "../redact.js";

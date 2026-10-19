@@ -659,6 +659,12 @@ that never settled after its background agents finished mid-turn was fixed in 11
   and no work done. A caller reading only the state takes it for a finished task. Trigger: find
   where the Responses stream converts a mid-stream `error` event into a text block, and check it
   on 10.7.0 first.
+- **`redactSecrets` misses three credential shapes.** On 2026-10-20 `redact.ts` left these
+  unmasked: `x-api-key: <value>` in a header, `https://user:password@host`, and a lowercase
+  `?token=<value>` query (`Authorization: Bearer <value>` is masked). `SlotRow.recent` passes a
+  Bash command or WebFetch url through it; the same text is already on the child's screen via
+  `capture_session`, so `recent` adds no exposure, but every caller of `redactSecrets` shares
+  the gap. Trigger: next change to `redact.ts`, or a report of a leaked key.
 
 ---
 
