@@ -80,6 +80,15 @@ export const MUSE_NO_LOGIN_MESSAGE =
 export const MUSE_NON_INTERACTIVE_MESSAGE =
   "muse@ in a team slot / MCP session needs a claudish login: run `claudish login muse`, or one interactive `claudish --model muse@<model>` and allow Keychain access.";
 
+/**
+ * A login file EXISTS and Meta rejected its token (mint 401/403): a different
+ * fact from a missing file, so it is not worded for any process role. The
+ * file is kept; only a new login fixes it.
+ */
+export function museLoginRejectedMessage(status: number): string {
+  return `Meta rejected the Muse Code login (HTTP ${status}): it has expired or been revoked. Run \`claudish login muse\`, or one interactive \`claudish --model muse@<model>\` and allow Keychain access.`;
+}
+
 /** Injectable side effects, so the core is testable with no network and no Keychain. */
 export interface MuseCoreDeps {
   mint: (accessToken: string) => Promise<MuseMint>;
@@ -183,10 +192,15 @@ function isLoginRejection(err: unknown): boolean {
   return err instanceof MuseLoginExpiredError;
 }
 
-/** Mint from one file source. null when the source is absent or its login was rejected. */
+/**
+ * Mint from one file source. null when the source is absent or its login was
+ * rejected; a rejection's status is pushed onto `rejections`, so the caller can
+ * tell "no login file" from "a login file Meta refused".
+ */
 async function tryFileSource(
   source: "claudish-login" | "borrowed-copy",
-  startEpoch: number
+  startEpoch: number,
+  rejections: number[]
 ): Promise<MuseState | null> {
   const record = deps.readStore(
     source === "claudish-login" ? "own-login" : "borrowed-copy",
@@ -198,6 +212,7 @@ async function tryFileSource(
   } catch (err) {
     if (isLoginRejection(err)) {
       log(`[MuseCode] ${source} login rejected by the key service; trying the next source`);
+      rejections.push((err as MuseLoginExpiredError).upstreamStatus);
       return null;
     }
     throw err;
@@ -205,9 +220,10 @@ async function tryFileSource(
 }
 
 async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<MuseState> {
-  const own = await tryFileSource("claudish-login", startEpoch);
+  const rejections: number[] = [];
+  const own = await tryFileSource("claudish-login", startEpoch, rejections);
   if (own) return own;
-  const borrowed = await tryFileSource("borrowed-copy", startEpoch);
+  const borrowed = await tryFileSource("borrowed-copy", startEpoch, rejections);
   if (borrowed) return borrowed;
 
   const role = credentialPromptRole();
@@ -249,6 +265,13 @@ async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<
       );
     }
     // absent / not-allowed: fall through to the no-login message.
+  }
+  // A login file was there and Meta refused it: say THAT, in words that fit
+  // every role. The no-file messages below describe a missing login, and the
+  // `never` one blames the team slot / MCP session, which a `-p` run is not.
+  // The files are kept either way.
+  if (rejections.length > 0) {
+    throw new MuseCredentialError(museLoginRejectedMessage(rejections[0]));
   }
   if (role === "never") throw new MuseCredentialError(MUSE_NON_INTERACTIVE_MESSAGE);
   throw new MuseCredentialError(MUSE_NO_LOGIN_MESSAGE);
@@ -319,8 +342,8 @@ export async function forceRefreshMuseApiKey(opts: {
     return await ensureMuseCredentialReady({ prompt: opts.prompt });
   } catch (err) {
     // Reworded only when the re-mint found no login that works (every source
-    // rejected, or none left). The team/MCP message and the Keychain messages
-    // name their own fix and pass through unchanged.
+    // rejected, or none left). The team/MCP message, the rejected-login message
+    // and the Keychain messages name their own fix and pass through unchanged.
     const noWorkingLogin =
       isLoginRejection(err) ||
       (err instanceof MuseCredentialError && err.message === MUSE_NO_LOGIN_MESSAGE);
