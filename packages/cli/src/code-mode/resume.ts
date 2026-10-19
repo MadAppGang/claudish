@@ -274,11 +274,7 @@ class Resume {
     const hash = batchHash(batchEntries(batch.ids, results));
 
     if (batch.batchHash !== undefined) {
-      // Different results for a batch already consumed (a rewind that re-ran
-      // the tools): not resumable; a tombstone under the new completion key.
-      if (batch.batchHash !== hash)
-        return this.tombstone(execKey, record, LOST_SCRIPT_NOTE, results);
-      return this.replayDuplicate(record, k);
+      return this.answerConsumed(execKey, record, k, batch.batchHash === hash, results);
     }
     if (record.state !== "suspended") return { kind: "none" };
     // A fork answering the original's pending batch: never resumed and never
@@ -296,6 +292,25 @@ class Resume {
       this.loseQuietly(record);
       return { kind: "none" };
     }
+  }
+
+  /** Results for batch `k`, which the script already consumed. */
+  private answerConsumed(
+    execKey: string,
+    record: ExecRecord,
+    k: number,
+    sameResults: boolean,
+    results: ReadonlyMap<string, ClaudeContentBlock>
+  ): ResumeOutcome {
+    // Different results (a rewind that re-ran the tools): not resumable; a
+    // tombstone under the new completion key.
+    if (!sameResults) return this.tombstone(execKey, record, LOST_SCRIPT_NOTE, results);
+    // Another session (a fork) may read a completed output, never be handed
+    // the owner's next batch: its tools would run twice, once per session.
+    if (record.sessionKey !== this.view.sessionKey && record.batches[k + 1]?.blocks) {
+      return this.tombstone(execKey, record, FORKED_SCRIPT_NOTE, results);
+    }
+    return this.replayDuplicate(record, k);
   }
 
   /**
