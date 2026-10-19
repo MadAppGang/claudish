@@ -57,8 +57,11 @@ function recordKey(sessionKey: string, anchor: string): string {
  * The anchor of an assistant message: its first tool_use id, else
  * `sha256(sessionKey ‖ sha256(canonical previous message) ‖ text blocks
  * trimmed and joined with "\n")`. `previousMessage` is the user message the
- * assistant message answered — the last message of the request that produced
- * it, which precedes it in every later history.
+ * assistant message answered — the last conversation message of the request
+ * that produced it, which precedes it in every later history's conversation
+ * messages. Never a system message: Claude Code sends the same one as blocks
+ * when it is last and as a string once a turn follows it, so its hash differs
+ * between the request that stores a record and every request that reads it.
  */
 export function turnAnchorFor(
   sessionKey: string,

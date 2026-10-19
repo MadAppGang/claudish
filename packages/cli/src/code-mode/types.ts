@@ -31,6 +31,23 @@ export interface ClaudeMessage {
   content: string | ClaudeContentBlock[];
 }
 
+/**
+ * The conversation's own messages: `user` and `assistant`, in order.
+ *
+ * Claude Code also sends `role: "system"` messages INSIDE `messages` (the
+ * SessionStart hook's output, MCP server instructions, the token reminder), and
+ * 2.1.303 ENDS a request with one: `user, system, assistant(tool_use×3),
+ * user(tool_result×3), system`. Code mode reasons about message ORDER — the
+ * last message, the message before an assistant message, a message after a
+ * batch — so it reads this view: a trailing system message hid every batch's
+ * answer and no script ever resumed. The input builder never rendered a system
+ * message, so dropping them changes no output.
+ */
+export function conversationMessages(messages: unknown): ClaudeMessage[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.filter((m): m is ClaudeMessage => m?.role === "user" || m?.role === "assistant");
+}
+
 /** A nested tool call relayed to Claude Code as one tool_use block. */
 export interface NestedToolUse {
   /** `toolu_cx_<hex>_<seq>` (`encodeNestedId`). */

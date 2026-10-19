@@ -16,6 +16,10 @@
  * one-shot calls, and consuming a batch there would run the script's next tools
  * outside the turn that owns it; the next ordinary request resumes it.
  *
+ * Every rule below reads the conversation's messages only (`conversationMessages`):
+ * Claude Code's inline `role: "system"` messages, which 2.1.303 puts LAST, are
+ * skipped, so "the last message" is the last user or assistant message.
+ *
  * Entry: the last user message carries tool_results whose ids decode as nested
  * ids. Only a suspended record owned by this session is resumed:
  *
@@ -61,7 +65,12 @@ import type { ExecRecord, ScriptStore } from "./script-store.js";
 import type { CodeModeStores } from "./stores.js";
 import { normalizeToolIdent } from "./tool-names.js";
 import { nestedResultFromToolResult, toolResultImages, toolResultText } from "./tool-results.js";
-import type { ClaudeContentBlock, ClaudeMessage, NestedToolUse } from "./types.js";
+import {
+  type ClaudeContentBlock,
+  type ClaudeMessage,
+  type NestedToolUse,
+  conversationMessages,
+} from "./types.js";
 
 /** Claude Code's interrupt marker (2.1.290: a user text block beside the results). */
 export const INTERRUPT_MARKER = "[Request interrupted by user";
@@ -640,7 +649,9 @@ export function resumeFromToolResults(
     // session's other scripts, or be answered with tool_use blocks.
     const tools = Array.isArray(req.tools) ? (req.tools as ClaudeToolLike[]) : [];
     if (tools.length === 0) return { kind: "none" };
-    const messages = Array.isArray(req.messages) ? (req.messages as ClaudeMessage[]) : [];
+    // Only user/assistant: a trailing system message (Claude Code 2.1.303)
+    // is never "the last message" that answers a batch.
+    const messages = conversationMessages(req.messages);
     let active = stores;
     if (
       !active &&

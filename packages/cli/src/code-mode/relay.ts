@@ -71,7 +71,10 @@ export interface CodeModeTurnContext {
   allTools: readonly ExecToolMeta[];
   /** Output budget of an exec with no pragma (discovery's truncation limit). */
   defaultMaxOutputTokens: number;
-  /** The request's last message: what a text-only message answered (its anchor). */
+  /**
+   * The request's last user/assistant message (`conversationMessages`): what a
+   * text-only message answered (its anchor). Never a trailing system message.
+   */
   previousMessage: ClaudeMessage | undefined;
   /** Test seam: the sandbox module. Default `loadQuickJSModule`. */
   loadModule?: () => Promise<QuickJSModuleLease | undefined>;

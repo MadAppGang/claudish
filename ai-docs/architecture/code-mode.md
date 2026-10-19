@@ -190,6 +190,15 @@ stored BEFORE 5d builds the input. Without it the builder rendered an unstored `
 that request and `Script completed` ("output unavailable after a claudish restart") on the next,
 for the same script.
 
+**"The last message" means the last user or assistant message** (`conversationMessages` in
+`code-mode/types.ts`), in 5r, in the input builder and in the turn-record anchor alike. Claude
+Code sends `role: "system"` messages inside `messages` (SessionStart hook output, MCP server
+instructions, the token reminder), and 2.1.303 ENDS requests with one: `user, system,
+assistant(tool_use×3), user(tool_result×3), system`. Reading the raw last message, 5r found no
+results on any request, so no script ever resumed and every answer took the lost path (Phase 7
+V2a/V2b/V4/V8: 0 resumes across 39 relays). The same system message arrives as blocks while it is
+last and as a string once a turn follows it, so it can never anchor a turn record either.
+
 | Situation (the last user message answers nested ids) | Behaviour |
 |---|---|
 | suspended, owned by this session, expected batch | results resolve or reject by seq (`is_error` rejects with a plain string, as Codex); missing → "no tool_result returned"; blocked again → **synthetic reply**; done → output stored, the upstream turn continues and the input builder renders it |

@@ -54,7 +54,12 @@ import { type ToolNameTable, normalizeToolIdent } from "./tool-names.js";
 import { imageUrlOf, toolResultImages, toolResultText } from "./tool-results.js";
 import { transliterateRound } from "./transliterate.js";
 import { turnAnchorFor } from "./turn-records.js";
-import type { ClaudeContentBlock, ClaudeMessage, ResponsesItem } from "./types.js";
+import {
+  type ClaudeContentBlock,
+  type ClaudeMessage,
+  type ResponsesItem,
+  conversationMessages,
+} from "./types.js";
 
 /** Whose records a request may read. */
 export interface CodeModeKeys {
@@ -546,8 +551,11 @@ export function buildCodeModeInput(
   keys: CodeModeKeys,
   options: BuildCodeModeInputOptions = {}
 ): ResponsesItem[] {
+  // The walk's neighbour rules (the message before an assistant message, the
+  // first user message after a round) read the conversation only: Claude
+  // Code's inline system messages were never rendered and sit between them.
   const builder = new InputBuilder(
-    Array.isArray(messages) ? messages : [],
+    conversationMessages(messages),
     stores,
     keys,
     options.defaultMaxOutputTokens ?? DEFAULT_EXEC_MAX_OUTPUT_TOKENS,

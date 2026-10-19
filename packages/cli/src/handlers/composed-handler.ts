@@ -51,6 +51,7 @@ import {
 import { resumeFromToolResults } from "../code-mode/resume.js";
 import { loadQuickJSModule } from "../code-mode/sandbox/quickjs-loader.js";
 import { getCodeModeStores, peekCodeModeStores } from "../code-mode/stores.js";
+import { conversationMessages } from "../code-mode/types.js";
 import {
   getLogLevel,
   log,
@@ -2504,9 +2505,10 @@ export class ComposedHandler implements ModelHandler {
               names: codeModeTurn.names,
               allTools: codeModeTurn.allTools,
               defaultMaxOutputTokens: codeModeTurn.defaultMaxOutputTokens,
-              previousMessage: Array.isArray(claudeRequest?.messages)
-                ? claudeRequest.messages[claudeRequest.messages.length - 1]
-                : undefined,
+              // The last user/assistant message, as the input builder reads
+              // the message before a text-only answer (a trailing system
+              // message would anchor the turn record where no render looks).
+              previousMessage: conversationMessages(claudeRequest?.messages).at(-1),
             })
           : undefined,
       };
