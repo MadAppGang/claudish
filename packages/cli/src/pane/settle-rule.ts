@@ -159,6 +159,21 @@ function pathSecondary(t: TurnView, input: SettleInput): Path {
     : null;
 }
 
+/**
+ * claudish's pending background agents disagreeing with Claude Code's own count at the
+ * turn's end record. Claude Code writes `pendingBackgroundAgentCount` only above 0, so
+ * absent means 0. A witness, never a decider (D23): session 779a03f0 counted 2 pending
+ * where Claude Code reported 0, and nothing said so.
+ */
+export function agentCountMismatch(
+  t: TurnView | null
+): { counted: number; reported: number } | null {
+  if (!t || !t.turnDurationAfterLast || t.wakingAfterLast) return null;
+  const counted = t.agentsLaunched - t.agentsCompleted;
+  const reported = t.turnDurationAfterLast.pendingBackgroundAgentCount ?? 0;
+  return counted === reported ? null : { counted, reported };
+}
+
 export function decideSettle(input: SettleInput): SettleDecision {
   const t = input.turn;
   const notYet: SettleDecision = { settled: false, activity: activityOf(t) };

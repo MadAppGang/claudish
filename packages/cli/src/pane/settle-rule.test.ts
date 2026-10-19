@@ -3,6 +3,7 @@ import {
   SECONDARY_QUIET_MS,
   type ScreenFacts,
   type SettleInput,
+  agentCountMismatch,
   decideSettle,
 } from "./settle-rule.js";
 import {
@@ -70,6 +71,23 @@ describe("path P — turn_duration", () => {
     });
   });
 
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("settles at the first turn_duration after mid-turn attachment notifications complete both agents", () => {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const w = textOf(recs[0]!);
+    expect(witnessIndex(n, w)).toBe(0);
+    const td = indexOf(n, (r) => r.type === "system" && r.subtype === "turn_duration");
+    expect(td).toBeGreaterThan(0);
+    const v = viewOf(n, w, { upTo: td + 1 });
+    expect(decideSettle(input(v))).toEqual({
+      settled: true,
+      by: "turn_duration",
+      stopReason: "end_turn",
+      anomalies: [],
+    });
+  });
+
   test("waits for the screen: typed text, a dialog, a working row, or a chat record < 500 ms old", () => {
     const v = viewOf("pear-hookless", PEAR);
     expect(decideSettle(input(v, { screen: { ...IDLE_SCREEN, boxEmpty: false } })).settled).toBe(
@@ -122,6 +140,75 @@ describe("path P — turn_duration", () => {
       by: "turn_duration",
       stopReason: "stop_sequence",
     });
+  });
+});
+
+describe("agentCountMismatch", () => {
+  function completedView(): TranscriptView {
+    const n = "corpus-redacted/background-agents-in-turn";
+    const recs = transcriptRecords(n);
+    const td = indexOf(n, (r) => r.type === "system" && r.subtype === "turn_duration");
+    return viewOf(n, textOf(recs[0]!), { upTo: td + 1 });
+  }
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("the fixed follower agrees with zero reported pending agents at the first turn_duration", () => {
+    const v = completedView();
+    expect([v.current!.agentsLaunched, v.current!.agentsCompleted]).toEqual([2, 2]);
+    expect(v.current!.turnDurationAfterLast).toEqual({ pendingBackgroundAgentCount: null });
+    expect(agentCountMismatch(v.current)).toBeNull();
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("missed mid-turn completions report the counter mismatch without settling the turn", () => {
+    const v = completedView();
+    const turn = { ...v.current!, agentsCompleted: 0 };
+    const before = structuredClone(turn);
+    expect(agentCountMismatch(turn)).toEqual({ counted: 2, reported: 0 });
+    expect(turn).toEqual(before);
+    expect(
+      decideSettle({
+        ...input(v, {
+          transcriptQuietMs: 1e9,
+          screen: { ...IDLE_SCREEN, aboveBoxQuietMs: 1e9 },
+        }),
+        turn,
+      })
+    ).toEqual({ settled: false, activity: "background" });
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("one counted background agent agrees with one reported at the Agent turn's first turn_duration", () => {
+    const n = "tools-session";
+    const w = transcriptRecords(n)
+      .map(textOf)
+      .find((s) => s.startsWith("Use the Agent tool with run_in_background"))!;
+    const td = indexOf(n, (r) => r.subtype === "turn_duration", witnessIndex(n, w));
+    const v = viewOf(n, w, { upTo: td + 1 });
+    expect([v.current!.agentsLaunched, v.current!.agentsCompleted]).toEqual([1, 0]);
+    expect(v.current!.turnDurationAfterLast).toEqual({ pendingBackgroundAgentCount: 1 });
+    expect(agentCountMismatch(v.current)).toBeNull();
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("a waking turn has no agent count mismatch even with stale end-of-turn counts", () => {
+    const v = completedView();
+    expect(
+      agentCountMismatch({ ...v.current!, agentsCompleted: 0, wakingAfterLast: true })
+    ).toBeNull();
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("no turn_duration means no reported count to compare", () => {
+    const v = completedView();
+    expect(
+      agentCountMismatch({ ...v.current!, agentsCompleted: 0, turnDurationAfterLast: null })
+    ).toBeNull();
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("a missing turn has no agent count mismatch", () => {
+    expect(agentCountMismatch(null)).toBeNull();
   });
 });
 

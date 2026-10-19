@@ -5,10 +5,12 @@
  * record with their answer intact — and report what they are doing meanwhile.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as pane from "./pane/index.js";
 import {
+  resetTeamRegistryForTests,
   runModels,
   setupSession,
   startModels,
@@ -37,6 +39,124 @@ beforeEach(() => {
 afterEach(async () => {
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
+});
+
+describe("offline team slot anomaly projection", () => {
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  it("agent_count_mismatch shows in the row and map while live, and stays in status history after clearing", async () => {
+    const sessionPath = teamDirOf(t);
+    setupSession(sessionPath, ["haiku"], "Reply with exactly PEAR");
+    const anomaly = "agent_count_mismatch: claudish 2 pending, Claude Code 0";
+    let snap: pane.PaneSnapshot = {
+      paneId: "c1-k0-t01-abcdef",
+      phase: "RUNNING",
+      state: "RUNNING",
+      reason: null,
+      detail: null,
+      activity: "background",
+      lastActivityAt: "2026-10-06T01:00:00.000Z",
+      idleSeconds: 0,
+      turnsCompleted: 0,
+      tokensIn: 33324,
+      tokensOut: 44,
+      toolCalls: 2,
+      liveAnswerBytes: 0,
+      exitCode: null,
+      captureSource: null,
+      turnSource: "transcript",
+      pendingInputs: 0,
+      connected: true,
+      startedAt: "2026-10-06T00:59:00.000Z",
+      endedAt: null,
+      transcriptPath: "/x.jsonl",
+      panePid: null,
+      screenTail: "",
+      anomalies: [anomaly],
+      claudeCodeVersion: null,
+      shape: "one-shot",
+      turnEndRecordMissing: false,
+      agentCountMismatch: true,
+    };
+    let onTransition: pane.PaneSessionOptions["onTransition"];
+    const terminal = Promise.withResolvers<void>();
+    // Exercise the real team projection and anomaly filter, without starting a pane.
+    const available = spyOn(pane, "assertMagmuxAvailable").mockResolvedValue({
+      binary: "unused-offline",
+      version: "unused-offline",
+    });
+    const reserve = spyOn(pane, "reservePanes").mockImplementation(() => {});
+    const start = spyOn(pane, "startPaneSession").mockImplementation(async (opts) => {
+      onTransition = opts.onTransition;
+      return {
+        paneId: snap.paneId,
+        snapshot: () => snap,
+        ready: Promise.resolve(),
+        terminal: terminal.promise,
+        turnAnswer: () => "PEAR",
+      } as unknown as pane.PaneSession;
+    });
+    let handle: Awaited<ReturnType<typeof startModels>> | undefined;
+    const update = (over: Partial<pane.PaneSnapshot>) => {
+      snap = { ...snap, ...over };
+      onTransition?.({ snap } as Parameters<NonNullable<typeof onTransition>>[0]);
+    };
+    try {
+      handle = await startModels(sessionPath, paneRunOptions(t));
+      const slotId = handle.slots.haiku!;
+      const rowActivity = () =>
+        teamRunRow(sessionPath)?.slots.find((s) => s.slot === slotId)?.activity ?? null;
+      const anomalies = () =>
+        JSON.parse(readFileSync(join(sessionPath, "status.json"), "utf8")).models[slotId].anomalies;
+      update({});
+      expect({
+        flag: snap.agentCountMismatch,
+        activity: teamLiveMaps(sessionPath)?.activity[slotId],
+        rowActivity: rowActivity(),
+        anomalies: anomalies(),
+      }).toEqual({
+        flag: true,
+        activity: "background: agent_count_mismatch",
+        rowActivity: "background: agent_count_mismatch",
+        anomalies: [anomaly],
+      });
+      // The anomaly is history once the live condition clears, not an activity suffix.
+      update({ activity: "Bash", agentCountMismatch: false });
+      expect(snap.agentCountMismatch).toBe(false);
+      expect(teamLiveMaps(sessionPath)?.activity[slotId]).toBe("Bash");
+      expect(rowActivity()).toBe("Bash");
+      expect(anomalies()).toEqual([anomaly]);
+      expect(teamRunRow(sessionPath)?.state).toBe("ACTIVE");
+      expect(snap.turnsCompleted).toBe(0);
+      update({
+        state: "COMPLETED",
+        phase: "COMPLETED",
+        activity: null,
+        agentCountMismatch: false,
+        turnsCompleted: 1,
+        endedAt: new Date().toISOString(),
+      });
+      terminal.resolve();
+      const status = await handle.done;
+      expect(status.models[slotId]?.state).toBe("COMPLETED");
+      expect(status.models[slotId]?.anomalies).toEqual([anomaly]);
+      expect(rowActivity()).toBeNull();
+    } finally {
+      if (handle) {
+        update({
+          state: "COMPLETED",
+          phase: "COMPLETED",
+          activity: null,
+          agentCountMismatch: false,
+        });
+        terminal.resolve();
+        await handle.done;
+      }
+      start.mockRestore();
+      reserve.mockRestore();
+      available.mockRestore();
+      resetTeamRegistryForTests();
+    }
+  });
 });
 
 describe.skipIf(!MAGMUX)("team slot heartbeat survival", () => {

@@ -45,7 +45,9 @@ export function toSlotRow(
       ? null
       : snap.turnEndRecordMissing && snap.activity
         ? `${snap.activity}: turn_end_record_missing`
-        : snap.activity,
+        : snap.agentCountMismatch && snap.activity
+          ? `${snap.activity}: agent_count_mismatch`
+          : snap.activity,
     pane: snap.paneId || null,
   };
 }

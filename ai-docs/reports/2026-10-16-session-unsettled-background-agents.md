@@ -1,6 +1,6 @@
 # One-shot session never settles: background-agent notifications delivered mid-turn are not read
 
-Date: 2026-10-16. Status: diagnosed, not fixed. Diagnosis verdict: **Confirmed** (offline replay of the real transcript through the production reducer and settle rule).
+Date: 2026-10-16. Status: **fixed in 11.0.0** — `fix(pane): settle turns whose background agents finish mid-turn` reads the `attachment/queued_command` form; `feat(pane): report agent_count_mismatch when agent counts disagree` adds suggested-fix item 3 as a warning only (it never settles a turn). Verified offline (the replay below: agents 2/2, settled by `turn_duration` at line 654) and live on 2026-10-17 (a bare CLI `team run` with the live recipe: the child transcript, Claude Code 2.1.301, held one async launch and its notification as `attachment/queued_command`, zero `user` notifications; the slot COMPLETED in 42 s with `DONE`, no anomalies). Diagnosis verdict: **Confirmed** (offline replay of the real transcript through the production reducer and settle rule).
 
 ## Summary
 
