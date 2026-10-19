@@ -11,7 +11,8 @@ lives in `ROADMAP.md`.
 
 - `routing.md` — `provider@model` syntax, every provider prefix, catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
 - `wire.md` — every request built from the connection's catalog `wire` + route registry (no model-name rules anywhere); clamp / borrow-and-drop / try-in-turn; the first-run refusal trap; `+pro` vs the `+` chain separator; custom endpoints' declared wire; read before touching `connection-*.ts`, `wire-*.ts`, step 5w, or any limit/reasoning field
-- `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
+- `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array; Codex zero-delta tool calls, the `parallel` wrapper, the Responses leg/turn split with in-turn retry and the 150 s stall guard, and the non-streamed SSE-error contract (`x-claudish-stream-failure`)
+- `code-mode.md` — `--code-mode` for `openai-codex`: one `exec` tool running JavaScript in a QuickJS sandbox, nested calls relayed as `tool_use` blocks; the decision order, lite/classic shapes and the lite → classic fallback, step 5r resume and tombstones, the input builder, store byte caps, and the sandbox limits (a 32 MiB heap limit does NOT bound wasm memory). Read before editing `code-mode/`, step 5d/5r, or the leg parser's exec handling
 - `network-recovery.md` — the two-tier connection hold: the DERIVED deadline (`API_TIMEOUT_MS`, not a
   watchdog), why tier 2 answers 503 and never 429, why the banner is magmux's `overlay` and never a
   pane of ours (closing a pane wedged Claude Code), the five auth sites
