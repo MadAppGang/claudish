@@ -296,8 +296,11 @@ function alignToolRound(assistant: any, collected: any[]): any[] {
  * of accepted image types. An allowlist here would be a second list to keep
  * current, and a media type this converter has not heard of is the upstream
  * provider's judgement to make, not ours.
+ *
+ * Exported for the code-mode input builder, which builds Responses `input`
+ * straight from Claude Code's messages and must express images the same way.
  */
-function imageBlockToUrlPart(block: any): any | null {
+export function imageBlockToUrlPart(block: any): any | null {
   const source = block?.source;
   if (!source || typeof source !== "object") {
     log("[OpenAIMessages] Dropping image block: error — no source object");
