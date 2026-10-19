@@ -86,11 +86,21 @@ export interface LegIssuerDeps<B extends LegAuthBinding = LegAuthBinding> {
 /** Thrown inside the issuer when the credential silo changed; never escapes it. */
 class BindingChanged extends Error {}
 
+/**
+ * The same credential silo: the same arm and the same account. One rule for
+ * every place that adopts a refreshed binding mid-request (each retry leg, and
+ * the primary 401 retry in composed-handler), since the body was built for the
+ * first one.
+ */
+export function isSameCredentialSilo(turn: LegAuthBinding, next: LegAuthBinding): boolean {
+  return (
+    (turn.auth?.arm ?? undefined) === (next.auth?.arm ?? undefined) &&
+    turn.accountKey === next.accountKey
+  );
+}
+
 function assertSameSilo(turn: LegAuthBinding | undefined, next: LegAuthBinding): void {
-  if (!turn) return;
-  const armChanged = (turn.auth?.arm ?? undefined) !== (next.auth?.arm ?? undefined);
-  const accountChanged = turn.accountKey !== next.accountKey;
-  if (armChanged || accountChanged) throw new BindingChanged();
+  if (turn && !isSameCredentialSilo(turn, next)) throw new BindingChanged();
 }
 
 /**

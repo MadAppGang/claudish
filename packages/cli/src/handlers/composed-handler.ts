@@ -117,7 +117,11 @@ import {
   isContextOverflowError,
   isRequestShapeError,
 } from "./shared/request-shape.js";
-import { type LegAuthBinding, createLegIssuer } from "./shared/responses-leg-issuer.js";
+import {
+  type LegAuthBinding,
+  createLegIssuer,
+  isSameCredentialSilo,
+} from "./shared/responses-leg-issuer.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
@@ -1895,6 +1899,23 @@ export class ComposedHandler implements ModelHandler {
           // retry leg after it, sign with the artifact just minted.
           const refreshed = await this.provider.forceRefreshAuth!();
           if (refreshed) {
+            // The body was built for THIS binding's account (code mode renders
+            // its encrypted reasoning and keys its records by it): a refresh
+            // onto another arm or account must not resend it. Answered with
+            // the upstream's own 401, never a throw: inside the recovery
+            // ladder an unclassified throw escapes `handle()`.
+            if (
+              binding &&
+              !isSameCredentialSilo(
+                { auth: binding.auth, accountKey: accountKeyFromBinding(binding) },
+                { auth: refreshed.auth, accountKey: accountKeyFromBinding(refreshed) }
+              )
+            ) {
+              log(`[${this.provider.displayName}] sign-in changed during the request; not resent`);
+              return new Response("Codex sign-in changed during the request; it was not resent", {
+                status: response.status,
+              });
+            }
             binding = refreshed;
             endpoint = this.provider.getEndpoint(this.targetModel, binding);
           }
