@@ -48,8 +48,9 @@ function failureOf(m: Record<string, unknown>): MagmuxFailure {
     error: String(m.error ?? ""),
   };
   if (typeof m.reason === "string" && m.reason) out.reason = m.reason;
-  if (m.typed === true) out.typed = true;
-  if (m.maybeSubmitted === true) out.maybeSubmitted = true;
+  // Present means present: an explicit false is information too.
+  if (typeof m.typed === "boolean") out.typed = m.typed;
+  if (typeof m.maybeSubmitted === "boolean") out.maybeSubmitted = m.maybeSubmitted;
   return out;
 }
 
