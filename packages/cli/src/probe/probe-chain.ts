@@ -144,6 +144,17 @@ function droppedLinkOf(
   };
 }
 
+/**
+ * The Key line text of a credential that is not an env var:
+ * `<effectiveLabel>  (<effectiveSource>)`, e.g.
+ * `Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`.
+ * Undefined for an env-var key, whose line the printer builds itself.
+ */
+export function keyLineText(provenance: KeyProvenance | undefined): string | undefined {
+  if (!provenance?.effectiveLabel) return undefined;
+  return `${provenance.effectiveLabel}  (${provenance.effectiveSource})`;
+}
+
 /** The fields the printer, the TUI and the JSON share, taken from the explanation. */
 export interface ProbeRoutingFields {
   routingSource: RouteExplanation["source"];
@@ -199,6 +210,7 @@ export function resultLinksFrom(
         ...(link.credentialHint ? { credentialHint: link.credentialHint } : {}),
         ...(link.notProbed ? { notProbed: link.notProbed } : {}),
         ...(link.probe ? { probe: link.probe } : {}),
+        ...withKeyLine(link.provenance),
       })
     ),
     ...dropped.map(
@@ -215,4 +227,9 @@ export function resultLinksFrom(
       })
     ),
   ];
+}
+
+function withKeyLine(provenance: KeyProvenance | undefined): { keyLine?: string } {
+  const keyLine = keyLineText(provenance);
+  return keyLine ? { keyLine } : {};
 }

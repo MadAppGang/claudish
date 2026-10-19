@@ -89,6 +89,11 @@ export interface ProbeResultLink {
   notProbed?: "native-auth";
   /** Set on a candidate the routing chain dropped: why. Never probed. */
   dropped?: DroppedOutcome;
+  /**
+   * The Key line of a credential that is not an env var (`keyLineText`):
+   * `Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`.
+   */
+  keyLine?: string;
 }
 
 /**
@@ -1043,6 +1048,12 @@ function DetailModel({
       ? `wire (${winner.displayName}): ${wiring.wireSummary ?? `${wiring.effectiveStreamFormat} · ${wiring.modelTranslator}`} · ${formatContextWindow(wiring.contextWindow)} ctx`
       : "wire: —";
 
+  // Key line — the credential of the link that answered, else of the first link
+  // that carries one (a kept hop that failed, or a dropped no-login candidate).
+  // Only a credential that is not an env var has one (Muse Code's login source
+  // and tier, Vertex's project), the same text the static printer prints.
+  const keyLine = (winner?.keyLine ? winner : result.links.find((l) => l.keyLine))?.keyLine;
+
   // ── Routing advisor ────────────────────────────────────────────────
   // Full route: the ordered chain of providers claudish would try — the kept
   // hops only, each with its tier label. Dropped rows are listed above, not here.
@@ -1143,6 +1154,12 @@ function DetailModel({
       <text>
         <span fg={C.dim}>{`  ${wireLine}`}</span>
       </text>
+      {keyLine && (
+        <text>
+          <span fg={C.dim}>{"  Key  "}</span>
+          <span fg={C.fgMuted}>{keyLine}</span>
+        </text>
+      )}
       {/* Routing advisor — full route + (when picked ≠ fastest) the rule to add */}
       <text>
         <span fg={C.dim}>{"  route: "}</span>
