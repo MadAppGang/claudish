@@ -49,6 +49,7 @@ import {
   type FailureReason,
   type FinalVerdict,
   type PaneBlock,
+  type PaneDiagnostics,
   type PaneSession,
   type PaneSessionOptions,
   type PaneSize,
@@ -156,6 +157,16 @@ export interface SessionDiagnostics {
     complete: boolean;
     reads: number;
   } | null;
+  /**
+   * magmux's input gate for the pane as last read (`ready`, `reason`, `detail`, `ageMs`
+   * since the reading); null when not live or not connected.
+   */
+  gate: PaneDiagnostics["gate"];
+  /**
+   * The last gated send's outcome in the gate's words (`kind`, `reason`, `accept`,
+   * `evidence`, `retypeCause`, `attempts`); null before the first send or when not live.
+   */
+  lastSend: PaneDiagnostics["lastSend"];
   claudeCodeVersion: string | null;
   /** Deduplicated anomaly keys with counts (`illegal_transition:…`, `socket_reconnected ×2`, …). */
   anomalies: readonly string[];
@@ -1309,6 +1320,8 @@ export class SessionManager {
     | "registry"
     | "preambleBytes"
     | "readCoverage"
+    | "gate"
+    | "lastSend"
     | "claudeCodeVersion"
     | "anomalies"
   > {
@@ -1323,6 +1336,8 @@ export class SessionManager {
         registry: null,
         preambleBytes: 0,
         readCoverage: null,
+        gate: null,
+        lastSend: null,
         claudeCodeVersion: null,
         anomalies: entry.info.detail ? [entry.info.detail] : [],
       };
@@ -1337,6 +1352,8 @@ export class SessionManager {
       registry: pane.registry,
       preambleBytes: pane.preambleBytes,
       readCoverage: pane.readCoverage,
+      gate: pane.gate,
+      lastSend: pane.lastSend,
       claudeCodeVersion: snap.claudeCodeVersion,
       anomalies: snap.anomalies,
     };
@@ -1600,6 +1617,8 @@ export class SessionManager {
       turnSource: info.turnSource,
       preambleBytes: 0,
       readCoverage: null,
+      gate: null,
+      lastSend: null,
       claudeCodeVersion: null,
       anomalies: record.partial
         ? [

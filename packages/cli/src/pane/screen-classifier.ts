@@ -195,8 +195,11 @@ function boxText(s: ScreenState, top: number, bottom: number): string {
   return parts.join("\n").trim();
 }
 
-/** Menus (`/` commands, `@` files and agents) are drawn directly above the top rule. */
-function menuAbove(
+/**
+ * Menus (`/` commands, `@` files and agents) are drawn directly above the top rule. `top`
+ * is the box's top rule row (from `inputBox` or `locateBox`).
+ */
+export function menuAbove(
   lines: readonly string[],
   top: number
 ): { menuOpen: boolean; menuItem: string | null } {

@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
-import { locateBox } from "./box-locate.js";
+import { locateBox, locatedBoxText } from "./box-locate.js";
 import {
   type CaptureResult,
   type CaptureUnchanged,
@@ -36,7 +36,13 @@ import {
   BOOT_DIALOG_KINDS,
   type GateDialogKind,
   type GateInput,
+  SEND_READY_WAIT_DEFAULT_MS,
+  type SendOutcome,
+  type SendOutcomeKind,
+  assertNever,
+  classifySendReply,
   parseGateInput,
+  sendBudgetMs,
 } from "./input-gate.js";
 import { MagmuxClient, type MagmuxConnectError, type MagmuxReply } from "./magmux-client.js";
 import {
@@ -95,15 +101,13 @@ import {
 import { type Delivery, planDelivery, writeTurnFile } from "./prompt-delivery.js";
 import {
   agentRejectedLine,
-  boxStartsWith,
   choiceDialog,
   dialogText,
-  echoHead,
   flatText,
   hasChoiceDialog,
-  hasEcho,
   inputBox,
   isWorking,
+  menuAbove,
   nameBootScreen,
   screenAnswer,
   screenErrorRows,
@@ -141,8 +145,11 @@ export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
 export const BOOT_TIMEOUT_MS = 90_000;
 export const ADMIT_TIMEOUT_MS = 30_000;
-/** Without a witness this long after delivery: re-press Enter, or enter degraded mode. */
-export const RESEND_AFTER_MS = 10_000;
+/**
+ * A turn the input gate accepted with no transcript witness this long after the acceptance
+ * settles from the screen (degraded mode). Acceptance itself is never inferred from the
+ * screen (architecture-v2 §5.7).
+ */
 export const DEGRADED_ENTRY_MS = 10_000;
 /** Degraded settle: no change above the box for 2 × this. */
 export const SCREEN_SETTLE_QUIET_MS = 3_000;
@@ -157,14 +164,19 @@ const PANEL_SETTLE_MS = 500;
  */
 export const REPL_STABLE_MS = 3_000;
 /**
- * After the nudge's ctrl-u, how long to keep reading frames for the box to stop showing the
- * line before concluding ctrl-u did not take. The first frame after the key is not evidence:
- * under load it can be a stale redraw still holding the line. Measured 2026-10-16 (report-F,
- * three parallel slots): 810 ms from ctrl-u to the first frame with the empty box, and a
- * single 500 ms frame wait read the stale box, sent a bare Enter on an emptied box and lost
- * the prompt. 3 s is ~3.7x that latency and still ends well inside `ADMIT_TIMEOUT_MS`.
+ * A gated send's client request timeout is magmux's own upper bound on it
+ * (`sendBudgetMs`, protocol.SendBudget) plus this. Every admission attempt is sized so
+ * that timeout ends by the admission deadline (architecture-v2 R1.4).
  */
-export const NUDGE_CLEAR_DEADLINE_MS = 3_000;
+const SEND_CLIENT_SLACK_MS = 2_000;
+/** No attempt is started with less readiness wait than this (R1.4). */
+const MIN_READY_TIMEOUT_MS = 1_000;
+/** A `busy` refusal (Enter not pressed): the next attempt after this. */
+const BUSY_RETRY_MS = 250;
+/** After a `text_mismatch`: magmux's verify settle, so a late draw has landed (sendbudget.go). */
+const MISMATCH_SETTLE_MS = 1_000;
+/** After a ctrl-u from the admission loop: wait at most this for a fresh `ready` reading. */
+const CLEAR_WAIT_MS = 1_000;
 /** A dialog or choice screen static this long blocks boot. */
 const BOOT_STATIC_MS = 5_000;
 const TICK_MS = 250;
@@ -215,12 +227,6 @@ const REGISTRY_GATE_BOOT_DISAGREE_MS = 5_000;
 /** No live registry record this long after boot was ready: `registry_record_missing`. */
 const REGISTRY_MISSING_MS = 5_000;
 const MAX_ANOMALY_KEYS = 64;
-/**
- * A declared pane gates every `send` with text or an Enter (magmux README "the input
- * gate"). Until delivery moves to one gated send (architecture-v2 R1.10 commit 5), every
- * send claudish makes stays the ungated send it always was, byte for byte.
- */
-const UNGATED_SENDS = true;
 /** Settled answers kept for `turnAnswer` (owners read the current or the last one). */
 const KEPT_ANSWERS = 4;
 
@@ -268,12 +274,15 @@ export interface PaneSessionOptions {
     secondaryQuietMs?: number;
     screenSettleQuietMs?: number;
     degradedEntryMs?: number;
+    /**
+     * @deprecated ignored: there is no resend timer; magmux's input gate resends Enter
+     * itself (architecture-v2 §5.1). Kept so the tests that still pass it load.
+     */
     resendAfterMs?: number;
     corroborationMs?: number;
     bootStaticMs?: number;
     /** @deprecated ignored: boot readiness is magmux's `input.ready` (see `REPL_STABLE_MS`) */
     replStableMs?: number;
-    nudgeClearDeadlineMs?: number;
   };
 }
 
@@ -308,6 +317,25 @@ export interface PaneDiagnostics {
     complete: boolean;
     reads: number;
   } | null;
+  /**
+   * magmux's input gate as last read (`list` → pane 0 `input`); `ageMs` since it was read.
+   * null: never read on this connection, or disconnected. Additive (architecture-v2 §9).
+   */
+  gate: { ready: boolean; reason: string | null; detail: string | null; ageMs: number } | null;
+  /** The last gated send's outcome, in the input gate's own words; null before any send. */
+  lastSend: PaneLastSend | null;
+}
+
+/** `get_diagnostics`' view of the last gated send (architecture-v2 §9, R1.2). */
+export interface PaneLastSend {
+  kind: SendOutcomeKind;
+  /** a `busy` / `not_accepted` reason, or a client / magmux code */
+  reason?: string;
+  accept?: string;
+  evidence?: string;
+  retypeCause?: string;
+  /** gated sends of the admission (or control line) it belongs to */
+  attempts: number;
 }
 
 export interface PaneSession {
@@ -334,17 +362,64 @@ export interface PaneSession {
   reaped(): Promise<void>;
 }
 
+/**
+ * Which gated send of an admission comes next (architecture-v2 §5.4): `submit` types the
+ * line and presses Enter in one send; a slash command is `type` (no Enter), a menu check,
+ * then `enter` (`{keys:["enter"]}`, itself a gated SUBMIT).
+ */
+type SubmitStep = "submit" | "type" | "enter";
+
+/**
+ * Why no further send of an admission is made: Enter may have been pressed and nothing
+ * proves it, so only claudish's own transcript witness can accept now (§5.6, R1.3).
+ */
+type SubmittedUnproven =
+  | "unconfirmed"
+  | "reply_lost"
+  | "still_in_box_twice"
+  | "maybe_submitted_by_other";
+
 interface Admission {
   index: number;
   text: string;
   plan: Delivery;
+  /** the one line every gated send of this admission types */
+  line: string;
   initial: boolean;
   startedAt: number;
-  deliveredAt: number | null;
-  resent: boolean;
-  panelEscaped: boolean;
-  /** degraded acceptance armed (no transcript evidence after the entry delay) */
-  degraded: boolean;
+  /** startedAt + (initial ? admitTimeoutMs : ADMIT_TIMEOUT_MS); no attempt outlives it */
+  deadline: number;
+  step: SubmitStep;
+  /** a gated send of this admission awaits its reply */
+  inFlight: boolean;
+  /** gated sends made */
+  attempts: number;
+  submittedUnproven: SubmittedUnproven | null;
+  /** the one ctrl-u + resend after `still_in_box` was used */
+  stuckRetried: boolean;
+  /** a command that opened a panel or picker (§5.4 `panelStep`) */
+  panel: null | {
+    showingSince: number | null;
+    escaped: boolean;
+    /** Enter reached the pane (`unconfirmed`), or not (`busy dialog:select`) */
+    entered: boolean;
+  };
+  /** no further attempt: a stop row of §5.2 already decided, or the pane is gone */
+  stopped: boolean;
+  /** the box may hold this admission's own text (a lost TYPE reply, a withheld Enter) */
+  clearFirst: boolean;
+  /**
+   * When the reply that set `clearFirst` arrived. Only a gate reading received after it (by
+   * one publication interval) may clear the flag: an older one can say `ready` while that
+   * delivery's text is still being drawn (Revision 3 item 2, DB-2).
+   */
+  clearAfter: number;
+  /** a TYPE whose reply was lost: its delivery may still be typing until `until` (R1.5.3) */
+  lostType: { client: MagmuxClient; until: number } | null;
+  /** the latest reply, for `prompt_not_accepted`'s detail */
+  last: SendOutcome | null;
+  /** anomaly keys counted once per admission */
+  noted: Set<string>;
 }
 
 /** A `resize` call waiting for the drain worker's send that carries its size (or a later one). */
@@ -480,6 +555,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private gateTimer: ReturnType<typeof setInterval> | null = null;
   /** when `list` first showed pane 0 dead with no `exit` event yet; 0 = not dead */
   private gateDeadSince = 0;
+  /** the last gated send's outcome (`get_diagnostics`) */
+  private lastSend: PaneLastSend | null = null;
+  /**
+   * When the current turn was accepted, by the gate's evidence or the witness: the
+   * degraded-entry clock (§5.7) and the `witness_missing` clock (§5.8). null: not accepted.
+   */
+  private turnAcceptedAt: number | null = null;
+  private turnErrorLogSize = 0;
+  private witnessMissingCounted = false;
+  /** a later send abandoned unwitnessed: a witness arriving in IDLE re-wakes this turn (§5.3) */
+  private abandonedIndex: number | null = null;
 
   private magmux: ChildProcess | null = null;
   private watcher: ChildProcess | null = null;
@@ -1186,7 +1272,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const head = this.queue.shift() as string;
       if (isControl(head)) {
         this.exitRequested = true;
-        void this.typeLine(head.trim(), true);
+        void this.submitControl(head.trim());
         return;
       }
       this.fire("admit");
@@ -1217,6 +1303,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.screenTurn = null;
     this.rewakeOfSettled = false;
     this.settledChatOffset = null;
+    this.turnAcceptedAt = null;
+    this.witnessMissingCounted = false;
+    this.abandonedIndex = null;
     if (plan.mode === "refused" || plan.mode === "control") {
       this.anomaly(`delivery_refused:${plan.mode === "refused" ? plan.reason : "control"}`);
       this.admission = null;
@@ -1237,90 +1326,514 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         ? { file: plan.file, text: plan.fileContent }
         : null;
     this.follower.openTurn({ index, offset, witness: plan.witness, delivery });
-    this.admission = {
-      index,
-      text,
-      plan,
-      initial,
-      startedAt: Date.now(),
-      deliveredAt: null,
-      resent: false,
-      panelEscaped: false,
-      degraded: false,
-    };
-    void this.deliver(this.admission);
+    // the test seam bounds only the CREATED prompt's admission, as its option says
+    const bound = initial ? (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS) : ADMIT_TIMEOUT_MS;
+    const adm = newAdmission({ index, text, plan, initial, bound });
+    this.admission = adm;
+    void this.runAdmission(adm);
   }
 
-  private async deliver(adm: Admission): Promise<void> {
-    if (await this.typeAndSubmit(adm.plan)) adm.deliveredAt = Date.now();
+  /** This admission is still the live one: nothing accepted, expired or ended it meanwhile. */
+  private admitting(adm: Admission): boolean {
+    return this.admission === adm && this.phase === "ADMITTING";
   }
 
-  /** Type the plan's line and submit it. False for a plan with nothing to type. */
-  private async typeAndSubmit(plan: Delivery): Promise<boolean> {
-    if (plan.mode !== "typed" && plan.mode !== "file" && plan.mode !== "command") return false;
-    if (plan.mode === "command") {
-      await this.typeLine(plan.line, false);
-      await this.nextFrame(500);
-      const box = inputBox(this.screen);
-      const name = plan.line.match(/^\/\S+/)?.[0] ?? "";
-      if (box?.menuOpen && box.menuItem !== name) await this.key("escape");
-      await this.key("enter");
-    } else {
-      await this.typeLine(plan.line, true);
+  /**
+   * The admission loop (architecture-v2 §5.3, R1.4): at most one gated send in flight, each
+   * sized so that its client timeout ends by the admission deadline, and every reply handled
+   * by the exhaustive switch of `onSendOutcome`. magmux's gate presses Enter only on a box
+   * holding exactly the line; claudish never reads the box to decide a retype, never resends
+   * a SUBMIT whose reply was lost or that may have been submitted, and never accepts on the
+   * screen. Claudish's own transcript witness accepts in `evalAdmission` whatever the loop is
+   * doing ("the witness always wins"); the loop sees that at its next check and stops.
+   *
+   * The loop ends with no decision when Enter may have been pressed unproven
+   * (`submittedUnproven`), when a stop row decided (`stopped`), or when no attempt fits
+   * before the deadline; `evalAdmission` then expires the admission at its deadline.
+   */
+  private async runAdmission(adm: Admission): Promise<void> {
+    try {
+      while (this.admitting(adm) && adm.submittedUnproven === null && !adm.stopped) {
+        if (Date.now() >= adm.deadline) return;
+        if (adm.panel) {
+          // a command opened a picker or panel: `panelStep` dismisses it, or hands it back
+          await this.pause(adm, TICK_MS);
+          continue;
+        }
+        if (!this.client || !this.gateTrusted) {
+          await this.awaitTrustedClient(adm);
+          continue;
+        }
+        // a stop row, an ended admission or a wait re-checks from the top of the loop
+        if ((await this.beforeSend(adm)) !== "send") continue;
+        if (!this.admitting(adm) || !(await this.attemptOnce(adm))) return;
+      }
+    } finally {
+      adm.inFlight = false;
     }
+  }
+
+  /** Nothing is written while disconnected: the redial's attach re-checks the binding first. */
+  private awaitTrustedClient(adm: Admission): Promise<void> {
+    return this.waitFor(
+      () => !this.admitting(adm) || (!!this.client && this.gateTrusted),
+      Math.max(0, adm.deadline - Date.now())
+    );
+  }
+
+  /**
+   * One gated send of the admission's current step, and its outcome handled. False when no
+   * attempt fits before the deadline, or the admission ended while the send was out.
+   */
+  private async attemptOnce(adm: Admission): Promise<boolean> {
+    const c = this.client;
+    if (!c) return true; // the loop waits for the redial
+    const step = adm.step;
+    const shape = sendShape(step, adm.line);
+    const rt = readyTimeoutFor(step, adm.line, adm.deadline - Date.now());
+    if (rt === null) return false;
+    const timeout = sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS;
+    const sentAt = Date.now();
+    adm.inFlight = true;
+    adm.attempts++;
+    let reply: MagmuxReply;
+    try {
+      reply = await c.request({ ...shape.msg, readyTimeoutMs: rt }, timeout);
+    } finally {
+      adm.inFlight = false;
+    }
+    const out = classifySendReply(reply);
+    adm.last = out;
+    this.noteLastSend(out, adm.attempts);
+    // the witness accepted it, or the session ended, while the send was out
+    if (!this.admitting(adm)) return false;
+    await this.onSendOutcome(adm, out, step, { client: c, until: sentAt + timeout });
     return true;
   }
 
   /**
-   * §2.9 step 4: retry only a send magmux refused (`busy`, `pane_*`) or one never
-   * written (`client_closed`). A send whose REPLY was lost (`client_timeout`,
-   * `client_lost`) may already have been typed, so the screen decides: retyping it
-   * blindly put the line in the box twice and no witness could ever match.
+   * One gated reply → what the admission does next (architecture-v2 §5.2, R1.1-R1.5). The
+   * switch is exhaustive over the closed `SendOutcome`; `input-gate.ts` only translates.
    */
-  private async typeLine(text: string, enter: boolean): Promise<boolean> {
-    let why = "disconnected";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const c = this.client;
-      if (c) {
-        const r = await c.request(
-          { type: "send", pane: 0, text, typed: true, enter, noGate: UNGATED_SENDS },
-          10_000
-        );
-        if (r.ok) return true;
-        why = r.code;
-        if (r.code === "client_timeout" || r.code === "client_lost") {
-          if (await this.landedAfterLostReply(text, enter)) return true;
+  private async onSendOutcome(
+    adm: Admission,
+    out: SendOutcome,
+    step: SubmitStep,
+    sent: { client: MagmuxClient; until: number }
+  ): Promise<void> {
+    switch (out.kind) {
+      case "accepted":
+        this.onGateAccepted(adm, out);
+        return;
+      case "in_box":
+        if (step !== "type") {
+          // a send that carried an Enter answered as a TYPE: whether Enter was pressed is unknown
+          this.anomaly("send_unexpected:in_box");
+          this.stopAdmission(adm, "magmux answered in_box to a send that carried an Enter");
+          return;
         }
-      }
-      await Bun.sleep(500);
+        if (out.retyped) this.anomaly(`gate_retyped:${out.retypeCause ?? "unknown"}`);
+        await this.menuCheck(adm);
+        adm.step = "enter";
+        return;
+      case "busy":
+        await this.onBusy(adm, out, step);
+        return;
+      case "not_accepted":
+        await this.onNotAccepted(adm, out, step);
+        return;
+      case "bad_request":
+        // nothing was written: a claudish bug (planDelivery emits printable text only)
+        this.anomaly("send_bad_request");
+        this.stopAdmission(adm, `send_bad_request: ${out.error}`);
+        return;
+      case "reply_lost":
+        this.anomaly("send_reply_lost");
+        if (step === "type") {
+          // R1.5.3: a TYPE presses no Enter, so its text is cleared and typed again, once the
+          // delivery behind the lost reply can no longer be typing
+          adm.lostType = sent;
+          markClearFirst(adm);
+          return;
+        }
+        // magmux carries the delivery on, Enter included: never resent; the witness decides
+        adm.submittedUnproven = "reply_lost";
+        return;
+      case "unsent":
+        // never written: the next attempt waits for the redial
+        await this.pause(adm, BUSY_RETRY_MS);
+        return;
+      case "pane_gone":
+        // the exit path decides (`onPaneExit`); no further attempt
+        adm.stopped = true;
+        return;
+      case "unexpected":
+        this.anomaly(`send_unexpected:${out.code}`);
+        this.stopAdmission(adm, `send_unexpected: ${out.code}${out.error ? `: ${out.error}` : ""}`);
+        return;
+      default:
+        assertNever(out);
     }
-    this.anomaly(`delivery_failed:${why}`);
+  }
+
+  /**
+   * `ok`: history evidence (this pane's own screen) accepts at once; transcript evidence
+   * only together with claudish's own witness (§5.6: until the named binding is trusted for
+   * it, a transcript the gate read is not attributable on its own), else it is `unconfirmed`.
+   */
+  private onGateAccepted(adm: Admission, out: Extract<SendOutcome, { kind: "accepted" }>): void {
+    if (out.accept === "resent_enter") this.anomaly("gate_resent_enter");
+    if (out.accept === "submitted_by_other") this.anomaly("gate_submitted_by_other");
+    if (out.retyped) this.anomaly(`gate_retyped:${out.retypeCause ?? "unknown"}`);
+    if (out.dismissed.length > 0) this.anomaly("gate_dismissed_unexpected");
+    if (out.evidence === "transcript") {
+      this.anomaly("gate_transcript_evidence");
+      if (!this.witnessNow()) {
+        this.anomaly("gate_transcript_evidence_unwitnessed");
+        adm.submittedUnproven = "unconfirmed";
+        return;
+      }
+    }
+    this.acceptAdmission(adm);
+  }
+
+  /** `busy`: Enter was NOT pressed. */
+  private async onBusy(
+    adm: Admission,
+    out: Extract<SendOutcome, { kind: "busy" }>,
+    step: SubmitStep
+  ): Promise<void> {
+    const reason = out.reason || "unknown";
+    if (this.stopOnGateBlock(adm, reason, out.dialog)) return;
+    if (out.dialog === "select" && step === "enter") {
+      // the command's own Enter met a picker or panel: dismiss it (§5.4 `panelStep`)
+      this.noteOnce(adm, "gate_dialog_at_admission:select");
+      adm.panel = { showingSince: null, escaped: false, entered: false };
+      return;
+    }
+    if (out.dialog) {
+      // a re-woken turn owns the dialog; evalIdle/evalRunning see it
+      this.noteOnce(adm, `gate_dialog_at_admission:${out.dialog}`);
+    } else if (out.typed) {
+      // the box may hold all or part of the text: the next send's precondition clears it
+      this.anomaly("gate_typed_withheld");
+      markClearFirst(adm);
+    } else if (reason === "box_not_empty") {
+      this.anomaly("gate_box_not_empty");
+      markClearFirst(adm);
+    } else {
+      // starting, terminal_not_ready, no_input_box, typing_in_progress, queue_full, in_flight, …
+      this.noteOnce(adm, `gate_busy:${reason}`);
+    }
+    await this.pause(adm, BUSY_RETRY_MS);
+  }
+
+  /**
+   * The §5.2 stop rows a gate reason decides on its own, from a reply or from the published
+   * view: a boot dialog kind (`first_run_dialog`) and vim mode. True when it stopped.
+   */
+  private stopOnGateBlock(adm: Admission, reason: string, dialog: GateDialogKind | null): boolean {
+    if (dialog && BOOT_DIALOG_KINDS.has(dialog)) {
+      // a question for the human: never a key, never accepted
+      this.anomaly(`gate_boot_dialog:${dialog}`);
+      this.stopAdmission(adm, dialogText(this.screen) || `busy ${reason}`, "first_run_dialog");
+      return true;
+    }
+    if (reason === "vim_mode") {
+      this.anomaly("gate_vim_mode");
+      this.stopAdmission(adm, "busy vim_mode: vim editing mode is on (-- INSERT -- under the box)");
+      return true;
+    }
     return false;
   }
 
-  /** After a lost reply: the line is in the box (typed), or already submitted (echo, witness). */
-  private async landedAfterLostReply(text: string, enter: boolean): Promise<boolean> {
-    await this.nextFrame(1000);
-    const head = echoHead(text, this.screen.cols);
-    const box = inputBox(this.screen);
-    let landed = !!box && boxStartsWith(box, head);
-    if (landed && enter) await this.key("enter");
-    if (!landed && enter) {
-      this.follower.poll();
-      const cur = this.follower.view().current;
-      landed =
-        (!!cur && cur.index === this.turnIndex && cur.acceptedAt !== null) ||
-        hasEcho(this.screen.lines, head);
-    }
-    if (landed) this.anomaly("send_reply_lost");
-    return landed;
+  /**
+   * Revision 3 item 1: magmux answers `busy vim_mode` and `busy dialog:<kind>` only after the
+   * send's WHOLE `readyTimeoutMs`, so before a send that types, the fresh published view is
+   * read first, as R1.5.2 does for `box_not_empty`. Vim mode or a boot dialog stops the
+   * admission with no send; a turn's own dialog (permission, question, plan) starts no send
+   * until it leaves, within the deadline. A stale or missing reading decides nothing: the
+   * send goes, and the gate decides.
+   * `"send"`: go ahead; `"stopped"`: a stop row decided; `"waited"`: re-check from the top.
+   */
+  private async precheckGate(adm: Admission): Promise<"send" | "stopped" | "waited"> {
+    const g = this.gateNow();
+    if (!g || g.ready) return "send";
+    if (this.stopOnGateBlock(adm, g.reason ?? "unknown", g.dialog)) return "stopped";
+    const kind = g.dialog;
+    if (kind !== "permission" && kind !== "question" && kind !== "plan") return "send";
+    this.noteOnce(adm, `gate_dialog_at_admission:${kind}`);
+    await this.waitFor(
+      () => !this.admitting(adm) || this.gateNow()?.dialog !== kind,
+      Math.max(0, adm.deadline - Date.now())
+    );
+    return "waited";
   }
 
+  /**
+   * The preconditions of a send that types: leftover text cleared, then the pre-check. A
+   * command's Enter types nothing and has none.
+   */
+  private async beforeSend(adm: Admission): Promise<"send" | "stopped" | "waited"> {
+    if (adm.step === "enter") return "send";
+    // R1.5.2 / R1.5.3: clear leftover text BEFORE a send that types
+    await this.clearLeftover(adm);
+    if (!this.admitting(adm)) return "stopped";
+    return this.precheckGate(adm);
+  }
+
+  /** `not_accepted`: Enter withheld (`text_mismatch`, `empty_box`) or pressed (the other two). */
+  private async onNotAccepted(
+    adm: Admission,
+    out: Extract<SendOutcome, { kind: "not_accepted" }>,
+    step: SubmitStep
+  ): Promise<void> {
+    switch (out.reason) {
+      case "text_mismatch":
+        if (out.maybeSubmitted) {
+          // R1.3: the text may already have been submitted by another writer: no ctrl-u and no
+          // further send; only claudish's own witness can accept now
+          this.anomaly("gate_maybe_submitted_by_other");
+          adm.submittedUnproven = "maybe_submitted_by_other";
+          return;
+        }
+        this.anomaly("gate_text_mismatch");
+        markClearFirst(adm);
+        if (adm.plan.mode === "command") adm.step = "type";
+        // magmux's verify settle: a late draw lands before the box is read again
+        await this.pause(adm, MISMATCH_SETTLE_MS);
+        return;
+      case "empty_box":
+        if (step === "enter") {
+          // R1.1: the typed command left the box without claudish's Enter, so it may have
+          // run; retyping it is the D-B duplicate in another form
+          this.anomaly("gate_command_left_box");
+          adm.submittedUnproven = "maybe_submitted_by_other";
+          return;
+        }
+        this.anomaly("gate_empty_box");
+        await this.pause(adm, BUSY_RETRY_MS);
+        return;
+      case "still_in_box":
+        // Enter was pressed and ignored, the text proven present
+        if (this.witnessNow()) {
+          this.acceptAdmission(adm);
+          return;
+        }
+        this.anomaly("gate_still_in_box");
+        if (adm.stuckRetried) {
+          adm.submittedUnproven = "still_in_box_twice";
+          return;
+        }
+        adm.stuckRetried = true;
+        await this.clearBox(adm);
+        if (adm.plan.mode === "command") adm.step = "type";
+        return;
+      case "unconfirmed":
+        // Enter was pressed with no attributable evidence: never retyped
+        this.anomaly("gate_unconfirmed");
+        adm.submittedUnproven = "unconfirmed";
+        if (step === "enter") adm.panel = { showingSince: null, escaped: false, entered: true };
+        return;
+      default:
+        assertNever(out.reason);
+    }
+  }
+
+  /** Accept from the async loop, inside one event-processing step. */
+  private acceptAdmission(adm: Admission): void {
+    this.step(() => {
+      if (this.admitting(adm)) this.accept();
+    });
+  }
+
+  /**
+   * A §5.2 stop row: no further attempt. The created prompt fails now with `detail` (its
+   * first line is `reason_detail`); a later send returns the session to IDLE.
+   */
+  private stopAdmission(adm: Admission, detail: string, reason?: FailureReason): void {
+    adm.stopped = true;
+    this.step(() => {
+      if (!this.admitting(adm)) return;
+      this.admission = null;
+      if (adm.initial) {
+        this.fire("admit_deadline", { reason, detail: `${detail}\n${screenTailOf(this.screen)}` });
+        return;
+      }
+      this.anomaly("send_not_accepted");
+      this.abandonedIndex = adm.index;
+      this.fire("admit_abandoned");
+    });
+  }
+
+  /** The current turn's witness, after a fresh read of the transcript. */
+  private witnessNow(): boolean {
+    return this.witnessed(this.pollFollower(true).current);
+  }
+
+  private noteOnce(adm: Admission, key: string): void {
+    if (adm.noted.has(key)) return;
+    adm.noted.add(key);
+    this.anomaly(key);
+  }
+
+  /** Wait `ms`, or less if the admission ends meanwhile. */
+  private pause(adm: Admission, ms: number): Promise<void> {
+    return this.waitFor(() => !this.admitting(adm), ms);
+  }
+
+  /** A gate reading received after `after` says the box is ready (and therefore empty). */
+  private freshReady(after: number): boolean {
+    const g = this.gateNow();
+    return !!g && g.receivedAt > after && g.ready;
+  }
+
+  /** KEYS ctrl-u, then wait at most `CLEAR_WAIT_MS` for a fresh `ready` reading. */
+  private async clearBox(adm: Admission): Promise<void> {
+    const at = Date.now();
+    await this.key("ctrl-u");
+    await this.waitFor(() => !this.admitting(adm) || this.freshReady(at), CLEAR_WAIT_MS);
+  }
+
+  /**
+   * The precondition of every gated send that types (R1.5.2): a gated send into a non-empty
+   * box types nothing and waits its whole `readyTimeoutMs`, so leftover text is cleared
+   * first, from the published view. `box_not_empty` is the gate's LAST readiness rule, so it
+   * already proves no dialog and a settled terminal: this ctrl-u cannot land on a dialog.
+   * Text this admission may itself have left (`clearFirst`) is judged only on a reading
+   * received after the reply that set the flag (Revision 3 item 2): an older one can say
+   * `ready` while that delivery's text is still being drawn (DB-2). Such a reading that is
+   * `ready` clears the flag; one naming a dialog or vim mode keeps it, and the pre-check
+   * decides; any other clears the box. With no newer reading within `CLEAR_WAIT_MS`, the
+   * ctrl-u goes anyway: a ctrl-u on an empty box is harmless, a send into a full one costs
+   * its whole `readyTimeoutMs`.
+   *
+   * R1.5.3: after a TYPE whose reply was lost, a ctrl-u on the SAME connection is
+   * lane-ordered behind that delivery; one on a NEW connection is not and could land
+   * mid-typing, so it waits until the lost TYPE's own client timeout has passed.
+   */
+  private async clearLeftover(adm: Admission): Promise<void> {
+    const lost = adm.lostType;
+    if (lost) {
+      adm.lostType = null;
+      if (lost.client !== this.client || lost.client.isClosed)
+        await this.pause(adm, Math.max(0, lost.until - Date.now()));
+      if (!this.admitting(adm)) return;
+    }
+    if (adm.clearFirst) await this.clearOwnLeftover(adm);
+    else if (this.gateNow()?.reason === "box_not_empty") await this.clearBox(adm);
+  }
+
+  /** `clearFirst`: judged on a reading received after the reply that set it (see above). */
+  private async clearOwnLeftover(adm: Admission): Promise<void> {
+    // the published view trails the pane by up to one refresh: a reading received within
+    // that interval of the reply may still show the box as it was before the text landed
+    const after = adm.clearAfter + GATE_POLL_MS;
+    const newer = (): GateInput | null => {
+      const g = this.gateNow();
+      return g && g.receivedAt > after ? g : null;
+    };
+    await this.waitFor(
+      () => !this.admitting(adm) || newer() !== null,
+      CLEAR_WAIT_MS + GATE_POLL_MS
+    );
+    if (!this.admitting(adm)) return;
+    const g = newer();
+    if (g?.ready) {
+      adm.clearFirst = false;
+      return;
+    }
+    // a dialog or vim mode: no key; the pre-check decides, and the flag waits for a clear box
+    if (g && (g.dialog !== null || g.reason === "vim_mode")) return;
+    adm.clearFirst = false;
+    await this.clearBox(adm);
+  }
+
+  /**
+   * After a command's TYPE (`in_box`): Enter on an open `/` menu runs the HIGHLIGHTED item,
+   * not the typed one, and the gate has no menu handling, so a menu whose highlight is not
+   * the typed name is closed with Escape first (§5.4). Read on the box located by the cursor;
+   * a box not located is `menu_unverified`, and no Escape.
+   */
+  private async menuCheck(adm: Admission): Promise<void> {
+    const name = adm.line.match(/^\/\S+/)?.[0] ?? "";
+    // our frames trail magmux's own verify by up to one frame interval
+    await this.waitFor(() => {
+      if (!this.admitting(adm)) return true;
+      const box = locateBox(this.screen);
+      return !!box && locatedBoxText(this.screen, box).startsWith(name);
+    }, 2 * TICK_MS);
+    if (!this.admitting(adm)) return;
+    const box = locateBox(this.screen);
+    if (!box) {
+      this.anomaly("menu_unverified");
+      return;
+    }
+    const menu = menuAbove(this.screen.lines, box.top);
+    if (menu.menuOpen && menu.menuItem !== name) await this.key("escape");
+  }
+
+  /** The last gated send, as `get_diagnostics` reports it. */
+  private noteLastSend(out: SendOutcome, attempts: number): PaneLastSend {
+    const s: PaneLastSend = { kind: out.kind, attempts };
+    switch (out.kind) {
+      case "accepted":
+        s.accept = out.accept;
+        s.evidence = out.evidence;
+        if (out.retypeCause) s.retypeCause = out.retypeCause;
+        break;
+      case "in_box":
+        s.accept = "in_box";
+        if (out.retypeCause) s.retypeCause = out.retypeCause;
+        break;
+      case "busy":
+      case "not_accepted":
+        s.reason = out.reason;
+        break;
+      case "bad_request":
+        s.reason = "bad_request";
+        break;
+      case "reply_lost":
+      case "unsent":
+      case "pane_gone":
+      case "unexpected":
+        s.reason = out.code;
+        break;
+      default:
+        assertNever(out);
+    }
+    this.lastSend = s;
+    return s;
+  }
+
+  /**
+   * `/exit` / `/quit` (§5.4 `control`): one gated SUBMIT. Its reply is only recorded; the
+   * pane's exit decides.
+   */
+  private async submitControl(line: string): Promise<void> {
+    const c = this.client;
+    if (!c) {
+      this.anomaly("control_send:unsent");
+      return;
+    }
+    const rt = SEND_READY_WAIT_DEFAULT_MS;
+    const shape = sendShape("submit", line);
+    const r = await c.request(
+      { ...shape.msg, readyTimeoutMs: rt },
+      sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS
+    );
+    const out = classifySendReply(r);
+    const s = this.noteLastSend(out, 1);
+    if (out.kind !== "accepted")
+      this.anomaly(`control_send:${out.kind}${s.reason ? `:${s.reason}` : ""}`);
+  }
+
+  /** One KEYS send (ctrl-u, Escape): no text and no final Enter, never gated. */
   private async key(k: string): Promise<boolean> {
     const c = this.client;
     if (!c) return false;
     const r = await c.request(
-      { type: "send", pane: 0, keys: [k], enter: false, noGate: UNGATED_SENDS },
+      { type: "send", pane: 0, keys: [k], enter: false, noGate: true },
       10_000
     );
     return r.ok;
@@ -1338,165 +1851,118 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     });
   }
 
+  /**
+   * Synchronous, on every evaluation: the witness accepts whatever the loop is doing; a
+   * command's panel is stepped; the deadline expires the admission once no gated send is
+   * out (every attempt is sized to end by it).
+   */
   private evalAdmission(view: TranscriptView): void {
     const adm = this.admission;
     if (!adm) return;
-    const cur = view.current;
-    if (cur && cur.index === adm.index && cur.acceptedAt !== null) {
+    if (this.witnessed(view.current)) {
       this.accept();
       return;
     }
-    const now = Date.now();
-    const since = adm.deliveredAt ? now - adm.deliveredAt : 0;
-    if (adm.deliveredAt && adm.plan.mode === "command" && this.panelCommand(adm, since)) return;
-    if (adm.deliveredAt && since >= this.t("resendAfterMs", RESEND_AFTER_MS)) this.nudge(adm);
-    if (
-      adm.deliveredAt &&
-      (view.availability === "off" || since >= this.t("degradedEntryMs", DEGRADED_ENTRY_MS))
-    )
-      this.maybeDegradedAccept(adm, view);
-    if (this.phase !== "ADMITTING") return;
-    if (now - adm.startedAt >= (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS)) this.admitExpired(adm);
+    if (adm.panel) this.panelStep(adm);
+    if (!this.admitting(adm)) return;
+    if (Date.now() >= adm.deadline && !adm.inFlight) this.admitExpired(adm);
   }
 
-  /** A full-screen panel: no input box, no choice dialog, and its `Esc to cancel` footer. */
-  private panelOpen(): boolean {
+  /** A full-screen panel or picker: the gate sees no box (or a `select` dialog), and `Esc to cancel`. */
+  private panelShowing(g: GateInput | null): boolean {
     return (
-      !inputBox(this.screen) &&
-      !hasChoiceDialog(this.screen) &&
+      !!g &&
+      (g.reason === "no_input_box" || g.dialog === "select") &&
       /Esc to cancel/.test(flatText(this.screen.lines))
     );
   }
 
   /**
-   * A delivered panel command (`/cost`, `/usage`, `/config`, …) writes no transcript record
-   * and swallows input until Esc (phase2-captures §3, §10), so it can never be witnessed.
-   * Once it is on screen it is dismissed at once, and when the empty box is back the
-   * admission ends without a turn: a later prompt is not held for the 30 s admission bound.
-   * True when this step handled the admission.
+   * A panel command (`/cost`, `/usage`, `/config`; `/model` with no argument) writes no
+   * transcript record and swallows input until Esc (phase2-captures §3, §10), so it can never
+   * be witnessed. Once it has been up for `PANEL_SETTLE_MS` it gets one Escape, and when the
+   * gate is ready again the admission ends without a turn (§5.4). Never an Escape while the
+   * gate names a boot dialog (`panelShowing` admits only `no_input_box` and `select`).
    */
-  private panelCommand(adm: Admission, since: number): boolean {
-    if (!adm.panelEscaped) {
-      if (since < PANEL_SETTLE_MS || !this.panelOpen()) return false;
-      adm.panelEscaped = true;
-      this.anomaly("panel_dismissed");
+  private panelStep(adm: Admission): void {
+    const p = adm.panel;
+    if (!p) return;
+    const g = this.gateNow();
+    if (!p.escaped) {
+      if (!this.panelShowing(g)) {
+        p.showingSince = null;
+        return;
+      }
+      const now = Date.now();
+      p.showingSince ??= now;
+      if (now - p.showingSince < PANEL_SETTLE_MS) return;
+      p.escaped = true;
+      this.anomaly(g?.dialog === "select" ? "picker_dismissed" : "panel_dismissed");
       void this.key("escape");
-      return true;
-    }
-    const box = inputBox(this.screen);
-    if (!box || box.text !== "" || this.panelOpen()) return false;
-    this.admission = null;
-    this.anomaly("panel_command");
-    if (adm.initial)
-      this.fire("admit_deadline", {
-        detail: `${adm.text.trim()} opened a panel and wrote no transcript record`,
-      });
-    else this.fire("admit_abandoned");
-    return true;
-  }
-
-  /**
-   * +10 s without a witness: the line still in the box → clear it, retype it once and
-   * submit; a panel → Esc. The line sits unsent when it was typed into Claude Code's
-   * startup stdin reset (see `REPL_STABLE_MS`), where a bare second Enter cannot be relied
-   * on to submit it. Ctrl-U clears the box (phase2-captures keylog). The same line is
-   * retyped, so the turn's witness and read coverage are unchanged.
-   */
-  /**
-   * Read frames after the nudge's ctrl-u until the box no longer shows the line, or
-   * `NUDGE_CLEAR_DEADLINE_MS` passes. `empty`: ctrl-u took. `other`: the box holds
-   * something else (or is gone from the screen at the deadline). `line`: the line is still
-   * there at the deadline. `gone`: the admission ended meanwhile.
-   */
-  private async awaitClearedBox(
-    adm: Admission,
-    head: string
-  ): Promise<"empty" | "line" | "other" | "gone"> {
-    const end = Date.now() + this.t("nudgeClearDeadlineMs", NUDGE_CLEAR_DEADLINE_MS);
-    for (;;) {
-      if (this.admission !== adm || this.phase !== "ADMITTING") return "gone";
-      const box = inputBox(this.screen);
-      if (box && box.text === "") return "empty";
-      if (box && !boxStartsWith(box, head)) return "other";
-      const left = end - Date.now();
-      if (left <= 0) return box ? "line" : "other";
-      // Resolves on the next frame (screen seq change) or at the deadline.
-      await this.nextFrame(left);
-    }
-  }
-
-  private nudge(adm: Admission): void {
-    const box = inputBox(this.screen);
-    const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    const head = echoHead(line, this.screen.cols);
-    if (!adm.resent && box && line && boxStartsWith(box, head)) {
-      adm.resent = true;
-      this.anomaly("resent_enter");
-      void (async () => {
-        if (box.menuOpen) await this.key("escape");
-        await this.key("ctrl-u");
-        const after = await this.awaitClearedBox(adm, head);
-        if (after === "gone") return; // accepted or ended meanwhile: nothing to resend
-        if (after === "empty") {
-          this.anomaly("retyped_prompt");
-          await this.typeAndSubmit(adm.plan);
-        } else if (after === "line") {
-          // Ctrl-U did not take within the deadline: the old remedy, one more Enter.
-          // Never type a second copy while the first could still be in the box.
-          await this.key("enter");
-        } else {
-          this.anomaly("clear_failed");
-        }
-      })();
       return;
     }
-    if (
-      !adm.panelEscaped &&
-      !box &&
-      !hasChoiceDialog(this.screen) &&
-      /Esc to cancel/.test(flatText(this.screen.lines))
-    ) {
-      // A panel command (`/cost`, `/usage`, …) writes no record and swallows input until Esc.
-      adm.panelEscaped = true;
-      this.anomaly("panel_dismissed");
-      void this.key("escape");
+    if (!g) return;
+    if (g.ready) {
+      this.admission = null;
+      this.anomaly("panel_command");
+      if (adm.initial)
+        this.fire("admit_deadline", {
+          detail: `${adm.text.trim()} opened a panel and wrote no transcript record`,
+        });
+      else this.fire("admit_abandoned");
+      return;
     }
-  }
-
-  /** Degraded acceptance (§2.8): the box emptied of the line, and an echo or a change above it. */
-  private maybeDegradedAccept(adm: Admission, view: TranscriptView): void {
-    if (view.availability === "ok") return;
-    const box = inputBox(this.screen);
-    if (!box || box.text !== "") return;
-    const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    const echo = hasEcho(this.screen.lines, echoHead(line, this.screen.cols));
-    // H2: a resize redraws everything above the box; within its quiet window only the echo counts
-    const changed =
-      adm.deliveredAt !== null &&
-      this.screen.aboveBoxChangedAt > adm.deliveredAt &&
-      !this.inResizeQuiet(this.screen.aboveBoxChangedAt);
-    if (!echo && !changed) return;
-    this.turnSource = "screen";
-    this.anomaly("degraded_mode");
-    this.screenTurn = { echo: line, acceptedAt: Date.now(), errorLogSize: this.errorLogSize() };
-    this.accept();
+    // Esc closed a menu, not a panel, and the command (whose Enter was never pressed) is
+    // still in the box: the loop presses its Enter through the gate again
+    if (!p.entered && g.reason === "box_not_empty") adm.panel = null;
   }
 
   private accept(): void {
     this.admission = null;
     this.initialDelivery = false;
-    this.lastChatSeenAt = Date.now();
+    const now = Date.now();
+    this.lastChatSeenAt = now;
+    this.turnAcceptedAt = now;
+    this.turnErrorLogSize = this.errorLogSize();
     this.fire("prompt_accepted");
   }
 
   private admitExpired(adm: Admission): void {
     this.admission = null;
     if (adm.initial) {
-      this.fire("admit_deadline", { detail: screenTailOf(this.screen) });
+      this.fire("admit_deadline", {
+        detail: `${this.notAcceptedLine(adm)}\n${screenTailOf(this.screen)}`,
+      });
       return;
     }
     this.anomaly("send_not_accepted");
+    // a witness that still arrives re-wakes the session as this turn (evalIdle)
+    this.abandonedIndex = adm.index;
     this.fire("admit_abandoned");
+  }
+
+  /**
+   * The first line of `prompt_not_accepted`'s detail, i.e. `reason_detail`: the input
+   * gate's own answer (the magus session reads it).
+   */
+  private notAcceptedLine(adm: Admission): string {
+    const secs = Math.round((Date.now() - adm.startedAt) / 1000);
+    switch (adm.submittedUnproven) {
+      case "maybe_submitted_by_other":
+        return "magmux could not tell whether the prompt was submitted (the box emptied without its Enter) and no transcript record of it appeared";
+      case "unconfirmed":
+        return `magmux not_accepted unconfirmed: Enter was pressed with no evidence it was submitted, and no transcript record appeared in ${secs} s`;
+      case "reply_lost": {
+        const code = adm.last?.kind === "reply_lost" ? adm.last.code : "client_lost";
+        return `the magmux send reply was lost (${code}) and no transcript record of the prompt appeared in ${secs} s`;
+      }
+      case "still_in_box_twice":
+        return "magmux not_accepted still_in_box: the prompt stayed in the input box after Enter, twice";
+      case null:
+        return `prompt not accepted in ${secs} s; ${describeLastReply(adm, this.gateNow())}`;
+      default:
+        return assertNever(adm.submittedUnproven);
+    }
   }
 
   private screenFacts(): ScreenFacts | null {
@@ -1510,7 +1976,40 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     };
   }
 
+  /**
+   * A turn the gate accepted that the transcript has not witnessed: with the transcript off,
+   * or still absent or empty `DEGRADED_ENTRY_MS` after the acceptance, it settles from the
+   * screen (§5.7, degraded mode now begins only AFTER an evidenced acceptance); with the
+   * transcript `ok` and no witness `ADMIT_TIMEOUT_MS` after it, `witness_missing` is counted
+   * once (§5.8) and the turn stays RUNNING: no timer ends it (D10).
+   */
+  private checkUnwitnessed(view: TranscriptView): void {
+    const at = this.turnAcceptedAt;
+    if (at === null || this.rewakeOfSettled || this.witnessed(view.current)) return;
+    const since = Date.now() - at;
+    const missing = view.availability === "absent" || view.availability === "empty";
+    if (
+      view.availability === "off" ||
+      (missing && since >= this.t("degradedEntryMs", DEGRADED_ENTRY_MS))
+    ) {
+      const d = this.currentDelivery;
+      this.turnSource = "screen";
+      this.anomaly("degraded_mode");
+      this.screenTurn = {
+        echo: d && d.mode !== "refused" ? d.line : "",
+        acceptedAt: at,
+        errorLogSize: this.turnErrorLogSize,
+      };
+      return;
+    }
+    if (view.availability === "ok" && since >= ADMIT_TIMEOUT_MS && !this.witnessMissingCounted) {
+      this.witnessMissingCounted = true;
+      this.anomaly("witness_missing");
+    }
+  }
+
   private evalRunning(view: TranscriptView): void {
+    if (this.turnSource === "transcript") this.checkUnwitnessed(view);
     if (this.turnSource === "screen") {
       this.evalScreenTurn(view);
       return;
@@ -1621,6 +2120,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private evalIdle(view: TranscriptView): void {
     const t = view.current;
+    // A later send abandoned unwitnessed (§5.3, R1.3) whose witness arrives now: magmux's
+    // delivery DID land. It is this same turn, reported late, never lost.
+    if (
+      t &&
+      this.abandonedIndex !== null &&
+      t.index === this.abandonedIndex &&
+      t.acceptedAt !== null &&
+      !this.exitRequested
+    ) {
+      this.abandonedIndex = null;
+      this.anomaly("late_witness");
+      this.turnAcceptedAt = Date.now();
+      this.turnErrorLogSize = this.errorLogSize();
+      this.lastChatSeenAt = Date.now();
+      this.fire("rewake");
+      this.activity = "thinking";
+      return;
+    }
     // After a delivered /exit only the pane's exit can follow, never a re-wake: Claude
     // Code 2.1.282–2.1.285 write the command's own records into the settled turn.
     if (!t || this.settledChatOffset === null || this.exitRequested) return;
@@ -2136,6 +2653,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   diagnostics(): PaneDiagnostics {
     const cur = this.follower.view().current;
     const rec = this.registryRec;
+    const g = this.gate;
     return {
       magmuxStderr: this.stderrHead,
       registry: rec
@@ -2150,6 +2668,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
             reads: cur.readCoverage.reads,
           }
         : null,
+      gate:
+        g && this.client
+          ? { ready: g.ready, reason: g.reason, detail: g.detail, ageMs: Date.now() - g.receivedAt }
+          : null,
+      lastSend: this.lastSend ? { ...this.lastSend } : null,
     };
   }
 
@@ -2337,6 +2860,135 @@ function launchSize(o: PaneSessionOptions): PaneSize {
   return o.initialSize
     ? clampPaneSize(o.initialSize.cols, o.initialSize.rows)
     : { cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS };
+}
+
+/** A fresh admission of a typed, file or command plan; its first step follows the plan's kind. */
+function newAdmission(a: {
+  index: number;
+  text: string;
+  plan: Extract<Delivery, { mode: "typed" | "file" | "command" }>;
+  initial: boolean;
+  bound: number;
+}): Admission {
+  const now = Date.now();
+  return {
+    index: a.index,
+    text: a.text,
+    plan: a.plan,
+    line: a.plan.line,
+    initial: a.initial,
+    startedAt: now,
+    deadline: now + a.bound,
+    step: a.plan.mode === "command" ? "type" : "submit",
+    inFlight: false,
+    attempts: 0,
+    submittedUnproven: null,
+    stuckRetried: false,
+    panel: null,
+    stopped: false,
+    clearFirst: false,
+    clearAfter: 0,
+    lostType: null,
+    last: null,
+    noted: new Set(),
+  };
+}
+
+/** The box may hold this admission's own text, as of the reply received now. */
+function markClearFirst(adm: Admission): void {
+  adm.clearFirst = true;
+  adm.clearAfter = Date.now();
+}
+
+/**
+ * The wire request of one admission step and the shape `sendBudgetMs` sizes it by. `keys`
+ * counts the final Enter as one key (an upper bound either way). Every send is typed
+ * (`typed:true`, R1.2: a paste is never retyped and is verified by token count). `noGate`
+ * and `dismissDialogs` are never set.
+ */
+function sendShape(
+  step: SubmitStep,
+  line: string
+): {
+  msg: Record<string, unknown>;
+  budget: { text: string; keys: number; submit: boolean };
+} {
+  switch (step) {
+    case "submit":
+      return {
+        msg: { type: "send", pane: 0, text: line, typed: true, enter: true },
+        budget: { text: line, keys: 1, submit: true },
+      };
+    case "type":
+      return {
+        msg: { type: "send", pane: 0, text: line, typed: true, enter: false },
+        budget: { text: line, keys: 0, submit: false },
+      };
+    case "enter":
+      // a final Enter key is a SUBMIT to the gate (verified `non_empty`), R1.5.4
+      return {
+        msg: { type: "send", pane: 0, keys: ["enter"], enter: false },
+        budget: { text: "", keys: 1, submit: true },
+      };
+    default:
+      return assertNever(step);
+  }
+}
+
+/** `sendBudgetMs` minus its readiness wait: what an attempt costs beyond waiting for the box. */
+function fixedSendMs(step: SubmitStep, line: string): number {
+  const rt = SEND_READY_WAIT_DEFAULT_MS;
+  return sendBudgetMs({ ...sendShape(step, line).budget, readyTimeoutMs: rt }) - rt;
+}
+
+/**
+ * The `readyTimeoutMs` of the next attempt, or null when none fits (R1.4): the client
+ * timeout (`sendBudgetMs + SEND_CLIENT_SLACK_MS`) must end by the deadline, and a command's
+ * TYPE leaves room for its Enter SUBMIT. Never above magmux's default 10 s, never below
+ * `MIN_READY_TIMEOUT_MS`.
+ */
+function readyTimeoutFor(step: SubmitStep, line: string, leftMs: number): number | null {
+  const reserve =
+    step === "type" ? fixedSendMs("enter", line) + SEND_CLIENT_SLACK_MS + MIN_READY_TIMEOUT_MS : 0;
+  const rt = Math.min(
+    SEND_READY_WAIT_DEFAULT_MS,
+    leftMs - fixedSendMs(step, line) - SEND_CLIENT_SLACK_MS - reserve
+  );
+  return rt < MIN_READY_TIMEOUT_MS ? null : Math.floor(rt);
+}
+
+/** The latest reply of an admission that ended with nothing submitted, in the gate's words. */
+function describeLastReply(
+  adm: { last: SendOutcome | null; attempts: number },
+  gate: GateInput | null
+): string {
+  const o = adm.last;
+  if (!o) {
+    const g = gate ? (gate.ready ? "ready" : (gate.reason ?? "not ready")) : "unknown";
+    return adm.attempts === 0
+      ? `no gated send fitted before the deadline (gate: ${g})`
+      : `no magmux reply (gate: ${g})`;
+  }
+  switch (o.kind) {
+    case "busy":
+      return `last magmux reply: busy ${o.reason || "unknown"}${o.typed ? " (typed, Enter withheld)" : ""}${gate?.detail ? ` (${gate.detail})` : ""}`;
+    case "not_accepted":
+      return `last magmux reply: not_accepted ${o.reason}`;
+    case "accepted":
+      return `last magmux reply: ok ${o.accept} (${o.evidence})`;
+    case "in_box":
+      return "last magmux reply: in_box (the command was typed, its Enter never sent)";
+    case "bad_request":
+      return `last magmux reply: bad_request ${o.error}`;
+    case "reply_lost":
+    case "unsent":
+    case "pane_gone":
+      return `last magmux reply: ${o.code}`;
+    case "unexpected":
+      return `last magmux reply: ${o.code}`;
+    default:
+      return assertNever(o);
+  }
 }
 
 function isControl(text: string): boolean {

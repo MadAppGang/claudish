@@ -38,6 +38,7 @@ export {
 export {
   type PaneBlock,
   type PaneDiagnostics,
+  type PaneLastSend,
   type PaneSession,
   type PaneResizeOutcome,
   type PaneSessionOptions,
