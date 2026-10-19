@@ -993,7 +993,25 @@ export class ComposedHandler implements ModelHandler {
     }
   }
 
+  /**
+   * One request. Once it has been SIGNED (its headers fetched), every answer —
+   * the stream, the JSON form, and an upstream error such as a 5xx or a
+   * remapped 400 — names the credential that signed it, so `--probe` reports
+   * the signer even when the request then failed for another reason. A request
+   * that failed before it was signed (no usable login) names nothing.
+   */
   async handle(c: Context, payload: any): Promise<Response> {
+    const signing: { headers?: Record<string, string> } = {};
+    const response = await this.handleSigned(c, payload, signing);
+    if (!signing.headers || !this.provider.signingCredential) return response;
+    return withSignerHeader(response, this.provider.signingCredential(signing.headers));
+  }
+
+  private async handleSigned(
+    c: Context,
+    payload: any,
+    signing: { headers?: Record<string, string> }
+  ): Promise<Response> {
     const startTime = performance.now();
     // Stamp the recovery deadline's ZERO POINT here, and not wherever something
     // first asks for it.
@@ -1451,14 +1469,13 @@ export class ComposedHandler implements ModelHandler {
     // Every header fetch below goes through this, so a header the wire requires
     // (a beta token next to the field it wrote) survives the auth retries too.
     // The headers of THIS request's latest attempt — the one whose answer is
-    // returned (primary, parameter re-fetch or auth retry). Local to this call,
-    // so a concurrent request on the same handler cannot replace it; the
-    // signer named on the response is looked up from these (`signingCredential`).
-    let signedHeaders: Record<string, string> | undefined;
+    // returned (primary, parameter re-fetch or auth retry), recorded on this
+    // call's own `signing` record so a concurrent request on the same handler
+    // cannot replace it. `handle` names the signer from them (`signingCredential`).
     const fetchHeaders = async (): Promise<Record<string, string>> => {
       const fetched = await this.provider.getHeaders(payload);
       mergeWireHeaders(fetched, wireHeaders);
-      signedHeaders = fetched;
+      signing.headers = fetched;
       return fetched;
     };
     let headers: Record<string, string>;
@@ -2430,12 +2447,8 @@ export class ComposedHandler implements ModelHandler {
     // ones, which is the bug being fixed. Claudish's own internal callers
     // (mcp-server.ts:235, probe-live.ts:139) both send `stream: true`
     // explicitly, so this changes nothing for them.
-    const signed = withSignerHeader(
-      streamed,
-      signedHeaders ? this.provider.signingCredential?.(signedHeaders) : undefined
-    );
-    if (payload?.stream === true) return signed;
-    return sseResponseToJson(signed, this.bareModelName);
+    if (payload?.stream === true) return streamed;
+    return sseResponseToJson(streamed, this.bareModelName);
   }
 
   /**

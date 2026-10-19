@@ -1595,6 +1595,8 @@ async function probeModelRouting(
   function museKeyProvenance(probe?: ProbeResult): KeyProvenance {
     const muse = describeMuseSigningSource({
       ...(probe?.signedWith ? { signedWith: probe.signedWith } : {}),
+      // Signed, then failed for another reason (a 5xx, a timeout): say how.
+      ...(probe && probe.state !== "live" ? { failure: describeProbeState(probe) } : {}),
       probed: probe !== undefined,
     });
     return {

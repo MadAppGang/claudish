@@ -273,7 +273,8 @@ export async function probeLink(
   if (!response.ok) {
     const body = await safeReadBody(response);
     return annotateOAuthHint(
-      classifyHttpError(response.status, body, ttfbMs),
+      // A request that was signed and then failed still names its signer.
+      { ...classifyHttpError(response.status, body, ttfbMs), ...signedWithOf(response) },
       link.provider,
       isOAuth
     );

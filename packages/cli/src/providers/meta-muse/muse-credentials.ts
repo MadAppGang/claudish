@@ -487,11 +487,12 @@ function displayPath(path: string): string {
  * R2-F28: a silent switch between the own login and a borrowed one must be
  * visible). Read AFTER the probe request, and in this order:
  *
- * 1. `signedWith` — the signer THIS probe request's response named
- *    (`x-claudish-signed-with`). Per request, so concurrent probes in one
- *    process cannot borrow each other's answer.
- * 2. A probe that ran and was refused because every login file was rejected
+ * 1. A probe that ran and was refused because every login file was rejected
  *    by Meta: `Muse Code login rejected`, with the rejection message.
+ * 2. `signedWith` — the signer THIS probe request's response named
+ *    (`x-claudish-signed-with`). Per request, so concurrent probes in one
+ *    process cannot borrow each other's answer. Named on a failed answer too
+ *    (`failure`: a 5xx, a timeout): the request was signed, then failed.
  * 3. The files, in the order the resolve tries them, with the tier the
  *    confirming mint wrote: what a request WOULD sign with (no probe sent, or
  *    it failed for another reason).
@@ -504,13 +505,21 @@ function displayPath(path: string): string {
  * Files and memos ONLY: never a Keychain question of any kind.
  */
 export function describeMuseSigningSource(
-  opts: { signedWith?: string; probed?: boolean } = {}
+  opts: { signedWith?: string; probed?: boolean; failure?: string } = {}
 ): MuseSigningDescription {
-  if (opts.signedWith) {
-    return { present: true, label: opts.signedWith, detail: "signed this probe request" };
-  }
+  // Rejected first: a request signed with a key whose re-mint then found every
+  // login rejected also names its signer, but the login is what is wrong now.
   if (opts.probed && lastRejection) {
     return { present: false, label: "Muse Code login rejected", detail: lastRejection };
+  }
+  if (opts.signedWith) {
+    return {
+      present: true,
+      label: opts.signedWith,
+      detail: opts.failure
+        ? `signed this probe request, which then failed: ${opts.failure}`
+        : "signed this probe request",
+    };
   }
   for (const [kind, source] of [
     ["own-login", "claudish-login"],
