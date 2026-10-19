@@ -308,7 +308,7 @@ promise that can never settle`). `blocked([])` is unrepresentable.
 | calls per batch / per script | 32 / 256 | the excess call rejects with a string, so `Promise.allSettled` still finishes |
 | one call input / one batch | 2 MiB / 8 MiB | that call rejects |
 | tool result into the script | 1 MiB each (truncated, marked) / 8 MiB per script | rejects |
-| `text()` output | 1 MiB per exec, enforced by the HOST on what it receives (a tampered prelude can waste one bounded copy, never raise the total) | dropped, with a warning line |
+| `text()` output | 1 MiB per exec, enforced by the HOST on what it receives (a tampered prelude can waste one bounded copy, never raise the total); `text("")` adds no part; ≤ 1,024 parts (the store counts 64 bytes per part) | dropped, with a warning line; past 1,024 parts, text joins the last part |
 | output tokens | `max_output_tokens` pragma clamped to [1, 50,000]; default discovery's `truncation_policy.limit` in tokens, else 10,000 | Codex's truncation header, at 4 B/token |
 
 Why 32 MiB and 2 s: the heap limit stops one runtime's ordinary allocations; it bounds nothing

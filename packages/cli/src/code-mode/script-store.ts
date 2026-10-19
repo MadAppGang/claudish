@@ -28,7 +28,8 @@
  * Every store has a byte ceiling the model cannot raise (architecture §5.8):
  * settled records (anything but running/suspended) are capped at 2,000 records
  * AND 32 MiB, counting the UTF-8 length of the source, every stored output's
- * text and the reasoning items' JSON (images are references, never bytes).
+ * text plus 64 bytes per output part, and the reasoning items' JSON (images
+ * are references, never bytes).
  * Eviction is LRU by `lastTouched`; an evicted record's id goes to a bounded
  * FIFO set, so the input builder can say "evicted" rather than "restart".
  * Suspended records are bounded by the sandbox's live-runtime cap (32) and a
@@ -159,9 +160,18 @@ function utf8Bytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
 
+/**
+ * What one stored output part costs beyond its text: the host object and its
+ * Responses part. Without it, parts with little or no text were free.
+ */
+const PART_OVERHEAD_BYTES = 64;
+
 function outputBytes(output: ExecOutput): number {
   let bytes = output.error ? utf8Bytes(output.error) : 0;
-  for (const part of output.parts) if (part.type === "text") bytes += utf8Bytes(part.text);
+  for (const part of output.parts) {
+    bytes += PART_OVERHEAD_BYTES;
+    if (part.type === "text") bytes += utf8Bytes(part.text);
+  }
   return bytes;
 }
 

@@ -104,6 +104,8 @@ export interface SandboxLimits {
   resultBytes: number;
   resultBytesPerScript: number;
   outputBytes: number;
+  /** Output parts kept separate; past this, text joins the last text part. */
+  outputParts: number;
 }
 
 export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
@@ -118,6 +120,7 @@ export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
   resultBytes: 1024 * 1024,
   resultBytesPerScript: 8 * 1024 * 1024,
   outputBytes: 1024 * 1024,
+  outputParts: 1_024,
 };
 
 export interface CreateScriptRuntimeOptions {
@@ -466,10 +469,8 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
     const length = ctx.getNumber(lengthH);
     lengthH.dispose();
     const remaining = this.limits.outputBytes - this.outputUsed;
-    if (!(length > 0)) {
-      this.parts.push({ type: "text", text: "" });
-      return;
-    }
+    // An empty string adds nothing the model can read, and would cost no budget.
+    if (!(length > 0)) return;
     if (remaining <= 0) {
       this.outputDropped += length;
       return;
@@ -498,7 +499,24 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
     const kept = received.length > remaining ? received.slice(0, remaining) : received;
     this.outputDropped += Math.max(0, length - kept.length);
     this.outputUsed += kept.length;
-    this.parts.push({ type: "text", text: kept });
+    if (kept.length === 0) return;
+    this.pushText(kept);
+  }
+
+  /**
+   * One text part per `text()` call, as Codex, up to `outputParts`; past that
+   * the text joins the last text part, so a loop of one-character calls keeps
+   * its bytes (already budgeted) without one host object per call.
+   */
+  private pushText(text: string): void {
+    if (this.parts.length >= this.limits.outputParts) {
+      const last = this.parts[this.parts.length - 1];
+      if (last?.type === "text") {
+        last.text += text;
+        return;
+      }
+    }
+    this.parts.push({ type: "text", text });
   }
 
   // ─── slices and settlement ──────────────────────────────────────────
