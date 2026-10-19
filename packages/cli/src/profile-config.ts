@@ -259,11 +259,11 @@ export interface ClaudishProfileConfig {
   proOnUltracode?: boolean;
 
   /**
-   * Code mode for `openai-codex` (`auto` | `on` | `off`, default `off`): Claude
+   * Code mode for `openai-codex` (`auto` | `on` | `off`, default `auto`): Claude
    * Code's tools are offered to the model as one freeform `exec` tool running
    * a script, the protocol the official Codex client uses.
    * Precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
-   * `.claudish.json` > this field > off. The scoped read is `readCodeMode()`,
+   * `.claudish.json` > this field > auto. The scoped read is `readCodeMode()`,
    * NOT this allowlist — same reason as `proOnUltracode`.
    */
   codeMode?: CodeModeSetting;

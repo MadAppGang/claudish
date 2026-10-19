@@ -3,9 +3,9 @@
  *
  * Precedence: `--code-mode <auto|on|off>` > `CLAUDISH_CODE_MODE` > `codeMode`
  * in the project `.claudish.json` > `codeMode` in the global config > the
- * default. The default is `off` until code mode has passed live validation;
- * `auto` then turns it on where the Codex `/models` endpoint reports
- * `tool_mode: code_mode_only`.
+ * default, `auto`: on where the Codex `/models` endpoint reports
+ * `tool_mode: code_mode_only`, and only for `openai-codex` on the OAuth arm
+ * with tools declared. `off` turns it off everywhere.
  *
  * Pure: no runtime imports from the request path (types only), so the CLI can
  * read it without loading anything else of code mode.
@@ -23,7 +23,7 @@ export type CodeModeSetting = "auto" | "on" | "off";
 export const CODE_MODE_SETTINGS: readonly CodeModeSetting[] = ["auto", "on", "off"];
 
 /** The setting when nothing states one. */
-export const DEFAULT_CODE_MODE_SETTING: CodeModeSetting = "off";
+export const DEFAULT_CODE_MODE_SETTING: CodeModeSetting = "auto";
 
 /** The env var that sets code mode when no flag does. */
 export const CODE_MODE_ENV_VAR = "CLAUDISH_CODE_MODE";

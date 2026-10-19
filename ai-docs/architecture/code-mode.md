@@ -1,7 +1,7 @@
 # Code mode — Codex models driven the way their own client drives them
 
 `--code-mode <auto|on|off>` (> `CLAUDISH_CODE_MODE` > `codeMode` in the project `.claudish.json`
-> `codeMode` in the global config > the default `off`) changes how the claudish provider
+> `codeMode` in the global config > the default `auto`) changes how the claudish provider
 `openai-codex` (the ChatGPT Codex backend, `cx@`) is asked to call tools. Instead of Claude
 Code's ~90 tools as classic function tools, the request carries ONE freeform tool, `exec`, whose
 input is a JavaScript script that calls `tools.<Name>(args)`; claudish runs the script in a QuickJS
@@ -9,9 +9,13 @@ sandbox and relays every nested call to Claude Code as an ordinary `tool_use` bl
 Codex client has driven these models this way since `tool_mode: code_mode_only`; claudish was the
 only client still sending them classic parallel function calls.
 
-The default is `off` until the Phase 7 live validation passes; a separate change then makes `auto`
-the default (on where the account's dynamic models catalog reports `code_mode_only`). With code
-mode off, everything code mode added is skipped (5r returns at once, 5d returns at the
+The default is `auto`: code mode is on only where the account's dynamic models catalog (the Codex
+`/models` endpoint) reports `tool_mode: "code_mode_only"` for the model, and only for `openai-codex`
+on the OAuth arm with tools declared; every other claudish provider is unaffected. It became the
+default after Phase 7 iteration 2 passed on Claude Code 2.1.303 and 2.1.304 (`cx@gpt-6.1-sol`):
+the real `auto` path 20/20 answers with 39/39 relayed exec ids resumed and 0 lost-state notes,
+edit + Bash 6/6, a claudish restart mid-script 2/2, and the compiled binary 1/1. `--code-mode off`,
+`CLAUDISH_CODE_MODE=off` or `codeMode: "off"` turns it off. With code mode off, everything code mode added is skipped (5r returns at once, 5d returns at the
 `setting-off` gate, apart from one `[CodeMode] off (setting-off)` log line per session). The
 request is NOT byte-for-byte what it was before this work, for one deliberate reason: commit
 `d6629064` sends `filterIdentity(system)` as the Responses `instructions` of EVERY `cx@` and
@@ -49,7 +53,7 @@ be in code mode pays no discovery wait, creates no store and loads no sandbox:
 | # | Gate | Off reason | Why |
 |---|---|---|---|
 | 1 | claudish provider is `openai-codex` | `not-openai-codex` | the only backend measured |
-| 2 | setting is not `off` | `setting-off` | the default |
+| 2 | setting is not `off` | `setting-off` | the user's opt-out |
 | 3 | the binding's arm is `oauth` | `metered-arm` | the api-key arm reaches api.openai.com, which publishes no `tool_mode` |
 | 4 | the login has a ChatGPT account id | `no-account-id` | every record is keyed by account (below); a login without one never gets code mode |
 | 5 | the wire API is Responses | `not-responses` | |
@@ -378,9 +382,9 @@ model, never an HTTP error.
 
 ## Not proven yet
 
-- Phase 7 live validation (the real `auto` path ×10, edit + Bash, a mixed classic → code-mode
-  history after `claude --resume`, Esc on a nested permission prompt, `--resume` across a claudish
-  restart mid-script, the compiled-binary smoke). The default stays `off` until it passes.
+- Not run live in Phase 7: a mixed classic → code-mode history after `claude --resume`, and Esc
+  on a nested permission prompt. `openai@` was BLOCKED (V3: the account had no credits); gate 3
+  keeps the api-key arm out of code mode whatever the setting.
 - Reasoning replayed before a first nested call after a switch to non-code-mode (remembered under
   `toolu_cx_<hex>_0`, the A3 `_p0` rule) was never observed live.
 - A login without a ChatGPT account id never gets code mode; if real logins lack it, a fallback

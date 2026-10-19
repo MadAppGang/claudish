@@ -165,7 +165,7 @@ export interface ProxyServerOptions {
   proOnUltracode?: boolean;
   /**
    * `--code-mode`: code mode for `openai-codex` (`auto` | `on` | `off`).
-   * Absent ⇒ `off`.
+   * Absent ⇒ `DEFAULT_CODE_MODE_SETTING` (`auto`).
    */
   codeMode?: CodeModeSetting;
 }

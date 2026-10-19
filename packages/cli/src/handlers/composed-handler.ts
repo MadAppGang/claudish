@@ -268,7 +268,7 @@ export interface ComposedHandlerOptions {
   /**
    * Code mode for `openai-codex` (`auto` | `on` | `off`), resolved by the CLI
    * from `--code-mode` > `CLAUDISH_CODE_MODE` > `codeMode` config. Absent ⇒
-   * `off`. Read only on the `openai-codex` request path.
+   * `DEFAULT_CODE_MODE_SETTING` (`auto`). Read only on the `openai-codex` request path.
    */
   codeMode?: CodeModeSetting;
   /**
@@ -1487,9 +1487,10 @@ export class ComposedHandler implements ModelHandler {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
     }
 
-    // 5d. Code mode (`openai-codex` only; off unless `--code-mode` /
-    // CLAUDISH_CODE_MODE / `codeMode` turns it on). After 5c, so the Codex
-    // fields 5c added are kept; decided from THIS request's binding. A lite
+    // 5d. Code mode (`openai-codex` only; by default `auto`, on where
+    // discovery reports `code_mode_only`; `--code-mode` / CLAUDISH_CODE_MODE /
+    // `codeMode` override it). After 5c, so the Codex fields 5c added are
+    // kept; decided from THIS request's binding. A lite
     // request's header joins `wireHeaders`, so every header fetch below
     // carries it. Never throws: a failed decision or build leaves the request
     // exactly as 5c produced it.

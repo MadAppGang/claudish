@@ -57,8 +57,8 @@ describe("T5 code-mode configuration", () => {
     expect((await parseArgs(args)).codeMode).toBe("auto");
   });
 
-  test("REQ-16 TEST-26 an absent setting defaults to off", async () => {
-    expect((await parseArgs(args)).codeMode).toBe("off");
+  test("REQ-16 TEST-26 an absent setting defaults to auto", async () => {
+    expect((await parseArgs(args)).codeMode).toBe("auto");
   });
 
   test.each(["auto", "on", "off"] as const)(

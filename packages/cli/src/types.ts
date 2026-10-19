@@ -87,7 +87,7 @@ export interface ClaudishConfig {
   modelParams?: Record<string, unknown>;
   /** --pro-on-ultracode: apply the model's catalog provider-preset while in ultracode (opt-in) */
   proOnUltracode?: boolean;
-  /** --code-mode auto|on|off: code mode for `openai-codex` (resolved; default off) */
+  /** --code-mode auto|on|off: code mode for `openai-codex` (resolved; default auto) */
   codeMode?: CodeModeSetting;
 
   // Cost tracking

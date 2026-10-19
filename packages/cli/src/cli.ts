@@ -1160,7 +1160,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   }
 
   // codeMode precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
-  // ./.claudish.json > global config.json > off. An env value other than
+  // ./.claudish.json > global config.json > auto. An env value other than
   // auto/on/off states nothing and falls through to the config files.
   if (config.codeMode === undefined) {
     config.codeMode =
@@ -2341,7 +2341,7 @@ ${h("OPTIONS")}
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
-  ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default off; env CLAUDISH_CODE_MODE)
+  ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default auto; env CLAUDISH_CODE_MODE)
   ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)
