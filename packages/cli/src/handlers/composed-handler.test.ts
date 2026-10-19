@@ -538,3 +538,141 @@ describe("ComposedHandler — provider context-window guard (S4-e lot E2)", () =
     expect(applied).toEqual([131072]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// message_start seed is per-session (#518)
+//
+// Handlers are cached per TARGET MODEL while the hub serves many sessions, and
+// the seed used to be read from the handler's TokenTracker — the last turn of
+// ANY session on that model. Measured on the hub 18/10: a fresh 233-token
+// single-turn request was announced at input_tokens=166322 (another tenant's
+// context size). Claude Code keeps the seed whenever the delta does not report
+// a positive count, so a foreign seed both mis-sizes the conversation (spurious
+// auto-compaction, or compaction disarmed at the cap) and discloses another
+// tenant's size. The seed must be keyed by session (extractSessionKey, the #91
+// dwell seam); an unknown session falls back to the first-turn constant,
+// never to a foreign session's count.
+// ---------------------------------------------------------------------------
+
+describe("ComposedHandler — message_start seed is per-session (#518)", () => {
+  // Minimal openai-sse stream: one content delta, one final usage frame, DONE.
+  function usageSse(promptTokens: number): string {
+    const chunks = [
+      {
+        id: "c1",
+        object: "chat.completion.chunk",
+        choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
+      },
+      {
+        id: "c1",
+        object: "chat.completion.chunk",
+        choices: [],
+        usage: { prompt_tokens: promptTokens, completion_tokens: 5, total_tokens: promptTokens + 5 },
+      },
+    ];
+    return [...chunks.map((c) => `data: ${JSON.stringify(c)}`), "data: [DONE]", ""].join("\n\n");
+  }
+
+  function sessionPayload(userId?: string): any {
+    return {
+      model: "glm-5.3",
+      max_tokens: 1024,
+      stream: true,
+      ...(userId ? { metadata: { user_id: userId } } : {}),
+      messages: [{ role: "user", content: "hello" }],
+    };
+  }
+
+  async function messageStartInput(res: Response): Promise<number> {
+    const body = await res.text();
+    const start = body
+      .split("\n")
+      .filter((l) => l.startsWith("data: ") && !l.startsWith("data: [DONE]"))
+      .map((l) => JSON.parse(l.slice(6)))
+      .find((e: any) => e.type === "message_start") as any;
+    return start.message.usage.input_tokens;
+  }
+
+  test("session B's seed is the first-turn fallback, not session A's context", async () => {
+    const script = [usageSse(166_322), usageSse(233), usageSse(166_322), usageSse(999)];
+    let i = 0;
+    const original = (globalThis as any).fetch;
+    (globalThis as any).fetch = (async () =>
+      new Response(script[i++], {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })) as typeof fetch;
+    try {
+      // ONE handler for every request: that is the production shape (handlers
+      // cached per model) and the precondition of the leak.
+      const handler = new ComposedHandler(overflowTransport(), "glm-5.3", "glm-5.3", 8468, {});
+      const app = new Hono();
+      app.post("/v1/messages", async (c: any) => handler.handle(c, JSON.parse(await c.req.text())));
+      const post = (p: any) =>
+        app.request("/v1/messages", {
+          method: "POST",
+          body: JSON.stringify(p),
+          headers: { "content-type": "application/json" },
+        });
+
+      // A turn 1 — first turn on this handler: fallback constant either way.
+      expect(await messageStartInput(await post(sessionPayload("session-a")))).toBe(100);
+      // B turn 1 — same model, DIFFERENT session: must NOT inherit A's 166322.
+      expect(await messageStartInput(await post(sessionPayload("session-b")))).toBe(100);
+      // A turn 2 — same-session continuity is the reason the seed exists (S4-b).
+      expect(await messageStartInput(await post(sessionPayload("session-a")))).toBe(166_322);
+      // No session key at all — unknown session, still never a foreign count.
+      expect(await messageStartInput(await post(sessionPayload()))).toBe(100);
+    } finally {
+      (globalThis as any).fetch = original;
+    }
+  });
+});
+
+describe("#518 seed map guards (coordinator probe)", () => {
+  function sse(promptTokens: number): string {
+    const chunks = [
+      { id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] },
+      { id: "c1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 5, total_tokens: promptTokens + 5 } },
+    ];
+    return [...chunks.map((c) => `data: ${JSON.stringify(c)}`), "data: [DONE]", ""].join("\n\n");
+  }
+  async function seedOf(res: Response): Promise<number> {
+    const start = (await res.text()).split("\n").filter((l) => l.startsWith("data: ") && !l.startsWith("data: [DONE]"))
+      .map((l) => JSON.parse(l.slice(6))).find((e: any) => e.type === "message_start") as any;
+    return start.message.usage.input_tokens;
+  }
+  function harness(next: () => string) {
+    const original = (globalThis as any).fetch;
+    (globalThis as any).fetch = (async () => new Response(next(), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    const handler = new ComposedHandler(overflowTransport(), "glm-5.3", "glm-5.3", 8468, {});
+    const app = new Hono();
+    app.post("/v1/messages", async (c: any) => handler.handle(c, JSON.parse(await c.req.text())));
+    const post = (sid: string) => app.request("/v1/messages", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "glm-5.3", max_tokens: 1024, stream: true, metadata: { user_id: sid }, messages: [{ role: "user", content: "hi" }] }) });
+    return { post, restore: () => { (globalThis as any).fetch = original; } };
+  }
+
+  test("a zero prompt_tokens report does not erase the session's seed", async () => {
+    const script = [sse(166_322), sse(0), sse(1)];
+    let i = 0;
+    const h = harness(() => script[i++]);
+    try {
+      await seedOf(await h.post("a"));
+      await seedOf(await h.post("a"));
+      expect(await seedOf(await h.post("a"))).toBe(166_322);
+    } finally { h.restore(); }
+  });
+
+  test("an active session survives 256 newer ones; the stalest is evicted", async () => {
+    const h = harness(() => sse(5_000));
+    try {
+      await seedOf(await h.post("a"));                                   // a recorded first (oldest)
+      for (let k = 1; k <= 255; k++) await seedOf(await h.post(`s${k}`)); // map full: a, s1..s255
+      expect(await seedOf(await h.post("a"))).toBe(5_000);               // a refreshed -> newest
+      await seedOf(await h.post("s256"));                                 // 257th -> evicts s1, not a
+      expect(await seedOf(await h.post("a"))).toBe(5_000);
+      expect(await seedOf(await h.post("s1"))).toBe(100);
+    } finally { h.restore(); }
+  });
+});

@@ -64,7 +64,7 @@ import {
   cascadeStepBusyWaitMs,
 } from "./shared/step-skip.js";
 import { StepBusyError } from "./shared/concurrency-limiter.js";
-import { isQuotaExhaustion } from "../fork/failover.js";
+import { extractSessionKey, isQuotaExhaustion } from "../fork/failover.js";
 import { recordSessionBudgetOutput } from "../fork/session-budget.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
@@ -311,6 +311,20 @@ export class ComposedHandler implements ModelHandler {
   private modelAdapter?: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
+  /**
+   * #518 — last full-context size PER SESSION KEY, feeding the message_start
+   * seed. The tracker above is per-handler and handlers are cached per model,
+   * so on a multi-session hub its "last input" belongs to whichever session
+   * happened to finish last — seeding from it announced a 233-token turn at
+   * 166322 (another tenant's context, measured 18/10). Bounded: see
+   * rememberSessionInput.
+   *
+   * Known edge: sub-agents share their parent's session_id (#317 measurement),
+   * so one served by the SAME model inherits the parent's count on its first
+   * turn — same-session by the key's definition, not a foreign tenant; the
+   * terminal delta overwrites it in the nominal case.
+   */
+  private readonly sessionInputSeeds = new Map<string, number>();
   /** Full routed model string (e.g. "zai@glm-4.7"). Used for provider routing and display echo. */
   private targetModel: string;
   /**
@@ -1572,6 +1586,23 @@ export class ComposedHandler implements ModelHandler {
     });
   }
 
+  /**
+   * #518 — record a session's last-known full context size for the
+   * message_start seed. delete+set refreshes insertion order so an active
+   * session is never the eviction victim of newer inserts; the cap bounds the
+   * map on a long-lived hub handler (256 concurrent-or-recent sessions is far
+   * beyond any observed lane, and eviction only costs a first-turn fallback).
+   */
+  private rememberSessionInput(key: string, inputTokens: number): void {
+    if (!(inputTokens > 0)) return;
+    this.sessionInputSeeds.delete(key);
+    this.sessionInputSeeds.set(key, inputTokens);
+    if (this.sessionInputSeeds.size > 256) {
+      const oldest = this.sessionInputSeeds.keys().next().value;
+      if (oldest !== undefined) this.sessionInputSeeds.delete(oldest);
+    }
+  }
+
   private handleStream(
     c: Context,
     response: Response,
@@ -1582,6 +1613,9 @@ export class ComposedHandler implements ModelHandler {
     headerLatencyMs?: number, // dispatch → upstream headers (for the [ttft] marker)
     retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (#65: responses + openai-sse + anthropic-sse lanes)
   ): Response {
+    // #518: the seed identity. Same extractor as the dwell seam (#91 p4) so
+    // "a session" means the same thing here as everywhere else in the proxy.
+    const sessionKey = extractSessionKey(claudeRequest);
     // `input` is the FULL context size, always — never the cache-reduced figure
     // that rides on the wire. `detail` is the optional cached breakdown of that
     // same number and is used for COST ONLY; handing the tracker a reduced
@@ -1592,6 +1626,9 @@ export class ComposedHandler implements ModelHandler {
       // attempt token was attached to c.req.raw by the cascade loop). Never
       // throws; no-op when the instrument is inert (no token attached).
       recordSessionBudgetOutput(c.req.raw, output);
+      // #518: the full context size, keyed by THIS stream's session — feeds
+      // the next same-session message_start seed (see priorInputTokens below).
+      if (sessionKey !== null) this.rememberSessionInput(sessionKey, input);
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
         case "accumulate-both":
@@ -1623,15 +1660,19 @@ export class ComposedHandler implements ModelHandler {
 
     // See resolveStreamFormat() for the priority rules and the #102 history.
     const streamFormat = this.resolveStreamFormat();
-    // The last-known full context size on this handler's token tracker, read
-    // BEFORE this stream updates it (S4-b ae8c07f). Seeds message_start.usage
-    // on the openai-sse lane: Claude Code only lets a delta override the seed
-    // when its value is > 0, so on turns without usage — or fully-cached turns
+    // The last-known full context size OF THIS SESSION, read BEFORE this
+    // stream updates it (S4-b ae8c07f). Seeds message_start.usage on the
+    // openai-sse lane: Claude Code only lets a delta override the seed when
+    // its value is > 0, so on turns without usage — or fully-cached turns
     // whose netted input is 0 — the seed is what the client records as the
-    // conversation size. The tracker reports the full context per request, not
-    // a delta, so this is the right order of magnitude from a real prior
-    // request on the same lane.
-    const priorInputTokens = this.tokenTracker.getInputTokens();
+    // conversation size. Keyed per session since #518: the handler's tracker
+    // holds whichever session finished last on this MODEL, and seeding from
+    // it announced another tenant's context size on a fresh session (166322
+    // vs 233 real, hub 18/10). An unknown or keyless session gets `undefined`
+    // here, which messageStartUsage() turns into the first-turn constant —
+    // never a foreign session's count.
+    const priorInputTokens =
+      sessionKey !== null ? this.sessionInputSeeds.get(sessionKey) : undefined;
     // First-useful-event watchdog (#108): a stream admitted with 200 that
     // produces only keep-alive comments held hub slots for ~900s during the
     // 14/09 deepseek-flash scheduler incident. Wrapped for every SSE format;
