@@ -494,7 +494,14 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
 
   // ─── slices and settlement ──────────────────────────────────────────
 
-  /** Run `body` as one CPU-budgeted slice, drain the job queue, then settle. */
+  /**
+   * Run `body` as one CPU-budgeted slice, drain the job queue, then settle.
+   *
+   * Settlement runs INSIDE the slice, with the deadline still armed: rendering
+   * a rejection dumps the guest value, and QuickJS's dump JSON-stringifies it,
+   * which runs the guest's `toJSON()`, getters and Proxy traps. Disarmed, a
+   * `throw {toJSON(){while(true){}}}` blocked the event loop forever.
+   */
   private slice(body: () => void): ScriptStep {
     const rt = this.requireRt();
     this.sliceCalls = [];
@@ -506,13 +513,13 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
       body();
       const jobs = rt.executePendingJobs();
       if (jobs.error) throw new GuestFault(this.consumeError(jobs.error));
+      return this.settleTop();
     } finally {
       this.cpuUsed += this.now() - this.sliceStart;
       this.sliceStart = -1;
       this.running = false;
       this.lastActive = Date.now();
     }
-    return this.settleTop();
   }
 
   private settleTop(): ScriptStep {
@@ -530,7 +537,10 @@ class QuickJSScriptRuntime implements ScriptRuntime, LeasedRuntime {
         state.error.dispose();
         return this.finish("completed");
       }
-      return this.finish("failed", this.consumeError(state.error));
+      const error = this.consumeError(state.error);
+      // The dump ran guest code under the deadline; an interrupt there is the budget's.
+      if (this.interrupted || this.wasmExceeded) return this.cpuExceeded();
+      return this.finish("failed", error);
     }
     const [first, ...rest] = this.sliceCalls;
     if (first) return { kind: "blocked", calls: [first, ...rest] };
