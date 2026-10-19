@@ -161,8 +161,9 @@ export type RetypeCause = "terminal_reset" | "never_drawn";
 
 /**
  * The phrase both "it is unknown whether the text was submitted" `text_mismatch` details
- * carry (inputgate_send.go:884 leftBox, :893 convMoved). There is no machine field for it
- * (asked as M11), so this prose is the contract; F14b makes the pinned binary emit it.
+ * carry (inputgate_send.go:884 leftBox, :893 convMoved). magmux 0.17.0 answers M11 with the
+ * machine field `maybeSubmitted: true` on both; this prose is read only for a reply that
+ * lacks the field.
  */
 export const MAYBE_SUBMITTED_MARKER = "check the conversation before sending";
 
@@ -288,7 +289,9 @@ function notAcceptedOutcome(r: Extract<MagmuxReply, { ok: false }>): SendOutcome
       return {
         kind: "not_accepted",
         reason: "text_mismatch",
-        maybeSubmitted: r.error.includes(MAYBE_SUBMITTED_MARKER),
+        // The field is the contract (magmux 0.17.0, M11). The text match is a fallback for a
+        // reply without the field, so a magmux that predates it is not read as "not submitted".
+        maybeSubmitted: r.maybeSubmitted === true || r.error.includes(MAYBE_SUBMITTED_MARKER),
         typed,
         detail: r.error,
       };
