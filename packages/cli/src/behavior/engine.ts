@@ -306,10 +306,15 @@ export class BehaviorSession {
    */
   repairToolCall(toolName: string, rawArgs: string): string | null {
     if (!this.bufferedTools.has(toolName)) return null;
+    // No arguments at all is not a call a rule can judge: reading it as `{}`
+    // made every rule see an argument-less call and journal false
+    // `tool_call/ignored` entries (a Codex multi-call turn sends no argument
+    // deltas, so a parser could hand over "" before the final arguments).
+    if (!rawArgs || rawArgs.trim() === "") return null;
 
     let args: Record<string, any> = {};
     try {
-      const parsed = JSON.parse(rawArgs || "{}");
+      const parsed = JSON.parse(rawArgs);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) args = parsed;
     } catch {
       // Malformed JSON is the recovery layer's problem, not ours. Leave it be.
