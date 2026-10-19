@@ -2424,8 +2424,9 @@ export class ComposedHandler implements ModelHandler {
     // ones, which is the bug being fixed. Claudish's own internal callers
     // (mcp-server.ts:235, probe-live.ts:139) both send `stream: true`
     // explicitly, so this changes nothing for them.
-    if (payload?.stream === true) return streamed;
-    return sseResponseToJson(streamed, this.bareModelName);
+    const signed = withSignerHeader(streamed, this.provider.signingCredential?.());
+    if (payload?.stream === true) return signed;
+    return sseResponseToJson(signed, this.bareModelName);
   }
 
   /**
@@ -2943,6 +2944,34 @@ export class ComposedHandler implements ModelHandler {
  * Nothing is inferred from the credential itself — see the branch for why the
  * key's own bytes are deliberately not read.
  */
+/**
+ * Name the credential that signed THIS request on its response, as
+ * `x-claudish-signed-with` (URI-encoded: a tier name need not be a valid
+ * header byte string), for a provider with several login sources (muse@: own
+ * login, borrowed copy, Keychain). Per response, so `--probe` names the signer
+ * of its own request and never a process-wide guess.
+ *
+ * Set on the returned Response, not through `c.header()`: the Responses stream
+ * parser builds its own `new Response`, which never sees the context's headers.
+ * Headers a stream parser built are mutable; a frozen set is copied instead.
+ */
+function withSignerHeader(response: Response, signer: string | undefined): Response {
+  if (!signer) return response;
+  const value = encodeURIComponent(signer);
+  try {
+    response.headers.set("x-claudish-signed-with", value);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.set("x-claudish-signed-with", value);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+}
+
 export function getRecoveryHint(
   status: number,
   errorText: string,

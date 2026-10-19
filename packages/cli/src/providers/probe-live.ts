@@ -53,6 +53,12 @@ export interface ProbeResult {
    *   streaming = latencyMs - ttftMs     (token generation)
    */
   timing?: ProbeTiming;
+  /**
+   * The credential that signed THIS probe request, when the provider has
+   * several login sources (muse@): `Muse Code borrowed copy · <tier>`. Read off
+   * the response's `x-claudish-signed-with`, so it is per request.
+   */
+  signedWith?: string;
 }
 
 /**
@@ -301,10 +307,22 @@ export async function probeLink(
       ...rest,
       latencyMs: totalMs,
       timing,
+      ...signedWithOf(response),
     },
     link.provider,
     isOAuth
   );
+}
+
+/** The `x-claudish-signed-with` the proxy set on this response (ComposedHandler). */
+function signedWithOf(response: Response): { signedWith?: string } {
+  const raw = response.headers.get("x-claudish-signed-with");
+  if (!raw) return {};
+  try {
+    return { signedWith: decodeURIComponent(raw) };
+  } catch {
+    return {};
+  }
 }
 
 /**

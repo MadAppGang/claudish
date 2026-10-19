@@ -117,6 +117,14 @@ export interface ProviderTransport {
   forceRefreshAuth?(ctx?: { rejectedHeaders?: Record<string, string> }): Promise<void>;
 
   /**
+   * Optional: a display-safe name of the credential that signed the request
+   * just sent (`RequestAuth.signer`), for a provider with several login
+   * sources. ComposedHandler returns it on a successful response as
+   * `x-claudish-signed-with` (URI-encoded), which `--probe` reads per request.
+   */
+  signingCredential?(): string | undefined;
+
+  /**
    * Optional per-provider verdict on whether an error response is TERMINAL
    * (won't recover on retry) — the transport's own reading of its provider's
    * error dialect.

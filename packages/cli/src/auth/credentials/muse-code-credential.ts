@@ -18,6 +18,7 @@ import {
   ensureMuseCredentialReady,
   isMuseCredentialConfigured,
   museCredentialStatusFromFiles,
+  museSignerLabel,
   refreshMuseCredentialStatus,
   requestPathMayPrompt,
   resetMuseCredentialState,
@@ -70,7 +71,12 @@ export class MuseCodeCredentialProvider implements CredentialProvider {
   /** A confirmed key; the request path may use the Keychain only in an interactive launch. */
   async getRequestAuth(): Promise<RequestAuth> {
     const state = await ensureMuseCredentialReady({ prompt: requestPathMayPrompt() });
-    return { headers: { Authorization: `Bearer ${state.key}` }, arm: "oauth" };
+    return {
+      headers: { Authorization: `Bearer ${state.key}` },
+      arm: "oauth",
+      // The source and tier of THIS state, captured with the key it signs with.
+      signer: museSignerLabel(state),
+    };
   }
 
   invalidate(): void {

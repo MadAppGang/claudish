@@ -115,6 +115,12 @@ const deadKeys = new Set<string>();
 let inFlightResolve: Promise<MuseState> | null = null;
 let lastFailure: string | undefined;
 /**
+ * The rejected-login message of the last resolve, when every login file it
+ * tried was rejected by Meta; cleared by a confirmed mint or a reset. Read by
+ * `--probe` after its request (`describeMuseSigningSource`).
+ */
+let lastRejection: string | undefined;
+/**
  * The invalidation epoch. A reset (login, logout, `credentials.invalidate`)
  * bumps it; a resolve that started in an older epoch may finish, but it never
  * installs its result: the login it resolved may be the one just replaced.
@@ -139,6 +145,7 @@ export function resetMuseCredentialState(): void {
   deadKeys.clear();
   inFlightResolve = null;
   lastFailure = undefined;
+  lastRejection = undefined;
 }
 
 /** The installed state, if any. Never contains a secret that was not confirmed. */
@@ -182,6 +189,7 @@ function install(
     generation: ++generation,
   };
   lastFailure = undefined;
+  lastRejection = undefined;
   // A mint that confirmed this key revives it: the service may hand back the
   // key it just rejected, and a dead mark on it would re-mint every request.
   deadKeys.delete(mint.apiKey);
@@ -220,6 +228,8 @@ async function tryFileSource(
 }
 
 async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<MuseState> {
+  // Each resolve states its own outcome; an older rejection must not outlive it.
+  if (startEpoch === epoch) lastRejection = undefined;
   const rejections: number[] = [];
   const own = await tryFileSource("claudish-login", startEpoch, rejections);
   if (own) return own;
@@ -271,7 +281,9 @@ async function resolveFromSources(prompt: boolean, startEpoch: number): Promise<
   // `never` one blames the team slot / MCP session, which a `-p` run is not.
   // The files are kept either way.
   if (rejections.length > 0) {
-    throw new MuseCredentialError(museLoginRejectedMessage(rejections[0]));
+    const message = museLoginRejectedMessage(rejections[0]);
+    if (startEpoch === epoch) lastRejection = message;
+    throw new MuseCredentialError(message);
   }
   if (role === "never") throw new MuseCredentialError(MUSE_NON_INTERACTIVE_MESSAGE);
   throw new MuseCredentialError(MUSE_NO_LOGIN_MESSAGE);
@@ -436,11 +448,21 @@ const SOURCE_LABELS: Record<MuseSource, string> = {
   keychain: "Muse Code CLI Keychain login",
 };
 
+/**
+ * The display name of the credential a state signs with:
+ * `Muse Code <source> · <tier>`. Display-safe (no token), so it travels with
+ * the request's artifact (`RequestAuth.signer`) and back to `--probe` on the
+ * response; see {@link describeMuseSigningSource}.
+ */
+export function museSignerLabel(signer: Pick<MuseState, "source" | "subsTierName">): string {
+  return `Muse Code ${SOURCE_LABELS[signer.source]} · ${signer.subsTierName ?? "tier unknown"}`;
+}
+
 /** What `--probe`'s Key line says about the Muse Code credential. */
 export interface MuseSigningDescription {
-  /** False when no source is known: no state in this process and neither file. */
+  /** False when nothing can sign here: rejected, or no login this process may use. */
   present: boolean;
-  /** `Muse Code <source> · <tier>`, or `no Muse Code login`. */
+  /** `Muse Code <source> · <tier>`, `Muse Code login rejected`, or the no-login label. */
   label: string;
   /** Where that came from: the request that signed, the file, or the remedy. */
   detail: string;
@@ -452,23 +474,34 @@ function displayPath(path: string): string {
 }
 
 /**
- * The source and tier a muse@ request signs (or would sign) with, for
- * `--probe` (contract §4.3 item 5 / R2-F28: a silent switch between the own
- * login and a borrowed one must be visible).
+ * What `--probe` says about a muse@ hop's credential (contract §4.3 item 5 /
+ * R2-F28: a silent switch between the own login and a borrowed one must be
+ * visible). Read AFTER the probe request, and in this order:
  *
- * Files and process state ONLY — never a Keychain read of any kind, so it is
- * safe in role `never`. The installed state wins: it is the source and tier
- * the last request in THIS process actually signed with (the probe's own proxy
- * runs in-process). Without one, the files are read in the order the resolve
- * tries them, and the tier is the `subs_tier_name` the confirming mint wrote.
+ * 1. `signedWith` — the signer THIS probe request's response named
+ *    (`x-claudish-signed-with`). Per request, so concurrent probes in one
+ *    process cannot borrow each other's answer.
+ * 2. A probe that ran and was refused because every login file was rejected
+ *    by Meta: `Muse Code login rejected`, with the rejection message.
+ * 3. The files, in the order the resolve tries them, with the tier the
+ *    confirming mint wrote: what a request WOULD sign with (no probe sent, or
+ *    it failed for another reason).
+ * 4. No file: worded for the role. A `never` process (team slot, MCP, `-p`,
+ *    `--probe`) reads files only, so a Muse Code CLI Keychain login may exist
+ *    but cannot be used here, and the line says so. In a role that may read
+ *    the Keychain, an item the attribute-only presence memo already saw is
+ *    reported present.
+ *
+ * Files and memos ONLY: never a Keychain question of any kind.
  */
-export function describeMuseSigningSource(): MuseSigningDescription {
-  if (state) {
-    return {
-      present: true,
-      label: `Muse Code ${SOURCE_LABELS[state.source]} · ${state.subsTierName ?? "tier unknown"}`,
-      detail: "signed the probe request",
-    };
+export function describeMuseSigningSource(
+  opts: { signedWith?: string; probed?: boolean } = {}
+): MuseSigningDescription {
+  if (opts.signedWith) {
+    return { present: true, label: opts.signedWith, detail: "signed this probe request" };
+  }
+  if (opts.probed && lastRejection) {
+    return { present: false, label: "Muse Code login rejected", detail: lastRejection };
   }
   for (const [kind, source] of [
     ["own-login", "claudish-login"],
@@ -477,10 +510,29 @@ export function describeMuseSigningSource(): MuseSigningDescription {
     const record = deps.readStore(kind, deps.dir());
     if (!record) continue;
     const tier = typeof record.subs_tier_name === "string" ? record.subs_tier_name : undefined;
+    const path = displayPath(museStorePath(kind, deps.dir()));
     return {
       present: true,
-      label: `Muse Code ${SOURCE_LABELS[source]} · ${tier ?? "tier unknown"}`,
-      detail: `${displayPath(museStorePath(kind, deps.dir()))}, not yet confirmed in this process`,
+      label: museSignerLabel({ source, subsTierName: tier }),
+      detail: opts.probed
+        ? `${path}; the probe request did not confirm it`
+        : `${path}, not yet confirmed in this process`,
+    };
+  }
+  if (credentialPromptRole() === "never") {
+    return {
+      present: false,
+      label: "no claudish Muse Code login",
+      detail:
+        "this process reads login files only, so a Muse Code CLI Keychain login cannot be used here: " +
+        "run `claudish login muse`, or one interactive `claudish --model muse@<model>` and allow Keychain access",
+    };
+  }
+  if (museKeychainPresenceCached() === "present") {
+    return {
+      present: true,
+      label: museSignerLabel({ source: "keychain" }),
+      detail: "in the macOS Keychain; read on first use, after you allow access",
     };
   }
   return { present: false, label: "no Muse Code login", detail: MUSE_NO_LOGIN_MESSAGE };

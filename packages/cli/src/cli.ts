@@ -1585,12 +1585,18 @@ async function probeModelRouting(
 
   /**
    * The Muse Code credential as a provenance record, through `effectiveLabel`
-   * (the channel for a credential that is not an env var). Present:
-   * `Key  Muse Code borrowed copy · Muse Code Power Usage  (signed the probe request)`.
-   * Absent: `Key  no Muse Code login  (<the §4.2 login instruction>)`.
+   * (the channel for a credential that is not an env var). `probe` is THIS
+   * hop's own result: read after the request, its `signedWith` names the login
+   * that signed it. Lines (`describeMuseSigningSource`):
+   * `Key  Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`,
+   * `Key  Muse Code login rejected  (Meta rejected the Muse Code login (HTTP 401): …)`,
+   * `Key  no claudish Muse Code login  (this process reads login files only, …)`.
    */
-  function museKeyProvenance(): KeyProvenance {
-    const muse = describeMuseSigningSource();
+  function museKeyProvenance(probe?: ProbeResult): KeyProvenance {
+    const muse = describeMuseSigningSource({
+      ...(probe?.signedWith ? { signedWith: probe.signedWith } : {}),
+      probed: probe !== undefined,
+    });
     return {
       envVar: "",
       hasValue: muse.present,
@@ -1599,6 +1605,18 @@ async function probeModelRouting(
       effectiveLabel: muse.label,
       layers: [],
     };
+  }
+
+  /**
+   * The chain's provenance was read BEFORE the live requests. A muse@ hop's is
+   * read again AFTER them, from that hop's own probe result, so its Key line
+   * names the login that signed THAT request (or that it was rejected). Both
+   * the `--json` and the TUI/printer paths call this once their probes settle.
+   */
+  function refreshMuseProvenance(chain: ProbeChainLink[]): void {
+    for (const link of chain) {
+      if (link.provider === "meta-muse-code") link.provenance = museKeyProvenance(link.probe);
+    }
   }
 
   /**
@@ -1851,6 +1869,7 @@ async function probeModelRouting(
             link.probe = probes[i];
           });
         }
+        refreshMuseProvenance(probe.chain);
 
         const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
         results.push(chainProbeOf(probe, wiring));
@@ -2040,12 +2059,7 @@ async function probeModelRouting(
     const printable: PrintableModelResult[] = [];
     const results: ProbeModelResult[] = [];
     for (const probe of modelProbes) {
-      // The chain's provenance was read BEFORE the live requests. A muse@ hop's
-      // is read again now, so its Key line names the source and tier the
-      // probe request actually signed with (the proxy is in this process).
-      for (const link of probe.chain) {
-        if (link.provider === "meta-muse-code") link.provenance = museKeyProvenance();
-      }
+      refreshMuseProvenance(probe.chain);
       const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
       const fields = routingFieldsFrom(probe.explanation);
       printable.push({

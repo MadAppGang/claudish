@@ -71,6 +71,11 @@ export class MuseCodeTransport extends OpenAIProviderTransport {
     this.auth = await credentials.getRequestAuth("meta-muse-code", { model: this.modelName });
   }
 
+  /** The source and tier of the login whose key signed the last request. */
+  signingCredential(): string | undefined {
+    return this.auth?.signer;
+  }
+
   getContextWindow(): number {
     return this.window;
   }
