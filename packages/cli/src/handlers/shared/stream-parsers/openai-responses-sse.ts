@@ -20,6 +20,11 @@ import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { formatRawSseLogPayload } from "./openai-sse.js";
+import {
+  type ParallelWrapperCall,
+  isParallelWrapperName,
+  parseParallelWrapper,
+} from "./responses/parallel-wrapper.js";
 import { sseDataPayload } from "./sse-line.js";
 
 export function createResponsesStreamHandler(
@@ -79,6 +84,13 @@ export function createResponsesStreamHandler(
     onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
     onToolCallObserved?: (name: string) => void;
     onTurnEnd?: () => void;
+    /**
+     * The request's tool names as Claude Code sent them (decoded, not the
+     * encoded wire names). A function_call named `parallel` is treated as the
+     * parallel wrapper only when no declared tool has that name. Absent → the
+     * values of `toolNameMap`.
+     */
+    declaredToolNames?: string[];
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -145,6 +157,24 @@ export function createResponsesStreamHandler(
 
   // Tool blocks that have been started but not yet stopped, in emission order.
   const openToolBlocks = new Set<FnCall>();
+
+  /**
+   * A `parallel` wrapper call being accumulated without a content_block_start
+   * (see responses/parallel-wrapper.ts). Keyed by call_id and item_id, like
+   * `functionCalls`; removed at its output_item.done.
+   */
+  type HeldWrapper = {
+    claudeBaseId: string;
+    arguments: string;
+    doneArgs?: string;
+    /** The reasoning that led to the wrapper, bound to its first expanded call only. */
+    reasoning: CachedReasoningItem[];
+  };
+  const heldWrappers: Map<string, HeldWrapper> = new Map();
+  const declaredToolNames: string[] = opts.declaredToolNames ?? [
+    ...(opts.toolNameMap?.values() ?? []),
+  ];
+  const decodeToolName = (name: string) => opts.toolNameMap?.get(name) || name;
 
   const stream = new ReadableStream({
     /*
@@ -249,6 +279,79 @@ export function createResponsesStreamHandler(
           return;
         }
         log(`[ResponsesSSE] done arguments diverge from streamed deltas for ${fnCall.name}`);
+      };
+
+      /**
+       * End the turn with an SSE `error` event: Claude Code discards the message
+       * (no tool_use of it runs) and retries the turn. Open blocks are closed
+       * first, because their starts are already on the wire. The upstream reader
+       * is cancelled: nothing more of this response will be used.
+       */
+      const endTurnWithStreamError = (message: string) => {
+        closeReasoning();
+        closeText();
+        closeTools();
+        send("error", { type: "error", error: { type: "api_error", message } });
+        isClosed = true;
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+        if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
+        reader.cancel().catch(() => {});
+        safeClose();
+      };
+
+      /** A degenerate `parallel` wrapper: never shown to Claude Code. */
+      const endTurnOnDegenerateWrapper = (reason: string, bytes: number) => {
+        log(`[ResponsesSSE] degenerate parallel wrapper (${reason}, ${bytes} bytes) → error event`);
+        endTurnWithStreamError(`degenerate parallel tool wrapper (${reason}, ${bytes} bytes)`);
+      };
+
+      /**
+       * Emit a valid wrapper's entries as ordinary tool_use blocks, one complete
+       * argument delta each (a buffered tool goes through onToolCall first). The
+       * wrapper's reasoning is remembered under the FIRST expanded id only, so the
+       * next request replays it exactly once, before that call.
+       */
+      const repairBufferedCall = (name: string, args: string): string => {
+        if (opts.shouldBufferTool?.(name) !== true) return args;
+        try {
+          const repaired = opts.onToolCall?.(name, args);
+          if (typeof repaired === "string" && repaired !== args) {
+            log(`[ResponsesSSE] tool call repaired: ${name}`);
+            return repaired;
+          }
+        } catch (err) {
+          log(`[ResponsesSSE] onToolCall threw for ${name}: ${err}`);
+        }
+        return args;
+      };
+      const emitExpandedWrapper = (held: HeldWrapper, calls: ParallelWrapperCall[]) => {
+        closeReasoning();
+        closeText();
+        calls.forEach((call, k) => {
+          const id = `${held.claudeBaseId}_p${k}`;
+          const args = repairBufferedCall(call.name, call.arguments);
+          const index = curIdx++;
+          opts.onToolCallObserved?.(call.name);
+          send("content_block_start", {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id, name: call.name, input: {} },
+          });
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index,
+            delta: { type: "input_json_delta", partial_json: args },
+          });
+          send("content_block_stop", { type: "content_block_stop", index });
+          if (k === 0 && held.reasoning.length > 0) {
+            rememberReasoningForCall(id, held.reasoning);
+          }
+        });
+        hasToolUse = true;
+        log(`[ResponsesSSE] parallel wrapper expanded into ${calls.length} tool_use block(s)`);
       };
 
       /**
@@ -362,7 +465,22 @@ export function createResponsesStreamHandler(
                     ? openaiCallId
                     : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
                   const rawFnName = event.item.name || "";
-                  const fnName = opts.toolNameMap?.get(rawFnName) || rawFnName;
+                  const fnName = decodeToolName(rawFnName);
+
+                  if (isParallelWrapperName(fnName, declaredToolNames)) {
+                    // HOLD: no content_block_start until the arguments are judged.
+                    // The reasoning so far belongs to the wrapper, not to a later call.
+                    const held: HeldWrapper = {
+                      claudeBaseId: callId,
+                      arguments: "",
+                      reasoning: pendingReasoning,
+                    };
+                    pendingReasoning = [];
+                    heldWrappers.set(openaiCallId, held);
+                    if (itemId && itemId !== openaiCallId) heldWrappers.set(itemId, held);
+                    log(`[ResponsesSSE] holding parallel wrapper ${rawFnName}`);
+                    continue;
+                  }
 
                   closeReasoning();
                   closeText();
@@ -439,6 +557,8 @@ export function createResponsesStreamHandler(
               } else if (event.type === "response.function_call_arguments.delta") {
                 const callId = event.call_id || event.item_id;
                 const fnCall = functionCalls.get(callId);
+                const held = fnCall ? undefined : heldWrappers.get(callId);
+                if (held) held.arguments += event.delta || "";
                 if (fnCall) {
                   fnCall.arguments += event.delta || "";
                   // Buffered calls emit nothing here — the whole argument object
@@ -457,8 +577,10 @@ export function createResponsesStreamHandler(
                 // turn with NO argument deltas, so for those calls this (or the
                 // item at output_item.done) is the only copy of the arguments.
                 const fnCall = functionCalls.get(event.call_id) || functionCalls.get(event.item_id);
-                if (fnCall && typeof event.arguments === "string") {
-                  fnCall.doneArgs = event.arguments;
+                const held = heldWrappers.get(event.call_id) || heldWrappers.get(event.item_id);
+                if (typeof event.arguments === "string") {
+                  if (fnCall) fnCall.doneArgs = event.arguments;
+                  else if (held) held.doneArgs = event.arguments;
                 }
               } else if (event.type === "response.output_item.done") {
                 if (event.item?.type === "reasoning" && event.item.encrypted_content) {
@@ -473,6 +595,21 @@ export function createResponsesStreamHandler(
                 }
                 if (event.item?.type === "function_call") {
                   const callId = event.item.call_id || event.item.id;
+                  const held = heldWrappers.get(callId) || heldWrappers.get(event.item.id);
+                  if (held) {
+                    heldWrappers.delete(callId);
+                    heldWrappers.delete(event.item.id);
+                    const itemArgs =
+                      typeof event.item.arguments === "string" ? event.item.arguments : undefined;
+                    const final = held.doneArgs ?? itemArgs ?? held.arguments;
+                    const parsed = parseParallelWrapper(final, decodeToolName);
+                    if (!parsed.ok) {
+                      endTurnOnDegenerateWrapper(parsed.reason, final.length);
+                      return;
+                    }
+                    emitExpandedWrapper(held, parsed.calls);
+                    continue;
+                  }
                   const fnCall = functionCalls.get(callId) || functionCalls.get(event.item.id);
                   if (fnCall && openToolBlocks.has(fnCall)) {
                     const itemArgs =
@@ -519,6 +656,16 @@ export function createResponsesStreamHandler(
                 if (event.response?.usage) {
                   inputTokens = event.response.usage.input_tokens || inputTokens;
                   outputTokens = event.response.usage.output_tokens || outputTokens;
+                }
+                // A wrapper still held when the response is cut short never got
+                // its arguments judged: degenerate by definition.
+                const pending = heldWrappers.values().next().value;
+                if (pending) {
+                  endTurnOnDegenerateWrapper(
+                    "incomplete",
+                    (pending.doneArgs ?? pending.arguments).length
+                  );
+                  return;
                 }
               } else if (event.type === "response.completed" || event.type === "response.done") {
                 if (event.response?.usage) {
@@ -577,6 +724,17 @@ export function createResponsesStreamHandler(
               log(`[ResponsesSSE] Parse error: ${parseError}`);
             }
           }
+        }
+
+        // The stream ended while a wrapper was still held: its arguments were
+        // never completed, so there is nothing valid to expand.
+        const unfinished = heldWrappers.values().next().value;
+        if (unfinished) {
+          endTurnOnDegenerateWrapper(
+            "incomplete",
+            (unfinished.doneArgs ?? unfinished.arguments).length
+          );
+          return;
         }
 
         if (pingInterval) {

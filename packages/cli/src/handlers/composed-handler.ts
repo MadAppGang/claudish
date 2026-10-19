@@ -2572,6 +2572,13 @@ export class ComposedHandler implements ModelHandler {
           // shared by two conversations the adapter's own map may already
           // belong to the next request by now.
           toolNameMap,
+          // Claude Code's own tool names: a function_call named `parallel` is the
+          // parallel wrapper only when none of these is called that.
+          declaredToolNames: Array.isArray(claudeRequest?.tools)
+            ? claudeRequest.tools
+                .map((t: { name?: unknown } | null) => t?.name)
+                .filter((n: unknown): n is string => typeof n === "string")
+            : [],
           contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
           onApiError,
           priorInputTokens,
