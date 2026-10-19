@@ -481,8 +481,17 @@ class ResponsesTurn {
   ): Promise<NextLeg> {
     if (this.sink.hasToolUse) {
       // A stray classic call already went out in this message: no further leg.
+      if (this.sink.hasIncompleteToolBlock) {
+        // Never a tool_use finish over a cut-off block (the cut-off rule).
+        log(`[ResponsesTurn] exec ${outcome.callId} after a cut-off tool_use → error event`);
+        this.sink.endWithError("a tool call was cut off before the exec call");
+        this.reportUsage();
+        return undefined;
+      }
       log(`[ResponsesTurn] exec ${outcome.callId} after a tool_use block — ending tool_use`);
-      this.recordTurn(outcome.precedingItems);
+      // The exec ran: its call and output belong to this message's history,
+      // or the model's next input lacks its own script and that script's result.
+      this.recordTurn([...outcome.precedingItems, ...appendItems]);
       await this.finishCompleted("tool_use");
       return undefined;
     }
