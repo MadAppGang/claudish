@@ -22,9 +22,12 @@
  *  - orphan tool_result (its call is in no earlier assistant message, e.g.
  *    compaction removed it): rendered as user text `[Tool Result]: <text>` with
  *    its images after it, as the step-3 converter does; never dropped.
- *  - classic tool round (ids that do not decode): emitted as `function_call` /
- *    `function_call_output` items until classic rounds are transliterated into
- *    exec items.
+ *  - classic tool round (ids that do not decode: a session that started classic,
+ *    a `/model` switch, parallel-wrapper `_p<k>` ids, a stray classic call):
+ *    transliterated into ONE synthetic exec (`transliterate.ts`) — the call at
+ *    the assistant message, its `Script completed` output after the message
+ *    that answers it — so a request never mixes classic `function_call` items
+ *    with the exec tool.
  *
  * Two sets keep the once-only rules mechanical for the whole walk: emitted
  * `call_id`s and emitted reasoning (by item id, else the sha256 of its
@@ -47,8 +50,9 @@ import {
   formatExecOutput,
 } from "./output.js";
 import type { CodeModeStores } from "./stores.js";
-import { normalizeToolIdent } from "./tool-names.js";
+import { type ToolNameTable, normalizeToolIdent } from "./tool-names.js";
 import { imageUrlOf, toolResultImages, toolResultText } from "./tool-results.js";
+import { transliterateRound } from "./transliterate.js";
 import { turnAnchorFor } from "./turn-records.js";
 import type { ClaudeContentBlock, ClaudeMessage, ResponsesItem } from "./types.js";
 
@@ -61,6 +65,15 @@ export interface CodeModeKeys {
 export interface BuildCodeModeInputOptions {
   /** Output budget for an exec whose record names none (discovery's truncation limit). */
   defaultMaxOutputTokens?: number;
+  /** Today's exec-tool identifiers; a transliterated call to a tool absent from it uses `tools["name"]`. */
+  toolNames?: ToolNameTable;
+}
+
+/** A classic round awaiting its transliterated output. */
+interface PendingClassicRound {
+  assistantIndex: number;
+  uses: ClaudeContentBlock[];
+  done: boolean;
 }
 
 /** First line of a reconstructed script. */
@@ -140,13 +153,15 @@ class InputBuilder {
   /** tool_use id → its tool_result block (first occurrence). */
   private readonly results = new Map<string, ClaudeContentBlock>();
   private readonly groups = new Map<string, ExecGroup>();
+  private readonly classicRounds: PendingClassicRound[] = [];
   private loggedOrphan = false;
 
   constructor(
     private readonly messages: readonly ClaudeMessage[],
     private readonly stores: CodeModeStores,
     private readonly keys: CodeModeKeys,
-    private readonly defaultMaxOutputTokens: number
+    private readonly defaultMaxOutputTokens: number,
+    private readonly toolNames?: ToolNameTable
   ) {
     this.index();
   }
@@ -235,23 +250,59 @@ class InputBuilder {
       }
     }
     const startedHere = new Set<string>();
+    const classicUses: ClaudeContentBlock[] = [];
     for (const block of blocksOf(message)) {
       if (block.type !== "tool_use" || typeof block.id !== "string") continue;
       if (this.toolUseAt.get(block.id) !== i) continue;
       const nested = decodeNestedId(block.id);
-      if (nested) {
-        const group = this.groups.get(nested.execKey);
-        if (group && group.rounds[0]?.assistantIndex === i && !startedHere.has(nested.execKey)) {
-          startedHere.add(nested.execKey);
-          this.startGroup(group);
-        }
+      if (!nested) {
+        classicUses.push(block);
         continue;
       }
+      const group = this.groups.get(nested.execKey);
+      if (group && group.rounds[0]?.assistantIndex === i && !startedHere.has(nested.execKey)) {
+        startedHere.add(nested.execKey);
+        this.startGroup(group);
+      }
+    }
+    if (classicUses.length > 0) this.startClassicRound(i, classicUses);
+  }
+
+  // ─── classic rounds (transliterated) ────────────────────────────────
+
+  /** A classic round's synthetic exec call; its output follows the message that answers it. */
+  private startClassicRound(i: number, uses: ClaudeContentBlock[]): void {
+    const round = transliterateRound({ uses, results: new Map() }, { names: this.toolNames });
+    this.push(round.call);
+    this.classicRounds.push({ assistantIndex: i, uses, done: false });
+  }
+
+  /**
+   * The transliterated output of every classic round message `i` answers: the
+   * first user message after the round (a missing result reads as not
+   * returned, as the step-3 converter synthesizes one). A round on the last
+   * message (a prefill) has no answer yet and gets the call alone.
+   */
+  private completeClassicRounds(i: number): void {
+    for (const pending of this.classicRounds) {
+      if (pending.done || pending.assistantIndex >= i) continue;
+      let firstUser = true;
+      for (let j = pending.assistantIndex + 1; j < i; j++) {
+        if (this.messages[j]?.role === "user") firstUser = false;
+      }
+      if (!firstUser) continue;
+      pending.done = true;
+      const round = transliterateRound(
+        { uses: pending.uses, results: this.results },
+        { names: this.toolNames }
+      );
       this.push({
-        type: "function_call",
-        call_id: block.id,
-        name: typeof block.name === "string" ? block.name : "",
-        arguments: JSON.stringify(block.input ?? {}),
+        type: "custom_tool_call_output",
+        call_id: round.callId,
+        output: formatExecOutput(round.output, {
+          maxOutputTokens: this.defaultMaxOutputTokens,
+          resolveImage: (ref) => this.resolveImage(ref),
+        }),
       });
     }
   }
@@ -288,6 +339,7 @@ class InputBuilder {
     const message = this.messages[i];
     if (typeof message.content === "string") {
       this.closeMovedOnGroups(i);
+      this.completeClassicRounds(i);
       if (message.content) {
         this.push({
           type: "message",
@@ -314,6 +366,7 @@ class InputBuilder {
     }
     for (const execKey of touchedGroups) this.maybeCompleteGroup(execKey, i);
     this.closeMovedOnGroups(i);
+    this.completeClassicRounds(i);
     if (parts.length > 0) this.push({ type: "message", role: "user", content: parts });
   }
 
@@ -330,18 +383,9 @@ class InputBuilder {
       return;
     }
     const nested = decodeNestedId(id);
-    if (nested) {
-      if (!touchedGroups.includes(nested.execKey)) touchedGroups.push(nested.execKey);
-      return;
-    }
-    const images = toolResultImages(block);
-    let text = toolResultText(block);
-    if (!text && images.length > 0) text = "[image returned; see following message]";
-    this.push({ type: "function_call_output", call_id: id, output: text });
-    for (const image of images) {
-      const url = imageUrlOf(image);
-      if (url) parts.push({ type: "input_image", image_url: url });
-    }
+    if (nested && !touchedGroups.includes(nested.execKey)) touchedGroups.push(nested.execKey);
+    // A classic result is read from `results` when its round's transliterated
+    // output is emitted (completeClassicRounds); its images go inside that output.
   }
 
   private orphan(block: ClaudeContentBlock, parts: ResponsesOutputPart[]): void {
@@ -501,7 +545,8 @@ export function buildCodeModeInput(
     Array.isArray(messages) ? messages : [],
     stores,
     keys,
-    options.defaultMaxOutputTokens ?? DEFAULT_EXEC_MAX_OUTPUT_TOKENS
+    options.defaultMaxOutputTokens ?? DEFAULT_EXEC_MAX_OUTPUT_TOKENS,
+    options.toolNames
   );
   return builder.build();
 }

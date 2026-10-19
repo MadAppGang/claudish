@@ -336,7 +336,7 @@ async function prepare(input: PrepareCodeModeInput): Promise<PreparedCodeMode> {
       Array.isArray(claudeRequest.messages) ? claudeRequest.messages : [],
       stores,
       { accountKey, sessionKey },
-      { defaultMaxOutputTokens }
+      { defaultMaxOutputTokens, toolNames: rendered.names }
     );
     const prePayload = structuredClone(payload);
     const context: CodeModePayloadContext = {
