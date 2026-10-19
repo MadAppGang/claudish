@@ -170,8 +170,10 @@ parallel wrapper's `toolu_<id>_p<k>` never decode, so history grouping never dep
 
 After 5b (the account is THIS request's) and after 3c (a synthetic reply gets the same Layer 4
 hooks), before 5c. Synchronous from record lookup to state transition, so two concurrent requests
-for one record serialise. Guard: `openai-codex`, `oauth` arm, an account key, a session id,
-`tool_choice` absent or `auto`. A request with a named tool, `any` or `none` never resumes a
+for one record serialise. Guard: `openai-codex`, `oauth` arm, an account key, a session id, ≥ 1
+declared tool (5d's `no-tools` gate: a tool-less compaction or summary request is never code mode,
+so it must not consume a batch, end other scripts, or get tool_use blocks), `tool_choice` absent or
+`auto`. A request with a named tool, `any` or `none` never resumes a
 script: consuming a batch there would run the script's next tools outside the turn that owns it;
 the next ordinary request resumes it. It reads the stores only if a code-mode request already
 created them, with one exception: when none exist (the first request after a restart) but the last

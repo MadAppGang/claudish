@@ -10,7 +10,8 @@
  *
  * Guard (else nothing is touched and the request continues): `openai-codex`
  * (the caller's check), the binding's arm is `oauth`, an account key, a Claude
- * Code session id, and `tool_choice` absent or `auto`. A named tool, `any` or
+ * Code session id, ≥ 1 declared tool (5d's `no-tools` gate), and `tool_choice`
+ * absent or `auto`. A named tool, `any` or
  * `none` never resumes a script: such requests are Claude Code's internal
  * one-shot calls, and consuming a batch there would run the script's next tools
  * outside the turn that owns it; the next ordinary request resumes it.
@@ -583,6 +584,11 @@ export function resumeFromToolResults(
     const sessionKey = sessionKeyFor(extractSessionId(req), accountKey);
     if (!accountKey || !sessionKey) return { kind: "none" };
     if (!isAutoToolChoice(toolChoice)) return { kind: "none" };
+    // 5d's `no-tools` gate: a tool-less request (compaction, an internal
+    // summary) is never code mode, so it must not consume a batch, end the
+    // session's other scripts, or be answered with tool_use blocks.
+    const tools = Array.isArray(req.tools) ? (req.tools as ClaudeToolLike[]) : [];
+    if (tools.length === 0) return { kind: "none" };
     const messages = Array.isArray(req.messages) ? (req.messages as ClaudeMessage[]) : [];
     let active = stores;
     if (
@@ -604,7 +610,7 @@ export function resumeFromToolResults(
         sessionKey,
         toolUses: indexToolUses(messages),
         results: indexToolResults(messages),
-        tools: Array.isArray(req.tools) ? (req.tools as ClaudeToolLike[]) : [],
+        tools,
       },
       active
     );
