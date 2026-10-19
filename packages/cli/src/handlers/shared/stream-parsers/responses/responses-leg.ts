@@ -84,7 +84,14 @@ export type LegOutcome =
       usage?: Usage;
     }
   | { kind: "api-error"; code: string; message: string; usage?: Usage }
-  | { kind: "stream-error"; error: unknown; openToolBlock: boolean; usage?: Usage }
+  | {
+      kind: "stream-error";
+      error: unknown;
+      openToolBlock: boolean;
+      /** Code mode: the socket died while the exec input streamed (never a block, never run). */
+      openExec?: boolean;
+      usage?: Usage;
+    }
   | { kind: "cancelled"; usage?: Usage };
 
 export interface ResponsesLegContext {
@@ -377,7 +384,13 @@ class ResponsesLeg {
       // what the client does with the fragment (see the driver).
       const openToolBlock = this.openToolBlocks.size > 0;
       this.closeTools();
-      return { kind: "stream-error", error, openToolBlock, usage: this.usage };
+      return {
+        kind: "stream-error",
+        error,
+        openToolBlock,
+        ...(this.heldExec ? { openExec: true } : {}),
+        usage: this.usage,
+      };
     } finally {
       guard?.disarm();
       signal.removeEventListener("abort", onAbort);
@@ -400,6 +413,7 @@ class ResponsesLeg {
         kind: "stream-error",
         error: new Error("the stream ended inside the exec call"),
         openToolBlock: false,
+        openExec: true,
         usage: this.usage,
       };
     }

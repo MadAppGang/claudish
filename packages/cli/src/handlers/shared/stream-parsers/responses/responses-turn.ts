@@ -605,7 +605,10 @@ class ResponsesTurn {
         // message with no completed tool_use, and it is the honest report — the
         // turn did fail. devin-connect ends a mid-stream fault the same way.
         // With no tool call in flight the inline text keeps partial prose visible.
-        if (outcome.openToolBlock) {
+        // Code mode: an exec cut mid-input is a tool call in flight too. It was
+        // never a block and never ran, so Claude Code's retry is safe — and
+        // `end_turn` would stop the agent where classic mode retries.
+        if (outcome.openToolBlock || outcome.openExec) {
           log("[ResponsesSSE] tool arguments cut off mid-stream → error event");
           this.sink.endWithError(`Stream error: ${outcome.error}`);
         } else {

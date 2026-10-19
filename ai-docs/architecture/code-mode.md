@@ -147,6 +147,9 @@ downstream Claude message) — the same mechanism that retries a degenerate leg
   `EXEC_DRAIN_MS = 10_000` (R1: the terminal event arrives milliseconds after the exec item), so the
   outcome carries its usage. An exec cut by `response.incomplete` is never run: the model gets
   `Script failed … exec input was truncated by max_output_tokens` and can send a shorter script.
+  An exec cut by a dropped socket (or a body that ends inside it) ends the message with an SSE
+  `error`, as a cut classic tool block does: the script never ran and nothing reached Claude Code,
+  so its retry is safe, where `end_turn` would stop the agent.
 - The hooks (`code-mode/relay.ts`) create the record, pin the session and run the script:
   - **blocked** on N nested calls → N whole `tool_use` blocks `toolu_cx_<hex>_<seq>` (Claude Code's
     tool names; buffered tools repaired through Layer 4; `onToolCallObserved` once per nested
