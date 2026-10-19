@@ -676,3 +676,81 @@ describe("#518 seed map guards (coordinator probe)", () => {
     } finally { h.restore(); }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #518 stats volet — recordStats must report THIS stream's token counts.
+//
+// The handler is per-model and shared by every session hitting that model; the
+// tracker underneath is handler-wide. Under "accumulate-both" it accumulates
+// input across streams (under "standard" it still accumulates OUTPUT and cost),
+// so reading the tracker from onStreamComplete attributes session A's context
+// to session B's stats line — the same class of cross-session bleed #518 fixed
+// for the message_start seed. The pin: two sessions, one handler, B's recorded
+// line must carry B's own input and output, never the accumulated totals.
+// ---------------------------------------------------------------------------
+
+describe("#518 stats volet — recordStats records this stream's tokens, not the tracker", () => {
+  function sse(promptTokens: number, completionTokens: number): string {
+    const chunks = [
+      { id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] },
+      { id: "c1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens } },
+    ];
+    return [...chunks.map((c) => `data: ${JSON.stringify(c)}`), "data: [DONE]", ""].join("\n\n");
+  }
+
+  test("two sessions on one handler: B's stats line carries B's own input and output", async () => {
+    const { existsSync, readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { initStats, resetStatsForTests } = await import("../stats.js");
+    const { readBuffer, clearBuffer, appendEvent } = await import("../stats-buffer.js");
+
+    // Arm the stats module against a scratch config (stats are opt-in; the real
+    // ~/.claudish/config.json is backed up and restored, stats-buffer precedent).
+    const configPath = join(homedir(), ".claudish", "config.json");
+    mkdirSync(join(homedir(), ".claudish"), { recursive: true });
+    const hadConfig = existsSync(configPath);
+    const prevConfig = hadConfig ? readFileSync(configPath, "utf-8") : null;
+    const prevStatsEnv = process.env.CLAUDISH_STATS;
+    delete process.env.CLAUDISH_STATS;
+    writeFileSync(configPath, JSON.stringify({
+      version: "1.0.0", defaultProfile: "default", profiles: {}, stats: { enabled: true },
+    }), "utf-8");
+    const bufferBefore = readBuffer();
+
+    const original = (globalThis as any).fetch;
+    const script = [sse(100, 5), sse(50, 7)];
+    let i = 0;
+    (globalThis as any).fetch = (async () =>
+      new Response(script[i++], { status: 200, headers: { "content-type": "text/event-stream" } })) as unknown as typeof fetch;
+    try {
+      resetStatsForTests(); // stats.test.ts may have latched initialized with the real config
+      initStats({ interactive: false } as any);
+      // One handler, one model — the shared-per-model shape the hub runs.
+      const handler = new ComposedHandler(overflowTransport(), "glm-5.3", "glm-5.3", 8471, { tokenStrategy: "accumulate-both" });
+      const app = new Hono();
+      app.post("/v1/messages", async (c: any) => handler.handle(c, JSON.parse(await c.req.text())));
+      const post = (sid: string) => app.request("/v1/messages", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "glm-5.3", max_tokens: 1024, stream: true, metadata: { user_id: sid }, messages: [{ role: "user", content: "hi" }] }) });
+
+      await (await post("a")).text(); // session A: 100 in / 5 out
+      await (await post("b")).text(); // session B: 50 in / 7 out
+
+      const mine = readBuffer().slice(bufferBefore.length);
+      expect(mine.length).toBe(2);
+      const b = mine[1];
+      expect(b.input_tokens).toBe(50); // tracker would say 100+50=150
+      expect(b.output_tokens).toBe(7); // tracker would say 5+7=12
+    } finally {
+      (globalThis as any).fetch = original;
+      if (prevStatsEnv === undefined) delete process.env.CLAUDISH_STATS; else process.env.CLAUDISH_STATS = prevStatsEnv;
+      // Restore the real config, then put the user's buffered events back (the
+      // two test events were flushed toward disk by appendEvent's setImmediate).
+      if (hadConfig) writeFileSync(configPath, prevConfig!, "utf-8");
+      else { try { require("node:fs").unlinkSync(configPath); } catch { /* ignore */ } }
+      clearBuffer();
+      for (const e of bufferBefore) appendEvent(e);
+      resetStatsForTests(); // leave the module inert — later tests must not record into the real buffer
+    }
+  });
+});

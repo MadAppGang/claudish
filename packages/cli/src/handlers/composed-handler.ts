@@ -1433,7 +1433,13 @@ export class ComposedHandler implements ModelHandler {
     // Pass an onComplete callback into handleStream; it fires at the end of the stream after
     // onTokenUpdate, so token counts are available.
     // fallbackMeta was captured at the top of handle() and is available via closure.
-    const onStreamComplete = () => {
+    // #518 stats volet: the input/output are THIS stream's counts, handed over by
+    // onTokenUpdate — never the handler-wide tracker, which under "accumulate-both"
+    // sums input across sessions (and accumulates output under every strategy), so
+    // reading it here attributes another session's context to this stream's line.
+    // estimated_cost and is_free_model stay on the tracker: they are cumulative
+    // session-cost semantics by design, not per-stream counts.
+    const onStreamComplete = (streamInput: number, streamOutput: number) => {
       try {
         const isFreeModel = this.tokenTracker.getTotalCost() === 0;
         recordStats({
@@ -1443,8 +1449,8 @@ export class ComposedHandler implements ModelHandler {
           latency_ms: latencyMs,
           success: true,
           http_status: httpStatus,
-          input_tokens: this.tokenTracker.getInputTokens(),
-          output_tokens: this.tokenTracker.getOutputTokens(),
+          input_tokens: streamInput,
+          output_tokens: streamOutput,
           estimated_cost: this.tokenTracker.getTotalCost(),
           is_free_model: isFreeModel,
           token_strategy: this.options.tokenStrategy ?? "standard",
@@ -1609,7 +1615,7 @@ export class ComposedHandler implements ModelHandler {
     adapter: BaseModelAdapter,
     claudeRequest: any,
     toolNameMap?: Map<string, string>,
-    onComplete?: () => void,
+    onComplete?: (input: number, output: number) => void,
     headerLatencyMs?: number, // dispatch → upstream headers (for the [ttft] marker)
     retryUpstream?: () => Promise<Response | null> // transparent in-stream retry (#65: responses + openai-sse + anthropic-sse lanes)
   ): Response {
@@ -1646,10 +1652,11 @@ export class ComposedHandler implements ModelHandler {
           this.tokenTracker.update(input, output, detail);
           break;
       }
-      // Fire onComplete after token update so recordStats() sees the final token counts.
+      // Fire onComplete after token update, handing over THIS stream's counts —
+      // recordStats() must report them, not the handler-wide tracker (#518).
       if (onComplete) {
         try {
-          onComplete();
+          onComplete(input, output);
         } catch {
           // Stats must never crash claudish
         }

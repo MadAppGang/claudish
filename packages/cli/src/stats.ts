@@ -90,6 +90,18 @@ function isStatsDisabledByEnv(): boolean {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
+ * Test seam: drop the `initialized` latch so a test-written config takes effect
+ * on the next initStats() call (stats.test.ts initializes the module with the
+ * machine's real config before other files can arm it — same shape as
+ * resetOverflowCapsForTests). Also closes the door behind a test: call without
+ * re-initializing to leave the module inert for the rest of the process.
+ */
+export function resetStatsForTests(): void {
+  initialized = false;
+  statsEnabled = false;
+}
+
+/**
  * Initialize the stats module. Called once at process startup after config loads.
  * Synchronous and fast (< 1ms). No network calls.
  */
