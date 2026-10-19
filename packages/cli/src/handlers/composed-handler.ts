@@ -1440,15 +1440,20 @@ export class ComposedHandler implements ModelHandler {
     // Synchronous from record lookup to state transition. A script that
     // blocked again is answered here with its next batch — no upstream call,
     // no further auth, no stats record (nothing was billed) — through the same
-    // exit as step 8. Anything else continues; a store that was never created
-    // (no code-mode request in this process) is never created here.
+    // exit as step 8. Anything else continues. A store that was never created
+    // (no code-mode request in this process) is created here only when the
+    // last message answers nested ids — the first request after a restart —
+    // so the lost script's tombstone exists before 5d builds the input.
     if (this.provider.name === "openai-codex") {
       const resumed = resumeFromToolResults(
         claudeRequest,
         binding,
         peekCodeModeStores(),
         claudeRequest?.tool_choice,
-        { setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING }
+        {
+          setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING,
+          createStores: getCodeModeStores,
+        }
       );
       if (resumed.kind === "reply") {
         const sse = createSyntheticToolUseReply(resumed.blocks, {

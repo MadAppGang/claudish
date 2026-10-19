@@ -79,6 +79,24 @@ export type ResumeOutcome =
 export interface ResumeOptions {
   /** The resolved code-mode setting; `off` turns matching suspended records lost. */
   setting?: CodeModeSetting;
+  /**
+   * Creates the process's stores when none exist yet but the last message
+   * answers nested ids (the first request after a restart), so the lost-script
+   * tombstone is stored before 5d builds the input. Default: never create.
+   */
+  createStores?: () => CodeModeStores;
+}
+
+/** True when the last message is a user message carrying a tool_result for a nested id. */
+function lastMessageAnswersNestedIds(messages: ClaudeMessage[]): boolean {
+  const last = messages[messages.length - 1];
+  if (last?.role !== "user") return false;
+  return blocksOf(last).some(
+    (b) =>
+      b.type === "tool_result" &&
+      typeof b.tool_use_id === "string" &&
+      decodeNestedId(b.tool_use_id) !== undefined
+  );
 }
 
 interface RequestView {
@@ -502,13 +520,25 @@ export function resumeFromToolResults(
   opts: ResumeOptions = {}
 ): ResumeOutcome {
   try {
-    if (!stores) return { kind: "none" };
     if (binding?.auth?.arm !== "oauth") return { kind: "none" };
     const accountKey = accountKeyFromBinding(binding);
     const sessionKey = sessionKeyFor(extractSessionId(req), accountKey);
     if (!accountKey || !sessionKey) return { kind: "none" };
     if (!isAutoToolChoice(toolChoice)) return { kind: "none" };
     const messages = Array.isArray(req.messages) ? (req.messages as ClaudeMessage[]) : [];
+    let active = stores;
+    if (
+      !active &&
+      opts.setting !== "off" &&
+      opts.createStores &&
+      lastMessageAnswersNestedIds(messages)
+    ) {
+      // After a restart: no store, but history answers a script claudish no
+      // longer has. Without its tombstone the builder rendered `Script failed`
+      // now and `Script completed` on the next request for the same script.
+      active = opts.createStores();
+    }
+    if (!active) return { kind: "none" };
     const resume = new Resume(
       {
         messages,
@@ -518,7 +548,7 @@ export function resumeFromToolResults(
         results: indexToolResults(messages),
         tools: Array.isArray(req.tools) ? (req.tools as ClaudeToolLike[]) : [],
       },
-      stores
+      active
     );
     if (opts.setting === "off") {
       resume.loseAnswered();

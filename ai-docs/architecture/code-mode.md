@@ -174,7 +174,11 @@ for one record serialise. Guard: `openai-codex`, `oauth` arm, an account key, a 
 `tool_choice` absent or `auto`. A request with a named tool, `any` or `none` never resumes a
 script: consuming a batch there would run the script's next tools outside the turn that owns it;
 the next ordinary request resumes it. It reads the stores only if a code-mode request already
-created them.
+created them, with one exception: when none exist (the first request after a restart) but the last
+message answers nested ids, 5r creates them (setting not `off`), so the lost script's tombstone is
+stored BEFORE 5d builds the input. Without it the builder rendered an unstored `Script failed` on
+that request and `Script completed` ("output unavailable after a claudish restart") on the next,
+for the same script.
 
 | Situation (the last user message answers nested ids) | Behaviour |
 |---|---|
