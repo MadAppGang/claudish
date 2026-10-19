@@ -290,10 +290,27 @@ class ResponsesTurn {
         headersAt = next.headersAt;
       }
     } catch (error) {
-      // Only a throwing callback can land here; the leg itself never throws.
-      log(`[ResponsesSSE] Stream error: ${error}`);
+      this.failTurn(error);
     } finally {
       this.sink.close();
+    }
+  }
+
+  /**
+   * A callback threw (`primaryBody`, `onApiError`, a usage or middleware
+   * hook); the leg itself never throws. A message with no ending yet still
+   * gets one: closed without `message_stop` or `error`, the non-streamed path
+   * folded it into a silent 200 partial.
+   */
+  private failTurn(error: unknown): void {
+    log(`[ResponsesSSE] Stream error: ${error}`);
+    if (!this.sink.hasEnded && !this.sink.isCancelled) {
+      this.sink.endWithError(`claudish: the turn failed: ${error}`);
+    }
+    try {
+      this.reportUsage();
+    } catch (err) {
+      log(`[ResponsesSSE] reporting usage failed: ${err}`);
     }
   }
 
