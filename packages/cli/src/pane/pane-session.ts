@@ -30,7 +30,8 @@ import {
   type FailureReason,
   type SlotState,
 } from "./contract.js";
-import { MagmuxClient, type MagmuxConnectError } from "./magmux-client.js";
+import { checkGateBinding } from "./gate-binding.js";
+import { MagmuxClient, type MagmuxConnectError, type MagmuxReply } from "./magmux-client.js";
 import {
   type ClaudishLaunch,
   FATAL_MAGMUX_STDERR,
@@ -174,6 +175,12 @@ const REGISTRY_DISAGREE_MS = 2_000;
 /** No live registry record this long after boot was ready: `registry_record_missing`. */
 const REGISTRY_MISSING_MS = 5_000;
 const MAX_ANOMALY_KEYS = 64;
+/**
+ * A declared pane gates every `send` with text or an Enter (magmux README "the input
+ * gate"). Until delivery moves to one gated send (architecture-v2 R1.10 commit 5), every
+ * send claudish makes stays the ungated send it always was, byte for byte.
+ */
+const UNGATED_SENDS = true;
 /** Settled answers kept for `turnAnswer` (owners read the current or the last one). */
 const KEPT_ANSWERS = 4;
 
@@ -522,6 +529,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         ctlDir: this.ctlDir,
         cwd: input.cwd,
         env: input.env,
+        sessionUuid: this.o.sessionUuid,
+        transcriptPath: this.o.transcriptPath,
       });
     } catch (e) {
       return this.spawnFailed(e);
@@ -598,8 +607,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     // dropped while asking: `disconnected` has already started the redial
     if (client.isClosed) return;
     this.client = client;
+    const magmuxVersion = caps.ok ? String(caps.result.version ?? "") : "";
     if (caps.ok) {
-      const v = String(caps.result.version ?? "");
+      const v = magmuxVersion;
       if (caps.result.protocol !== 1 || !versionAtLeast(v, MIN_MAGMUX_VERSION)) {
         this.step(() =>
           this.fire("pane_lost", {
@@ -621,7 +631,40 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (p0?.dead === true && !this.paneExited) {
       if (!reconnect) await this.nextFrame(500); // let the keyframe land: the final screen decides agent_rejected
       void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
+      return;
     }
+    this.verifyGateBinding(client, list, magmuxVersion);
+  }
+
+  /**
+   * The binding check (architecture-v2 R1.0), on every attach: magmux's input gate is
+   * trusted only for a pane it bound BY NAME to this session's id and transcript. Anything
+   * else fails the pane; claudish never falls back to magmux's transcript discovery.
+   * Nothing reads the gate yet: this only proves the declared launch took.
+   */
+  private verifyGateBinding(
+    client: MagmuxClient,
+    list: MagmuxReply<{ panes?: Array<Record<string, unknown>> }>,
+    magmuxVersion: string
+  ): void {
+    // dropped while asking: the redial attaches again and re-checks
+    if (client.isClosed || isTerminalPhase(this.phase)) return;
+    if (!list.ok) {
+      this.step(() =>
+        this.fire("pane_lost", {
+          detail: `input_gate_unbound: magmux ${magmuxVersion || "?"} list failed (${list.code}: ${list.error}), so the binding of pane 0 is unknown`,
+        })
+      );
+      return;
+    }
+    // no pane 0: it is gone, and the exit path owns that
+    if (!list.result.panes?.some((p) => p.pane === 0)) return;
+    const check = checkGateBinding(list.result, {
+      sessionUuid: this.o.sessionUuid,
+      transcriptPath: this.o.transcriptPath,
+      magmuxVersion,
+    });
+    if (!check.ok) this.step(() => this.fire("pane_lost", { detail: check.detail }));
   }
 
   /* ───────────────────────────── magmux events ───────────────────────────── */
@@ -1081,7 +1124,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     for (let attempt = 0; attempt < 2; attempt++) {
       const c = this.client;
       if (c) {
-        const r = await c.request({ type: "send", pane: 0, text, typed: true, enter }, 10_000);
+        const r = await c.request(
+          { type: "send", pane: 0, text, typed: true, enter, noGate: UNGATED_SENDS },
+          10_000
+        );
         if (r.ok) return true;
         why = r.code;
         if (r.code === "client_timeout" || r.code === "client_lost") {
@@ -1115,7 +1161,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private async key(k: string): Promise<boolean> {
     const c = this.client;
     if (!c) return false;
-    const r = await c.request({ type: "send", pane: 0, keys: [k], enter: false }, 10_000);
+    const r = await c.request(
+      { type: "send", pane: 0, keys: [k], enter: false, noGate: UNGATED_SENDS },
+      10_000
+    );
     return r.ok;
   }
 

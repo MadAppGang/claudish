@@ -10,9 +10,14 @@
  * child re-applies (`child-env.ts`), and `$SHELL` is a generated shim that drops `-l`, so
  * no profile runs at all (X-M15).
  *
- * The pane command must never name `claude`: magmux attaches its ClaudeCodeController
- * to such a pane, and that controller's mtime-based transcript discovery can lock onto
- * the parent's or a sibling's transcript (research-magmux §3).
+ * magmux runs a pane DECLARED: `--controller claude-code --session-id <uuid> --transcript
+ * <path>` before `-e` names the session and the transcript claudish already gives Claude
+ * Code and its own transcript follower, so magmux's input gate reads exactly that file
+ * and never its mtime-based discovery, which can lock onto the parent's or a sibling's
+ * transcript (research-magmux §3; architecture-v2 R1.0). `PaneSession` verifies the
+ * binding from `list` on every attach (`gate-binding.ts`). The pane command itself still
+ * never names `claude`: a direct `claude` launch would be gated with basis `direct`, by
+ * discovery, and have its `--settings` rewritten.
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
@@ -484,7 +489,12 @@ export const KNOWN_CLAUDISH_FLAGS: readonly string[] = Object.keys(CLAUDISH_FLAG
 
 /* ───────────────────────────── magmux binary ───────────────────────────── */
 
-export const MIN_MAGMUX_VERSION = "0.15.1";
+/**
+ * 0.17.0: the Claude Code input gate with a declared transcript (`--session-id`,
+ * `--transcript`, and `list`'s `bound`/`sessionId`/`transcriptPath`). A pre-release such as
+ * `0.17.0-rc1` passes: `versionAtLeast` compares the numeric triple only.
+ */
+export const MIN_MAGMUX_VERSION = "0.17.0";
 
 export class MagmuxUnavailableError extends Error {
   readonly code = "magmux_unavailable";
@@ -505,7 +515,7 @@ export function versionAtLeast(v: string, min: string): boolean {
 const magmuxCache = new Map<string, { binary: string; version: string }>();
 const execFileAsync = promisify(execFile);
 
-/** The magmux binary and its version (≥ 0.15.1), cached per process. Never a `-p` fallback. */
+/** The magmux binary and its version (≥ MIN_MAGMUX_VERSION), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(
   binary?: string
 ): Promise<{ binary: string; version: string }> {
@@ -529,7 +539,7 @@ export async function assertMagmuxAvailable(
   const version = out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "";
   if (!version || !versionAtLeast(version, MIN_MAGMUX_VERSION))
     throw new MagmuxUnavailableError(
-      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION}`
+      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION} (the Claude Code input gate bound to a named transcript); upgrade: brew upgrade MadAppGang/tap/magmux`
     );
   const result = { binary: found, version };
   magmuxCache.set(binary ?? "", result);
@@ -571,7 +581,7 @@ export function launcherScript(cwd: string, launch: ClaudishLaunch, argv: string
 
 export const SHELL_SHIM = '#!/bin/sh\n[ "$1" = -l ] && shift\nexec /bin/sh "$@"\n';
 
-/** The `-e` value. It never names `claude` (research-magmux §3). */
+/** The `-e` value. It never names `claude`: the pane is declared, not a direct launch. */
 export function paneCommand(ctlDir: string): string {
   const cmd = `. ${shq(join(ctlDir, "pane-launch.sh"))}`;
   if (/claude /.test(cmd) || /claude$/.test(cmd) || /(^|\/)claude['"]?$/.test(cmd))
@@ -629,24 +639,49 @@ export interface MagmuxSpawnInput {
   sockRoot: string;
   ctlDir: string;
   cwd: string;
+  /**
+   * magmux's environment (`buildPaneEnv`). It is built from the same parent environment
+   * the transcript path is derived from, so a `CLAUDE_CONFIG_DIR` the session uses is in
+   * magmux's own environment too, where magmux resolves the session registry.
+   */
   env: Record<string, string>;
+  /** the `--session-id` claudish passes Claude Code */
+  sessionUuid: string;
+  /** the transcript claudish's follower reads; made absolute here (magmux requires it) */
+  transcriptPath: string;
+}
+
+/**
+ * magmux's argv. The declaration comes before `-e`, which it binds; `--id <paneId>
+ * --sock-dir` stays adjacent, because that pair is how the reap, the sweep and the pane
+ * watcher recognise this pane's magmux (`magmuxNeedle`).
+ */
+export function paneMagmuxArgv(input: Omit<MagmuxSpawnInput, "binary" | "cwd" | "env">): string[] {
+  return [
+    "--headless",
+    "--no-status",
+    "--controller",
+    "claude-code",
+    "--session-id",
+    input.sessionUuid,
+    "--transcript",
+    resolve(input.transcriptPath),
+    "--id",
+    input.paneId,
+    "--sock-dir",
+    input.sockRoot,
+    "-e",
+    paneCommand(input.ctlDir),
+  ];
 }
 
 export function spawnPaneMagmux(input: MagmuxSpawnInput): ChildProcess {
-  const proc = spawn(
-    input.binary,
-    [
-      "--headless",
-      "--no-status",
-      "--id",
-      input.paneId,
-      "--sock-dir",
-      input.sockRoot,
-      "-e",
-      paneCommand(input.ctlDir),
-    ],
-    { cwd: input.cwd, env: input.env, stdio: ["ignore", "ignore", "pipe"], detached: true }
-  );
+  const proc = spawn(input.binary, paneMagmuxArgv(input), {
+    cwd: input.cwd,
+    env: input.env,
+    stdio: ["ignore", "ignore", "pipe"],
+    detached: true,
+  });
   proc.on("error", () => {});
   return proc;
 }
