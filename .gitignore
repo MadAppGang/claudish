@@ -5,12 +5,18 @@ node_modules/
 dist/
 build/
 
-# Environment files
-.env
-.env.local
-.env.*.local
-.env.*.bak
-.env.*bak*
+# Environment files — any shape: the 19/09 rogue-relay evidence file
+# (.env.rogue-relay-20260919) sat untracked at the root because only `.env`
+# exactly was ignored (mandate 19/10). Tracked examples stay tracked.
+.env*
+!.env.example
+!.env.*.example
+
+# Machine-local MCP config (.mcp.json can carry credentials; never commit)
+.mcp.json
+
+# Playwright MCP artifacts (snapshots, console CSV exports)
+.playwright-mcp/
 
 # Machine-local compose overrides (hub-only binds, never shared)
 docker-compose.override.yml
