@@ -28,6 +28,7 @@ import { discoverContextWindow } from "../model-discovery.js";
 import { OpenAIProviderTransport } from "./openai.js";
 
 const WINDOW_RETRY_MS = 5 * 60_000;
+const MAX_REMEMBERED_SIGNERS = 8;
 
 /** The bearer token of a header bag, if it carries one. */
 function bearerOf(headers?: Record<string, string>): string | undefined {
@@ -39,6 +40,8 @@ function bearerOf(headers?: Record<string, string>): string | undefined {
 export class MuseCodeTransport extends OpenAIProviderTransport {
   override readonly displayName = "Muse Code";
   private auth?: RequestAuth;
+  /** Minted key → the login that minted it (`RequestAuth.signer`), newest last. */
+  private readonly signers = new Map<string, string>();
   private window = 0;
   private windowRetryAt = 0;
 
@@ -52,7 +55,9 @@ export class MuseCodeTransport extends OpenAIProviderTransport {
   }
 
   async refreshAuth(): Promise<void> {
-    this.auth = await credentials.getRequestAuth("meta-muse-code", { model: this.modelName });
+    this.auth = this.remember(
+      await credentials.getRequestAuth("meta-muse-code", { model: this.modelName })
+    );
     if (!this.window && Date.now() >= this.windowRetryAt) {
       this.window = (await discoverContextWindow("meta-muse-code", this.modelName)) ?? 0;
       if (!this.window) this.windowRetryAt = Date.now() + WINDOW_RETRY_MS;
@@ -68,12 +73,36 @@ export class MuseCodeTransport extends OpenAIProviderTransport {
       rejectedKey: bearerOf(ctx?.rejectedHeaders),
       prompt: requestPathMayPrompt(),
     });
-    this.auth = await credentials.getRequestAuth("meta-muse-code", { model: this.modelName });
+    this.auth = this.remember(
+      await credentials.getRequestAuth("meta-muse-code", { model: this.modelName })
+    );
   }
 
-  /** The source and tier of the login whose key signed the last request. */
-  signingCredential(): string | undefined {
-    return this.auth?.signer;
+  /**
+   * The source and tier of the login that minted the key a request was SENT
+   * with: looked up by that request's own bearer, which no later rotation of
+   * `this.auth` can change.
+   */
+  signingCredential(sentHeaders: Record<string, string>): string | undefined {
+    const key = bearerOf(sentHeaders);
+    return key ? this.signers.get(key) : undefined;
+  }
+
+  /** Remember which login minted this artifact's key, captured with the key itself. */
+  private remember(auth: RequestAuth): RequestAuth {
+    const key = bearerOf(auth.headers);
+    if (key && auth.signer) {
+      this.signers.delete(key);
+      this.signers.set(key, auth.signer);
+      // A bound, not a policy: keys rotate at most every few minutes, so the
+      // newest few cover every request still in flight.
+      while (this.signers.size > MAX_REMEMBERED_SIGNERS) {
+        const oldest = this.signers.keys().next().value;
+        if (oldest === undefined) break;
+        this.signers.delete(oldest);
+      }
+    }
+    return auth;
   }
 
   getContextWindow(): number {

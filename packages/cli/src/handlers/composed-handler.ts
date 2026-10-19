@@ -1450,9 +1450,15 @@ export class ComposedHandler implements ModelHandler {
     // The touch is refresh-conditional, which makes this rare, not safe.
     // Every header fetch below goes through this, so a header the wire requires
     // (a beta token next to the field it wrote) survives the auth retries too.
+    // The headers of THIS request's latest attempt — the one whose answer is
+    // returned (primary, parameter re-fetch or auth retry). Local to this call,
+    // so a concurrent request on the same handler cannot replace it; the
+    // signer named on the response is looked up from these (`signingCredential`).
+    let signedHeaders: Record<string, string> | undefined;
     const fetchHeaders = async (): Promise<Record<string, string>> => {
       const fetched = await this.provider.getHeaders(payload);
       mergeWireHeaders(fetched, wireHeaders);
+      signedHeaders = fetched;
       return fetched;
     };
     let headers: Record<string, string>;
@@ -2424,7 +2430,10 @@ export class ComposedHandler implements ModelHandler {
     // ones, which is the bug being fixed. Claudish's own internal callers
     // (mcp-server.ts:235, probe-live.ts:139) both send `stream: true`
     // explicitly, so this changes nothing for them.
-    const signed = withSignerHeader(streamed, this.provider.signingCredential?.());
+    const signed = withSignerHeader(
+      streamed,
+      signedHeaders ? this.provider.signingCredential?.(signedHeaders) : undefined
+    );
     if (payload?.stream === true) return signed;
     return sseResponseToJson(signed, this.bareModelName);
   }
