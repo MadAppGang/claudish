@@ -17,16 +17,19 @@
  * - the product: `maxScreenCells` = 4 000 000. When `cols × rows` exceeds it, `rows` drops to
  *   `floor(4 000 000 / cols)`, so a clamped size never earns magmux's `too_large`.
  *
- * The floor is claudish's (plan review H1, L4): at 80 columns every closed-list dialog marker
- * the classifier matches still fits one row, and 24 rows hold a whole permission or trust
- * dialog. A smaller screen would turn a dialog into "no input box, no dialog" — an honest
- * unknown that never settles.
+ * The floor is claudish's (MTL-140). At 40 columns, real Claude Code 2.1.304 screens
+ * (`size-40x24-*`) still give magmux's gate `dialog:permission` and `dialog:question`, a
+ * ready empty box and a located box; the classifier matches every marker against the
+ * dialog region flattened into one string, so a marker wrapped across rows still names its
+ * dialog. 24 rows still hold the tallest captured dialog (Bash permission, rows 6–23).
+ * A smaller screen would turn a dialog into "no input box, no dialog": an honest unknown
+ * that never settles.
  */
 
 export const DEFAULT_PANE_COLS = 160;
 export const DEFAULT_PANE_ROWS = 50;
 
-export const MIN_PANE_COLS = 80;
+export const MIN_PANE_COLS = 40;
 export const MAX_PANE_COLS = 9_999;
 export const MIN_PANE_ROWS = 24;
 export const MAX_PANE_ROWS = 9_999;

@@ -374,12 +374,17 @@ function namedDialog(flat: string): NamedDialog | null {
   return null;
 }
 
-/** An unnamed static non-REPL screen with choice markers (M2). */
+/**
+ * An unnamed static non-REPL screen with choice markers (M2). The footers are matched
+ * against the flattened screen: at 40 columns the AskUserQuestion footer wraps as
+ * `Enter to select · ↑/↓ to navigate · Esc` / `to cancel` (`size-40x24-ask-user-question`).
+ */
 function isUnnamedChoice(lines: readonly string[]): boolean {
   const numbered = lines.some((l) => NUMBERED_OPTION.test(l));
   const yesNo = lines.some((l) => /^\s*(❯\s*)?(\d+\.\s+)?(Yes|No)\b|\(esc\)/.test(l));
   if (numbered && yesNo) return true;
-  return lines.some((l) => /Press Enter to continue/.test(l) || SELECT_FOOTER.test(l));
+  const flat = flatText(lines);
+  return /Press Enter to continue/.test(flat) || SELECT_FOOTER.test(flat);
 }
 
 /**
