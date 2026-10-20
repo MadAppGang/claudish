@@ -1,20 +1,63 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file
+// `env -S` (split the rest into arguments) is in GNU coreutils and BSD `env`, not in
+// BusyBox `env` (Alpine), where this shebang fails. There, start claudish through the npm
+// `claudish` launcher (bin/claudish.cjs passes --no-env-file itself) or run
+// `bun --no-env-file dist/index.js`. Documented in docs/advanced/hooks.md.
 
-// FIRST import, on purpose: in an MCP pane child it restores the server's exact
-// environment and cwd at import time — before `.env` loading and before any module
-// below reads the environment while it is being evaluated. A no-op everywhere else.
+// FIRST import, on purpose: drops every control variable (CLAUDISH_CONFIG, the pane
+// markers, …), and every other name those files set, when Bun loaded this directory's
+// env files for the process, before the pane child below can act on one. See
+// launch-env.ts.
+import { droppedAtLaunch } from "./launch-guard.js";
+
+// SECOND: in an MCP pane child it restores the server's exact environment and cwd at
+// import time — before `.env` loading and before any module below reads the
+// environment while it is being evaluated. A no-op everywhere else.
 import {
   assertNotNested,
   assertPaneChildInteractive,
+  isPaneChild,
   paneChildBootNotes,
 } from "./pane/child-env.js";
 
-// Load .env file before anything else (quiet mode to suppress verbose output)
-import { config } from "dotenv";
-config({ quiet: true }); // Loads .env from current working directory
-
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { droppedByAutoloadNotice, takeLauncherDropped } from "./launch-env.js";
+
+// Names left out because Bun loaded this directory's env files: by launch-guard.ts for
+// this process, or by the npm launcher before it started this one.
+const autoloadDropped = [...droppedAtLaunch, ...takeLauncherDropped(process.env)];
+
+// The working directory's `.env`, as dotenv's `config()` reads it (an existing value is
+// never overwritten), for provider API keys and model settings only (dotenv-allowlist.ts).
+// The allowlist is derived from the provider table, so it is imported only when there is
+// a file.
+let dotenvText: Buffer | undefined;
+try {
+  dotenvText = readFileSync(join(process.cwd(), ".env"));
+} catch {
+  // no readable .env: nothing to load
+}
+if (dotenvText !== undefined) {
+  const { loadDotenvText, refusedFromDotenvNotice, rejectedModelNotice } = await import(
+    "./dotenv-allowlist.js"
+  );
+  const rejectedModels: string[] = [];
+  const refused = loadDotenvText(process.env, dotenvText, (name) =>
+    rejectedModels.push(name)
+  ).filter((key) => !autoloadDropped.includes(key));
+  if (refused.length > 0) console.error(refusedFromDotenvNotice(refused));
+  // A name the autoload drop already reports below gets that one line, not a second.
+  const rejected = rejectedModels.filter((key) => !autoloadDropped.includes(key));
+  if (rejected.length > 0) console.error(rejectedModelNotice(rejected));
+}
+// One line for the autoload drops, less any the pane snapshot or the `.env` load above
+// set again (a provider API key in `.env`).
+{
+  const ignored = autoloadDropped.filter((key) => process.env[key] === undefined);
+  if (ignored.length > 0) console.error(droppedByAutoloadNotice(ignored));
+}
+
 import { resolveExplicitFlagAuth } from "./auth/credentials/op-source.js";
 import { resolveClassifierConfig } from "./classifier-passthrough.js";
 import {
@@ -247,6 +290,8 @@ async function applyOpImport(): Promise<void> {
 // env→config chain, so it can carry literal provider keys directly.
 async function applyConfigOverride(): Promise<void> {
   const { planConfigOverride, setConfigFileOverride } = await import("./config-override.js");
+  // CLAUDISH_CONFIG here is the real environment's: no env file in the working
+  // directory can set it (launch-guard.ts and loadDotenvText above).
   const plan = planConfigOverride(process.argv.slice(2), process.env, {
     resolve,
     exists: existsSync,
@@ -362,8 +407,8 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
 const isKeychainCommand = firstPositional === "keychain";
-// Behavior subcommand: claudish behavior rules|corpus (Layer 4 introspection)
-const isBehaviorCommand = firstPositional === "behavior";
+// Hooks subcommand: claudish hooks list|check|init|corpus|telemetry
+const isHooksCommand = firstPositional === "hooks";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
 const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
@@ -413,15 +458,18 @@ if (isMcpMode) {
       process.exit(1);
     })
   );
-} else if (isBehaviorCommand) {
-  // Layer 4 introspection: claudish behavior rules|corpus. Read-only unless
-  // --write is passed to `corpus`.
-  const behaviorArgIndex = args.indexOf("behavior");
-  import("./behavior-command.js").then((m) =>
-    m.behaviorCommand(args.slice(behaviorArgIndex + 1)).catch((e) => {
-      console.error(`[claudish behavior] ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    })
+} else if (isHooksCommand) {
+  // Hook introspection and scaffolding. Read-only except `init` (writes two new
+  // files, never overwriting), `corpus --write` and `telemetry --enable|--disable`.
+  const hooksArgIndex = args.indexOf("hooks");
+  import("./hooks-command.js").then((m) =>
+    m
+      .hooksCommand(args.slice(hooksArgIndex + 1))
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        console.error(`[claudish hooks] ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(1);
+      })
   );
 } else if (isTeamCommand) {
   // Multi-model orchestration: claudish team run|run-and-judge. Routed here
@@ -1230,6 +1278,9 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          // Proxy events run in the process that hosts the proxy: a pane child
+          // for MCP/team slots, the interactive launcher otherwise.
+          hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",
         }
       )
     );

@@ -91,7 +91,7 @@ jobs:
           VERSION="${GITHUB_REF#refs/tags/v}"
           sed -i.bak "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" packages/cli/src/cli.ts
           # Build from root to preserve workspace resolution
-          bun build packages/cli/src/index.ts --compile --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
+          bun build packages/cli/src/index.ts --compile --no-compile-autoload-dotenv --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
 
       - name: Ad-hoc sign binary (macOS Gatekeeper compatibility)
         if: startsWith(matrix.target, 'bun-darwin')

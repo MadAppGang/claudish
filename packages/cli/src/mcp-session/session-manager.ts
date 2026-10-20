@@ -14,6 +14,12 @@
 // non-terminal state and queued (D17). `timeout_seconds` is the caller's own deadline
 // and the only post-acceptance timer (D10).
 //
+// Session hooks (hook-system §2.3, §7.3, §7.4): every child gets an owner-created
+// inbox (`hook-inbox.jsonl` in its session dir) and `CLAUDISH_HOOK_INBOX` /
+// `CLAUDISH_HOOK_SESSION`. When this process's hook engine has a session hook, the pane
+// gets a binding and each settled turn's answer is RECORDED into the output at once
+// (`recordAnswer`), before its verdict, so no terminal path can lose it.
+//
 // The 10.4.0 session records are kept, byte for byte where the magus monitor reads
 // them (§20.1): `spawn.json` before any pane, `waits.jsonl` from the pane's transition
 // hook, `meta.json` through `toMetaRecord` with every 10.4.0 key, `events.jsonl` with
@@ -31,6 +37,7 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -38,6 +45,17 @@ import { join, resolve, sep } from "node:path";
 
 import { ENV } from "../config.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "../handlers/shared/upstream-error-capture.js";
+import type { HookEngine } from "../hooks/engine.js";
+import { loadHooksOnce } from "../hooks/index.js";
+import { createHookInbox } from "../hooks/injection/inbox.js";
+import { HOOK_INBOX_ENV } from "../hooks/injection/sinks.js";
+import { HOOK_SESSION_ENV } from "../hooks/request-stage.js";
+import {
+  type SessionHookBinding,
+  createSessionHookBinding,
+  reportOwnerWithoutHooks,
+  sessionHooksNeedBinding,
+} from "../hooks/session/binding.js";
 import {
   type Accounting,
   type CaptureResult,
@@ -61,6 +79,7 @@ import {
   type SettledTurn,
   type SlotState,
   assertMagmuxAvailable,
+  chainAnswerOf,
   checkChildFlags,
   clampPaneSize,
   deliveryRefusal,
@@ -137,6 +156,8 @@ export interface SessionDiagnostics {
   costUsd: number | null;
   toolCalls: number;
   pendingInputs: number;
+  /** Queued hook injections (hook-system §4.7 rule 11); 0 when not live. */
+  pendingHookInputs: number;
   /** Whether claudish holds a live socket to the pane's magmux right now. */
   connected: boolean;
   /** The last non-empty rows of the child's screen, redacted (a PTY has no separate stderr). */
@@ -230,6 +251,8 @@ interface SessionEntry {
    * is appended.
    */
   answeredTurns: Map<number, string>;
+  /** The owner-created hook inbox; null when it could not be created. */
+  inboxPath: string | null;
   waitLogPath: string;
   waitLogBytes: number;
   /** The `since` of the wait that is open now, or null. */
@@ -304,7 +327,8 @@ const UPSTREAM_ERROR_TAIL_BYTES = 64 * 1024;
 const SPAWN_RECORD_SCHEMA = 1;
 
 /** RUNNING activities that are not a tool name (§8 B). */
-const NON_TOOL_ACTIVITY = new Set(["thinking", "background", "finishing"]);
+// "hook": a settled turn held while session hooks run (§7.3); not a tool
+const NON_TOOL_ACTIVITY = new Set(["thinking", "background", "finishing", "hook"]);
 
 /** `meta.json` `status` for each terminal state (§20.1): EMPTY is a failure to the monitor. */
 const META_STATUS: Record<SlotState, string> = {
@@ -661,6 +685,11 @@ export class SessionManager {
   private readonly teamRunStarts = new Map<string, string>();
   /** Team run records whose end is on disk. The first `finishTeamRun` write to succeed wins. */
   private readonly settledTeamRuns = new Set<string>();
+  /** The hook engine pane bindings are built from; loaded before the first pane spawn. */
+  private hookEnginePromise: Promise<HookEngine | null> | null = null;
+  private readonly hookEngineSource: () => Promise<HookEngine | null>;
+  private readonly bindingOverride: SessionManagerOptions["hookBinding"];
+  private readonly magmuxBinary: string | undefined;
 
   constructor(options?: SessionManagerOptions) {
     // Computed once: the Claude Code process that launched this MCP server
@@ -679,6 +708,15 @@ export class SessionManager {
     this.sessionsDir = options?.sessionsDir ?? sessionsDirFrom(process.env);
     this.parentEnv = options?.parentEnv ?? process.env;
     this.paneTimings = options?.paneTimings;
+    this.hookEngineSource = options?.hookEngine ?? (() => loadHooksOnce());
+    this.bindingOverride = options?.hookBinding;
+    this.magmuxBinary = options?.magmuxBinary;
+  }
+
+  /** The process's hook engine (§2.2), awaited before the first pane spawn. Never rejects. */
+  private hookEngine(): Promise<HookEngine | null> {
+    if (!this.hookEnginePromise) this.hookEnginePromise = this.hookEngineSource().catch(() => null);
+    return this.hookEnginePromise;
   }
 
   /** The Claude Code process that launched this MCP server (`spawn.json` `hostPid`). */
@@ -856,7 +894,7 @@ export class SessionManager {
       counted = false;
     };
     try {
-      await assertMagmuxAvailable();
+      await assertMagmuxAvailable(this.magmuxBinary);
       reservePanes(1, sockRootFor(parentEnv));
       let entry: SessionEntry;
       try {
@@ -957,6 +995,7 @@ export class SessionManager {
       eventRing: [],
       proseBytes: 0,
       answeredTurns: new Map(),
+      inboxPath: null,
       waitLogPath: join(sessionDir, "waits.jsonl"),
       waitLogBytes: 0,
       waitSince: null,
@@ -976,6 +1015,9 @@ export class SessionManager {
     p: { flags: string[]; readAvailable: boolean; parentEnv: Record<string, string | undefined> }
   ): Promise<void> {
     const info = entry.info;
+    const engine = await this.hookEngine();
+    entry.inboxPath = createHookInbox(entry.sessionDir);
+    const binding = this.bindingFor(entry, engine);
     // L2: a size asked for before this point is the pane's launch size
     const launch = entry.requestedSize;
     const paneOpts: PaneSessionOptions = {
@@ -993,6 +1035,10 @@ export class SessionManager {
         // Per session, unconditionally: the records carry no session id, so a shared
         // path would interleave concurrent sessions into one unattributable file.
         [UPSTREAM_ERROR_LOG_ENV]: entry.upstreamErrorLogPath,
+        // Every child, unconditionally (§2.3 step 1): a child may load hooks this
+        // process did not, so it must never lack a sink, and ctx.session must be set.
+        ...(entry.inboxPath ? { [HOOK_INBOX_ENV]: entry.inboxPath } : {}),
+        [HOOK_SESSION_ENV]: JSON.stringify({ kind: "channel", id: info.sessionId, role: null }),
       },
       shape: info.shape,
       ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
@@ -1005,20 +1051,69 @@ export class SessionManager {
       onTransition: (t) => this.onPaneTransition(entry, t),
       parentEnv: p.parentEnv,
       ...(this.paneTimings ? { timings: this.paneTimings } : {}),
+      ...(this.magmuxBinary ? { magmuxBinary: this.magmuxBinary } : {}),
+      ...(binding
+        ? {
+            hooks: binding,
+            onTurnRecorded: (turn: SettledTurn) =>
+              this.recordAnswer(entry, turn.index, turn.answer),
+          }
+        : {}),
     };
     try {
       entry.session = await startPaneSession(paneOpts);
     } catch (err) {
+      this.removeInbox(entry);
       this.failNeverSpawned(entry, err);
       throw err;
     }
+    const session = entry.session;
     // a size asked for while the pane started (after its environment was built): apply it
     // now; the pane's own worker answers any later resize
     const asked = entry.requestedSize;
     entry.requestedSize = null;
     if (asked && (asked.cols !== launch?.cols || asked.rows !== launch?.rows))
-      entry.session.resize(asked.cols, asked.rows).catch(() => undefined);
-    if (!entry.ended) this.applySnapshot(entry, entry.session.snapshot());
+      session.resize(asked.cols, asked.rows).catch(() => undefined);
+    // At reap: an owner without a binding checks the inbox once, then the file goes.
+    void session.reaped().then(() => {
+      if (!binding && entry.inboxPath)
+        reportOwnerWithoutHooks(entry.inboxPath, engine, {
+          model: info.model,
+          sessionId: info.claudeSessionId,
+        });
+      // with a binding, what no settle took is journaled before the file goes
+      binding?.sweepInbox?.();
+      this.removeInbox(entry);
+    });
+    if (!entry.ended) this.applySnapshot(entry, session.snapshot());
+  }
+
+  /** The pane's hook binding: a test's, or the real one when this engine has session hooks. */
+  private bindingFor(entry: SessionEntry, engine: HookEngine | null): SessionHookBinding | null {
+    const info = entry.info;
+    const session = {
+      kind: "channel" as const,
+      role: null,
+      id: info.sessionId,
+      claudeSessionId: info.claudeSessionId,
+      model: info.model,
+      cwd: entry.cwd,
+      shape: info.shape,
+      injection: "available" as const,
+    };
+    if (this.bindingOverride)
+      return this.bindingOverride({ session, inboxPath: entry.inboxPath, engine });
+    if (!engine || !sessionHooksNeedBinding(engine)) return null;
+    return createSessionHookBinding(engine, session, entry.inboxPath);
+  }
+
+  private removeInbox(entry: SessionEntry): void {
+    if (!entry.inboxPath) return;
+    try {
+      rmSync(entry.inboxPath, { force: true });
+    } catch {
+      // the session dir keeps it; nothing reads it after the reap
+    }
   }
 
   /** A session whose pane never started: FAILED `pane_lost`, its records ended. */
@@ -1044,11 +1139,13 @@ export class SessionManager {
     // The pane's shape at the settle, not entry.info's copy: a send_input whose own step
     // settles the turn has converted the session before sendInput could update the copy.
     if (turn.shape === "one-shot") {
+      // A hook-extended turn chain is classified as one answer, with the CHAIN HEAD's
+      // prompt-read result (§4.7 rule 9). Without hooks both equal the turn's own.
       const v = classifyRunOutput({
-        answer: turn.answer,
+        answer: chainAnswerOf(turn),
         apiError: turn.apiError,
         stopReason: turn.stopReason,
-        promptRead: turn.delivery,
+        promptRead: turn.chainDelivery,
         minOutputBytes: 0,
       });
       if (v) return { state: v.state, reason: v.reason, detail: v.detail };
@@ -1061,8 +1158,9 @@ export class SessionManager {
       return { state: "FAILED", reason: "api_error", detail: v?.detail ?? "API error" };
     }
     // An interactive turn whose task file was not fully read continues; the anomaly is
-    // in the session's event log (r2, X-M4).
-    if (turn.delivery.complete === false) {
+    // in the session's event log (r2, X-M4). An unread HOOK turn is the pane's
+    // hook_injection_not_read, never the caller-facing prompt_not_read (L-2).
+    if (!turn.hookCaused && turn.delivery.complete === false) {
       this.appendEvent(entry, {
         type: "anomaly",
         key: "prompt_not_read",
@@ -1292,6 +1390,8 @@ export class SessionManager {
       costUsd: info.costUsd,
       toolCalls: info.toolCalls,
       pendingInputs: info.pendingInputs,
+      pendingHookInputs:
+        entry.session && !entry.ended ? entry.session.snapshot().pendingHookInputs : 0,
       pane: info.pane,
       captureSource: info.captureSource,
       turnSource: info.turnSource,
@@ -1607,6 +1707,7 @@ export class SessionManager {
       costUsd: info.costUsd,
       toolCalls: info.toolCalls,
       pendingInputs: 0,
+      pendingHookInputs: 0,
       connected: false,
       screenTail: redactSecrets(screen?.text ?? "").trimEnd(),
       pane: info.pane,
@@ -1665,6 +1766,16 @@ export class SessionManager {
     if (entry.session && !entry.ended) this.applySnapshot(entry, entry.session.snapshot());
     else if (!isTerminalState(entry.info.state))
       entry.info.elapsedSeconds = elapsedSecondsBetween(entry.info.startedAt, Date.now());
+  }
+
+  /**
+   * `onTurnRecorded` (binding present): the answer reaches the output when the turn is
+   * RECORDED, before its verdict and before any hold. A second record of the same index
+   * (a re-wake) appends only the text past what was already written, once, as its own
+   * paragraph (§7.4) — the same extension rule `appendAnswer` applies to a re-settle (D23).
+   */
+  private recordAnswer(entry: SessionEntry, index: number, answer: string): void {
+    this.appendAnswer(entry, index, answer);
   }
 
   /** A settled turn's answer → scrollback, `output.log` and `outputBytes`. Once per turn. */

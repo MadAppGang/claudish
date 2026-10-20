@@ -1,6 +1,6 @@
 {
   "name": "claudish-monorepo",
-  "version": "12.3.2",
+  "version": "13.0.0",
   "private": true,
   "description": "Monorepo for Claudish - Run Claude Code with any model",
   "type": "module",
@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "cd packages/cli && exec bun run src/index.ts",
+    "dev": "cd packages/cli && exec bun --no-env-file run src/index.ts",
     "dev:mcp": "bun run --cwd packages/cli dev:mcp",
     "dev:grok": "bun run --cwd packages/cli dev:grok",
     "dev:grok:debug": "bun run --cwd packages/cli dev:grok:debug",

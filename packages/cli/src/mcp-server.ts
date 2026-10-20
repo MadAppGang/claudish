@@ -1,5 +1,3 @@
-#!/usr/bin/env bun
-
 /**
  * Claudish MCP Server
  *
@@ -18,11 +16,13 @@ import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { loadHooksOnce } from "./hooks/index.js";
+import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
+import { initLogger, log } from "./logger.js";
 import { SessionManager } from "./mcp-session/index.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
 import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
@@ -93,16 +93,11 @@ import {
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
 
-// Load environment variables.
-//
-// `quiet: true` is REQUIRED, not cosmetic: this process speaks MCP JSON-RPC over
-// STDOUT, and dotenv v17 otherwise prints a banner there —
-//   [dotenv@17.2.3] injecting env (0) from .env -- tip: …
-// — the moment a .env exists in the cwd. That single non-JSON line corrupts the
-// stream, so the host (Claude Code) fails to initialize the server and the user
-// silently gets NO claudish tools. index.ts already passes quiet for the same
-// reason; this call is the one the MCP path actually hits.
-config({ quiet: true });
+// No `.env` load here. `index.ts` loads the working directory's `.env` through the
+// allowlist (dotenv-allowlist.ts) before it imports this module, and that is the only
+// `.env` load claudish has. Claude Code starts this server in a checkout before its
+// folder-trust dialog, so a second, unfiltered load here would hand the checkout every
+// name the allowlist refused (`CLAUDE_PATH`, `NODE_OPTIONS`, base URLs, the pane markers).
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -266,7 +261,7 @@ async function getProxy(): Promise<ProxyServer> {
       false, // not monitor mode
       process.env.ANTHROPIC_API_KEY,
       undefined, // no model map
-      { quiet: true }
+      { quiet: true, hostMode: "mcp" }
     );
     proxyInstance = proxy;
     return proxy;
@@ -2380,7 +2375,46 @@ function unknownToolModeWarning(mode: string): string | undefined {
 
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
+/**
+ * Whether `claudish --mcp` writes the debug log (`logs/` in the working directory):
+ * the same switches as every other claudish run. `--debug-claudish` / `-d` turn it
+ * on and `--no-debug-claudish` off, the last one on the command line winning; without
+ * a flag, `CLAUDISH_DEBUG` decides (1/true on, 0/false or unset off). The MCP server
+ * runs no `parseArgs`, so it reads these itself.
+ */
+export function mcpDebugLogEnabled(
+  argv: readonly string[],
+  env: Record<string, string | undefined>
+): boolean {
+  let flag: boolean | undefined;
+  for (const arg of argv) {
+    if (arg === "--debug-claudish" || arg === "-d") flag = true;
+    else if (arg === "--no-debug-claudish") flag = false;
+  }
+  if (flag !== undefined) return flag;
+  const fromEnv = env.CLAUDISH_DEBUG?.toLowerCase();
+  return fromEnv === "1" || fromEnv === "true";
+}
+
 async function main() {
+  // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
+  // the JSON-RPC writer alone. Every other stdout route — Bun's native
+  // console.log, process.stdout.write, fs.writeSync(1), Bun.write(Bun.stdout),
+  // an inheriting child — lands on stderr or in the debug log, so no hook
+  // output (and no stray write of claudish's own) can corrupt the protocol.
+  // Where libc cannot be bound, `active` is false, stdout is untouched, and the
+  // loader loads no user hook module in this process.
+  const iso: ProtocolStdout = isolateProtocolStdout();
+
+  // The debug log is also where hook output and diverted stdout writes go.
+  if (mcpDebugLogEnabled(process.argv.slice(2), process.env)) initLogger(true, "debug", true);
+  if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
+
+  // Session hooks need the engine without a proxy, so loading starts now, in the
+  // background. The MCP server's own proxy (run_prompt, preflight) awaits the
+  // same memoised promise before it builds a handler.
+  void loadHooksOnce({ hostMode: "mcp" });
+
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   // Inside a session a claudish owner started, one level of nesting is the limit:
   // only the one-shot tools of NESTED_MCP_TOOL_NAMES, intersected with the groups
@@ -2493,8 +2527,9 @@ async function main() {
     }
   });
 
-  // Connect via stdio transport.
-  const transport = new StdioServerTransport();
+  // Connect via stdio transport, writing through the protocol writer (the real
+  // stdout's private descriptor when isolation is active).
+  const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
   installMcpShutdown(sessionManager);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped

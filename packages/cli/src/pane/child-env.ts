@@ -30,9 +30,16 @@
  *     Code derives the transcript directory from the cwd, so a profile `cd` would move
  *     the transcript out of the place the server reads it from.
  *
- * This module is imported FIRST by the CLI entry (`index.ts`), before `.env` loading
- * and before any module that reads the environment at import time. Its one side
- * effect is `bootstrapPaneChild()` at the bottom, which is a no-op outside the pane child.
+ * The markers come only from the parent claudish that spawned the pane, through the
+ * spawn environment (`buildPaneEnv`). Nothing in the working directory can set them:
+ * Bun's env-file autoload is off on every launch path, `launch-guard.ts` drops them
+ * when a launch left it on, and claudish's own `.env` load never sets them
+ * (`launch-env.ts`). That is what lets `isPaneChild` read a plain variable.
+ *
+ * This module is imported by the CLI entry (`index.ts`) right after `launch-guard.ts`,
+ * before `.env` loading and before any module that reads the environment at import
+ * time. Its one side effect is `bootstrapPaneChild()` at the bottom, which is a no-op
+ * outside the pane child.
  *
  * After `parseArgs`, `assertPaneChildInteractive` refuses any flag combination that
  * would make the pane child anything but an interactive Claude Code REPL. The server
@@ -49,13 +56,27 @@ import { ENV } from "../config.js";
 /** Exit status of a refused pane child (EX_USAGE). */
 export const PANE_CHILD_REFUSED_EXIT = 64;
 
+/** The owner-created hook inbox of this pane child (hook-system §2.3). */
+export const HOOK_INBOX_VAR = "CLAUDISH_HOOK_INBOX";
+/** `{"kind","id","role"}` of the session this pane child serves (hook-system §2.3). */
+export const HOOK_SESSION_VAR = "CLAUDISH_HOOK_SESSION";
+
 /**
  * The markers that describe the LAUNCHED claudish only. claude-runner deletes them
  * from Claude Code's environment. `CLAUDISH_PANE_CHILD` is deliberately not here: it
  * is inherited by everything the session starts, so a claudish or a claudish MCP
- * server started from inside it knows it is already one level deep.
+ * server started from inside it knows it is already one level deep. The two hook
+ * markers are here: the model's Bash tool never sees the hook inbox path, and a
+ * claudish started from inside the session never writes into its owner's inbox.
+ * They stay in this process's own `process.env`: the child's proxy writes the inbox
+ * named there.
  */
-export const PANE_LAUNCH_VARS = [ENV.CLAUDISH_PANE_ENV, ENV.CLAUDISH_PANE_CWD] as const;
+export const PANE_LAUNCH_VARS = [
+  ENV.CLAUDISH_PANE_ENV,
+  ENV.CLAUDISH_PANE_CWD,
+  HOOK_INBOX_VAR,
+  HOOK_SESSION_VAR,
+] as const;
 
 /**
  * Keys owned by the pane's shell and terminal, not by the server's environment.
@@ -146,7 +167,15 @@ export function applyPaneEnvSnapshot(env: Env): PaneBootResult {
   for (const value of Object.values(snapshot)) {
     if (typeof value !== "string") return { ok: false, reason: "bad env snapshot" };
   }
-  const keep = new Set<string>([ENV.CLAUDISH_PANE_CHILD, ENV.CLAUDISH_PANE_CWD]);
+  // The hook markers survive like the pane markers: the owner sets them beside the
+  // snapshot for every child (hook-system §2.3 step 2), and a snapshot that lacks them
+  // must not leave the child's proxy without its inbox.
+  const keep = new Set<string>([
+    ENV.CLAUDISH_PANE_CHILD,
+    ENV.CLAUDISH_PANE_CWD,
+    HOOK_INBOX_VAR,
+    HOOK_SESSION_VAR,
+  ]);
   for (const key of Object.keys(env)) {
     if (Object.hasOwn(snapshot, key) || keep.has(key) || isPaneShellManagedKey(key)) continue;
     delete env[key];

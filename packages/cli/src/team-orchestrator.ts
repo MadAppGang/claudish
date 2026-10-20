@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -13,6 +14,18 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { ENV } from "./config.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
+import type { HookEngine } from "./hooks/engine.js";
+import { loadHooksOnce } from "./hooks/index.js";
+import { createHookInbox } from "./hooks/injection/inbox.js";
+import { HOOK_INBOX_ENV } from "./hooks/injection/sinks.js";
+import type { SessionInfo as HookSessionInfo } from "./hooks/public.js";
+import { HOOK_SESSION_ENV } from "./hooks/request-stage.js";
+import {
+  type SessionHookBinding,
+  createSessionHookBinding,
+  reportOwnerWithoutHooks,
+  sessionHooksNeedBinding,
+} from "./hooks/session/binding.js";
 import {
   type Accounting,
   type CaptureResult,
@@ -37,6 +50,7 @@ import {
   type TeamResizeResult,
   type TeamRunRow,
   assertMagmuxAvailable,
+  chainAnswerOf,
   checkChildFlags,
   contractMeta,
   deliveryRefusal,
@@ -230,6 +244,17 @@ export interface TeamRunOptions {
   paneTimings?: PaneSessionOptions["timings"];
   /** @internal test-only boot bound; production uses the pane's 90 s */
   bootTimeoutMs?: number;
+  /**
+   * The hook engine slot bindings are built from. Default: the process engine
+   * (`loadHooksOnce()`), awaited before the spawn loop. Tests pass their own.
+   */
+  hookEngine?: () => Promise<HookEngine | null>;
+  /** @internal test seam (§11.5): the binding for one slot, instead of the real one */
+  hookBinding?: (ctx: {
+    session: HookSessionInfo;
+    inboxPath: string | null;
+    engine: HookEngine | null;
+  }) => SessionHookBinding | null;
 }
 
 /**
@@ -316,6 +341,10 @@ interface SlotEntry {
   /** what `response-<id>.md` holds once it was written (decide, onBlocked or terminal) */
   answer: string | null;
   stopReason: string | null;
+  /** the slot's session-hook binding (§7.4); null = today's index formulas */
+  binding?: SessionHookBinding | null;
+  /** the owner-created hook inbox; removed at reap */
+  inboxPath?: string | null;
 }
 
 interface LiveTeamRun {
@@ -855,6 +884,11 @@ export const TRUNCATION_NOTE =
 export function classifyRunOutput(input: {
   /** The full answer: text blocks joined with "\n\n", as written to response-<id>.md. */
   answer: string;
+  /**
+   * A hook-extended turn chain's answers, one per turn (§7.4): `requirePattern` passes
+   * when it matches the joined `answer` OR any single element. Absent = the answer only.
+   */
+  chainAnswers?: string[];
   apiError: { status: number | null; text: string } | null;
   stopReason?: string | null;
   /** `complete === false` → prompt_not_read */
@@ -902,8 +936,16 @@ function classifyTurnSignals(input: Parameters<typeof classifyRunOutput>[0]): Ve
   return null;
 }
 
-/** The caller's shape contract, matched against the full answer (no flags). */
-function classifyShape(answer: string, requirePattern: string | undefined): Verdict | null {
+/**
+ * The caller's shape contract, matched against the full answer (no flags), or against any
+ * single turn of a hook-extended chain, so a `^`-anchored pattern still matches a turn
+ * that begins with it (§7.4).
+ */
+function classifyShape(
+  answer: string,
+  requirePattern: string | undefined,
+  chainAnswers?: ReadonlyArray<string>
+): Verdict | null {
   if (!requirePattern) return null;
   let re: RegExp | null = null;
   try {
@@ -915,6 +957,7 @@ function classifyShape(answer: string, requirePattern: string | undefined): Verd
     return null;
   }
   if (re.test(answer)) return null;
+  for (const turn of chainAnswers ?? []) if (re.test(turn)) return null;
   return {
     state: "EMPTY",
     reason: "shape_mismatch",
@@ -951,7 +994,7 @@ function classifyAnswer(input: Parameters<typeof classifyRunOutput>[0]): Verdict
     };
   }
 
-  return classifyShape(answer, input.requirePattern);
+  return classifyShape(answer, input.requirePattern, input.chainAnswers);
 }
 
 /**
@@ -1274,6 +1317,8 @@ async function startModelsIn(
   assertNoActiveRun(path);
   const parentEnv = opts.parentEnv ?? process.env;
   const kind = opts.kind ?? "run";
+  // The hook engine slot bindings are built from (§2.2), loaded before any spawn.
+  const hookEngine = await (opts.hookEngine ?? (() => loadHooksOnce()))().catch(() => null);
 
   // Resolve every model's credential AND its route HERE, before the spawn loop
   // below starts N children. Each child would otherwise open its own 1Password SDK
@@ -1353,15 +1398,38 @@ async function startModelsIn(
     return text;
   }
 
+  /**
+   * `onTurnRecorded` (binding present): the response file holds the chain so far, so no
+   * terminal path can lose a settled turn. Not final: `e.answer` stays unset (§7.4).
+   */
+  function writeChainSoFar(e: SlotEntry): void {
+    if (e.answer !== null || !e.session) return;
+    try {
+      writeFileSync(join(path, `response-${e.id}.md`), e.session.chainText(), "utf-8");
+    } catch (err) {
+      persistErrorLog(errorLogPathOf(e.id), `response file not written: ${String(err)}`, []);
+    }
+  }
+
+  /** The answer of a slot that ended without a verdict: the chain with a binding (§7.4). */
+  function unsettledAnswer(e: SlotEntry, index: number): string {
+    if (e.binding && e.session) return e.session.chainText();
+    return e.session?.turnAnswer(index) ?? "";
+  }
+
   /** Team policy for a settled turn (D8): the verdict, after the response file exists. */
   function teamDecide(e: SlotEntry, turn: SettledTurn): FinalVerdict {
     e.stopReason = turn.stopReason;
-    writeResponse(e, turn.answer);
+    // A hook-extended chain is the slot's answer: every turn joined, classified with the
+    // chain head's prompt-read result. Without hooks both are the turn's own (§7.4).
+    const answer = chainAnswerOf(turn);
+    writeResponse(e, answer);
     const v = classifyRunOutput({
-      answer: turn.answer,
+      answer,
+      chainAnswers: [...turn.chainAnswers, turn.answer],
       apiError: turn.apiError,
       stopReason: turn.stopReason,
-      promptRead: turn.delivery,
+      promptRead: turn.chainDelivery,
       minOutputBytes,
       requirePattern,
     });
@@ -1381,7 +1449,7 @@ async function startModelsIn(
   /** D19: team has no answering verb, so a slot blocked on a question can never finish. */
   function teamOnBlocked(e: SlotEntry, b: PaneBlock): FinalVerdict {
     const index = (e.session?.snapshot().turnsCompleted ?? 0) + 1;
-    writeResponse(e, e.session?.turnAnswer(index) ?? "");
+    if (e.answer === null) writeResponse(e, unsettledAnswer(e, index));
     return { state: "FAILED", reason: "blocked", detail: b.text };
   }
 
@@ -1412,7 +1480,7 @@ async function startModelsIn(
   /** The fields a slot gets once, when it turns terminal (and its error log on failure). */
   function terminalFields(e: SlotEntry, snap: PaneSnapshot): Partial<ModelStatus> {
     const index = Math.max(1, snap.turnsCompleted);
-    const answer = e.answer ?? writeResponse(e, e.session?.turnAnswer(index) ?? "");
+    const answer = e.answer ?? writeResponse(e, unsettledAnswer(e, index));
     const anomalies = [
       ...notableAnomalies(snap),
       ...(snap.state === "COMPLETED" && e.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : []),
@@ -1497,8 +1565,29 @@ async function startModelsIn(
   const cwd = process.cwd();
   const projects = projectsDir(parentEnv);
 
+  /** The slot's hook binding: a test's, or the real one when the engine has session hooks. */
+  function bindingFor(e: SlotEntry, uuid: string): SessionHookBinding | null {
+    const session: HookSessionInfo = {
+      kind: "team",
+      role: kind === "judge" ? "judge" : "slot",
+      id: `${runId}:${e.id}`,
+      claudeSessionId: uuid,
+      model: e.model,
+      cwd,
+      shape: "one-shot",
+      injection: "available",
+    };
+    if (opts.hookBinding)
+      return opts.hookBinding({ session, inboxPath: e.inboxPath ?? null, engine: hookEngine });
+    if (!hookEngine || !sessionHooksNeedBinding(hookEngine)) return null;
+    return createSessionHookBinding(hookEngine, session, e.inboxPath ?? null);
+  }
+
   async function startSlot(e: SlotEntry, uuid: string, transcriptPath: string): Promise<void> {
     let session: PaneSession;
+    e.inboxPath = createHookInbox(join(path, "work"), `${e.id}.hook-inbox.jsonl`);
+    const binding = bindingFor(e, uuid);
+    e.binding = binding;
     try {
       session = await startPaneSession({
         kind: "t",
@@ -1515,6 +1604,13 @@ async function startModelsIn(
           // Per SLOT, unconditionally: the records carry no slot id, so one shared
           // path would interleave every model in the run into an unattributable file.
           [UPSTREAM_ERROR_LOG_ENV]: upstreamLogOf(e.id),
+          // Every slot and judge, unconditionally (§2.3 step 1).
+          ...(e.inboxPath ? { [HOOK_INBOX_ENV]: e.inboxPath } : {}),
+          [HOOK_SESSION_ENV]: JSON.stringify({
+            kind: "team",
+            id: `${runId}:${e.id}`,
+            role: kind === "judge" ? "judge" : "slot",
+          }),
         },
         shape: "one-shot",
         initialPrompt: inputContent,
@@ -1525,13 +1621,32 @@ async function startModelsIn(
         parentEnv,
         ...(opts.bootTimeoutMs !== undefined ? { bootTimeoutMs: opts.bootTimeoutMs } : {}),
         ...(opts.paneTimings ? { timings: opts.paneTimings } : {}),
+        ...(binding ? { hooks: binding, onTurnRecorded: () => writeChainSoFar(e) } : {}),
       });
     } catch (err) {
+      removeInbox(e);
       failNeverSpawned(e, err);
       return;
     }
     e.session = session;
+    // At reap: an owner without a binding checks the inbox once, then the file goes.
+    void session.reaped().then(() => {
+      if (!binding && e.inboxPath)
+        reportOwnerWithoutHooks(e.inboxPath, hookEngine, { model: e.model, sessionId: uuid });
+      // with a binding, what no settle took is journaled before the file goes
+      binding?.sweepInbox?.();
+      removeInbox(e);
+    });
     updateModelStatus(e.id, { pane: session.paneId });
+  }
+
+  function removeInbox(e: SlotEntry): void {
+    if (!e.inboxPath) return;
+    try {
+      rmSync(e.inboxPath, { force: true });
+    } catch {
+      // nothing reads it after the reap
+    }
   }
 
   const slotIds = Object.keys(manifest.models);

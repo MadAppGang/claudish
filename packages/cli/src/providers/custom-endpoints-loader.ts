@@ -42,6 +42,7 @@ import type { ClaudishProfileConfig } from "../profile-config.js";
 import type { WireApi } from "./connection-wire.js";
 import { declaredConnection, declaredWire } from "./declared-wire.js";
 import { clearEndpointUnavailable, recordEndpointUnavailable } from "./endpoint-diagnostics.js";
+import { customEndpointKeyEnvVar } from "./endpoint-key-env.js";
 import {
   type RouteTier,
   type TieredProviderDefinition,
@@ -648,20 +649,4 @@ export function resolveDeclaredEndpointKey(ep: CustomEndpoint): string | undefin
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
-}
-
-/**
- * The synthesized `CUSTOM_<NAME>_KEY` env var for an endpoint name.
- *
- * Exported because a BUNDLED endpoint carries the vendor's own variable as its
- * primary and this spelling as an ALIAS, so the user-authored form keeps
- * working for a name that also ships. The two must be produced by one function
- * or a rename in either place silently stops honouring the other's variable.
- */
-export function customEndpointKeyEnvVar(name: string): string {
-  return `CUSTOM_${sanitizeEnvName(name)}_KEY`;
-}
-
-function sanitizeEnvName(name: string): string {
-  return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }

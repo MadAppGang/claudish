@@ -83,11 +83,11 @@ import type { ClaudishProfileConfig } from "../profile-config.js";
 import {
   type EndpointDefinitionOverrides,
   classifyEndpointBaseUrl,
-  customEndpointKeyEnvVar,
   describeBadBaseUrlOverride,
   registerEndpoint,
 } from "./custom-endpoints-loader.js";
 import { recordEndpointUnavailable } from "./endpoint-diagnostics.js";
+import { customEndpointKeyEnvVar } from "./endpoint-key-env.js";
 import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
 import type { PredefinedEndpoint } from "./predefined-endpoint-schema.js";
 // The reserved-namespace guard is SHARED with the user-authored customEndpoints

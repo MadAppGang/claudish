@@ -29,7 +29,7 @@ describe("MCP capability declaration", () => {
     const layout = makeTempLayout("wirecaps");
     layouts.push(layout);
     // Drive only the initialize handshake — no session needed.
-    const proc: ChildProcess = spawn(process.execPath, [SERVER_ENTRY, "--mcp"], {
+    const proc: ChildProcess = spawn(process.execPath, ["--no-env-file", SERVER_ENTRY, "--mcp"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: serverEnv(layout, { CLAUDISH_MCP_TOOLS: toolMode }),
       cwd: layout.cwd,

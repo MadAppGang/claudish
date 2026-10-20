@@ -8,6 +8,7 @@
  */
 
 import type { Context } from "hono";
+import type { RawStreamTap } from "../../../hooks/raw.js";
 import { log } from "../../../logger.js";
 import {
   type ToolSchema,
@@ -239,7 +240,11 @@ export function createStreamingResponseHandler(
   response: Response,
   adapter: any,
   target: string,
-  middlewareManager: any,
+  /**
+   * The raw-tier tap (`providerChunk` / `providerStreamEnd`), when a raw hook
+   * applies to this route. `chunk()` returns the object to read from then on.
+   */
+  raw: RawStreamTap | null | undefined,
   /**
    * `input` is ALWAYS `prompt_tokens` — the full context size. The cached
    * breakdown rides in the third argument and is for COST ONLY; handing the
@@ -255,55 +260,21 @@ export function createStreamingResponseHandler(
   toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
   priorInputTokens?: number, // Last request's context size — seeds message_start.usage
   /**
-   * Behavior layer (Layer 4) tool-call interception. Grouped into one object
-   * rather than two more positional parameters — this signature already carries
-   * nine.
-   *
-   * Unlike the Responses parser, this path already buffers tool arguments
-   * whenever the request carries tools (see `buffered` below), so hooking repair
-   * in costs nothing extra: the complete argument object is assembled here
-   * regardless. `shouldBufferTool` only matters for the rare case of a rule
-   * wanting a tool the schema-validation path would not have buffered.
+   * Observation callbacks, grouped into one object rather than another
+   * positional parameter — this signature already carries nine.
+   * `onToolCallObserved` feeds the token tracker's tool count. Tool-argument
+   * interception is not this parser's job: it happens at the hook response
+   * seam, above every parser.
    */
-  behavior?: {
-    shouldBufferTool?: (name: string) => boolean;
-    onToolCall?: (name: string, argsJson: string) => string | null | undefined;
-    /**
-     * Layer 4 observation. Normalized text, so rules never parse this parser's
-     * event shape.
-     */
-    onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+  observers?: {
     onToolCallObserved?: (name: string) => void;
-    onTurnEnd?: () => void;
   }
 ): Response {
-  /**
-   * Offer a COMPLETE argument object to the behavior layer.
-   *
-   * Only ever called where the full object is in hand. The incremental
-   * `partial_json` fragment path must never route through here — repairing a
-   * fragment would emit malformed JSON.
-   */
-  const repairArgs = (toolName: string, argsJson: string): string => {
-    if (!behavior?.onToolCall) return argsJson;
-    try {
-      const repaired = behavior.onToolCall(toolName, argsJson);
-      if (typeof repaired === "string" && repaired !== argsJson) {
-        log(`[Streaming] tool call repaired by behavior layer: ${toolName}`);
-        return repaired;
-      }
-    } catch (err) {
-      // A failing rule must never corrupt the stream.
-      log(`[Streaming] behavior onToolCall threw for ${toolName}: ${err}`);
-    }
-    return argsJson;
-  };
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
   let ping: NodeJS.Timeout | null = null;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const streamMetadata = new Map<string, any>();
 
   return c.body(
     new ReadableStream({
@@ -318,15 +289,14 @@ export function createStreamingResponseHandler(
             //
             // This parser declared `onToolCallObserved` and never called it — so on the
             // busiest wire in claudish (GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter,
-            // LiteLLM) the behaviour layer's tool-name list was always empty and the
-            // session summary would have reported zero tools. Hooking the writer instead
+            // LiteLLM) the session summary would have reported zero tools. Hooking the writer instead
             // of the emission sites makes that class of omission impossible: a new
             // tool_use path cannot forget to opt in, and because exactly one
             // `content_block_start` is emitted per tool call, it cannot double count
             // either. The `input_json_delta` frames deliberately do not match.
             if (e === "content_block_start" && d?.content_block?.type === "tool_use") {
               try {
-                behavior?.onToolCallObserved?.(String(d.content_block.name ?? ""));
+                observers?.onToolCallObserved?.(String(d.content_block.name ?? ""));
               } catch (err) {
                 log(`[Streaming] onToolCallObserved threw: ${err}`);
               }
@@ -354,7 +324,6 @@ export function createStreamingResponseHandler(
          */
         const emitSplitContent = ({ thinking, text }: ThinkSplit): void => {
           if (thinking) {
-            behavior?.onAssistantText?.(thinking, "reasoning");
             writer.append(writer.openThinking(), thinking);
           }
           if (!text) return;
@@ -583,7 +552,7 @@ export function createStreamingResponseHandler(
                 const toolIdx = writer.reserve();
                 const toolId = `tool_${Date.now()}_${toolIdx}`;
                 const ref = writer.openTool({ id: toolId, name: tc.name, index: toolIdx });
-                writer.append(ref, repairArgs(tc.name, JSON.stringify(tc.arguments)));
+                writer.append(ref, JSON.stringify(tc.arguments));
                 writer.close(ref);
               }
             }
@@ -614,11 +583,8 @@ export function createStreamingResponseHandler(
                   );
 
                   if (validation.valid || (validation.repaired && validation.repairedArgs)) {
-                    const argsJson = repairArgs(
-                      t.name,
-                      JSON.stringify(
-                        validation.repaired ? validation.repairedArgs : validation.parsedArgs
-                      )
+                    const argsJson = JSON.stringify(
+                      validation.repaired ? validation.repairedArgs : validation.parsedArgs
                     );
                     log(
                       `[Streaming] Sending buffered tool call (finish_reason!=tool_calls): ${t.name} with args: ${argsJson}`
@@ -636,7 +602,7 @@ export function createStreamingResponseHandler(
                   }
                 } else {
                   // No schemas to validate against — send as-is
-                  const argsJson = repairArgs(t.name, t.arguments || "{}");
+                  const argsJson = t.arguments || "{}";
                   log(
                     `[Streaming] Sending buffered tool call (no validation): ${t.name} with args: ${argsJson}`
                   );
@@ -660,9 +626,7 @@ export function createStreamingResponseHandler(
               }
             }
 
-            if (middlewareManager) {
-              await middlewareManager.afterStreamComplete(target, streamMetadata);
-            }
+            if (raw) await raw.streamEnd();
 
             if (ending === "failure") {
               // An SSE `error` event is the ONE ending Claude Code honours by
@@ -790,7 +754,6 @@ export function createStreamingResponseHandler(
                   output_tokens: state.usage?.completion_tokens || 0,
                 },
               });
-              behavior?.onTurnEnd?.();
               send("message_stop", { type: "message_stop" });
             }
 
@@ -850,7 +813,7 @@ export function createStreamingResponseHandler(
               }
 
               try {
-                const chunk = JSON.parse(dataStr);
+                let chunk = JSON.parse(dataStr);
                 if (chunk.usage) {
                   state.usage = chunk.usage;
                   log(
@@ -875,6 +838,14 @@ export function createStreamingResponseHandler(
                   return;
                 }
 
+                // The raw tap runs BEFORE anything is derived from the chunk:
+                // what it returns is the committed object (a hook's clone, or
+                // the chunk itself), and every read below is of it, deletions
+                // and a changed finish_reason included.
+                if (raw && chunk.choices?.[0]?.delta) {
+                  chunk = raw.chunk(chunk, (c: any) => c.choices?.[0]?.delta);
+                }
+
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
                 if (finishReason) state.finishReason = finishReason;
@@ -887,15 +858,6 @@ export function createStreamingResponseHandler(
                 }
 
                 if (delta) {
-                  if (middlewareManager) {
-                    await middlewareManager.afterStreamChunk({
-                      modelId: target,
-                      chunk,
-                      delta,
-                      metadata: streamMetadata,
-                    });
-                  }
-
                   // Reasoning arrives under two different field names on this one
                   // wire format: `reasoning_content` (Kimi, DeepSeek via LiteLLM)
                   // and `reasoning` (OpenRouter). Reading only the former silently
@@ -908,7 +870,6 @@ export function createStreamingResponseHandler(
                     // providers whose chat template opens `<think>` server-side and
                     // leaks the bare close into the content.
                     thinkSplitter.disarmOpen();
-                    behavior?.onAssistantText?.(reasoningText, "reasoning");
                     state.lastActivity = Date.now();
                     // Reasoning arriving AFTER text used to open a thinking block
                     // while the text block was still open — two open blocks, which
@@ -919,7 +880,6 @@ export function createStreamingResponseHandler(
 
                   // Handle text content
                   const txt = delta.content || "";
-                  if (txt) behavior?.onAssistantText?.(txt, "text");
                   log(
                     `[Streaming] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
                   );
@@ -997,12 +957,9 @@ export function createStreamingResponseHandler(
                             // index before the name did are drained in here.
                             arguments: state.pendingToolArgs.get(idx) ?? "",
                             ref: null,
-                            // Buffer if we have schemas to validate, OR if a behavior
-                            // rule wants to rewrite this call — repair is only
-                            // possible while the arguments are still withheld.
-                            buffered:
-                              (!!toolSchemas && toolSchemas.length > 0) ||
-                              behavior?.shouldBufferTool?.(restoredName) === true,
+                            // Buffer if we have schemas to validate the
+                            // completed arguments against.
+                            buffered: !!toolSchemas && toolSchemas.length > 0,
                           };
                           if (t.arguments) {
                             log(
@@ -1029,9 +986,7 @@ export function createStreamingResponseHandler(
                             );
                           } else {
                             t.name = restoredName;
-                            t.buffered =
-                              (!!toolSchemas && toolSchemas.length > 0) ||
-                              behavior?.shouldBufferTool?.(restoredName) === true;
+                            t.buffered = !!toolSchemas && toolSchemas.length > 0;
                             if (isWebSearchToolCall(restoredName)) {
                               warnWebSearchUnsupported(restoredName, target);
                             }
@@ -1106,10 +1061,7 @@ export function createStreamingResponseHandler(
                           log(
                             `[Streaming] Tool call ${t.name} was repaired with inferred parameters`
                           );
-                          const repairedJson = repairArgs(
-                            t.name,
-                            JSON.stringify(validation.repairedArgs)
-                          );
+                          const repairedJson = JSON.stringify(validation.repairedArgs);
                           log(
                             `[Streaming] Sending repaired tool call: ${t.name} with args: ${repairedJson}`
                           );
@@ -1176,10 +1128,7 @@ export function createStreamingResponseHandler(
 
                         // Valid tool call - send if buffered, close if not
                         if (t.buffered && !t.started) {
-                          const argsJson = repairArgs(
-                            t.name,
-                            JSON.stringify(validation.parsedArgs)
-                          );
+                          const argsJson = JSON.stringify(validation.parsedArgs);
                           t.ref = writer.openTool({
                             id: t.id,
                             name: t.name,

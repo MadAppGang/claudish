@@ -60,4 +60,5 @@ export {
   RESIZE_QUIET_MS,
 } from "./pane-size.js";
 export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
+export { chainAnswerOf } from "./types.js";
 export type { Phase } from "./slot-state.js";

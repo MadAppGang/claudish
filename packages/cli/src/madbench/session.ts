@@ -71,7 +71,7 @@ export function writeMcpConfig(opts: SessionOptions): string {
     mcpServers: {
       claudish: {
         command: "/usr/bin/env",
-        args: ["-i", ...serverEnv, "bun", "run", opts.serverEntry, "--mcp"],
+        args: ["-i", ...serverEnv, "bun", "--no-env-file", "run", opts.serverEntry, "--mcp"],
       },
     },
   };

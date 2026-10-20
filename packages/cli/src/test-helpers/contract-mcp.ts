@@ -146,7 +146,7 @@ export class McpServer {
     command?: string[];
   }): Promise<McpServer> {
     const server = new McpServer(
-      opts.command ?? [process.execPath, SERVER_ENTRY, "--mcp"],
+      opts.command ?? [process.execPath, "--no-env-file", SERVER_ENTRY, "--mcp"],
       opts.env,
       opts.cwd
     );

@@ -8,6 +8,8 @@ import { credentials } from "../auth/credentials/authority.js";
 import { decideTuiRole, setCredentialPromptRole } from "../auth/credentials/prompt-role.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { resetVertexProjectDiscovery } from "../auth/vertex-auth.js";
+import { getConfigFileOverride } from "../config-override.js";
+import { NO_ENV_FILE_FLAG, isCompiledEntry } from "../launch-env.js";
 import { setStderrQuiet } from "../logger.js";
 import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
 import { resetMuseCredentialState } from "../providers/meta-muse/muse-credentials.js";
@@ -19,6 +21,24 @@ import type { ProviderLoginAction } from "./providers.js";
 
 export function gcloudCommand(platform: NodeJS.Platform): string {
   return platform === "win32" ? "gcloud.cmd" : "gcloud";
+}
+
+/**
+ * The `claudish login <slug>` child of this process. Bun runs the script with
+ * `--no-env-file`, as every claudish launch does (launch-env.ts), so the working
+ * directory's env files stay out and the child keeps this run's config: an active
+ * `--config` is passed on as the flag. A compiled binary is its own script, takes no
+ * Bun flags, and reads no env files.
+ */
+export function loginCommand(
+  slug: string,
+  execPath: string,
+  entry: string,
+  configFile: string | null
+): { command: string; args: string[] } {
+  const tail = ["login", slug, ...(configFile ? ["--config", configFile] : [])];
+  if (isCompiledEntry(entry)) return { command: execPath, args: tail };
+  return { command: execPath, args: [NO_ENV_FILE_FLAG, entry, ...tail] };
 }
 
 /**
@@ -97,14 +117,26 @@ export async function startConfigTui(): Promise<void> {
     console.log(`\nLaunching: ${command}\n`);
     // stdio: "inherit" gives the child our terminal so inquirer prompts
     // and the OAuth callback server work normally.
-    const result =
-      action.kind === "gcloud-adc"
-        ? spawnSync(gcloudCommand(process.platform), ["auth", "application-default", "login"], {
-            stdio: "inherit",
-            // Windows .cmd scripts require a shell to execute.
-            shell: process.platform === "win32",
-          })
-        : spawnSync(process.argv[0], [process.argv[1], "login", action.slug], { stdio: "inherit" });
+    let result: ReturnType<typeof spawnSync>;
+    if (action.kind === "gcloud-adc") {
+      result = spawnSync(
+        gcloudCommand(process.platform),
+        ["auth", "application-default", "login"],
+        {
+          stdio: "inherit",
+          // Windows .cmd scripts require a shell to execute.
+          shell: process.platform === "win32",
+        }
+      );
+    } else {
+      const login = loginCommand(
+        action.slug,
+        process.execPath,
+        process.argv[1],
+        getConfigFileOverride()
+      );
+      result = spawnSync(login.command, login.args, { stdio: "inherit" });
+    }
     if (result.error) {
       if (
         action.kind === "gcloud-adc" &&

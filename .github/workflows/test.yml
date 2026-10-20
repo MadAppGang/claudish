@@ -109,8 +109,102 @@ jobs:
       # and the real-magmux pane suites dominate. On the CI runner main took 1088 s
       # (2026-10-20, run 39383777717) and the gated-delivery suite for magmux's input
       # gate adds ~310 s, so ~26 minutes; 40 minutes leaves ~1.5x headroom.
+      #
+      # src/hooks/blind is EXCLUDED here and runs in the blind-hooks job below.
+      # This is the root `bun run test` spelled out, because Bun 1.3.10 has no way
+      # to ignore a path: no --path-ignore-patterns flag, and bunfig's
+      # test.pathIgnorePatterns is not read (both measured on 1.3.10). So the cli
+      # files are listed explicitly, with Bun's own test-file name rule, and the
+      # list must not come back empty. They are passed WITHOUT a leading `./`: Bun
+      # then reads them as filters on its own discovery and keeps a bare `bun
+      # test`'s file order (measured: same 431 files, same order). `./` paths run
+      # in argument order instead, and a few suites share process state across
+      # files, so a new order is a new suite.
       - name: Hermetic tests
-        run: bun run test
+        shell: bash
+        run: |
+          cd packages/cli
+          FILES=$(find . -name node_modules -prune -o -path ./src/hooks/blind -prune -o -type f -print \
+            | grep -E '(\.test|_test_|\.spec|_spec_)[^/]*\.[cm]?[jt]sx?$' | sed 's|^\./||')
+          [ -n "$FILES" ] || { echo "no cli test files found"; exit 1; }
+          # shellcheck disable=SC2086  # one argument per file; no path holds a space
+          bun test $FILES
+          cd ../..
+          bun run --cwd packages/macos-bridge test
+          bun test ./scripts/*.test.ts
         timeout-minutes: 40
         env:
           CLAUDISH_SKIP_LIVE_E2E: "1"
+
+  # The blind hook tests, on Bun 1.4.0 instead of the pinned 1.3.10. Two of them
+  # fail on 1.3.10 because of bugs in Bun's TEST client, not in claudish, and pass
+  # 20 of 20 on 1.4.0 (reproduced on 1.3.10 with no claudish code in the loop):
+  # C-17, a fetch reader.cancel() that never closes the connection, and X-12, a
+  # paused-then-resumed node:child_process reader that drops every byte. The
+  # blind TYPECHECK stays in the job above, under the pinned Bun. This job does
+  # not lint, so a newer bun rewriting packages/cli/package.json on install does
+  # not matter here.
+  blind-hooks:
+    name: blind hook tests · bun 1.4.0
+    runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Same pinned magmux as the job above, so the blind tests run in the same
+      # environment the hermetic job gives the rest of the suite.
+      - name: Install the pinned magmux (pane suites)
+        run: |
+          set -a; . .github/magmux.env; set +a
+          ARCH=$(uname -m); case "$ARCH" in (arm64|aarch64) ARCH=arm64;; (x86_64) ARCH=amd64;; esac
+          ASSET="magmux_darwin_${ARCH}.tar.gz"
+          WANT=$(eval echo "\$MAGMUX_SHA256_darwin_${ARCH}")
+          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
+          echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
+          tar xzf "/tmp/${ASSET}" -C /tmp
+          sudo install -m 0755 /tmp/magmux /usr/local/bin/magmux
+          magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Blind hook tests
+        working-directory: packages/cli
+        run: bun test src/hooks/blind
+        timeout-minutes: 15
+        env:
+          CLAUDISH_SKIP_LIVE_E2E: "1"
+
+  # S1: a user hook module (.ts type import, .ts value import through the
+  # Bun.plugin virtual module, .js) loads from a `--target bun` bundle and from a
+  # `--compile` binary. The hermetic job above runs the same test on macOS with
+  # the pinned 1.3.10; this job runs it on every OS/arch release.yml builds a
+  # binary for, with the Bun release.yml builds with (`latest`), because that is
+  # the binary magus installs. The test imports no dependency, so there is no
+  # `bun install` (and no package.json rewrite by a newer bun).
+  hooks-loading:
+    name: hook module loading · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: S1 hook loading (source, dist bundle, compiled binary)
+        run: bun test packages/cli/src/hooks/s1-probe/
+        timeout-minutes: 5

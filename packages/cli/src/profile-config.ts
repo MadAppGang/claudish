@@ -241,11 +241,21 @@ export interface ClaudishProfileConfig {
   predefinedEndpoints?: Record<string, unknown>;
 
   /**
-   * Layer 4 behavior-compatibility settings (rule severities, hooks, observer).
-   * Validated at the consumption site via Zod in behavior/config.ts, not here —
-   * `loadConfig` runs on lightweight startup paths and stays Zod-free.
+   * The pre-hook-system `behavior` block. The hook system never reads it: its
+   * only reader there is the reporter in hooks/config.ts, which tells the user
+   * what to move into `hooks`.
+   * It stays on the allowlist as an opaque passthrough so the next global save
+   * does not silently drop it before the user has moved it.
    */
   behavior?: Record<string, unknown>;
+
+  /**
+   * The hook system (modules, severity, injection cap, observer, telemetry
+   * consent). Read from the GLOBAL config only — a project `.claudish.json` is
+   * repo-controlled and must not name code to run. Validated at the consumption
+   * site via Zod in hooks/config.ts; `loadConfig` stays Zod-free.
+   */
+  hooks?: Record<string, unknown>;
 
   /**
    * Apply a model's catalog provider-preset (e.g. `reasoning.mode=pro`) while
@@ -411,6 +421,12 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.behavior !== undefined) {
       merged.behavior = config.behavior;
+    }
+    // Same trap as keychain/onepasswordEnvironments: omitted from this
+    // allowlist, the block survives on disk until the first global save and is
+    // then silently dropped — every user hook would stop loading with no error.
+    if (config.hooks !== undefined) {
+      merged.hooks = config.hooks;
     }
     // Same trap as keychain/onepasswordEnvironments above: omitted from this
     // allowlist, the field survives on disk until the first global save and is
@@ -864,18 +880,33 @@ export function setDefaultProfile(name: string, scope: ProfileScope = "global"):
   saveConfigForScope(config, scope);
 }
 
+/** The model tiers a run takes from a profile, and where that profile came from. */
+export interface RunModelMapping {
+  models: ModelMapping;
+  /**
+   * The profile's name when it came from the project `.claudish.json`, which ships with
+   * the checkout; null for the user's own config. `project-models.ts` checks a project
+   * profile's tiers before a run uses them.
+   */
+  projectProfile: string | null;
+}
+
 /**
- * Get model mapping from a profile
- * Uses local-first resolution when no scope is given
+ * The model tiers of the profile a run uses: `profileName`, or the default profile,
+ * resolved local-first exactly as `getProfile(name)` / `getDefaultProfile()` resolve it,
+ * keeping the scope those discard.
  */
-export function getModelMapping(profileName?: string): ModelMapping {
-  const profile = profileName ? getProfile(profileName) : getDefaultProfile();
-
-  if (!profile) {
-    return {};
+export function getRunModelMapping(profileName?: string): RunModelMapping {
+  const local = loadLocalConfig();
+  const name = profileName || local?.defaultProfile || undefined;
+  if (name !== undefined) {
+    const fromLocal = local?.profiles[name];
+    if (fromLocal) return { models: fromLocal.models ?? {}, projectProfile: name };
+    const fromGlobal = loadConfig().profiles[name];
+    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null };
+    if (profileName) return { models: {}, projectProfile: null };
   }
-
-  return profile.models;
+  return { models: getDefaultProfile("global").models, projectProfile: null };
 }
 
 /**

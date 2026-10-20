@@ -340,7 +340,7 @@ Faithful to "it relies on the global `claudish`" — the profiles app spawns bar
 mkdir -p ~/bin
 cat > ~/bin/claudish <<'EOF'
 #!/bin/sh
-exec bun run /Users/jack/mag/claudish/.claude/worktrees/models-list-serve/packages/cli/src/index.ts "$@"
+exec bun --no-env-file run <claudish-checkout>/packages/cli/src/index.ts "$@"
 EOF
 chmod +x ~/bin/claudish
 
@@ -362,9 +362,15 @@ If the profiles app can be configured with an explicit command for dev instead
 of a bare `claudish`:
 
 ```sh
-bun run /Users/jack/mag/claudish/.claude/worktrees/models-list-serve/packages/cli/src/index.ts serve --port 8787 --models ~/models.json
-bun run /Users/jack/mag/claudish/.claude/worktrees/models-list-serve/packages/cli/src/index.ts providers --json
+bun --no-env-file run <claudish-checkout>/packages/cli/src/index.ts serve --port 8787 --models ~/models.json
+bun --no-env-file run <claudish-checkout>/packages/cli/src/index.ts providers --json
 ```
+
+`<claudish-checkout>` is the absolute path of your clone. Keep `--no-env-file` in both
+recipes: it stops Bun loading the env files of whatever directory the command runs in,
+which is what the installed `claudish` does. Without it claudish cannot tell those
+values from yours, so it ignores `CLAUDISH_CONFIG` and the other control variables, and
+every name the files set, with one stderr line.
 
 ### Two traps — do NOT use these in this worktree
 

@@ -398,7 +398,6 @@ test("T1: subscription_usage after completed preserves text, tools, usage and on
       )
       .join("") + "data: [DONE]\n\n";
   const usage: number[][] = [];
-  let ends = 0;
   const app = new Hono();
   app.get("/", (c) =>
     createResponsesStreamHandler(
@@ -407,9 +406,6 @@ test("T1: subscription_usage after completed preserves text, tools, usage and on
       {
         modelName: "muse-spark-1.3",
         onTokenUpdate: (i, o) => usage.push([i, o]),
-        onTurnEnd: () => {
-          ends++;
-        },
       }
     )
   );
@@ -420,8 +416,9 @@ test("T1: subscription_usage after completed preserves text, tools, usage and on
   expect(body).toContain("muse.read_file");
   expect(body).toContain("note.txt");
   expect(body.match(/event: message_stop/g) ?? []).toHaveLength(1);
+  // The parser's turn end is the one message_stop above: the onTurnEnd
+  // callback is gone, and a turn end is observed at the hook seam.
   expect(usage.at(-1)).toEqual([27, 9]);
-  expect(ends).toBe(1);
   // Replay the parsed reasoning cache through the Responses converter on the
   // next Anthropic tool-result turn; use the public adapter constructor/methods.
   const { CodexAPIFormat } = await import("../../adapters/codex-api-format.js");

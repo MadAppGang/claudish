@@ -10,7 +10,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { HOOK_INBOX_ENV } from "../hooks/injection/sinks.js";
+import { HOOK_SESSION_ENV } from "../hooks/request-stage.js";
 import {
+  HOOK_INBOX_VAR,
+  HOOK_SESSION_VAR,
   NESTED_SESSION_REFUSAL,
   PANE_CHILD_REFUSED_EXIT,
   PANE_LAUNCH_VARS,
@@ -21,6 +25,7 @@ import {
   nestedLaunchRefusal,
   paneChildRefusal,
 } from "./child-env.js";
+import { buildPaneEnv } from "./pane-launch.js";
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "claudish-child-env-")));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -43,8 +48,13 @@ describe("MCP session and pane-child predicates", () => {
     expect(isPaneChild({ CLAUDISH_PANE_CHILD: "true", CLAUDISH_PANE_CWD: "/w" })).toBe(false);
   });
 
-  test("T-U-4: launch variables exclude the inherited session flag", () => {
-    expect([...PANE_LAUNCH_VARS]).toEqual(["CLAUDISH_PANE_ENV", "CLAUDISH_PANE_CWD"]);
+  test("T-U-4: launch variables exclude the inherited session flag and include the two hook markers", () => {
+    expect([...PANE_LAUNCH_VARS]).toEqual([
+      "CLAUDISH_PANE_ENV",
+      "CLAUDISH_PANE_CWD",
+      "CLAUDISH_HOOK_INBOX",
+      "CLAUDISH_HOOK_SESSION",
+    ]);
   });
 
   test("T-U-5: only a session descendant without a pane cwd is refused", () => {
@@ -62,6 +72,11 @@ describe("MCP session and pane-child predicates", () => {
     expect(NESTED_SESSION_REFUSAL).toBe(
       "already inside a session started by the claudish MCP server; one level of nesting is the limit"
     );
+  });
+
+  test("the hook marker names are the ones the child's proxy reads (one name per concept)", () => {
+    expect(HOOK_INBOX_VAR).toBe(HOOK_INBOX_ENV);
+    expect(HOOK_SESSION_VAR).toBe(HOOK_SESSION_ENV);
   });
 });
 
@@ -115,6 +130,47 @@ describe("applyPaneEnvSnapshot", () => {
     };
     applyPaneEnvSnapshot(env);
     expect(env).toEqual({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: "/w", A: "1" });
+  });
+
+  test("hook-system §2.3 step 2: the hook inbox and session survive a snapshot that lacks them", () => {
+    const env: Record<string, string | undefined> = {
+      CLAUDISH_PANE_CHILD: "1",
+      CLAUDISH_PANE_CWD: "/w",
+      CLAUDISH_HOOK_INBOX: "/s/hook-inbox.jsonl",
+      CLAUDISH_HOOK_SESSION: '{"kind":"channel","id":"abcd1234","role":null}',
+      DROPPED: "x",
+      CLAUDISH_PANE_ENV: JSON.stringify({ A: "1" }),
+    };
+    applyPaneEnvSnapshot(env);
+    expect(env).toEqual({
+      CLAUDISH_PANE_CHILD: "1",
+      CLAUDISH_PANE_CWD: "/w",
+      CLAUDISH_HOOK_INBOX: "/s/hook-inbox.jsonl",
+      CLAUDISH_HOOK_SESSION: '{"kind":"channel","id":"abcd1234","role":null}',
+      A: "1",
+    });
+  });
+
+  test("an owner's slotEnv hook markers reach the child through buildPaneEnv and applyPaneEnv", () => {
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv: { PATH: "/bin", HOME: "/h", CLAUDISH_HOOK_INBOX: "/stale-from-parent" },
+      slotEnv: {
+        CLAUDISH_HOOK_INBOX: "/sess/hook-inbox.jsonl",
+        CLAUDISH_HOOK_SESSION: '{"kind":"team","id":"r1:01","role":"judge"}',
+      },
+      cwd: "/w",
+      ctlDir: "/tmp/launch-abcdef",
+      configFile: null,
+    });
+    // the pane's shell profile may export anything; the snapshot is re-applied over it
+    const child: Record<string, string | undefined> = {
+      ...magmuxEnv,
+      CLAUDISH_HOOK_INBOX: "/from-a-profile",
+    };
+    applyPaneEnvSnapshot(child);
+    expect(child.CLAUDISH_HOOK_INBOX).toBe("/sess/hook-inbox.jsonl");
+    expect(child.CLAUDISH_HOOK_SESSION).toBe('{"kind":"team","id":"r1:01","role":"judge"}');
+    expect(child.CLAUDISH_PANE_ENV).toBeUndefined();
   });
 
   test("no snapshot leaves the environment alone", () => {
@@ -290,7 +346,7 @@ describe("the CLI entry asserts an interactive REPL after parseArgs", () => {
     ["print mode", ["--model", "claude-sonnet-4-5", "-p", "hi"], "-p/--print"],
   ] as const) {
     test(`T-CLI-7: ${name} exits 64 with the pane-child refusal`, () => {
-      const r = Bun.spawnSync([process.execPath, "run", "src/index.ts", ...argv], {
+      const r = Bun.spawnSync([process.execPath, "--no-env-file", "run", "src/index.ts", ...argv], {
         cwd: cliDir,
         env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: scratch }),
         timeout: 60_000,
@@ -311,7 +367,7 @@ describe("nested CLI launches", () => {
     ["T-CLI-4", "team run before argument validation", ["team", "run"]],
   ] as const) {
     test(`${id}: ${name} exits 64 with the exact nested refusal line`, () => {
-      const r = Bun.spawnSync([process.execPath, "run", "src/index.ts", ...argv], {
+      const r = Bun.spawnSync([process.execPath, "--no-env-file", "run", "src/index.ts", ...argv], {
         cwd: cliDir,
         env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),
         stdin: "ignore",
@@ -327,11 +383,14 @@ describe("nested CLI launches", () => {
   }
 
   test("T-CLI-5: --version still succeeds inside an MCP session", () => {
-    const r = Bun.spawnSync([process.execPath, "run", "src/index.ts", "--version"], {
-      cwd: cliDir,
-      env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),
-      timeout: 60_000,
-    });
+    const r = Bun.spawnSync(
+      [process.execPath, "--no-env-file", "run", "src/index.ts", "--version"],
+      {
+        cwd: cliDir,
+        env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),
+        timeout: 60_000,
+      }
+    );
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toMatch(/\b\d+\.\d+\.\d+\b/);
     expect(r.stderr.toString()).not.toContain("refused");
@@ -341,7 +400,16 @@ describe("nested CLI launches", () => {
     const statusPath = mkdtempSync(join(cliDir, ".nested-team-status-"));
     try {
       const r = Bun.spawnSync(
-        [process.execPath, "run", "src/index.ts", "team", "status", "--path", statusPath],
+        [
+          process.execPath,
+          "--no-env-file",
+          "run",
+          "src/index.ts",
+          "team",
+          "status",
+          "--path",
+          statusPath,
+        ],
         {
           cwd: cliDir,
           env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),

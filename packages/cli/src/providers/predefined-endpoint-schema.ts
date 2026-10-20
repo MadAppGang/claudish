@@ -17,9 +17,10 @@
  *     claudish refusing a model that actually works. Model metadata comes from
  *     models-index or is absent. The schema is `.strict()`, so a future
  *     contributor cannot add one of those keys by accident — an unknown key is
- *     a parse error, not a silently ignored field. Same doctrine as
- *     `telemetry/toUploadable()`: an allow-list projection, where leaking has to
- *     be done on purpose.
+ *     a parse error, not a silently ignored field. Same doctrine as the upload
+ *     projection in the hook engine's `journal()` fan-out (hooks/engine.ts): only
+ *     fields passed explicitly reach the telemetry report, so leaking has to be
+ *     done on purpose.
  *
  *  2. **`apiPath` is REQUIRED, with no default.** Measured 2026-08-14: DeepInfra
  *     (`/v1/openai` + `/chat/completions`), Novita (`/v3/openai` +

@@ -471,8 +471,7 @@ the same for a team slot.
 
 Every `create_session` session keeps its record under `~/.claudish/sessions/<session_id>/`
 (`CLAUDISH_SESSIONS_DIR` overrides the root). Tools that watch sessions from outside the MCP
-server — such as the magus `claudish` plugin's monitor — read these files; they are a stable
-contract.
+server read these files; they are a stable contract.
 
 | File | Written | Contents |
 |------|---------|----------|
@@ -673,6 +672,12 @@ Use Claude Code and ask it to list available MCP tools. You should see all 15: `
 ```bash
 CLAUDISH_MCP_TOOLS=session OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
 # [claudish] MCP server started (tools: session, 8 tools)
+```
+
+**Write the debug log** (`logs/` in the server's working directory; standard output stays
+JSON-RPC only):
+```bash
+claudish --mcp --debug-claudish      # or -d, or CLAUDISH_DEBUG=1
 ```
 
 **Check magmux** (needed by `team` and sessions):

@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
+import { builtinHooks } from "../hooks/builtins/index.js";
+import { HookEngine } from "../hooks/engine.js";
+import { HookRegistry } from "../hooks/registry.js";
+import { withHooks } from "../hooks/response-seam.js";
 import type { DiskCacheV3 } from "../providers/all-models-cache.js";
 import { resolveConnection } from "../providers/connection-resolver.js";
 import { getProviderByName, toRemoteProvider } from "../providers/provider-definitions.js";
@@ -204,8 +208,19 @@ test.each(["google/gemini-3.8-flash", "opaque-model"])(
         { headers: { "content-type": "text/event-stream" } }
       );
     }) as typeof fetch;
+    // The thought signatures are carried by the built-in raw hook
+    // `gemini/thought-signature`, which runs inside the hook seam, as in the proxy.
+    const engine = new HookEngine({
+      registry: new HookRegistry(builtinHooks({}), [], undefined),
+      config: {},
+      hostMode: "other",
+      journalSink: () => {},
+      warn: () => {},
+      drainTelemetryOutbox: false,
+    });
+    const hooked = withHooks(handler, engine);
     const app = new Hono();
-    app.post("/", async (c) => handler.handle(c, await c.req.json()));
+    app.post("/", async (c) => hooked.handle(c, await c.req.json()));
     const base = {
       model,
       stream: true,

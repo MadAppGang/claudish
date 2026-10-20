@@ -193,7 +193,12 @@ describe("P1: permission to read a credential", () => {
   });
   test("P1: only the exact pane session marker identifies an MCP session", async () => {
     const pane = await import("../../pane/child-env.js");
-    expect(pane.PANE_LAUNCH_VARS).toEqual(["CLAUDISH_PANE_ENV", "CLAUDISH_PANE_CWD"]);
+    expect(pane.PANE_LAUNCH_VARS).toEqual([
+      "CLAUDISH_PANE_ENV",
+      "CLAUDISH_PANE_CWD",
+      "CLAUDISH_HOOK_INBOX",
+      "CLAUDISH_HOOK_SESSION",
+    ]);
     for (const marker of ["1", "0", "", "true", undefined]) {
       const env = marker === undefined ? {} : { CLAUDISH_PANE_CHILD: marker };
       expect(pane.inMcpSession(env)).toBe(marker === "1");
