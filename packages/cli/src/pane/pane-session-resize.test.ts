@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { MagmuxReply } from "./magmux-client.js";
+import { MIN_MAGMUX_VERSION } from "./pane-launch.js";
 import { PaneSessionImpl, type PaneSessionOptions } from "./pane-session.js";
 
 type Request = Record<string, unknown>;
@@ -41,7 +42,7 @@ class FakeClient {
       } else if (msg.type === "capabilities") {
         reply({
           ok: true,
-          result: { protocol: 1, version: "0.17.0", verbs: ["watch", "list", "resize"] },
+          result: { protocol: 1, version: MIN_MAGMUX_VERSION, verbs: ["watch", "list", "resize"] },
         });
       } else if (msg.type === "watch" || msg.type === "list") {
         reply({ ok: true, result: { panes: [] } });

@@ -18,7 +18,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { waitForExit } from "../process-tree.js";
-import { assertMagmuxAvailable, ensureSockRoot, spawnPaneWatcher } from "./pane-launch.js";
+import {
+  MIN_MAGMUX_VERSION,
+  assertMagmuxAvailable,
+  ensureSockRoot,
+  spawnPaneWatcher,
+} from "./pane-launch.js";
 import {
   MAX_LIVE_PANES,
   PaneLimitError,
@@ -433,7 +438,7 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
   test("R3-M1: a magmux spawn failure reaps at once — record and dirs gone, no watcher, livePaneCount 0", async () => {
     const t = env();
     const fake = join(t.tmp, "magmux-fake");
-    writeFileSync(fake, "#!/bin/sh\necho 'magmux 0.17.0 (fake)'\n");
+    writeFileSync(fake, `#!/bin/sh\necho 'magmux ${MIN_MAGMUX_VERSION} (fake)'\n`);
     chmodSync(fake, 0o755);
     await assertMagmuxAvailable(fake); // passes the version gate …
     rmSync(fake);

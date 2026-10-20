@@ -58,7 +58,6 @@ import {
   launcherScript,
   mintPaneId,
   resolveClaudishLaunch,
-  sockPathFor,
   sockRootFor,
   spawnPaneMagmux,
   spawnPaneWatcher,
@@ -96,6 +95,7 @@ import {
   liveEscaped,
   readProcessTableAsync,
   recordPathOf,
+  sockPathOf,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 import { type Delivery, planDelivery, writeTurnFile } from "./prompt-delivery.js";
@@ -3061,7 +3061,7 @@ function preparePane(
   let dirs: { ctlDir: string; turnDir: string } | null = null;
   try {
     const paneId = mintPaneId(o.kind, o.label);
-    const sockPath = sockPathFor(root, paneId);
+    const sockPath = sockPathOf(root, paneId);
     const cwd = realpathSync(o.cwd);
     const launch = o.claudishSpawn ?? resolveClaudishLaunch(parentEnv);
     dirs = createLaunchDirs(root);

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertNotNested } from "./pane/child-env.js";
-import { installPaneShutdownHooks } from "./pane/index.js";
+import { MIN_MAGMUX_VERSION, installPaneShutdownHooks } from "./pane/index.js";
 import {
   type TeamRunOptions,
   type TeamStatus,
@@ -88,7 +88,7 @@ Options (run / run-and-judge):
   --timeout <secs>    Grid modes only: magmux's own per-pane timeout (default: 300).
                       json mode has no deadline — nothing kills a working model.
                       json mode runs each model as an interactive pane in a headless
-                      magmux (>= 0.15.1; darwin and linux).
+                      magmux (>= ${MIN_MAGMUX_VERSION}; darwin and linux).
   --grid              Show all models in a magmux grid with live output + status bar
   --mode <m>          run only: json (default, panes), default (the grid, as --grid)
                       or interactive (as --interactive)

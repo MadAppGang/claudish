@@ -21,6 +21,7 @@ export {
   assertMagmuxAvailable,
   flagsRemoveRead,
   MagmuxUnavailableError,
+  MIN_MAGMUX_VERSION,
   SOCK_ROOT,
   sockRootFor,
 } from "./pane-launch.js";

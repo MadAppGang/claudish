@@ -6,7 +6,7 @@
  * `CLAUDE_CONFIG_DIR`, `ZDOTDIR` and `XDG_CONFIG_HOME` all point into a temp dir, so
  * nothing reads or writes the real `~/.claude`, `~/.claudish` or the keychain.
  *
- * `sockRoot` is a short `/tmp/cpt-<8 hex>` so socket paths stay under 100 bytes.
+ * `sockRoot` is a per-test `/tmp/cpt-<8 hex>`, never the user's `/tmp/claudish-mux-<uid>`.
  *
  * `assertNoOrphans` is the per-test no-orphan check: no process whose argv contains the
  * test's sockRoot or a session id, no process in any of the pane pgids, and no socket,
