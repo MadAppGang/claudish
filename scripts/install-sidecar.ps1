@@ -375,10 +375,14 @@ if ($WriteEnvOnly) {
 # ── 4. Build + start ────────────────────────────────────────────────
 Write-Step "docker compose up -d --build"
 Push-Location $RepoDir
+$prevEap = $ErrorActionPreference
 try {
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under
+    # 'Stop' — docker compose prints build progress on stderr, so judge by exit code.
+    $ErrorActionPreference = 'Continue'
     docker compose up -d --build 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { Die "docker compose up failed" }
-} finally { Pop-Location }
+} finally { $ErrorActionPreference = $prevEap; Pop-Location }
 
 # ── 5. Healthcheck ──────────────────────────────────────────────────
 Write-Step "Waiting for /health on :$ProxyPort"
