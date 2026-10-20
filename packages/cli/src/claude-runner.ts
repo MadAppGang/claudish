@@ -1,12 +1,16 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -17,6 +21,16 @@ import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
+import { getHookEngine } from "./hooks/index.js";
+import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
+import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
+import { InteractiveDriver } from "./hooks/session/interactive-driver.js";
+import {
+  driverLeadingArgs,
+  planInteractiveSurfaces,
+  sessionFlagsOf,
+} from "./hooks/session/interactive-launch.js";
+import { type NoSurfaceSession, startNoSurfaceSession } from "./hooks/session/no-surface.js";
 import {
   STRIPPED_CHILD_VARS,
   magmuxPaneCapability,
@@ -26,13 +40,19 @@ import {
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
+import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
-import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
+import {
+  installRecoveryUi,
+  recoveryOverlayHeld,
+  shutdownRecoveryUi,
+} from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
+import { projectsDir } from "./session/session-discovery.js";
 import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
@@ -2087,8 +2107,40 @@ export async function runClaudeWithProxy(
   // `paneCapability` was resolved before the environment was finalised, and is
   // re-used rather than re-derived: the watchdog above is exported on exactly
   // the launches that reach `planMagmuxWrap` or the ambient branch below.
+  //
+  // SESSION HOOKS are the wrap's SECOND reason (hook-system §7.5). A loaded hook that
+  // declares `responseEnd` or a session event needs the `InteractiveDriver`, which
+  // needs a pane, so `--no-recovery` no longer removes the surface such a hook needs.
+  // That reason plans the wrap and starts the driver and NOTHING else: the recovery UI
+  // and the retry watchdog (exported above by `applyRetryWatchdog`, which asks
+  // `recoverySurfaceAllowed()` itself) stay gated on the recovery switches alone. The
+  // hook engine is the proxy's, already loaded by `createProxyServer`; null when the
+  // proxy runs no hooks (monitor mode).
+  const hookEngine = getHookEngine();
+  const surfaces = planInteractiveSurfaces({
+    capability: paneCapability,
+    recoveryAllowed: recoverySurfaceAllowed(),
+    sessionHooksNeedDriver: hookEngine !== null && sessionHooksNeedBinding(hookEngine),
+  });
+  const sessionFlags = sessionFlagsOf(config.claudeArgs);
+  let driverLaunch: { sink: InProcessSink; turnDir: string; sessionId: string | null } | null =
+    null;
+  if (surfaces.driver) {
+    // The transcript path must be known from boot, so claudish mints the session id
+    // unless the user named one or asked Claude Code to resume. Long injections go to a
+    // turn file the model Reads from the `--add-dir` directory (no prompt there: S2b).
+    const minted = sessionFlags.sessionId || sessionFlags.resumes ? null : randomUUID();
+    const turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-"));
+    chmodSync(turnDir, 0o700);
+    claudeArgs.unshift(...driverLeadingArgs({ mintedSessionId: minted, turnDir }));
+    const sink = new InProcessSink();
+    // Installed before Claude Code starts, so its first request already reports here.
+    setProcessSink(sink);
+    driverLaunch = { sink, turnDir, sessionId: minted ?? sessionFlags.sessionId };
+  }
+
   const wrap =
-    recoverySurfaceAllowed() && paneCapability.kind === "wrap"
+    surfaces.wrap && paneCapability.kind === "wrap"
       ? planMagmuxWrap({
           claudeBinary,
           claudeArgs,
@@ -2110,6 +2162,8 @@ export async function runClaudeWithProxy(
 
   if (wrap) {
     wrap.watch(proc);
+  }
+  if (wrap && surfaces.recoveryUi === "wrap") {
     // Hand the control socket to the proxy as an EXPLICIT input. It cannot be
     // discovered: claudish is magmux's parent and `MAGMUX_SOCK` is exported
     // downward only, so the `--id` path — fixed before magmux starts — is the
@@ -2122,7 +2176,7 @@ export async function runClaudeWithProxy(
       // after the user had already quit.
       void shutdownRecoveryUi();
     });
-  } else if (recoverySurfaceAllowed() && paneCapability.kind === "ambient") {
+  } else if (surfaces.recoveryUi === "ambient") {
     // Already inside someone else's magmux — `team --grid --mode interactive`,
     // or a user who launched claudish in a pane by hand. There is nothing to
     // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI
@@ -2137,6 +2191,56 @@ export async function runClaudeWithProxy(
     // `config.interactive && process.env.MAGMUX_SOCK` — two statements of one
     // rule, which `network-recovery.md` forbids because they drift.
     installRecoveryUi(null);
+  }
+
+  // The session-hook host of this launch: the driver on a pane, or the lifecycle-only
+  // session when there is no pane (`sessionStart` now, `sessionEnd` at exit).
+  let driver: InteractiveDriver | null = null;
+  let noSurfaceSession: NoSurfaceSession | null = null;
+  const sessionModel = modelDisplayName;
+  if (driverLaunch && hookEngine && surfaces.driver) {
+    const sockPath =
+      surfaces.driver === "wrap" && wrap
+        ? wrap.controlSocket
+        : paneCapability.kind === "ambient"
+          ? paneCapability.sock
+          : null;
+    if (sockPath) {
+      const d = new InteractiveDriver({
+        mode: surfaces.driver,
+        sockPath,
+        // A wrap has exactly one `-e` pane, so Claude Code is pane 0; an ambient
+        // pane is found by ancestry.
+        ...(surfaces.driver === "wrap" ? { pane: 0 } : {}),
+        cwd: process.cwd(),
+        sessionId: driverLaunch.sessionId,
+        projectsRoot: projectsDir(env),
+        turnDir: driverLaunch.turnDir,
+        readAvailable: !flagsRemoveRead(config.claudeArgs),
+        model: sessionModel,
+        sink: driverLaunch.sink,
+        engine: hookEngine,
+        overlayHeld: recoveryOverlayHeld,
+      });
+      driver = d;
+      void d.start();
+      wrap?.onClaudeExit((code) => {
+        void d.stop(sessionOutcomeOf(code));
+      });
+    } else {
+      // No socket to drive after all: nothing would ever drain the sink.
+      driverLaunch.sink.markUnavailable();
+    }
+  } else if (surfaces.noSurfaceSession && hookEngine) {
+    noSurfaceSession = startNoSurfaceSession(hookEngine, {
+      kind: "interactive",
+      role: null,
+      id: sessionFlags.sessionId ?? "",
+      claudeSessionId: sessionFlags.sessionId,
+      model: sessionModel,
+      cwd: process.cwd(),
+      shape: config.interactive ? "interactive" : "one-shot",
+    });
   }
 
   if (filterChildStderr && proc.stderr) {
@@ -2209,6 +2313,19 @@ export async function runClaudeWithProxy(
   });
   wrap?.cleanup();
 
+  // `sessionEnd`, awaited at most 1.5 s before the caller shuts the proxy down (§4.4).
+  // The driver's stop is idempotent: in a wrap it began at the pane's exit announcement.
+  if (driver) await driver.stop(sessionOutcomeOf(exitCode));
+  if (noSurfaceSession) await noSurfaceSession.end(sessionOutcomeOf(exitCode));
+  if (driverLaunch) {
+    setProcessSink(null);
+    try {
+      rmSync(driverLaunch.turnDir, { recursive: true, force: true });
+    } catch {
+      // a leftover 0700 temp dir of turn files is harmless
+    }
+  }
+
   // The only durable record of WHY the run ended. The always-on session log
   // carries proxy traffic, so a session that died before its first request left
   // nothing but "[Proxy] Server started" behind, and the caller's error notice
@@ -2235,6 +2352,17 @@ export async function runClaudeWithProxy(
   }
 
   return exitCode;
+}
+
+/** `sessionEnd`'s outcome for the interactive launcher: Claude Code's exit. */
+function sessionOutcomeOf(exitCode: number | null): {
+  state: string;
+  reason: string | null;
+  exitCode: number | null;
+} {
+  return exitCode === 0
+    ? { state: "COMPLETED", reason: null, exitCode }
+    : { state: "FAILED", reason: "child_exited", exitCode };
 }
 
 /**
