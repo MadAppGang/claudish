@@ -93,6 +93,17 @@ export function decideLaunchRole(facts: LaunchFacts): CredentialPromptRole {
   return "interactive-launch";
 }
 
+/**
+ * The role of the config TUI (`tui/index.tsx` `startConfigTui`). Inside an MCP
+ * session it is `never`: a `claudish config` typed into a session's pane renders
+ * on a screen nobody may be watching, so a Keychain dialog would wait unseen.
+ */
+export function decideTuiRole(
+  env: Record<string, string | undefined> = process.env
+): CredentialPromptRole {
+  return inMcpSession(env) ? "never" : "tui";
+}
+
 /** Test seam: forget the role, as if no entry point had run. */
 export function _resetCredentialPromptRoleForTest(): void {
   role = "never";

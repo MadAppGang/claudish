@@ -129,6 +129,26 @@ describe("P1: permission to read a credential", () => {
       expect(roles.decideLaunchRole(facts)).toBe("never");
     });
   }
+  describe("decideTuiRole", () => {
+    test("standalone TUI receives tui rights", () => {
+      expect(roles.decideTuiRole({})).toBe("tui");
+    });
+    test("MCP session marker denies TUI rights without a cwd", () => {
+      expect(roles.decideTuiRole({ CLAUDISH_PANE_CHILD: "1" })).toBe("never");
+    });
+    test("MCP session marker denies TUI rights with a cwd", () => {
+      expect(roles.decideTuiRole({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: "/x" })).toBe(
+        "never"
+      );
+    });
+    test("MCP session TUI role cannot later be raised to tui", () => {
+      roles._resetCredentialPromptRoleForTest();
+      roles.setCredentialPromptRole(roles.decideTuiRole({ CLAUDISH_PANE_CHILD: "1" }));
+      expect(roles.credentialPromptRole()).toBe("never");
+      roles.setCredentialPromptRole("tui");
+      expect(roles.credentialPromptRole()).toBe("never");
+    });
+  });
   test("never role cannot gain rights from prompt:true", async () => {
     await expect(core.ensureMuseCredentialReady({ prompt: true })).rejects.toThrow("login");
     expect(reads).toBe(0);
