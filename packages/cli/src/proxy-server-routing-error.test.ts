@@ -187,12 +187,15 @@ describe("S4-d lot A: RoutingError → terminal 400 (bbb448f6)", () => {
     expect(raw?.error?.message).toContain("[Route]");
   });
 
-  test("non-routing errors keep their 500 (malformed body)", async () => {
+  test("non-routing errors keep their 500 (handler error on a parseable body)", async () => {
+    // #548: an unparseable body is now a terminal 400 (proxy-server-malformed-body
+    // .test.ts). `{}` parses but fails inside the handler — a genuine non-routing
+    // error, whose 500 mapping is deliberately unchanged.
     const port = await spin();
     const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{not json",
+      body: "{}",
     });
     const raw: any = await res.json();
 

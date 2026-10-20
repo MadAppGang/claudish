@@ -2053,7 +2053,25 @@ export async function createProxyServer(
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {
     try {
-      const body = await c.req.json();
+      // #548 — same client-error terminal 400 as /v1/messages: c.req.json()
+      // throws a SyntaxError on empty / non-JSON input that the catch below
+      // maps to a retryable 500 (which relays count toward hub hysteresis).
+      // Answered before the freeze gate, handler resolution and any forward.
+      let body: any;
+      try {
+        body = await c.req.json();
+      } catch (parseErr) {
+        return c.json(
+          wrapAnthropicError(400, `Invalid request body: ${(parseErr as Error)?.message ?? parseErr}`, "invalid_request_error"),
+          400
+        );
+      }
+      if (body === null || typeof body !== "object" || Array.isArray(body)) {
+        return c.json(
+          wrapAnthropicError(400, "Invalid request body: expected a JSON object", "invalid_request_error"),
+          400
+        );
+      }
       // #306 review — same admission freeze as the serving routes: messages
       // are refused during the window, so counting for a message that can no
       // longer be admitted is the asymmetry po-2024 flagged. Same 503 +
@@ -2232,7 +2250,26 @@ export async function createProxyServer(
     try {
       // readRequestBody inflates a gzipped body (WAN external sidecar → hub);
       // identical to c.req.json() on the uncompressed LAN/direct path.
-      const body = await readRequestBody(c);
+      // #548 — an empty / non-JSON / non-object body is the CLIENT's error: a
+      // terminal 400, not a retryable 500 (Claude Code loops on "API error ·
+      // Retrying" against a 5xx, and a sidecar's local 500 would pollute the
+      // hub-500 signal the relays arm hysteresis on). Answered before the
+      // relay branch, handler selection and any upstream call.
+      let body: any;
+      try {
+        body = await readRequestBody(c);
+      } catch (parseErr) {
+        return c.json(
+          wrapAnthropicError(400, `Invalid request body: ${(parseErr as Error)?.message ?? parseErr}`, "invalid_request_error"),
+          400
+        );
+      }
+      if (body === null || typeof body !== "object" || Array.isArray(body)) {
+        return c.json(
+          wrapAnthropicError(400, "Invalid request body: expected a JSON object", "invalid_request_error"),
+          400
+        );
+      }
 
       // #306 — opt-in admission freeze, BEFORE the relay branch: the freeze
       // belongs to THIS container's restart, so a frozen admission must not
@@ -2372,7 +2409,26 @@ export async function createProxyServer(
   // translated ingress into the same pipeline. See CLAUDE.md.
   app.post("/v1/chat/completions", async (c) => {
     try {
-      const openaiBody = await readRequestBody(c);
+      // #548 — same client-error terminal 400 as /v1/messages, in this route's
+      // OpenAI error envelope: readRequestBody() throws a SyntaxError on
+      // empty / non-JSON input that the catch below maps to a retryable 500
+      // (which relays count toward hub hysteresis). Answered before the
+      // freeze gate, the relay branch and any upstream call.
+      let openaiBody: any;
+      try {
+        openaiBody = await readRequestBody(c);
+      } catch (parseErr) {
+        return c.json(
+          { error: { message: `Invalid request body: ${(parseErr as Error)?.message ?? parseErr}`, type: "invalid_request_error", param: null, code: null } },
+          400
+        );
+      }
+      if (openaiBody === null || typeof openaiBody !== "object" || Array.isArray(openaiBody)) {
+        return c.json(
+          { error: { message: "Invalid request body: expected a JSON object", type: "invalid_request_error", param: null, code: null } },
+          400
+        );
+      }
 
       // #306 — same admission freeze as /v1/messages, same placement before
       // the relay branch, for the same reason.
