@@ -65,6 +65,13 @@ confirm the merge commit's tree equals
 `git merge-tree --write-tree <main before the merge> <tested PR head>`; if `main`
 moved in between, the tag would mark an untested tree.
 
+When `main` moves under an open release PR, run `gh pr update-branch <n>`. Do not
+re-run the PR's workflow: a re-run reuses the merge SHA of the original event, so it
+tests the stale tree again. `update-branch` makes a new head that already contains
+`main`, its `pull_request` run tests that tree, and the merge commit's tree then equals
+the head's tree exactly. 12.3.2 needed this when PR #320 landed during the release PR's
+CI run.
+
 **Local gates do not replace the clean runner.** Run `bun run typecheck` again
 after the LAST test file lands, not only after the source change. Treat CI as the
 only neutral environment for tests that touch credentials or `~/.claudish`
