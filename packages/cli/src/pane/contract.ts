@@ -149,7 +149,8 @@ export interface SlotRow {
   /** seconds since last_activity_at; null in terminal states */
   idle_seconds: number | null;
   /** RUNNING: tool name, "thinking", "background" (waiting on background agents), or "finishing" (the
-   * model's message ended; waiting for Claude Code's end-of-turn record, typically while Stop hooks run);
+   * model's message ended; waiting for Claude Code's end-of-turn record, typically while Stop hooks run),
+   * or "hook" (the turn settled and claudish's session hooks run before the verdict);
    * AWAITING_PERMISSION: blocked tool; AWAITING_INPUT on a question: "AskUserQuestion"; otherwise null.
    * Treat unknown values as "busy". */
   activity: string | null;

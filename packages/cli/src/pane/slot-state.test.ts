@@ -20,10 +20,14 @@ const ALL_EVENTS: PhaseEvent[] = [
   "prompt_accepted",
   "admit_deadline",
   "admit_abandoned",
+  "hook_admit_abandoned",
   "blocked_question",
   "blocked_permission",
   "unblocked",
   "turn_continue",
+  "settle_hold",
+  "hold_inject",
+  "hold_rewake",
   "rewake",
   "verdict_completed",
   "verdict_empty",
@@ -45,12 +49,20 @@ describe("slot-state transition table (§5)", () => {
     ["ADMITTING", "prompt_accepted", "RUNNING"],
     ["ADMITTING", "admit_deadline", "FAILED"],
     ["ADMITTING", "admit_abandoned", "IDLE"],
+    ["ADMITTING", "hook_admit_abandoned", "SETTLING"],
     ["RUNNING", "blocked_question", "QUESTION"],
     ["RUNNING", "blocked_permission", "PERMISSION"],
     ["RUNNING", "turn_continue", "IDLE"],
     ["RUNNING", "verdict_completed", "COMPLETED"],
     ["RUNNING", "verdict_empty", "EMPTY"],
     ["RUNNING", "verdict_failed", "FAILED"],
+    ["RUNNING", "settle_hold", "SETTLING"],
+    ["SETTLING", "hold_inject", "IDLE"],
+    ["SETTLING", "hold_rewake", "RUNNING"],
+    ["SETTLING", "turn_continue", "IDLE"],
+    ["SETTLING", "verdict_completed", "COMPLETED"],
+    ["SETTLING", "verdict_empty", "EMPTY"],
+    ["SETTLING", "verdict_failed", "FAILED"],
     ["IDLE", "admit", "ADMITTING"],
     ["IDLE", "rewake", "RUNNING"],
     ["IDLE", "exit_clean", "COMPLETED"],
@@ -83,12 +95,18 @@ describe("slot-state transition table (§5)", () => {
     expect(nextPhase("QUESTION", "blocked_permission")).toBeNull();
     expect(nextPhase("PERMISSION", "blocked_question")).toBeNull();
     expect(nextPhase("RUNNING", "admit")).toBeNull();
+    // the hold is a latch: no re-settle, no admission, no exit_clean, no dialog from SETTLING
+    expect(nextPhase("SETTLING", "settle_hold")).toBeNull();
+    expect(nextPhase("SETTLING", "admit")).toBeNull();
+    expect(nextPhase("SETTLING", "exit_clean")).toBeNull();
+    expect(nextPhase("SETTLING", "blocked_question")).toBeNull();
+    expect(nextPhase("IDLE", "hold_inject")).toBeNull();
   });
 
   test("the table has exactly the listed legal edges plus the four any-live edges", () => {
     let count = 0;
     for (const p of PHASES) count += Object.keys(TRANSITIONS[p]).length;
-    expect(count).toBe(legal.length + 4 * 6);
+    expect(count).toBe(legal.length + 4 * 7);
   });
 
   test("no wait turns into another wait: no QUESTION/PERMISSION/IDLE edge between them", () => {
@@ -119,6 +137,11 @@ describe("wireState", () => {
     const idle = wireState("IDLE", false);
     const admitting = wireState(nextPhase("IDLE", "admit")!, false);
     expect([idle, admitting]).toEqual(["AWAITING_INPUT", "RUNNING"]);
+  });
+
+  test("SETTLING is RUNNING on the wire, for either delivery flag (§7.3)", () => {
+    expect(wireState("SETTLING", false)).toBe("RUNNING");
+    expect(wireState("SETTLING", true)).toBe("RUNNING");
   });
 
   test("IDLE and QUESTION are AWAITING_INPUT, PERMISSION is AWAITING_PERMISSION, terminals map to themselves", () => {

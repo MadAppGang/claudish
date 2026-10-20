@@ -28,6 +28,19 @@ export interface SettledTurn {
     complete: boolean | null;
     preambleBytes: number;
   };
+  /** recorded answers of the turn chain's earlier turns (§7.3); [] without session hooks */
+  chainAnswers: string[];
+  /** the chain head's delivery: the turn the caller's prompt started; equals `delivery` without hooks */
+  chainDelivery: SettledTurn["delivery"];
+  /** hook-caused turns in the chain so far */
+  hookTurns: number;
+  /** this turn was admitted from a hook item; false without session hooks */
+  hookCaused: boolean;
+}
+
+/** `[...t.chainAnswers, t.answer]` with empty strings dropped, joined with "\n\n". */
+export function chainAnswerOf(t: Pick<SettledTurn, "chainAnswers" | "answer">): string {
+  return [...t.chainAnswers, t.answer].filter((a) => a !== "").join("\n\n");
 }
 
 export interface FinalVerdict {
@@ -54,7 +67,10 @@ export interface PaneSnapshot {
   exitCode: number | null;
   captureSource: SettledTurn["captureSource"] | null;
   turnSource: "transcript" | "screen";
+  /** caller input only (`send_input`); hook items are `pendingHookInputs` */
   pendingInputs: number;
+  /** queued hook injections (additive, §4.7 rule 11) */
+  pendingHookInputs: number;
   connected: boolean;
   startedAt: string;
   endedAt: string | null;
