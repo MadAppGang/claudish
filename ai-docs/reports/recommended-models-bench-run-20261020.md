@@ -82,3 +82,28 @@ madbench experiments/flagship.cli.experiment.yaml experiments/cost_efficient.cli
 
 and the same with `.mcp.`. Only the 8 failing rows need a re-run once the credentials are
 fixed: add `--variant <model>` per row.
+
+## Re-run of the 8 rows, 2026-10-20 after the credential fixes
+
+Jack renewed the GLM Coding Plan and replaced the OpenCode Go key (`OPENCODE_GO_API_KEY`,
+Keychain item changed 2026-10-20T12:38:19Z). `qtoken@qwen3.8-max` also probes `live` now.
+claudish 12.2.0 (subscription-only routing after a login failure, #310), madbench 0.47.0, same
+Experiments, `--variant` for the 7 model names (8 rows).
+
+| | CLI Bench | MCP Bench |
+|---|---|---|
+| Summary (report JSON) | 8 rows: 8 pass | 24 rows: 21 pass, 3 fail |
+
+The 3 MCP failures are wrong answers from the model, relayed correctly by claudish. The task
+was `4817 + 2906` (7723); the only failed Check is `session:match` on `\b7723\b`:
+
+| Row | Scenario | Served by | Answer |
+|---|---|---|---|
+| `deepseek-v4-pro` (flagship) | `team` | Zen Go | `8308` |
+| `mimo-v2.6-pro` (cost_efficient) | `create-session` | Zen Go | `7713` |
+| `deepseek-v4.1-flash` (lightweight) | `team` | Zen Go | `7713` |
+
+With the earlier 16 passing rows, every one of the 24 recommended rows passes the CLI Bench,
+and every model passes at least two of the three MCP Scenarios on one run. The `qwen3.8-max`
+pass came from its first hop serving; it does not exercise the #310 routing change, whose
+evidence is `fallback-handler.subscription-only.test.ts`.
