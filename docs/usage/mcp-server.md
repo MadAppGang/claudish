@@ -13,7 +13,7 @@ The server exposes **14 tools** across four groups: low-level (3), agentic (3), 
 Every `team` slot and every `create_session` session is a real, interactive Claude Code session
 running your model, inside its own headless [magmux](magmux.md) pane. That needs:
 
-- **magmux 0.14.0 or newer.** It is bundled with the npm package on macOS and Linux; otherwise
+- **magmux 0.18.0 or newer.** It is bundled with the npm package on macOS and Linux; otherwise
   install it with `brew install MadAppGang/tap/magmux`. Without it, `team(mode:"run")`,
   `create_session` and the CLI's `claudish team` / `--team` refuse with
   `Error: magmux_unavailable: …` instead of falling back to anything else.
@@ -642,7 +642,7 @@ CLAUDISH_MCP_TOOLS=session OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
 
 **Check magmux** (needed by `team` and sessions):
 ```bash
-magmux --version   # 0.14.0 or newer
+magmux --version   # 0.18.0 or newer
 ```
 
 ---
@@ -655,7 +655,7 @@ magmux --version   # 0.14.0 or newer
 
 **Rate limits:** OpenRouter has rate limits. Heavy parallel usage might hit them.
 
-**Platforms:** `team` and sessions need magmux 0.14.0+ and run on macOS and Linux only; Windows is not supported for them.
+**Platforms:** `team` and sessions need magmux 0.18.0+ and run on macOS and Linux only; Windows is not supported for them.
 
 ---
 

@@ -3,11 +3,12 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  FATAL_MAGMUX_STDERR,
   HOST_IDENTITY_VARS,
   LINUX_ENV_STRING_LIMIT,
+  MIN_MAGMUX_VERSION,
   OWNER_START36,
   PaneEnvTooLargeError,
-  PaneRootError,
   SHELL_SHIM,
   assertMagmuxAvailable,
   buildClaudishPaneArgv,
@@ -18,11 +19,16 @@ import {
   launcherScript,
   mintPaneId,
   paneCommand,
-  sockPathFor,
   sockRootFor,
   versionAtLeast,
 } from "./pane-launch.js";
-import { WATCHER_ARGV0, WATCHER_SCRIPT, isLaunchDirPath, watcherArgv } from "./process-identity.js";
+import {
+  WATCHER_ARGV0,
+  WATCHER_SCRIPT,
+  isLaunchDirPath,
+  sockPathOf,
+  watcherArgv,
+} from "./process-identity.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -33,6 +39,12 @@ function tmp(): string {
   const d = mkdtempSync(join(tmpdir(), "pl-"));
   dirs.push(d);
   return d;
+}
+
+/** The release just below `v`: one patch down, or the last patch of the previous minor. */
+function versionBelow(v: string): string {
+  const [major = 0, minor = 0, patch = 0] = v.split(".").map((x) => Number.parseInt(x, 10));
+  return patch > 0 ? `${major}.${minor}.${patch - 1}` : `${major}.${minor - 1}.9`;
 }
 
 describe("launcher and shim", () => {
@@ -211,9 +223,15 @@ describe("ids, socket paths and the socket root", () => {
     expect(isValidPaneId("c1-a-t01-abcdef")).toBe(true);
   });
 
-  test("a socket path of 100 bytes or more is refused", () => {
-    expect(sockPathFor("/tmp/r", "c1-x")).toBe("/tmp/r/magmux-c1-x.sock");
-    expect(() => sockPathFor(`/tmp/${"d".repeat(80)}`, "c1-abcdefghij")).toThrow(PaneRootError);
+  // REGRESSION: G-10 deep socket paths (>= 100 bytes) refused — Fixed in /dev:fix session dev-fix-20261017-g10-socket
+  test("a 121-byte pane socket path is accepted", () => {
+    expect(sockPathOf("/tmp/r", "c1-x")).toBe("/tmp/r/magmux-c1-x.sock");
+    const id = "c1-abcdefghij";
+    const fixed = Buffer.byteLength(join("/tmp/", `magmux-${id}.sock`)) + 1; // + the "/" after the root
+    const root = `/tmp/${"d".repeat(121 - fixed)}`;
+    const want = join(root, `magmux-${id}.sock`);
+    expect(Buffer.byteLength(want)).toBe(121);
+    expect(sockPathOf(root, id)).toBe(want);
   });
 
   test("CLAUDISH_PANE_ROOT overrides the default root", () => {
@@ -274,20 +292,23 @@ describe("watcher argv and version gate", () => {
   test("the magmux version probe never blocks the event loop; an old version is refused", async () => {
     const dir = tmp();
     const slow = join(dir, "magmux-slow");
-    writeFileSync(slow, "#!/bin/sh\nsleep 0.6\necho 'magmux 0.14.0 (fake)'\n");
+    writeFileSync(slow, `#!/bin/sh\nsleep 0.6\necho 'magmux ${MIN_MAGMUX_VERSION} (fake)'\n`);
     chmodSync(slow, 0o755);
     let ticks = 0;
     const timer = setInterval(() => ticks++, 50);
     try {
-      expect(await assertMagmuxAvailable(slow)).toEqual({ binary: slow, version: "0.14.0" });
+      expect(await assertMagmuxAvailable(slow)).toEqual({
+        binary: slow,
+        version: MIN_MAGMUX_VERSION,
+      });
     } finally {
       clearInterval(timer);
     }
     expect(ticks).toBeGreaterThanOrEqual(5); // a synchronous probe would let none run
     const old = join(dir, "magmux-old");
-    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.13.9'\n");
+    writeFileSync(old, `#!/bin/sh\necho 'magmux ${versionBelow(MIN_MAGMUX_VERSION)}'\n`);
     chmodSync(old, 0o755);
-    await expect(assertMagmuxAvailable(old)).rejects.toThrow(/panes need >= 0.14.0/);
+    await expect(assertMagmuxAvailable(old)).rejects.toThrow(`panes need >= ${MIN_MAGMUX_VERSION}`);
   });
 
   test("versionAtLeast", () => {
@@ -295,5 +316,30 @@ describe("watcher argv and version gate", () => {
     expect(versionAtLeast("0.15.2", "0.14.0")).toBe(true);
     expect(versionAtLeast("0.13.9", "0.14.0")).toBe(false);
     expect(versionAtLeast("1.0.0", "0.14.0")).toBe(true);
+  });
+
+  // REGRESSION: G-10 deep socket paths (>= 100 bytes) refused — Fixed in /dev:fix session dev-fix-20261017-g10-socket
+  test("panes need magmux 0.18.0, the first release that binds and dials a deep socket", async () => {
+    expect(MIN_MAGMUX_VERSION).toBe("0.18.0");
+    const dir = tmp();
+    const old = join(dir, "magmux-0.17.0");
+    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.17.0'\n");
+    chmodSync(old, 0o755);
+    await expect(assertMagmuxAvailable(old)).rejects.toThrow(
+      "is version 0.17.0; panes need >= 0.18.0"
+    );
+  });
+
+  // REGRESSION: G-10 deep socket paths (>= 100 bytes) refused — Fixed in /dev:fix session dev-fix-20261017-g10-socket
+  test("magmux's loud --sock-dir / MAGMUX_SOCK_DIR refusal and a bind failure are fatal stderr", () => {
+    expect(FATAL_MAGMUX_STDERR.test('magmux: --sock-dir "/x": not a directory')).toBe(true);
+    expect(
+      FATAL_MAGMUX_STDERR.test(
+        'magmux: MAGMUX_SOCK_DIR "/x": cannot stat it: stat /x: no such file or directory'
+      )
+    ).toBe(true);
+    expect(
+      FATAL_MAGMUX_STDERR.test("magmux: socket /x/magmux-a.sock: bind: permission denied")
+    ).toBe(true);
   });
 });

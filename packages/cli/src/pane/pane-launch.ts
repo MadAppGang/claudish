@@ -31,7 +31,7 @@ import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { isPaneShellManagedKey } from "./child-env.js";
-import { type WatcherArgs, isValidPaneId, sockPathOf, watcherArgv } from "./process-identity.js";
+import { type WatcherArgs, isValidPaneId, watcherArgv } from "./process-identity.js";
 
 /* ───────────────────────────── socket root ───────────────────────────── */
 
@@ -106,16 +106,6 @@ export function mintPaneId(kind: "t" | "s", label: string): string {
   const id = `${head}${clean}${tail}`;
   if (!isValidPaneId(id)) throw new Error(`minted an invalid pane id: ${id}`);
   return id;
-}
-
-/** Unix socket paths must stay under 100 bytes, or magmux silently binds elsewhere. */
-export function sockPathFor(root: string, id: string): string {
-  const p = sockPathOf(root, id);
-  if (Buffer.byteLength(p) >= 100)
-    throw new PaneRootError(
-      `pane socket path ${p} is ${Buffer.byteLength(p)} bytes; it must be < 100`
-    );
-  return p;
 }
 
 /* ───────────────────────────── environment ───────────────────────────── */
@@ -480,7 +470,8 @@ export const KNOWN_CLAUDISH_FLAGS: readonly string[] = Object.keys(CLAUDISH_FLAG
 
 /* ───────────────────────────── magmux binary ───────────────────────────── */
 
-export const MIN_MAGMUX_VERSION = "0.14.0";
+/** The first magmux that binds and dials its socket at any path depth (0.18.0). */
+export const MIN_MAGMUX_VERSION = "0.18.0";
 
 export class MagmuxUnavailableError extends Error {
   readonly code = "magmux_unavailable";
@@ -501,7 +492,7 @@ export function versionAtLeast(v: string, min: string): boolean {
 const magmuxCache = new Map<string, { binary: string; version: string }>();
 const execFileAsync = promisify(execFile);
 
-/** The magmux binary and its version (≥ 0.14.0), cached per process. Never a `-p` fallback. */
+/** The magmux binary and its version (≥ `MIN_MAGMUX_VERSION`), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(
   binary?: string
 ): Promise<{ binary: string; version: string }> {
@@ -616,8 +607,12 @@ export function spawnPaneWatcher(args: WatcherArgs): ChildProcess {
   return proc;
 }
 
-/** Fatal magmux stderr: it ignores an invalid id or socket dir and binds somewhere else. */
-export const FATAL_MAGMUX_STDERR = /ignoring --id|ignoring --sock-dir|magmux: socket/;
+/**
+ * Fatal magmux stderr: an invalid `--id` (magmux ignores it and binds under its pid), an
+ * unusable `--sock-dir` / `MAGMUX_SOCK_DIR` (magmux exits 1), or a failed socket bind.
+ */
+export const FATAL_MAGMUX_STDERR =
+  /ignoring --id|magmux: (?:--sock-dir|MAGMUX_SOCK_DIR) |magmux: socket/;
 
 export interface MagmuxSpawnInput {
   binary: string;

@@ -534,12 +534,14 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
 ## magmux socket traps
 
 - **Always pass `--sock-dir`**, and strip `MAGMUX_*`: an inherited `MAGMUX_SOCK_DIR` moves the
-  socket (measured). An invalid `--id` or `--sock-dir` is IGNORED, with exit 0 and a stderr line, and
-  magmux binds somewhere else; `ignoring --id`, `ignoring --sock-dir` and `magmux: socket` on stderr
-  are therefore fatal (`pane_lost`). Ids are validated client-side (`[A-Za-z0-9_-]{1,64}`, not all
-  digits — an all-digit id collides with a pid socket).
-- **A socket path must be under 100 bytes**, or the bind fails; `sockPathFor` asserts it, which is why
-  test roots are `/tmp/cpt-<8 hex>`.
+  socket (measured). An invalid `--id` is IGNORED, with a stderr line, and magmux binds under its pid;
+  an unusable `--sock-dir` / `MAGMUX_SOCK_DIR` exits 1 with `magmux: --sock-dir "<dir>": <reason>`
+  (or `magmux: MAGMUX_SOCK_DIR "<dir>": …`), and a failed bind prints `magmux: socket <path>: <err>`.
+  All three on stderr are fatal (`FATAL_MAGMUX_STDERR`, `pane_lost`). Ids are validated client-side
+  (`[A-Za-z0-9_-]{1,64}`, not all digits — an all-digit id collides with a pid socket).
+- **A socket path may be any length.** magmux ≥ 0.18.0 binds and dials a socket deeper than
+  `sun_path` (104 bytes on darwin, 108 on linux), so `CLAUDISH_PANE_ROOT` can sit anywhere, such as
+  inside a sandbox's home. `sockPathOf` (`process-identity.ts`) is the one place the path is built.
 - **`--id` sockets are never reaped after a SIGKILL** (seven stale ones were found during research).
   claudish unlinks its own sockets, and the sweep cleans recordless ones.
 - **EOF is not death.** magmux keeps its panes when a client leaves, and it closes slow subscribers
@@ -554,8 +556,9 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   pane's life. `capture` and `capture_session` are memory reads. `aboveBoxChangedAt` moves only when a
   row ABOVE the input box changes, so the status line ticking under the box never holds a quiet window
   open. 4 fps (research recommended 2–4) halves boot, witness and settle latency at no idle cost.
-- `assertMagmuxAvailable` requires `magmux --version` ≥ 0.14.0 (cached per binary), and every
-  connect re-checks `capabilities` (`protocol: 1`, version ≥ 0.14.0). claudish never substitutes print mode.
+- `assertMagmuxAvailable` requires `magmux --version` ≥ `MIN_MAGMUX_VERSION` (0.18.0, the first
+  release that binds and dials a deep socket; cached per binary), and every connect re-checks
+  `capabilities` (`protocol: 1`, version ≥ `MIN_MAGMUX_VERSION`). claudish never substitutes print mode.
   The release job bundles a pinned magmux and checks the pin against `MIN_MAGMUX_VERSION`.
 - **Latent, outside this driver:** `team-grid.ts` (CLI `--grid`) does not pass `--sock-dir`, so an
   inherited `MAGMUX_SOCK_DIR` would move its socket (F7).

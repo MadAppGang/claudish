@@ -51,7 +51,7 @@ A refusal is an `invalid_args` error before any credential work. `create_session
 argument becomes `--agent <name>`; an unknown name is refused by the child itself (FAILED
 `agent_rejected`), so claudish runs no agent probe of its own.
 
-**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.14.0,
+**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.18.0,
 else `Error: magmux_unavailable: …`), credential pre-hydration, the parent session read, a pane
 reservation (`Error: pane_limit: …` past 48 live panes per user), `prompt.md`, `spawn.json`, then the
 pane. `create_session` returns `{session_id, state}` once the pane exists, without waiting for boot.

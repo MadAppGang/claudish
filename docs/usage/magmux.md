@@ -60,7 +60,7 @@ has finished, and closes the pane when the slot or session ends.
 
 **Requirements:**
 
-- **magmux 0.14.0 or newer.** The npm package bundles it on macOS and Linux; otherwise
+- **magmux 0.18.0 or newer.** The npm package bundles it on macOS and Linux; otherwise
   `brew install MadAppGang/tap/magmux`. With an older magmux, or none, `team(mode:"run")`,
   `create_session` and `claudish team` / `--team` refuse with `magmux_unavailable`; claudish
   never substitutes print mode.

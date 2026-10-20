@@ -113,9 +113,8 @@ const PANE_FAKE_CHILD = resolve(
 );
 
 /**
- * A short pane root per replica (`/tmp/cpt-<8 hex>`, so socket paths stay < 100
- * bytes): the server's startup sweep, its pane limit and its records stay inside it,
- * never the user's `/tmp/claudish-mux-<uid>`.
+ * A pane root per replica (`/tmp/cpt-<8 hex>`): the server's startup sweep, its pane
+ * limit and its records stay inside it, never the user's `/tmp/claudish-mux-<uid>`.
  */
 function newPaneRoot(): string {
   return `/tmp/cpt-${randomBytes(4).toString("hex")}`;
