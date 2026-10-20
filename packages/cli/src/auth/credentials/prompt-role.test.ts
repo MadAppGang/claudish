@@ -171,19 +171,44 @@ describe("P1: permission to read a credential", () => {
     expect(reads).toBe(0);
     expect(mints).toBe(0);
   });
-  test("P1: pane/team child with real PTY facts never gains prompt rights", async () => {
+  test("P1: only the exact pane session marker identifies an MCP session", async () => {
     const pane = await import("../../pane/child-env.js");
-    expect(pane.PANE_MARKER_VARS).toContain("CLAUDISH_PANE_CHILD");
-    const env = { CLAUDISH_PANE_CHILD: "1" };
-    expect(pane.isPaneChild(env)).toBe(true);
-    const role = roles.decideLaunchRole({ argv: [], env, stdinIsTTY: true, stderrIsTTY: true });
-    expect(role).toBe("never");
-    roles.setCredentialPromptRole(role);
-    await expect(
-      core.ensureMuseCredentialReady({ prompt: core.requestPathMayPrompt() })
-    ).rejects.toThrow("muse@ in a team slot / MCP session needs a claudish login");
-    expect(reads).toBe(0);
-    expect(mints).toBe(0);
+    expect(pane.PANE_LAUNCH_VARS).toEqual(["CLAUDISH_PANE_ENV", "CLAUDISH_PANE_CWD"]);
+    for (const marker of ["1", "0", "", "true", undefined]) {
+      const env = marker === undefined ? {} : { CLAUDISH_PANE_CHILD: marker };
+      expect(pane.inMcpSession(env)).toBe(marker === "1");
+    }
   });
+  test("P1: a pane child needs the exact session marker and a non-empty cwd", async () => {
+    const pane = await import("../../pane/child-env.js");
+    for (const marker of ["1", "0", "", "true", undefined]) {
+      for (const cwd of ["/test/pane", "", undefined]) {
+        const env = {
+          ...(marker === undefined ? {} : { CLAUDISH_PANE_CHILD: marker }),
+          ...(cwd === undefined ? {} : { CLAUDISH_PANE_CWD: cwd }),
+        };
+        expect(pane.isPaneChild(env)).toBe(marker === "1" && cwd === "/test/pane");
+      }
+    }
+  });
+  for (const cwd of [undefined, "/test/pane"]) {
+    test(`P1: ${cwd === undefined ? "process nested below the pane child" : "pane/team child"} with real PTY facts never gains prompt rights`, async () => {
+      const pane = await import("../../pane/child-env.js");
+      const env = {
+        CLAUDISH_PANE_CHILD: "1",
+        ...(cwd === undefined ? {} : { CLAUDISH_PANE_CWD: cwd }),
+      };
+      expect(pane.inMcpSession(env)).toBe(true);
+      expect(pane.isPaneChild(env)).toBe(cwd !== undefined);
+      const role = roles.decideLaunchRole({ argv: [], env, stdinIsTTY: true, stderrIsTTY: true });
+      expect(role).toBe("never");
+      roles.setCredentialPromptRole(role);
+      await expect(
+        core.ensureMuseCredentialReady({ prompt: core.requestPathMayPrompt() })
+      ).rejects.toThrow("muse@ in a team slot / MCP session needs a claudish login");
+      expect(reads).toBe(0);
+      expect(mints).toBe(0);
+    });
+  }
   test.skip("P1 BLOCKED: actual MCP/preflight probe:true and probe:false handlers are not exported; startMcpServer has no injected server or tool-dispatch seam", () => {});
 });
