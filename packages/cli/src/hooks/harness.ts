@@ -157,8 +157,6 @@ function matchPlanPath(text: string): string | undefined {
  * when the conversation is the ~180K tokens where this bug actually bites.
  */
 export function detectHarnessFacts(claudeRequest: any): HarnessFacts {
-  const facts: HarnessFacts = { planModeActive: false };
-
   let planPath = matchPlanPath(textOf(claudeRequest?.system));
 
   if (!planPath && Array.isArray(claudeRequest?.messages)) {
@@ -169,12 +167,9 @@ export function detectHarnessFacts(claudeRequest: any): HarnessFacts {
     }
   }
 
-  if (planPath) {
-    facts.planModeActive = true;
-    facts.planFilePath = planPath;
-    const slash = planPath.lastIndexOf("/");
-    if (slash > 0) facts.planDir = planPath.slice(0, slash);
-  }
-
-  return facts;
+  if (!planPath) return { planModeActive: false };
+  const slash = planPath.lastIndexOf("/");
+  return slash > 0
+    ? { planModeActive: true, planFilePath: planPath, planDir: planPath.slice(0, slash) }
+    : { planModeActive: true, planFilePath: planPath };
 }
