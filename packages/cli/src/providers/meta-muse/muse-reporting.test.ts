@@ -698,6 +698,15 @@ describe("revision 3: winner Key line and signed failures", () => {
     );
   });
 
+  test("rejected login 401 remains visible without a signer or failure", async () => {
+    store.writeMuseStore("own-login", { access_token: OWN }, dir);
+    mintStatus = 401;
+    await expect(sign()).rejects.toThrow(rejectedMessage(401));
+    const result = description({ probed: true });
+    expect(await keyLine(result)).toBe(`Muse Code login rejected  (${rejectedMessage(401)})`);
+    expect(keychainUses).toBe(0);
+  });
+
   test("no provenance has no Key text", async () => {
     const { keyLineText } = await import("../../probe/probe-chain.js");
     expect(keyLineText(undefined)).toBeUndefined();
@@ -716,6 +725,20 @@ describe("revision 3: winner Key line and signed failures", () => {
   }
 
   for (const status of [401, 403]) {
+    test(`signed-and-live probe takes precedence over rejected login ${status}`, async () => {
+      store.writeMuseStore("own-login", { access_token: OWN }, dir);
+      mintStatus = status;
+      await expect(sign()).rejects.toThrow(rejectedMessage(status));
+      const label = "Muse Code borrowed copy · Muse Code Power Usage";
+      const result = description({ signedWith: label, probed: true });
+      expect(result.present).toBe(true);
+      expect(result.label).toBe(label);
+      expect(result.detail).toBe("signed this probe request");
+      expect(await keyLine(result)).toBe(
+        "Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)"
+      );
+      expect(keychainUses).toBe(0);
+    });
     test(`rejected login ${status} takes precedence over a supplied signer and failure`, async () => {
       store.writeMuseStore("own-login", { access_token: OWN }, dir);
       mintStatus = status;

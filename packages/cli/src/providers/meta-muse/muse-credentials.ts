@@ -488,7 +488,8 @@ function displayPath(path: string): string {
  * visible). Read AFTER the probe request, and in this order:
  *
  * 1. A probe that ran and was refused because every login file was rejected
- *    by Meta: `Muse Code login rejected`, with the rejection message.
+ *    by Meta: `Muse Code login rejected`, with the rejection message. Never
+ *    over a request of this probe that signed and went live.
  * 2. `signedWith` — the signer THIS probe request's response named
  *    (`x-claudish-signed-with`). Per request, so concurrent probes in one
  *    process cannot borrow each other's answer. Named on a failed answer too
@@ -509,7 +510,11 @@ export function describeMuseSigningSource(
 ): MuseSigningDescription {
   // Rejected first: a request signed with a key whose re-mint then found every
   // login rejected also names its signer, but the login is what is wrong now.
-  if (opts.probed && lastRejection) {
+  // Not over a request that signed and went live: `lastRejection` is process
+  // wide, so it may be a concurrent sibling probe's re-mint, and this request's
+  // own answer proves its login worked.
+  const signedAndLive = opts.signedWith !== undefined && opts.failure === undefined;
+  if (opts.probed && lastRejection && !signedAndLive) {
     return { present: false, label: "Muse Code login rejected", detail: lastRejection };
   }
   if (opts.signedWith) {
