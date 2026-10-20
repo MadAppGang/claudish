@@ -15,18 +15,21 @@ describe("clampPaneSize", () => {
     [120, 40, 120, 40],
     [250, 60, 250, 60],
     [500, 200, 500, 200],
-    [1, 1, 80, 24],
+    [1, 1, 40, 24],
+    [10, 5, 40, 24],
+    [40, 24, 40, 24],
+    [39, 24, 40, 24],
     [501, 201, 501, 201],
-    [79, 60, 80, 60],
+    [79, 60, 79, 60],
     [501, 60, 501, 60],
     [250, 23, 250, 24],
     [250, 201, 250, 201],
-    [79, 201, 80, 201],
+    [79, 201, 79, 201],
     [501, 23, 501, 24],
     [400, 100, 400, 100],
     [10_000, 50, 9_999, 50],
     [9_999, 9_999, 9_999, 400],
-    [50, 10, 80, 24],
+    [50, 10, 50, 24],
     [2_000, 2_001, 2_000, 2_000],
     [9_999, 50, 9_999, 50],
     [80, 9_999, 80, 9_999],
@@ -36,9 +39,9 @@ describe("clampPaneSize", () => {
     [8_000, 500, 8_000, 500],
     [8_000, 501, 8_000, 500],
     [2_001, 2_000, 2_001, 1_999],
-    [0, 0, 80, 24],
-    [-1, -1, 80, 24],
-    [-1, 60, 80, 60],
+    [0, 0, 40, 24],
+    [-1, -1, 40, 24],
+    [-1, 60, 40, 60],
     [120, -1, 120, 24],
   ])("%i × %i clamps to %i × %i", (cols, rows, expectedCols, expectedRows) => {
     expect(clampPaneSize(cols, rows)).toEqual({ cols: expectedCols, rows: expectedRows });
@@ -46,10 +49,10 @@ describe("clampPaneSize", () => {
 
   test.each([
     [120.9, 40.9, 120, 40],
-    [79.9, 23.9, 80, 24],
+    [79.9, 23.9, 79, 24],
     [9_999.9, 50.9, 9_999, 50],
     [80.9, 9_999.9, 80, 9_999],
-    [-120.9, -40.9, 80, 24],
+    [-120.9, -40.9, 40, 24],
   ])("%s × %s truncates and clamps to %s × %s", (cols, rows, expectedCols, expectedRows) => {
     expect(clampPaneSize(cols, rows)).toEqual({ cols: expectedCols, rows: expectedRows });
   });
@@ -68,11 +71,11 @@ describe("U9: magmux size bounds", () => {
     expect(clampPaneSize(1_000, 50).cols).toBe(1_000);
   });
 
-  test("exports magmux limits and the 80 × 24 minimum", () => {
+  test("exports magmux limits and the 40 × 24 minimum", () => {
     expect(MAX_PANE_COLS).toBe(9_999);
     expect(MAX_PANE_ROWS).toBe(9_999);
     expect(MAX_PANE_CELLS).toBe(4_000_000);
-    expect(MIN_PANE_COLS).toBe(80);
+    expect(MIN_PANE_COLS).toBe(40);
     expect(MIN_PANE_ROWS).toBe(24);
   });
 });

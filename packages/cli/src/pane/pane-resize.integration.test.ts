@@ -273,11 +273,11 @@ describe.skipIf(!RESIZE_AVAILABLE)("pane resize through MCP (requires magmux res
   );
 
   test(
-    "small dimensions clamp to 80 columns and 24 rows",
+    "small dimensions clamp to 40 columns and 24 rows",
     async () => {
       const id = await create();
-      expect(await resize(id, 5, 5)).toMatchObject({ cols: 80, rows: 24, changed: true });
-      await redrawn(id, 80, 24);
+      expect(await resize(id, 5, 5)).toMatchObject({ cols: 40, rows: 24, changed: true });
+      await redrawn(id, 40, 24);
     },
     T_TEST
   );
