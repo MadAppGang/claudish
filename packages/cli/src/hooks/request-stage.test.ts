@@ -127,7 +127,7 @@ describe("systemTextOf / proxySessionFromEnv", () => {
 });
 
 describe("RequestHooks.beginAttempt — stage A and stage B", () => {
-  it("hooks see the request before stage A, and stage A replaces system/messages without mutating them", async () => {
+  it("the first hook sees the request as given, and stage A replaces system/messages without mutating them", async () => {
     let seen: { systemText?: string; firstUser?: unknown; session?: unknown; host?: unknown } = {};
     const { engine } = engineWith([
       userHook("edit", {
@@ -225,6 +225,37 @@ describe("RequestHooks.beginAttempt — stage A and stage B", () => {
     expect(scope.harness.planModeActive).toBe(true);
     expect(scope.harness.planFilePath).toBe("/tmp/p/assigned.md");
     expect(scope.harness.sessionId).toBe(SESSION_A);
+  });
+
+  it("a responseEnd-only hook sees the real harness facts", async () => {
+    const { engine } = engineWith([userHook("end", { on: { responseEnd: () => [] } })]);
+    const req = requestFor(SESSION_A);
+    req.messages[0].content = "You should create your plan at /tmp/p/assigned.md now.";
+    const { scope } = await begin(new RequestHooks(engine), req);
+
+    expect(scope.harness.planModeActive).toBe(true);
+    expect(scope.harness.planFilePath).toBe("/tmp/p/assigned.md");
+  });
+
+  it("a hook reordering ctx.request.messages in place cannot change the request", async () => {
+    const { engine, journal } = engineWith([
+      userHook("rev", {
+        on: {
+          request: (ctx) => {
+            (ctx.request.messages as unknown as unknown[]).reverse();
+            (ctx.request.tools as unknown as unknown[]).pop();
+            return [];
+          },
+        },
+      }),
+    ]);
+    const req = requestFor(SESSION_A);
+    req.messages.push({ role: "assistant", content: "second" });
+    await begin(new RequestHooks(engine), req);
+
+    expect(req.messages.map((m: { content: string }) => m.content)).toEqual(["hello", "second"]);
+    expect(req.tools.map((t: { name: string }) => t.name)).toEqual(["ExitPlanMode"]);
+    expect(journal.some((e) => e.hookId === "hook:m/rev" && e.decision === "error")).toBe(true);
   });
 
   it("evaluates toolCall armed() and responseRewrite claims() for fix-severity hooks only", async () => {
@@ -357,8 +388,8 @@ describe("pending notes (ported from behavior/output-rules.test.ts)", () => {
     expect(engine.peekNotes(SESSION_A)).toEqual([]);
   });
 
-  it("applies an identical note from a hook and from the store once", async () => {
-    const { engine } = engineWith([
+  it("applies an identical note from a hook and from the store once: the hook's is superseded", async () => {
+    const { engine, journal } = engineWith([
       userHook("same", { on: { request: () => [act.injectSystemNote("Same text")] } }),
     ]);
     engine.queueNote(SESSION_A, "hook:m/judge", "Same text");
@@ -366,6 +397,37 @@ describe("pending notes (ported from behavior/output-rules.test.ts)", () => {
     await begin(new RequestHooks(engine), req);
 
     expect(req.system).toBe("base system\n\nSame text");
+    expect(
+      journal
+        .filter((e) => e.action === "injectSystemNote")
+        .map((e) => [e.hookId, e.decision, e.detail])
+    ).toEqual([
+      ["behavior/pending-correction", "matched", undefined],
+      ["hook:m/same", "superseded", "duplicate"],
+    ]);
+  });
+
+  it("applies the stored note as step 0: it precedes the hooks' notes, and they see it", async () => {
+    let saw: { systemText: string; prior: unknown } | undefined;
+    const { engine } = engineWith([
+      userHook("other", {
+        on: {
+          request: (ctx) => {
+            saw = { systemText: ctx.request.systemText, prior: ctx.prior };
+            return [act.injectSystemNote("Hook note")];
+          },
+        },
+      }),
+    ]);
+    engine.queueNote(SESSION_A, "hook:m/judge", "Stored note");
+    const req = requestFor(SESSION_A);
+    await begin(new RequestHooks(engine), req);
+
+    expect(req.system).toBe("base system\n\nStored note\n\nHook note");
+    expect(saw?.systemText).toBe("base system\n\nStored note");
+    expect(saw?.prior).toEqual([
+      { hookId: "behavior/pending-correction", action: act.injectSystemNote("Stored note") },
+    ]);
   });
 
   it("applies no hook action at warn severity", async () => {
