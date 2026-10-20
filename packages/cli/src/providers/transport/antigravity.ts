@@ -382,6 +382,16 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
 
   /**
+   * The access token `buildLocalHeaders` signs the capacity-fallback fetches
+   * with, for exact-value redaction. Those fetches never pass through
+   * ComposedHandler's `fetchHeaders`, and the token mirrored here is not always
+   * the delegated artifact's, so it is registered on its own.
+   */
+  redactionSecrets(): string[] {
+    return this.accessToken ? [this.accessToken] : [];
+  }
+
+  /**
    * Build the Antigravity headers from local OAuth state. Used by the 429
    * fallback chain (handleCapacityExhausted), which needs a fresh
    * x-activity-request-id per attempt. The PRIMARY request uses the delegated
