@@ -1,5 +1,8 @@
 // REGRESSION: Vertex config TUI showed oauth but offered only "set key" and an unexplained 403 — Fixed in /dev:fix session dev-fix-20261020-235500-vtx01
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { credentials } from "../../auth/credentials/authority.js";
 import { resetVertexProjectDiscovery } from "../../auth/vertex-auth.js";
 import { _clearVertexDiscoveryCache, discoverVertexProbeModel } from "./vertex-discovery.js";
@@ -63,7 +66,10 @@ function expectAccessDeniedReason(
 }
 
 describe.serial("Vertex model-list access denied", () => {
+  let credentialDir: string;
+
   beforeEach(() => {
+    credentialDir = mkdtempSync(join(tmpdir(), "claudish-vertex-account-"));
     process.env.VERTEX_PROJECT = "vertex-test-project";
     process.env.VERTEX_LOCATION = "us-central1";
     delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -84,6 +90,7 @@ describe.serial("Vertex model-list access denied", () => {
     if (originalApplicationCredentials === undefined)
       delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
     else process.env.GOOGLE_APPLICATION_CREDENTIALS = originalApplicationCredentials;
+    rmSync(credentialDir, { recursive: true, force: true });
     resetVertexProjectDiscovery();
     _clearVertexDiscoveryCache();
   });
@@ -101,6 +108,57 @@ describe.serial("Vertex model-list access denied", () => {
     );
     expect(requests.some((url) => url.startsWith("https://oauth2.googleapis.com/tokeninfo"))).toBe(
       true
+    );
+  });
+
+  // REGRESSION: Setting GOOGLE_APPLICATION_CREDENTIALS skipped tokeninfo when client_email was absent — /dev:fix session dev-fix-20261020-235500-vtx01
+  test("service_account file names client_email without a tokeninfo request", async () => {
+    const credPath = join(credentialDir, "service-account.json");
+    writeFileSync(
+      credPath,
+      JSON.stringify({ type: "service_account", client_email: "service@example.test" }),
+      { mode: 0o600 }
+    );
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
+    const requests = installHttpResponses("email");
+
+    const result = await discoverVertexProbeModel();
+
+    expect(result.model).toBeNull();
+    expectAccessDeniedReason(result.reason);
+    expect(result.reason).toContain("ADC account service@example.test");
+    expect(requests).toHaveLength(1);
+  });
+
+  for (const type of ["authorized_user", "external_account"]) {
+    test(`${type} file names the account from tokeninfo`, async () => {
+      const credPath = join(credentialDir, `${type}.json`);
+      writeFileSync(credPath, JSON.stringify({ type }), { mode: 0o600 });
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
+      const requests = installHttpResponses("email");
+
+      const result = await discoverVertexProbeModel();
+
+      expect(result.model).toBeNull();
+      expectAccessDeniedReason(result.reason);
+      expect(result.reason).toContain("ADC account ops@example.test");
+      expect(requests).toContain(
+        "https://oauth2.googleapis.com/tokeninfo?access_token=offline-vertex-test-token"
+      );
+    });
+  }
+
+  test("unreadable credential path uses tokeninfo without hiding the upstream refusal", async () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = join(credentialDir, "missing.json");
+    const requests = installHttpResponses("email");
+
+    const result = await discoverVertexProbeModel();
+
+    expect(result.model).toBeNull();
+    expectAccessDeniedReason(result.reason);
+    expect(result.reason).toContain("ADC account ops@example.test");
+    expect(requests).toContain(
+      "https://oauth2.googleapis.com/tokeninfo?access_token=offline-vertex-test-token"
     );
   });
 

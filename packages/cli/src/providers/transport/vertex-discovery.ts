@@ -231,11 +231,16 @@ export async function listVertexPublisherModels(
       try {
         const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
         if (credPath) {
-          const credential = JSON.parse(await readFile(credPath, "utf-8")) as {
-            client_email?: unknown;
-          };
-          account = str(credential.client_email);
-        } else {
+          try {
+            const credential = JSON.parse(await readFile(credPath, "utf-8")) as {
+              client_email?: unknown;
+            };
+            account = str(credential.client_email);
+          } catch {
+            // An unreadable credential file must not prevent the tokeninfo lookup.
+          }
+        }
+        if (!account) {
           const token = auth.headers.Authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
           if (token) {
             const tokeninfo = await fetch(
