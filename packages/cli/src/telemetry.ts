@@ -15,6 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { log } from "./logger.js";
 import { loadConfig, saveConfig } from "./profile-config.js";
+import { redactSigningValues } from "./redact.js";
 import type { ClaudishConfig } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -431,6 +432,11 @@ export function buildReport(ctx: ErrorContext): TelemetryReport {
   } else {
     rawMessage = String(ctx.error);
   }
+  // The report leaves the machine, and `sanitizeMessage` knows shapes, not
+  // values: an upstream error quoting the credential a live request signed
+  // with is masked here, before any truncation could cut a value in half and
+  // leave a fragment no exact match would find.
+  rawMessage = redactSigningValues(rawMessage);
 
   const report: TelemetryReport = {
     schema_version: 1,
@@ -463,7 +469,8 @@ export function buildReport(ctx: ErrorContext): TelemetryReport {
   if (ctx.adapterName !== undefined) report.adapter_name = ctx.adapterName;
   if (ctx.authType !== undefined) report.auth_type = ctx.authType;
   if (ctx.contextWindow !== undefined) report.context_window = ctx.contextWindow;
-  if (ctx.providerErrorType !== undefined) report.provider_error_type = ctx.providerErrorType;
+  if (ctx.providerErrorType !== undefined)
+    report.provider_error_type = redactSigningValues(ctx.providerErrorType);
 
   return report;
 }
