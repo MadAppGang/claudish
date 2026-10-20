@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.2.0] - 2026-10-20
+
+### Bug Fixes
+
+- try other subscriptions after a subscription login fails *(routing)* ([`8c06927`](https://github.com/MadAppGang/claudish/commit/8c069277c153ebd20dcde2a789427c762a65f721))
+
+### Documentation
+
+- update CHANGELOG.md for v12.1.2([`5ef7507`](https://github.com/MadAppGang/claudish/commit/5ef7507ed56dd38e187d28c5693b8e520deb643d))
+
+### Other Changes
+
+- v12.2.0 *(release)* ([`803b411`](https://github.com/MadAppGang/claudish/commit/803b41163e4cebd2dcc90ef85c2d39e768379120))
+
 ## [12.1.2] - 2026-10-20
 
 ### Bug Fixes
