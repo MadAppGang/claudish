@@ -104,6 +104,9 @@ async function assertLoudLoss(r: GateRun, reason: string): Promise<void> {
   expect(r.turns).toHaveLength(0);
   expect(r.transitions.some(({ to }) => to === "EMPTY" || to === "COMPLETED")).toBe(false);
   expect(submissions(r)).toEqual([]);
+  // A recording gap must fail here as a missed send, not below as a timing bound.
+  const typed = gatedSends(r).filter(({ message }) => typeof message.text === "string");
+  expect(typed.length).toBe(r.s.diagnostics().lastSend?.attempts ?? -1);
   const failedAt = r.transitions.find(({ to }) => to === "FAILED")?.at ?? 0;
   expect(failedAt - (gatedSends(r)[0]?.at ?? Number.POSITIVE_INFINITY)).toBeGreaterThanOrEqual(
     29_000
@@ -114,7 +117,8 @@ async function assertLoudLoss(r: GateRun, reason: string): Promise<void> {
 describe.skipIf(!MAGMUX)(
   `gated delivery at production timings (${MAGMUX ? "real magmux" : NO_MAGMUX_MESSAGE})`,
   () => {
-    afterEach(disposeGatePanes);
+    // One disposal awaits reaped() and then polls up to 8 s for orphans; 5 s is bun's default.
+    afterEach(disposeGatePanes, 30_000);
 
     test(
       "I1: promptless boot uses the declared gate, without a transcript or a send",
