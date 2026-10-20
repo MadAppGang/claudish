@@ -252,6 +252,23 @@ export function reportProjectHooks(
   return true;
 }
 
+/**
+ * Validate a global config's `hooks` block and run every config-load reporter: one
+ * line per issue in an invalid `hooks` block (which then counts as `{}`), the
+ * `behavior` migration lines, and the project-`hooks`-ignored line, the last two
+ * once per process. The launcher's engine and `claudish hooks list` both read the
+ * config through here, so they report the same things.
+ */
+export function readHooksConfig(
+  raw: { hooks?: unknown; behavior?: unknown },
+  warn: WarnSink = defaultWarn
+): HooksConfig {
+  const config = parseHooksConfig(raw.hooks, warn);
+  reportBehaviorBlock(raw.behavior, warn);
+  reportProjectHooks(undefined, warn);
+  return config;
+}
+
 /** Test seam: let both reporters print again. */
 export function resetConfigReportersForTests(): void {
   behaviorReported = false;
