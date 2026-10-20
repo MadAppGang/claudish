@@ -17,6 +17,10 @@ import { App } from "./App.js";
 import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
 import type { ProviderLoginAction } from "./providers.js";
 
+export function gcloudCommand(platform: NodeJS.Platform): string {
+  return platform === "win32" ? "gcloud.cmd" : "gcloud";
+}
+
 /**
  * Start the config TUI. Re-entrant: if App requests a login,
  * we tear down the renderer, spawn the login command as a CHILD
@@ -95,7 +99,11 @@ export async function startConfigTui(): Promise<void> {
     // and the OAuth callback server work normally.
     const result =
       action.kind === "gcloud-adc"
-        ? spawnSync("gcloud", ["auth", "application-default", "login"], { stdio: "inherit" })
+        ? spawnSync(gcloudCommand(process.platform), ["auth", "application-default", "login"], {
+            stdio: "inherit",
+            // Windows .cmd scripts require a shell to execute.
+            shell: process.platform === "win32",
+          })
         : spawnSync(process.argv[0], [process.argv[1], "login", action.slug], { stdio: "inherit" });
     if (result.error) {
       if (
