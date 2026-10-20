@@ -514,30 +514,78 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   else out.cleaned.push(rec.paneId);
 }
 
-/** A unix socket at `sockPath` accepts a connection: some magmux still serves it. */
-async function socketAnswers(sockPath: string): Promise<boolean> {
+/**
+ * What one connection attempt says about a pane socket:
+ *   - `answers`: the connect succeeded; some magmux serves it (the caller owns `client`);
+ *   - `stale`: ECONNREFUSED or ENOENT, nothing listens there;
+ *   - `inconclusive`: any other error (EPERM, EACCES, EMFILE, ENFILE, ...) or no answer
+ *     within `SOCKET_PROBE_TIMEOUT_MS`; says nothing about the listener, so files stay.
+ *
+ * Known darwin limit (magmux `sockdir.go`): a LIVE listener whose accept queue is full
+ * answers ECONNREFUSED. Every caller probes only after the owner is proven dead, so the
+ * remaining risk is a dead owner's still-running magmux with a full backlog read as stale.
+ */
+export type SocketProbe =
+  | { state: "answers"; client: MagmuxClient }
+  | { state: "stale"; code: string }
+  | { state: "inconclusive"; code: string };
+
+const STALE_SOCKET_CODES = new Set(["ECONNREFUSED", "ENOENT"]);
+const SOCKET_PROBE_TIMEOUT_MS = 2000;
+
+let dialSocket: (sockPath: string) => Promise<MagmuxClient> = (p) => MagmuxClient.dial(p);
+
+/** @internal tests: replace how the sweep dials a pane socket; returns the previous dial. */
+export function setSocketDialForTest(
+  next: (sockPath: string) => Promise<MagmuxClient>
+): (sockPath: string) => Promise<MagmuxClient> {
+  const prev = dialSocket;
+  dialSocket = next;
+  return prev;
+}
+
+/** THE pane-socket probe, for the record sweep and the recordless-socket sweep. */
+export async function probeSocket(sockPath: string): Promise<SocketProbe> {
+  const dial = dialSocket(sockPath);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), SOCKET_PROBE_TIMEOUT_MS);
+  });
   try {
-    (await MagmuxClient.dial(sockPath)).close();
-    return true;
-  } catch {
-    return false;
+    const won = await Promise.race([dial, timeout]);
+    if (won !== "timeout") return { state: "answers", client: won };
+    void dial.then(
+      (c) => c.close(),
+      () => undefined
+    );
+    return { state: "inconclusive", code: "ETIMEDOUT" };
+  } catch (e) {
+    const code = (e as { errno?: string | null; code?: string }).errno ?? "unknown";
+    return STALE_SOCKET_CODES.has(code)
+      ? { state: "stale", code }
+      : { state: "inconclusive", code };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 /**
  * A dead owner's record (kill(pid, 0) answered ESRCH) while the table is unavailable.
  * No process can be identified, so nothing is signalled. A watcher pid that may be alive
- * may be mid-job, and a socket that still answers is a live magmux: both keep the files,
- * and the pane is left running for a sweep that can read the table. Otherwise the pane's
- * magmux is gone and its files are removed, as the dead-owner path does when nothing is
- * verified alive.
+ * may be mid-job, and a socket that answers (a live magmux) or whose probe is
+ * inconclusive may still be served: each keeps the files, and the pane is left running
+ * for a sweep that can read the table. Only a stale socket (`probeSocket`) means the
+ * pane's magmux is gone; then its files are removed, as the dead-owner path does when
+ * nothing is verified alive.
  */
 async function sweepUnidentifiable(rec: PaneRecord, root: string, out: SweepResult) {
   if (rec.watcherPid && pidMayBeAlive(rec.watcherPid)) {
     out.kept.push(rec.paneId);
     return;
   }
-  if (await socketAnswers(sockPathOf(root, rec.paneId))) {
+  const probe = await probeSocket(sockPathOf(root, rec.paneId));
+  if (probe.state !== "stale") {
+    if (probe.state === "answers") probe.client.close();
     out.kept.push(rec.paneId);
     return;
   }
@@ -564,14 +612,17 @@ async function sweepRecordlessSocket(root: string, name: string, out: SweepResul
   const owner = ownerOfSocketId(id);
   if (!owner || ownerAlive(owner, table)) return; // no owner in the id: not ours to judge
   const sockPath = join(root, name);
-  let client: MagmuxClient | null = null;
-  try {
-    client = await MagmuxClient.dial(sockPath);
-  } catch {
+  const probe = await probeSocket(sockPath);
+  if (probe.state === "stale") {
     rmSync(sockPath, { force: true });
     out.cleaned.push(id);
     return;
   }
+  if (probe.state === "inconclusive") {
+    out.kept.push(id); // the probe says nothing about the listener
+    return;
+  }
+  const client = probe.client;
   if (!table) {
     // a live magmux of a dead owner: without the table nothing identifies its processes
     client.close();

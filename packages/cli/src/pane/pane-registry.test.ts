@@ -13,12 +13,14 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { type Server, createServer } from "node:net";
 import { join } from "node:path";
 import { waitForExit } from "../process-tree.js";
+import { MagmuxConnectError } from "./magmux-client.js";
 import {
   MIN_MAGMUX_VERSION,
   OWNER_START36,
@@ -34,6 +36,7 @@ import {
   livePaneCount,
   ownerAlive,
   ownerStartOfSelf,
+  probeSocket,
   readRecord,
   readRecords,
   reapAllPanes,
@@ -42,6 +45,7 @@ import {
   removePaneFiles,
   reservePanes,
   reservedPaneCount,
+  setSocketDialForTest,
   sweepOrphanPanes,
   updateRecord,
   writeRecord,
@@ -93,6 +97,18 @@ function alive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * A socket inode nothing listens on, as a SIGKILLed magmux leaves it: a dial is refused
+ * with ECONNREFUSED. (A plain file there answers ENOTSOCK, which is not proof of a stale
+ * socket.)
+ */
+async function staleSocket(path: string): Promise<void> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(`${path}.live`, resolve));
+  renameSync(`${path}.live`, path);
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 function deadPid(): number {
@@ -400,7 +416,7 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
     const t = env();
     ensureSockRoot(t.sockRoot);
     const stale = join(t.sockRoot, `magmux-c${deadPid()}-zz-tstale-abcdef.sock`);
-    writeFileSync(stale, "");
+    await staleSocket(stale);
     const id = `c${deadPid()}-zz-tlive-abcdef`;
     const mag = spawn(
       MAGMUX as string,
@@ -747,10 +763,14 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
   /**
    * A pane record as another owner's sweep or count would find it: owned by THIS live
    * process, or by a pid that is gone (an owner SIGKILLed inside a sandbox, so its
-   * record has no ownerStart and nothing removed it). The socket is a plain file: it
-   * refuses a connection, as a dead magmux's does.
+   * record has no ownerStart and nothing removed it). The socket is stale (`staleSocket`),
+   * as a dead magmux leaves it.
    */
-  function ownerPane(t: PaneTestEnv, label: string, owner: "live" | "dead"): PaneRecord {
+  async function ownerPane(
+    t: PaneTestEnv,
+    label: string,
+    owner: "live" | "dead"
+  ): Promise<PaneRecord> {
     const root = ensureSockRoot(t.sockRoot);
     const ownerPid = owner === "live" ? process.pid : deadPid();
     const paneId = `c${ownerPid}-${OWNER_START36}-t${label}-abcdef`;
@@ -771,7 +791,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
       turnDir: turn,
       createdAt: new Date().toISOString(),
     };
-    writeFileSync(rec.sockPath, "");
+    await staleSocket(rec.sockPath);
     writeRecord(root, rec);
     return rec;
   }
@@ -786,7 +806,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
 
   test("a live owner: counted, and the sweep keeps its record, socket and dirs", async () => {
     const t = env();
-    const rec = ownerPane(t, "lv", "live");
+    const rec = await ownerPane(t, "lv", "live");
     expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(1);
     const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
     expect(r).toEqual({ reaped: [], cleaned: [], kept: [] });
@@ -796,7 +816,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
 
   test("a dead owner whose magmux is gone: not counted, and the sweep removes its files", async () => {
     const t = env();
-    const rec = ownerPane(t, "dd", "dead");
+    const rec = await ownerPane(t, "dd", "dead");
     expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(0);
     const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
     expect(r.cleaned).toEqual([rec.paneId]);
@@ -806,7 +826,8 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
 
   test("dead owners never fill the pane limit", async () => {
     const t = env();
-    for (let i = 0; i < MAX_LIVE_PANES; i++) ownerPane(t, i.toString(36).padStart(2, "0"), "dead");
+    for (let i = 0; i < MAX_LIVE_PANES; i++)
+      await ownerPane(t, i.toString(36).padStart(2, "0"), "dead");
     // 48 records of dead owners: a start must still be admitted, not refused as pane_limit
     await withProcessTableUnavailable(() => reservePanes(1, t.sockRoot));
     releasePaneReservations(1);
@@ -814,7 +835,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
 
   test("a dead owner whose magmux still answers: not counted, files kept, nothing signalled", async () => {
     const t = env();
-    const rec = ownerPane(t, "dm", "dead");
+    const rec = await ownerPane(t, "dm", "dead");
     rmSync(rec.sockPath);
     const server = await liveSocket(rec.sockPath);
     try {
@@ -830,7 +851,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
 
   test("a dead owner whose watcher pid may be alive: kept (the watcher may be mid-job)", async () => {
     const t = env();
-    const rec = ownerPane(t, "dw", "dead");
+    const rec = await ownerPane(t, "dw", "dead");
     updateRecord(t.sockRoot, rec.paneId, { watcherPid: process.pid });
     const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
     expect(r.kept).toEqual([rec.paneId]);
@@ -845,7 +866,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
     const deadLive = join(root, `magmux-c${gone}-${OWNER_START36}-tdl-abcdef.sock`);
     const deadRefused = join(root, `magmux-c${gone}-${OWNER_START36}-tdr-abcdef.sock`);
     const servers = [await liveSocket(ownLive), await liveSocket(deadLive)];
-    writeFileSync(deadRefused, "");
+    await staleSocket(deadRefused);
     try {
       const r = await withProcessTableUnavailable(() => sweepOrphanPanes(root));
       expect(r.reaped).toEqual([]);
@@ -858,6 +879,118 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
       ]);
     } finally {
       for (const s of servers) s.close();
+    }
+  }, 20_000);
+
+  /** Run `fn` with every pane-socket dial failing with `code`. */
+  async function withDialError<T>(code: string, fn: () => Promise<T>): Promise<T> {
+    const prev = setSocketDialForTest(() =>
+      Promise.reject(new MagmuxConnectError(`connect ${code}`, code))
+    );
+    try {
+      return await fn();
+    } finally {
+      setSocketDialForTest(prev);
+    }
+  }
+
+  const INCONCLUSIVE = ["EPERM", "EACCES", "EMFILE", "ENFILE", "ENOTSOCK"];
+  const STALE = ["ECONNREFUSED", "ENOENT"];
+
+  test("a dead owner's record: an inconclusive probe keeps the files, a stale one removes them", async () => {
+    for (const code of [...INCONCLUSIVE, ...STALE]) {
+      const t = env();
+      const rec = await ownerPane(t, "pr", "dead");
+      const r = await withDialError(code, () =>
+        withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot))
+      );
+      const removed = STALE.includes(code);
+      expect({ code, r }).toEqual({
+        code,
+        r: { reaped: [], cleaned: removed ? [rec.paneId] : [], kept: removed ? [] : [rec.paneId] },
+      });
+      for (const p of filesOf(rec)) expect(`${code} ${existsSync(p)}`).toBe(`${code} ${!removed}`);
+    }
+  }, 30_000);
+
+  test("a dead owner's recordless socket: an inconclusive probe keeps it, a stale one removes it", async () => {
+    for (const code of [...INCONCLUSIVE, ...STALE]) {
+      const t = env();
+      const root = ensureSockRoot(t.sockRoot);
+      const id = `c${deadPid()}-${OWNER_START36}-trp-abcdef`;
+      const sock = sockPathOf(root, id);
+      await staleSocket(sock);
+      const r = await withDialError(code, () =>
+        withProcessTableUnavailable(() => sweepOrphanPanes(root))
+      );
+      const removed = STALE.includes(code);
+      expect({ code, kept: r.kept, cleaned: r.cleaned }).toEqual({
+        code,
+        kept: removed ? [] : [id],
+        cleaned: removed ? [id] : [],
+      });
+      expect(`${code} ${existsSync(sock)}`).toBe(`${code} ${!removed}`);
+    }
+  }, 30_000);
+});
+
+describe("the pane-socket probe: only ECONNREFUSED and ENOENT prove a socket stale", () => {
+  test("real sockets: live → answers; refused or missing → stale; mode 000 or a plain file → inconclusive", async () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const live = join(root, "magmux-live.sock");
+    const locked = join(root, "magmux-locked.sock");
+    const servers = [createServer((c) => c.end()), createServer((c) => c.end())];
+    await new Promise<void>((resolve) => servers[0]?.listen(live, resolve));
+    await new Promise<void>((resolve) => servers[1]?.listen(locked, resolve));
+    chmodSync(locked, 0o000);
+    const refused = join(root, "magmux-refused.sock");
+    await staleSocket(refused);
+    const plain = join(root, "magmux-plain.sock");
+    writeFileSync(plain, "");
+    try {
+      const answers = await probeSocket(live);
+      expect(answers.state).toBe("answers");
+      if (answers.state === "answers") answers.client.close();
+      expect(await probeSocket(refused)).toEqual({ state: "stale", code: "ECONNREFUSED" });
+      expect(await probeSocket(join(root, "magmux-none.sock"))).toEqual({
+        state: "stale",
+        code: "ENOENT",
+      });
+      expect(await probeSocket(locked)).toEqual({ state: "inconclusive", code: "EACCES" });
+      expect(await probeSocket(plain)).toEqual({ state: "inconclusive", code: "ENOTSOCK" });
+    } finally {
+      for (const s of servers) s.close();
+    }
+  }, 20_000);
+
+  test("a dial that never settles is inconclusive", async () => {
+    const prev = setSocketDialForTest(() => new Promise<never>(() => {}));
+    try {
+      expect(await probeSocket("/nonexistent/magmux-x.sock")).toEqual({
+        state: "inconclusive",
+        code: "ETIMEDOUT",
+      });
+    } finally {
+      setSocketDialForTest(prev);
+    }
+  }, 20_000);
+
+  test("with a readable table, a dead owner's recordless socket that refuses access (EACCES) is kept", async () => {
+    // outside any sandbox: the sweep keeps what it cannot probe instead of unlinking it
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const id = `c${deadPid()}-${OWNER_START36}-tea-abcdef`;
+    const sock = sockPathOf(root, id);
+    const server = createServer((c) => c.end());
+    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    chmodSync(sock, 0o000);
+    try {
+      const r = await sweepOrphanPanes(root);
+      expect(r).toEqual({ reaped: [], cleaned: [], kept: [id] });
+      expect(existsSync(sock)).toBe(true);
+    } finally {
+      server.close();
     }
   }, 20_000);
 });
