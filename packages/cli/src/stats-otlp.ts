@@ -121,6 +121,15 @@ export interface StatsEvent {
    */
   leg_retries?: number;
 
+  /**
+   * Who issued the request. `"advisor"` marks an `--advisor` panel or collector
+   * call, made by claudish itself rather than by Claude Code; absent on every
+   * main request. `estimated_cost` keeps one meaning for both: the emitting
+   * handler's running total, so a launch's advisor spend is the largest
+   * `estimated_cost` per `(model_id, provider_name)` with this field set.
+   */
+  request_role?: "advisor";
+
   // Invocation
   invocation_mode: string; // "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map"
 
@@ -314,6 +323,9 @@ export function eventToLogRecord(event: StatsEvent): OtlpLogRecord {
   }
   if (event.leg_retries !== undefined) {
     attributes.push(intAttr("llm.leg_retries", event.leg_retries));
+  }
+  if (event.request_role !== undefined) {
+    attributes.push(stringAttr("llm.request_role", event.request_role));
   }
 
   return {

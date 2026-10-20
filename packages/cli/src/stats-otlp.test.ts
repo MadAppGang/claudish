@@ -289,6 +289,11 @@ const OPTIONAL_WIRE = {
     sample: "handoff",
     value: { stringValue: "handoff" },
   },
+  request_role: {
+    attribute: "llm.request_role",
+    sample: "advisor",
+    value: { stringValue: "advisor" },
+  },
 } satisfies Record<OptionalStatsKey, { attribute: string; sample: unknown; value: unknown }>;
 
 const OPTIONAL_ENTRIES = Object.entries(OPTIONAL_WIRE) as Array<
