@@ -2,6 +2,7 @@ import { appendFile, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DiagOutput } from "./diag-output.js";
+import { redactSigningValues } from "./redact.js";
 
 let logFilePath: string | null = null;
 let logLevel: "debug" | "info" | "minimal" = "info"; // Default to structured logging
@@ -273,7 +274,12 @@ export function initLogger(
  * Log a message (to file only in debug mode, silent otherwise)
  * Uses async buffered writes to avoid blocking event loop
  */
-export function log(message: string, forceConsole = false): void {
+export function log(rawMessage: string, forceConsole = false): void {
+  // Before any buffer, file or console write: `log` is the only writer of the
+  // debug file and of the always-on log, so this one pass covers every line
+  // either receives (an echoed credential in a queue 429, a parser frame, an
+  // auth exception). A no-op when no request holds a signing value.
+  const message = redactSigningValues(rawMessage);
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] ${message}\n`;
 
@@ -309,7 +315,9 @@ export function log(message: string, forceConsole = false): void {
  * to avoid corrupting Claude Code's TUI display.
  * When a DiagOutput is set, stderr messages are routed there instead.
  */
-export function logStderr(message: string): void {
+export function logStderr(rawMessage: string): void {
+  // Same pass as `log`, before stderr or DiagOutput sees the line.
+  const message = redactSigningValues(rawMessage);
   if (diagOutput) {
     // Route to DiagOutput (log file) instead of polluting stderr
     diagOutput.write(message);
