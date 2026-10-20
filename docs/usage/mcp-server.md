@@ -675,6 +675,12 @@ CLAUDISH_MCP_TOOLS=session OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
 # [claudish] MCP server started (tools: session, 8 tools)
 ```
 
+**Write the debug log** (`logs/` in the server's working directory; standard output stays
+JSON-RPC only):
+```bash
+claudish --mcp --debug-claudish      # or -d, or CLAUDISH_DEBUG=1
+```
+
 **Check magmux** (needed by `team` and sessions):
 ```bash
 magmux --version   # 0.18.0 or newer

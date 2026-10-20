@@ -1,5 +1,3 @@
-#!/usr/bin/env bun
-
 /**
  * Claudish MCP Server
  *
@@ -18,7 +16,6 @@ import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
@@ -96,16 +93,11 @@ import {
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
 
-// Load environment variables.
-//
-// `quiet: true` is REQUIRED, not cosmetic: this process speaks MCP JSON-RPC over
-// STDOUT, and dotenv v17 otherwise prints a banner there —
-//   [dotenv@17.2.3] injecting env (0) from .env -- tip: …
-// — the moment a .env exists in the cwd. That single non-JSON line corrupts the
-// stream, so the host (Claude Code) fails to initialize the server and the user
-// silently gets NO claudish tools. index.ts already passes quiet for the same
-// reason; this call is the one the MCP path actually hits.
-config({ quiet: true });
+// No `.env` load here. `index.ts` loads the working directory's `.env` through the
+// allowlist (dotenv-allowlist.ts) before it imports this module, and that is the only
+// `.env` load claudish has. Claude Code starts this server in a checkout before its
+// folder-trust dialog, so a second, unfiltered load here would hand the checkout every
+// name the allowlist refused (`CLAUDE_PATH`, `NODE_OPTIONS`, base URLs, the pane markers).
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -2383,6 +2375,27 @@ function unknownToolModeWarning(mode: string): string | undefined {
 
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
+/**
+ * Whether `claudish --mcp` writes the debug log (`logs/` in the working directory):
+ * the same switches as every other claudish run. `--debug-claudish` / `-d` turn it
+ * on and `--no-debug-claudish` off, the last one on the command line winning; without
+ * a flag, `CLAUDISH_DEBUG` decides (1/true on, 0/false or unset off). The MCP server
+ * runs no `parseArgs`, so it reads these itself.
+ */
+export function mcpDebugLogEnabled(
+  argv: readonly string[],
+  env: Record<string, string | undefined>
+): boolean {
+  let flag: boolean | undefined;
+  for (const arg of argv) {
+    if (arg === "--debug-claudish" || arg === "-d") flag = true;
+    else if (arg === "--no-debug-claudish") flag = false;
+  }
+  if (flag !== undefined) return flag;
+  const fromEnv = env.CLAUDISH_DEBUG?.toLowerCase();
+  return fromEnv === "1" || fromEnv === "true";
+}
+
 async function main() {
   // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
   // the JSON-RPC writer alone. Every other stdout route — Bun's native
@@ -2393,11 +2406,8 @@ async function main() {
   // loader loads no user hook module in this process.
   const iso: ProtocolStdout = isolateProtocolStdout();
 
-  // `CLAUDISH_DEBUG` (1/true) is the documented always-on debug switch; the MCP
-  // server never parses CLI flags, so it reads the env var directly. The debug
-  // log is also where hook output and diverted stdout writes go.
-  const debugEnv = process.env.CLAUDISH_DEBUG?.toLowerCase();
-  if (debugEnv === "1" || debugEnv === "true") initLogger(true, "debug", true);
+  // The debug log is also where hook output and diverted stdout writes go.
+  if (mcpDebugLogEnabled(process.argv.slice(2), process.env)) initLogger(true, "debug", true);
   if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
 
   // Session hooks need the engine without a proxy, so loading starts now, in the
