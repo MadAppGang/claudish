@@ -19,7 +19,9 @@
  * in a fixed order, each present only when an applicable hook needs it:
  *
  * 1. the closed transform (`intercept` or `buffer`, seam-transform.ts);
- * 2. the raw `response` hooks (the unsafe tier; none until it is built);
+ * 2. the raw `response` hooks (the unsafe tier, raw.ts): each drains its input
+ *    into a recorder, so no hook can stall the stream before it, and a
+ *    replacement is held whole and forwarded only once it completed;
  * 3. the observe tap (seam-tap.ts), which writes the inbox `stop` before the
  *    `message_stop` chunk is enqueued and runs every observe-type consumer —
  *    `responseEnd` included — on exactly the bytes the client received.
@@ -39,9 +41,9 @@ import {
   attachRequestHooks,
   hookScopeOf,
 } from "./request-stage.js";
-import { messageView } from "./response-blocks.js";
-import { SeamHooks } from "./seam-hooks.js";
-import { EndLine, newRequestId, observeTap } from "./seam-tap.js";
+import { messageBlock, messageView, rewrittenView } from "./response-blocks.js";
+import { SeamHooks, type ToolCallOutcome } from "./seam-hooks.js";
+import { EndLine, newRequestId, observeTap, runResponseConsumers } from "./seam-tap.js";
 import { type ClosedMode, closedTransform } from "./seam-transform.js";
 import { type RewriteBlock, applyTextActions } from "./text-rewrite.js";
 
@@ -97,6 +99,8 @@ export interface SeamOptions {
 /** The seam's stages for one request, decided before the response starts. */
 export interface SeamPlan {
   mode: "none" | ClosedMode;
+  /** Applicable raw `response` hooks. */
+  raw: number;
   tap: boolean;
 }
 
@@ -107,7 +111,7 @@ export function planSeam(scope: HookRequestScope): SeamPlan {
     p.rewriteHooks.length > 0 ? "buffer" : p.interceptHooks.length > 0 ? "intercept" : "none";
   const tap =
     p.endHooks.length > 0 || p.observeToolHooks.length > 0 || p.observeRewriteHooks.length > 0;
-  return { mode, tap };
+  return { mode, raw: scope.raw.responseHookCount, tap };
 }
 
 /**
@@ -121,12 +125,26 @@ export async function applyResponseSeam(
   opts: SeamOptions = {}
 ): Promise<Response> {
   const plan = planSeam(scope);
-  log(`[hooks] seam mode=${plan.mode} raw=0 tap=${plan.tap ? 1 : 0}`);
-  if ((plan.mode === "none" && !plan.tap) || !response.body) return response;
+  log(`[hooks] seam mode=${plan.mode} raw=${plan.raw} tap=${plan.tap ? 1 : 0}`);
+  if ((plan.mode === "none" && plan.raw === 0 && !plan.tap) || !response.body) return response;
 
   const hooks = new SeamHooks(scope, opts.sink ?? new UnavailableSink());
   const req = opts.req ?? newRequestId();
-  if (isJson(response)) return jsonBranch(response, hooks, plan, req);
+  const rawOpts = { pingIntervalMs: opts.pingIntervalMs, capBytes: opts.holdCapBytes };
+  if (isJson(response)) {
+    // fail open here too. The branch reads the body; the untouched copy is what
+    // the client gets when that read or a stage throws, so an upstream body error
+    // reaches the reader as it would with no hook, and never rejects out of the seam.
+    const original = response.clone();
+    try {
+      return await jsonBranch(response, hooks, plan, req, (r) =>
+        scope.raw.responseStages(r, rawOpts)
+      );
+    } catch (err) {
+      log(`[hooks] seam not applied: ${err instanceof Error ? err.message : err}`);
+      return original;
+    }
+  }
 
   try {
     let body: ReadableStream<Uint8Array> = response.body;
@@ -137,6 +155,17 @@ export async function applyResponseSeam(
         pingIntervalMs: opts.pingIntervalMs,
         holdCapBytes: opts.holdCapBytes,
       });
+    }
+    if (plan.raw > 0) {
+      const staged = scope.raw.responseStages(
+        new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        }),
+        rawOpts
+      );
+      body = staged.body ?? body;
     }
     if (plan.tap) body = observeTap(body, hooks, req);
     return new Response(body, {
@@ -170,17 +199,99 @@ function isCitedText(block: Json): boolean {
 }
 
 /**
- * The non-streaming branch (§5.4): the message is parsed once, `toolCall`
- * hooks repair `tool_use.input`, `responseRewrite` applies the same text
- * actions over `content[]` (the whole array being the held region), and the body
- * is re-serialised with the original status and headers. The inbox `stop` is
- * written before the Response is returned; `responseEnd` runs after.
+ * The closed part of the JSON branch. Returns the body to forward and the
+ * message it holds (null when the body is not a Messages API message, which
+ * passes unchanged). Fails open: on a throw the original text goes.
+ */
+async function closedJson(
+  text: string,
+  hooks: SeamHooks,
+  plan: SeamPlan
+): Promise<{ text: string; message: Json }> {
+  let message: Json;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return { text, message: null };
+  }
+  if (!message || !Array.isArray(message.content)) return { text, message: null };
+  if (plan.mode === "none") return { text, message };
+
+  // Repairs are journaled once it is known whether the rebuilt body goes out.
+  const outcomes: ToolCallOutcome[] = [];
+  try {
+    // Each tool call is its own dispatch (§4.4.1 rule 9): their chains run
+    // side by side, and the blocks keep their order.
+    let content: Json[] = await Promise.all(
+      (message.content as Json[]).map(async (block) => {
+        if (
+          block?.type !== "tool_use" ||
+          typeof block.name !== "string" ||
+          !hooks.intercepts(block.name)
+        ) {
+          return block;
+        }
+        const outcome = await hooks.interceptToolCall({
+          id: String(block.id ?? ""),
+          name: block.name,
+          rawArgs: JSON.stringify(block.input ?? {}),
+        });
+        outcomes.push(outcome);
+        return outcome.args ? { ...block, input: outcome.args } : block;
+      })
+    );
+    if (plan.mode === "buffer") {
+      const blocks: RewriteBlock[] = content.map((b) => ({
+        type: typeof b?.type === "string" ? b.type : "unknown",
+        ...(b?.type === "text" && typeof b.text === "string" ? { text: b.text } : {}),
+        ...(isCitedText(b) ? { locked: true } : {}),
+      }));
+      // The whole content[] is the held region: each rewrite step sees it as the
+      // earlier steps' text actions left it.
+      const repaired = content;
+      const stopReason = typeof message.stop_reason === "string" ? message.stop_reason : null;
+      const { planned, final } = await hooks.rewrite((actions) => {
+        const result = applyTextActions(blocks, actions);
+        return {
+          view: rewrittenView([], result.blocks, (i) => messageBlock(repaired[i]), stopReason),
+          result,
+        };
+      });
+      if (planned.length > 0 && blocks.some((b) => b.locked)) hooks.noteRewriteInvalid("citations");
+      const result = final.result;
+      hooks.recordRewrite(planned, result);
+      const original = content;
+      content = result.blocks.map((out) => {
+        const text = (out.block as { text?: string }).text ?? "";
+        if (out.source === null) return { type: "text", text };
+        return out.changed ? { ...original[out.source], text } : original[out.source];
+      });
+    }
+    const next = { ...message, content };
+    const body = JSON.stringify(next);
+    for (const o of outcomes) o.delivered();
+    return { text: body, message: next };
+  } catch (err) {
+    log(`[hooks] seam JSON branch failed open: ${err instanceof Error ? err.message : err}`);
+    for (const o of outcomes) o.notDelivered("failed_open");
+    return { text, message };
+  }
+}
+
+/**
+ * The non-streaming branch (§5.4): the message is parsed once, the `toolCall`
+ * hook chain repairs `tool_use.input`, the `responseRewrite` chain applies the
+ * same text actions over `content[]` (the whole array being the held region),
+ * and the body is re-serialised with the original status and headers. The raw `response`
+ * stage then sees that body as one unit. The inbox `stop` is written before the
+ * Response is returned; `responseEnd` runs after, on the final message.
  */
 async function jsonBranch(
   response: Response,
   hooks: SeamHooks,
   plan: SeamPlan,
-  req: string
+  req: string,
+  rawStages: (r: Response) => Response
 ): Promise<Response> {
   const text = await response.text();
   const rebuild = (body: string) =>
@@ -190,64 +301,23 @@ async function jsonBranch(
       headers: withoutLength(response.headers),
     });
 
-  let message: Json;
-  try {
-    message = JSON.parse(text);
-  } catch {
-    return rebuild(text);
-  }
-  if (!message || !Array.isArray(message.content)) return rebuild(text);
-
-  try {
-    let content: Json[] = message.content;
-    if (plan.mode !== "none") {
-      const repaired: Json[] = [];
-      for (const block of content) {
-        if (
-          block?.type === "tool_use" &&
-          typeof block.name === "string" &&
-          hooks.intercepts(block.name)
-        ) {
-          const args = await hooks.interceptToolCall({
-            id: String(block.id ?? ""),
-            name: block.name,
-            rawArgs: JSON.stringify(block.input ?? {}),
-          });
-          repaired.push(args ? { ...block, input: args } : block);
-        } else {
-          repaired.push(block);
-        }
-      }
-      content = repaired;
-    }
-    if (plan.mode === "buffer") {
-      const planned = await hooks.rewrite(messageView({ ...message, content }));
-      const blocks: RewriteBlock[] = content.map((b) => ({
-        type: typeof b?.type === "string" ? b.type : "unknown",
-        ...(b?.type === "text" && typeof b.text === "string" ? { text: b.text } : {}),
-        ...(isCitedText(b) ? { locked: true } : {}),
-      }));
-      if (planned.length > 0 && blocks.some((b) => b.locked)) hooks.noteRewriteInvalid("citations");
-      const result = applyTextActions(
-        blocks,
-        planned.map((p) => p.action)
-      );
-      hooks.recordRewrite(planned, result);
-      const original = content;
-      content = result.blocks.map((out) => {
-        const text = (out.block as { text?: string }).text ?? "";
-        if (out.source === null) return { type: "text", text };
-        return out.changed ? { ...original[out.source], text } : original[out.source];
-      });
-    }
-    message = { ...message, content };
-  } catch (err) {
-    log(`[hooks] seam JSON branch failed open: ${err instanceof Error ? err.message : err}`);
-    return rebuild(text);
-  }
-
-  const out = rebuild(JSON.stringify(message));
+  const closed = await closedJson(text, hooks, plan);
+  let out = rebuild(closed.text);
+  if (plan.raw > 0) out = rawStages(out);
   if (!plan.tap) return out;
+
+  // The tap needs the final bytes: a raw replacement is what the client gets.
+  const finalText = plan.raw > 0 ? await out.text() : closed.text;
+  let message: Json = closed.message;
+  if (plan.raw > 0) {
+    try {
+      message = JSON.parse(finalText);
+    } catch {
+      // A replacement that is not a message: the consumers see what they can.
+    }
+  }
+  if (!message || !Array.isArray(message.content)) return rebuild(finalText);
+  out = rebuild(finalText);
 
   const end = new EndLine(hooks, req);
   if (hooks.hasEndHooks) {
@@ -273,15 +343,6 @@ async function jsonBranch(
         .catch(() => {});
     }
   }
-  void (async () => {
-    try {
-      await hooks.observeRewrite(view);
-      await hooks.end(view, req);
-    } catch (err) {
-      log(`[hooks] tap consumers failed: ${err instanceof Error ? err.message : err}`);
-    } finally {
-      end.write(false);
-    }
-  })();
+  runResponseConsumers(hooks, view, req, end);
   return out;
 }

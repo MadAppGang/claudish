@@ -6,8 +6,8 @@
  * Every parser golden replays through the new parser + seam (`drive-seam.ts`)
  * to its recorded output, byte for byte after normalization, except the one
  * golden that recorded a defect of the old code, which is compared by its data
- * payloads. The Gemini middleware golden still replays through `middleware/`
- * (`drive-gemini-middleware.ts`) until the raw tier replaces it.
+ * payloads. The Gemini middleware golden replays through the hook raw tier
+ * (`drive-gemini-raw.ts`), against the output the middleware recorded.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -23,7 +23,7 @@ import {
   REPAIRED_ARGS,
   REPAIRED_VALUE,
 } from "./cases.js";
-import { runGeminiCapture } from "./drive-gemini-middleware.js";
+import { runGeminiCapture } from "./drive-gemini-raw.js";
 import { runParserCase } from "./drive-seam.js";
 import {
   type GeminiMiddlewareGolden,
@@ -89,7 +89,7 @@ describe("parser goldens: parser + response seam reproduce them", () => {
     });
   }
 
-  it("Gemini thought-signature middleware", async () => {
+  it("Gemini thought-signature built-in (raw tier)", async () => {
     const golden = geminiGolden();
     const replay = await runGeminiCapture(
       golden.id,

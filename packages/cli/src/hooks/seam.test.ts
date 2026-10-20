@@ -209,7 +209,7 @@ describe("seam plan", () => {
   it("is mode none with no tap when nothing claims the request, and returns the same object", async () => {
     const { engine } = engineWith([]);
     const scope = await scopeOf(engine);
-    expect(planSeam(scope)).toEqual({ mode: "none", tap: false });
+    expect(planSeam(scope)).toEqual({ mode: "none", raw: 0, tap: false });
     const res = sse([messageStart()]);
     expect(await applyResponseSeam(res, scope)).toBe(res);
   });
@@ -225,7 +225,7 @@ describe("seam plan", () => {
     const tool = repairHook("Write", {});
     const rewrite = rewriteHook("rw", () => []);
     const { engine } = engineWith([tool, rewrite], { "hook:t/*": "warn" });
-    expect(planSeam(await scopeOf(engine))).toEqual({ mode: "none", tap: true });
+    expect(planSeam(await scopeOf(engine))).toEqual({ mode: "none", raw: 0, tap: true });
   });
 
   it("an unarmed toolCall hook and a declining rewrite hook leave the identity case", async () => {
@@ -239,7 +239,7 @@ describe("seam plan", () => {
     });
     const { engine } = engineWith([tool, rewrite]);
     const scope = await scopeOf(engine);
-    expect(planSeam(scope)).toEqual({ mode: "none", tap: false });
+    expect(planSeam(scope)).toEqual({ mode: "none", raw: 0, tap: false });
   });
 });
 
@@ -274,6 +274,23 @@ describe("intercept mode", () => {
         (e) => e.event === "toolCall" && e.decision === "repaired" && e.toolName === "Write"
       )
     ).toBe(true);
+  });
+
+  it("the hold cap counts one tool block, not every block of the response", async () => {
+    const { engine, journal } = engineWith([repairHook("Write", { file_path: "/fixed" })]);
+    const args = ['{"file_path":"/wr', `ong","pad":"${"x".repeat(60)}"}`];
+    const blocks = [0, 1, 2, 3].flatMap((i) => toolBlock(i, "Write", args));
+    const perBlock = new TextEncoder().encode(toolBlock(0, "Write", args).slice(1).join("")).length;
+    const out = await readAll(
+      await applyResponseSeam(
+        sse([messageStart(), ...blocks, messageDelta("tool_use"), messageStop()]),
+        await scopeOf(engine),
+        // room for one block's held events, not for four
+        { holdCapBytes: perBlock + 50 }
+      )
+    );
+    expect(out.split('{\\"file_path\\":\\"/fixed\\"}').length - 1).toBe(4);
+    expect(journal.some((e) => e.detail === "buffer_cap")).toBe(false);
   });
 
   it("a hook that changes nothing still finishes the block with one delta of the model's arguments", async () => {
@@ -912,6 +929,83 @@ describe("observe tap", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("a slow warn-mode rewrite never delays responseEnd or its end line", async () => {
+    const path = inboxPath();
+    const slowRewrite = userHook({
+      id: "slowrw",
+      timeoutMs: 5_000,
+      on: {
+        responseRewrite: {
+          handle: () => Bun.sleep(1_500).then(() => [act.appendText("!")]) as never,
+        },
+      },
+    });
+    const { engine } = engineWith([slowRewrite, endHook(() => [act.injectUserTurn("ON-TIME")])], {
+      "hook:t/slowrw": "warn",
+    });
+    await readAll(
+      await applyResponseSeam(
+        sse([messageStart(), ...textBlock(0, "x"), messageDelta(), messageStop()]),
+        await scopeOf(engine),
+        { sink: new InboxFileSink(path), req: "r4" }
+      )
+    );
+    const readAt = Date.now();
+    await until(() => inboxLines(path).some((l) => l.kind === "end"), 5_000);
+    // responseEnd's own time only: the 1.5 s warn rewrite is not in front of it
+    expect(Date.now() - readAt).toBeLessThan(700);
+    expect(inboxLines(path).map((l) => l.kind)).toEqual(["stop", "inject", "end"]);
+  });
+
+  it("a client cancel after message_stop leaves end to responseEnd, after its payload", async () => {
+    const path = inboxPath();
+    const { engine } = engineWith([
+      endHook(() => Bun.sleep(200).then(() => [act.injectUserTurn("LATE-BUT-KEPT")])),
+    ]);
+    const res = await applyResponseSeam(
+      sse([messageStart(), ...textBlock(0, "x"), messageDelta(), messageStop()], {
+        gates: new Map([[6, new Promise<void>(() => {})]]),
+      }),
+      await scopeOf(engine),
+      { sink: new InboxFileSink(path), req: "c8" }
+    );
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const r = await reader.read();
+      if (r.done || decoder.decode(r.value).includes('"type":"message_stop"')) break;
+    }
+    await reader.cancel("client closed after message_stop");
+    await until(() => inboxLines(path).some((l) => l.kind === "end"), 3_000);
+    await Bun.sleep(300);
+    expect(inboxLines(path)).toEqual([
+      { v: 1, kind: "stop", req: "c8" },
+      expect.objectContaining({ kind: "inject", req: "c8", text: "LATE-BUT-KEPT" }),
+      { v: 1, kind: "end", req: "c8" },
+    ]);
+  });
+
+  it("an upstream read error after message_stop leaves end to responseEnd, after its payload", async () => {
+    const path = inboxPath();
+    const { engine } = engineWith([
+      endHook(() => Bun.sleep(200).then(() => [act.injectUserTurn("LATE-BUT-KEPT")])),
+    ]);
+    const chunks = [messageStart(), ...textBlock(0, "x"), messageDelta(), messageStop()];
+    const res = await applyResponseSeam(
+      sse(chunks, { errorAfter: chunks.length }),
+      await scopeOf(engine),
+      { sink: new InboxFileSink(path), req: "e8" }
+    );
+    await expect(readAll(res)).rejects.toThrow("upstream socket dropped");
+    await until(() => inboxLines(path).some((l) => l.kind === "end"), 3_000);
+    await Bun.sleep(300);
+    expect(inboxLines(path)).toEqual([
+      { v: 1, kind: "stop", req: "e8" },
+      expect.objectContaining({ kind: "inject", req: "e8", text: "LATE-BUT-KEPT" }),
+      { v: 1, kind: "end", req: "e8" },
+    ]);
+  });
+
   it("a response that ends before message_stop writes only its end", async () => {
     const path = inboxPath();
     const { engine } = engineWith([endHook()]);
@@ -953,7 +1047,7 @@ describe("observe tap", () => {
     });
     const { engine, journal } = engineWith([observe, warnRepair], { "hook:t/warned": "warn" });
     const scope = await scopeOf(engine);
-    expect(planSeam(scope)).toEqual({ mode: "none", tap: true });
+    expect(planSeam(scope)).toEqual({ mode: "none", raw: 0, tap: true });
     const input = [
       messageStart(),
       ...toolBlock(0, "Write", ['{"a":', "1}"]),
@@ -1034,6 +1128,25 @@ describe("non-streaming JSON branch", () => {
       "text",
       "tool_use",
     ]);
+  });
+
+  it("a body that errors on read fails open: the seam returns, the error reaches the reader", async () => {
+    const { engine } = engineWith([rewriteHook("rw", () => [act.appendText("!")])]);
+    let sent = false;
+    const broken = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          if (!sent) {
+            sent = true;
+            c.enqueue(encoder.encode('{"type":"message","content":['));
+          } else c.error(new Error("upstream body dropped"));
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    const out = await applyResponseSeam(broken, await scopeOf(engine));
+    expect(out.status).toBe(200);
+    await expect(out.text()).rejects.toThrow("upstream body dropped");
   });
 
   it("passes a body that is not a message through unchanged", async () => {

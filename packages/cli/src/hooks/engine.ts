@@ -1,20 +1,29 @@
 /**
- * The hook engine: runs one event's hooks and turns what they return into
- * attributed, severity-gated, validated actions.
+ * The hook engine: runs one dispatch's hooks as a hook chain and turns what
+ * they return into attributed, severity-gated, validated, applied actions.
  *
- * Execution: every applicable hook's handler is invoked CONCURRENTLY, each with
- * its own timeout and `AbortSignal`, against a shallow-frozen context, inside
- * the hook output scope. Results are collected and returned in EFFECTIVE ORDER;
- * the appliers (actions.ts, text-rewrite.ts) then apply them sequentially.
- * Closed handlers cannot see each other's results, so concurrency changes no
- * outcome — it only bounds latency to the slowest hook.
+ * Execution (§4.4.1): a dispatch is one firing of one event. Its applicable
+ * hooks run one at a time, in effective order — a left fold the engine drives,
+ * never `next()` middleware, so no hook can stall or stop the chain. Each step
+ * builds a fresh shallow-frozen context from the dispatch's WORKING STATE (the
+ * event's input plus every action earlier steps applied), calls the handler
+ * inside the hook output scope with its own timeout and `AbortSignal`, then
+ * severity-gates and validates what it returned and hands the step's fix
+ * actions to the event's applier, in the order the hook returned them, before
+ * the next hook is called. `ctx.prior` lists what earlier steps applied.
+ *
+ * Latency is the sum of the steps, bounded by an event budget (§4.5): a step's
+ * timeout is its own or the budget left, whichever is shorter, and a hook whose
+ * step would start with no budget left is journaled `skipped`. Separate
+ * dispatches (two requests, two tool calls, two sessions) are independent.
  *
  * Failure posture: fail open, always. A throw, a rejection, a timeout or an
- * invalid return value is journaled and treated as "no actions"; an invalid
- * action is journaled and ignored. Five consecutive failures of one hook disable
- * it for the process (journal `disabled`, one stderr line); any success resets
- * the count. There is no fail-closed option: a throwing hook never breaks a
- * request or a session.
+ * invalid return value is journaled and treated as "no actions", and the next
+ * step sees what the failed one saw; an invalid action is journaled and
+ * ignored. Five consecutive failures of one hook disable it for the process
+ * (journal `disabled`, one stderr line); any success resets the count. A
+ * timeout the event budget caused, and a skipped step, do not count. There is
+ * no fail-closed option: a throwing hook never breaks a request or a session.
  *
  * Observability: one private `journal()` fans out to the local journal and —
  * for the surfaces and decision values the telemetry backend accepts — to
@@ -33,6 +42,7 @@ import {
   validateAction,
 } from "./actions.js";
 import type { HooksConfig, WarnSink } from "./config.js";
+import { deepFreeze } from "./freeze.js";
 import {
   type Decision,
   JOURNAL_SCHEMA_VERSION,
@@ -51,6 +61,7 @@ import type {
   HookDefinition,
   HostMode,
   ObserveAction,
+  PriorAction,
   RequestAction,
   ResponseEndAction,
   RewriteAction,
@@ -77,14 +88,34 @@ export const EVENT_TIMEOUTS: Readonly<Record<HookEventName, { default: number; m
   sessionStart: { default: 5_000, max: 30_000 },
   sessionIdle: { default: 5_000, max: 30_000 },
   sessionBlocked: { default: 5_000, max: 30_000 },
-  // Shared across hooks: they run concurrently from one start, so a per-hook
-  // bound of 1,500 ms bounds the whole dispatch to 1,500 ms.
   sessionEnd: { default: 1_500, max: 1_500 },
   "raw.providerRequest": { default: 1_000, max: 5_000 },
   // Synchronous; no timeout applies.
   "raw.providerChunk": { default: 0, max: 0 },
   "raw.providerStreamEnd": { default: 1_000, max: 5_000 },
   "raw.response": { default: 1_000, max: 5_000 },
+};
+
+/**
+ * The event budget (§4.5): the time the whole hook chain of one dispatch may
+ * take, in ms. Each equals the event's per-hook maximum, so no dispatch's
+ * worst case is longer than one hook at its maximum. `null` = no budget: raw
+ * `providerChunk` is synchronous, and each raw `response` step keeps its own
+ * call and close deadlines (a budget would cut a replacement mid-decision).
+ */
+export const EVENT_BUDGETS: Readonly<Record<HookEventName, number | null>> = {
+  request: 5_000,
+  toolCall: 5_000,
+  responseRewrite: 10_000,
+  responseEnd: 30_000,
+  sessionStart: 30_000,
+  sessionIdle: 30_000,
+  sessionBlocked: 30_000,
+  sessionEnd: 1_500,
+  "raw.providerRequest": 5_000,
+  "raw.providerChunk": null,
+  "raw.providerStreamEnd": 5_000,
+  "raw.response": null,
 };
 
 /** A hook's timeout for an event: its own `timeoutMs` clamped to the event's maximum. */
@@ -95,8 +126,92 @@ export function timeoutFor(def: HookDefinition, event: HookEventName): number {
   return Math.min(own, bounds.max);
 }
 
+/**
+ * The dispatch bound of an event (§4.5): the smaller of its budget and the sum
+ * of its applicable hooks' step timeouts. With no budget, the sum.
+ */
+export function dispatchBoundMs(
+  event: HookEventName,
+  hooks: ReadonlyArray<{ hook: { def: HookDefinition } }>
+): number {
+  let sum = 0;
+  for (const a of hooks) sum += timeoutFor(a.hook.def, event);
+  const budget = EVENT_BUDGETS[event];
+  return budget === null ? sum : Math.min(budget, sum);
+}
+
+/** One step's timeout: its own, or the budget left, whichever is shorter. */
+export interface StepTimeout {
+  ms: number;
+  /**
+   * true when the earlier steps cut this step's time by MORE than `clipMarginMs`, so a
+   * timeout is theirs: journaled `event_budget`, not counted toward the breaker. A cut
+   * within the margin leaves this false even though `ms` may be a little under the
+   * hook's own timeout: that timeout is the hook's own and counts.
+   */
+  clipped: boolean;
+}
+
+/** The smallest cut, in ms, that makes a budget-shortened step's timeout the budget's fault. */
+export const CLIP_MARGIN_MIN_MS = 250;
+/** The same margin as a share of the hook's own timeout, when that is larger. */
+export const CLIP_MARGIN_SHARE = 0.1;
+/** The margin never exceeds this share of the hook's own timeout (short hooks). */
+export const CLIP_MARGIN_MAX_SHARE = 0.5;
+
+/**
+ * How much shorter than its own timeout a step must be before a timeout is not counted:
+ * max(250 ms, 10 % of its own timeout), capped at half its own timeout. Without the cap a
+ * hook whose own timeout is 250 ms or less could never be clipped by more than the
+ * margin, so a slow hook before it would get it disabled.
+ */
+export function clipMarginMs(ownMs: number): number {
+  return Math.min(
+    ownMs * CLIP_MARGIN_MAX_SHARE,
+    Math.max(CLIP_MARGIN_MIN_MS, ownMs * CLIP_MARGIN_SHARE)
+  );
+}
+
+/**
+ * The step timeout of a hook whose step starts with `remaining` ms of budget
+ * left (`null` = no budget), or null when nothing is left: the hook is skipped.
+ *
+ * The breaker rule (§2.4): a step timeout counts toward the hook's breaker unless the
+ * step was clipped by MORE than `clipMarginMs(own)` — max(250 ms, 10 % of the hook's own
+ * timeout), capped at half its own timeout — and therefore the hook did not get its own
+ * full timeout. A clip within the
+ * margin is what the earlier steps' ordinary run time costs (the built-ins before every
+ * `request` hook, a 1 ms boundary between deadline and `Date.now()`); exempting it let a
+ * hook that hangs at its own maximum escape the breaker forever whenever any step ran
+ * before it. A larger clip means an earlier hook really spent the budget, and a slow hook
+ * A must not disable a healthy hook B.
+ */
+export function stepTimeout(
+  def: HookDefinition,
+  event: HookEventName,
+  remaining: number | null
+): StepTimeout | null {
+  const own = timeoutFor(def, event);
+  if (remaining === null) return { ms: own, clipped: false };
+  if (remaining <= 0) return null;
+  if (remaining >= own) return { ms: own, clipped: false };
+  return { ms: remaining, clipped: own - remaining > clipMarginMs(own) };
+}
+
+/** The journal detail of a timeout or a skip the event budget caused. */
+export const EVENT_BUDGET_DETAIL = "event_budget";
+
 /** Consecutive failures that disable a hook for the process. */
 export const BREAKER_THRESHOLD = 5;
+
+/**
+ * Actions one hook may return from one step; the rest are journaled `invalid`
+ * (`too_many_actions`) and not applied. Applying a step is synchronous and runs
+ * outside the step's timeout, and a `responseRewrite` step re-applies every text
+ * action so far over a held response of up to 8 MiB, so an unbounded list could
+ * hold the response (and its keepalive) far past the event's budget.
+ */
+export const MAX_ACTIONS_PER_STEP = 64;
 
 /** The synthetic hook id carried by a pending note on the request it is applied to. */
 export const PENDING_NOTE_ID = "behavior/pending-correction";
@@ -137,7 +252,10 @@ export interface BaseContextParts {
   hookId: string;
   severity: Exclude<Severity, "off">;
   log(message: string): void;
+  /** this step's own signal: its step timeout, or the dispatch's abort */
   signal: AbortSignal;
+  /** what earlier steps of this dispatch applied or handed on, in order (§4.4.1 rule 5) */
+  prior: ReadonlyArray<PriorAction>;
 }
 
 /** Facts every journal line of one dispatch shares. */
@@ -160,27 +278,73 @@ export interface JournalInput extends JournalMeta {
   expectedPath?: string;
   note?: string;
   detail?: string;
+  /** Never sent to the telemetry aggregate, whatever the surface and decision (raw-tier rows). */
+  localOnly?: boolean;
 }
 
-export type HookRunStatus = "ok" | "timeout" | "error" | "invalid" | "aborted";
+export type HookRunStatus = "ok" | "timeout" | "error" | "invalid" | "aborted" | "skipped";
 
-/** One hook's run within a dispatch. */
+/** One hook's step within a dispatch. */
 export interface HookRun<A extends HookAction> {
   applicable: ApplicableHook;
   status: HookRunStatus;
   /** Every valid action the hook returned, `warn` included, before the severity gate. */
   returned: A[];
+  /** The actions this step applied (or handed on): what it added to `ctx.prior`. */
+  applied: Array<PlannedAction<A>>;
 }
 
-export interface RunResult<A extends HookAction> {
-  runs: Array<HookRun<A>>;
-  /** Valid, non-`warn` actions of fix-severity hooks, in effective order: what to apply. */
-  apply: Array<PlannedAction<A>>;
+/** What one step's applier did with that step's fix actions. */
+export interface StepApplied<A extends HookAction, S> {
+  /** The working state the next step starts from. */
+  state: S;
+  /** Outcomes the engine journals at this step (an applier may journal itself and return none). */
+  results: ReadonlyArray<ActionResult<A>>;
+  /** The actions that took effect, in order: appended to `ctx.prior`. */
+  applied: ReadonlyArray<PlannedAction<A>>;
 }
 
-export interface RunOptions {
-  /** Aborting it aborts every hook's signal; unfinished hooks end `aborted`, unjournaled. */
+/**
+ * One event's step functions (§4.4.1). `context` builds a step's context from
+ * the working state; `apply` applies one step's fix actions — valid, non-`warn`,
+ * in the order the hook returned them — and must not mutate `state`: the
+ * engine replaces the working state only when it returns, so a step is atomic.
+ * The one exception is `responseEnd`, whose applier delivers each action as it
+ * routes it; it contains a throw per action instead (`SeamHooks.end`).
+ * An observe-only chain passes no `apply`: nothing it returns can be applied.
+ */
+export interface ChainStep<A extends HookAction, S> {
+  context(applicable: ApplicableHook, base: BaseContextParts, state: S): object;
+  apply?(state: S, items: ReadonlyArray<PlannedAction<A>>): StepApplied<A, S>;
+  /** Extra fields for the journal line of one result this step's applier returned. */
+  journalExtra?(result: ActionResult<A>, before: S): Partial<JournalInput>;
+  /**
+   * Called once a hook's step ended (not for a skipped or aborted one, nor for one
+   * whose applier threw: that step's lines are its `apply_failed` errors), with
+   * the state the step saw: for journal lines that are not action outcomes.
+   */
+  afterStep?(run: HookRun<A>, before: S): void;
+}
+
+export interface ChainOptions<S> {
+  /** The working state step 1 starts from. */
+  initial: S;
+  /**
+   * Aborting it aborts the running step's signal and starts no later step;
+   * the running hook ends `aborted`, unjournaled.
+   */
   signal?: AbortSignal;
+  /** `ctx.prior` of step 1: actions applied before the chain (the request's pending notes). */
+  prior?: ReadonlyArray<PriorAction>;
+}
+
+export interface ChainResult<A extends HookAction, S> {
+  /** One entry per hook the chain reached, in effective order. */
+  runs: Array<HookRun<A>>;
+  /** The working state after the last step. */
+  state: S;
+  /** Every action the chain's steps applied (or handed on), in order. */
+  applied: Array<PlannedAction<A>>;
 }
 
 function isUserHook(hookId: string): boolean {
@@ -277,28 +441,75 @@ export class HookEngine {
     return this.disabled.has(hookId);
   }
 
-  /* ───────────── dispatch ───────────── */
+  /* ───────────── dispatch: the hook chain (§4.4.1) ───────────── */
 
   /**
-   * Run one closed event's handlers concurrently and collect their actions.
+   * Run one dispatch's hooks as a hook chain: one at a time, in the order of
+   * `hooks` (effective order), each step's fix actions applied by `step.apply`
+   * before the next hook is called.
    *
-   * `context` builds the event's full context from the engine's base parts;
-   * the result is shallow-frozen before the handler sees it.
+   * Per step: a hook the breaker disabled since selection is passed over with
+   * no journal line; a hook whose step would start with no budget left is
+   * journaled `skipped`; otherwise its context is built from the working state
+   * (shallow-frozen, with `prior`), it is called with its step timeout and its
+   * own signal, its return value is validated, `warn` actions and everything a
+   * warn-severity hook returned are journaled `warned`, and its remaining
+   * actions are applied atomically. An applier that throws (a claudish bug)
+   * leaves the working state as it was and journals each action of the step
+   * `error` with detail `apply_failed:<message>`.
    */
-  async run<E extends ClosedEvent>(
+  async runChain<E extends ClosedEvent, S>(
     event: E,
     hooks: ReadonlyArray<ApplicableHook>,
-    context: (applicable: ApplicableHook, base: BaseContextParts) => object,
+    step: ChainStep<EventActions[E], S>,
     meta: JournalMeta,
-    opts: RunOptions = {}
-  ): Promise<RunResult<EventActions[E]>> {
-    const runs = await Promise.all(
-      hooks.map((applicable) => this.runOne(event, applicable, context, meta, opts.signal))
-    );
+    opts: ChainOptions<S>
+  ): Promise<ChainResult<EventActions[E], S>> {
+    type A = EventActions[E];
+    const budget = EVENT_BUDGETS[event];
+    const deadline = budget === null ? null : Date.now() + budget;
+    const prior: PriorAction[] = [...(opts.prior ?? [])];
+    const runs: Array<HookRun<A>> = [];
+    const appliedAll: Array<PlannedAction<A>> = [];
+    let state = opts.initial;
 
-    const apply: Array<PlannedAction<EventActions[E]>> = [];
-    for (const run of runs) {
-      const { hook, severity } = run.applicable;
+    for (const applicable of hooks) {
+      if (opts.signal?.aborted) break;
+      const { hook, severity } = applicable;
+      if (this.disabled.has(hook.id)) continue;
+
+      const timeout = stepTimeout(
+        hook.def,
+        event,
+        deadline === null ? null : deadline - Date.now()
+      );
+      if (timeout === null) {
+        this.journal({
+          ...meta,
+          event,
+          hookId: hook.id,
+          decision: "skipped",
+          detail: EVENT_BUDGET_DETAIL,
+        });
+        runs.push({ applicable, status: "skipped", returned: [], applied: [] });
+        continue;
+      }
+
+      const seen = state;
+      const frozenPrior = Object.freeze([...prior]);
+      const run = await this.runStep<E>(
+        event,
+        applicable,
+        (base) => step.context(applicable, { ...base, prior: frozenPrior }, seen),
+        meta,
+        opts.signal,
+        timeout
+      );
+      runs.push(run);
+      if (run.status === "aborted") break;
+
+      // Severity gate: warn actions journal at the step; a warn hook applies nothing.
+      const items: Array<PlannedAction<A>> = [];
       for (const action of run.returned) {
         if (action.type === "warn") {
           log(`[hooks] ${hook.id} warn: ${action.message}`);
@@ -323,24 +534,70 @@ export class HookEngine {
           });
           continue;
         }
-        apply.push({ hookId: hook.id, action });
+        items.push({ hookId: hook.id, action });
       }
+      if (items.length === 0 || !step.apply) {
+        step.afterStep?.(run, seen);
+        continue;
+      }
+
+      let outcome: StepApplied<A, S>;
+      try {
+        outcome = step.apply(seen, items);
+      } catch (err) {
+        log(`[hooks] ${hook.id}: applying its actions failed: ${errorText(err)}`);
+        for (const item of items) {
+          this.journal({
+            ...meta,
+            event,
+            hookId: hook.id,
+            action: item.action.type,
+            decision: "error",
+            detail: `apply_failed:${errorText(err)}`,
+          });
+        }
+        // No afterStep: the step's lines are the `error` ones above. An `ignored` line
+        // from afterStep (no repair applied) would contradict them.
+        continue;
+      }
+      state = outcome.state;
+      if (outcome.results.length > 0) {
+        this.recordResults(
+          event,
+          outcome.results,
+          meta,
+          step.journalExtra
+            ? (r) => step.journalExtra?.(r as ActionResult<A>, seen) ?? {}
+            : undefined
+        );
+      }
+      for (const p of outcome.applied) {
+        run.applied.push(p);
+        appliedAll.push(p);
+        // Already a deep-frozen copy (`collect`): the same object the working state
+        // holds, so a later hook cannot write into it through ctx.prior.
+        prior.push(Object.freeze({ hookId: p.hookId, action: p.action }));
+      }
+      step.afterStep?.(run, seen);
     }
-    return { runs, apply };
+    return { runs, state, applied: appliedAll };
   }
 
-  private runOne<E extends ClosedEvent>(
+  /** One step: call the handler within `timeout`, validate what it returned. */
+  private runStep<E extends ClosedEvent>(
     event: E,
     applicable: ApplicableHook,
-    context: (applicable: ApplicableHook, base: BaseContextParts) => object,
+    context: (base: BaseContextParts) => object,
     meta: JournalMeta,
-    parent: AbortSignal | undefined
+    parent: AbortSignal | undefined,
+    timeout: StepTimeout
   ): Promise<HookRun<EventActions[E]>> {
     const { hook, severity } = applicable;
     const done = (status: HookRunStatus, returned: Array<EventActions[E]> = []) => ({
       applicable,
       status,
       returned,
+      applied: [],
     });
 
     const handler = handlerOf(hook.def, event);
@@ -348,7 +605,7 @@ export class HookEngine {
     if (parent?.aborted) return Promise.resolve(done("aborted"));
 
     const controller = new AbortController();
-    const timeoutMs = timeoutFor(hook.def, event);
+    const timeoutMs = timeout.ms;
     const observe =
       event === "toolCall" &&
       (hook.def.on?.toolCall as { observe?: boolean } | undefined)?.observe === true;
@@ -369,6 +626,7 @@ export class HookEngine {
       };
       parent?.addEventListener("abort", onParentAbort, { once: true });
 
+      // A late result is discarded: once the timer fired, `settled` is true.
       const timer = setTimeout(() => {
         controller.abort(new Error(`hook ${hook.id} timed out after ${timeoutMs} ms`));
         this.journal({
@@ -376,9 +634,11 @@ export class HookEngine {
           event,
           hookId: hook.id,
           decision: "timeout",
-          detail: `${timeoutMs} ms`,
+          detail: timeout.clipped ? EVENT_BUDGET_DETAIL : `${timeoutMs} ms`,
         });
-        this.noteFailure(hook.id, meta, event);
+        // Clipped beyond the margin: the steps before this one spent the budget, so it is
+        // not this hook's failure. Within the margin it is the hook's own (stepTimeout).
+        if (!timeout.clipped) this.noteFailure(hook.id, meta, event);
         finish(done("timeout"));
       }, timeoutMs);
 
@@ -387,11 +647,12 @@ export class HookEngine {
         severity,
         log: (message: string) => log(`[hook ${hook.id}] ${message}`),
         signal: controller.signal,
+        prior: [],
       };
 
       let value: unknown;
       try {
-        const ctx = Object.freeze(context(applicable, base));
+        const ctx = Object.freeze(context(base));
         value = runInHookScope(hook.id, () => handler.fn.call(handler.self, ctx));
       } catch (err) {
         this.journal({
@@ -415,8 +676,16 @@ export class HookEngine {
             finish(done("invalid"));
             return;
           }
+          const actions = result.actions as Array<EventActions[E]>;
+          if (result.notPlainData) {
+            // Its other, valid actions still apply, as with any invalid action; but a
+            // value claudish cannot copy is a broken return, so the step counts.
+            this.noteFailure(hook.id, meta, event);
+            finish(done("invalid", actions));
+            return;
+          }
           this.noteSuccess(hook.id);
-          finish(done("ok", result as Array<EventActions[E]>));
+          finish(done("ok", actions));
         },
         (err: unknown) => {
           if (settled) return;
@@ -437,6 +706,15 @@ export class HookEngine {
   /**
    * Validate a handler's return value. Returns the valid actions, or null when
    * the value itself is invalid (not an array, not undefined).
+   *
+   * Each action is COPIED before it is validated, and the deep-frozen copy is the
+   * only object claudish uses from then on: the applier, stage B's held list, the
+   * rewrite plan and `ctx.prior` all share it. So a hook cannot change an action
+   * after returning it (from a timer, say) to slip past the limits checked here,
+   * and a getter or a Proxy cannot show validation one value and the applier
+   * another. A value that cannot be copied as plain data (a method, a Symbol, a
+   * Proxy) is journaled `invalid` (`not_plain_data`) and sets `notPlainData`,
+   * which counts the step toward the breaker.
    */
   private collect(
     event: ClosedEvent,
@@ -444,8 +722,8 @@ export class HookEngine {
     returned: unknown,
     meta: JournalMeta,
     observe: boolean
-  ): HookAction[] | null {
-    if (returned === undefined || returned === null) return [];
+  ): { actions: HookAction[]; notPlainData: boolean } | null {
+    if (returned === undefined || returned === null) return { actions: [], notPlainData: false };
     if (!Array.isArray(returned)) {
       this.journal({
         ...meta,
@@ -457,13 +735,45 @@ export class HookEngine {
       return null;
     }
     const valid: HookAction[] = [];
-    for (const value of returned) {
-      const checked = validateAction(event, value, { observe });
-      if (checked.ok) {
-        valid.push(checked.action);
+    if (returned.length > MAX_ACTIONS_PER_STEP) {
+      // One line for the excess, not one per action: the array is unbounded.
+      this.journal({
+        ...meta,
+        event,
+        hookId,
+        decision: "invalid",
+        detail: `too_many_actions:${returned.length - MAX_ACTIONS_PER_STEP} over ${MAX_ACTIONS_PER_STEP}`,
+      });
+    }
+    let notPlainData = false;
+    for (const value of returned.slice(0, MAX_ACTIONS_PER_STEP)) {
+      let copy: unknown;
+      try {
+        copy = structuredClone(value);
+      } catch {
+        notPlainData = true;
+        let type: unknown;
+        try {
+          type = (value as { type?: unknown } | null)?.type;
+        } catch {
+          // a Proxy may throw on any read
+        }
+        this.journal({
+          ...meta,
+          event,
+          hookId,
+          action: typeof type === "string" ? type : undefined,
+          decision: "invalid",
+          detail: "not_plain_data",
+        });
         continue;
       }
-      const type = (value as { type?: unknown } | null)?.type;
+      const checked = validateAction(event, copy, { observe });
+      if (checked.ok) {
+        valid.push(deepFreeze(checked.action));
+        continue;
+      }
+      const type = (copy as { type?: unknown } | null)?.type;
       this.journal({
         ...meta,
         event,
@@ -473,7 +783,7 @@ export class HookEngine {
         detail: checked.reason,
       });
     }
-    return valid;
+    return { actions: valid, notPlainData };
   }
 
   /**
@@ -538,7 +848,7 @@ export class HookEngine {
     const upload = isUploadSurface(surface);
     const pathRelation = upload ? classifyPath(input.observedPath, input.expectedPath) : undefined;
 
-    if (upload && isUploadDecision(input.decision)) {
+    if (upload && input.localOnly !== true && isUploadDecision(input.decision)) {
       const user = isUserHook(input.hookId);
       recordTelemetryDecision({
         sessionId: input.sessionId,

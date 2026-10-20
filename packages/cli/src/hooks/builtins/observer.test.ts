@@ -68,6 +68,7 @@ describe("observer built-in definition", () => {
     expect(ids).toEqual([
       "plan-mode/plan-file-path",
       "session-context/no-harness-echo",
+      "gemini/thought-signature",
       OBSERVER_HOOK_ID,
     ]);
   });
@@ -107,7 +108,7 @@ describe("observer through the seam", () => {
         stream: true,
       }
     );
-    expect(planSeam(scope)).toEqual({ mode: "none", tap: true });
+    expect(planSeam(scope)).toEqual({ mode: "none", raw: 0, tap: true });
 
     const wire = [
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"Write","input":{}}}\n\n',

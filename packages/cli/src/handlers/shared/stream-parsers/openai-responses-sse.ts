@@ -16,6 +16,7 @@ import {
   type CachedReasoningItem,
   rememberReasoningForCall,
 } from "../../../adapters/reasoning-cache.js";
+import type { RawStreamTap } from "../../../hooks/raw.js";
 import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import { messageStartUsage } from "./message-start-usage.js";
@@ -49,11 +50,12 @@ export function createResponsesStreamHandler(
      */
     priorInputTokens?: number;
     /**
-     * Middleware chain, so the Responses path gets the same response-side hooks
-     * the Chat Completions path has had. Previously absent, which left the Codex
-     * models with no observation point at all.
+     * The raw-tier tap (`providerChunk` / `providerStreamEnd`), so the Responses
+     * path has the same raw hook points as the Chat Completions path. The
+     * Responses API has no `delta` object of its own, so the event stands in for
+     * both.
      */
-    middlewareManager?: any;
+    raw?: RawStreamTap | null;
     /**
      * Called once per `tool_use` block start, for the token tracker's tool
      * count. Tool-argument interception is not this parser's job: it happens at
@@ -105,9 +107,6 @@ export function createResponsesStreamHandler(
     index: number;
     claudeId?: string;
   };
-
-  /** Shared across every chunk hook in this stream; handed to afterStreamComplete. */
-  const streamMetadata = new Map<string, any>();
 
   // Track function calls being streamed. Keyed by BOTH call_id and item_id, so
   // the same FnCall object appears under two keys — never derive a count from
@@ -240,19 +239,13 @@ export function createResponsesStreamHandler(
             }
 
             try {
-              const event = JSON.parse(data);
+              let event = JSON.parse(data);
 
-              // Response-side observation point. The Responses API has no
-              // `delta` object of its own, so the event stands in for both —
-              // observers here key off `event.type`.
-              if (opts.middlewareManager) {
-                await opts.middlewareManager.afterStreamChunk({
-                  modelId: opts.modelName,
-                  chunk: event,
-                  delta: event,
-                  metadata: streamMetadata,
-                });
-              }
+              // Raw-tier tap, before anything reads the event: what it returns
+              // is the committed object, and every read below is of it. The
+              // Responses API has no `delta` object of its own, so the event
+              // stands in for both.
+              if (opts.raw) event = opts.raw.chunk(event, (e: any) => e);
 
               if (getLogLevel() === "debug" && event.type) {
                 log(`[ResponsesSSE] Event: ${event.type}`);
@@ -497,9 +490,7 @@ export function createResponsesStreamHandler(
 
         isClosed = true;
         if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
-        if (opts.middlewareManager) {
-          await opts.middlewareManager.afterStreamComplete(opts.modelName, streamMetadata);
-        }
+        if (opts.raw) await opts.raw.streamEnd();
         safeClose();
       } catch (error) {
         if (pingInterval) {

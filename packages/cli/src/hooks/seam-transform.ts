@@ -5,15 +5,22 @@
  *   arrives, re-encoded from the decoded text (byte-identical for valid UTF-8).
  *   Only a `tool_use` block of an armed tool is held: its `content_block_start`
  *   goes out at once, its `input_json_delta` events are swallowed, and at its
- *   `content_block_stop` the `toolCall` hooks run and the block is finished with
- *   ONE `input_json_delta` carrying the repaired (or original) arguments, then
- *   the stop. No block is inserted or dropped, so no index changes.
+ *   `content_block_stop` its `toolCall` hook chain STARTS and the block is
+ *   finished, once the chain ends, with ONE `input_json_delta` carrying the
+ *   repaired (or original) arguments, then the stop. Reading goes on while a
+ *   chain runs: each tool call is its own dispatch (§4.4.1 rule 9), so a later
+ *   block's chain starts at that block's stop without waiting for an earlier
+ *   one. Output keeps block order: what arrives behind an unfinished block is
+ *   queued (`out`) and forwarded once every block ahead of it is finished. No
+ *   block is inserted or dropped, so no index changes.
  * - `buffer`: `message_start` and leading thinking blocks stream live. From the
  *   first `content_block_start` of any other type, every event except `ping` is
  *   held, in order, until `message_delta`. Then the `toolCall` hooks' repairs
  *   (started at each held tool block's stop) are collected, the
- *   `responseRewrite` hooks run over the whole response, their text actions are
- *   applied to the held blocks, and the held region is re-emitted. Once a block
+ *   `responseRewrite` hook chain runs over the whole response — each hook
+ *   seeing the held blocks as the earlier hooks' text actions left them — the
+ *   chain's text actions are applied to the held blocks, and the held region is
+ *   re-emitted. Once a block
  *   is inserted or dropped, every later block event is re-serialised with its
  *   new index, so emitted indices are always 0, 1, 2, … with no gap or repeat.
  *
@@ -29,10 +36,11 @@ import { log } from "../logger.js";
 import {
   BlockCollector,
   type CollectedBlock,
-  collectorView,
   isThinkingType,
+  rewrittenView,
+  viewBlock,
 } from "./response-blocks.js";
-import type { SeamHooks } from "./seam-hooks.js";
+import type { SeamHooks, ToolCallOutcome } from "./seam-hooks.js";
 import {
   type SseEvent,
   SseSplitter,
@@ -42,6 +50,17 @@ import {
   serializeSseEvent,
 } from "./sse-codec.js";
 import { type RewriteBlock, applyTextActions } from "./text-rewrite.js";
+
+/**
+ * The reader surface this module uses. Annotated structurally, not as
+ * `ReadableStreamDefaultReader`: bun-types and node:stream/web declare that
+ * global differently (`readMany`), and a package that typechecks this file
+ * under node's stream types (macos-bridge) rejects the bun one.
+ */
+type ByteReader = {
+  read(): Promise<{ done: true; value?: unknown } | { done: false; value: Uint8Array }>;
+  cancel(reason?: unknown): Promise<void>;
+};
 
 export type ClosedMode = "intercept" | "buffer";
 
@@ -67,6 +86,35 @@ type QueueItem =
   | { kind: "event"; ev: SseEvent }
   | { kind: "end" }
   | { kind: "error"; err: unknown };
+
+/**
+ * One piece of `intercept` output in block order: text ready to go, or a tool
+ * block whose `toolCall` chain is running. `lines` is set when the chain ended;
+ * `fallback` is the block as the model sent it, forwarded instead whenever the
+ * transform must flush first (cap, upstream error, fail-open). `abort` ends this
+ * block's chain alone; `outcome` journals its repairs once delivery is known.
+ */
+type OutSegment =
+  | { kind: "ready"; text: string }
+  | {
+      kind: "tool";
+      fallback: string[];
+      lines: string[] | null;
+      settled: Promise<void>;
+      abort: AbortController;
+      outcome: ToolCallOutcome | null;
+      /** Set when a flush sent `fallback` while the chain still ran. */
+      flushedFor: FlushReason | null;
+    };
+
+/** One `buffer`-mode tool block's running chain. */
+interface ToolRun {
+  outcome: Promise<ToolCallOutcome | null>;
+  abort: AbortController;
+}
+
+/** Why held content went out unchanged; the journal detail of a repair it discarded. */
+type FlushReason = "hold_cap" | "upstream_error" | "failed_open" | "stream_end";
 
 /** One armed tool block held in `intercept` mode. */
 interface HeldTool {
@@ -170,7 +218,7 @@ class ClosedTransform {
   readonly readable: ReadableStream<Uint8Array>;
 
   private controller!: ReadableStreamDefaultController<Uint8Array>;
-  private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  private readonly reader: ByteReader;
   private readonly splitter = new SseSplitter();
   private readonly abort = new AbortController();
   private readonly pingIntervalMs: number;
@@ -190,6 +238,11 @@ class ClosedTransform {
 
   // intercept
   private heldTool: HeldTool | null = null;
+  /**
+   * Output waiting behind a tool block whose chain has not ended, in arrival
+   * order. Empty while nothing is pending: events are then emitted directly.
+   */
+  private out: OutSegment[] = [];
 
   // buffer
   private phase: "live" | "holding" | "after" = "live";
@@ -199,7 +252,7 @@ class ClosedTransform {
   private heldBlocks: HeldBlock[] = [];
   private readonly heldByIndex = new Map<number, HeldBlock>();
   private loose: Array<{ ev: SseEvent; ordinal: number }> = [];
-  private readonly toolRuns = new Map<number, Promise<Record<string, unknown> | undefined>>();
+  private readonly toolRuns = new Map<number, ToolRun>();
   private heldBytes = 0;
 
   constructor(
@@ -290,12 +343,21 @@ class ClosedTransform {
 
   private handleItem(item: QueueItem): void | Promise<void> {
     if (item.kind === "end") {
-      this.flushHeld();
+      // A tool chain still running finishes its block before the stream closes.
+      const running = this.out.flatMap((seg) => (seg.kind === "tool" ? [seg.settled] : []));
+      if (running.length > 0) {
+        return Promise.all(running).then(() => {
+          this.flushOut();
+          this.flushHeld("stream_end");
+          this.close();
+        });
+      }
+      this.flushHeld("stream_end");
       this.close();
       return;
     }
     if (item.kind === "error") {
-      this.flushHeld();
+      this.flushHeld("upstream_error");
       this.stop();
       this.pendingError = { err: item.err };
       this.raisePendingError();
@@ -312,7 +374,7 @@ class ClosedTransform {
       return;
     }
     if (isError(ev, json)) {
-      this.flushHeld();
+      this.flushHeld("upstream_error");
       this.passthrough = true;
       this.emit(ev.raw);
       return;
@@ -322,11 +384,12 @@ class ClosedTransform {
 
   /* ───────────── intercept ───────────── */
 
-  private intercept(ev: SseEvent, json: Json): void | Promise<void> {
+  private intercept(ev: SseEvent, json: Json): void {
     const held = this.heldTool;
     if (held) {
       if (json?.type === "content_block_stop" && json.index === held.index) {
-        return this.finishTool(held, ev);
+        this.finishTool(held, ev);
+        return;
       }
       if (
         json?.type === "content_block_delta" &&
@@ -356,26 +419,93 @@ class ClosedTransform {
         extras: [],
       };
     }
-    this.emit(ev.raw);
+    this.forward(ev);
   }
 
-  private async finishTool(held: HeldTool, stop: SseEvent): Promise<void> {
-    let repaired: Record<string, unknown> | undefined;
-    try {
-      repaired = await this.opts.hooks.interceptToolCall(
-        { id: held.id, name: held.name, rawArgs: held.args },
-        this.abort.signal
-      );
-    } catch (err) {
-      // The block goes out as the model sent it.
-      log(`[hooks] seam toolCall failed open: ${err instanceof Error ? err.message : err}`);
-    }
-    if (this.done || this.heldTool !== held) return;
+  /**
+   * Emit now, or queue behind a tool block whose chain is still running. Queued
+   * output is not counted toward the hold cap: the cap bounds one held block,
+   * and this is what a reader blocked on that chain would have left unread.
+   */
+  private forward(ev: SseEvent): void {
+    if (this.out.length === 0) this.emit(ev.raw);
+    else this.out.push({ kind: "ready", text: ev.raw });
+  }
+
+  /**
+   * A held block's arguments are complete: start its `toolCall` chain and go on
+   * reading. The block is finished, in order, once the chain ends.
+   */
+  private finishTool(held: HeldTool, stop: SseEvent): void {
     this.heldTool = null;
-    const args = repaired ? JSON.stringify(repaired) : held.args;
-    if (repaired || held.deltas.length > 0) this.emit(inputDelta(held.index, args));
-    for (const extra of held.extras) this.emit(extra.raw);
-    this.emit(stop.raw);
+    // the cap bounds one held block: this one is complete
+    this.heldBytes = 0;
+    const segment: Extract<OutSegment, { kind: "tool" }> = {
+      kind: "tool",
+      fallback: [...held.deltas.map((e) => e.raw), ...held.extras.map((e) => e.raw), stop.raw],
+      lines: null,
+      settled: Promise.resolve(),
+      abort: this.childAbort(),
+      outcome: null,
+      flushedFor: null,
+    };
+    this.out.push(segment);
+    segment.settled = this.opts.hooks
+      .interceptToolCall({ id: held.id, name: held.name, rawArgs: held.args }, segment.abort.signal)
+      .catch((err: unknown): ToolCallOutcome | null => {
+        // The block goes out as the model sent it.
+        log(`[hooks] seam toolCall failed open: ${err instanceof Error ? err.message : err}`);
+        return null;
+      })
+      .then((outcome) => {
+        // Flushed meanwhile (cap, error, fail-open) or cancelled: the model's own
+        // arguments went out, or nothing did.
+        if (this.done || !this.out.includes(segment)) {
+          outcome?.notDelivered(segment.flushedFor ?? "client_cancelled");
+          return;
+        }
+        try {
+          const repaired = outcome?.args;
+          const args = repaired ? JSON.stringify(repaired) : held.args;
+          segment.outcome = outcome;
+          segment.lines = [
+            ...(repaired || held.deltas.length > 0 ? [inputDelta(held.index, args)] : []),
+            ...held.extras.map((e) => e.raw),
+            stop.raw,
+          ];
+        } catch (err) {
+          // Unserialisable arguments, say: the block goes out as the model sent it.
+          log(`[hooks] seam toolCall failed open: ${err instanceof Error ? err.message : err}`);
+          outcome?.notDelivered("failed_open");
+          segment.outcome = null;
+          segment.lines = segment.fallback;
+        }
+        this.flushOut();
+      });
+  }
+
+  /** An AbortController that also aborts when the transform's own does (a client cancel). */
+  private childAbort(): AbortController {
+    const child = new AbortController();
+    const parent = this.abort.signal;
+    if (parent.aborted) child.abort(parent.reason);
+    else parent.addEventListener("abort", () => child.abort(parent.reason), { once: true });
+    return child;
+  }
+
+  /** Emit every leading segment that is ready; stop at the first running chain. */
+  private flushOut(): void {
+    while (this.out.length > 0) {
+      const head = this.out[0] as OutSegment;
+      if (head.kind === "tool" && head.lines === null) return;
+      this.out.shift();
+      if (head.kind === "ready") {
+        this.emit(head.text);
+        continue;
+      }
+      for (const line of head.lines ?? []) this.emit(line);
+      head.outcome?.delivered();
+    }
   }
 
   /* ───────────── buffer ───────────── */
@@ -429,13 +559,14 @@ class ClosedTransform {
   private startToolRun(block: HeldBlock): void {
     const c = block.collected;
     if (c.type !== "tool_use" || !c.name || !this.opts.hooks.intercepts(c.name)) return;
-    const run = this.opts.hooks
-      .interceptToolCall({ id: c.id ?? "", name: c.name, rawArgs: c.args }, this.abort.signal)
-      .catch((err: unknown) => {
+    const abort = this.childAbort();
+    const outcome = this.opts.hooks
+      .interceptToolCall({ id: c.id ?? "", name: c.name, rawArgs: c.args }, abort.signal)
+      .catch((err: unknown): ToolCallOutcome | null => {
         log(`[hooks] seam toolCall failed open: ${err instanceof Error ? err.message : err}`);
-        return undefined;
+        return null;
       });
-    this.toolRuns.set(block.index, run);
+    this.toolRuns.set(block.index, { outcome, abort });
   }
 
   private async finishHold(messageDelta: SseEvent): Promise<void> {
@@ -444,7 +575,7 @@ class ClosedTransform {
     } catch (err) {
       // Fail open: whatever is still held goes out unchanged.
       log(`[hooks] seam rewrite failed open: ${err instanceof Error ? err.message : err}`);
-      this.flushHeld();
+      this.flushHeld("failed_open");
       this.passthrough = true;
     }
     if (this.done) return;
@@ -452,30 +583,63 @@ class ClosedTransform {
     this.emit(messageDelta.raw);
   }
 
-  /** Collect repairs, run `responseRewrite`, and re-emit the held region. */
-  private async rewriteHeld(): Promise<void> {
+  /** Wait for every held tool block's chain: the repaired arguments by block index. */
+  private async collectRepairs(): Promise<{
+    repairs: Map<number, Record<string, unknown>>;
+    outcomes: ToolCallOutcome[];
+  }> {
     const repairs = new Map<number, Record<string, unknown>>();
+    const outcomes: ToolCallOutcome[] = [];
     for (const [index, run] of this.toolRuns) {
-      const args = await run;
-      if (args) repairs.set(index, args);
+      const outcome = await run.outcome;
+      if (!outcome) continue;
+      outcomes.push(outcome);
+      if (outcome.args) repairs.set(index, outcome.args);
     }
-    if (this.done) return;
+    return { repairs, outcomes };
+  }
+
+  /** True when the client cancelled: the repairs never reach it. */
+  private cancelledWith(outcomes: ReadonlyArray<ToolCallOutcome>): boolean {
+    if (!this.done) return false;
+    for (const o of outcomes) o.notDelivered("client_cancelled");
+    return true;
+  }
+
+  /** Collect repairs, run the `responseRewrite` chain, and re-emit the held region. */
+  private async rewriteHeld(): Promise<void> {
+    const { repairs, outcomes } = await this.collectRepairs();
+    if (this.cancelledWith(outcomes)) return;
     const hooks = this.opts.hooks;
-    const planned = await hooks.rewrite(collectorView(this.collector, repairs), this.abort.signal);
-    if (this.done) return;
 
     const rewriteBlocks: RewriteBlock[] = this.heldBlocks.map((b) => ({
       type: b.collected.type,
       ...(b.collected.type === "text" ? { text: b.collected.text } : {}),
       ...(b.collected.locked ? { locked: true } : {}),
     }));
+    // What a rewrite step sees: the blocks that streamed live, then the held
+    // region with the earlier steps' text actions applied, repairs included.
+    const held = new Set(this.heldBlocks.map((b) => b.collected));
+    const lead = this.collector.blocks.filter((b) => !held.has(b)).map((b) => viewBlock(b));
+    const original = (source: number) => {
+      const b = this.heldBlocks[source] as HeldBlock;
+      return viewBlock(b.collected, repairs.get(b.index));
+    };
+    const { planned, final } = await hooks.rewrite((actions) => {
+      const result = applyTextActions(rewriteBlocks, actions);
+      return {
+        view: rewrittenView(lead, result.blocks, original, this.collector.stopReason),
+        result,
+      };
+    }, this.abort.signal);
+    if (this.cancelledWith(outcomes)) return;
+
     if (planned.length > 0 && rewriteBlocks.some((b) => b.locked)) {
       hooks.noteRewriteInvalid("citations");
     }
-    const result = applyTextActions(
-      rewriteBlocks,
-      planned.map((p) => p.action)
-    );
+    // The last step's application, reused: applying every action again is the
+    // O(steps × actions) cost the event budget does not cover.
+    const result = final.result;
     hooks.recordRewrite(planned, result);
 
     // Build the whole region first, so a throw half way emits nothing twice.
@@ -499,8 +663,12 @@ class ClosedTransform {
       out.push(...heldBlock(held, index, repairs.get(held.index)));
     }
     flushLoose(Number.POSITIVE_INFINITY);
-    this.resetHeld();
+    // Emit, then forget the held region: if an emit throws part way, `finishHold`'s
+    // fail-open still has the held events to flush (a repeat beats a truncated
+    // response), and the repairs count as not delivered.
     for (const text of out) this.emit(text);
+    for (const o of outcomes) o.delivered();
+    this.resetHeld();
   }
 
   /* ───────────── holding bookkeeping ───────────── */
@@ -511,13 +679,35 @@ class ClosedTransform {
     if (this.heldBytes <= this.holdCap) return;
     log(`[hooks] seam held more than ${this.holdCap} bytes: flushed unchanged, holding stopped`);
     if (mode === "buffer") this.opts.hooks.noteRewriteInvalid("buffer_cap");
-    else this.opts.hooks.noteInterceptInvalid("buffer_cap");
-    this.flushHeld();
+    else this.opts.hooks.noteInterceptInvalid("hold_cap");
+    this.flushHeld("hold_cap");
     this.passthrough = true;
   }
 
-  /** Forward everything held, unchanged, in arrival order. */
-  private flushHeld(): void {
+  /**
+   * Forward everything held, UNCHANGED, in arrival order: every tool block goes out
+   * as the model sent it, even one whose chain already finished, and every chain
+   * still running is aborted. Their repairs are journaled `dropped` with `reason`
+   * (a running chain's when it settles), never `repaired`.
+   */
+  private flushHeld(reason: FlushReason): void {
+    // Queued intercept output first: it arrived before the block held now.
+    const out = this.out;
+    this.out = [];
+    for (const seg of out) {
+      if (seg.kind === "ready") {
+        this.emit(seg.text);
+        continue;
+      }
+      for (const line of seg.fallback) this.emit(line);
+      seg.flushedFor = reason;
+      seg.abort.abort(new Error(`seam flushed: ${reason}`));
+      seg.outcome?.notDelivered(reason);
+    }
+    for (const run of this.toolRuns.values()) {
+      run.abort.abort(new Error(`seam flushed: ${reason}`));
+      void run.outcome.then((o) => o?.notDelivered(reason));
+    }
     const tool = this.heldTool;
     if (tool) {
       this.heldTool = null;
@@ -541,7 +731,7 @@ class ClosedTransform {
   }
 
   private get holding(): boolean {
-    return this.busy || this.heldTool !== null || this.phase === "holding";
+    return this.busy || this.heldTool !== null || this.out.length > 0 || this.phase === "holding";
   }
 
   /** The seam's own keepalive, while it holds content and upstream sends none. */
@@ -555,7 +745,7 @@ class ClosedTransform {
   private failOpen(err: unknown): void {
     log(`[hooks] seam transform failed open: ${err instanceof Error ? err.message : err}`);
     try {
-      this.flushHeld();
+      this.flushHeld("failed_open");
     } catch {}
     this.passthrough = true;
   }

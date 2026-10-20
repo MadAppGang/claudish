@@ -8,15 +8,16 @@
 
 import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
+import type { RawStreamTap } from "../../../hooks/raw.js";
 import { log } from "../../../logger.js";
-import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { sseDataPayload } from "./sse-line.js";
 
 export interface GeminiSseOptions {
   modelName: string;
   adapter?: BaseAPIFormat;
-  middlewareManager?: MiddlewareManager;
+  /** The raw-tier tap; this wire calls only its `providerStreamEnd`. */
+  raw?: RawStreamTap | null;
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
@@ -87,8 +88,8 @@ export function createGeminiSseStream(
       }, 1000);
 
       // Kept out of finalize() so it can run from a `finally`. finalize() guards
-      // re-entry on `finalized`, so a throw part-way through (afterStreamComplete
-      // is an await on user middleware) used to leave the controller open and the
+      // re-entry on `finalized`, so a throw part-way through (the raw tap's
+      // streamEnd is an await on hook code) used to leave the controller open and the
       // ping interval running forever — the outer catch re-called finalize() and
       // it returned at the guard. Safe to call more than once.
       const teardown = () => {
@@ -127,9 +128,7 @@ export function createGeminiSseStream(
             }
           }
 
-          if (opts.middlewareManager) {
-            await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
-          }
+          if (opts.raw) await opts.raw.streamEnd();
 
           const inputTokens = usage?.promptTokenCount || 0;
           const outputTokens = usage?.candidatesTokenCount || 0;

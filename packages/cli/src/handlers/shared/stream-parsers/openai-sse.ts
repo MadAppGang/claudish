@@ -8,6 +8,7 @@
  */
 
 import type { Context } from "hono";
+import type { RawStreamTap } from "../../../hooks/raw.js";
 import { log } from "../../../logger.js";
 import {
   type ToolSchema,
@@ -239,7 +240,11 @@ export function createStreamingResponseHandler(
   response: Response,
   adapter: any,
   target: string,
-  middlewareManager: any,
+  /**
+   * The raw-tier tap (`providerChunk` / `providerStreamEnd`), when a raw hook
+   * applies to this route. `chunk()` returns the object to read from then on.
+   */
+  raw: RawStreamTap | null | undefined,
   /**
    * `input` is ALWAYS `prompt_tokens` — the full context size. The cached
    * breakdown rides in the third argument and is for COST ONLY; handing the
@@ -270,7 +275,6 @@ export function createStreamingResponseHandler(
   let ping: NodeJS.Timeout | null = null;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const streamMetadata = new Map<string, any>();
 
   return c.body(
     new ReadableStream({
@@ -622,9 +626,7 @@ export function createStreamingResponseHandler(
               }
             }
 
-            if (middlewareManager) {
-              await middlewareManager.afterStreamComplete(target, streamMetadata);
-            }
+            if (raw) await raw.streamEnd();
 
             if (ending === "failure") {
               // An SSE `error` event is the ONE ending Claude Code honours by
@@ -811,7 +813,7 @@ export function createStreamingResponseHandler(
               }
 
               try {
-                const chunk = JSON.parse(dataStr);
+                let chunk = JSON.parse(dataStr);
                 if (chunk.usage) {
                   state.usage = chunk.usage;
                   log(
@@ -836,6 +838,14 @@ export function createStreamingResponseHandler(
                   return;
                 }
 
+                // The raw tap runs BEFORE anything is derived from the chunk:
+                // what it returns is the committed object (a hook's clone, or
+                // the chunk itself), and every read below is of it, deletions
+                // and a changed finish_reason included.
+                if (raw && chunk.choices?.[0]?.delta) {
+                  chunk = raw.chunk(chunk, (c: any) => c.choices?.[0]?.delta);
+                }
+
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
                 if (finishReason) state.finishReason = finishReason;
@@ -848,15 +858,6 @@ export function createStreamingResponseHandler(
                 }
 
                 if (delta) {
-                  if (middlewareManager) {
-                    await middlewareManager.afterStreamChunk({
-                      modelId: target,
-                      chunk,
-                      delta,
-                      metadata: streamMetadata,
-                    });
-                  }
-
                   // Reasoning arrives under two different field names on this one
                   // wire format: `reasoning_content` (Kimi, DeepSeek via LiteLLM)
                   // and `reasoning` (OpenRouter). Reading only the former silently
