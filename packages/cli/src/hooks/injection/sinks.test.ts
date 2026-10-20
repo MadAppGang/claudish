@@ -99,11 +99,17 @@ describe("UnavailableSink and sinkFromEnv", () => {
 
   it("uses the inbox the owner named, else none", () => {
     const path = inbox();
-    const sink = sinkFromEnv({ [HOOK_INBOX_ENV]: path });
+    const child = { CLAUDISH_PANE_CHILD: "1", [HOOK_INBOX_ENV]: path };
+    const sink = sinkFromEnv(child);
     expect(sink).toBeInstanceOf(InboxFileSink);
     expect((sink as InboxFileSink).path).toBe(path);
     // One sink per file: the payload cap spans every request of the process.
-    expect(sinkFromEnv({ [HOOK_INBOX_ENV]: path })).toBe(sink);
+    expect(sinkFromEnv(child)).toBe(sink);
     expect(sinkFromEnv({})).toBeInstanceOf(UnavailableSink);
+  });
+
+  it("outside a pane child the inbox variable is ignored (a .env cannot name a file to append to)", () => {
+    const path = inbox();
+    expect(sinkFromEnv({ [HOOK_INBOX_ENV]: path })).toBeInstanceOf(UnavailableSink);
   });
 });
