@@ -221,6 +221,102 @@ describe("custom-endpoints-loader", () => {
     expect(def?.apiPath).toBe("/v1/chat/completions");
   });
 
+  /**
+   * The descriptor is what `PickerDataSource.providerList()` reads as
+   * `hasDiscovery` (`picker/PickerDataSource.ts:191`), and with it absent the
+   * picker never asked a custom endpoint what it serves: the provider row read
+   * `0 models` and `⏎` opened an empty list. Asserted on the definition rather
+   * than through the picker so the test stays hermetic and never loads OpenTUI.
+   */
+  describe("derived openai models discovery", () => {
+    test("simple openai endpoint: /models beside its /chat/completions", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "my-vllm": {
+            kind: "simple",
+            url: "https://api.example.invalid/v1",
+            format: "openai",
+            apiKey: "sk-fake-key",
+          },
+        })
+      );
+
+      expect(getRuntimeProviders().get("my-vllm")?.modelDiscovery).toEqual({
+        path: "/models",
+        format: "openai-models-list",
+      });
+      // The endpoint's own URL carries the version segment, so the resolved
+      // request is the one the vendor documents.
+      expect(getProviderByName("my-vllm")?.baseUrl).toBe("https://api.example.invalid/v1");
+    });
+
+    test("complex openai endpoint: the sibling of its DECLARED apiPath", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "corp-proxy": {
+            kind: "complex",
+            displayName: "Corporate LLM Proxy",
+            transport: "openai",
+            baseUrl: "https://llm.corp.invalid",
+            apiPath: "/api/v2/chat/completions",
+            apiKey: "sk-fake-key",
+          },
+        })
+      );
+
+      expect(getRuntimeProviders().get("corp-proxy")?.modelDiscovery).toEqual({
+        path: "/api/v2/models",
+        format: "openai-models-list",
+      });
+    });
+
+    test("complex openai endpoint with no apiPath: the default path's sibling", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "default-path": {
+            kind: "complex",
+            displayName: "Default Path",
+            transport: "openai",
+            baseUrl: "https://llm.corp.invalid",
+            apiKey: "sk-fake-key",
+          },
+        })
+      );
+
+      const def = getRuntimeProviders().get("default-path");
+      expect(def?.apiPath).toBe("/v1/chat/completions");
+      expect(def?.modelDiscovery).toEqual({ path: "/v1/models", format: "openai-models-list" });
+    });
+
+    test.each([
+      ["simple", { kind: "simple", url: "https://a.invalid", format: "anthropic" }],
+      [
+        "complex litellm",
+        {
+          kind: "complex",
+          displayName: "L",
+          transport: "litellm",
+          baseUrl: "https://b.invalid",
+        },
+      ],
+      [
+        "complex anthropic",
+        {
+          kind: "complex",
+          displayName: "A",
+          transport: "anthropic",
+          baseUrl: "https://c.invalid",
+          apiPath: "/v1/messages",
+        },
+      ],
+    ])("a %s endpoint declares nothing — its /models is a different shape", (_label, entry) => {
+      loadCustomEndpoints(makeConfig({ other: { ...entry, apiKey: "sk-fake-key" } }));
+
+      expect(getRuntimeProviders().get("other")).toBeDefined();
+      expect(getRuntimeProviders().get("other")?.modelDiscovery).toBeUndefined();
+    });
+  });
+
   describe('authScheme "none" registration', () => {
     test("simple endpoint preserves the scheme and needs no credential", async () => {
       const name = "keyless-simple-regression";
