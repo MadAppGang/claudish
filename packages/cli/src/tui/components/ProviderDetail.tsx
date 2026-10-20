@@ -366,12 +366,21 @@ export function ProviderDetail({
           <span fg={hasKey ? C.green : C.yellow}>{line}</span>
         </text>
       ))}
+      {/* The API endpoint, printed WITHOUT its scheme. It is not a web page:
+          measured 2026-10-20, 17 of 28 provider endpoints answer a browser with
+          404 or 421, and a terminal turns any `https://` into a link the user
+          clicks while hunting for a key. The key page is `Get Key:` below. */}
       {selectedProvider.endpointEnvVar && (
         <text>
           <span fg={C.blue} attributes={A.bold}>
-            URL:{" "}
+            API:{" "}
           </span>
-          <span fg={C.cyan}>{activeEndpoint || selectedProvider.defaultEndpoint || "default"}</span>
+          <span fg={C.cyan}>
+            {(activeEndpoint || selectedProvider.defaultEndpoint || "default").replace(
+              /^https?:\/\//,
+              ""
+            )}
+          </span>
         </text>
       )}
       {/* Two Auth: lines use the description's row; the description remains in
