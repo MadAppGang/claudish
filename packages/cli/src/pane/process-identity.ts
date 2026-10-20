@@ -86,55 +86,99 @@ export function parsePsTable(text: string): PsRow[] {
   return rows;
 }
 
-const PS_ENV = { PATH: "/bin:/usr/bin:/usr/sbin:/sbin", LC_ALL: "C" };
+/**
+ * The process table, or null when it is UNAVAILABLE: `ps` could not run, failed, or
+ * printed no row. A readable table is never empty (it lists the reader), so null never
+ * means "no process": every caller treats what it would have looked up as possibly
+ * alive — no reap, no sweep, no file removed, no owner counted dead.
+ *
+ * Measured: macOS refuses to exec the setuid `/bin/ps` from ANY Seatbelt sandbox, even
+ * `sandbox-exec -p '(version 1)(allow default)'` (EPERM, `posix_spawn 'ps'`), so inside
+ * one every read is null for the life of the process.
+ */
+export type ProcessTable = PsRow[] | null;
 
-/** The whole process table, synchronously (exit hooks, the sweep). */
-export function readProcessTable(): PsRow[] {
-  try {
-    return parsePsTable(
-      execFileSync("ps", PS_ARGS, {
-        env: PS_ENV,
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: ["ignore", "pipe", "ignore"],
-      })
-    );
-  } catch {
-    return [];
-  }
+const PS_ENV = { PATH: "/bin:/usr/bin:/usr/sbin:/sbin", LC_ALL: "C" };
+const PS_OPTIONS = { env: PS_ENV, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 } as const;
+
+type PsOptions = typeof PS_OPTIONS;
+
+/** How `ps` is spawned: node's `execFile`/`execFileSync`, narrowed to the one call made. */
+export interface PsSpawn {
+  execFileSync(file: string, args: string[], opts: PsOptions & { stdio: StdioPipeOut }): string;
+  execFile(
+    file: string,
+    args: string[],
+    opts: PsOptions,
+    cb: (err: Error | null, stdout: string) => void
+  ): unknown;
+}
+
+type StdioPipeOut = ["ignore", "pipe", "ignore"];
+
+let psSpawn: PsSpawn = { execFile, execFileSync };
+
+/** @internal tests: replace how `ps` is spawned; returns the previous spawn, to restore. */
+export function setPsSpawnForTest(next: PsSpawn): PsSpawn {
+  const prev = psSpawn;
+  psSpawn = next;
+  return prev;
 }
 
 /**
- * A table that does not list THIS process was not read: ps failed (EPERM in a macOS
- * sandbox that refuses the setuid /bin/ps, EAGAIN/EMFILE, maxBuffer). Every read path maps
- * failure to [], so "absent from the table" means "unknown", never "dead". No liveness or
- * destructive decision may be taken from such a table.
+ * Whether rows a `ps` run printed are a real table: they list THIS process. A run that
+ * failed part way (EAGAIN/EMFILE, maxBuffer) or printed something else does not, and no
+ * liveness or destructive decision may be taken from it.
  */
-export function processTableTrusted(table: PsRow[]): boolean {
-  return table.some((r) => r.pid === process.pid);
+export function processTableTrusted(rows: PsRow[]): boolean {
+  return rows.some((r) => r.pid === process.pid);
 }
 
-/** The whole process table without blocking the event loop (the registry tick). */
-export function readProcessTableAsync(): Promise<PsRow[]> {
+/**
+ * The table one `ps` run gives: its parsed stdout, or null when the run produced no output
+ * or no trusted table (`processTableTrusted`). Both readers end here, so they agree on
+ * what "unavailable" is.
+ */
+function tableOf(stdout: string | null): ProcessTable {
+  if (stdout === null) return null;
+  const rows = parsePsTable(stdout);
+  return processTableTrusted(rows) ? rows : null;
+}
+
+/** The whole process table, synchronously (exit hooks, the sweep); null when unavailable. */
+export function readProcessTable(): ProcessTable {
+  let stdout: string | null;
+  try {
+    stdout = psSpawn.execFileSync("ps", PS_ARGS, {
+      ...PS_OPTIONS,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    stdout = null;
+  }
+  return tableOf(stdout);
+}
+
+/**
+ * The whole process table without blocking the event loop (the registry tick); null when
+ * unavailable. Never rejects: Bun throws a spawn failure (EPERM in a sandbox) from
+ * `execFile` itself rather than passing it to the callback, so the call is guarded too.
+ */
+export function readProcessTableAsync(): Promise<ProcessTable> {
   return new Promise((resolve) => {
     try {
-      execFile(
-        "ps",
-        PS_ARGS,
-        { env: PS_ENV, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-        (err, stdout) => resolve(err ? [] : parsePsTable(String(stdout)))
+      psSpawn.execFile("ps", PS_ARGS, PS_OPTIONS, (err, stdout) =>
+        resolve(tableOf(err ? null : String(stdout)))
       );
     } catch {
-      // spawn throws synchronously for errnos other than ENOENT/EACCES/EAGAIN/EMFILE/ENFILE:
-      // EPERM when a macOS sandbox refuses to exec the setuid /bin/ps. Keep the never-reject contract.
-      resolve([]);
+      resolve(tableOf(null));
     }
   });
 }
 
-/** `lstart` of one pid, or null when it is gone. */
+/** `lstart` of one pid; null when it is gone or the table is unavailable. */
 export function lstartOf(pid: number, table?: PsRow[]): string | null {
-  const rows = table ?? readProcessTable();
+  const rows = table ?? readProcessTable() ?? [];
   return rows.find((r) => r.pid === pid)?.lstart ?? null;
 }
 
@@ -159,16 +203,16 @@ export function isPaneMagmuxCommand(command: string, paneId: string): boolean {
   return command.includes(magmuxNeedle(paneId));
 }
 
-/** `pid` is, right now, pane `paneId`'s magmux. */
+/** `pid` is, right now, verifiably pane `paneId`'s magmux (false when the table is unavailable). */
 export function isPaneMagmux(pid: number, paneId: string, table?: PsRow[]): boolean {
-  const rows = table ?? readProcessTable();
+  const rows = table ?? readProcessTable() ?? [];
   const row = rows.find((r) => r.pid === pid);
   return !!row && isPaneMagmuxCommand(row.command, paneId);
 }
 
-/** Every magmux process carrying pane `paneId` (normally zero or one). */
+/** Every magmux process verifiably carrying pane `paneId` (normally zero or one). */
 export function findPaneMagmux(paneId: string, table?: PsRow[]): PsRow[] {
-  return (table ?? readProcessTable()).filter((r) => isPaneMagmuxCommand(r.command, paneId));
+  return (table ?? readProcessTable() ?? []).filter((r) => isPaneMagmuxCommand(r.command, paneId));
 }
 
 export function paneIdentityMatches(command: string, pane: PaneIdentity): boolean {
@@ -378,6 +422,7 @@ set -f
 export LC_ALL=C
 PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7
 pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }
+ps_ok() { ps -o pid= -p $$ >/dev/null 2>&1; }
 mag=""
 mag_ok() {
   case "$mag" in (''|*[!0-9]*) return 1;; esac
@@ -429,6 +474,9 @@ launch_dir_ok() {
 const WATCHER_MAIN = `
 while IFS= read -r l; do [ "$l" = done ] && exit 0; done
 # EOF without "done": the owner is gone (SIGKILL included: the kernel closed its end).
+# No readable table (a sandbox refuses the setuid ps): nothing can be verified, so nothing
+# is signalled or removed; the files stay for a sweep that can read the table.
+ps_ok || exit 1
 find_mag
 find_pg
 for s in TERM KILL; do

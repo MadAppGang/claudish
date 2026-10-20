@@ -6,6 +6,6 @@ import { readProcessTable } from "../process-identity.js";
 const root = process.argv[2];
 if (!root) throw new Error("Expected a temporary pane root argument");
 
-const processTableRows = readProcessTable().length;
+const processTableRows = readProcessTable()?.length ?? 0;
 const result = await sweepOrphanPanes(root);
 process.stdout.write(`${JSON.stringify({ processTableRows, result })}\n`);

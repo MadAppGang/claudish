@@ -1,6 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   type GroupSnapshot,
@@ -18,10 +26,14 @@ import {
   paneIdentityMatches,
   parseGroupFile,
   parsePsTable,
+  readProcessTable,
+  readProcessTableAsync,
   sameSnapshot,
+  setPsSpawnForTest,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 import { FIXTURES } from "./test-helpers/fixtures.js";
+import { SANDBOX_REFUSED_PS, withProcessTableUnavailable } from "./test-helpers/hermetic-env.js";
 
 // A REAL `ps -ax -ww -o pid=,ppid=,pgid=,lstart=,command=` of one live pane (watcher, magmux,
 // pane leader), captured by impl3/capture-ps.ts; home paths redacted to /opt/u.
@@ -322,5 +334,113 @@ describe("the generated watcher shell agrees with the TS predicates on the same 
       expect(sh).toBe(isLaunchDirPath(root, p) ? "Y" : "N");
     }
     expect(isLaunchDirPath(root, good)).toBe(true);
+  });
+});
+
+describe("the process table when ps cannot run (macOS refuses the setuid ps in any sandbox)", () => {
+  test("a real read lists the reader itself, synchronously and asynchronously", async () => {
+    expect(readProcessTable()?.some((r) => r.pid === process.pid)).toBe(true);
+    expect((await readProcessTableAsync())?.some((r) => r.pid === process.pid)).toBe(true);
+  });
+
+  test("readProcessTableAsync resolves null, never rejects, when execFile throws synchronously", async () => {
+    // Bun throws EPERM from execFile itself; an unguarded executor rejected, and the MCP
+    // server's unhandled rejection (setPanePid) exited it with status 1
+    await withProcessTableUnavailable(async () => {
+      await expect(readProcessTableAsync()).resolves.toBeNull();
+      expect(readProcessTable()).toBeNull();
+    });
+  });
+
+  test("a failure passed to the callback, and output with no row, read as unavailable too", async () => {
+    const prev = setPsSpawnForTest({
+      ...SANDBOX_REFUSED_PS,
+      execFile: (_f, _a, _o, cb) => cb(Object.assign(new Error("ps: exit 1"), { code: 1 }), ""),
+    });
+    try {
+      expect(await readProcessTableAsync()).toBeNull();
+    } finally {
+      setPsSpawnForTest(prev);
+    }
+    const real = setPsSpawnForTest({
+      execFileSync: () => "\n",
+      execFile: (_f, _a, _o, cb) => cb(null, ""),
+    });
+    try {
+      expect(readProcessTable()).toBeNull();
+      expect(await readProcessTableAsync()).toBeNull();
+    } finally {
+      setPsSpawnForTest(real);
+    }
+  });
+
+  test.skipIf(process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec"))(
+    "inside a real macOS sandbox: both reads are unavailable and the process exits 0",
+    () => {
+      // `void …then(…)` is the shape of the real call site (pane-session setPanePid): a
+      // rejection there is unhandled and exits the process with code 1.
+      const modulePath = join(import.meta.dir, "process-identity.ts");
+      const script =
+        `import { readProcessTable, readProcessTableAsync } from ${JSON.stringify(modulePath)};\n` +
+        `const sync = readProcessTable();\n` +
+        `void readProcessTableAsync().then((t) => { console.log(String(sync) + " " + String(t)); process.exit(0); });\n` +
+        "setInterval(() => {}, 1000);\n" +
+        `setTimeout(() => { console.log("timeout"); process.exit(3); }, 10000);\n`;
+      const res = spawnSync(
+        "/usr/bin/sandbox-exec",
+        ["-p", "(version 1)(allow default)", process.execPath, "--no-env-file", "-e", script],
+        { encoding: "utf8", timeout: 20_000 }
+      );
+      expect({ status: res.status, stdout: res.stdout.trim() }).toEqual({
+        status: 0,
+        stdout: "null null",
+      });
+    },
+    30_000
+  );
+});
+
+/** The whole watcher script, its owner already gone (stdin at EOF), against a stand-in `ps`. */
+function watcherAfterOwnerDeath(psBody: string): {
+  status: number | null;
+  left: Record<string, boolean>;
+} {
+  const root = mkdtempSync(join(scratch, "wroot-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ps"), `#!/bin/sh\n${psBody}\n`, { mode: 0o755 });
+  const paneId = "c1-zz-twatch-abcdef";
+  const ctl = join(root, "launch-CtL123");
+  const turn = join(root, "launch-TuRn12");
+  const sock = join(root, `magmux-${paneId}.sock`);
+  const rec = join(root, "panes", `${paneId}.json`);
+  mkdirSync(ctl);
+  mkdirSync(turn);
+  mkdirSync(join(root, "panes"));
+  writeFileSync(sock, "");
+  writeFileSync(rec, "{}");
+  const r = spawnSync(
+    "/bin/sh",
+    ["-c", WATCHER_SCRIPT, "claudish-pane-watcher", paneId, "uuid", ctl, sock, rec, turn, root],
+    { encoding: "utf8", input: "", env: { PATH: `${bin}:/usr/bin:/bin` } }
+  );
+  const left = Object.fromEntries(
+    Object.entries({ ctl, turn, sock, rec }).map(([k, p]) => [k, existsSync(p)])
+  );
+  return { status: r.status, left };
+}
+
+describe("the watcher when its owner dies and ps cannot run", () => {
+  test("nothing verifiable: exit 1, the socket, record and dirs are kept for a later sweep", () => {
+    // what /bin/sh reports when the sandbox refuses the exec
+    const r = watcherAfterOwnerDeath('echo "ps: Operation not permitted" >&2; exit 126');
+    expect(r.status).toBe(1);
+    expect(r.left).toEqual({ ctl: true, turn: true, sock: true, rec: true });
+  });
+
+  test("control: a readable table with no pane process left → files removed, exit 0", () => {
+    const r = watcherAfterOwnerDeath(`echo "    1     1 ${leader.lstart} /sbin/launchd"`);
+    expect(r.status).toBe(0);
+    expect(r.left).toEqual({ ctl: false, turn: false, sock: false, rec: false });
   });
 });

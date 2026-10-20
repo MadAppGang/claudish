@@ -964,7 +964,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.panePidValue = pid;
     updateRecord(this.root, this.paneId, { panePid: pid });
     // never a synchronous ps on the event loop: a stalled loop gets our socket dropped as a slow consumer
-    void readProcessTableAsync().then((t) => refreshGroupOf(this, t));
+    void readProcessTableAsync().then((t) => {
+      if (t) refreshGroupOf(this, t);
+    });
   }
 
   private onFrame(f: MagmuxFrame): void {
@@ -3394,6 +3396,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** Step 0: refresh the verified group while its members still carry their identity. */
   private async captureGroupBeforeReap(): Promise<void> {
     const table = await readProcessTableAsync();
+    if (!table) return;
     if (!this.panePidValue && this.magmux?.pid) {
       const lead = table.find((r) => r.ppid === this.magmux?.pid && r.pgid === r.pid);
       if (lead) {
@@ -3404,10 +3407,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     refreshGroupOf(this, table);
   }
 
-  /** The verified group, or a recorded escaped descendant (own process group), is alive. */
+  /**
+   * The verified group, or a recorded escaped descendant (own process group), is alive.
+   * True while the table is unavailable: the reap stays unverified and keeps its files.
+   */
   private async groupAlive(): Promise<boolean> {
     if (!this.group) return false;
     const table = await readProcessTableAsync();
+    if (!table) return true;
     return groupCheck(table, this.group) || liveEscaped(table, this.group).length > 0;
   }
 
@@ -3415,6 +3422,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private async backstopTargets(): Promise<number[]> {
     if (!this.group) return [];
     const table = await readProcessTableAsync();
+    if (!table) return [];
     return [
       ...(groupCheck(table, this.group) ? [-this.group.pgid] : []),
       ...liveEscaped(table, this.group),

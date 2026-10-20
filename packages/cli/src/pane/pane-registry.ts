@@ -45,7 +45,6 @@ import {
   liveEscaped,
   mergeSnapshots,
   parseGroupFile,
-  processTableTrusted,
   readProcessTable,
   readProcessTableAsync,
   recordPathOf,
@@ -85,17 +84,21 @@ let ownStart: string | null = null;
 /** This process's `lstart` (one `ps` call, cached only when it found this process). */
 export function ownerStartOfSelf(): string {
   if (ownStart) return ownStart;
-  const row = readProcessTable().find((r) => r.pid === process.pid);
+  const row = readProcessTable()?.find((r) => r.pid === process.pid);
   if (row) ownStart = row.lstart;
   return row?.lstart ?? "";
 }
 
+/**
+ * The record's owner is alive: same pid, same start time. A record written while its owner
+ * could not read the table has no `ownerStart`, so its live pid alone counts as the owner.
+ */
 export function ownerAlive(
   rec: Pick<PaneRecord, "ownerPid" | "ownerStart">,
   table: PsRow[]
 ): boolean {
   const row = table.find((r) => r.pid === rec.ownerPid);
-  return !!row && row.lstart === rec.ownerStart;
+  return !!row && (!rec.ownerStart || row.lstart === rec.ownerStart);
 }
 
 /* ───────────────────────────── records ───────────────────────────── */
@@ -270,7 +273,8 @@ async function tick(): Promise<void> {
   if (ticking || live.size === 0) return;
   ticking = true;
   try {
-    refreshGroups(await readProcessTableAsync());
+    const table = await readProcessTableAsync();
+    if (table) refreshGroups(table);
     for (const p of live.values()) if (p.reapFailed) await p.retryReap();
   } finally {
     ticking = false;
@@ -279,10 +283,15 @@ async function tick(): Promise<void> {
 
 /* ───────────────────────────── the pane limit ───────────────────────────── */
 
-/** Records with a live owner whose reap has not finished, across every owner, plus our reservations. */
+/**
+ * Records with a live owner whose reap has not finished, across every owner, plus our
+ * reservations. With the table unavailable every such record's owner counts as alive.
+ */
 export function livePaneCount(root: string = sockRootFor()): number {
   const table = readProcessTable();
-  const counted = readRecords(root).filter((r) => !r.reapFailed && ownerAlive(r, table)).length;
+  const counted = readRecords(root).filter(
+    (r) => !r.reapFailed && (!table || ownerAlive(r, table))
+  ).length;
   return counted + reserved;
 }
 
@@ -454,9 +463,10 @@ function sweepTargets(rec: PaneRecord, root: string, table: PsRow[]): SweepTarge
 }
 
 async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets> {
-  const t = sweepTargets(rec, root, readProcessTable());
+  // an unavailable table verifies nothing, so nothing below is signalled
+  const t = sweepTargets(rec, root, readProcessTable() ?? []);
   for (const sig of ["SIGTERM", "SIGKILL"] as const) {
-    const table = readProcessTable();
+    const table = readProcessTable() ?? [];
     if (t.group && groupCheck(table, t.group)) signal(-t.group.pgid, sig);
     for (const pid of liveEscaped(table, t.group)) signal(pid, sig);
     if (t.mag && isPaneMagmux(t.mag, rec.paneId, table)) signal(t.mag, sig);
@@ -467,8 +477,8 @@ async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets
 
 async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Promise<void> {
   const table = readProcessTable();
-  if (!processTableTrusted(table)) {
-    out.kept.push(rec.paneId); // ps failed: absence is unknown, never dead
+  if (!table) {
+    out.kept.push(rec.paneId); // nothing can be verified: the owner may be alive
     return;
   }
   if (ownerAlive(rec, table)) return;
@@ -481,11 +491,8 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   const anyVerified = (t0.group && groupCheck(table, t0.group)) || t0.mag !== null;
   if (anyVerified) await killVerified(rec, root);
   const after = readProcessTable();
-  if (!processTableTrusted(after)) {
-    out.kept.push(rec.paneId);
-    return;
-  }
   const stillAlive =
+    !after ||
     (t0.group && groupCheck(after, t0.group)) ||
     liveEscaped(after, t0.group).length > 0 ||
     (t0.mag !== null && isPaneMagmux(t0.mag, rec.paneId, after));
@@ -518,8 +525,8 @@ function ownerOfIdAlive(id: string, table: PsRow[]): boolean {
 async function sweepRecordlessSocket(root: string, name: string, out: SweepResult): Promise<void> {
   const id = name.slice("magmux-".length, -".sock".length);
   const table = readProcessTable();
-  if (!processTableTrusted(table)) {
-    out.kept.push(id); // ps failed: a live magmux socket must not be unlinked
+  if (!table) {
+    out.kept.push(id); // the owner may be alive and the socket a live magmux's
     return;
   }
   if (ownerOfIdAlive(id, table)) return;
