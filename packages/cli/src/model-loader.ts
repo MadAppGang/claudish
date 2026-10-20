@@ -561,6 +561,15 @@ export function projectRecommendations(
           ? String(model.contextWindow)
           : "N/A",
       releaseDate: model.releaseDate,
+      // Capabilities come from the slim entry of the same generation. A field the
+      // catalog does not publish stays absent: unknown is never written as false.
+      ...(typeof model.supportsTools === "boolean" ? { supportsTools: model.supportsTools } : {}),
+      ...(typeof model.reasoning?.supported === "boolean"
+        ? { supportsReasoning: model.reasoning.supported }
+        : {}),
+      ...(typeof model.supportsVision === "boolean"
+        ? { supportsVision: model.supportsVision }
+        : {}),
       ...(subscription ? { subscription, subscriptions: [subscription] } : {}),
     });
   }
