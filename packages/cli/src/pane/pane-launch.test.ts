@@ -119,6 +119,7 @@ describe("pane environment", () => {
       slotEnv: { CLAUDISH_TOKEN_FILE: "/t.json" },
       cwd: "/real/cwd",
       ctlDir: "/root/launch-AAAAAA",
+      configFile: null,
     });
     for (const k of [
       "CLAUDECODE",
@@ -147,6 +148,7 @@ describe("pane environment", () => {
       slotEnv: {},
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     });
     const snap = JSON.parse(magmuxEnv.CLAUDISH_PANE_ENV as string);
     expect(snap.SHELL).toBe("/bin/zsh");
@@ -165,12 +167,38 @@ describe("pane environment", () => {
     expect(snap.CLAUDISH_PANE_CHILD).toBe("1");
   });
 
+  test("the parent's config file reaches the child in the env and the snapshot", () => {
+    // A parent started with `--config <file>`: the override is passed explicitly, so
+    // a parentEnv without CLAUDISH_CONFIG, or with another value, cannot drop it.
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv: { ...parentEnv, CLAUDISH_CONFIG: "/elsewhere.json" },
+      slotEnv: {},
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+      configFile: "/trusted/config.json",
+    });
+    expect(magmuxEnv.CLAUDISH_CONFIG).toBe("/trusted/config.json");
+    expect(JSON.parse(magmuxEnv.CLAUDISH_PANE_ENV as string).CLAUDISH_CONFIG).toBe(
+      "/trusted/config.json"
+    );
+
+    const none = buildPaneEnv({
+      parentEnv,
+      slotEnv: {},
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
+    });
+    expect(none.magmuxEnv.CLAUDISH_CONFIG).toBeUndefined();
+  });
+
   test("a caller's own CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is kept", () => {
     const { magmuxEnv } = buildPaneEnv({
       parentEnv: { ...parentEnv, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "0" },
       slotEnv: {},
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     });
     expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("0");
   });
@@ -246,6 +274,7 @@ describe("pane environment", () => {
         slotEnv: {},
         cwd: "/c",
         ctlDir: "/r/launch-AAAAAA",
+        configFile: null,
         platform: "linux",
       })
     ).toThrow(PaneEnvTooLargeError);
@@ -255,6 +284,7 @@ describe("pane environment", () => {
         slotEnv: {},
         cwd: "/c",
         ctlDir: "/r/launch-AAAAAA",
+        configFile: null,
         platform: "linux",
       })
     ).toThrow(/over Linux's 131072-byte limit per variable/);
@@ -264,6 +294,7 @@ describe("pane environment", () => {
         slotEnv: {},
         cwd: "/c",
         ctlDir: "/r/launch-AAAAAA",
+        configFile: null,
         platform: "darwin",
       })
     ).not.toThrow();
