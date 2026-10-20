@@ -104,6 +104,16 @@ export function readProcessTable(): PsRow[] {
   }
 }
 
+/**
+ * A table that does not list THIS process was not read: ps failed (EPERM in a macOS
+ * sandbox that refuses the setuid /bin/ps, EAGAIN/EMFILE, maxBuffer). Every read path maps
+ * failure to [], so "absent from the table" means "unknown", never "dead". No liveness or
+ * destructive decision may be taken from such a table.
+ */
+export function processTableTrusted(table: PsRow[]): boolean {
+  return table.some((r) => r.pid === process.pid);
+}
+
 /** The whole process table without blocking the event loop (the registry tick). */
 export function readProcessTableAsync(): Promise<PsRow[]> {
   return new Promise((resolve) => {

@@ -235,7 +235,10 @@ pane; for a declared wrapper its `editorOverride` is `delegated` ("the wrapper m
 mode itself"). If vim mode is on anyway, the gate refuses to type (`vim_mode`) and the prompt fails
 with `vim editing mode is on` — at once when the published view already says so, else after the
 in-flight send's ready wait (≤ 10 s) — instead of sitting unsent. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
-`ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
+`ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text. It cannot occur in a pure-proxy
+pane: such a pane child sets no `ANTHROPIC_API_KEY` (and deletes an inherited one), only the placeholder
+`ANTHROPIC_AUTH_TOKEN`, which alone suppresses login (`applyProxyPlaceholderAuth`; verified on
+Claude Code 2.1.304, where an env key raised "Detected a custom API key in your environment").
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
 probe was deleted (D11): with two validators the cheap one always decides and the real one is never
@@ -818,6 +821,15 @@ on its panes: without them a SIGKILLed MCP server would leave REPLs running and 
    first spawn on a root, a process sweeps it once (`ensureSwept`): records whose owner is dead and
    whose watcher is gone are killed after identity checks and removed; a recordless
    `magmux-c<pid>-*.sock` whose owner is dead is probed and cleaned.
+
+   **A process table without this process decides nothing.** Every table read maps a `ps` failure
+   to `[]` (EPERM in a macOS sandbox that refuses the setuid `/bin/ps`, EAGAIN/EMFILE, `maxBuffer`),
+   and an empty table reads as "owner dead, watcher gone". So the sweep checks
+   `processTableTrusted` on each read and, when this process is absent, keeps the pane: no kill,
+   no unlink. Measured 2026-10-21: in the madbench home sandbox a voter's nested MCP server ran the
+   sweep on the shared root and deleted a live voter's launch dir and record about 4 s after it
+   started. A nested MCP server also does not sweep at all: it registers no session tools and never
+   spawns a pane.
 3. **Shutdown hooks.** SIGINT, SIGTERM, SIGHUP and, for the MCP server, stdin EOF/close run the
    owner's `before` (the MCP server ends its session and team records there) and then reap every pane
    in parallel, then exit 128 + n (0 for stdin). `stats-buffer.ts` used to exit synchronously on
