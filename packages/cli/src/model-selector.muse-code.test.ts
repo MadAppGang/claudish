@@ -150,6 +150,9 @@ test("N3: discovery failure notice identifies the missing Muse login", async () 
 });
 
 test("N3: contributor-first cloud connections emit plain Meta specs and no implicit zgo contributor", async () => {
+  const { _setChatCapabilityCachePathForTest } = await import(
+    "./providers/transport/probe-discovery.js"
+  );
   const { createCatalogClient } = await import("./providers/model-catalog.js");
   const { servedModelsForProvider, resolveProviderExternalId } = await import(
     "./model-selector.js"
@@ -202,10 +205,12 @@ test("N3: contributor-first cloud connections emit plain Meta specs and no impli
     searchModels: async () => [],
   });
   try {
+    _setChatCapabilityCachePathForTest(cachePath);
     const rows = servedModelsForProvider("meta", catalog);
     expect(rows.map((r) => resolveProviderExternalId("meta", r))).toEqual(["muse-spark-1.3"]);
     expect(servedModelsForProvider("opencode-zen-go", catalog)).toEqual([]);
   } finally {
+    _setChatCapabilityCachePathForTest(undefined);
     _clearAllModelsCacheMemo();
   }
 });

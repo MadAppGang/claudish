@@ -131,6 +131,19 @@ export function _clearChatCapabilityIndex(): void {
   _catalogChatIndex.clear();
 }
 
+/**
+ * The catalog path {@link classifyChatCapability} reads when its caller passes none.
+ * Tests only: a caller several layers up (`servedModelsForProvider`, the picker) has
+ * no `cachePath` to forward, and Bun keeps `homedir()` on the real `~/.claudish`.
+ */
+let _defaultChatCapabilityCachePath: string | undefined;
+
+/** Point the chat filter at a test-owned catalog; `undefined` restores the real one. */
+export function _setChatCapabilityCachePathForTest(path: string | undefined): void {
+  _defaultChatCapabilityCachePath = path;
+  _catalogChatIndex.clear();
+}
+
 /** The catalog key for an id: lowercased, vendor prefix dropped (`openai/x` is `x`). */
 function catalogKey(name: string): string {
   const lower = name.toLowerCase();
@@ -271,7 +284,7 @@ export function classifyChatCapability(
 
   if (reported) return reported;
 
-  const index = catalogCapabilityIndex(cachePath);
+  const index = catalogCapabilityIndex(cachePath ?? _defaultChatCapabilityCachePath);
   const key = catalogKey(name);
 
   if (index.nonTextOutput.has(key)) return "not-chat";
