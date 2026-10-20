@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.3.1] - 2026-10-20
+
+### Bug Fixes
+
+- list ag@ models in the order agy models prints them *(picker)* ([`d8a4819`](https://github.com/MadAppGang/claudish/commit/d8a48196ff5cf28ef6eca8b52ed57faa70001823))
+- send the installed agy version in the User-Agent *(antigravity)* ([`c2ec41c`](https://github.com/MadAppGang/claudish/commit/c2ec41ccca9f8142ec4347dd6467c4d975749cc1))
+
+### Documentation
+
+- update CHANGELOG.md for v12.3.0([`7e73bb6`](https://github.com/MadAppGang/claudish/commit/7e73bb665a3cd564f959dcdf14174f3ef483033a))
+
+### Other Changes
+
+- v12.3.1 *(release)* ([`6e2ed7c`](https://github.com/MadAppGang/claudish/commit/6e2ed7c6cce2ec504a667814f12ded7434d5847c))
+
 ## [12.3.0] - 2026-10-20
 
 ### Bug Fixes
