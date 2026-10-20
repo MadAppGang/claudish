@@ -977,7 +977,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    apiKeyDescription: "OpenCode Zen API Key (Console → Settings → Service accounts)",
+    apiKeyDescription: "OpenCode Zen API Key (Console > Settings > Service accounts)",
     apiKeyUrl: "https://opencode.ai/console",
     // publicKeyFallback REMOVED (was `"public"`).
     //
@@ -1057,7 +1057,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyEnvVar: "OPENCODE_GO_API_KEY",
     siblingKeyEnvVars: ["OPENCODE_API_KEY"],
     apiKeyDescription:
-      "OpenCode Zen Go (Lite Plan) API Key (Console → Settings → Service accounts)",
+      "OpenCode Zen Go (Lite Plan) API Key (Console > Settings > Service accounts)",
     apiKeyUrl: "https://opencode.ai/console",
     shortcuts: ["zengo", "zgo"],
     shortestPrefix: "zengo",
