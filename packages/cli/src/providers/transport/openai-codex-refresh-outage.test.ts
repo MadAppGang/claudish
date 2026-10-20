@@ -106,7 +106,10 @@ function classifyConnectionError(error: unknown) {
   const failure = classifyAuthFailure(error);
   return failure.kind === "connection" ? failure.conn : null;
 }
-import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import {
+  type RemoteProvider,
+  registerSubscriptionCredentialProbe,
+} from "../../handlers/shared/remote-provider-types.js";
 const { OpenAICodexTransport } = await import("./openai-codex.js");
 
 const PROVIDER: RemoteProvider = {
@@ -306,11 +309,29 @@ describe("C4 (REQ-4) — the fixtures prove something: the classifier separates 
 
 // Section 1: actual HTTP response and request counts, not endpoint getters alone.
 describe("C2/E2: Codex handler never sends a metered request on refresh failure", () => {
+  let previousProbe: ReturnType<typeof registerSubscriptionCredentialProbe>;
+  beforeEach(() => {
+    // A throwing composite implies an available OAuth login in production.
+    previousProbe = registerSubscriptionCredentialProbe((provider) => provider === "openai-codex");
+  });
+  afterEach(() => {
+    registerSubscriptionCredentialProbe(previousProbe);
+  });
+
   test.each([
-    ["unknown refresh", () => new Error("refresh_token rejected"), 503, "transient"],
-    ["classified invalid grant login rejection", invalidGrantRejection, 400, "terminal"],
-    ["bare invalid grant", bareServerRejection, 400, "terminal"],
-  ] as const)("%s", async (_label, makeError, status, verdict) => {
+    ["unknown refresh", () => new Error("refresh_token rejected"), 503, "transient", true],
+    ["classified invalid grant login rejection", invalidGrantRejection, 400, "terminal", true],
+    ["bare invalid grant", bareServerRejection, 400, "terminal", true],
+    // Unknown metered refresh failures allow another credential: 401, no verdict.
+    [
+      "unknown refresh without a Codex login",
+      () => new Error("refresh_token rejected"),
+      401,
+      null,
+      false,
+    ],
+  ] as const)("%s", async (_label, makeError, status, verdict, hasCodexLogin) => {
+    if (!hasCodexLogin) registerSubscriptionCredentialProbe(() => false);
     const { Hono } = await import("hono");
     const { ComposedHandler } = await import("../../handlers/composed-handler.js");
     const { DefaultAPIFormat } = await import("../../adapters/base-api-format.js");
