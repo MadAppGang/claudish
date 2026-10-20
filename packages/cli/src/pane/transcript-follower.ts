@@ -45,7 +45,12 @@ import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
 export type Witness =
   | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
   /** slash command: its `<command-name>` record, or the plain user record of the typed `line` */
-  | { kind: "command"; name: string; line?: string };
+  | { kind: "command"; name: string; line?: string }
+  /**
+   * A prompt a HUMAN typed (the interactive driver, hook-system §7.5): matched by
+   * provenance, never by text. See `isHumanPrompt`.
+   */
+  | { kind: "human" };
 
 export interface TurnDelivery {
   /** absolute path of the turn file the child must Read */
@@ -91,6 +96,13 @@ export interface TurnView {
   localCommandOutput: string | null;
   /** the last RECENT_STEP_LIMIT steps of this turn, oldest first (SlotRow.recent); [] before the first */
   recent: SlotStep[];
+  /**
+   * Before the witness: the offset of the first main-chain record that shows the model
+   * working without any prompt of this turn (an assistant record, or a task notification
+   * waking it). The interactive driver reads it as a re-wake of the turn it settled
+   * (D23); panes never open a turn ahead of their own delivery and ignore it.
+   */
+  unwitnessedChatOffset: number | null;
 }
 
 export interface SessionFacts {
@@ -151,6 +163,7 @@ interface TurnState {
   localOutput: { text: string; offset: number } | null;
   /** at most RECENT_STEP_LIMIT, oldest dropped first */
   steps: SlotStep[];
+  unwitnessedChat: number | null;
 }
 
 export interface FollowerState {
@@ -254,7 +267,30 @@ function isLocalCommandSystem(r: Rec): boolean {
   return r.type === "system" && r.subtype === "local_command" && !r.isSidechain;
 }
 
+const INTERRUPT_PREFIX = "[Request interrupted by user";
+
+/**
+ * A prompt a human typed, by PROVENANCE (hook-system §3.2, §7.5): a main-chain user
+ * record that is not `isMeta`, carries no `tool_result`, and is none of the records
+ * Claude Code writes on its own — a task notification, a local command's records, an
+ * interrupt marker, a compact summary. When the record carries `origin` (2.1.290+ always
+ * does for typed prompts), `origin.kind` must be `"human"`. A background notification
+ * (`origin.kind: "task-notification"`) therefore never reads as a human turn, so a D23
+ * re-wake stays the turn it woke.
+ */
+export function isHumanPrompt(record: Record<string, unknown>): boolean {
+  const r = record as Rec;
+  if (!isMainUser(r) || r.isMeta || hasToolResult(r) || r.isCompactSummary) return false;
+  if (isTaskNotification(r)) return false;
+  const text = userText(r);
+  if (!text.trim() || isLocalCommandText(text) || text.startsWith(INTERRUPT_PREFIX)) return false;
+  const origin = r.origin;
+  if (origin !== undefined && origin !== null) return origin?.kind === "human";
+  return true;
+}
+
 function matchesWitness(r: Rec, w: Witness): boolean {
+  if (w.kind === "human") return isHumanPrompt(r);
   // Some local commands are written as system records, not user records (captured:
   // 2.1.291 `/color yellow` → two `system/local_command` records).
   if (w.kind === "command" && isLocalCommandSystem(r))
@@ -497,7 +533,7 @@ function applyUser(t: TurnState, r: Rec, offset: number): void {
     applyLocalCommandRecord(t, text, offset);
     return;
   }
-  if (text.startsWith("[Request interrupted by user")) {
+  if (text.startsWith(INTERRUPT_PREFIX)) {
     t.interrupt = { forToolUse: text.includes("for tool use") };
     t.pending.clear();
     t.pendingInput.clear();
@@ -546,6 +582,8 @@ export function applyRecord(
 
   if (t.acceptedAt === null) {
     acceptIfWitness(t, r, offset);
+    if (t.acceptedAt === null && t.unwitnessedChat === null && wakesModel(r))
+      t.unwitnessedChat = offset;
     return state;
   }
 
@@ -558,6 +596,12 @@ export function applyRecord(
   applyQueuedNotification(t, r); // attachment records only; the predicate rejects every other type
   // compact_boundary carries no turn fact; compactions are counted on the isCompactSummary record
   return state;
+}
+
+/** A main-chain record that shows the model working with no prompt: its reply, or a notification. */
+function wakesModel(r: Rec): boolean {
+  if (r.type === "assistant") return true;
+  return isMainUser(r) && !hasToolResult(r) && isTaskNotification(r);
 }
 
 function applyTurnDuration(state: FollowerState, t: TurnState, r: Rec): void {
@@ -622,6 +666,7 @@ export function openTurnState(
     lastChatOffset: null,
     localOutput: null,
     steps: [],
+    unwitnessedChat: null,
   });
   return state;
 }
@@ -676,6 +721,7 @@ export function turnView(t: TurnState): TurnView {
     lastChatOffset: t.lastChatOffset,
     localCommandOutput: t.localOutput?.text ?? null,
     recent: [...t.steps],
+    unwitnessedChatOffset: t.unwitnessedChat,
   };
 }
 
@@ -690,6 +736,12 @@ export class Tail {
   offset = 0;
   private rest: Buffer = Buffer.alloc(0);
   constructor(readonly path: string) {}
+
+  /** Read again from byte `offset` (a line start): the next `read()` returns every line from there. */
+  seek(offset: number): void {
+    this.offset = Math.max(0, offset);
+    this.rest = Buffer.alloc(0);
+  }
 
   /** Read appended bytes; return complete lines with the byte offset each starts at. */
   read(): Array<{ offset: number; line: string }> {
@@ -799,6 +851,23 @@ export class TranscriptFollower {
     openTurnState(this.state, t);
   }
 
+  /**
+   * Re-open turn `t` from its own offset and fold its records again. The interactive
+   * driver does this on a re-wake (D23): it had opened the NEXT turn after the settle,
+   * so the continuation's records were read into a turn that never accepted them. Usage,
+   * tool ids and assistant ids are keyed, so folding a record twice counts it once.
+   */
+  rewindTo(t: {
+    index: number;
+    offset: number;
+    witness: Witness;
+    delivery?: TurnDelivery | null;
+  }): void {
+    this.main.seek(t.offset);
+    openTurnState(this.state, t);
+    this.poll();
+  }
+
   markSettled(): void {
     this.settled++;
   }
@@ -836,6 +905,24 @@ export class TranscriptFollower {
       session: { ...this.state.session },
     };
   }
+}
+
+/**
+ * The byte offset of the line holding the LAST human prompt in a transcript, or null
+ * when it holds none. The interactive driver opens a turn there when it learns a session
+ * id from a proxy request rather than minting it (`--resume`, `--continue`,
+ * `--fork-session`, `/clear`): Claude Code writes the prompt before it sends the
+ * request that names the session, so the prompt is already on disk and is the turn's
+ * witness.
+ */
+export function lastHumanPromptOffset(path: string): number | null {
+  const tail = new Tail(path);
+  let found: number | null = null;
+  for (const { offset, line } of tail.read()) {
+    const rec = parse(line);
+    if (rec && isHumanPrompt(rec)) found = offset;
+  }
+  return found;
 }
 
 function fileSize(p: string): number {
