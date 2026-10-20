@@ -734,7 +734,8 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
       detail: `no base URL resolved — check ${overrides || "the provider's baseUrl"}`,
     });
   }
-  const endpoint = registryModelsEndpoint(providerName, def) ?? `${baseUrl}${descriptor.path}`;
+  const definitionEndpoint = `${baseUrl}${descriptor.path}`;
+  let endpoint = registryModelsEndpoint(providerName, def) ?? definitionEndpoint;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
@@ -793,13 +794,24 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
     ...headers,
   };
 
+  const fetchList = (url: string) =>
+    fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+
   let response: Response;
   try {
-    response = await fetch(endpoint, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    response = await fetchList(endpoint);
+    // The registry publishes API bases, not a model-list URL, so the registry
+    // endpoint is DERIVED (`<chat base>/models`). That holds for Zen
+    // (`inference/v1`) but not for Zen Go, whose APIs split by family
+    // (`inference/go/openai/v1`) while its list sits at `inference/go/v1/models`.
+    // Measured 2026-10-20, one key: the derived URL answers 404, the
+    // definition's `zen/go/v1/models` answers 200 with 37 models. A 404 says
+    // "no list at this address", never anything about entitlement, so the
+    // definition's URL gets one try before the failure is recorded.
+    if (response.status === 404 && endpoint !== definitionEndpoint) {
+      endpoint = definitionEndpoint;
+      response = await fetchList(endpoint);
+    }
   } catch (e: unknown) {
     return recordFailure({
       kind: "unreachable",
@@ -863,7 +875,7 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
 
   _failures.delete(providerName);
   log(
-    `[model-discovery:${providerName}] discovered ${models.length} models: ` +
+    `[model-discovery:${providerName}] discovered ${models.length} models from ${endpoint}: ` +
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")
   );
   _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
