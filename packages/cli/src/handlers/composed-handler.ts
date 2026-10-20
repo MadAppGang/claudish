@@ -303,6 +303,16 @@ export interface ComposedHandlerOptions {
   wireMode?: WireMode;
   /** `#<speed>` on the model spec, refused where the wire does not publish it. */
   wireSpeed?: WireSpeed;
+  /**
+   * Who issues requests through this handler. `"advisor"` marks a handler built
+   * for `--advisor` panel and collector calls, which claudish issues itself:
+   * it writes no status-line token file (the main session owns it), skips the
+   * plan-usage scrape and poll (that reading belongs on the main status line
+   * too), starts no Layer 4 session (a panel call is not a harness turn), and
+   * tags every stats event `request_role: "advisor"`. Absent on every handler
+   * that serves Claude Code's own requests.
+   */
+  requestRole?: "advisor";
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -463,6 +473,7 @@ export class ComposedHandler implements ModelHandler {
       providerName: provider.name,
       modelName: this.bareModelName,
       providerDisplayName: provider.displayName,
+      ...(options.requestRole === "advisor" ? { writesTokenFile: false } : {}),
     });
   }
 
@@ -571,7 +582,9 @@ export class ComposedHandler implements ModelHandler {
    * missed by a site added later.
    */
   private emitStats(event: Parameters<typeof recordStats>[0]): void {
-    recordStats(event);
+    recordStats(
+      this.options.requestRole ? { ...event, request_role: this.options.requestRole } : event
+    );
   }
 
   /**
@@ -1271,23 +1284,28 @@ export class ComposedHandler implements ModelHandler {
 
     // 3c. Layer 4 — harness-convention conformance. Session is per-request so
     // two concurrent turns on this cached handler cannot share detected state.
-    const behaviorSession = this.behaviorEngine.startSession({
-      modelId: this.bareModelName,
-      providerName: this.provider.name,
-      // A naming rule, not a pinned model list: Claude models are `claude-*`, and
-      // they already follow these conventions (measured 87/87 on plan mode).
-      //
-      // `forceForeignModel` is the one escape hatch, and it exists because the
-      // name is not always evidence: a subscription aggregator can serve uids
-      // like `claude-sonnet-5-medium` that match this test while being reached
-      // over a foreign protocol, where the 87/87 measurement says nothing. The
-      // flag is opt-in per provider profile, so the global rule — and every
-      // other provider's behaviour — is unchanged.
-      isNativeAnthropic:
-        !this.options.forceForeignModel &&
-        (/^claude[-.]/i.test(this.bareModelName) || this.provider.name === "anthropic"),
-    });
-    if (!behaviorSession.isNoop) {
+    // An advisor handler starts none: a panel call is not a harness turn, and
+    // its request carries no session id whose corrections it could drain.
+    const behaviorSession =
+      this.options.requestRole === "advisor"
+        ? undefined
+        : this.behaviorEngine.startSession({
+            modelId: this.bareModelName,
+            providerName: this.provider.name,
+            // A naming rule, not a pinned model list: Claude models are `claude-*`, and
+            // they already follow these conventions (measured 87/87 on plan mode).
+            //
+            // `forceForeignModel` is the one escape hatch, and it exists because the
+            // name is not always evidence: a subscription aggregator can serve uids
+            // like `claude-sonnet-5-medium` that match this test while being reached
+            // over a foreign protocol, where the 87/87 measurement says nothing. The
+            // flag is opt-in per provider profile, so the global rule — and every
+            // other provider's behaviour — is unchanged.
+            isNativeAnthropic:
+              !this.options.forceForeignModel &&
+              (/^claude[-.]/i.test(this.bareModelName) || this.provider.name === "anthropic"),
+          });
+    if (behaviorSession && !behaviorSession.isNoop) {
       behaviorSession.applyRequest(claudeRequest, claudeRequest.tools ?? [], tools, messages);
     }
 
@@ -3279,6 +3297,8 @@ export class ComposedHandler implements ModelHandler {
    * disturbing a turn over.
    */
   private capturePlanUsage(response: Response): void {
+    // The plan reading feeds the main status line; an advisor handler has none.
+    if (this.options.requestRole === "advisor") return;
     try {
       const adapter = resolveQuotaAdapter(this.provider.name);
       if (!adapter) return;

@@ -104,6 +104,7 @@ export interface ProfileContext {
     | "codeMode"
     | "wireMode"
     | "wireSpeed"
+    | "requestRole"
   >;
 }
 

@@ -24,6 +24,13 @@ export interface TokenTrackerConfig {
   modelName: string;
   /** Display name for the provider (e.g., "OpenAI", "Gemini") */
   providerDisplayName?: string;
+  /**
+   * `false` keeps every counter but never writes the status-line token file.
+   * An `--advisor` panel handler sets it: the file is keyed by
+   * `CLAUDISH_TOKEN_FILE` before the port, so no port value can keep a panel
+   * call from repainting the main session's status line. Default `true`.
+   */
+  writesTokenFile?: boolean;
 }
 
 /**
@@ -493,6 +500,8 @@ export class TokenTracker {
   }
 
   private writeFile(inputTokens: number, outputTokens: number, isEstimate?: boolean): void {
+    // The choke point of every write: each update path ends here.
+    if (this.config.writesTokenFile === false) return;
     try {
       const total = inputTokens + outputTokens;
       const cw = this.config.contextWindow;
