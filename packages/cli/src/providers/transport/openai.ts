@@ -6,6 +6,7 @@
  * Includes 30-second timeout with detailed error reporting.
  */
 
+import { callAbortError, sleepUnlessAborted } from "../../handlers/shared/call-context.js";
 import { isQuotaExhaustionError } from "../../handlers/shared/quota-exhaustion.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
@@ -110,7 +111,10 @@ export class OpenAIProviderTransport implements ProviderTransport {
    * skip the retry chain entirely: retrying a balance error wastes wall
    * clock and lies about endpoint health.
    */
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+  async enqueueRequest(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
     const maxRetries = 2;
     let lastResponse: Response | null = null;
 
@@ -141,12 +145,16 @@ export class OpenAIProviderTransport implements ProviderTransport {
           log(
             `[${this.displayName}] 429 rate limited, retry ${attempt + 1}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`
           );
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          // An internal call's deadline ends the wait (see the catch below).
+          if (await sleepUnlessAborted(delayMs, opts?.signal)) throw callAbortError();
           continue;
         }
 
         return response;
       } catch (fetchError: any) {
+        // The caller's own deadline, not this transport's 30 s timeout: the
+        // abort is rethrown unchanged, so it is never reported as a timeout.
+        if (opts?.signal?.aborted) throw fetchError;
         if (fetchError.name === "AbortError") {
           log(`[${this.displayName}] Request timed out after 30s`);
           throw new OpenAITimeoutError(this.provider.baseUrl, fetchError);
