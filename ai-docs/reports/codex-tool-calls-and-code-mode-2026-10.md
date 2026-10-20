@@ -1,6 +1,6 @@
 # Codex tool calls: zero-delta fix, parallel-wrapper retry, code mode (2026-10)
 
-Branch `worktree-investgiage-gpt-file`, base `086cf608`, 69 commits. Sibling report:
+Branch `worktree-investgiage-gpt-file`, base `086cf608`. Sibling report:
 `codex-parallel-wrapper-degeneration-2026-10.md` (the request-factor experiment, part B).
 
 ## The defect
@@ -73,13 +73,16 @@ request shape from the design, not from the harness.
 
 ## Open items
 
-- The commits are unsigned (1Password signing was unavailable); re-sign before any push and reword:
-  `eefa4f8a` (89 chars), `039d3b44` (77), `a2452d0d` (73), `932f27e1` (74); scope `code-mode` →
-  `openai-codex` on `c804ae84`, `88561b8d`.
+- Re-run check: `ai-docs/benches/codex-code-mode/` (madbench; `classic`, `auto`, `auto-edit` on
+  `cx@gpt-6.1-sol`, subscription only). First run 2026-10-20 on Claude Code 2.1.304: 15/15, 19/19 exec
+  scripts resumed, 0 input errors in tool_results. Needs `--concurrency 1` (cause unknown). Claude Code
+  2.1.303, where D1 lived, was not pinned.
 - Behaviour changes outside code mode, for the PR and release notes: `d6629064` identity-filters
   `instructions` on every `cx@`/`openai@` Responses request; a 401 whose forced refresh lands on another
   ChatGPT account is answered with the upstream 401, not resent (`1fe1b580`, `a808fab2`).
-- `openai@` regression check not run (no API credits).
+- `openai@` regression check (V3) not run: on 2026-10-20, after a credit top-up, the Keychain
+  `OPENAI_API_KEY` (`sk-proj-…`) still got `credit_balance_exhausted` inside a 200 stream; claudish
+  reached `https://api.openai.com/v1/responses` on the `direct-api` arm as intended.
 - Not proven live: a mixed classic/code-mode history after `--resume`; Esc on a nested permission prompt.
 - Not covered by tests (no seam or no capture): the real OAuth refresh single-flight; `codeMode` through a
   provider profile; an image tool_result inside an exec output.
