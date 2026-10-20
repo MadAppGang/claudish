@@ -249,7 +249,7 @@ let discoveredProjectSettled: VertexProjectOrigin | null | undefined;
 let syncAdcOrigin: VertexProjectOrigin | null | undefined;
 
 /**
- * Reset the discovery memos. Test seam — production resolves once per process.
+ * Reset the discovery memos, including when credentials.invalidate("vertex") runs after ADC login.
  */
 export function resetVertexProjectDiscovery(): void {
   discoveredProjectPromise = null;
@@ -304,6 +304,29 @@ export function describeVertexProjectSource(origin: VertexProjectOrigin): string
  */
 export const VERTEX_SET_PROJECT_REMEDY =
   "set VERTEX_PROJECT or run `gcloud config set project <id>`";
+
+/** Report the upstream refusal first, then account and project facts and how to change accounts. */
+export function describeVertexAccessDenied({
+  status,
+  upstream,
+  projectId,
+  origin,
+  account,
+}: {
+  status: number;
+  upstream: string;
+  projectId: string;
+  origin: VertexProjectOrigin | null;
+  account?: string;
+}): string {
+  const segments = [`HTTP ${status}: ${upstream}`];
+  if (account) segments.push(`ADC account ${account}`);
+  segments.push(
+    `project ${projectId}` + (origin ? ` (from ${describeVertexProjectSource(origin)})` : "")
+  );
+  segments.push("to sign in as another account: gcloud auth application-default login");
+  return segments.join(" · ");
+}
 
 /** The same two remedies, plus the fact that rules out the third guess. */
 export const VERTEX_NO_PROJECT_REMEDY = `${VERTEX_SET_PROJECT_REMEDY} — Vertex takes no API key`;
@@ -618,6 +641,11 @@ export function buildVertexOAuthEndpoint(
 
 // Singleton instance
 let authManagerInstance: VertexAuthManager | null = null;
+
+/** Drop the cached token after the ADC login changes. */
+export function resetVertexAuthManager(): void {
+  authManagerInstance = null;
+}
 
 /**
  * Get the shared VertexAuthManager instance
