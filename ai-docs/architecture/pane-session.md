@@ -613,8 +613,10 @@ run the user's profile.
 
 - **The snapshot.** The owner passes its environment as JSON in `CLAUDISH_PANE_ENV` — inherited,
   never written to disk, the same exposure class as the variables themselves. The child claudish
-  (`pane/child-env.ts`, imported first by `index.ts`) sets every snapshot key, removes every key the
-  snapshot lacks except the shell-managed ones, then deletes `CLAUDISH_PANE_ENV`. A profile that
+  (`pane/child-env.ts`, imported by `index.ts` right after `launch-guard.ts`) sets every snapshot
+  key, removes every key the snapshot lacks except the shell-managed ones, then deletes
+  `CLAUDISH_PANE_ENV`. The markers and the snapshot are control variables: no env file in the
+  child's cwd can set them (`launch-env.ts`, `ai-docs/architecture/hooks.md`). A profile that
   re-exports `OPENAI_API_KEY` or `CLAUDE_CONFIG_DIR` is undone. On Linux a snapshot over 131,000
   bytes fails the start (`MAX_ARG_STRLEN` is 131,072 per string).
 - **The shim.** `SHELL=<ctl>/sh-shim`, set after the snapshot is taken: `[ "$1" = -l ] && shift;
@@ -631,7 +633,9 @@ run the user's profile.
   `CLAUDISH_UPSTREAM_ERROR_LOG`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` when the owner left
   it unset (it suppresses side calls billed on the routed model), with `CLAUDE_CODE_NATIVE_CURSOR=1`
   under the same rule (traffic off makes Claude self-draw a reverse-video cursor on the faint
-  placeholder, which the input gate reads as `box_not_empty`).
+  placeholder, which the input gate reads as `box_not_empty`). For every child, also
+  `CLAUDISH_HOOK_INBOX` (the owner-created hook inbox) and `CLAUDISH_HOOK_SESSION`
+  (`{"kind","id","role"}`); see [`hooks.md`](hooks.md).
 - **`MAGMUX_*` survives in the child.** magmux injects `MAGMUX_SOCK` into the pane; it is excluded
   from the snapshot and kept when the snapshot is applied, so the child knows it is already inside a
   multiplexer and never wraps itself in a second magmux.
@@ -642,8 +646,10 @@ run the user's profile.
   argv, and any positional token or `--`, by claudish's own value-consumption rule). After
   `parseArgs` the child asserts it is interactive, not a team run, with no positional prompt;
   otherwise it prints `claudish: pane child refused: <reason>` and exits 64 (FAILED `child_exited`).
-- `CLAUDISH_PANE_ENV` and `CLAUDISH_PANE_CWD` (`PANE_LAUNCH_VARS`) are deleted from Claude Code's
-  own environment. `CLAUDISH_PANE_CHILD` is KEPT there; the next section says why.
+- `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX` and `CLAUDISH_HOOK_SESSION`
+  survive the snapshot. `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD` and the two hook markers
+  (`PANE_LAUNCH_VARS`) are deleted from Claude Code's own environment, so the model never sees the
+  inbox path. `CLAUDISH_PANE_CHILD` is KEPT there; the next section says why.
 
 **One level of nesting.** A `create_session` child (gpt-6.1-sol) once called the claudish MCP
 `create_session` itself; that session (#969aa2) failed `prompt_not_accepted`. It was a claudish MCP
@@ -923,8 +929,9 @@ terminals absorb, so a late pane `exit` cannot overturn a CANCELLED or TIMEOUT.
 | phase | wire state | leaves by |
 |---|---|---|
 | BOOTING | STARTING | gate `ready` (IDLE, or ADMITTING with a queued prompt); boot dialog, blocked screen, 90 s → FAILED; binding check failed → FAILED `pane_lost` |
-| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send) |
-| RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED |
+| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send); an unaccepted hook injection in a one-shot session → SETTLING (`hook_admit_abandoned`), which concludes on the chain so far |
+| RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED; with a hook binding and idle work, `settle_hold` → SETTLING |
+| SETTLING | RUNNING (activity `hook`) | only with a hook binding: the settled turn is recorded and `sessionIdle` runs. `hold_inject` → IDLE (an injection is admitted next); `hold_rewake` → RUNNING (same turn); `turn_continue` → IDLE; the verdict → COMPLETED / EMPTY / FAILED. See [`hooks.md`](hooks.md) |
 | IDLE | AWAITING_INPUT | queued send → ADMITTING; background re-wake → RUNNING (same turn); clean exit after `/exit` or ≥ 1 settled turn → COMPLETED |
 | QUESTION | AWAITING_INPUT | the tool resolves → RUNNING; `onBlocked` verdict → FAILED |
 | PERMISSION | AWAITING_PERMISSION | same as QUESTION |
@@ -949,7 +956,8 @@ type and new fields may only be added.
   and out, `cost_usd` (always null for native Claude routes — Claude Code's own cost is API-rate
   pricing, fictional spend for a subscription user; D12), tool calls, turns completed,
   `last_activity_at`, `idle_seconds`, `activity` (`thinking`, `background`, `finishing`, a tool name,
-  `AskUserQuestion`; unknown values mean busy) and `pane`.
+  `AskUserQuestion`, `hook` while a settled turn's hooks run; unknown values mean busy) and `pane`.
+  `hook` needed no version change, because an unknown value already meant busy.
 - `reason_detail` (added within v1, 2026-10-16) is one line, at most 160 characters, saying why
   `reason`: for `api_error` the provider's `error.message` from the LAST record of the upstream-error
   capture (`errors/<slot>-upstream.jsonl` for team, `upstream-errors.jsonl` for a session), else the

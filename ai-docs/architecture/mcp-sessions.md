@@ -242,9 +242,11 @@ server's own `hostPid`.
 ### `meta.json` — the final record, and `events.jsonl`'s assistant lines
 
 `meta.json` is written once, at the terminal transition and before the pane is reaped, through
-`toMetaRecord`. It keeps every 10.4.0 key under its 10.4.0 name, because the monitor reads
-`status` (an unknown value reads as `failed`), `terminalReason`, `elapsedSeconds`,
-`turnsCompleted`, `toolCallCount`, `costUsd` and `exitCode`:
+`toMetaRecord`. Its existence is the run's end record: the magus `claudish-usage` skill and the
+multimodel `team` and `delegate` commands wait, bounded, for this file to appear. It keeps every
+10.4.0 key under its 10.4.0 name, because the monitor reads `status` (an unknown value reads as
+`failed`), `terminalReason`, `elapsedSeconds`, `turnsCompleted`, `toolCallCount`, `costUsd` and
+`exitCode`:
 
 - `status`: COMPLETED → `completed`; FAILED and EMPTY → `failed`; CANCELLED → `cancelled`;
   TIMEOUT → `timeout`;
@@ -260,6 +262,22 @@ server's own `hostPid`.
 
 `events.jsonl` carries one `assistant` line per main-chain message id, first-seen order, each once,
 which is exactly what the monitor counts as replies (RB5).
+
+### Hook records in an MCP session
+
+When hooks are loaded ([`hooks.md`](hooks.md)), an MCP session's records gain these, all
+additive:
+
+- `<sessionDir>/hook-inbox.jsonl`, created (0600) for **every** child before it spawns and named in
+  the child's `CLAUDISH_HOOK_INBOX`. The child's proxy appends `stop`, `inject`, `annotate`, `end` and
+  `capped` lines; the server reads it at each settle and deletes it at reap.
+- `events.jsonl` anomaly keys: `hook_injection_delivered`, `hook_injection_dropped:<reason>`,
+  `hook_injection_not_read`, `hook_hold_error`, `hook_hold_watchdog`.
+- `get_diagnostics` adds `pendingHookInputs`, and its `phase` can read `SETTLING` while
+  `sessionIdle` hooks run. The row `state` stays `RUNNING`, with activity `hook`, which `sessionEventFor`
+  reports as `running`, never `tool_executing`. `pendingInputs` still counts caller input only.
+- A one-shot session that a hook extends stays `RUNNING` across its turn chain, and its output grows
+  turn by turn: each chain turn's answer is appended when the turn is recorded, before any hook runs.
 
 ### Diagnostics are captured unconditionally, and reachable from the API
 
