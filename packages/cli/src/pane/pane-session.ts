@@ -329,7 +329,7 @@ export interface PaneSessionOptions {
     replStableMs?: number;
     /** H-31: hold the exit-path screen capture this long, as a slow magmux reply does */
     exitCaptureDelayMs?: number;
-    /** the admission bound, through owners that do not pass `admitTimeoutMs` (H-13, H-14) */
+    /** a LATER admission's bound, through owners that do not pass `admitTimeoutMs` (H-13 … H-15) */
     admitTimeoutMs?: number;
     /** a frame polls the transcript only this long after the last poll (default 250) */
     pollDebounceMs?: number;
@@ -1308,11 +1308,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /**
    * An admission's bound. `admitTimeoutMs` bounds only the CREATED prompt's admission, as its
-   * option says; the test-only `timings.admitTimeoutMs` bounds every admission, for owners
-   * that do not pass `admitTimeoutMs` (H-13, H-14).
+   * option says; the test-only `timings.admitTimeoutMs` bounds only a LATER one (an injected
+   * turn, H-13 … H-15), for owners that do not pass `admitTimeoutMs`. A bound must leave room
+   * for one gated send (`readyTimeoutFor`), else no attempt is made at all.
    */
   private admitBoundMs(initial: boolean): number {
-    if (initial) return this.admitTimeoutMs();
+    if (initial) return this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS;
     return this.o.timings?.admitTimeoutMs ?? ADMIT_TIMEOUT_MS;
   }
 
@@ -1529,7 +1530,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         ? { file: plan.file, text: plan.fileContent }
         : null;
     this.follower.openTurn({ index, offset, witness: plan.witness, delivery });
-    const adm = newAdmission({ index, item, text, plan, initial, bound: this.admitBoundMs(initial) });
+    const adm = newAdmission({
+      index,
+      item,
+      text,
+      plan,
+      initial,
+      bound: this.admitBoundMs(initial),
+    });
     this.admission = adm;
     void this.runAdmission(adm);
   }

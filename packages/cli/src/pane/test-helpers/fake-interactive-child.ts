@@ -560,7 +560,11 @@ interface TurnScript {
   partial?: string;
   /** write this text (if non-empty), then open an AskUserQuestion and wait for Esc */
   ask?: string;
-  /** never write the user record: the turn is never accepted */
+  /**
+   * the turn is never accepted: no user record and no echo in the conversation, so neither
+   * claudish's witness nor magmux's input gate (whose `history` evidence is that echo) has
+   * evidence it was submitted
+   */
   noWitness?: boolean;
   /** exit with this code as soon as the line is submitted (before any witness) */
   exitOnSubmit?: number;
@@ -1206,10 +1210,7 @@ async function submit(line: string, opts: { argv?: boolean } = {}): Promise<void
         await sleep(30);
         return await quit(sc.exitOnSubmit);
       }
-      if (sc.noWitness) {
-        S.history.push(`❯ ${line.split("\n")[0]}`);
-        return;
-      }
+      if (sc.noWitness) return;
       // A command-line prompt is written at once, before the REPL is drawn.
       if (!opts.argv) await sleep(gap("WITNESS", 50));
       rec.user(line);

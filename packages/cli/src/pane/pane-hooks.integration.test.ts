@@ -110,6 +110,13 @@ function engineOf(...defs: Array<Omit<HookDefinition, "apiVersion">>) {
 
 const after = <T>(ms: number, v: T) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 
+/**
+ * An injected turn's admission bound in the never-accepted rows: enough for ONE gated send
+ * of a short line (its budget, ~13 s with a 1 s readiness wait), so the line is typed and
+ * magmux answers before the bound drops it.
+ */
+const HOOK_ADMIT_BOUND_MS = 16_000;
+
 /* ───────────────────────────── helpers ───────────────────────────── */
 
 interface TurnScript {
@@ -643,7 +650,8 @@ wait $child
         const x = await team({
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
-          timings: { admitTimeoutMs: 1_500 },
+          // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
+          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
         });
         try {
           await until(() => ctl.calls.length === 1, "settle() 1");
@@ -654,6 +662,7 @@ wait $child
           expect(ctl.dropped).toEqual([{ text: "HOOK-PING", reason: "send_not_accepted" }]);
           for (const m of Object.values(getStatus(x.handle.sessionPath).models))
             expect(["RUNNING", "AWAITING_INPUT"]).not.toContain(m.state);
+          expect(keylog(x.t)).toContain("HOOK-PING");
         } finally {
           await teamDone(x);
         }
@@ -691,7 +700,8 @@ wait $child
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
-          timings: { admitTimeoutMs: 1_500 },
+          // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
+          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -702,6 +712,8 @@ wait $child
           expect(c.rowEvents()).not.toContain("waiting_for_input");
           expect(lineCount(c.output(), "ANS-ONE")).toBe(1);
           expect(ctl.dropped).toEqual([{ text: "HOOK-PING", reason: "send_not_accepted" }]);
+          // typed and submitted, never accepted: not dropped before a send was made
+          expect(keylog(c.t)).toContain("HOOK-PING");
         } finally {
           await done(c);
         }
@@ -717,7 +729,8 @@ wait $child
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
           prompt: null,
-          timings: { admitTimeoutMs: 1_500 },
+          // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
+          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
         });
         try {
           await until(() => c.info().state === "AWAITING_INPUT", "boot");
@@ -730,6 +743,7 @@ wait $child
           );
           await until(() => c.info().state === "AWAITING_INPUT", "AWAITING_INPUT");
           expect(lineCount(c.output(), "ANS-ONE")).toBe(1);
+          expect(keylog(c.t)).toContain("HOOK-PING");
         } finally {
           await done(c);
         }

@@ -42,6 +42,11 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log, logStderr } from "../../logger.js";
+import {
+  SEND_READY_WAIT_DEFAULT_MS,
+  classifySendReply,
+  sendBudgetMs,
+} from "../../pane/input-gate.js";
 import { MagmuxClient } from "../../pane/magmux-client.js";
 import { findOwnPane } from "../../pane/own-pane.js";
 import {
@@ -65,8 +70,8 @@ import {
 } from "../../pane/screen-model.js";
 import {
   CORROBORATION_MS,
+  type CorroborationFacts,
   SECONDARY_QUIET_MS,
-  type ScreenFacts,
   decideSettle,
 } from "../../pane/settle-rule.js";
 import {
@@ -109,6 +114,8 @@ const WATCH_FPS = 4;
 const REPL_STABLE_MS = 500;
 /** How long a session id learned from a request may wait for its transcript to appear. */
 const RETARGET_WAIT_MS = 10_000;
+/** Added to a send's budget for the client timeout, as a pane does. */
+const SEND_CLIENT_SLACK_MS = 2_000;
 /** How long a lost send reply waits for `reconnect()` before the admission fails. */
 const RECONNECT_WAIT_MS = 10_000;
 const DEFAULT_MAX_CONSECUTIVE = 3;
@@ -700,12 +707,19 @@ export class InteractiveDriver {
     this.transition("admit_failed");
   }
 
-  private screenFacts(): ScreenFacts | null {
+  /**
+   * Settle corroboration in the settle rule's shape. The driver reads the SCREEN, not
+   * magmux's input gate: the pane it follows may be ungated (an ambient pane, a test's
+   * headless one), and the gate's published view names pane 0 only. So `gate.ready` is
+   * the screen's box drawn and empty with no choice dialog, as the driver settled on
+   * before; corroboration can delay a transcript-proven ending, never veto it (the
+   * settle rule's grace).
+   */
+  private corroborationFacts(): CorroborationFacts | null {
     if (!this.client) return null;
-    const box = inputBox(this.screen);
+    const reason = screenNotIdleReason(this.screen);
     return {
-      boxEmpty: !!box && box.text === "",
-      choiceDialog: hasChoiceDialog(this.screen),
+      gate: { ready: reason === null, dialog: null, reason },
       working: isWorking(this.screen),
       aboveBoxQuietMs: Date.now() - this.screen.aboveBoxChangedAt,
     };
@@ -721,10 +735,12 @@ export class InteractiveDriver {
       session: view.session,
       transcriptQuietMs: now - (view.lastAppendAt ?? this.startedAt),
       chatQuietMs: now - this.lastChatSeenAt,
-      screen: this.screenFacts(),
+      facts: this.corroborationFacts(),
       paneExited: false,
       secondaryQuietMs: this.ms("secondaryQuietMs", SECONDARY_QUIET_MS),
       corroborationMs: this.ms("corroborationMs", CORROBORATION_MS),
+      // the grace is the secondary window, as a pane's (`GATE_GRACE_MS`)
+      corroborationGraceMs: this.ms("secondaryQuietMs", SECONDARY_QUIET_MS),
     });
     if (decision.settled) this.record(t, decision.by === "local_command", decision.stopReason);
   }
@@ -996,15 +1012,34 @@ export class InteractiveDriver {
     }
     this.transition("deliver");
     const adm = this.admission;
+    // On a pane magmux gates (its command names Claude Code, as the `-w` wrap's does) the send waits for
+    // the box and answers only with evidence, so the client timeout is the gated budget:
+    // a shorter one reads a slow gated answer as a lost reply.
+    const rt = SEND_READY_WAIT_DEFAULT_MS;
+    const timeout =
+      sendBudgetMs({ readyTimeoutMs: rt, text: plan.line, keys: 1, submit: true }) +
+      SEND_CLIENT_SLACK_MS;
     void client
-      .request({ type: "send", pane, text: plan.line, typed: true, enter: true }, 10_000)
+      .request(
+        { type: "send", pane, text: plan.line, typed: true, enter: true, readyTimeoutMs: rt },
+        timeout
+      )
       .then(async (r) => {
         if (r.ok || this.admission !== adm) return;
+        const out = classifySendReply(r);
         // a lost REPLY is not a refusal. The line may already be typed, or typed
-        // and entered; the screen and the transcript decide, as in a pane (`typeLine`).
+        // and entered; the screen and the transcript decide, as in a pane.
         // Once it landed, the text witness accepts it within `acceptMs` as usual.
-        const lost = r.code === "client_timeout" || r.code === "client_lost";
-        if (lost && (await this.landedAfterLostReply(adm, pane, plan.line))) return;
+        if (out.kind === "reply_lost" && out.code !== "timeout") {
+          if (await this.landedAfterLostReply(adm, pane, plan.line)) return;
+        } else if (out.kind === "not_accepted" && enterMayHaveBeenPressed(out)) {
+          // the gate pressed Enter (or another writer may have): never pressed again;
+          // the text witness accepts it, or `acceptMs` drops it
+          log(
+            `[hooks] interactive driver: send not confirmed (${out.reason}); awaiting the witness`
+          );
+          return;
+        }
         if (this.admission === adm)
           this.step(() => this.admitFailed(`send refused: ${r.code} ${r.error}`));
       });
@@ -1085,6 +1120,19 @@ export class InteractiveDriver {
       // journaling never breaks the driver
     }
   }
+}
+
+/** Why the screen does not show an idle REPL (a choice dialog, no box, text in it); null when it does. */
+function screenNotIdleReason(screen: ScreenState): string | null {
+  if (hasChoiceDialog(screen)) return "choice_dialog";
+  const box = inputBox(screen);
+  if (!box) return "no_input_box";
+  return box.text === "" ? null : "box_not_empty";
+}
+
+/** A gated `not_accepted` after which Enter was, or may have been, pressed. */
+function enterMayHaveBeenPressed(o: { reason: string; maybeSubmitted: boolean }): boolean {
+  return o.reason === "still_in_box" || o.reason === "unconfirmed" || o.maybeSubmitted;
 }
 
 function assertNeverPhase(p: never): never {
