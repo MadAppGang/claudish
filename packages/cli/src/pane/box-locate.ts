@@ -4,9 +4,11 @@
  *
  * `isBoxRule` (screen-model.ts) needs a rule at least `cols − 1` cells long, so it holds
  * only at the widths it was captured at (80 to 250 columns). This locator anchors on the
- * hidden cursor instead: in every captured REPL screen from 80 to 250 columns the cursor
- * sits on the box's caret row, also while a turn is working and during a UserPromptSubmit
- * hook (session research `box-dependence.md`, "Hidden cursor position"). The box is then
+ * hidden cursor instead: in every captured REPL screen from 80 to 500 columns (350 × 80
+ * and 500 × 100 captured on Claude Code 2.1.303) the cursor sits on the box's caret row,
+ * also while a turn is working and during a UserPromptSubmit hook (session research
+ * `box-dependence.md`, "Hidden cursor position"). This is why `resize_session` has no
+ * width cap of its own (`pane-size.ts`). The box is then
  * the nearest rule row above the cursor and the nearest rule row below it.
  *
  * Every rule here is a CLOSED list. A screen that does not match reads as `unknown`, never

@@ -482,12 +482,23 @@ inline 400 and the slot is FAILED `api_error`.
 **The size is the viewer's, not ours.** Every pane used to be born 160×50 and stay there, so a
 docked viewer either showed empty rows below the screen or cut every line. 160×50 is now only the
 launch default (`pane/pane-size.ts`); `resize_session` and `team(mode:"resize")` set it at any time,
-mid-turn included, clamped to cols 80–250 × rows 24–200. The floor is not arbitrary: at 80 columns
-every closed-list dialog marker still fits one row's width, and 24 rows still hold a full permission
-or trust dialog, so boot and blocked-screen detection keep working. magmux's own limits (≥ 20 × 3,
-≤ 10000 per side) are wider, so a clamped size can never earn its `too_small`/`too_large`. The
-column cap is where the real classifier fixtures stop: above 250 columns `isBoxRule`'s cols − 1
-rule is unverified, and a box it misses is a screen that never classifies.
+mid-turn included, clamped to cols 80–9999 × rows 24–9999 and at most 4 000 000 cells. The floor is
+claudish's and is not arbitrary: at 80 columns every closed-list dialog marker still fits one row's
+width, and 24 rows still hold a full permission or trust dialog, so boot and blocked-screen
+detection keep working. The ceiling is magmux's own (`mux/size.go`), so a clamped size can never
+earn its `too_small`/`too_large`: the `resize` op refuses a side over 10 000, but the launch size it
+parses from `COLUMNS`/`LINES` is EXCLUSIVE of 10 000, and a size requested while the pane is
+starting goes through those variables, so 9 999 is the largest side valid on both paths; the
+product is capped at `maxScreenCells` = 4 000 000, so `clampPaneSize` lowers `rows` to
+`floor(4 000 000 / cols)` (9 999 columns leave 400 rows).
+
+There used to be a 250-column cap, because the real screen fixtures stopped there and `isBoxRule`
+found the input box by a `─` rule at least `cols − 1` long. No decision depends on the width any
+more: readiness, acceptance and dialogs come from magmux's input gate, and the box is located by
+the hidden cursor's row (`pane/box-locate.ts`), with no width test. Captures at 350 × 80 and
+500 × 100 (Claude Code 2.1.303) show every rule spanning exactly the full width and the cursor on
+the box's text row, the same as at 80–250. A very large size is flagged, not capped: 9 999 × 400 is
+4 M cells in claudish's screen model and in every `capture_session` reply.
 
 **A resize is a real one.** claudish sends magmux's `resize` op (`{type:"resize", pane:0, cols,
 rows}` → `{rows, cols, changed, manual}`); magmux sets the PTY winsize, the child gets a genuine
@@ -519,7 +530,7 @@ as `since_seq` never reads a pre-resize frame as current.
 at other widths its checks are width-proof: echo prefixes are `min(40, cols − 4)` long and compared
 against box text with row breaks removed, dialog markers match the dialog region joined into one
 string, and the working row tolerates a wrapped tail. They are validated on real Claude Code screens
-captured at 80, 120 and 250 columns. A resize redraw moves the above-box region, which only DELAYS
+captured at 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A resize redraw moves the above-box region, which only DELAYS
 settle and boot (it restarts their quiet clocks) and never completes them. Two places would have
 read a redraw as evidence and therefore ignore it inside the quiet window, an interval
 [from, until) opened at the SEND (the SIGWINCH redraw can land before the reply) and extended to

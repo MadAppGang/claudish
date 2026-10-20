@@ -7,20 +7,31 @@
  * may change it at any time. magmux refuses a size outside its own limits (< 20 × 3, a side
  * over 10 000, over 4 M cells); claudish CLAMPS instead and reports the size it set.
  *
- * The bounds are tighter than magmux's on purpose (plan review H1, L4): at 80 columns every
- * closed-list dialog marker the classifier matches still fits one row, and 24 rows hold a
- * whole permission or trust dialog. A smaller screen would turn a dialog into "no input box,
- * no dialog" — an honest unknown that never settles. The column cap is 250 because the
- * real classifier fixtures stop there: above it, `isBoxRule`'s cols − 1 rule is unverified.
+ * The upper bounds are magmux's, nothing tighter. No claudish decision depends on the width
+ * any more: readiness, prompt acceptance and dialogs come from magmux's input gate, and the
+ * input box is located by the cursor row, not by a rule `cols − 1` long. Two magmux limits
+ * meet here (mux/size.go at v0.17.0):
+ * - a side: the `resize` op refuses a side over 10 000, but the launch size parsed from
+ *   `COLUMNS`/`LINES` is EXCLUSIVE of 10 000. A size requested while the pane is starting is
+ *   applied through those variables, so 9 999 is the largest side valid on both paths.
+ * - the product: `maxScreenCells` = 4 000 000. When `cols × rows` exceeds it, `rows` drops to
+ *   `floor(4 000 000 / cols)`, so a clamped size never earns magmux's `too_large`.
+ *
+ * The floor is claudish's (plan review H1, L4): at 80 columns every closed-list dialog marker
+ * the classifier matches still fits one row, and 24 rows hold a whole permission or trust
+ * dialog. A smaller screen would turn a dialog into "no input box, no dialog" — an honest
+ * unknown that never settles.
  */
 
 export const DEFAULT_PANE_COLS = 160;
 export const DEFAULT_PANE_ROWS = 50;
 
 export const MIN_PANE_COLS = 80;
-export const MAX_PANE_COLS = 250;
+export const MAX_PANE_COLS = 9_999;
 export const MIN_PANE_ROWS = 24;
-export const MAX_PANE_ROWS = 200;
+export const MAX_PANE_ROWS = 9_999;
+/** magmux's `maxScreenCells`: the most cells one pane screen may hold. */
+export const MAX_PANE_CELLS = 4_000_000;
 
 /**
  * After a resize the child redraws everything it shows (SIGWINCH reflow). From the send
@@ -38,12 +49,15 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, Math.trunc(n)));
 }
 
-/** The size claudish sets for a requested one: each side clamped into its bounds. */
+/**
+ * The size claudish sets for a requested one: each side clamped into its bounds, then `rows`
+ * lowered until the screen fits `MAX_PANE_CELLS`. At the widest side (9 999) that still leaves
+ * 400 rows, far above the 24-row floor.
+ */
 export function clampPaneSize(cols: number, rows: number): PaneSize {
-  return {
-    cols: clamp(cols, MIN_PANE_COLS, MAX_PANE_COLS),
-    rows: clamp(rows, MIN_PANE_ROWS, MAX_PANE_ROWS),
-  };
+  const c = clamp(cols, MIN_PANE_COLS, MAX_PANE_COLS);
+  const r = clamp(rows, MIN_PANE_ROWS, MAX_PANE_ROWS);
+  return { cols: c, rows: Math.min(r, Math.floor(MAX_PANE_CELLS / c)) };
 }
 
 export function samePaneSize(a: PaneSize | null, b: PaneSize | null): boolean {

@@ -447,8 +447,9 @@ scroll region, which garbled Claude Code's input box and stopped its turns from 
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
-- `cols` (required) - Columns, an integer; clamped to 80–250
-- `rows` (required) - Rows, an integer; clamped to 24–200
+- `cols` (required) - Columns, an integer; clamped to 80–9999
+- `rows` (required) - Rows, an integer; clamped to 24–9999, then lowered so that `cols × rows` is at
+  most 4 000 000 (magmux's own limits; 9999 columns leave 400 rows)
 
 **Returns:** `{ session_id, cols, rows, changed, seq, pending? }`. `cols`/`rows` are the size actually
 set, after clamping. `changed: false` means the session already had that size, or has ended (it then

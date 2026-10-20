@@ -262,8 +262,8 @@ export interface CaptureUnchanged {
 }
 
 /**
- * F — `resize_session`. `cols`/`rows` are the size SET (the request clamped to cols 80–250,
- * rows 24–200); `changed` = the pane's size moved; `seq` = the screen's seq after the
+ * F — `resize_session`. `cols`/`rows` are the size SET (the request clamped to cols 80–9999,
+ * rows 24–9999 and at most 4 000 000 cells, magmux's limits: `clampPaneSize`); `changed` = the pane's size moved; `seq` = the screen's seq after the
  * resize (the first capture at the new size once `changed`). `pending: true` = the socket
  * is reconnecting (or the pane is still starting): the size is stored and applied on the
  * reconnect (or at launch). A terminal session answers its last size with `changed:false`.
