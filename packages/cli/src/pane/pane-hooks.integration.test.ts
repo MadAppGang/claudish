@@ -1421,6 +1421,7 @@ wait $child
       async function direct(o: {
         script: TurnScript[];
         hooks?: SessionHookBinding;
+        exitCaptureDelayMs?: number;
       }): Promise<Direct> {
         const t = env(o.script);
         const uuid = newSessionUuid();
@@ -1448,7 +1449,11 @@ wait $child
           onBlocked: () => ({ state: "FAILED", reason: "blocked" }),
           onTransition: (x) => void transitions.push([x.from, x.to]),
           onTurnRecorded: (turn) => void recorded.push(turn),
-          timings: { replStableMs: 200, corroborationMs: 200 },
+          timings: {
+            replStableMs: 200,
+            corroborationMs: 200,
+            ...(o.exitCaptureDelayMs ? { exitCaptureDelayMs: o.exitCaptureDelayMs } : {}),
+          },
           ...(o.hooks ? { hooks: o.hooks } : {}),
         });
         return { s, t, uuid, transitions, recorded, decided };
@@ -1522,6 +1527,40 @@ wait $child
             hooks: ctl.binding,
           });
           try {
+            const snap = await d.s.terminal;
+            expect(ctl.calls).toEqual([]);
+            expect(snap.state).toBe("COMPLETED");
+            expect(snap.detail ?? "").toContain("pane child exited 0");
+            expect(d.decided.map((t) => t.answer)).toEqual(["ANS-ONE"]);
+          } finally {
+            await directDone(d);
+          }
+        },
+        T
+      );
+
+      test(
+        "H-27b the end record settles inside the exit-capture window: the exit note keeps its code",
+        async () => {
+          // The interleaving H-27 hits under load, made deterministic: the exit event is
+          // processed (the pane is known dead) and the session is still capturing the final
+          // screen when a tick settles the turn on its end record. The note must carry the
+          // code the exit event reported, never a bare "pane child exited".
+          const ctl = controlled();
+          const d = await direct({
+            script: [{ delayMs: 1000, say: "ANS-ONE" }],
+            hooks: ctl.binding,
+            exitCaptureDelayMs: 4000,
+          });
+          try {
+            await until(
+              () => d.transitions.some(([, to]) => to === "RUNNING"),
+              "the turn is RUNNING"
+            );
+            const exit = (
+              d.s as unknown as { onPaneExit(e: { exitCode: number; lastLine: string }): void }
+            ).onPaneExit.bind(d.s);
+            exit({ exitCode: 0, lastLine: "" });
             const snap = await d.s.terminal;
             expect(ctl.calls).toEqual([]);
             expect(snap.state).toBe("COMPLETED");

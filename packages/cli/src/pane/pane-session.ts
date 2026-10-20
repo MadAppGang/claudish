@@ -1046,9 +1046,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** The pane child exited (magmux `exit` event, or a dead pane found on reconnect). */
   private async onPaneExit(e: { exitCode?: unknown; lastLine?: unknown }): Promise<void> {
     if (this.paneExited || isTerminalPhase(this.phase)) return;
-    this.paneExited = true;
     const code = typeof e?.exitCode === "number" ? e.exitCode : null;
     const lastLine = typeof e?.lastLine === "string" ? e.lastLine : "";
+    // The code is stored with the exit itself, not after the capture below: a tick that
+    // settles the turn inside that window concludes with this code (H-27).
+    this.paneExited = true;
+    this.exitCode = code;
+    this.exitLastLine = lastLine;
     // The final screen, with scrollback, so a long agent list cannot hide the refusal (L8).
     const slow = this.o.timings?.exitCaptureDelayMs;
     if (slow) await Bun.sleep(slow);
@@ -1064,11 +1068,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       )
         this.exitScrollback = cap.result.text ?? "";
     }
-    this.step(() => {
-      this.exitCode = code;
-      this.exitLastLine = lastLine;
-      this.applyExitPath(code);
-    });
+    this.step(() => this.applyExitPath(code));
   }
 
   /* ───────────────────────────── the step ───────────────────────────── */
@@ -2482,7 +2482,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     if (exitCode !== null || this.paneExited) {
-      const note = `pane child exited${exitCode === null ? "" : ` ${exitCode}`}`;
+      const note = exitNoteOf(exitCode ?? this.exitCode);
       verdict = { ...verdict, detail: verdict.detail ? `${verdict.detail} · ${note}` : note };
     }
     this.applyVerdict(verdict);
@@ -2540,7 +2540,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       }
     }
     if (!work) {
-      this.conclude(exited ? exitNoteOf(exitCode) : null);
+      this.conclude(exited ? exitNoteOf(exitCode ?? this.exitCode) : null);
       return;
     }
     this.startHold(turn);
