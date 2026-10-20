@@ -235,7 +235,10 @@ pane; for a declared wrapper its `editorOverride` is `delegated` ("the wrapper m
 mode itself"). If vim mode is on anyway, the gate refuses to type (`vim_mode`) and the prompt fails
 with `vim editing mode is on` — at once when the published view already says so, else after the
 in-flight send's ready wait (≤ 10 s) — instead of sitting unsent. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
-`ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
+`ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text. It cannot occur in a pure-proxy
+pane: such a pane child sets no `ANTHROPIC_API_KEY` (and deletes an inherited one), only the placeholder
+`ANTHROPIC_AUTH_TOKEN`, which alone suppresses login (`applyProxyPlaceholderAuth`; verified on
+Claude Code 2.1.304, where an env key raised "Detected a custom API key in your environment").
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
 probe was deleted (D11): with two validators the cheap one always decides and the real one is never

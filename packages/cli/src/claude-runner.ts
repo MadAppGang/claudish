@@ -183,6 +183,22 @@ export const CLAUDISH_PLACEHOLDER_API_KEY =
 export const CLAUDISH_PLACEHOLDER_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
 
 /**
+ * Pure proxy mode's placeholder credentials. The token alone suppresses Claude Code's
+ * login (verified on Claude Code 2.1.304). An env ANTHROPIC_API_KEY raises "Detected a
+ * custom API key" on a config that has not answered it, and a headless pane cannot
+ * answer, so the pane child sets no key at all and deletes an inherited one. Other
+ * launches keep the pair unchanged.
+ */
+export function applyProxyPlaceholderAuth(
+  env: Record<string, string | undefined>,
+  paneChild: boolean = isPaneChild()
+): void {
+  env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+  if (paneChild) delete env.ANTHROPIC_API_KEY;
+  else env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
+}
+
+/**
  * Remove claudish's OWN placeholder credentials that were inherited from a parent
  * proxied session.
  *
@@ -1888,11 +1904,11 @@ export async function runClaudeWithProxy(
       // is dead weight. Forwarding one is actively harmful: Claude Code then
       // reports "API Usage Billing", and pairing it with the placeholder token
       // trips "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may
-      // not work as expected". So overwrite unconditionally with placeholders —
+      // not work as expected". So overwrite any real key with placeholders —
       // their only job is suppressing the login dialog (#13: a placeholder API
-      // key alone still redirected to the payment page, hence the token too).
-      env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
-      env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+      // key alone still redirected to the payment page, hence the token). A pane
+      // child gets the token only; see applyProxyPlaceholderAuth.
+      applyProxyPlaceholderAuth(env);
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
