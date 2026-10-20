@@ -78,7 +78,7 @@ describe.skipIf(!SUPPORTED)("MCP protocol stdout with hooks loaded", () => {
       const configPath = join(layout.root, "config.json");
       writeFileSync(configPath, JSON.stringify({ hooks: { modules: [modulePath] } }));
 
-      const proc = Bun.spawn(["bun", ENTRY, "--mcp"], {
+      const proc = Bun.spawn(["bun", "--no-env-file", ENTRY, "--mcp"], {
         cwd: layout.cwd,
         env: serverEnv(layout, { CLAUDISH_CONFIG: configPath, CLAUDISH_DEBUG: "1" }),
         stdin: "pipe",

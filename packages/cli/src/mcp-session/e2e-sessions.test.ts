@@ -49,7 +49,7 @@ describe("Group 1: MCP Protocol — session tools", () => {
   beforeAll(async () => {
     transport = new StdioClientTransport({
       command: "bun",
-      args: ["run", SERVER_ENTRY, "--mcp"],
+      args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
       env: Object.fromEntries(
         Object.entries({
           ...process.env,
@@ -234,7 +234,7 @@ describe("Group 1b: MCP Protocol — session-only tools", () => {
   beforeAll(async () => {
     transport = new StdioClientTransport({
       command: "bun",
-      args: ["run", SERVER_ENTRY, "--mcp"],
+      args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
       env: Object.fromEntries(
         Object.entries({
           ...process.env,
@@ -278,7 +278,7 @@ describe("Group 1b: MCP Protocol — low-level-only tools", () => {
   beforeAll(async () => {
     transport = new StdioClientTransport({
       command: "bun",
-      args: ["run", SERVER_ENTRY, "--mcp"],
+      args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
       env: Object.fromEntries(
         Object.entries({
           ...process.env,
@@ -336,7 +336,7 @@ for (const [toolMode, expected] of [
     beforeAll(async () => {
       transport = new StdioClientTransport({
         command: "bun",
-        args: ["run", SERVER_ENTRY, "--mcp"],
+        args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
         env: Object.fromEntries(
           Object.entries({
             ...process.env,
@@ -399,7 +399,7 @@ async function runClaudeWithMcp(
     mcpServers: {
       claudish: {
         command: "bun",
-        args: ["run", SERVER_ENTRY, "--mcp"],
+        args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
         env: {
           CLAUDISH_MCP_TOOLS: "all",
           CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,

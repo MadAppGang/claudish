@@ -57,7 +57,7 @@ function sandboxedProbe(model: string, keys: Record<string, string> = {}): Probe
 
   try {
     const child = Bun.spawnSync(
-      [process.execPath, CLI_ENTRY, "--probe", model, "--json", "--no-probe"],
+      [process.execPath, "--no-env-file", CLI_ENTRY, "--probe", model, "--json", "--no-probe"],
       {
         cwd: REPO_ROOT,
         env,

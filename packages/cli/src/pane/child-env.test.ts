@@ -367,7 +367,7 @@ describe("nested CLI launches", () => {
     ["T-CLI-4", "team run before argument validation", ["team", "run"]],
   ] as const) {
     test(`${id}: ${name} exits 64 with the exact nested refusal line`, () => {
-      const r = Bun.spawnSync([process.execPath, "run", "src/index.ts", ...argv], {
+      const r = Bun.spawnSync([process.execPath, "--no-env-file", "run", "src/index.ts", ...argv], {
         cwd: cliDir,
         env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),
         stdin: "ignore",
@@ -383,11 +383,14 @@ describe("nested CLI launches", () => {
   }
 
   test("T-CLI-5: --version still succeeds inside an MCP session", () => {
-    const r = Bun.spawnSync([process.execPath, "run", "src/index.ts", "--version"], {
-      cwd: cliDir,
-      env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),
-      timeout: 60_000,
-    });
+    const r = Bun.spawnSync(
+      [process.execPath, "--no-env-file", "run", "src/index.ts", "--version"],
+      {
+        cwd: cliDir,
+        env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),
+        timeout: 60_000,
+      }
+    );
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toMatch(/\b\d+\.\d+\.\d+\b/);
     expect(r.stderr.toString()).not.toContain("refused");
@@ -397,7 +400,16 @@ describe("nested CLI launches", () => {
     const statusPath = mkdtempSync(join(cliDir, ".nested-team-status-"));
     try {
       const r = Bun.spawnSync(
-        [process.execPath, "run", "src/index.ts", "team", "status", "--path", statusPath],
+        [
+          process.execPath,
+          "--no-env-file",
+          "run",
+          "src/index.ts",
+          "team",
+          "status",
+          "--path",
+          statusPath,
+        ],
         {
           cwd: cliDir,
           env: hermeticEnv({ CLAUDISH_PANE_CHILD: "1" }),

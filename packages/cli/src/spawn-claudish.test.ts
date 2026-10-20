@@ -19,7 +19,7 @@ describe("resolveClaudishSpawn", () => {
 
       expect(resolveClaudishSpawn({ [CLAUDISH_BIN_ENV]: entry })).toEqual({
         command: process.execPath,
-        prefixArgs: ["run", entry],
+        prefixArgs: ["--no-env-file", "run", entry],
       });
     }
   );
@@ -36,7 +36,7 @@ describe("resolveClaudishSpawn", () => {
 
     expect(resolveClaudishSpawn({ [CLAUDISH_BIN_ENV]: entry })).toEqual({
       command: process.execPath,
-      prefixArgs: ["run", entry],
+      prefixArgs: ["--no-env-file", "run", entry],
     });
   });
 

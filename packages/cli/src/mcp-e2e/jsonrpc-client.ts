@@ -109,7 +109,7 @@ export async function driveServer(opts: DriveOptions): Promise<DriveResult> {
   // scenario loses every result that came before it.
   let proc: ReturnType<typeof spawn>;
   try {
-    proc = spawn("bun", ["run", opts.serverEntry, "--mcp"], {
+    proc = spawn("bun", ["--no-env-file", "run", opts.serverEntry, "--mcp"], {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: opts.cwd,
       env: opts.env,

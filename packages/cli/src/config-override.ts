@@ -133,6 +133,8 @@ export function planConfigOverride(
     }
     path = flag.value;
   } else {
+    // Trusted as the real environment's: no env file in the working directory can
+    // set a control variable (launch-env.ts).
     path = env.CLAUDISH_CONFIG || undefined;
   }
   if (!path) return { kind: "none" };

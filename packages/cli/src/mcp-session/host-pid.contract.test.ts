@@ -122,7 +122,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
         writeFileSync(
           launcher,
           [
-            `const child = Bun.spawn([process.execPath, ${JSON.stringify(SERVER_ENTRY)}, "--mcp"], {`,
+            `const child = Bun.spawn([process.execPath, "--no-env-file", ${JSON.stringify(SERVER_ENTRY)}, "--mcp"], {`,
             `  stdin: "inherit", stdout: "inherit", stderr: "inherit",`,
             "  env: { ...process.env, CLAUDISH_PANE_CHILD: undefined, CLAUDISH_LAUNCHER_PID: String(process.pid), CLAUDISH_LAUNCHER_PPID: String(process.ppid) },",
             "});",

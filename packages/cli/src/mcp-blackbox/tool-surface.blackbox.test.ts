@@ -108,7 +108,7 @@ function contractError(r: ToolResult, code: string): void {
  * an unsupported MCP lifecycle rather than the contract's initialization.
  */
 async function initializeOnce(env: Record<string, string>): Promise<Json> {
-  const child = Bun.spawn([process.execPath, SERVER_ENTRY, "--mcp"], {
+  const child = Bun.spawn([process.execPath, "--no-env-file", SERVER_ENTRY, "--mcp"], {
     env,
     cwd: layout.cwd,
     stdin: "pipe",
@@ -437,7 +437,7 @@ describe("nested MCP server over stdio", () => {
   async function connect(mode: string | undefined, nested = true): Promise<Client> {
     transport = new StdioClientTransport({
       command: process.execPath,
-      args: ["run", SERVER_ENTRY, "--mcp"],
+      args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
       cwd: layout.cwd,
       env: serverEnv(layout, {
         CLAUDISH_PANE_CHILD: nested ? "1" : undefined,
