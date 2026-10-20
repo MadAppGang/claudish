@@ -626,7 +626,9 @@ run the user's profile.
 - **Added:** `COLUMNS`/`LINES` at the launch size (160×50 unless a size was requested while the
   pane was starting; they are not updated by a later resize — "Terminal size" below), the slot's `CLAUDISH_TOKEN_FILE` and
   `CLAUDISH_UPSTREAM_ERROR_LOG`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` when the owner left
-  it unset (it suppresses side calls billed on the routed model).
+  it unset (it suppresses side calls billed on the routed model), with `CLAUDE_CODE_NATIVE_CURSOR=1`
+  under the same rule (traffic off makes Claude self-draw a reverse-video cursor on the faint
+  placeholder, which the input gate reads as `box_not_empty`).
 - **`MAGMUX_*` survives in the child.** magmux injects `MAGMUX_SOCK` into the pane; it is excluded
   from the snapshot and kept when the snapshot is applied, so the child knows it is already inside a
   multiplexer and never wraps itself in a second magmux.
