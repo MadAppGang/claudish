@@ -305,6 +305,29 @@ export function describeVertexProjectSource(origin: VertexProjectOrigin): string
 export const VERTEX_SET_PROJECT_REMEDY =
   "set VERTEX_PROJECT or run `gcloud config set project <id>`";
 
+/** Report the upstream refusal first, then account and project facts and how to change accounts. */
+export function describeVertexAccessDenied({
+  status,
+  upstream,
+  projectId,
+  origin,
+  account,
+}: {
+  status: number;
+  upstream: string;
+  projectId: string;
+  origin: VertexProjectOrigin | null;
+  account?: string;
+}): string {
+  const segments = [`HTTP ${status}: ${upstream}`];
+  if (account) segments.push(`ADC account ${account}`);
+  segments.push(
+    `project ${projectId}` + (origin ? ` (from ${describeVertexProjectSource(origin)})` : "")
+  );
+  segments.push("to sign in as another account: gcloud auth application-default login");
+  return segments.join(" · ");
+}
+
 /** The same two remedies, plus the fact that rules out the third guess. */
 export const VERTEX_NO_PROJECT_REMEDY = `${VERTEX_SET_PROJECT_REMEDY} — Vertex takes no API key`;
 
