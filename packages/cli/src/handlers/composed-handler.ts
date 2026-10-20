@@ -109,7 +109,17 @@ import {
   isCredentialRejection,
   respondAuthFailure,
 } from "./shared/auth-failure.js";
-import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
+import {
+  abortedResponse,
+  addSigningSecrets,
+  callAbortError,
+  callAbortSignal,
+  callAborted,
+  credentialValuesFromRequest,
+  raceCallAbort,
+  sleepUnlessAborted,
+  withCallSignal,
+} from "./shared/call-context.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import type { ConnectionErrorKind } from "./shared/connection-error.js";
 import {
@@ -178,26 +188,6 @@ interface ResponsesTurnWiring {
   onTurnSummary: (s: { legs: number; legRetries: number }) => void;
   /** Code mode for this turn (`openai-codex`, decided at 5d). */
   codeMode?: CodeModeTurnHooks;
-}
-
-/**
- * Wait `ms`, or less if `signal` aborts first. Resolves `true` when it was
- * aborted. A retry leg passes its turn signal so a client that disconnects
- * during a 7b backoff does not hold the leg open for up to 30 s.
- */
-function sleepUnlessAborted(ms: number, signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted) return Promise.resolve(true);
-  return new Promise<boolean>((resolve) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve(true);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve(false);
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 /**
@@ -600,6 +590,42 @@ export class ComposedHandler implements ModelHandler {
     recordStats(
       this.options.requestRole ? { ...event, request_role: this.options.requestRole } : event
     );
+  }
+
+  /**
+   * The answer when an internal call's deadline passed (`call-context.ts`).
+   * No classification, no recovery, nothing on stderr: the caller has already
+   * stopped waiting and reports the timeout itself. One failure stats event,
+   * so the attempt is still counted. Unreachable on a main request, which
+   * never carries a call signal.
+   */
+  private respondCallAborted(
+    startTime: number,
+    fallbackMeta?: { chain: string[]; attempts: number }
+  ): Response {
+    log(`[${this.provider.displayName}] call stopped: its deadline passed`);
+    try {
+      this.emitStats({
+        model_id: this.targetModel,
+        provider_name: this.provider.name,
+        stream_format: this.provider.streamFormat,
+        latency_ms: Math.round(performance.now() - startTime),
+        success: false,
+        http_status: 408,
+        error_class: "timeout",
+        error_code: "call_aborted",
+        token_strategy: this.options.tokenStrategy ?? "standard",
+        adapter_name: this.getActiveAdapterName(),
+        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        fallback_used: fallbackMeta !== undefined,
+        fallback_chain: fallbackMeta?.chain,
+        fallback_attempts: fallbackMeta?.attempts,
+        invocation_mode: this.options.invocationMode ?? "auto-route",
+      });
+    } catch {
+      // Stats must never crash claudish
+    }
+    return abortedResponse();
   }
 
   /**
@@ -1146,6 +1172,11 @@ export class ComposedHandler implements ModelHandler {
     // several at once. It stays all-zero and contributes NOTHING to any stats
     // record unless a classified connection failure actually occurs.
     const recoveryTally = ComposedHandler.newRecoveryTally();
+    // An internal call's deadline (the advisor panel gateway installs it).
+    // Undefined on every request from Claude Code, and then every use below
+    // collapses to the expression that ran before it existed.
+    const callSignal = callAbortSignal(c);
+    if (callSignal?.aborted) return this.respondCallAborted(startTime, fallbackMeta);
     // 1. Transform incoming Claude-format request
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
@@ -1454,7 +1485,10 @@ export class ComposedHandler implements ModelHandler {
     let binding: AuthBinding | undefined;
     if (this.provider.refreshAuth) {
       try {
-        binding = (await this.provider.refreshAuth()) || undefined;
+        // Raced, not cancelled: a refresh is single-flight and shared with
+        // other requests, so an aborted call stops WAITING for it and nothing
+        // more.
+        binding = (await raceCallAbort(this.provider.refreshAuth(), callSignal)) || undefined;
         // Quota is DELIBERATELY not fetched here.
         //
         // This used to await getQuotaRemaining with a 2s cap on every single
@@ -1476,6 +1510,8 @@ export class ComposedHandler implements ModelHandler {
         // user across every provider in the chain — off a subscription onto
         // metered billing — for an outage on their own machine.
         //
+        // A stopped call is not a failure to classify: no verdict, no stderr.
+        if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
         const conn = classifyConnectionError(err);
         if (conn) {
           // The refresh path's deadline is DELIBERATELY earlier than the fetch
@@ -1698,8 +1734,9 @@ export class ComposedHandler implements ModelHandler {
     };
     let headers: Record<string, string>;
     try {
-      headers = await fetchHeaders(binding);
+      headers = await raceCallAbort(fetchHeaders(binding), callSignal);
     } catch (err: any) {
+      if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
       const conn = classifyConnectionError(err);
       if (!conn) {
         // A credential failure this site can place is answered here — terminal
@@ -1762,8 +1799,14 @@ export class ComposedHandler implements ModelHandler {
     // from turning a slow answer into a re-issued one.
     const deadlineAt = tier1DeadlineAt(c);
     const clamp = deadlineClamp(deadlineAt);
-    const doFetch = () =>
-      fetch(
+    //
+    // An internal call's deadline reaches this closure twice: a pre-start
+    // check, so a queue that admits it late (or a transport retry that calls it
+    // again) never starts a fetch, and the signal on the fetch, which also
+    // governs the body read after `clamp.disarm()`.
+    const doFetch = () => {
+      if (callSignal?.aborted) return Promise.reject(callAbortError());
+      return fetch(
         endpoint,
         mergeSignalIntoInit(
           {
@@ -1772,22 +1815,30 @@ export class ComposedHandler implements ModelHandler {
             body: serialized?.body ?? JSON.stringify(requestPayload),
             ...requestInit,
           },
-          clamp.signal
+          withCallSignal(clamp.signal, callSignal)
         )
       );
+    };
+    // Every queue admission of this request: with the call's signal when one
+    // is installed, so a queue that honours it drops the call while it waits;
+    // called exactly as before otherwise.
+    const enqueue = (fn: () => Promise<Response>): Promise<Response> =>
+      callSignal
+        ? this.provider.enqueueRequest!(fn, { signal: callSignal })
+        : this.provider.enqueueRequest!(fn);
 
     let response: Response;
     try {
       try {
-        response = this.provider.enqueueRequest
-          ? await this.provider.enqueueRequest(doFetch)
-          : await doFetch();
+        response = this.provider.enqueueRequest ? await enqueue(doFetch) : await doFetch();
       } finally {
         // Before a byte of the body is read, so the ceiling can only ever bound
         // connect-and-headers — never cut a response already arriving.
         clamp.disarm();
       }
     } catch (error: any) {
+      // A stopped call first: no classification, no stderr, no recovery.
+      if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
       // A failure to even REACH the provider (DNS can't resolve, connection
       // refused, host unreachable) is a LOCAL network problem, not an upstream
       // server error. Surface it as a connection_error with an honest,
@@ -2008,7 +2059,8 @@ export class ComposedHandler implements ModelHandler {
           // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
           // out of here is untouched.
           const doParamRetry = async (sig?: AbortSignal): Promise<Response> => {
-            const retryHeaders = await fetchHeaders(binding);
+            if (callSignal?.aborted) throw callAbortError();
+            const retryHeaders = await raceCallAbort(fetchHeaders(binding), callSignal);
             retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
             return fetch(
               endpoint,
@@ -2019,7 +2071,7 @@ export class ComposedHandler implements ModelHandler {
                   body: retrySerialized?.body ?? JSON.stringify(requestPayload),
                   ...(this.provider.getRequestInit?.() || {}),
                 },
-                sig
+                withCallSignal(sig, callSignal)
               )
             );
           };
@@ -2027,6 +2079,7 @@ export class ComposedHandler implements ModelHandler {
           try {
             retryResp = await doParamRetry();
           } catch (err: any) {
+            if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
             const conn = classifyConnectionError(err);
             if (!conn) {
               // The re-fetch re-reads the headers, so a credential failure can
@@ -2108,7 +2161,11 @@ export class ComposedHandler implements ModelHandler {
           // retry leg after it, sign with the artifact just minted. The headers
           // of the request the upstream rejected go with it, so a transport can
           // tell a stale failure from one naming the credential it holds now.
-          const refreshed = await this.provider.forceRefreshAuth!({ rejectedHeaders: headers });
+          if (callSignal?.aborted) throw callAbortError();
+          const refreshed = await raceCallAbort(
+            this.provider.forceRefreshAuth!({ rejectedHeaders: headers }),
+            callSignal
+          );
           if (refreshed) {
             // The body was built for THIS binding's account (code mode renders
             // its encrypted reasoning and keys its records by it): a refresh
@@ -2133,7 +2190,7 @@ export class ComposedHandler implements ModelHandler {
             binding = refreshed;
             endpoint = this.provider.getEndpoint(this.targetModel, binding);
           }
-          const retryHeaders = await fetchHeaders(binding);
+          const retryHeaders = await raceCallAbort(fetchHeaders(binding), callSignal);
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.
@@ -2148,7 +2205,7 @@ export class ComposedHandler implements ModelHandler {
                 body: serialized?.body ?? JSON.stringify(requestPayload),
                 ...retryInit,
               },
-              sig
+              withCallSignal(sig, callSignal)
             )
           );
         };
@@ -2271,6 +2328,7 @@ export class ComposedHandler implements ModelHandler {
           const answered = await settleAuthRetry(await doAuthRetry());
           if (answered) return answered;
         } catch (err: any) {
+          if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
           // CLASSIFY FIRST, exactly as in the refreshAuth catch above, and for a
           // sharper reason: this path covers BOTH `forceRefreshAuth()` AND the
           // raw retry `fetch` that follows it, so "the network dropped while we
@@ -2545,13 +2603,20 @@ export class ComposedHandler implements ModelHandler {
     // against the guard rather than adding to it.
     let responseHeadersAt = Date.now();
     if (this.resolveStreamFormat() === "openai-responses-sse") {
-      const settled = await this.settleResponsesStreamHead(response, async () => {
-        const next = await (this.provider.enqueueRequest
-          ? this.provider.enqueueRequest(doFetch)
-          : doFetch());
-        responseHeadersAt = Date.now();
-        return next;
-      });
+      const settled = await this.settleResponsesStreamHead(
+        response,
+        async () => {
+          const next = await (this.provider.enqueueRequest ? enqueue(doFetch) : doFetch());
+          responseHeadersAt = Date.now();
+          return next;
+        },
+        // Ends the backoff wait when an internal call's deadline passes.
+        callSignal
+      );
+      if (callAborted(c)) {
+        if (settled.kind === "ok") await settled.response.body?.cancel().catch(() => {});
+        return this.respondCallAborted(startTime, fallbackMeta);
+      }
       if (settled.kind === "exhausted") {
         const waited = STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce(
           (sum, ms) => sum + ms,
@@ -2601,8 +2666,12 @@ export class ComposedHandler implements ModelHandler {
     // as a 400 rendered inline rather than a status Claude Code silently retries.
     if (this.resolveStreamFormat() === "connect-proto") {
       const settled = await this.settleDevinStreamHead(response, () =>
-        this.provider.enqueueRequest ? this.provider.enqueueRequest(doFetch) : doFetch()
+        this.provider.enqueueRequest ? enqueue(doFetch) : doFetch()
       );
+      if (callAborted(c)) {
+        if (settled.kind === "ok") await settled.response.body?.cancel().catch(() => {});
+        return this.respondCallAborted(startTime, fallbackMeta);
+      }
       if (settled.kind !== "ok") {
         const isTerminal = settled.kind === "terminal";
         const httpStatus = isTerminal ? 400 : 503;
@@ -2750,7 +2819,11 @@ export class ComposedHandler implements ModelHandler {
       });
       responsesTurn = {
         retry: {
-          issueLeg,
+          // A leg composes its turn signal with an internal call's deadline,
+          // and the issuer returns `aborted` before it starts once either fired.
+          issueLeg: callSignal
+            ? (body, turnSignal) => issueLeg(body, AbortSignal.any([turnSignal, callSignal]))
+            : issueLeg,
           // Default scope: `openai-codex` on the subscription arm, the only
           // backend the stall data comes from; CLAUDISH_RESPONSES_STALL_MS
           // overrides it everywhere.

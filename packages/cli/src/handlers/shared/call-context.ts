@@ -223,3 +223,123 @@ export function releaseWhenBodyEnds(response: Response, release: () => void): Re
     headers: response.headers,
   });
 }
+
+// ─── Call abort ──────────────────────────────────────────────────────────────
+
+/**
+ * The Context key of an internal call's abort signal. Installed ONLY by a
+ * caller that issues requests of its own with a deadline (the advisor panel
+ * gateway); never on a request from Claude Code. Every reach point reads it
+ * through `callAbortSignal`, which returns `undefined` for a main request, so
+ * each composition below collapses to the code that ran before it existed.
+ *
+ * A Context variable, not `c.req.raw.signal`: the inbound request's signal is
+ * the CLIENT going away, which the recovery ladder already reads with its own
+ * meaning, and a main request must not acquire a second one.
+ */
+export const CALL_ABORT_SIGNAL_KEY = "claudishCallAbortSignal" as const;
+
+/** Header on the answer to an aborted call. Produced, never compared by status. */
+export const CALL_ABORTED_HEADER = "x-claudish-call-aborted";
+
+declare module "hono" {
+  interface ContextVariableMap {
+    /** An internal call's deadline; see `CALL_ABORT_SIGNAL_KEY`. */
+    claudishCallAbortSignal: AbortSignal;
+  }
+}
+
+/** The call's abort signal, or `undefined` (every main request). */
+export function callAbortSignal(c: Context | undefined): AbortSignal | undefined {
+  return readCallVar<AbortSignal>(c, CALL_ABORT_SIGNAL_KEY);
+}
+
+/** True once the call's deadline has passed. Always false on a main request. */
+export function callAborted(c: Context | undefined): boolean {
+  return callAbortSignal(c)?.aborted === true;
+}
+
+/** The error a stopped reach point rejects with: a DOM `AbortError`. */
+export function callAbortError(): Error {
+  return new DOMException("the call's deadline passed; claudish stopped its work", "AbortError");
+}
+
+/**
+ * Stop WAITING for `p` once `signal` aborts; `p` itself is not cancelled. For
+ * work that is shared or unbilled (a single-flight token refresh, a quota
+ * read), where cancelling would hurt other requests and waiting would hold
+ * this one past its deadline. Without a signal, `p` is returned unchanged.
+ *
+ * The losing promise's rejection is owned here (a no-op `catch`), so a refresh
+ * that fails after the abort won never surfaces as an unhandled rejection.
+ */
+export function raceCallAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  p.catch(() => {});
+  if (signal.aborted) return Promise.reject(callAbortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(callAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
+ * Wait `ms`, or less if `signal` aborts first. Resolves `true` when it was
+ * aborted. The timer is cleared on abort and the listener removed on expiry,
+ * so neither outlives the wait.
+ */
+export function sleepUnlessAborted(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** `sig` composed with the call's signal; either alone when the other is absent. */
+export function withCallSignal(
+  sig: AbortSignal | undefined,
+  callSignal: AbortSignal | undefined
+): AbortSignal | undefined {
+  if (!callSignal) return sig;
+  if (!sig) return callSignal;
+  return AbortSignal.any([sig, callSignal]);
+}
+
+/**
+ * The answer to a call whose deadline passed: 408 with `CALL_ABORTED_HEADER`.
+ * Its caller has already stopped waiting; this exists so every path returns a
+ * Response instead of throwing, and so nothing downstream classifies it.
+ */
+export function abortedResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      type: "error",
+      error: {
+        type: "timeout_error",
+        message: "claudish stopped this call: its deadline passed",
+      },
+    }),
+    {
+      status: 408,
+      headers: { "content-type": "application/json", [CALL_ABORTED_HEADER]: "1" },
+    }
+  );
+}
