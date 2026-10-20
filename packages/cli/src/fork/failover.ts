@@ -251,6 +251,12 @@ export function providerBucketOf(target: string): string {
 const walled = new Map<string, ArmedFailover>();
 /** Roles armed by CLAUDISH_FAILOVER_ACTIVE — divert regardless of bucket. */
 const configArmedRoles = new Set<FailoverRole>();
+/** `role@machine` pieces of CLAUDISH_FAILOVER_ACTIVE — divert that role only for
+ * requests whose X-Claudish-Machine names the machine (lowercased). Operator-held
+ * like configArmedRoles; the route turns a match into a `machine:<name>` bucket
+ * (machineArmBucket), so every downstream decision keys on it unchanged. */
+const configArmedMachines = new Map<FailoverRole, Set<string>>();
+const MACHINE_BUCKET_PREFIX = "machine:";
 /** Per-step failure counters, per role. Independent of the bucket-wall TTL: the
  * cascade steps are shared targets, their walls are facts about the STEP, not
  * about whichever nominal diverted onto it. */
@@ -504,6 +510,7 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   autoArmEnabled = /^(1|true|yes|on)$/i.test((env.CLAUDISH_FAILOVER_AUTO || "").trim());
   walled.clear();
   configArmedRoles.clear();
+  configArmedMachines.clear();
   // In-memory probe/recovery state does not survive a restart — start fresh.
   stepFailures.clear();
   recovering.clear();
@@ -527,9 +534,21 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   const activeRaw = (env.CLAUDISH_FAILOVER_ACTIVE || "").trim().toLowerCase();
   if (activeRaw && activeRaw !== "none") {
     for (const piece of activeRaw.split(/[,\s]+/).filter(Boolean)) {
-      const role = piece as FailoverRole;
-      if (!FAILOVER_ROLES.includes(role)) {
-        logStderr(`[Failover] Ignoring unknown role in CLAUDISH_FAILOVER_ACTIVE: '${piece}'`);
+      const at = piece.indexOf("@");
+      const role = (at >= 0 ? piece.slice(0, at) : piece) as FailoverRole;
+      const machine = at >= 0 ? piece.slice(at + 1) : null;
+      // A second `@` (`haiku@m1@m2`, `haiku@m@`) would otherwise become a machine
+      // name no X-Claudish-Machine header can ever carry — an arm that silently
+      // never bites (#552 review).
+      const flaw = !FAILOVER_ROLES.includes(role)
+        ? "unknown role"
+        : machine === ""
+          ? "empty machine"
+          : machine?.includes("@")
+            ? "malformed machine"
+            : null;
+      if (flaw) {
+        logStderr(`[Failover] Ignoring ${flaw} in CLAUDISH_FAILOVER_ACTIVE: '${piece}'`);
         continue;
       }
       const rule = rules.get(role);
@@ -541,13 +560,28 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
         );
         continue;
       }
-      configArmedRoles.add(role);
+      if (machine) {
+        let machines = configArmedMachines.get(role);
+        if (!machines) {
+          machines = new Set();
+          configArmedMachines.set(role, machines);
+        }
+        machines.add(machine);
+      } else {
+        configArmedRoles.add(role);
+      }
     }
   }
 
   if (configArmedRoles.size > 0 || walled.size > 0 || rules.size > 0) {
     const parts: string[] = [];
     for (const role of configArmedRoles) parts.push(`${role}→${describeResolved(role)}`);
+    for (const [role, machines] of configArmedMachines) {
+      for (const m of machines) {
+        const { step } = resolveFailoverTarget(role, `${MACHINE_BUCKET_PREFIX}${m}`);
+        parts.push(`${role}@${m}→${step ? step.label : "nominal"}`);
+      }
+    }
     for (const bucket of walled.keys()) parts.push(`${bucket}→walled`);
     const armedList = parts.length > 0 ? parts.join(", ") : "none";
     logStderr(
@@ -972,8 +1006,17 @@ export function resolveFailoverTarget(
 // never under one.
 
 /** Live dwell pins: role → session → the step it must keep serving until `until`.
- * Set only while armed at a step (stepIndex >= 0) — nominal is never pinned. */
-const dwellPins = new Map<FailoverRole, Map<string, { stepIndex: number; until: number }>>();
+ * Set only while armed at a step (stepIndex >= 0) — nominal is never pinned.
+ * `bucket` is the bucket the pin was resolved in: a pin holds only for a request
+ * of that same bucket. One role can carry two live buckets in different arm
+ * states (a `role@machine` arm diverts `machine:<name>` while the nominal's own
+ * bucket stays unarmed), and a bucket-blind pin would serve the step to the
+ * unarmed bucket — with no streaming notice, since consumeStreamNotice gates on
+ * isFailoverActive(role, bucket) (#552 review, B1). */
+const dwellPins = new Map<
+  FailoverRole,
+  Map<string, { stepIndex: number; until: number; bucket: string | undefined }>
+>();
 /** Timestamp of the FIRST verified nominal success since the last arm (onNominalSuccess), keyed by
  * role|bucket like the other #275 state. A live dwell pin yields once this is
  * older than `recoveryGraceMs`, so an ACTIVE conversation returns to the
@@ -1034,7 +1077,7 @@ export function getSessionDwellMs(): number {
 export function getSessionDwellPinForTests(
   role: FailoverRole,
   sessionKey: string
-): { stepIndex: number; until: number } | null {
+): { stepIndex: number; until: number; bucket: string | undefined } | null {
   const pin = dwellPins.get(role)?.get(sessionKey);
   if (!pin || pin.until <= Date.now()) return null;
   return { ...pin };
@@ -1084,7 +1127,13 @@ export function resolveFailoverTargetForSession(
 
   const now = Date.now();
   const pins = dwellPins.get(role);
-  const pin = pins?.get(sessionKey);
+  const storedPin = pins?.get(sessionKey);
+  // #552 B1: a pin resolved in another bucket does not exist for this request —
+  // neither held nor deleted here. The request resolves in its own bucket (an
+  // unarmed one goes nominal), and the other bucket's pin survives for that
+  // bucket's next request.
+  const foreignPin = storedPin !== undefined && storedPin.bucket !== bucket;
+  const pin = foreignPin ? undefined : storedPin;
   // #276: set when a live pin's step died of a NON-QUOTA error — the dwell is
   // forfeited below instead of re-pinned at the walk's next step.
   let pinnedDiedNonQuota = false;
@@ -1202,8 +1251,8 @@ export function resolveFailoverTargetForSession(
     // cascade attempt (swap + loop read) and identical results must not churn
     // the map or the log.
     const prev = m.get(sessionKey);
-    if (!prev || prev.stepIndex !== resolved.stepIndex) {
-      m.set(sessionKey, { stepIndex: resolved.stepIndex, until: now + dwell });
+    if (!prev || prev.stepIndex !== resolved.stepIndex || prev.bucket !== bucket) {
+      m.set(sessionKey, { stepIndex: resolved.stepIndex, until: now + dwell, bucket });
       dwellPins.set(role, m);
       pruneDwellPins(role);
       logStderr(
@@ -1212,7 +1261,9 @@ export function resolveFailoverTargetForSession(
     } else {
       prev.until = Math.max(prev.until, now + dwell);
     }
-  } else if (pins) {
+  } else if (pins && !foreignPin) {
+    // A foreign-bucket request landing on its nominal says nothing about the
+    // pinned bucket — that pin stays (#552 B1).
     pins.delete(sessionKey); // back at nominal: no pin
     // The #276 forfeit served its purpose — the session is back at the nominal
     // (which is never pinned); let ordinary dwell apply on a future re-arm.
@@ -1405,17 +1456,31 @@ export function isBucketWalled(bucket: string): boolean {
  * True when requests for this role must be routed into the cascade. With `bucket`
  * (#275): the request diverts when its OWN nominal's bucket is walled, when the
  * legacy role-wide bucket is walled, or when the role is config-armed — never
- * because some OTHER bucket's nominal maxed. Without `bucket` (banner, health,
- * tests): any wall or config-arm of the role diverts.
+ * because some OTHER bucket's nominal maxed. A `machine:<name>` bucket (from
+ * machineArmBucket) is active by construction while its `role@name` arm holds.
+ * Without `bucket` (banner, health, tests): any wall or role-wide config-arm of
+ * the role diverts — a machine arm never does, it concerns one machine's requests.
  */
 export function isFailoverActive(role: FailoverRole, bucket?: string): boolean {
-  if (configArmedRoles.has(role)) return true;
+  if (configArmHolding(role, bucket)) return true;
   if (bucket !== undefined) return isBucketWalled(bucket) || isBucketWalled(LEGACY_ROLE_WIDE_BUCKET);
   if (isBucketWalled(LEGACY_ROLE_WIDE_BUCKET)) return true;
   for (const b of walled.keys()) {
     if (isBucketWalled(b)) return true;
   }
   return false;
+}
+
+/**
+ * The bucket a request must key on when its role is config-armed for its
+ * machine (`role@machine` in CLAUDISH_FAILOVER_ACTIVE), else undefined — the
+ * caller then computes the nominal's real bucket as usual. Computed once at the
+ * route, like the #275 bucket, so the cascade and the notices agree.
+ */
+export function machineArmBucket(role: FailoverRole, machine: string | null | undefined): string | undefined {
+  const m = (machine || "").trim().toLowerCase();
+  if (!m || !configArmedMachines.get(role)?.has(m)) return undefined;
+  return `${MACHINE_BUCKET_PREFIX}${m}`;
 }
 
 /** Currently-armed (role, bucket) pairs with their resolved step, in stable order.
@@ -2017,20 +2082,36 @@ export function appendFailoverNoticeToMessage(
 }
 
 /** Depth-aware stream notice for an ARMED role: names the step + what's exhausted
- * ahead of it. Addressed to the substitute model about to generate. */
-function buildStreamNoticeText(role: FailoverRole, step: FailoverStep, stepIndex: number): string {
+ * ahead of it. Addressed to the substitute model about to generate. `heldBy`
+ * names an operator config-arm (role-wide, or `role@machine` with its machine):
+ * the nominal is then NOT exhausted, and saying so would state a false fact. */
+function buildStreamNoticeText(
+  role: FailoverRole,
+  step: FailoverStep,
+  stepIndex: number,
+  heldBy?: { machine: string | null }
+): string {
   const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
-  const ahead =
-    stepIndex > 0
-      ? ` and ${rules
-          .get(role)!
-          .steps.slice(0, stepIndex)
-          .map((s) => s.label)
-          .join(", ")} ahead of you ${stepIndex === 1 ? "is" : "are"} also`
-      : "";
+  const aheadLabels = rules
+    .get(role)!
+    .steps.slice(0, stepIndex)
+    .map((s) => s.label)
+    .join(", ");
+  const isAre = stepIndex === 1 ? "is" : "are";
+  const why = heldBy
+    ? `because the operator routes the ${roleLabel} role${
+        heldBy.machine ? ` of ${heldBy.machine}` : ""
+      } away from its nominal model${stepIndex > 0 ? ` and ${aheadLabels} ahead of you ${isAre} temporarily exhausted` : ""}. `
+    : `because the nominal ${roleLabel} model${
+        stepIndex > 0 ? ` and ${aheadLabels} ahead of you ${isAre} also` : ""
+      } temporarily exhausted. `;
   const prefix = `[claudish] You are serving this session as ${step.label} (\`${step.target}\`) — the ${ordinal(
     stepIndex
-  )} fallback for the ${roleLabel} role, because the nominal ${roleLabel} model${ahead} temporarily exhausted. `;
+  )} fallback for the ${roleLabel} role, ${why}`;
+  // The operator's per-step note (`..._NOTE`) rides here too, after the
+  // capability sentence — the condensation notice already carried it, the
+  // per-session notice did not.
+  const note = step.note ? ` ${step.note}` : "";
   // Name the steps still downstream — a serving step read alone looks like the
   // rest of the cascade (e.g. Kimi) was dropped from the config.
   const remaining = rules.get(role)!.steps.slice(stepIndex + 1);
@@ -2040,17 +2121,29 @@ function buildStreamNoticeText(role: FailoverRole, step: FailoverStep, stepIndex
     return (
       prefix +
       remainder +
-      `Capability note: ${step.label} is weaker than the nominal ${roleLabel} model; the inherited context may reflect the nominal's stronger output.`
+      `Capability note: ${step.label} is weaker than the nominal ${roleLabel} model; the inherited context may reflect the nominal's stronger output.` +
+      note
     );
   }
   if (step.direction === "improved") {
     return (
       prefix +
       remainder +
-      `Capability note: ${step.label} is stronger than the nominal ${roleLabel} model.`
+      `Capability note: ${step.label} is stronger than the nominal ${roleLabel} model.` +
+      note
     );
   }
-  return prefix + remainder + `Capability is roughly equivalent; continue the work as normal.`;
+  return prefix + remainder + `Capability is roughly equivalent; continue the work as normal.` + note;
+}
+
+/** The operator config-arm holding this (role, bucket) diversion, if any. */
+function configArmHolding(role: FailoverRole, bucket?: string): { machine: string | null } | undefined {
+  if (configArmedRoles.has(role)) return { machine: null };
+  if (bucket?.startsWith(MACHINE_BUCKET_PREFIX)) {
+    const machine = bucket.slice(MACHINE_BUCKET_PREFIX.length);
+    if (configArmedMachines.get(role)?.has(machine)) return { machine };
+  }
+  return undefined;
 }
 
 /** One-time stream notice for a RECOVERING role: the nominal is back. */
@@ -2114,7 +2207,7 @@ export function consumeStreamNotice(
   }
   if (announced.has(stepIndex)) return null; // already announced this depth in this session
   announced.add(stepIndex);
-  return buildStreamNoticeText(role, step, stepIndex);
+  return buildStreamNoticeText(role, step, stepIndex, configArmHolding(role, bucket));
 }
 
 /**
@@ -2155,6 +2248,7 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     autoArmEnabled = false;
     walled.clear();
     configArmedRoles.clear();
+    configArmedMachines.clear();
     stepFailures.clear();
     recovering.clear();
     servedUnderWall.clear();

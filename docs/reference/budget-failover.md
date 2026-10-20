@@ -21,8 +21,8 @@ The cluster runs on weekly-metered plans (Anthropic, MiniMax, Z.AI). When a plan
 | `CLAUDISH_FAILOVER_<ROLE>` | Routing target for the role. Any spec `getHandlerForRequest` accepts. |
 | `..._LABEL` | Human name used in the notice. Defaults to the target string. |
 | `..._DIRECTION` | `degraded` (default) · `improved` · `lateral`. Unset means degraded — never flatter the substitute. |
-| `..._NOTE` | Extra guidance appended to that role's notice line. |
-| `CLAUDISH_FAILOVER_ACTIVE` | Roles armed **now**, comma-separated, or `none`. Use to conserve a plan *before* it dies. |
+| `..._NOTE` | Extra guidance appended to that role's notice line — the condensation notice and the per-session stream notice alike. |
+| `CLAUDISH_FAILOVER_ACTIVE` | Roles armed **now**, comma-separated, or `none`. Use to conserve a plan *before* it dies. A `role@machine` piece (e.g. `haiku@myia-po-2027`) arms the role **only for requests whose `X-Claudish-Machine` names that machine** (case-insensitive); every other machine stays on the nominal. The route keys those requests on a `machine:<name>` bucket, so the cascade and the notices follow unchanged, and the per-session notice states the operator routing instead of an exhaustion. |
 | `CLAUDISH_FAILOVER_AUTO` | `1` = also arm on genuine upstream quota exhaustion. |
 
 **With nothing set, every code path is inert** — no routing change, no notice, zero added bytes. Configuring a target does **not** activate it; arming is separate and deliberate.

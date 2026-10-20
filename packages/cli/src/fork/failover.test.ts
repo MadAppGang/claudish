@@ -47,6 +47,7 @@ import {
   resolveDelegationOwner,
   setRoleNominalResolver,
   setRoleNominalBucketResolver,
+  machineArmBucket,
   NATIVE_BUCKET,
 } from "./failover.js";
 import type { DelegationOwner } from "./failover.js";
@@ -270,6 +271,137 @@ describe("failover — arming", () => {
   it("cannot auto-arm a role with no configured cascade", () => {
     initFailover({ CLAUDISH_FAILOVER_AUTO: "1" });
     expect(armFailover("sonnet", "HTTP 402")).toBe(false);
+  });
+});
+
+// ── Machine-scoped config arm (`role@machine`) ─────────────────────────────────
+//
+// The operator diverts ONE machine's role to its cascade (a calibration load
+// on our own vLLM from one machine) without moving any other machine: the
+// role-wide form diverts every machine of the fleet.
+
+describe("failover — machine-scoped config arm (role@machine)", () => {
+  const HAIKU_LOCAL = {
+    CLAUDISH_FAILOVER_HAIKU: "vllm-myia@qwen3.6-35b-a3b>role:sonnet",
+    CLAUDISH_FAILOVER_HAIKU_LABEL: "Swift local>Sonnet role",
+    CLAUDISH_FAILOVER_HAIKU_DIRECTION: "degraded>improved",
+    CLAUDISH_FAILOVER_HAIKU_NOTE: "A much smaller model than the nominal.>",
+    CLAUDISH_FAILOVER_SONNET: "mistral@glm-5.3",
+  } as NodeJS.ProcessEnv;
+
+  it("arms the role for that machine's bucket only — never role-wide", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@myia-po-2027" });
+    const mine = machineArmBucket("haiku", "myia-po-2027");
+    expect(mine).toBe("machine:myia-po-2027");
+    expect(isFailoverActive("haiku", mine)).toBe(true);
+    expect(resolveFailoverTarget("haiku", mine).step?.target).toBe("vllm-myia@qwen3.6-35b-a3b");
+    // Every other reading of the role stays nominal.
+    expect(isFailoverActive("haiku")).toBe(false);
+    expect(isFailoverActive("haiku", "minimax-coding")).toBe(false);
+    expect(machineArmBucket("haiku", "myia-po-2025")).toBeUndefined();
+    expect(machineArmBucket("haiku", null)).toBeUndefined();
+    expect(machineArmBucket("sonnet", "myia-po-2027")).toBeUndefined();
+    expect(getActiveFailovers()).toEqual([]); // role-less notices never announce it
+  });
+
+  it("matches the machine header case-insensitively", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@MYIA-PO-2027" });
+    expect(machineArmBucket("haiku", " Myia-Po-2027 ")).toBe("machine:myia-po-2027");
+  });
+
+  it("coexists with role-wide arms and ignores an empty machine or an unconfigured role", () => {
+    initFailover({
+      ...HAIKU_LOCAL,
+      ...OPUS_TO_QWEN,
+      CLAUDISH_FAILOVER_ACTIVE: "opus, haiku@m1 haiku@m2, haiku@, fable@m1",
+    });
+    expect(isFailoverActive("opus")).toBe(true);
+    expect(machineArmBucket("haiku", "m1")).toBe("machine:m1");
+    expect(machineArmBucket("haiku", "m2")).toBe("machine:m2");
+    expect(isFailoverActive("haiku")).toBe(false); // `haiku@` is not a role-wide arm
+    expect(machineArmBucket("fable", "m1")).toBeUndefined(); // no fable cascade
+  });
+
+  it("the session notice states the operator routing (not an exhaustion) and carries the step note", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@myia-po-2027" });
+    const text = consumeStreamNotice("haiku", "s-po2027", machineArmBucket("haiku", "myia-po-2027"))!;
+    expect(text).toContain("Swift local");
+    expect(text).toContain("the operator routes the Haiku role of myia-po-2027 away from its nominal model");
+    expect(text).not.toContain("temporarily exhausted");
+    expect(text).toContain("A much smaller model than the nominal.");
+    // Other machines' sessions get nothing.
+    expect(consumeStreamNotice("haiku", "s-other", "minimax-coding")).toBeNull();
+  });
+
+  it("a real wall still reads as an exhaustion (wording unchanged off the config arm)", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_AUTO: "1" });
+    armFailover("haiku", "HTTP 402", "minimax-coding");
+    const text = consumeStreamNotice("haiku", "s-wall", "minimax-coding")!;
+    expect(text).toContain("because the nominal Haiku model temporarily exhausted");
+  });
+
+  // ── #552 review, non-blocking pins ──
+
+  const captureStderr = (fn: () => void): string[] => {
+    const lines: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (chunk: any) => {
+      lines.push(String(chunk));
+      return true;
+    };
+    try {
+      fn();
+    } finally {
+      (process.stderr as any).write = realWrite;
+    }
+    return lines;
+  };
+
+  it("N: the startup banner names the live machine arm and its step", () => {
+    const lines = captureStderr(() =>
+      initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@myia-po-2027" })
+    );
+    const banner = lines.filter((l) => l.includes("[Failover] configured="));
+    expect(banner.length).toBe(1);
+    expect(banner[0]).toContain("haiku@myia-po-2027→Swift local");
+  });
+
+  it("T: a re-init without the arm drops the machine arm", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@myia-po-2027" });
+    expect(machineArmBucket("haiku", "myia-po-2027")).toBe("machine:myia-po-2027");
+    initFailover({ ...HAIKU_LOCAL });
+    expect(machineArmBucket("haiku", "myia-po-2027")).toBeUndefined();
+  });
+
+  it("U: resetFailoverForTests() drops the machine arm", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@myia-po-2027" });
+    resetFailoverForTests();
+    expect(machineArmBucket("haiku", "myia-po-2027")).toBeUndefined();
+  });
+
+  it("W: the step note appears exactly once in the session notice", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@myia-po-2027" });
+    const text = consumeStreamNotice("haiku", "s-note", machineArmBucket("haiku", "myia-po-2027"))!;
+    expect(text.split("A much smaller model than the nominal.").length - 1).toBe(1);
+  });
+
+  it("the role-wide config arm reads as operator routing, with no machine named", () => {
+    initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku" });
+    const text = consumeStreamNotice("haiku", "s-rolewide", "minimax-coding")!;
+    expect(text).toContain("because the operator routes the Haiku role away from its nominal model");
+    expect(text).not.toContain("temporarily exhausted");
+  });
+
+  it("a second @ in the machine is ignored with a log, never armed", () => {
+    const lines = captureStderr(() =>
+      initFailover({ ...HAIKU_LOCAL, CLAUDISH_FAILOVER_ACTIVE: "haiku@m1@m2, haiku@myia-po-2027@" })
+    );
+    expect(lines.filter((l) => l.includes("Ignoring malformed machine")).length).toBe(2);
+    expect(machineArmBucket("haiku", "m1@m2")).toBeUndefined();
+    expect(machineArmBucket("haiku", "m1")).toBeUndefined();
+    expect(machineArmBucket("haiku", "myia-po-2027@")).toBeUndefined();
+    expect(machineArmBucket("haiku", "myia-po-2027")).toBeUndefined();
+    expect(isFailoverActive("haiku")).toBe(false);
   });
 });
 

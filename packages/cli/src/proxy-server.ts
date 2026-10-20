@@ -73,6 +73,7 @@ import {
   isWiringError,
   roleFromModelName,
   getFailoverRule,
+  machineArmBucket,
   classifyNominalBucket,
   providerBucketOf,
   resolveFailoverTargetForSession,
@@ -887,6 +888,22 @@ export async function createProxyServer(
     // No chain: a bare name with no routable provider is the native lane
     // (matches the isNative predicate of step 6 below).
     return providerBucketOf(target);
+  };
+
+  /**
+   * The ONE bucket an ingress request keys every failover decision on (#275):
+   * undefined when its role has no cascade; the `machine:<name>` bucket when
+   * the role is config-armed for the caller's X-Claudish-Machine
+   * (`role@machine` in CLAUDISH_FAILOVER_ACTIVE) — that machine's requests
+   * divert, with the notice, while every other machine stays on the nominal;
+   * else the nominal's real bucket.
+   */
+  const requestBucketOf = async (c: Context, requestedModel: string): Promise<string | undefined> => {
+    const role = roleFromModelName(requestedModel);
+    if (!role || !getFailoverRule(role)) return undefined;
+    return (
+      machineArmBucket(role, c.req.header("x-claudish-machine")) ?? (await nominalBucketOfModel(requestedModel))
+    );
   };
 
   /**
@@ -2051,12 +2068,16 @@ export async function createProxyServer(
       }
       // #412 — same suppression as the serving routes: this resolution writes
       // the dwell pin too, and the keyless guard just below must see the
-      // handler the request would ACTUALLY get, not a swapped one.
+      // handler the request would ACTUALLY get, not a swapped one. Same bucket
+      // as the serving routes too (#552 review, B2): with `undefined` the
+      // resolution fell back to the nominal's bucket, so a machine-armed
+      // caller counted against the nominal instead of the model that answers,
+      // and the nominal landing deleted its session's dwell pin.
       const handler = await getHandlerForRequest(
         body.model,
         0,
         extractSessionKey(body),
-        undefined,
+        await requestBucketOf(c, body.model),
         undefined,
         keylessNativeRequest(c, body.model)
       );
@@ -2291,8 +2312,7 @@ export async function createProxyServer(
       // notices — both must key on the same meter or a notice announces a
       // diversion the session never took.
       const requestRole = roleFromModelName(body.model);
-      const requestBucket =
-        requestRole && getFailoverRule(requestRole) ? await nominalBucketOfModel(body.model) : undefined;
+      const requestBucket = await requestBucketOf(c, body.model);
       // #412 — the SAME suppression as the cascade below: this resolution is
       // not a dry run (it writes the per-session dwell pin and decides the
       // billing-header strip), so letting it swap behind a keyless native
@@ -2412,10 +2432,7 @@ export async function createProxyServer(
 
       // #275: same one-bucket-per-request rule as /v1/messages (see there).
       const requestRole = roleFromModelName(anthropicBody.model);
-      const requestBucket =
-        requestRole && getFailoverRule(requestRole)
-          ? await nominalBucketOfModel(anthropicBody.model)
-          : undefined;
+      const requestBucket = await requestBucketOf(c, anthropicBody.model);
       // #412 — the OpenAI-compatible ingress resolves the handler for the same
       // two reasons as /v1/messages (log label + billing strip, plus the dwell
       // pin it writes as a side effect), so it carries the same suppression.
