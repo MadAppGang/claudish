@@ -163,7 +163,7 @@ It replaced a module-global `Set<string>` of ids.
 **Keyed by session**, because `serve` and the MCP path run several conversations through one
 proxy. With one shared 256-entry set, one conversation could evict another's pending id, and
 generated `tool_<ts>_<idx>` ids can collide across conversations. The key comes from
-`extractSessionId` in `behavior/harness.ts`, which takes the whole request and reads the
+`extractSessionId` in `hooks/harness.ts`, which takes the whole request and reads the
 `session_id` inside `metadata.user_id`. A different function with the same name exists in
 `session-events/index.ts` and takes the metadata object; the import names the path.
 

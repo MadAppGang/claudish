@@ -15,7 +15,11 @@ lives in `ROADMAP.md`.
 - `network-recovery.md` — the two-tier connection hold: the DERIVED deadline (`API_TIMEOUT_MS`, not a
   watchdog), why tier 2 answers 503 and never 429, why the banner is magmux's `overlay` and never a
   pane of ours (closing a pane wedged Claude Code), the five auth sites
-- `behavior-layer.md` — Layer 4, the harness-conformance supervisor
+- `hooks.md` — the hook system (`hooks/`): closed actions and severity, the unsafe raw tier and its
+  transactional containment, the response seam and opt-in buffering, cross-process injection through
+  the owner-created inbox, the `SETTLING` hold and turn chains, the interactive driver, and the
+  harness-conformance supervisor with its plan-mode measurement. Read before editing `hooks/`, a stream
+  parser's raw tap, or the settle path. User guide: `docs/advanced/hooks.md`
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint
@@ -38,8 +42,8 @@ lives in `ROADMAP.md`.
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
 - `mcp-sessions.md` — the 15-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, `resize_session`, the session records the
-  magus monitor reads), `run_prompt`'s Claude Code print path, progress keepalive
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, the on-disk session records
+  and who reads them), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every
