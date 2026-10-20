@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { credentialNoteLines, resolveProviderDetailKeyDisplay } from "./ProviderDetail.js";
+import {
+  credentialNoteLines,
+  resolveProviderDetailKeyDisplay,
+  validTestNote,
+} from "./ProviderDetail.js";
 
 describe("resolveProviderDetailKeyDisplay", () => {
   test("shows OAuth as the active credential instead of an empty key", () => {
@@ -28,6 +32,29 @@ describe("resolveProviderDetailKeyDisplay", () => {
         cfgKeyMask: "cfg-mask",
       })
     ).toBe("env-mask");
+  });
+});
+
+// REGRESSION: Login-authenticated providers reported an API key after a successful Test — /dev:fix session dev-fix-20261020-235500-vtx01
+describe("validTestNote", () => {
+  test("keeps the API key success sentence for a keyed provider", () => {
+    expect(validTestNote({ isLocal: false, credential: "key" })).toBe(
+      "  API key is valid and endpoint is reachable."
+    );
+  });
+
+  test("names the login for an OAuth or ADC provider", () => {
+    expect(validTestNote({ isLocal: false, credential: "login" })).toBe(
+      "  Login is valid and endpoint is reachable."
+    );
+  });
+
+  test("keeps the local success sentence regardless of credential", () => {
+    for (const credential of ["key", "login"] as const) {
+      expect(validTestNote({ isLocal: true, credential })).toBe(
+        "  Local provider responded through the shared probe path."
+      );
+    }
   });
 });
 

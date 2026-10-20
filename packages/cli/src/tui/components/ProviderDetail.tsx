@@ -107,6 +107,13 @@ export function resolveProviderDetailKeyDisplay(input: {
   return "────────";
 }
 
+export function validTestNote(input: { isLocal: boolean; credential: "key" | "login" }): string {
+  if (input.isLocal) return "  Local provider responded through the shared probe path.";
+  return input.credential === "login"
+    ? "  Login is valid and endpoint is reachable."
+    : "  API key is valid and endpoint is reachable.";
+}
+
 export function ProviderDetail({
   selectedProvider,
   mode,
@@ -409,9 +416,11 @@ export function ProviderDetail({
               </span>
               {tr.ms !== undefined && <span fg={C.dim}>{`  ${tr.ms}ms`}</span>}
               <span fg={C.fgMuted}>
-                {selectedProvider.isLocal
-                  ? "  Local provider responded through the shared probe path."
-                  : "  API key is valid and endpoint is reachable."}
+                {validTestNote({
+                  isLocal: !!selectedProvider.isLocal,
+                  credential:
+                    isOAuth || selectedProvider.catalogName === "vertex" ? "login" : "key",
+                })}
               </span>
             </>
           )}
