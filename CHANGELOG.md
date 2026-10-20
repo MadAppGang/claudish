@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.1.1] - 2026-10-20
+
+### Bug Fixes
+
+- bundle magmux 0.18.0, which binds deep pane socket paths *(pane)* ([`dd91ceb`](https://github.com/MadAppGang/claudish/commit/dd91cebfe51f59f637a7f89336a743aaf94ece06))
+- accept pane socket paths of 100 bytes or more *(pane)* ([`7836e09`](https://github.com/MadAppGang/claudish/commit/7836e09a70660dca7ed6afce44b99a25ae643f68))
+
+### Documentation
+
+- update CHANGELOG.md for v12.1.0([`2a66aeb`](https://github.com/MadAppGang/claudish/commit/2a66aebcac4005fc3670cc3d10f5a98c373feb51))
+
+### Other Changes
+
+- v12.1.1 *(release)* ([`02b6009`](https://github.com/MadAppGang/claudish/commit/02b600917d7c23c0410bc3611f3732a7b4923faa))
+
+### Refactoring
+
+- read the magmux minimum in help text from MIN_MAGMUX_VERSION *(mcp)* ([`50850fa`](https://github.com/MadAppGang/claudish/commit/50850fab617366076e54d1f7256562d6d774706f))
+
 ## [12.1.0] - 2026-10-20
 
 ### Bug Fixes
