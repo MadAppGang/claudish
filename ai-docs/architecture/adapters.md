@@ -445,6 +445,19 @@ walked onto the next hop, usually metered, and never told to log in. Jack's deci
 credential failure of any subscription provider stops with its message, and a transient fault
 never becomes a 401. This narrows the "strictly additive" property for exactly that case.
 
+**Amended 2026-10-20: the chain moves on to the other SUBSCRIPTIONS, never to a metered hop.**
+The Bench run of that day (`ai-docs/reports/recommended-models-bench-run-20261020.md`) showed the
+stop costing availability the rule was never meant to cost: a bare `glm-5.3` whose Zen Go key had
+expired stopped dead although the Qwen Token Plan, also a subscription, was two hops later. Jack:
+"it should not go to metered providers, but that models has native subscription". So after a
+subscription candidate's terminal verdict (or a headerless 401/403 credential rejection,
+`isSubscriptionCredentialRejection`), `FallbackHandler.handle` skips every metered candidate and
+tries only the remaining subscription ones. Any failure of those is logged and passed over; if none
+serves, the answer is the FIRST rejection's response unchanged (its status, verdict header and
+"log in" message), never a combined `all_providers_failed`. An explicit spec (`zengo@glm-5.3`) has
+one candidate, so it still stops. A transient verdict, and a terminal verdict from a metered
+candidate, still return at once. Tests: `fallback-handler.subscription-only.test.ts`.
+
 **The verdict rides a header, `x-claudish-auth-verdict`** (`terminal` or `transient`), from
 `handlers/shared/auth-failure.ts`. The status cannot carry it: a terminal failure is answered 400
 so Claude Code shows it inline, and a 400 with `upstream_status: 401` is precisely what the

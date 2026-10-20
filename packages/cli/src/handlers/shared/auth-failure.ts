@@ -5,9 +5,11 @@
  * ## The rule (project owner, 2026-10-16)
  *
  * - A TERMINAL credential failure of a SUBSCRIPTION provider answers 400 with
- *   its message, and the routing chain stops there. It never walks onto a
- *   metered provider: a user whose flat-rate login expired is told to log in,
- *   not silently billed per token by the next hop.
+ *   its message. It never walks onto a metered provider: a user whose
+ *   flat-rate login expired is told to log in, not silently billed per token
+ *   by the next hop. The routing chain tries only its remaining SUBSCRIPTION
+ *   candidates, and answers with this failure if none serves (2026-10-20,
+ *   `FallbackHandler.handle`).
  * - A TRANSIENT failure (network fault, 5xx, 429) never becomes a 401. A 401 is
  *   the one status `FallbackHandler.isRetryableError` reads as "try another
  *   credential", so a blip answered 401 walked the chain mid-outage.
