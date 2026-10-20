@@ -112,3 +112,77 @@ test("Kimi discovery uses the registry host instead of the definition host", () 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test.each([
+  ["OpenCode Go discovery retries the definition URL after a registry 404", 404, 200],
+  ["OpenCode Go discovery does not retry a registry 401", 401, 200],
+  ["OpenCode Go discovery records the definition URL when both endpoints return 404", 404, 404],
+] as const)("%s", (_name, registryStatus, definitionStatus) => {
+  const home = mkdtempSync(join(tmpdir(), "discovery-registry-go-fallback-"));
+  try {
+    const data = structuredClone(fixture);
+    data.routeRegistry!.registry.routes.opencode!.profiles["go-subscription"]!.apis = {
+      "chat-completions": { baseUrl: "https://opencode.ai/inference/go/openai/v1" },
+      responses: { baseUrl: "https://opencode.ai/inference/go/openai/v1" },
+      "anthropic-messages": { baseUrl: "https://opencode.ai/inference/go/anthropic/v1" },
+      gemini: { baseUrl: "https://opencode.ai/inference/go/google/v1beta" },
+    };
+    mkdirSync(join(home, ".claudish"));
+    writeFileSync(join(home, ".claudish/cloud-models-catalog-v3.json"), JSON.stringify(data));
+    const child = Bun.spawnSync(
+      [
+        process.execPath,
+        "--eval",
+        `
+      const { discoverProviderModelsCatalog, getDiscoveryFailure } = await import(${JSON.stringify(new URL("./model-discovery.ts", import.meta.url).pathname)});
+      const calls = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        calls.push({url: String(url), headers: Object.fromEntries(new Headers(init.headers))});
+        const status = String(url) === "https://opencode.ai/inference/go/openai/v1/models"
+          ? ${registryStatus} : ${definitionStatus};
+        return Response.json({data: [{id: "test-chat"}]}, {status});
+      };
+      try {
+        const result = await discoverProviderModelsCatalog("opencode-zen-go");
+        console.log(JSON.stringify({result, calls, failure: getDiscoveryFailure("opencode-zen-go")}));
+      } finally { globalThis.fetch = originalFetch; }
+    `,
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          CLAUDISH_DISABLE_CATALOG_WARM: "1",
+          CLAUDISH_DISABLE_KEYCHAIN: "1",
+          CLAUDISH_DISABLE_OP: "1",
+          OPENCODE_GO_API_KEY: "fake",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    const result = JSON.parse(child.stdout.toString());
+    const registryEndpoint = "https://opencode.ai/inference/go/openai/v1/models";
+    const definitionEndpoint = "https://opencode.ai/zen/go/v1/models";
+    expect(result.calls.map((call: { url: string }) => call.url)).toEqual(
+      registryStatus === 404 ? [registryEndpoint, definitionEndpoint] : [registryEndpoint]
+    );
+    for (const call of result.calls) {
+      expect(call.headers.authorization).toBe("Bearer fake");
+    }
+    if (registryStatus === 404 && definitionStatus === 200) {
+      expect(result.result.kind, JSON.stringify(result)).toBe("served");
+      expect(result.result.models).toEqual([expect.objectContaining({ id: "test-chat" })]);
+    } else {
+      expect(result.result.kind, JSON.stringify(result)).not.toBe("served");
+      expect(result.failure).toMatchObject({
+        status: registryStatus === 404 ? definitionStatus : registryStatus,
+        endpoint: registryStatus === 404 ? definitionEndpoint : registryEndpoint,
+      });
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
