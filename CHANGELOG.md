@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.1.2] - 2026-10-20
+
+### Bug Fixes
+
+- start pane children with Claude Code's native cursor *(pane)* ([`6265866`](https://github.com/MadAppGang/claudish/commit/626586617143c6c38751467b9db470574005819a))
+
+### Documentation
+
+- record the 2026-10-20 recommended-models Bench run *(reports)* ([`34fbe21`](https://github.com/MadAppGang/claudish/commit/34fbe212af1172f13480a7de9f4725e6c8091087))
+- update CHANGELOG.md for v12.1.1([`43eeca1`](https://github.com/MadAppGang/claudish/commit/43eeca1e4c02fde1b4392b7b98be6480ab6822db))
+
+### Other Changes
+
+- v12.1.2 *(release)* ([`7efd15b`](https://github.com/MadAppGang/claudish/commit/7efd15bb5a774b6a286da2a6c6e42891799be9b5))
+
 ## [12.1.1] - 2026-10-20
 
 ### Bug Fixes
