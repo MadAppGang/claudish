@@ -147,6 +147,16 @@ Each step tracks its own failure count plus last-failure timestamp in
 `BACKOFF_MS = [10m, 30m, 1h, 4h, 24h]` (caps at 24h). A TTL-failed step is skipped by
 `resolveFailoverTarget` until its TTL elapses.
 
+**One rung per failure EPISODE, never per concurrent failure (#553).** The ladder is meant to grow
+with repeated episodes: a re-probe that fails after the bench elapsed. A mark that lands while the
+step's record still binds (TTL or known reset not yet elapsed — the step is already benched) on the
+same concrete comes from requests that were in flight before the bench and failed together. Such a
+mark refreshes `lastFailure` (and the other record fields) but keeps the count. Its `[Failover] step`
+line reads `count=N (same episode)`. Measured trigger, hub 20/10 00:19Z: `haiku[1]` (Kimi) went
+count 2 → 4, i.e. a 4 h bench, within one second, and the cascade paid the next steps for those
+hours. A mark on a different concrete (a `role:` step whose delegation moved, #331) is a new episode
+and escalates. Pins: `failover.test.ts` "#553: …" (4 mutations executed).
+
 **Reset-time dominance.** The backoff assumes the wall's duration is unknown. When it IS known —
 body-parsed, or declared via `..._RESET` — `StepFailure.resetAt` holds the step skipped until that
 instant, overriding the backoff entirely (a 24h-capped re-probe cycle against an 11-day wall is pure

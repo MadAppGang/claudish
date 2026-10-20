@@ -868,7 +868,16 @@ function stepFailuresFor(role: FailoverRole): StepFailure[] {
  * operator-declared step.resetAt applies if configured. `opts.concrete` is the
  * concrete target the failed attempt served (#331): for a `role:` step it is
  * what the delegation resolved to, and the step's TTL binds only while the
- * delegation keeps resolving there. */
+ * delegation keeps resolving there.
+ *
+ * #553: the ladder climbs one rung per failure EPISODE, never per concurrent
+ * failure. A mark landing while the step's record is still binding (TTL or known
+ * reset not yet elapsed — the step is already benched) on the same concrete is the
+ * same episode: in-flight requests selected before the bench, failing together.
+ * It refreshes the record but keeps the count. Measured on the hub 20/10 00:19Z:
+ * Kimi (haiku[1]) went count 2 → 4, i.e. a 4 h bench, within one second. A mark
+ * on a probeable step (bench elapsed — the re-probe failed) or on a different
+ * concrete (a role-step whose delegation moved) is a new episode and escalates. */
 export function markStepFailed(
   role: FailoverRole,
   idx: number,
@@ -879,11 +888,14 @@ export function markStepFailed(
   const rule = rules.get(role);
   if (!rule || idx < 0 || idx >= rule.steps.length) return;
   const arr = stepFailuresFor(role);
+  const prev = arr[idx];
   const resetAt = bodyResetAt ?? rule.steps[idx].resetAt;
   const nonQuota = opts?.nonQuota === true;
   const concrete = opts?.concrete;
+  const sameEpisode =
+    isStepTtlFailed(prev) && (prev.concrete === undefined || concrete === undefined || prev.concrete === concrete);
   arr[idx] = {
-    count: arr[idx].count + 1,
+    count: sameEpisode ? prev.count : prev.count + 1,
     lastFailure: new Date(Date.now()),
     resetAt,
     ...(nonQuota ? { nonQuota: true } : {}),
@@ -891,7 +903,7 @@ export function markStepFailed(
   };
   const ttlText = resetAt ? `until ${resetAt.toISOString()}` : `${Math.round(stepTtlMs(arr[idx].count) / 60000)}min`;
   logStderr(
-    `[Failover] step ${role}[${idx}] (${rule.steps[idx].label}) ${nonQuota ? "failed (non-quota)" : "walled"} — count=${arr[idx].count} ttl=${ttlText} (${reason})`
+    `[Failover] step ${role}[${idx}] (${rule.steps[idx].label}) ${nonQuota ? "failed (non-quota)" : "walled"} — count=${arr[idx].count}${sameEpisode ? " (same episode)" : ""} ttl=${ttlText} (${reason})`
   );
 }
 

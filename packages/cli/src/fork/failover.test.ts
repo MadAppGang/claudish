@@ -588,13 +588,74 @@ describe("per-step backoff", () => {
     expect(resolveFailoverTarget("opus").stepIndex).toBe(0); // step 0 probed again
   });
 
-  it("two failures extend the TTL to ~30 minutes", () => {
+  it("two failure EPISODES extend the TTL to ~30 minutes", () => {
     markStepFailed("opus", 0, "one");
+    clock += 11 * 60 * 1000; // bench elapsed — the re-probe fails: a second episode
     markStepFailed("opus", 0, "two");
     clock += 20 * 60 * 1000; // 20 min — within 30 min TTL
     expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
     clock += 15 * 60 * 1000; // 35 min total — past 30 min TTL
     expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  // #553: N requests in flight on one step that fail together are ONE episode.
+  // Measured on the hub 20/10 00:19Z: Kimi (haiku[1]) count 2 → 4 (a 4 h bench)
+  // within one second; the cascade then paid DeepSeek PAYG for those hours.
+  it("#553: concurrent failures on a benched step climb ONE rung, not N", () => {
+    for (let i = 0; i < 5; i++) markStepFailed("opus", 0, `in-flight ${i}`);
+    clock += 9 * 60 * 1000;
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1); // still benched
+    clock += 2 * 60 * 1000; // 11 min — first rung (10 min), not the fifth (24 h)
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  it("#553: a late in-flight failure refreshes the bench without escalating it", () => {
+    markStepFailed("opus", 0, "first");
+    clock += 5 * 60 * 1000; // a long stream selected before the bench dies now
+    markStepFailed("opus", 0, "late in-flight");
+    clock += 9 * 60 * 1000; // 14 min after the first, 9 after the refresh
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+    clock += 2 * 60 * 1000; // 11 min after the refresh — still the 10 min rung
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  it("#553: a failure while a known reset is pending is the same episode", () => {
+    const resetAt = new Date(clock + 2 * 3600_000);
+    markStepFailed("opus", 0, "wall with a reset", resetAt);
+    clock = resetAt.getTime() - 5 * 60_000; // TTL rung long gone, the reset still binds
+    markStepFailed("opus", 0, "in-flight while walled", resetAt);
+    clock = resetAt.getTime() + 6 * 60_000; // reset passed, 11 min after the last failure
+    // FIRST rung (10 min) from the last failure → probeable; a second rung (30 min)
+    // would still hold the step here.
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  it("#553: a failure on a DIFFERENT concrete is a new episode", () => {
+    markStepFailed("opus", 0, "on A", undefined, { concrete: "prov@model-a" });
+    markStepFailed("opus", 0, "on B", undefined, { concrete: "prov@model-b" });
+    clock += 11 * 60 * 1000; // past the first rung
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1); // second rung holds
+    clock += 20 * 60 * 1000; // 31 min — past the second rung
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  it("#553: the held mark says so in the [Failover] line", () => {
+    const realWrite = process.stderr.write.bind(process.stderr);
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      markStepFailed("opus", 0, "first");
+      markStepFailed("opus", 0, "concurrent");
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    const step = lines.filter((l) => l.includes("[Failover] step opus[0]"));
+    expect(step.length).toBe(2);
+    expect(step[0]).toContain("count=1 ttl=");
+    expect(step[1]).toContain("count=1 (same episode) ttl=");
   });
 
   it("step failures survive the role-arm TTL cycle (the corrected invariant)", () => {
@@ -603,7 +664,8 @@ describe("per-step backoff", () => {
     initFailover({ ...OPUS_CASCADE, CLAUDISH_FAILOVER_AUTO: "1" });
     expect(armFailover("opus", "weekly wall")).toBe(true);
     markStepFailed("opus", 0, "qwen weekly");
-    markStepFailed("opus", 0, "qwen weekly"); // count=2 → 30 min TTL
+    clock += 11 * 60 * 1000; // first bench elapsed; the re-probe fails too
+    markStepFailed("opus", 0, "qwen weekly"); // second episode: count=2 → 30 min TTL
     // Advance past the 10-min role-arm TTL; the role disarms then re-arms, but the
     // step's 30-min backoff must hold — Qwen must not be re-probed every 10 min.
     clock += 11 * 60 * 1000;
