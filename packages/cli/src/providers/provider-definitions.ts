@@ -811,8 +811,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     baseUrl: "https://api.kimi.com/coding/v1",
     apiPath: "/messages",
     apiKeyEnvVar: "KIMI_CODING_API_KEY",
-    apiKeyDescription: "Kimi Coding API Key",
-    apiKeyUrl: "https://kimi.com/code (get key from membership page, or run: claudish login kimi)",
+    apiKeyDescription: "Kimi Coding API Key (membership page, or run: claudish login kimi)",
+    apiKeyUrl: "https://www.kimi.com/code",
     oauthFallback: "kimi-oauth.json",
     oauthLoginSlug: "kimi",
     shortcuts: ["kc"],
@@ -877,7 +877,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyEnvVar: "ZHIPU_API_KEY",
     apiKeyAliases: ["GLM_API_KEY"],
     apiKeyDescription: "GLM/Zhipu API Key",
-    apiKeyUrl: "https://z.ai/",
+    apiKeyUrl: "https://z.ai/manage-apikey/apikey-list",
     shortcuts: ["glm", "zhipu"],
     shortestPrefix: "glm",
     legacyPrefixes: [
@@ -927,7 +927,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiPath: "/api/anthropic/v1/messages",
     apiKeyEnvVar: "ZAI_API_KEY",
     apiKeyDescription: "Z.AI API Key",
-    apiKeyUrl: "https://z.ai/",
+    apiKeyUrl: "https://z.ai/manage-apikey/apikey-list",
     // Canonical name is "z-ai" (matches the Firebase catalog slug). Bare "zai"
     // stays as an input alias for existing `zai@...` commands.
     shortcuts: ["z-ai", "zai"],
@@ -951,7 +951,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiPath: "/api/chat",
     apiKeyEnvVar: "OLLAMA_API_KEY",
     apiKeyDescription: "OllamaCloud API Key",
-    apiKeyUrl: "https://ollama.com/account",
+    apiKeyUrl: "https://ollama.com/settings/keys",
     shortcuts: ["oc", "llama", "lc"],
     shortestPrefix: "oc",
     legacyPrefixes: [{ prefix: "oc/", stripPrefix: true }],
@@ -977,8 +977,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    apiKeyDescription: "OpenCode Zen API Key",
-    apiKeyUrl: "https://opencode.ai/",
+    apiKeyDescription: "OpenCode Zen API Key (Console → Settings → Service accounts)",
+    apiKeyUrl: "https://opencode.ai/console",
     // publicKeyFallback REMOVED (was `"public"`).
     //
     // It sent the literal string "public" as the bearer token on the theory that
@@ -1056,8 +1056,9 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // missing-credential sentence instead of a silent `SUB` label.
     apiKeyEnvVar: "OPENCODE_GO_API_KEY",
     siblingKeyEnvVars: ["OPENCODE_API_KEY"],
-    apiKeyDescription: "OpenCode Zen Go (Lite Plan) API Key",
-    apiKeyUrl: "https://opencode.ai/",
+    apiKeyDescription:
+      "OpenCode Zen Go (Lite Plan) API Key (Console → Settings → Service accounts)",
+    apiKeyUrl: "https://opencode.ai/console",
     shortcuts: ["zengo", "zgo"],
     shortestPrefix: "zengo",
     legacyPrefixes: [
@@ -1225,7 +1226,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // sets LMSTUDIO_API_KEY if their server requires it.
     apiKeyEnvVar: "LMSTUDIO_API_KEY",
     apiKeyDescription: "LM Studio API Key (optional — leave blank for localhost)",
-    apiKeyUrl: "https://lmstudio.ai/docs/local-server",
+    apiKeyUrl: "https://lmstudio.ai/docs/developer/core/server",
     shortcuts: ["lms", "lmstudio", "mlstudio"],
     shortestPrefix: "lms",
     legacyPrefixes: [

@@ -156,8 +156,10 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
         "export KIMI_CODING_API_KEY='sk-kimi-...' (get from https://kimi.com/code membership page, or run: claudish login kimi)",
       ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
       GLM_CODING_API_KEY: "export GLM_CODING_API_KEY='your-key' (get from https://z.ai/subscribe)",
-      OLLAMA_API_KEY: "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
-      OPENCODE_API_KEY: "export OPENCODE_API_KEY='your-key' (get from https://opencode.ai/)",
+      OLLAMA_API_KEY:
+        "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/settings/keys)",
+      OPENCODE_API_KEY:
+        "export OPENCODE_API_KEY='your-key' (create one at https://opencode.ai/console → Settings → Service accounts)",
     };
 
     const example = examples[provider.apiKeyEnvVar] || `export ${provider.apiKeyEnvVar}='your-key'`;
