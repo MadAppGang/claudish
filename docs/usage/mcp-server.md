@@ -451,7 +451,7 @@ Code's input box and stopped its turns from ending. `list_sessions` and
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
-- `cols` (required) - Columns, an integer; clamped to 80–9999
+- `cols` (required) - Columns, an integer; clamped to 40–9999
 - `rows` (required) - Rows, an integer; clamped to 24–9999, then lowered so that `cols × rows` is at
   most 4 000 000 (magmux's own limits; 9999 columns leave 400 rows)
 

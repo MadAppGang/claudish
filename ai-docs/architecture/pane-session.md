@@ -709,10 +709,26 @@ inline 400 and the slot is FAILED `api_error`.
 **The size is the viewer's, not ours.** Every pane used to be born 160×50 and stay there, so a
 docked viewer either showed empty rows below the screen or cut every line. 160×50 is now only the
 launch default (`pane/pane-size.ts`); `resize_session` and `team(mode:"resize")` set it at any time,
-mid-turn included, clamped to cols 80–9999 × rows 24–9999 and at most 4 000 000 cells. The floor is
-claudish's and is not arbitrary: at 80 columns every closed-list dialog marker still fits one row's
-width, and 24 rows still hold a full permission or trust dialog, so boot and blocked-screen
-detection keep working. The ceiling is magmux's own (`mux/size.go`), so a clamped size can never
+mid-turn included, clamped to cols 40–9999 × rows 24–9999 and at most 4 000 000 cells. The floor is
+claudish's and is measured, not arbitrary. It was 80, the width at which every closed-list marker
+still fit one row. MTL-140 lowered it to 40 on real Claude Code 2.1.304 screens in magmux 0.18.0
+(`size-40x24-*`):
+
+- magmux's gate still answers `dialog:permission` (Write and Bash) and `dialog:question`, a ready
+  empty box, and `box_not_empty` for a typed line. Claude Code shortens what it prints in a narrow
+  dialog (`Do you want to create hello.txt?`, not the path), so the runtime markers stay on one row.
+- The gate's `dismissable` drops for the question dialog, whose footer wraps as
+  `Enter to select · ↑/↓ to navigate · Esc` / `to cancel`, so magmux's one-row `Esc to cancel`
+  check fails. claudish never reads that flag: it sends Escape itself from its `QUESTION` or
+  `PERMISSION` phase.
+- A boot marker such as `Is this a project you created or one you trust` (46 characters) cannot
+  fit one 40-column row, so magmux's per-row marker table misses it. claudish names it from the
+  flattened screen (`nameBootScreen`), which is the path `bootBlock` takes when the gate has no
+  boot kind. Not captured live at 40 columns: the capturing account trusts `/`, so no trust
+  prompt appears.
+- 24 rows still hold the tallest captured dialog (Bash permission, rows 5–22).
+
+The ceiling is magmux's own (`mux/size.go`), so a clamped size can never
 earn its `too_small`/`too_large`: the `resize` op refuses a side over 10 000, but the launch size it
 parses from `COLUMNS`/`LINES` is EXCLUSIVE of 10 000, and a size requested while the pane is
 starting goes through those variables, so 9 999 is the largest side valid on both paths; the
@@ -757,7 +773,7 @@ as `since_seq` never reads a pre-resize frame as current.
 at other widths its checks are width-proof: echo prefixes are `min(40, cols − 4)` long and compared
 against box text with row breaks removed, dialog markers match the dialog region joined into one
 string, and the working row tolerates a wrapped tail. They are validated on real Claude Code screens
-captured at 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A
+captured at 40, 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A
 resize redraw moves the above-box region, which only DELAYS settle (it restarts its quiet clocks)
 and never completes it; during the redraw the cursor can be stale for a frame, and the answer for
 that frame is "box not located", an unknown, never a wrong box. A resize during an admission only
