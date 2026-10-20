@@ -44,6 +44,11 @@ import {
 } from "../../auth/antigravity-user.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
+import {
+  callAbortError,
+  raceCallAbort,
+  sleepUnlessAborted,
+} from "../../handlers/shared/call-context.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
@@ -545,13 +550,26 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * - MODEL_CAPACITY_EXHAUSTED → model fallback chain
    * - QUOTA_EXHAUSTED → terminal, return error (daily limit)
    * - Unknown 429 → retry with backoff
+   *
+   * `opts.signal` (an internal call's deadline) is honoured everywhere this
+   * method does work of its own: it is checked before each attempt and each
+   * capacity-fallback candidate, handed to the queue, given to the fallback
+   * `fetch`, and it ends the retry sleep. The quota reads are raced against it
+   * rather than cancelled (unbilled reads). An abort rejects with `AbortError`,
+   * which ComposedHandler answers before classifying anything. Without a
+   * signal every step is what it was.
    */
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+  async enqueueRequest(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
+    const signal = opts?.signal;
 
     let lastResponse: Response | null = null;
     for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
-      const response = attempt === 1 ? await queue.enqueue(fetchFn) : await queue.enqueue(fetchFn);
+      if (signal?.aborted) throw callAbortError();
+      const response = await queue.enqueue(fetchFn, opts);
 
       if (response.status !== 429) {
         // A 404 usually means this model is not served by the tier we are on.
@@ -576,11 +594,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
       );
 
       if (classification.reason === "MODEL_CAPACITY_EXHAUSTED") {
-        return this.handleCapacityExhausted(response, queue);
+        return this.handleCapacityExhausted(response, queue, signal);
       }
 
       if (classification.terminal) {
-        return await this.explainTerminalQuota(response, bodyText, classification.reason);
+        return await this.explainTerminalQuota(response, bodyText, classification.reason, signal);
       }
 
       if (attempt < MAX_RETRY_ATTEMPTS) {
@@ -591,9 +609,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
           `[Antigravity] Rate limited (${classification.reason || "unattributed — server gave no reason or retry delay"}), retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_RETRY_ATTEMPTS})`
         );
         if (attempt === 1) {
-          await this.logQuotaInfo();
+          await raceCallAbort(this.logQuotaInfo(), signal);
         }
-        await new Promise((r) => setTimeout(r, delay));
+        if (await sleepUnlessAborted(delay, signal)) throw callAbortError();
       }
     }
 
@@ -610,7 +628,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private async handleCapacityExhausted(
     originalResponse: Response,
-    queue: GeminiRequestQueue
+    queue: GeminiRequestQueue,
+    signal?: AbortSignal
   ): Promise<Response> {
     const candidates = this.servedModels.filter((m) => m !== this.servedModelName);
 
@@ -637,6 +656,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
     const tried: string[] = [this.servedModelName];
 
     for (const fallbackModel of candidates) {
+      // No candidate starts after the call's deadline; the one in flight is
+      // aborted through the signal on its own fetch.
+      if (signal?.aborted) throw callAbortError();
       log(`[Antigravity] Trying fallback model: ${fallbackModel}`);
       tried.push(fallbackModel);
 
@@ -644,12 +666,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";
 
-      const fallbackResponse = await queue.enqueue(() =>
-        fetch(endpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(fallbackEnvelope),
-        })
+      const fallbackResponse = await this.fetchCapacityCandidate(
+        queue,
+        endpoint,
+        headers,
+        fallbackEnvelope,
+        signal
       );
 
       if (fallbackResponse.status === 200) {
@@ -686,6 +708,28 @@ export class AntigravityProviderTransport implements ProviderTransport {
       return this.rewriteModelNotFound(lastResponse, true);
     }
     return lastResponse;
+  }
+
+  /**
+   * One capacity-fallback request through the Gemini queue. With a call
+   * signal, the queue drops it while it waits, the closure refuses to start
+   * it once aborted, and the fetch itself carries the signal; without one it
+   * is the plain queued fetch.
+   */
+  private fetchCapacityCandidate(
+    queue: GeminiRequestQueue,
+    endpoint: string,
+    headers: Record<string, string>,
+    envelope: unknown,
+    signal?: AbortSignal
+  ): Promise<Response> {
+    const init: RequestInit = { method: "POST", headers, body: JSON.stringify(envelope) };
+    if (!signal) return queue.enqueue(() => fetch(endpoint, init));
+    return queue.enqueue(
+      () =>
+        signal.aborted ? Promise.reject(callAbortError()) : fetch(endpoint, { ...init, signal }),
+      { signal }
+    );
   }
 
   /**
@@ -791,9 +835,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
   private async explainTerminalQuota(
     response: Response,
     bodyText: string,
-    reason: string | undefined
+    reason: string | undefined,
+    signal?: AbortSignal
   ): Promise<Response> {
-    const remaining = await this.quotaRemainingForServedModel();
+    const remaining = await raceCallAbort(this.quotaRemainingForServedModel(), signal);
     const model = this.servedModelName;
 
     let advice: string;
