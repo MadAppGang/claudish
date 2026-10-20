@@ -342,16 +342,17 @@ const SIGNALS: Array<[NodeJS.Signals, number]> = [
 async function shutdown(reason: "stdin_closed" | "signal", code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  try {
+    await hookOpts.before?.();
+  } catch {
+    // a failing record writer must not keep panes alive
+  }
   // The reap's last waits (the pane watcher, waitForExit's timer) are unref'd. Once
   // the cancel lets the run's main flow return, they are all that is left, and Bun
-  // exits 0 before process.exit(code) below. This interval holds the loop open.
+  // exits 0 before process.exit(code) below. This interval holds the loop open for
+  // the reap only: every wait in it is bounded, and `before` is not.
   const hold = setInterval(() => {}, 1_000);
   try {
-    try {
-      await hookOpts.before?.();
-    } catch {
-      // a failing record writer must not keep panes alive
-    }
     await reapAllPanes(reason);
   } finally {
     clearInterval(hold);
