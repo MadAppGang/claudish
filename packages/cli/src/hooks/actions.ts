@@ -4,25 +4,28 @@
  * request and tool-call targets.
  *
  * Actions are plain data (the Command pattern as a discriminated union), so
- * they can be validated, severity-gated, conflict-checked, journaled and, for
- * `injectUserTurn` / `annotateTurn`, serialised into the hook inbox. Nothing
- * here runs hook code.
+ * they can be validated, severity-gated, applied one hook-chain step at a time,
+ * journaled and, for `injectUserTurn` / `annotateTurn`, serialised into the
+ * hook inbox. Nothing here runs hook code.
  *
  * The request appliers never mutate a message, block or tool object in place.
- * Stage A replaces `system`, `messages` and `tools` (and every changed message
- * or tool) with new objects on the request object it is given; stage B replaces
- * ELEMENTS of the two tool arrays it is given, so a converted array the provider
- * payload aliases sees the change. That makes them safe on the NativeHandler's
+ * Stage A works on a step's copy of the request chain's working state and
+ * returns a new one (every changed message or tool a new object); stage B
+ * replaces ELEMENTS of the two tool arrays it is given, so a converted array the
+ * provider payload aliases sees the change. That makes them safe on the NativeHandler's
  * copy-on-write view as well as on ComposedHandler's deep copy.
  */
 
+import { sanitizeToolNameForGemini } from "../handlers/shared/gemini-schema.js";
 import type {
   ClaudeContentBlock,
   HookAction,
   JsonValue,
   RemoveMessageText,
   ReplaceMessageText,
+  ReplaceToolDescription,
   RequestAction,
+  RewriteToolDescription,
   ToolCallAction,
 } from "./public.js";
 import { compileMatcher } from "./text-rewrite.js";
@@ -253,7 +256,7 @@ export interface PlannedAction<A extends HookAction = HookAction> {
 export interface ActionResult<A extends HookAction = HookAction> {
   hookId: string;
   action: A;
-  decision: "matched" | "superseded" | "invalid" | "ignored";
+  decision: "matched" | "superseded" | "invalid" | "ignored" | "queued" | "dropped";
   detail?: string;
 }
 
@@ -269,140 +272,227 @@ export interface MutableClaudeRequest {
 
 const STAGE_B: ReadonlySet<string> = new Set(["rewriteToolDescription", "replaceToolDescription"]);
 
-/** The outcome of stage A, and what stage B still has to do. */
-export interface StageAResult {
+/**
+ * The working state of one request hook chain (§4.4.1): the request as the
+ * steps so far left it, plus what the duplicate and removal rules need to
+ * remember across steps. Never mutated: each step produces a new one.
+ */
+export interface RequestChainState {
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format system is a string or a block array
+  readonly system: any;
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format messages
+  readonly messages: any[] | undefined;
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format tools
+  readonly tools: any[] | undefined;
+  /** Tool-description actions in chain order: the overlay, replayed at stage B. */
+  readonly held: ReadonlyArray<PlannedAction<RequestAction>>;
+  /** System-note texts earlier steps of this dispatch added (pending notes included). */
+  readonly seenNotes: ReadonlySet<string>;
+  /** User texts earlier steps of this dispatch appended. */
+  readonly seenAppends: ReadonlySet<string>;
+  /**
+   * Tools earlier steps removed, each with the number of `held` description actions at
+   * the moment of its removal: the held actions before that index preceded the removal
+   * and stay `matched` at stage B; the ones from it on are `superseded: tool_removed`.
+   */
+  readonly removedTools: ReadonlyMap<string, number>;
+}
+
+/** The working state a request chain starts from: the attempt's request as given. */
+export function requestChainState(req: MutableClaudeRequest): RequestChainState {
+  return {
+    system: req.system,
+    messages: req.messages,
+    tools: req.tools,
+    held: [],
+    seenNotes: new Set(),
+    seenAppends: new Set(),
+    removedTools: new Map(),
+  };
+}
+
+/** One step's stage A: the next working state, the outcomes to journal, what took effect. */
+export interface StageAStep {
+  state: RequestChainState;
+  /** Outcomes of every action but the description actions (those journal at stage B). */
   results: ActionResult<RequestAction>[];
-  /** Tool-description actions, held for stage B in effective order. */
-  held: PlannedAction<RequestAction>[];
-  /** Tools stage A removed; description actions on them are `superseded`. */
-  removedTools: ReadonlySet<string>;
+  /** What took effect at this step, description actions on a present tool included. */
+  applied: PlannedAction<RequestAction>[];
 }
 
 /**
- * Stage A, before conversion: system notes, then message text, then tool
- * schemas, then tool removal. `items` are in effective order and already
- * severity-gated (fix only) and validated; `warn` actions are skipped.
+ * Stage A for one step of the request chain, before conversion. `items` are one
+ * hook's actions (or the pending notes), already severity-gated and validated,
+ * applied in ARRAY ORDER, each over the state every action before it produced:
+ * earlier actions of the same list and every earlier step. `warn` is skipped.
  *
- * Conflict rules: identical system notes and identical appended user texts are
- * applied once (later copies `superseded`); message text actions apply
- * sequentially; one schema per tool (first wins); one removal per tool (first
- * wins); every other action on a removed tool is `superseded`.
+ * - `injectSystemNote` / `appendUserText`: a text equal to one an earlier action
+ *   of this dispatch added is `superseded` (`duplicate`).
+ * - message text edits: over the current messages.
+ * - `replaceToolSchema`: replaces the current schema; on a removed tool
+ *   `superseded: tool_removed`.
+ * - `removeTool`: removes the tool now; a second removal is
+ *   `superseded: already_removed`; a tool still used in the history is
+ *   `invalid: tool_in_history`.
+ * - description actions join the overlay (`held`), in order, and are journaled
+ *   when stage B applies them.
+ *
+ * `state` is never mutated, so a throw leaves the chain's working state intact.
  */
 export function applyStageA(
-  req: MutableClaudeRequest,
+  state: RequestChainState,
   items: ReadonlyArray<PlannedAction<RequestAction>>
-): StageAResult {
+): StageAStep {
+  const req: MutableClaudeRequest = {
+    system: state.system,
+    messages: state.messages,
+    tools: state.tools,
+  };
+  const held = [...state.held];
+  const seenNotes = new Set(state.seenNotes);
+  const seenAppends = new Set(state.seenAppends);
+  const removed = new Map(state.removedTools);
   const results: ActionResult<RequestAction>[] = [];
-  const held: PlannedAction<RequestAction>[] = [];
+  const applied: PlannedAction<RequestAction>[] = [];
   const result = (
     item: PlannedAction<RequestAction>,
     decision: ActionResult["decision"],
     detail?: string
-  ) => results.push(detail === undefined ? { ...item, decision } : { ...item, decision, detail });
+  ) => {
+    results.push(detail === undefined ? { ...item, decision } : { ...item, decision, detail });
+    if (decision === "matched") applied.push(item);
+  };
+  const hasTool = (name: string) => (req.tools ?? []).some((t) => t?.name === name);
 
-  const notes: PlannedAction<RequestAction>[] = [];
-  const messageEdits: PlannedAction<RequestAction>[] = [];
-  const schemas: PlannedAction<RequestAction>[] = [];
-  const removals: PlannedAction<RequestAction>[] = [];
   for (const item of items) {
-    const t = item.action.type;
-    if (t === "warn") continue;
-    if (t === "injectSystemNote") notes.push(item);
-    else if (t === "appendUserText" || t === "replaceMessageText" || t === "removeMessageText") {
-      messageEdits.push(item);
-    } else if (t === "replaceToolSchema") schemas.push(item);
-    else if (t === "removeTool") removals.push(item);
-    else if (STAGE_B.has(t)) held.push(item);
-  }
-
-  // 1. System notes.
-  const seenNotes = new Set<string>();
-  for (const item of notes) {
-    const text = (item.action as { text: string }).text;
-    if (seenNotes.has(text)) {
-      result(item, "superseded", "duplicate");
-      continue;
-    }
-    seenNotes.add(text);
-    req.system = withSystemNote(req.system, text);
-    result(item, "matched");
-  }
-
-  // 2. Message text, sequentially in effective order.
-  const seenAppends = new Set<string>();
-  for (const item of messageEdits) {
     const a = item.action;
-    if (a.type === "appendUserText") {
-      if (seenAppends.has(a.text)) {
-        result(item, "superseded", "duplicate");
-        continue;
+    switch (a.type) {
+      case "warn":
+        break;
+      case "injectSystemNote":
+        if (seenNotes.has(a.text)) {
+          result(item, "superseded", "duplicate");
+          break;
+        }
+        seenNotes.add(a.text);
+        req.system = withSystemNote(req.system, a.text);
+        result(item, "matched");
+        break;
+      case "appendUserText": {
+        if (seenAppends.has(a.text)) {
+          result(item, "superseded", "duplicate");
+          break;
+        }
+        const r = appendUserText(req, a.text);
+        if (r) result(item, "invalid", r);
+        else {
+          // Only an append that took effect makes a later identical one a duplicate.
+          seenAppends.add(a.text);
+          result(item, "matched");
+        }
+        break;
       }
-      seenAppends.add(a.text);
-      const r = appendUserText(req, a.text);
-      if (r) result(item, "invalid", r);
-      else result(item, "matched");
-      continue;
-    }
-    const edit = editMessageText(req, a as ReplaceMessageText | RemoveMessageText);
-    if (edit.invalid) result(item, "invalid", edit.invalid);
-    else if (edit.reverted > 0 && !edit.changed) result(item, "invalid", "empty_message");
-    else if (edit.reverted > 0) result(item, "matched", `empty_message_reverted:${edit.reverted}`);
-    else if (!edit.changed) result(item, "ignored", "no_match");
-    else result(item, "matched");
-  }
-
-  // 3. Decide removals first, so a schema action on a removed tool is superseded.
-  const toolNames = new Set<string>((req.tools ?? []).map((t) => t?.name));
-  const removed = new Set<string>();
-  const removalOutcome = new Map<
-    PlannedAction<RequestAction>,
-    [ActionResult["decision"], string?]
-  >();
-  for (const item of removals) {
-    const name = (item.action as { tool: string }).tool;
-    if (removed.has(name)) removalOutcome.set(item, ["superseded", "already_removed"]);
-    else if (!toolNames.has(name)) removalOutcome.set(item, ["invalid", "unknown_tool"]);
-    else if (toolInHistory(req.messages, name)) {
-      removalOutcome.set(item, ["invalid", "tool_in_history"]);
-    } else {
-      removed.add(name);
-      removalOutcome.set(item, ["matched"]);
-    }
-  }
-
-  // 4. Schemas: one per tool, first wins.
-  const schemaDone = new Set<string>();
-  for (const item of schemas) {
-    const a = item.action as { tool: string; inputSchema: Record<string, unknown> };
-    if (!toolNames.has(a.tool)) result(item, "invalid", "unknown_tool");
-    else if (removed.has(a.tool)) result(item, "superseded", "tool_removed");
-    else if (schemaDone.has(a.tool)) result(item, "superseded");
-    else {
-      schemaDone.add(a.tool);
-      req.tools = (req.tools ?? []).map((t) =>
-        t?.name === a.tool ? { ...t, input_schema: structuredClone(a.inputSchema) } : t
-      );
-      result(item, "matched");
+      case "replaceMessageText":
+      case "removeMessageText": {
+        const edit = editMessageText(req, a);
+        if (edit.invalid) result(item, "invalid", edit.invalid);
+        else if (edit.reverted > 0 && !edit.changed) result(item, "invalid", "empty_message");
+        else if (edit.reverted > 0)
+          result(item, "matched", `empty_message_reverted:${edit.reverted}`);
+        else if (!edit.changed) result(item, "ignored", "no_match");
+        else result(item, "matched");
+        break;
+      }
+      case "replaceToolSchema":
+        if (removed.has(a.tool)) result(item, "superseded", "tool_removed");
+        else if (!hasTool(a.tool)) result(item, "invalid", "unknown_tool");
+        else {
+          req.tools = (req.tools ?? []).map((t) =>
+            t?.name === a.tool ? { ...t, input_schema: structuredClone(a.inputSchema) } : t
+          );
+          result(item, "matched");
+        }
+        break;
+      case "removeTool":
+        if (removed.has(a.tool)) result(item, "superseded", "already_removed");
+        else if (!hasTool(a.tool)) result(item, "invalid", "unknown_tool");
+        else if (toolInHistory(req.messages, a.tool)) result(item, "invalid", "tool_in_history");
+        else {
+          removed.set(a.tool, held.length);
+          req.tools = (req.tools ?? []).filter((t) => t?.name !== a.tool);
+          result(item, "matched");
+        }
+        break;
+      default:
+        if (STAGE_B.has(a.type)) {
+          held.push(item);
+          // Visible to later steps through the overlay when the tool is on offer;
+          // stage B journals its outcome either way.
+          const tool = (a as { tool: string }).tool;
+          if (!removed.has(tool) && hasTool(tool)) applied.push(item);
+        }
+        break;
     }
   }
 
-  // 5. Removal.
-  if (removed.size > 0) req.tools = (req.tools ?? []).filter((t) => !removed.has(t?.name));
-  for (const item of removals) {
-    const [decision, detail] = removalOutcome.get(item) ?? ["invalid"];
-    result(item, decision, detail);
-  }
+  return {
+    state: {
+      system: req.system,
+      messages: req.messages,
+      tools: req.tools,
+      held,
+      seenNotes,
+      seenAppends,
+      removedTools: removed,
+    },
+    results,
+    applied,
+  };
+}
 
-  return { results, held, removedTools: removed };
+/** One description action over a description. */
+function describeWith(
+  a: RewriteToolDescription | ReplaceToolDescription,
+  current: unknown
+): string {
+  return a.type === "rewriteToolDescription"
+    ? `${typeof current === "string" ? current : ""}${a.append}`
+    : a.description;
 }
 
 /**
- * Stage B, after conversion: tool descriptions on BOTH representations, so
- * `--summarize-tools` (which truncates the converted description to its first
- * sentence) can never cut an appended instruction. One description action per
- * tool (first wins). A tool present in `claudeTools` but not in the converted
- * array (the tool-count cap removed it) gets the Claude-format change only and is
- * `matched` with detail `capped`.
+ * The description overlay: `tools` with every held description action replayed
+ * in chain order on new tool objects, exactly as stage B will give the
+ * Claude-format tools. `tools` is never mutated; an action on a tool not in it
+ * is passed over.
+ */
+export function overlayToolDescriptions(
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format tools
+  tools: any[] | undefined,
+  held: ReadonlyArray<PlannedAction<RequestAction>>
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format tools
+): any[] {
+  const out = [...(tools ?? [])];
+  for (const { action: a } of held) {
+    if (a.type !== "rewriteToolDescription" && a.type !== "replaceToolDescription") continue;
+    out.forEach((t, i) => {
+      if (t?.name === a.tool) out[i] = { ...t, description: describeWith(a, t.description) };
+    });
+  }
+  return out;
+}
+
+/**
+ * Stage B, after conversion: the held description actions replayed in chain
+ * order on BOTH representations, each over the description the earlier ones
+ * produced, so `--summarize-tools` (which truncates the converted description
+ * to its first sentence) can never cut an appended instruction. An append
+ * extends the current description; a replace replaces it on both copies. A tool
+ * present in `claudeTools` but not in the converted array (the tool-count cap
+ * removed it) gets the Claude-format change only and is `matched` with detail
+ * `capped`. On a tool a step removed, an action held before the removal is `matched`
+ * (it took effect on the view the steps in between saw) and one held after it is
+ * `superseded: tool_removed`.
  *
  * `convertedTools` is null on a route with one representation (native).
  */
@@ -412,87 +502,134 @@ export function applyStageB(
   // biome-ignore lint/suspicious/noExplicitAny: see above
   convertedTools: any[] | null,
   held: ReadonlyArray<PlannedAction<RequestAction>>,
-  removedTools: ReadonlySet<string> = new Set()
+  removedTools: ReadonlyMap<string, number> = new Map()
 ): ActionResult<RequestAction>[] {
   const results: ActionResult<RequestAction>[] = [];
-  const done = new Set<string>();
-  const sameArray = convertedTools === claudeTools;
-
-  for (const item of held) {
+  for (const [index, item] of held.entries()) {
     const a = item.action;
     if (a.type !== "rewriteToolDescription" && a.type !== "replaceToolDescription") continue;
-    if (removedTools.has(a.tool)) {
-      results.push({ ...item, decision: "superseded", detail: "tool_removed" });
-      continue;
-    }
-    if (done.has(a.tool)) {
-      results.push({ ...item, decision: "superseded" });
-      continue;
-    }
-    const describe = (current: unknown) =>
-      a.type === "rewriteToolDescription"
-        ? `${typeof current === "string" ? current : ""}${a.append}`
-        : a.description;
-
-    let claudeHits = 0;
-    claudeTools.forEach((t, i) => {
-      if (t?.name !== a.tool) return;
-      claudeTools[i] = { ...t, description: describe(t.description) };
-      claudeHits++;
-    });
-    if (claudeHits === 0) {
-      results.push({ ...item, decision: "invalid", detail: "unknown_tool" });
-      continue;
-    }
-    done.add(a.tool);
-
-    let convertedHits = 0;
-    if (convertedTools && !sameArray) {
-      convertedTools.forEach((t, i) => {
-        // Chat Completions wraps the definition in `function`; Responses does not.
-        if (t?.function?.name === a.tool) {
-          convertedTools[i] = {
-            ...t,
-            function: { ...t.function, description: describe(t.function.description) },
-          };
-          convertedHits++;
-        } else if (!t?.function && t?.name === a.tool) {
-          convertedTools[i] = { ...t, description: describe(t.description) };
-          convertedHits++;
-        }
-      });
-    }
-    const capped = convertedTools !== null && !sameArray && convertedHits === 0;
-    results.push(
-      capped ? { ...item, decision: "matched", detail: "capped" } : { ...item, decision: "matched" }
-    );
+    const removedAt = removedTools.get(a.tool);
+    // §4-J: an action applied before the removal stays `matched` (it took effect on the
+    // view the hooks between saw); one after it is `superseded: tool_removed`.
+    const outcome: Outcome =
+      removedAt === undefined
+        ? describeOnBoth(claudeTools, convertedTools, a)
+        : index < removedAt
+          ? { decision: "matched" }
+          : { decision: "superseded", detail: "tool_removed" };
+    results.push({ ...item, ...outcome });
   }
   return results;
 }
 
-/** The outcome of the `repairToolArgs` actions for one call. */
+type Outcome = Pick<ActionResult, "decision" | "detail">;
+
+/** One description action on both tool representations (stage B), and its outcome. */
+function describeOnBoth(
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format and provider-format tools
+  claudeTools: any[],
+  // biome-ignore lint/suspicious/noExplicitAny: see above
+  convertedTools: any[] | null,
+  a: RewriteToolDescription | ReplaceToolDescription
+): Outcome {
+  const claudeHits = replaceEach(claudeTools, (t) =>
+    t?.name === a.tool
+      ? { tool: { ...t, description: describeWith(a, t.description) }, hits: 1 }
+      : null
+  );
+  if (claudeHits === 0) return { decision: "invalid", detail: "unknown_tool" };
+  // null: a route with one representation (native); the same array: nothing to convert.
+  if (convertedTools === null || convertedTools === claudeTools) return { decision: "matched" };
+  const convertedHits = replaceEach(convertedTools, (t) => describeConverted(t, a));
+  return convertedHits === 0 ? { decision: "matched", detail: "capped" } : { decision: "matched" };
+}
+
+/**
+ * Replace each element `edit` matches with the tool it returns, in place (the
+ * element, never the tool object), and count the definitions matched.
+ */
+function replaceEach(
+  // biome-ignore lint/suspicious/noExplicitAny: Claude-format or provider-format tools
+  tools: any[],
+  // biome-ignore lint/suspicious/noExplicitAny: see above
+  edit: (t: any) => { tool: any; hits: number } | null
+): number {
+  let hits = 0;
+  tools.forEach((t, i) => {
+    const r = edit(t);
+    if (!r || r.hits === 0) return;
+    tools[i] = r.tool;
+    hits += r.hits;
+  });
+  return hits;
+}
+
+/**
+ * One description action on one provider-format tool entry: the new entry and how many
+ * definitions in it matched. Chat Completions wraps the definition in `function`;
+ * Responses does not; Gemini groups every definition under one `functionDeclarations`
+ * entry, by the name `convertToolsToGemini` sanitized.
+ */
+function describeConverted(
+  // biome-ignore lint/suspicious/noExplicitAny: provider-format tool
+  t: any,
+  a: RewriteToolDescription | ReplaceToolDescription
+  // biome-ignore lint/suspicious/noExplicitAny: provider-format tool
+): { tool: any; hits: number } {
+  if (t?.function?.name === a.tool) {
+    return {
+      tool: {
+        ...t,
+        function: { ...t.function, description: describeWith(a, t.function.description) },
+      },
+      hits: 1,
+    };
+  }
+  if (Array.isArray(t?.functionDeclarations)) {
+    const name = sanitizeToolNameForGemini(a.tool);
+    let hits = 0;
+    // biome-ignore lint/suspicious/noExplicitAny: Gemini function declaration
+    const decls = t.functionDeclarations.map((d: any) => {
+      if (d?.name !== name) return d;
+      hits++;
+      return { ...d, description: describeWith(a, d.description) };
+    });
+    return { tool: hits > 0 ? { ...t, functionDeclarations: decls } : t, hits };
+  }
+  if (!t?.function && t?.name === a.tool) {
+    return { tool: { ...t, description: describeWith(a, t.description) }, hits: 1 };
+  }
+  return { tool: t, hits: 0 };
+}
+
+/** The outcome of one step's `repairToolArgs` actions for one call. */
 export interface ToolCallApplied {
-  /** The replacement arguments, or undefined when nothing was applied. */
-  args?: Record<string, unknown>;
+  /** The working arguments after the step: a new object when a repair applied, else `args`. */
+  args: Record<string, unknown>;
+  /** True when at least one repair applied. */
+  repaired: boolean;
   results: ActionResult<ToolCallAction>[];
 }
 
-/** One call's arguments: the first `repairToolArgs` in effective order wins. */
+/**
+ * One step's repairs of one call, in order: each `repairToolArgs` replaces the
+ * working arguments, and every one is `matched` (journaled `repaired`). `args`
+ * is never mutated.
+ */
 export function applyToolCallActions(
+  args: Record<string, unknown>,
   items: ReadonlyArray<PlannedAction<ToolCallAction>>
 ): ToolCallApplied {
   const results: ActionResult<ToolCallAction>[] = [];
-  let args: Record<string, unknown> | undefined;
+  let current = args;
+  let repaired = false;
   for (const item of items) {
     if (item.action.type !== "repairToolArgs") continue;
-    if (args !== undefined) {
-      results.push({ ...item, decision: "superseded" });
-      continue;
-    }
-    args = structuredClone(item.action.args);
+    current = structuredClone(item.action.args);
+    repaired = true;
     results.push({ ...item, decision: "matched" });
   }
-  return args === undefined ? { results } : { args, results };
+  return { args: current, repaired, results };
 }
 
 /* ───────────── request helpers ───────────── */

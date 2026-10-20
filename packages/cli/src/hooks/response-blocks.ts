@@ -8,6 +8,7 @@
  */
 
 import type { ResponseBlock, ResponseView } from "./public.js";
+import type { RewriteBlock, RewrittenBlock } from "./text-rewrite.js";
 
 /** One block as the collector assembled it. */
 export interface CollectedBlock {
@@ -183,28 +184,52 @@ export function collectorView(
   );
 }
 
+/** One block of a non-streaming message's `content[]`, as a hook sees it. */
+export function messageBlock(b: Json): ResponseBlock {
+  switch (b?.type) {
+    case "text":
+      return { type: "text", text: typeof b.text === "string" ? b.text : "" };
+    case "thinking":
+      return { type: "thinking", thinking: typeof b.thinking === "string" ? b.thinking : "" };
+    case "tool_use":
+      return {
+        type: "tool_use",
+        id: String(b.id ?? ""),
+        name: String(b.name ?? ""),
+        input: b.input,
+      };
+    default:
+      return { type: "other", blockType: typeof b?.type === "string" ? b.type : "unknown" };
+  }
+}
+
 /** A view over a non-streaming message's `content[]`. */
 export function messageView(message: Json): ResponseView {
   const content: Json[] = Array.isArray(message?.content) ? message.content : [];
-  const blocks: ResponseBlock[] = content.map((b: Json): ResponseBlock => {
-    switch (b?.type) {
-      case "text":
-        return { type: "text", text: typeof b.text === "string" ? b.text : "" };
-      case "thinking":
-        return { type: "thinking", thinking: typeof b.thinking === "string" ? b.thinking : "" };
-      case "tool_use":
-        return {
-          type: "tool_use",
-          id: String(b.id ?? ""),
-          name: String(b.name ?? ""),
-          input: b.input,
-        };
-      default:
-        return { type: "other", blockType: typeof b?.type === "string" ? b.type : "unknown" };
-    }
-  });
   return responseView(
-    blocks,
+    content.map(messageBlock),
     typeof message?.stop_reason === "string" ? message.stop_reason : null
   );
+}
+
+/**
+ * The view a later `responseRewrite` step sees (§4.4.1): `lead` (blocks before
+ * the held region, e.g. thinking that streamed live), then the held region as
+ * `applyTextActions` left it — an edited or inserted text block as its new
+ * text, any other block as `original(source)` gives it. Text actions touch only
+ * text blocks, so `reasoning`, `toolNames` and `stopReason` come out unchanged.
+ */
+export function rewrittenView(
+  lead: ReadonlyArray<ResponseBlock>,
+  rewritten: ReadonlyArray<RewrittenBlock<RewriteBlock>>,
+  original: (source: number) => ResponseBlock,
+  stopReason: string | null
+): ResponseView {
+  const held = rewritten.map(
+    (b): ResponseBlock =>
+      b.source === null || b.changed
+        ? { type: "text", text: (b.block as { text?: string }).text ?? "" }
+        : original(b.source)
+  );
+  return responseView([...lead, ...held], stopReason);
 }

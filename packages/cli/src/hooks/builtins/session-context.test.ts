@@ -18,6 +18,7 @@ function requestContext(systemText = "", messages: unknown[] = []): RequestConte
     severity: "fix",
     log: () => {},
     signal: new AbortController().signal,
+    prior: [],
     event: "request",
     host: { mode: "other" },
     route: { modelId: "m", provider: "p", native: false },

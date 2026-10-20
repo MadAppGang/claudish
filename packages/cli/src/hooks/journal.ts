@@ -71,7 +71,7 @@ export type Decision =
   | "warned" // a rule matched but severity was warn
   | "repaired" // arguments were rewritten
   | "novel" // nothing matched and the observer was consulted
-  | "superseded" // an earlier hook won the same target
+  | "superseded" // a duplicate of an earlier step's text, or an action on a removed tool
   | "invalid" // the action was refused (shape, limit, not allowed for the event)
   | "timeout" // the handler did not return within its timeout
   | "error" // the handler threw or rejected
@@ -79,7 +79,8 @@ export type Decision =
   | "dropped" // an injection or annotation was dropped
   | "queued" // an injection or note was queued
   | "delivered" // an injection was delivered
-  | "raw"; // a raw (unsafe) hook touched the request or response
+  | "raw" // a raw (unsafe) hook touched the request or response
+  | "skipped"; // the event budget was spent before the hook's step (local only)
 
 /**
  * The decision values the telemetry backend accepts — the `counts.*` keys of

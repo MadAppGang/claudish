@@ -5,6 +5,7 @@ import {
   applyStageA,
   applyStageB,
   applyToolCallActions,
+  requestChainState,
   validateAction,
 } from "./actions.js";
 import { type RequestAction, type ToolCallAction, act } from "./public.js";
@@ -39,6 +40,18 @@ function request(overrides: Partial<MutableClaudeRequest> = {}): MutableClaudeRe
     ],
     ...overrides,
   };
+}
+
+/**
+ * One stage-A step over `req` as a chain's first step: the step's state is
+ * written back onto `req`, so the assertions read the request as it would be sent.
+ */
+function stageA(req: MutableClaudeRequest, items: ReadonlyArray<PlannedAction<RequestAction>>) {
+  const step = applyStageA(requestChainState(req), items);
+  req.system = step.state.system;
+  req.messages = step.state.messages;
+  req.tools = step.state.tools;
+  return { ...step, held: step.state.held, removedTools: step.state.removedTools };
 }
 
 describe("validateAction", () => {
@@ -148,7 +161,7 @@ describe("validateAction", () => {
 describe("applyStageA — system notes", () => {
   it("appends to a string system as a new paragraph, once per identical text", () => {
     const req = request();
-    const { results } = applyStageA(req, [
+    const { results } = stageA(req, [
       plan("a", act.injectSystemNote("NOTE")),
       plan("b", act.injectSystemNote("NOTE")),
     ]);
@@ -162,7 +175,7 @@ describe("applyStageA — system notes", () => {
   it("appends a text block to an array system without mutating the original array", () => {
     const original = [{ type: "text", text: "base" }];
     const req = request({ system: original });
-    applyStageA(req, [plan("a", act.injectSystemNote("NOTE"))]);
+    stageA(req, [plan("a", act.injectSystemNote("NOTE"))]);
     expect(req.system).toEqual([
       { type: "text", text: "base" },
       { type: "text", text: "NOTE" },
@@ -172,7 +185,7 @@ describe("applyStageA — system notes", () => {
 
   it("sets the system prompt when the request has none", () => {
     const req = request({ system: undefined });
-    applyStageA(req, [plan("a", act.injectSystemNote("NOTE"))]);
+    stageA(req, [plan("a", act.injectSystemNote("NOTE"))]);
     expect(req.system).toBe("NOTE");
   });
 });
@@ -180,7 +193,7 @@ describe("applyStageA — system notes", () => {
 describe("applyStageA — message text", () => {
   it("appendUserText lands at the end of the last user message, after tool_result", () => {
     const req = request();
-    applyStageA(req, [plan("a", act.appendUserText("REMINDER"))]);
+    stageA(req, [plan("a", act.appendUserText("REMINDER"))]);
     const last = req.messages?.[2];
     expect(last.content).toEqual([
       { type: "tool_result", tool_use_id: "toolu_1", content: "plan contents" },
@@ -190,7 +203,7 @@ describe("applyStageA — message text", () => {
 
   it("appendUserText normalises a string content to blocks first", () => {
     const req = request({ messages: [{ role: "user", content: "hi" }] });
-    applyStageA(req, [plan("a", act.appendUserText("there"))]);
+    stageA(req, [plan("a", act.appendUserText("there"))]);
     expect(req.messages?.[0].content).toEqual([
       { type: "text", text: "hi" },
       { type: "text", text: "there" },
@@ -199,13 +212,13 @@ describe("applyStageA — message text", () => {
 
   it("appendUserText with no user message is invalid", () => {
     const req = request({ messages: [{ role: "assistant", content: "x" }] });
-    const { results } = applyStageA(req, [plan("a", act.appendUserText("x"))]);
+    const { results } = stageA(req, [plan("a", act.appendUserText("x"))]);
     expect(results[0]).toMatchObject({ decision: "invalid", detail: "no_user_message" });
   });
 
   it("identical appended texts are applied once", () => {
     const req = request({ messages: [{ role: "user", content: "q" }] });
-    const { results } = applyStageA(req, [
+    const { results } = stageA(req, [
       plan("a", act.appendUserText("same")),
       plan("b", act.appendUserText("same")),
     ]);
@@ -213,19 +226,38 @@ describe("applyStageA — message text", () => {
     expect(results.map((r) => r.decision)).toEqual(["matched", "superseded"]);
   });
 
+  it("a duplicate in a later step's list is superseded too", () => {
+    const req = request({ messages: [{ role: "user", content: "q" }] });
+    const first = applyStageA(requestChainState(req), [
+      plan("a", act.appendUserText("same")),
+      plan("a", act.injectSystemNote("NOTE")),
+    ]);
+    const second = applyStageA(first.state, [
+      plan("b", act.appendUserText("same")),
+      plan("b", act.injectSystemNote("NOTE")),
+    ]);
+    expect(second.state.messages?.[0].content.length).toBe(2);
+    expect(second.state.system).toBe("base\n\nNOTE");
+    expect(second.results.map((r) => [r.hookId, r.decision, r.detail])).toEqual([
+      ["b", "superseded", "duplicate"],
+      ["b", "superseded", "duplicate"],
+    ]);
+    // A step never mutates the state it was given.
+    expect(first.state.messages?.[0].content.length).toBe(2);
+    expect(req.messages?.[0].content).toBe("q");
+  });
+
   it("never touches tool_use, tool_result or thinking, and defaults roles to user", () => {
     const req = request();
     const before = structuredClone(req.messages);
-    applyStageA(req, [plan("a", act.replaceMessageText("plan", "PLAN"))]);
+    stageA(req, [plan("a", act.replaceMessageText("plan", "PLAN"))]);
     // User string content was edited; the assistant turn (default roles) was not.
     expect(req.messages?.[0].content).toBe("first question");
     expect(req.messages?.[1]).toEqual(before?.[1]);
     // tool_result content is never edited even though it contains "plan".
     expect(req.messages?.[2]).toEqual(before?.[2]);
 
-    applyStageA(req, [
-      plan("a", act.replaceMessageText("check", "verify", { roles: ["assistant"] })),
-    ]);
+    stageA(req, [plan("a", act.replaceMessageText("check", "verify", { roles: ["assistant"] }))]);
     const blocks = req.messages?.[1].content;
     expect(blocks[0]).toEqual({ type: "thinking", thinking: "secret plan", signature: "sig" });
     expect(blocks[1]).toEqual({ type: "text", text: "let me verify" });
@@ -234,7 +266,7 @@ describe("applyStageA — message text", () => {
 
   it("inserts a literal $500 verbatim and expands $1 in regex mode", () => {
     const req = request({ messages: [{ role: "user", content: "cost N, name: Ada Lovelace" }] });
-    applyStageA(req, [
+    stageA(req, [
       plan("a", act.replaceMessageText("N", "$500")),
       plan("b", act.replaceMessageText("(\\w+) (\\w+)$", "$2 $1", { regex: true })),
     ]);
@@ -255,7 +287,7 @@ describe("applyStageA — message text", () => {
         { role: "user", content: "DROP" },
       ],
     });
-    const { results } = applyStageA(req, [plan("a", act.removeMessageText("DROP"))]);
+    const { results } = stageA(req, [plan("a", act.removeMessageText("DROP"))]);
     expect(req.messages?.[0].content).toEqual([{ type: "text", text: "keep" }]);
     expect(req.messages?.[2].content).toBe("DROP");
     expect(results[0]).toMatchObject({ decision: "matched", detail: "empty_message_reverted:1" });
@@ -263,14 +295,14 @@ describe("applyStageA — message text", () => {
 
   it("reports invalid empty_message when every changed message was reverted", () => {
     const req = request({ messages: [{ role: "user", content: "only" }] });
-    const { results } = applyStageA(req, [plan("a", act.removeMessageText("only"))]);
+    const { results } = stageA(req, [plan("a", act.removeMessageText("only"))]);
     expect(req.messages?.[0].content).toBe("only");
     expect(results[0]).toMatchObject({ decision: "invalid", detail: "empty_message" });
   });
 
   it("applies message edits sequentially in effective order", () => {
     const req = request({ messages: [{ role: "user", content: "a" }] });
-    applyStageA(req, [
+    stageA(req, [
       plan("a", act.replaceMessageText("a", "b")),
       plan("b", act.replaceMessageText("b", "c")),
       plan("c", act.appendUserText("d")),
@@ -284,7 +316,7 @@ describe("applyStageA — message text", () => {
   it("does not mutate the original message objects", () => {
     const original = { role: "user", content: [{ type: "text", text: "x" }] };
     const req = request({ messages: [original] });
-    applyStageA(req, [plan("a", act.replaceMessageText("x", "y"))]);
+    stageA(req, [plan("a", act.replaceMessageText("x", "y"))]);
     expect(original.content[0]?.text).toBe("x");
     expect(req.messages?.[0]).not.toBe(original);
   });
@@ -293,14 +325,14 @@ describe("applyStageA — message text", () => {
 describe("applyStageA — tools", () => {
   it("removeTool is refused while a message holds a tool_use of that tool", () => {
     const req = request();
-    const { results } = applyStageA(req, [plan("a", act.removeTool("Read"))]);
+    const { results } = stageA(req, [plan("a", act.removeTool("Read"))]);
     expect(results[0]).toMatchObject({ decision: "invalid", detail: "tool_in_history" });
     expect(req.tools?.map((t) => t.name)).toEqual(["Read", "Write", "ExitPlanMode"]);
   });
 
-  it("removes a tool, and supersedes every other action on it", () => {
+  it("removes a tool at its place; an action before it stays matched, later ones are superseded", () => {
     const req = request();
-    const stage = applyStageA(req, [
+    const stage = stageA(req, [
       plan("a", act.replaceToolSchema("Write", { type: "object", properties: {} })),
       plan("b", act.removeTool("Write")),
       plan("c", act.removeTool("Write")),
@@ -308,7 +340,7 @@ describe("applyStageA — tools", () => {
     ]);
     expect(req.tools?.map((t) => t.name)).toEqual(["Read", "ExitPlanMode"]);
     expect(stage.results.map((r) => [r.hookId, r.decision, r.detail])).toEqual([
-      ["a", "superseded", "tool_removed"],
+      ["a", "matched", undefined],
       ["b", "matched", undefined],
       ["c", "superseded", "already_removed"],
     ]);
@@ -320,30 +352,30 @@ describe("applyStageA — tools", () => {
     });
   });
 
-  it("replaceToolSchema: first wins per tool; an unknown tool is invalid", () => {
+  it("replaceToolSchema: each replaces the current schema; an unknown tool is invalid", () => {
     const original = request().tools?.[1];
     const req = request();
-    const { results } = applyStageA(req, [
+    const { results } = stageA(req, [
       plan("a", act.replaceToolSchema("Write", { type: "object", properties: { a: {} } })),
       plan("b", act.replaceToolSchema("Write", { type: "object", properties: { b: {} } })),
       plan("c", act.replaceToolSchema("Nope", { type: "object" })),
     ]);
-    expect(req.tools?.[1].input_schema).toEqual({ type: "object", properties: { a: {} } });
+    expect(req.tools?.[1].input_schema).toEqual({ type: "object", properties: { b: {} } });
     expect(original?.input_schema).toEqual({ type: "object" });
     expect(results.map((r) => [r.hookId, r.decision, r.detail])).toEqual([
       ["a", "matched", undefined],
-      ["b", "superseded", undefined],
+      ["b", "matched", undefined],
       ["c", "invalid", "unknown_tool"],
     ]);
   });
 
   it("removeTool on an unknown tool is invalid", () => {
-    const { results } = applyStageA(request(), [plan("a", act.removeTool("Nope"))]);
+    const { results } = stageA(request(), [plan("a", act.removeTool("Nope"))]);
     expect(results[0]).toMatchObject({ decision: "invalid", detail: "unknown_tool" });
   });
 
-  it("holds description actions for stage B in effective order", () => {
-    const { held } = applyStageA(request(), [
+  it("holds description actions for stage B in chain order", () => {
+    const { held } = stageA(request(), [
       plan("a", act.rewriteToolDescription("Write", " A")),
       plan("b", act.injectSystemNote("x")),
       plan("c", act.replaceToolDescription("Read", "R")),
@@ -384,14 +416,16 @@ describe("applyStageB — tool descriptions", () => {
     expect(converted[0]?.description).toBe(`Long.${append}`);
   });
 
-  it("first description action per tool wins across append and replace", () => {
+  it("replays description actions in order, each over the description before it", () => {
     const claude = claudeTools();
-    const results = applyStageB(claude, chatTools(), [
+    const converted = chatTools();
+    const results = applyStageB(claude, converted, [
       plan("a", act.replaceToolDescription("Write", "NEW")),
       plan("b", act.rewriteToolDescription("Write", " more")),
     ]);
-    expect(claude[1]?.description).toBe("NEW");
-    expect(results.map((r) => r.decision)).toEqual(["matched", "superseded"]);
+    expect(claude[1]?.description).toBe("NEW more");
+    expect(converted[1]?.function.description).toBe("NEW more");
+    expect(results.map((r) => r.decision)).toEqual(["matched", "matched"]);
   });
 
   it("an unknown tool is invalid; a capped tool changes the Claude copy only", () => {
@@ -427,18 +461,24 @@ describe("applyStageB — tool descriptions", () => {
 });
 
 describe("applyToolCallActions", () => {
-  it("first repairToolArgs wins; later ones are superseded", () => {
+  it("each repairToolArgs replaces the current arguments; every one is matched", () => {
     const items: PlannedAction<ToolCallAction>[] = [
       { hookId: "a", action: act.repairToolArgs({ file_path: "/a" }, "a") },
       { hookId: "b", action: act.repairToolArgs({ file_path: "/b" }, "b") },
     ];
-    const out = applyToolCallActions(items);
-    expect(out.args).toEqual({ file_path: "/a" });
-    expect(out.results.map((r) => r.decision)).toEqual(["matched", "superseded"]);
+    const model = { file_path: "/model" };
+    const out = applyToolCallActions(model, items);
+    expect(out.args).toEqual({ file_path: "/b" });
+    expect(out.repaired).toBe(true);
+    expect(out.results.map((r) => r.decision)).toEqual(["matched", "matched"]);
+    expect(model).toEqual({ file_path: "/model" });
   });
 
-  it("returns no args when nothing repaired", () => {
-    expect(applyToolCallActions([{ hookId: "a", action: act.warn("w") }])).toEqual({
+  it("returns the arguments it was given when nothing repaired", () => {
+    const model = { file_path: "/model" };
+    expect(applyToolCallActions(model, [{ hookId: "a", action: act.warn("w") }])).toEqual({
+      args: model,
+      repaired: false,
       results: [],
     });
   });

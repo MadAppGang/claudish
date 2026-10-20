@@ -3,12 +3,20 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as logger from "../logger.js";
-import { applyStageA, applyToolCallActions } from "./actions.js";
+import {
+  type RequestChainState,
+  applyStageA,
+  applyToolCallActions,
+  requestChainState,
+} from "./actions.js";
 import {
   BREAKER_THRESHOLD,
   type BaseContextParts,
+  EVENT_BUDGETS,
   HookEngine,
   MAX_PENDING_SESSIONS,
+  dispatchBoundMs,
+  stepTimeout,
 } from "./engine.js";
 import type { JournalEntry } from "./journal.js";
 import { type HookDefinition, act } from "./public.js";
@@ -51,29 +59,48 @@ function engineWith(
   return { engine, journal, warnings };
 }
 
-/** A minimal RequestContext builder. */
-const requestCtx = (_a: ApplicableHook, base: BaseContextParts) => ({
+/** A minimal RequestContext builder over a request chain's working state. */
+const requestCtx = (_a: ApplicableHook, base: BaseContextParts, state: RequestChainState) => ({
   ...base,
   event: "request",
   host: { mode: "other" },
   route: ROUTE,
-  request: { model: "glm-5", stream: true, systemText: "", messages: [], tools: [] },
+  request: {
+    model: "glm-5",
+    stream: true,
+    systemText: typeof state.system === "string" ? state.system : "",
+    messages: [],
+    tools: [],
+  },
   harness: { planModeActive: false },
   session: null,
 });
 
+/** One request dispatch: stage A applied at each step, starting from system "base". */
+function runRequest(engine: HookEngine) {
+  return engine.runChain(
+    "request",
+    engine.select("request", { route: ROUTE }),
+    { context: requestCtx, apply: (state, items) => applyStageA(state, items) },
+    META,
+    { initial: requestChainState({ system: "base", messages: [], tools: [] }) }
+  );
+}
+
 afterEach(() => resetTelemetryState());
 
-describe("HookEngine.run", () => {
-  it("runs hooks concurrently and returns actions in effective order", async () => {
-    const started: string[] = [];
+describe("HookEngine.runChain", () => {
+  it("runs hooks one after another; the second sees the first's applied note", async () => {
+    const events: string[] = [];
+    let fastSaw: { systemText: string; prior: unknown } | undefined;
     const slow = userHook(
       "slow",
       {
         on: {
           request: async () => {
-            started.push("slow");
+            events.push("slow:start");
             await Bun.sleep(40);
+            events.push("slow:end");
             return [act.injectSystemNote("SLOW")];
           },
         },
@@ -84,8 +111,9 @@ describe("HookEngine.run", () => {
       "fast",
       {
         on: {
-          request: () => {
-            started.push("fast");
+          request: (ctx) => {
+            events.push("fast:start");
+            fastSaw = { systemText: ctx.request.systemText, prior: ctx.prior };
             return [act.injectSystemNote("FAST")];
           },
         },
@@ -94,22 +122,19 @@ describe("HookEngine.run", () => {
     );
     const { engine } = engineWith([slow, fast]);
     const t0 = performance.now();
-    const result = await engine.run(
-      "request",
-      engine.select("request", { route: ROUTE }),
-      requestCtx,
-      META
-    );
-    // Both started before either finished, and the slow one did not serialise the fast one.
-    expect(started).toEqual(["slow", "fast"]);
-    expect(performance.now() - t0).toBeLessThan(400);
-    expect(result.apply.map((p) => [p.hookId, p.action])).toEqual([
+    const result = await runRequest(engine);
+    // The second step starts only after the first returned, so the total is at least the slow hook's.
+    expect(events).toEqual(["slow:start", "slow:end", "fast:start"]);
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(35);
+    expect(fastSaw?.systemText).toBe("base\n\nSLOW");
+    expect(fastSaw?.prior).toEqual([
+      { hookId: "hook:m/slow", action: act.injectSystemNote("SLOW") },
+    ]);
+    expect(result.applied.map((p) => [p.hookId, p.action])).toEqual([
       ["hook:m/slow", act.injectSystemNote("SLOW")],
       ["hook:m/fast", act.injectSystemNote("FAST")],
     ]);
-    const req = { system: "base" };
-    applyStageA(req, result.apply);
-    expect(req.system).toBe("base\n\nSLOW\n\nFAST");
+    expect(result.state.system).toBe("base\n\nSLOW\n\nFAST");
   });
 
   it("times out a hook: its signal aborts, its result is discarded, others still apply", async () => {
@@ -128,19 +153,18 @@ describe("HookEngine.run", () => {
     });
     const ok = userHook("ok", { on: { request: () => [act.injectSystemNote("OK")] } }, 1);
     const { engine, journal } = engineWith([hung, ok]);
-    const result = await engine.run(
-      "request",
-      engine.select("request", { route: ROUTE }),
-      requestCtx,
-      META
-    );
+    const result = await runRequest(engine);
     expect(seen?.aborted).toBe(true);
     expect(result.runs.map((r) => r.status)).toEqual(["timeout", "ok"]);
-    expect(result.apply.map((p) => p.hookId)).toEqual(["hook:m/ok"]);
-    expect(journal.find((e) => e.decision === "timeout")?.hookId).toBe("hook:m/hung");
+    expect(result.applied.map((p) => p.hookId)).toEqual(["hook:m/ok"]);
+    expect(journal.find((e) => e.decision === "timeout")).toMatchObject({
+      hookId: "hook:m/hung",
+      detail: "50 ms",
+    });
     await Bun.sleep(150);
     expect(lateMutation).toBe(true);
-    expect(result.apply.length).toBe(1);
+    expect(result.applied.length).toBe(1);
+    expect(result.state.system).toBe("base\n\nOK");
   });
 
   it("clamps timeoutMs to the event maximum", async () => {
@@ -150,6 +174,44 @@ describe("HookEngine.run", () => {
     expect(timeoutFor(d, "responseRewrite")).toBe(10_000);
     expect(timeoutFor(d, "sessionEnd")).toBe(1_500);
     expect(timeoutFor({ apiVersion: 1, id: "x" } as HookDefinition, "sessionIdle")).toBe(5_000);
+  });
+
+  it("has an event budget equal to each event's per-hook maximum", async () => {
+    const { EVENT_TIMEOUTS } = await import("./engine.js");
+    for (const event of [
+      "request",
+      "toolCall",
+      "responseRewrite",
+      "responseEnd",
+      "sessionStart",
+      "sessionIdle",
+      "sessionBlocked",
+      "sessionEnd",
+      "raw.providerRequest",
+      "raw.providerStreamEnd",
+    ] as const) {
+      expect(EVENT_BUDGETS[event]).toBe(EVENT_TIMEOUTS[event].max);
+    }
+    expect(EVENT_BUDGETS["raw.providerChunk"]).toBeNull();
+    expect(EVENT_BUDGETS["raw.response"]).toBeNull();
+  });
+
+  it("clips a step's timeout to the budget left, and skips a step with none left", () => {
+    const d = { apiVersion: 1, id: "x", timeoutMs: 3_000 } as HookDefinition;
+    expect(stepTimeout(d, "request", 5_000)).toEqual({ ms: 3_000, clipped: false });
+    expect(stepTimeout(d, "request", 1_200)).toEqual({ ms: 1_200, clipped: true });
+    expect(stepTimeout(d, "request", 0)).toBeNull();
+    expect(stepTimeout(d, "raw.response", null)).toEqual({ ms: 3_000, clipped: false });
+  });
+
+  it("bounds a dispatch by the sum of its step timeouts, capped at the budget", () => {
+    const hook = (timeoutMs?: number) => ({
+      hook: { def: { apiVersion: 1, id: "x", timeoutMs } as HookDefinition },
+    });
+    expect(dispatchBoundMs("responseEnd", [hook()])).toBe(5_000);
+    expect(dispatchBoundMs("responseEnd", [hook(), hook(8_000)])).toBe(13_000);
+    expect(dispatchBoundMs("responseEnd", [hook(20_000), hook(20_000)])).toBe(30_000);
+    expect(dispatchBoundMs("sessionIdle", [])).toBe(0);
   });
 
   it("fails open on a throw, a rejection and an invalid return value", async () => {
@@ -168,14 +230,10 @@ describe("HookEngine.run", () => {
     const wrong = userHook("wrong", { on: { request: (() => "nope") as never } }, 2);
     const fine = userHook("fine", { on: { request: () => [act.injectSystemNote("F")] } }, 3);
     const { engine, journal } = engineWith([thrower, rejecter, wrong, fine]);
-    const result = await engine.run(
-      "request",
-      engine.select("request", { route: ROUTE }),
-      requestCtx,
-      META
-    );
+    const result = await runRequest(engine);
     expect(result.runs.map((r) => r.status)).toEqual(["error", "error", "invalid", "ok"]);
-    expect(result.apply.map((p) => p.hookId)).toEqual(["hook:m/fine"]);
+    expect(result.applied.map((p) => p.hookId)).toEqual(["hook:m/fine"]);
+    expect(result.state.system).toBe("base\n\nF");
     expect(journal.filter((e) => e.decision === "error").map((e) => e.detail)).toEqual([
       "boom",
       "no",
@@ -189,13 +247,8 @@ describe("HookEngine.run", () => {
       },
     });
     const { engine, journal } = engineWith([mixed]);
-    const result = await engine.run(
-      "request",
-      engine.select("request", { route: ROUTE }),
-      requestCtx,
-      META
-    );
-    expect(result.apply.map((p) => p.action.type)).toEqual(["injectSystemNote"]);
+    const result = await runRequest(engine);
+    expect(result.applied.map((p) => p.action.type)).toEqual(["injectSystemNote"]);
     expect(journal.find((e) => e.decision === "invalid")).toMatchObject({
       action: "appendText",
       detail: "not_allowed:appendText",
@@ -209,13 +262,9 @@ describe("HookEngine.run", () => {
       on: { request: () => [act.injectSystemNote("N"), act.warn("look out")] },
     });
     const { engine, journal } = engineWith([h], [], { "hook:m/w": "warn" });
-    const result = await engine.run(
-      "request",
-      engine.select("request", { route: ROUTE }),
-      requestCtx,
-      META
-    );
-    expect(result.apply).toEqual([]);
+    const result = await runRequest(engine);
+    expect(result.applied).toEqual([]);
+    expect(result.state.system).toBe("base");
     expect(journal.map((e) => [e.action, e.decision])).toEqual([
       ["injectSystemNote", "warned"],
       ["warn", "warned"],
@@ -234,11 +283,11 @@ describe("HookEngine.run", () => {
     });
     const { engine } = engineWith([h], [], { "hook:*": "off" });
     expect(engine.select("request", { route: ROUTE })).toEqual([]);
-    await engine.run("request", engine.select("request", { route: ROUTE }), requestCtx, META);
+    await runRequest(engine);
     expect(called).toBe(false);
   });
 
-  it("hands the handler a frozen context with hookId, severity, log and signal", async () => {
+  it("hands the handler a frozen context with hookId, severity, log, signal and prior", async () => {
     let captured: Record<string, unknown> | undefined;
     const h = userHook("ctx", {
       on: {
@@ -249,12 +298,14 @@ describe("HookEngine.run", () => {
       },
     });
     const { engine } = engineWith([h]);
-    await engine.run("request", engine.select("request", { route: ROUTE }), requestCtx, META);
+    await runRequest(engine);
     expect(Object.isFrozen(captured)).toBe(true);
     expect(captured?.hookId).toBe("hook:m/ctx");
     expect(captured?.severity).toBe("fix");
     expect(typeof captured?.log).toBe("function");
     expect(captured?.signal).toBeInstanceOf(AbortSignal);
+    expect(captured?.prior).toEqual([]);
+    expect(Object.isFrozen(captured?.prior)).toBe(true);
   });
 
   it("restricts an observe-mode toolCall hook to warn", async () => {
@@ -268,18 +319,20 @@ describe("HookEngine.run", () => {
       },
     });
     const { engine, journal } = engineWith([obs]);
-    const result = await engine.run(
+    const result = await engine.runChain(
       "toolCall",
       engine.select("toolCall", { route: ROUTE }),
-      requestCtx,
-      { ...META, toolName: "Write" }
+      { context: (_a, base) => ({ ...base, event: "toolCall" }) },
+      { ...META, toolName: "Write" },
+      { initial: undefined }
     );
-    expect(result.apply).toEqual([]);
+    expect(result.applied).toEqual([]);
     expect(journal.map((e) => e.decision)).toContain("invalid");
     expect(journal.find((e) => e.decision === "invalid")?.detail).toBe("observe_only");
   });
 
-  it("an aborted parent signal ends unfinished hooks as aborted, unjournaled", async () => {
+  it("an aborted dispatch ends the running hook as aborted and starts no later one", async () => {
+    let laterCalled = false;
     const h = userHook("idle", {
       on: {
         sessionIdle: async (ctx) => {
@@ -288,20 +341,33 @@ describe("HookEngine.run", () => {
         },
       },
     });
-    const { engine, journal } = engineWith([h]);
+    const later = userHook(
+      "later",
+      {
+        on: {
+          sessionIdle: () => {
+            laterCalled = true;
+            return [];
+          },
+        },
+      },
+      1
+    );
+    const { engine, journal } = engineWith([h, later]);
     const parent = new AbortController();
-    const running = engine.run(
+    const running = engine.runChain(
       "sessionIdle",
       engine.select("sessionIdle", { sessionModel: "glm-5" }),
-      (_a, base) => ({ ...base, event: "sessionIdle" }),
+      { context: (_a, base) => ({ ...base, event: "sessionIdle" }) },
       META,
-      { signal: parent.signal }
+      { initial: undefined, signal: parent.signal }
     );
     await Bun.sleep(10);
     parent.abort("caller");
     const result = await running;
-    expect(result.runs[0]?.status).toBe("aborted");
-    expect(result.apply).toEqual([]);
+    expect(result.runs.map((r) => r.status)).toEqual(["aborted"]);
+    expect(result.applied).toEqual([]);
+    expect(laterCalled).toBe(false);
     expect(journal).toEqual([]);
   });
 });
@@ -319,7 +385,7 @@ describe("circuit breaker", () => {
     });
     const { engine, journal, warnings } = engineWith([flaky]);
     for (let i = 0; i < BREAKER_THRESHOLD + 2; i++) {
-      await engine.run("request", engine.select("request", { route: ROUTE }), requestCtx, META);
+      await runRequest(engine);
     }
     expect(calls).toBe(BREAKER_THRESHOLD);
     expect(engine.isDisabled("hook:m/flaky")).toBe(true);
@@ -342,7 +408,7 @@ describe("circuit breaker", () => {
     });
     const { engine } = engineWith([sometimes]);
     for (let i = 0; i < 12; i++) {
-      await engine.run("request", engine.select("request", { route: ROUTE }), requestCtx, META);
+      await runRequest(engine);
     }
     expect(engine.isDisabled("hook:m/sometimes")).toBe(false);
     expect(n).toBe(12);
@@ -368,15 +434,19 @@ describe("journal fan-out and the upload projection", () => {
 
       for (const toolName of ["mcp__srv__x", "Write"]) {
         const meta = { ...META, toolName };
-        const result = await engine.run(
+        await engine.runChain(
           "toolCall",
           engine.select("toolCall", { route: ROUTE }),
-          requestCtx,
-          meta
+          {
+            context: (_a, base) => ({ ...base, event: "toolCall" }),
+            apply: (args: Record<string, unknown>, items) => {
+              const out = applyToolCallActions(args, items);
+              return { state: out.args, results: out.results, applied: items };
+            },
+          },
+          meta,
+          { initial: {} as Record<string, unknown> }
         );
-        for (const planned of result.apply) {
-          engine.recordResults("toolCall", applyToolCallActions([planned]).results, meta);
-        }
       }
 
       const outbox = join(dir, "outbox.jsonl");

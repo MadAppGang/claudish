@@ -19,6 +19,15 @@
  * per-turn data from a proxy event to `sessionIdle` with `annotateTurn`, never
  * with module variables.
  *
+ * ## Execution: a hook chain
+ *
+ * The hooks of one event run one after another, in effective order. Each hook's
+ * actions are applied before the next hook is called, so `ctx.request`,
+ * `ctx.tool.args` and `ctx.response` show what the earlier hooks did, and
+ * `ctx.prior` lists it. A warn-severity or failing hook changes nothing for the
+ * next one. Each event has a budget for all its hooks together; a hook's timeout
+ * is cut to what is left of it.
+ *
  * ## Output
  *
  * Log with `ctx.log`. `console.*` and `process.stdout`/`stderr` writes made by a
@@ -45,20 +54,20 @@ export type JsonValue =
 /* ───────────── facts ───────────── */
 
 export interface HarnessFacts {
-  planModeActive: boolean;
-  planFilePath?: string;
-  planDir?: string;
+  readonly planModeActive: boolean;
+  readonly planFilePath?: string;
+  readonly planDir?: string;
   /** Claude Code session id from request metadata */
-  sessionId?: string;
+  readonly sessionId?: string;
   /** empty = no listing found, not "no skills" */
-  skills?: ReadonlyArray<{ name: string; description: string }>;
+  readonly skills?: ReadonlyArray<{ name: string; description: string }>;
 }
 
 export interface RouteInfo {
   /** bare model name the handler serves, e.g. "glm-5" */
-  modelId: string;
+  readonly modelId: string;
   /** claudish provider name, e.g. "openrouter"; "anthropic" for native */
-  provider: string;
+  readonly provider: string;
   /**
    * true when the request is served by the native Anthropic handler, OR when
    *   !forceForeignModel && (/^claude[-.]/i.test(modelId) || provider === "anthropic")
@@ -66,7 +75,7 @@ export interface RouteInfo {
    * rule the plan-mode built-in has always used (a claude-* uid on an aggregator that sets
    * forceForeignModel is foreign).
    */
-  native: boolean;
+  readonly native: boolean;
 }
 
 export interface ClaudeTool {
@@ -88,23 +97,37 @@ export interface ClaudeMessage {
   content: string | ReadonlyArray<ClaudeContentBlock>;
 }
 
+/**
+ * In `request`, the request as the earlier steps of the hook chain left it. On
+ * the response side and in `claims()`, the request chain's final view.
+ */
 export interface RequestFacts {
-  /** as Claude Code asked for it */
-  model: string;
-  stream: boolean;
-  /** system prompt flattened to text */
-  systemText: string;
-  /** read-only view; change it through actions */
-  messages: ReadonlyArray<ClaudeMessage>;
-  /** read-only view; change it through actions */
-  tools: ReadonlyArray<ClaudeTool>;
+  /** as Claude Code asked for it; frozen */
+  readonly model: string;
+  /** frozen */
+  readonly stream: boolean;
+  /** system prompt flattened to text, after earlier steps */
+  readonly systemText: string;
+  /** read-only view after earlier steps; change it through actions */
+  readonly messages: ReadonlyArray<ClaudeMessage>;
+  /**
+   * read-only view after earlier steps; `description` includes earlier description actions as
+   * stage B will apply them to the Claude-format tool (the provider copy may be summarised)
+   */
+  readonly tools: ReadonlyArray<ClaudeTool>;
 }
 
 /** Which session a proxy event belongs to, when claudish knows. */
 export interface ProxySessionRef {
-  kind: SessionKind;
-  id: string;
-  role: "slot" | "judge" | null;
+  readonly kind: SessionKind;
+  readonly id: string;
+  readonly role: "slot" | "judge" | null;
+}
+
+/** One action an earlier step of this hook chain applied or handed on. */
+export interface PriorAction {
+  readonly hookId: string;
+  readonly action: HookAction;
 }
 
 interface BaseContext {
@@ -113,8 +136,18 @@ interface BaseContext {
   readonly severity: Severity;
   /** writes to claudish's debug log; never to the terminal */
   log(message: string): void;
-  /** aborted when this hook's timeout elapses */
+  /**
+   * this step's own signal: aborted when its step timeout elapses (its own timeout, or the
+   * event budget left, whichever is shorter) or when the dispatch is aborted. Never shared
+   * with another hook's step.
+   */
   readonly signal: AbortSignal;
+  /**
+   * actions earlier steps of this hook chain applied (or, for responseEnd/sessionStart/
+   * sessionIdle, handed on), in order. Empty for the first step and in claims()/the toolCall
+   * predicate. Never lists warn actions or anything a warn-severity hook returned.
+   */
+  readonly prior: ReadonlyArray<PriorAction>;
 }
 
 export interface ProxyContext extends BaseContext {
@@ -134,7 +167,9 @@ export interface ToolCallContext extends ProxyContext {
   readonly tool: {
     id: string;
     name: string;
+    /** the arguments after every repair earlier hooks in the chain applied */
     args: Readonly<Record<string, unknown>>;
+    /** the argument JSON exactly as the model produced it; never rewritten */
     rawArgs: string;
   };
 }
@@ -156,6 +191,7 @@ export interface ResponseView {
   stopReason: string | null;
 }
 
+/** response = the held response after every text action earlier hooks in the chain applied */
 export interface ResponseRewriteContext extends ProxyContext {
   readonly event: "responseRewrite";
   readonly response: ResponseView;
@@ -405,7 +441,7 @@ interface HookBase {
   models?: string | ReadonlyArray<string>;
   /** default "all"; proxy events only */
   routes?: RouteScope;
-  /** per-handler; clamped to the event's maximum */
+  /** per call; clamped to the event's maximum and to the event budget left when the hook's turn comes */
   timeoutMs?: number;
   on?: HookHandlers;
 }

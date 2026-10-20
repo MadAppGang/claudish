@@ -26,6 +26,7 @@ function requestContext(
     severity: "fix",
     log: () => {},
     signal: new AbortController().signal,
+    prior: [],
     event: "request",
     host: { mode: "other" },
     route: { modelId: "gpt-5.6-codex", provider: "openai-codex", native: false },

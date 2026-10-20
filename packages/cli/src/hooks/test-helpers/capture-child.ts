@@ -40,11 +40,12 @@ const engine = new HookEngine({
   drainTelemetryOutbox: false,
 });
 const route = { modelId: "m", provider: "p", native: false };
-const result = await engine.run(
+const result = await engine.runChain(
   "request",
   engine.select("request", { route }),
-  (_a, base) => ({ ...base, event: "request", route }),
-  { model: "m", provider: "p" }
+  { context: (_a, base) => ({ ...base, event: "request", route }) },
+  { model: "m", provider: "p" },
+  { initial: undefined }
 );
 
 // Let timers the hooks scheduled fire, and the logger's interval flush run.
