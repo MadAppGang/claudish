@@ -122,8 +122,11 @@ interface WorkBlock<B extends RewriteBlock> {
  * - `replaceText` / `removeText` → each text block independently, in order.
  *
  * A text block left empty by an edit is dropped (an empty text block is a 400 on
- * Anthropic-compatible endpoints when replayed). An originally empty block that
- * no action touched passes through unchanged.
+ * Anthropic-compatible endpoints when replayed), and from that action on it is not
+ * there: a later append goes to the last text block still standing, or before the
+ * first `tool_use` when none is. So replaying one hook chain's actions in a single
+ * call gives exactly what each hook saw step by step. An originally empty block
+ * that no action touched passes through unchanged.
  */
 export function applyTextActions<B extends RewriteBlock>(
   blocks: ReadonlyArray<B>,
@@ -196,6 +199,9 @@ export function applyTextActions<B extends RewriteBlock>(
             w.text = next;
             w.touched = true;
             changed = true;
+            // Emptied: the previous result has no such block, so no later action
+            // (an append, a replace matching "") may target it.
+            if (next === "") w.editable = false;
           }
         }
         applied.push({ index, action, changed });
@@ -214,7 +220,7 @@ export function applyTextActions<B extends RewriteBlock>(
 
   const out: Array<RewrittenBlock<B>> = [];
   for (const w of work) {
-    if (w.editable && w.touched && (w.text ?? "") === "") continue;
+    if (w.touched && w.text === "") continue;
     if (w.original && (!w.editable || w.text === w.original.text)) {
       out.push({ block: w.original, source: w.source, changed: false });
       continue;
