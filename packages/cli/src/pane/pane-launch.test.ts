@@ -175,6 +175,69 @@ describe("pane environment", () => {
     expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("0");
   });
 
+  // REGRESSION: pane child boot_timeout — self-drawn cursor on the placeholder read as typed text — /dev:fix session dev-fix-20261017-g10-socket
+  test("CLAUDE_CODE_NATIVE_CURSOR defaults to 1 alongside the traffic default", () => {
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv,
+      slotEnv: {},
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+    });
+    expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(magmuxEnv.CLAUDE_CODE_NATIVE_CURSOR).toBe("1");
+    expect(JSON.parse(magmuxEnv.CLAUDISH_PANE_ENV as string).CLAUDE_CODE_NATIVE_CURSOR).toBe("1");
+  });
+
+  // REGRESSION: pane child boot_timeout — self-drawn cursor on the placeholder read as typed text — /dev:fix session dev-fix-20261017-g10-socket
+  test("a caller's own CLAUDE_CODE_NATIVE_CURSOR is kept as given", () => {
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv: { ...parentEnv, CLAUDE_CODE_NATIVE_CURSOR: "yes" },
+      slotEnv: {},
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+    });
+    expect(magmuxEnv.CLAUDE_CODE_NATIVE_CURSOR).toBe("yes");
+  });
+
+  test("the native cursor defaults to 1 when the caller turned traffic off itself", () => {
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv: { ...parentEnv, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      slotEnv: {},
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+    });
+    expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(magmuxEnv.CLAUDE_CODE_NATIVE_CURSOR).toBe("1");
+  });
+
+  // REGRESSION: pane child boot_timeout — self-drawn cursor on the placeholder read as typed text — /dev:fix session dev-fix-20261017-g10-socket
+  test("the slot env overrides both pane defaults and the parent's values", () => {
+    const slotEnv = {
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "slot-traffic",
+      CLAUDE_CODE_NATIVE_CURSOR: "slot-cursor",
+    };
+    const fromDefault = buildPaneEnv({
+      parentEnv,
+      slotEnv,
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+    }).magmuxEnv;
+    expect(fromDefault.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("slot-traffic");
+    expect(fromDefault.CLAUDE_CODE_NATIVE_CURSOR).toBe("slot-cursor");
+    const fromParent = buildPaneEnv({
+      parentEnv: {
+        ...parentEnv,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "parent-traffic",
+        CLAUDE_CODE_NATIVE_CURSOR: "parent-cursor",
+      },
+      slotEnv,
+      cwd: "/c",
+      ctlDir: "/r/launch-AAAAAA",
+    }).magmuxEnv;
+    expect(fromParent.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("slot-traffic");
+    expect(fromParent.CLAUDE_CODE_NATIVE_CURSOR).toBe("slot-cursor");
+  });
+
   test("Linux refuses a snapshot over 131,000 bytes; macOS has no per-string limit", () => {
     const big = { ...parentEnv, BIG: "x".repeat(LINUX_ENV_STRING_LIMIT) };
     expect(() =>

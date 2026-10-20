@@ -196,8 +196,17 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
   }
   env.COLUMNS = String(input.cols ?? DEFAULT_PANE_COLS);
   env.LINES = String(input.rows ?? DEFAULT_PANE_ROWS);
+  // Two independent defaults; a caller's own value of either is kept. Each is checked on
+  // its own, because a caller that turns traffic off itself still needs the cursor
+  // default. Traffic off leaves Claude Code's tengu_native_cursor flag at its default
+  // false, so Claude draws
+  // its own reverse-video cursor on the first rune of the faint "Try …" placeholder,
+  // which magmux's input gate reads as text in the box (box_not_empty) and boot never
+  // becomes ready. CLAUDE_CODE_NATIVE_CURSOR restores the terminal's native cursor;
+  // Claude Code reads it as set or unset, so any non-empty value (even "0") turns it on.
   if (input.parentEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined)
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  if (input.parentEnv.CLAUDE_CODE_NATIVE_CURSOR === undefined) env.CLAUDE_CODE_NATIVE_CURSOR = "1";
   Object.assign(env, input.slotEnv);
   env[ENV.CLAUDISH_PANE_CHILD] = "1";
   env[ENV.CLAUDISH_PANE_CWD] = input.cwd;
