@@ -78,6 +78,20 @@ export interface DiscoveredModel {
    */
   ignoreCatalogReleaseDate?: boolean;
   /**
+   * The row's position in the provider's OWN model picker (0 = first), when the
+   * provider publishes one. When any row of a dynamic models catalog carries it,
+   * the claudish picker lists exactly the rows that do, in this order, instead
+   * of every row newest first.
+   *
+   * Antigravity is the case: `agy models` prints `agentModelSorts`, a curated
+   * subset in a curated order, and the picker is asked to match that list
+   * exactly. The rows WITHOUT it stay in the dynamic models catalog on purpose:
+   * the routing availability filter (`providerServesModel`) and
+   * `discoverContextWindow` read the same list, and a row missing there would
+   * read as "not served". Presentation only — routing never reads this field.
+   */
+  providerOrder?: number;
+  /**
    * What the PROVIDER said about whether this model answers chat turns, when it
    * said anything. Set by the discovery fetcher that holds the evidence, and read
    * by every caller that filters a dynamic models catalog for chat models.

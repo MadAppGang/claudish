@@ -122,6 +122,21 @@ function isUndeclaredEditorInternal(id: string): boolean {
  * catalog — `claude-sonnet-4-6` is 250,000 from the backend against 1,000,000
  * in the catalog. `resolveDiscoveredContextLength` already prefers a discovered
  * window over the catalog; this is what gives it one to prefer.
+ *
+ * WHICH ids the picker shows follows agy. `agy models` prints exactly the
+ * response's `agentModelSorts` ids, in order — a curated subset of the dynamic
+ * models catalog, which also carries older generations (`gemini-2.5-*`,
+ * `gemini-3-*`). Those rows carry `providerOrder`, and the picker lists exactly
+ * the rows that do, in that order; when the field is absent (unknown, not
+ * "none") no row carries it and the picker shows every selectable id, newest
+ * first.
+ *
+ * THIS FETCHER STILL RETURNS EVERY SELECTABLE ID. It is not the picker's alone:
+ * `providerServesModel` (the routing availability filter) and
+ * `discoverContextWindow` read the same list, and a "not-served" there REMOVES
+ * the `ag@` hop from a bare name's routing chain. Narrowing the list here to
+ * agy's subset would silently route a bare `gemini-2.5-pro` past the
+ * subscription. The narrowing is the picker's, in `buildRowsFromDiscovered`.
  */
 async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
   let endpoint: string | undefined;
@@ -147,18 +162,31 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
     }
 
     const { projectId } = await setupAntigravityUser(token);
-    const { servedIds, meta, excludedIds } = await getServedAntigravityModels(token, projectId);
+    const { servedIds, meta, excludedIds, agentModelIds } = await getServedAntigravityModels(
+      token,
+      projectId
+    );
     // Declared first, guess second. `excludedIds` is the backend's own verdict —
     // internal flags, per-feature role bindings, and retired ids (which look
     // entirely normal but answer 400).
     const declaredExcluded = excludedIds ?? new Set<string>();
-    const selectable = servedIds.filter(
-      (id) => !declaredExcluded.has(id) && !isUndeclaredEditorInternal(id)
+    // agy's own list, when the backend sent one: those ids, in agy's order,
+    // still intersected with what is served and not declared excluded — a
+    // curated id the account is not served is not a choice. They lead, each
+    // with its position; every other selectable id follows WITHOUT one, kept
+    // for routing (see above) and left out of the picker by the missing field.
+    const served = new Set(servedIds);
+    const agentSelectable = (agentModelIds ?? []).filter(
+      (id) => served.has(id) && !declaredExcluded.has(id)
+    );
+    const position = new Map(agentSelectable.map((id, index) => [id, index]));
+    const otherSelectable = servedIds.filter(
+      (id) => !position.has(id) && !declaredExcluded.has(id) && !isUndeclaredEditorInternal(id)
     );
     return {
       kind: "models",
       endpoint,
-      models: selectable.map((id) => {
+      models: [...agentSelectable, ...otherSelectable].map((id) => {
         const m = meta[id];
         // contextWindow is left UNSET when the backend reported none
         // (gemini-3.1-flash-image does), so the catalog still gets its turn rather
@@ -170,14 +198,19 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
         // and so were the undeclared editor-completion models. What remains is the
         // set it offers for chat. Judged by id alone, 14 of 21 read as unknown,
         // because these tuned variants are ids the cloud catalog does not carry.
+        // `providerOrder` only on agy's own ids: the rest are in `models` key
+        // order, which nobody curated.
+        const index = position.get(id);
+        const order = index === undefined ? {} : { providerOrder: index };
         return m?.contextWindow
           ? {
               id,
               contextWindow: m.contextWindow,
               ignoreCatalogReleaseDate: true,
               reported: "chat" as const,
+              ...order,
             }
-          : { id, ignoreCatalogReleaseDate: true, reported: "chat" as const };
+          : { id, ignoreCatalogReleaseDate: true, reported: "chat" as const, ...order };
       }),
     };
   } catch (err: unknown) {

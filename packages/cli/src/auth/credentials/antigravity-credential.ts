@@ -12,7 +12,9 @@
  *
  * Request artifact:
  *  - Authorization: Bearer <antigravity oauth token>
- *  - User-Agent: antigravity/cli/1.1.9 (...)
+ *  - User-Agent: antigravity/cli/<version> (...), the version the installed agy
+ *    reports, captured per auth session by getValidAntigravityAccessToken()
+ *    (see auth/antigravity-client-version.ts)
  *  - x-activity-request-id: short random id (matches the Antigravity CLI logger)
  *  - payload wrapped in the CodeAssist envelope
  *    {model, project, user_prompt_id, request: <inner>} (+ enabled_credit_types

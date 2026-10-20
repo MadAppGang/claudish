@@ -14,6 +14,7 @@
  */
 
 import { log } from "../logger.js";
+import { getAgyClientVersion } from "./antigravity-client-version.js";
 
 /**
  * The Antigravity backend host.
@@ -88,17 +89,31 @@ function makeTerminalSetupError(message: string): Error {
   return err;
 }
 
+/** A floor for when agy cannot be read — not a pinned target; the version comes from agy. */
+const AGY_FALLBACK_CLIENT_VERSION = "1.1.9";
+
+/** The client version this process presents: agy's own, else the floor. */
+function antigravityClientVersion(): string {
+  return getAgyClientVersion() ?? AGY_FALLBACK_CLIENT_VERSION;
+}
+
 /**
- * Antigravity's own User-Agent — matches the captured Antigravity CLI exactly.
+ * Antigravity's own User-Agent — the Antigravity CLI's, with the version the
+ * installed `agy` reports.
  *
  * `loadCodeAssist` gates the VISIBLE TIER on request identity (this UA plus
- * `metadata.ideType`), which is why it is reproduced verbatim. It does not gate
- * generation — that is gated on the OAuth client that minted the token, which
- * headers cannot fake. We present this identity because we are carrying a real
- * Antigravity token, not to impersonate one.
+ * `metadata.ideType`), which is why it is reproduced verbatim. The VERSION in it
+ * gates discovery and generation as well. Measured 2026-10-14, same token,
+ * project and host, only the version varying: `fetchAvailableModels` at 1.1.9
+ * lists 23 ids with no `gemini-4-argon-*`, and generating with
+ * `gemini-4-argon-low` answers 404; at 1.3.5 it lists 29 ids and the same
+ * request answers 200. A pinned version therefore hides every model newer than
+ * the pin, so the version is read from agy once per auth session
+ * (`antigravity-client-version.ts`). We present this identity because we are
+ * carrying a real Antigravity token, not to impersonate one.
  */
 export function buildAntigravityUserAgent(): string {
-  return `antigravity/cli/1.1.9 (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
+  return `antigravity/cli/${antigravityClientVersion()} (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
 }
 
 let cachedAgProjectId: string | null = null;
@@ -112,6 +127,7 @@ export function resetAntigravityUserCache(): void {
   cachedAgTierName = null;
   agServedCache = null;
   agServedCacheAt = 0;
+  agServedCacheVersion = null;
 }
 
 /** loadCodeAssist with the Antigravity identity (minimal `{ ideType }` metadata). */
@@ -285,6 +301,12 @@ interface FetchAvailableModelsResponse {
    * backend gives, and claudish was throwing it away.
    */
   deprecatedModelIds?: Record<string, { newModelId?: string }>;
+  /**
+   * The editor's model picker: sorts, each with groups of ids. `agy models`
+   * prints exactly `agentModelSorts[*].groups[*].modelIds`, in this order —
+   * a curated subset of `models`, which also carries older generations.
+   */
+  agentModelSorts?: Array<{ displayName?: string; groups?: Array<{ modelIds?: string[] }> }>;
 }
 
 /** What the backend reports about one served model. */
@@ -327,10 +349,45 @@ export interface AntigravityServedModels {
   excludedIds?: Set<string>;
   /** Retired id → its replacement, so a request for one can name the other. */
   deprecatedReplacements?: Record<string, string>;
+  /**
+   * The ids agy itself offers for selection — `agentModelSorts` flattened over
+   * every sort and group, order kept, duplicates dropped. This is the list
+   * `agy models` prints, and the one the picker shows.
+   *
+   * PICKER ONLY. Routing keeps `servedIds`, so a typed `ag@gemini-2.5-pro`
+   * still resolves. `undefined` when the backend sent no such field (or an
+   * empty one): absent means unknown, not "none".
+   */
+  agentModelIds?: string[];
 }
 
 let agServedCache: AntigravityServedModels | null = null;
 let agServedCacheAt = 0;
+/**
+ * The client version the cache was fetched with. The backend's answer depends
+ * on it (1.1.9 omits every `gemini-4-argon-*` id), so a cache fetched under one
+ * version is not an answer for another.
+ */
+let agServedCacheVersion: string | null = null;
+
+/** Flatten `agentModelSorts` into one ordered, deduplicated id list; undefined when empty. */
+function flattenAgentModelSorts(
+  sorts: FetchAvailableModelsResponse["agentModelSorts"]
+): string[] | undefined {
+  if (!Array.isArray(sorts)) return undefined;
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const sort of sorts) {
+    for (const group of sort?.groups ?? []) {
+      for (const id of group?.modelIds ?? []) {
+        if (typeof id !== "string" || id === "" || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+  }
+  return ids.length > 0 ? ids : undefined;
+}
 
 /**
  * Discover which model ids this account's Antigravity subscription serves — LIVE.
@@ -339,7 +396,11 @@ let agServedCacheAt = 0;
  * account's dynamic models catalog: the KEYS of its `models` dict ARE the served
  * ids (already carrying their reasoning-tier suffix, e.g.
  * `gemini-3.6-flash-high`), and `defaultAgentModelId` is the backend's own
- * default.
+ * default. `agentModelSorts` is the subset agy offers for selection, returned as
+ * `agentModelIds` for the picker.
+ *
+ * The answer depends on the client version in the User-Agent, so the cache is
+ * keyed to it as well as to time.
  *
  * Degrades to `{ servedIds: [], defaultId: null }` on any error, so the
  * transport's 404 handling still functions.
@@ -350,6 +411,18 @@ export async function getServedAntigravityModels(
   opts?: { force?: boolean }
 ): Promise<AntigravityServedModels> {
   const now = Date.now();
+  const version = antigravityClientVersion();
+  if (agServedCache && agServedCacheVersion !== version) {
+    // Fetched under another client version — dropped outright rather than kept
+    // as the degraded-path answer below, which would serve the old version's
+    // dynamic models catalog after a failed refetch.
+    log(
+      `[Antigravity] Client version changed (${agServedCacheVersion} -> ${version}); ` +
+        "refetching the dynamic models catalog."
+    );
+    agServedCache = null;
+    agServedCacheAt = 0;
+  }
   if (!opts?.force && agServedCache && now - agServedCacheAt < SERVED_MODELS_TTL_MS) {
     return agServedCache;
   }
@@ -359,6 +432,8 @@ export async function getServedAntigravityModels(
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
+        // Built in the same synchronous step as `version` above, so the cache is
+        // stamped with the version this request actually presented.
         "User-Agent": buildAntigravityUserAgent(),
       },
       // NOTE: the body is `{ project }` — NOT `{ metadata }` (that 400s here).
@@ -417,8 +492,17 @@ export async function getServedAntigravityModels(
           if (info?.newModelId) deprecatedReplacements[oldId] = info.newModelId;
         }
 
-        agServedCache = { servedIds, defaultId, meta, excludedIds, deprecatedReplacements };
+        const agentModelIds = flattenAgentModelSorts(data.agentModelSorts);
+        agServedCache = {
+          servedIds,
+          defaultId,
+          meta,
+          excludedIds,
+          deprecatedReplacements,
+          ...(agentModelIds ? { agentModelIds } : {}),
+        };
         agServedCacheAt = now;
+        agServedCacheVersion = version;
         return agServedCache;
       }
     } else {
@@ -438,4 +522,5 @@ export async function getServedAntigravityModels(
 export function _resetAntigravityServedModelsCache(): void {
   agServedCache = null;
   agServedCacheAt = 0;
+  agServedCacheVersion = null;
 }

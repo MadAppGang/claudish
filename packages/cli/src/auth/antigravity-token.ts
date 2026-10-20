@@ -34,6 +34,11 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log, logStderr } from "../logger.js";
+import {
+  agyClientVersionReadFor,
+  getAgyClientVersion,
+  recordAgyClientVersionRead,
+} from "./antigravity-client-version.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -65,6 +70,8 @@ const EXPIRY_SKEW_MS = 120_000;
  * and which is precisely the case the "timeout" message now names.
  */
 const AGY_REFRESH_TIMEOUT_MS = 12_000;
+/** Max time to wait for `agy --version` (measured at 0.04 s). */
+const AGY_VERSION_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,6 +134,17 @@ export interface AntigravityTokenDeps {
    * take minutes.
    */
   runAgyRefresh: () => AgyRefreshOutcome;
+  /**
+   * Read the installed agy's version (`agy --version` → `1.3.5`), or null when
+   * agy is absent or the read fails. The Antigravity backend gates discovery
+   * AND generation on the version in the User-Agent, so claudish presents the
+   * version agy reports rather than a pinned one; see
+   * `antigravity-client-version.ts`.
+   *
+   * Optional so a test fake that omits it captures nothing (and never spawns a
+   * real agy); `defaultDeps` always supplies it.
+   */
+  readAgyVersion?: () => string | null;
   /** Current time in ms since epoch (defaults to Date.now). */
   now: () => number;
 }
@@ -290,11 +308,35 @@ function defaultRunAgyRefresh(): AgyRefreshOutcome {
   }
 }
 
+/**
+ * Read the installed agy's version via `agy --version` (prints `1.3.5`, 0.04 s).
+ * Null on any failure — agy absent, non-zero exit, timeout, or output without a
+ * dotted version — so the caller keeps whatever version it already had.
+ */
+function defaultReadAgyVersion(): string | null {
+  const agy = locateAgyBinary();
+  if (!agy) return null;
+  try {
+    // `stdio` MUST be named, for the reason spelled out in `defaultReadStore`:
+    // without it the child's stderr goes straight to the parent's terminal,
+    // which the Claude Code TUI shares. stdout stays piped — it is the answer.
+    const out = execFileSync(agy, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: AGY_VERSION_TIMEOUT_MS,
+    });
+    return out.match(/\d+(\.\d+)+/)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const defaultDeps: AntigravityTokenDeps = {
   readStore: defaultReadStore,
   writeStore: defaultWriteStore,
   deleteStore: defaultDeleteStore,
   runAgyRefresh: defaultRunAgyRefresh,
+  readAgyVersion: defaultReadAgyVersion,
   now: () => Date.now(),
 };
 
@@ -405,6 +447,34 @@ function needsRefresh(tok: AntigravityToken, now: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Client version (captured once per auth session)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture agy's version for the auth session this access token belongs to.
+ *
+ * Re-read only when the token differs from the one the last read was made for:
+ * a new token means agy ran (it refreshed or re-minted), and agy auto-updates,
+ * so that is exactly when the version can have changed. Same token → reuse, at
+ * the cost of a string compare per request. A failed read keeps the previous
+ * good version; see `recordAgyClientVersionRead`.
+ */
+function captureAgyClientVersion(accessToken: string, deps: AntigravityTokenDeps): void {
+  if (!deps.readAgyVersion || agyClientVersionReadFor(accessToken)) return;
+  const read = deps.readAgyVersion();
+  recordAgyClientVersionRead(read, accessToken);
+  if (read) {
+    log(`[Antigravity] Client version from agy: ${read}`);
+  } else {
+    const kept = getAgyClientVersion();
+    log(
+      "[Antigravity] Could not read the agy version" +
+        (kept ? `; keeping ${kept}.` : "; using the fallback version.")
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public: valid access token (single-flight)
 // ---------------------------------------------------------------------------
 
@@ -429,6 +499,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   }
 
   if (!needsRefresh(rec.token, deps.now())) {
+    captureAgyClientVersion(rec.token.access_token, deps);
     return rec.token.access_token;
   }
 
@@ -440,6 +511,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   const refreshedRec = parseRecord(deps.readStore());
   if (refreshedRec && !needsRefresh(refreshedRec.token, deps.now())) {
     log("[Antigravity] Shared token refreshed by the Antigravity CLI.");
+    captureAgyClientVersion(refreshedRec.token.access_token, deps);
     return refreshedRec.token.access_token;
   }
 
@@ -560,6 +632,7 @@ export async function forceRefreshAntigravityToken(
   const token = refreshed?.token;
   if (token && token.access_token !== original.access_token && !needsRefresh(token, deps.now())) {
     log("[Antigravity] Shared token re-minted by the Antigravity CLI.");
+    captureAgyClientVersion(token.access_token, deps);
     return token.access_token;
   }
 
