@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.3.0] - 2026-10-20
+
+### Bug Fixes
+
+- match select footers across wrapped rows in isUnnamedChoice *(pane)* ([`5371143`](https://github.com/MadAppGang/claudish/commit/53711434a91431e8faed00aa22511a156b99a470))
+
+### Documentation
+
+- quote the Bash dialog's rows from the true 40x24 screen *(pane)* ([`1fb4641`](https://github.com/MadAppGang/claudish/commit/1fb46411de6d484c6dad6fadf8471d65d78e64ac))
+- update CHANGELOG.md for v12.2.2([`0957b79`](https://github.com/MadAppGang/claudish/commit/0957b79e16d11b4ec0a6b5cfdf5c792922926246))
+
+### New Features
+
+- lower resize_session's minimum width from 80 to 40 columns *(mcp)* ([`75945c6`](https://github.com/MadAppGang/claudish/commit/75945c6513d5058267ee010b1df7d8bc093236d9))
+
+### Other Changes
+
+- v12.3.0 *(release)* ([`dc8c316`](https://github.com/MadAppGang/claudish/commit/dc8c316a63762de8ffe11527a6f42405b61069bf))
+
 ## [12.2.2] - 2026-10-20
 
 ### Bug Fixes
