@@ -136,6 +136,7 @@ import {
 import {
   type AuthSource,
   type ProviderDef,
+  type ProviderLoginAction,
   getProviderDefs,
   maskKey,
   providerAuthCapabilities,
@@ -143,6 +144,7 @@ import {
   providerCredentialNote,
   providerIsReady,
   providerIsReadyForDisplay,
+  providerLoginAction,
 } from "./providers.js";
 import { A, C } from "./theme.js";
 import type {
@@ -160,15 +162,12 @@ import type {
 interface AppProps {
   /**
    * Called from the Providers tab `l` handler. The wrapper in
-   * tui/index.tsx records the requested slug, then after the renderer
-   * is destroyed it spawns `claudish login {slug}` as a child process
-   * and re-enters startConfigTui when the child exits. App.tsx just
-   * signals intent; lifecycle is the wrapper's responsibility.
+   * tui/index.tsx records the requested action, then after the renderer
+   * is destroyed it spawns the login command as a child process and
+   * re-enters startConfigTui when the child exits. App.tsx just signals
+   * intent; lifecycle is the wrapper's responsibility.
    */
-  // Derived, not restated: this union had drifted the same way `ProviderDef.
-  // oauthSlug` had, still naming the removed `gemini` provider. Both now follow
-  // the catalog's `oauthLoginSlug`.
-  requestLogin?: (slug: NonNullable<ProviderDef["oauthSlug"]>) => void;
+  requestLogin?: (action: ProviderLoginAction) => void;
 }
 
 /**
@@ -2326,9 +2325,9 @@ export function App({ requestLogin }: AppProps = {}) {
               : "No stored config to remove.")
         );
       } else if (key.name === "l") {
-        // OAuth login for the selected provider. Signal the wrapper
-        // (tui/index.tsx) which slug to log into, then destroy the
-        // renderer. The wrapper spawns `claudish login {slug}` as a
+        // Login for the selected provider. Signal the wrapper
+        // (tui/index.tsx) which action to run, then destroy the
+        // renderer. The wrapper spawns the login command as a
         // child process so the OAuth callback server and inquirer
         // prompts run in a clean stdio environment. When the child
         // exits, the wrapper re-enters startConfigTui and we're back
@@ -2337,20 +2336,26 @@ export function App({ requestLogin }: AppProps = {}) {
         // Child-process isolation avoids the ERR_CONNECTION_REFUSED
         // issue that an earlier in-process attempt hit — the child
         // gets a fresh Node runtime with no OpenTUI residue.
-        const slug = selectedProvider.oauthSlug;
-        if (!slug) {
+        const action = providerLoginAction(selectedProvider);
+        const command =
+          action?.kind === "gcloud-adc"
+            ? "gcloud auth application-default login"
+            : action
+              ? `claudish login ${action.slug}`
+              : "";
+        if (!action) {
           setStatusMsg(
             `${selectedProvider.displayName} doesn't support OAuth login. Press s to set an API key.`
           );
         } else if (!requestLogin) {
           // Fallback: wrapper didn't provide the login bridge. Tell the
           // user the command to run manually.
-          setStatusMsg(`Run: claudish login ${slug}`);
+          setStatusMsg(`Run: ${command}`);
         } else {
-          setStatusMsg(`Launching: claudish login ${slug}…`);
+          setStatusMsg(`Launching: ${command}…`);
           // Defer destroy so React commits the status message first.
           setTimeout(() => {
-            requestLogin(slug);
+            requestLogin(action);
             renderer.destroy();
           }, 50);
         }
@@ -2845,7 +2850,7 @@ export function App({ requestLogin }: AppProps = {}) {
           activeTab === "providers" && selectedProvider
             ? {
                 apiKey: !!selectedProvider.apiKeyEnvVar,
-                oauth: !!selectedProvider.oauthSlug,
+                oauth: Boolean(providerLoginAction(selectedProvider)),
                 endpoint: !!selectedProvider.endpointEnvVar,
                 local: selectedProviderIsLocal,
                 localEnabled: selectedLocalEnabled,

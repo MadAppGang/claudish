@@ -22,6 +22,44 @@ interface FooterProps {
   };
 }
 
+export function providerFooterKeys(
+  providerCaps: FooterProps["providerCaps"]
+): Array<[string, string, string]> {
+  // Hotkey row is computed per-cursor-row: chips that don't apply to the
+  // selected provider are hidden. e.g. Gemini Code Assist has no API-key
+  // path so `s set key` and `e endpoint` are omitted; bare Gemini has no
+  // OAuth path so `l login` is omitted.
+  //
+  // When providerCaps is omitted (e.g. legacy callers, empty list), all
+  // chips are shown — back-compat.
+  const showKey = providerCaps ? providerCaps.apiKey : true;
+  const showEndpoint = providerCaps ? providerCaps.endpoint || providerCaps.local : true;
+  const showLogin = providerCaps ? providerCaps.oauth : true;
+  const showRemove = providerCaps
+    ? !providerCaps.local && (providerCaps.apiKey || providerCaps.endpoint)
+    : true;
+  // `u` is shown whenever the provider has an editable endpoint URL.
+  // For local providers it's the ONLY way to change the URL because `e`
+  // is taken by the enable/disable toggle. For remote providers it's a
+  // shortcut equivalent to `e endpoint`.
+  const showUrl = providerCaps ? providerCaps.endpoint : true;
+  const keys: Array<[string, string, string]> = [[C.blue, "↑↓", "navigate"]];
+  if (showKey) keys.push([C.green, "s", "set key"]);
+  if (showEndpoint)
+    keys.push([
+      C.green,
+      "e",
+      providerCaps?.local ? (providerCaps.localEnabled ? "disable" : "enable") : "endpoint",
+    ]);
+  if (showUrl) keys.push([C.green, "u", "url"]);
+  if (showLogin) keys.push([C.green, "l", "login"]);
+  keys.push([C.cyan, "t", "test"]);
+  keys.push([C.cyan, "T", "test all"]);
+  if (showRemove) keys.push([C.red, "x", "remove"]);
+  keys.push([C.dim, "q", "quit"]);
+  return keys;
+}
+
 export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps) {
   // Recompute isProfileEditMode from the `mode` prop — pure on `mode`, kept
   // self-contained so the parent doesn't have to pass a derived bool.
@@ -53,38 +91,7 @@ export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps
       [C.dim, "q", "quit"],
     ];
   } else if (activeTab === "providers") {
-    // Hotkey row is computed per-cursor-row: chips that don't apply to the
-    // selected provider are hidden. e.g. Gemini Code Assist has no API-key
-    // path so `s set key` and `e endpoint` are omitted; bare Gemini has no
-    // OAuth path so `l login` is omitted.
-    //
-    // When providerCaps is omitted (e.g. legacy callers, empty list), all
-    // chips are shown — back-compat.
-    const showKey = providerCaps ? providerCaps.apiKey : true;
-    const showEndpoint = providerCaps ? providerCaps.endpoint || providerCaps.local : true;
-    const showLogin = providerCaps ? providerCaps.oauth : true;
-    const showRemove = providerCaps
-      ? !providerCaps.local && (providerCaps.apiKey || providerCaps.endpoint)
-      : true;
-    // `u` is shown whenever the provider has an editable endpoint URL.
-    // For local providers it's the ONLY way to change the URL because `e`
-    // is taken by the enable/disable toggle. For remote providers it's a
-    // shortcut equivalent to `e endpoint`.
-    const showUrl = providerCaps ? providerCaps.endpoint : true;
-    keys = [[C.blue, "↑↓", "navigate"]];
-    if (showKey) keys.push([C.green, "s", "set key"]);
-    if (showEndpoint)
-      keys.push([
-        C.green,
-        "e",
-        providerCaps?.local ? (providerCaps.localEnabled ? "disable" : "enable") : "endpoint",
-      ]);
-    if (showUrl) keys.push([C.green, "u", "url"]);
-    if (showLogin) keys.push([C.green, "l", "login"]);
-    keys.push([C.cyan, "t", "test"]);
-    keys.push([C.cyan, "T", "test all"]);
-    if (showRemove) keys.push([C.red, "x", "remove"]);
-    keys.push([C.dim, "q", "quit"]);
+    keys = providerFooterKeys(providerCaps);
   } else if (activeTab === "profiles" && isProfileEditMode) {
     // The bordered "New Profile" wizard modal owns its own inline hint line
     // for every step (scope, name, model fields, provider picker). Showing

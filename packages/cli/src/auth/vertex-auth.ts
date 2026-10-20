@@ -249,7 +249,7 @@ let discoveredProjectSettled: VertexProjectOrigin | null | undefined;
 let syncAdcOrigin: VertexProjectOrigin | null | undefined;
 
 /**
- * Reset the discovery memos. Test seam — production resolves once per process.
+ * Reset the discovery memos, including when credentials.invalidate("vertex") runs after ADC login.
  */
 export function resetVertexProjectDiscovery(): void {
   discoveredProjectPromise = null;
@@ -641,6 +641,11 @@ export function buildVertexOAuthEndpoint(
 
 // Singleton instance
 let authManagerInstance: VertexAuthManager | null = null;
+
+/** Drop the cached token after the ADC login changes. */
+export function resetVertexAuthManager(): void {
+  authManagerInstance = null;
+}
 
 /**
  * Get the shared VertexAuthManager instance

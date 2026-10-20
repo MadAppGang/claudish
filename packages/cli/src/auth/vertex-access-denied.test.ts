@@ -1,5 +1,6 @@
 // REGRESSION: Vertex config TUI showed oauth but offered only "set key" and an unexplained 403 — Fixed in /dev:fix session dev-fix-20261020-235500-vtx01
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { credentials } from "./credentials/authority.js";
 import * as vertexAuth from "./vertex-auth.js";
 
 const projectId = "vertex-test-project";
@@ -53,4 +54,32 @@ describe("Vertex access-denied explanation", () => {
       });
     }
   }
+});
+
+describe.serial("Vertex authentication cache reset", () => {
+  afterEach(() => {
+    vertexAuth.resetVertexAuthManager?.();
+    vertexAuth.resetVertexProjectDiscovery();
+  });
+
+  test("resetVertexAuthManager replaces the shared authentication manager", () => {
+    const previous = vertexAuth.getVertexAuthManager();
+    expect(vertexAuth.getVertexAuthManager()).toBe(previous);
+
+    vertexAuth.resetVertexAuthManager();
+
+    const current = vertexAuth.getVertexAuthManager();
+    expect(current).not.toBe(previous);
+    expect(vertexAuth.getVertexAuthManager()).toBe(current);
+  });
+
+  test('credentials.invalidate("vertex") replaces the shared authentication manager', () => {
+    const previous = vertexAuth.getVertexAuthManager();
+
+    credentials.invalidate("vertex");
+
+    const current = vertexAuth.getVertexAuthManager();
+    expect(current).not.toBe(previous);
+    expect(vertexAuth.getVertexAuthManager()).toBe(current);
+  });
 });

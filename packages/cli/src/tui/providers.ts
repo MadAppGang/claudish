@@ -49,6 +49,17 @@ export interface ProviderDef {
   oauthSlug?: ProviderDefinition["oauthLoginSlug"];
 }
 
+export type ProviderLoginAction =
+  | { kind: "claudish"; slug: NonNullable<ProviderDef["oauthSlug"]> }
+  | { kind: "gcloud-adc" };
+
+/** The login offered by both the Providers-tab footer and its `l` handler. */
+export function providerLoginAction(p: ProviderDef): ProviderLoginAction | undefined {
+  if (p.oauthSlug) return { kind: "claudish", slug: p.oauthSlug };
+  if (p.catalogName === "vertex") return { kind: "gcloud-adc" };
+  return undefined;
+}
+
 // Skip virtual providers that have no API key and no TUI presence
 const SKIP = new Set(["qwen", "native-anthropic"]);
 
@@ -252,7 +263,7 @@ export function providerCredentialNote(p: ProviderDef): string | undefined {
     // sentence mentions an API key, because there is none to find.
     return hasVertexAdcCredentials()
       ? `ADC present, no project — ${VERTEX_SET_PROJECT_REMEDY}`
-      : `No credential — run \`gcloud auth application-default login\`, then ${VERTEX_SET_PROJECT_REMEDY}`;
+      : `No credential — run \`gcloud auth application-default login\` (press l), then ${VERTEX_SET_PROJECT_REMEDY}`;
   }
   return `Project ${origin.projectId} from ${describeVertexProjectSource(origin)}`;
 }
