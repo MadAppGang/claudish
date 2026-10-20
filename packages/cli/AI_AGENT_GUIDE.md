@@ -470,7 +470,10 @@ claudish --models-top --json
         "output": "$1.5/1M",
         "average": "$0.85/1M"
       },
-      "context": "256000"
+      "context": "256000",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": false
     }
   ]
 }
@@ -480,7 +483,9 @@ claudish --models-top --json
 `subscription`; `recommendationTiers` lists the tiers this claudish version knows. `priority` is
 the rank within that tier, from 1. A model listed in two tiers is two rows, so dedupe ids
 yourself. Only `subscription` rows carry `subscriptions[].command`, the model spec to run.
-Prices are `"N/A"` when the catalog has none.
+Prices are `"N/A"` when the catalog has none. `supportsTools`, `supportsReasoning` and
+`supportsVision` come from the cloud models catalog; a field is absent when the catalog does not
+publish it, so treat absent as unknown, not as `false`.
 
 `claudish --models --json` prints the full catalog instead; its records carry no
 `recommendationTier`.
