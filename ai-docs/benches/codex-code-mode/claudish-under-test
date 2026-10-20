@@ -20,4 +20,25 @@ dist="$root/packages/cli/dist/index.js"
   echo "head=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "dist_mtime=$(stat -f %Sm -t %Y-%m-%dT%H:%M:%S "$dist")"
 } > claudish-provenance.txt
+
+# TEMPORARY — stands in for a claudish fix: createTempSettingsFile
+# (packages/cli/src/claude-runner.ts) names its file
+# ~/.claudish/settings-<Date.now()>.json, so two claudish processes started in
+# the same millisecond write ONE file, and both Claude Codes load the last
+# writer's statusLine and hooks. madbench starts concurrent Scenarios within a
+# millisecond of each other, so the losers' statusLine sinks stay empty and
+# madbench reports "agent never started" (diagnosis: README.md, "Concurrency").
+# This spaces launches at least 100 ms apart with a lock directory, so each
+# process reads a different Date.now(). Delete it when claudish names the
+# file uniquely per process.
+lock=/tmp/claudish-under-test.launch.lock
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+  waited=$((waited + 1))
+  # a lock left by a killed launch is never older than a few seconds
+  if [ "$waited" -gt 200 ]; then rmdir "$lock" 2>/dev/null || true; waited=0; fi
+  sleep 0.02
+done
+( sleep 0.1; rmdir "$lock" 2>/dev/null ) &
+
 exec bun "$dist" --debug-claudish --log-level debug -q "$@"
