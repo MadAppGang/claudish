@@ -810,8 +810,20 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
     const rec = await ownerPane(t, "lv", "live");
     expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(1);
     const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
-    expect(r).toEqual({ reaped: [], cleaned: [], kept: [] });
+    // alive by kill(pid, 0) alone is unverified, so the pane is listed as kept
+    expect(r).toEqual({ reaped: [], cleaned: [], kept: [rec.paneId] });
     expect(readRecord(t.sockRoot, rec.paneId)).not.toBeNull();
+    for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
+  });
+
+  test("a record a sandboxed owner wrote (no ownerStart), swept later with a working ps: kept", async () => {
+    // the owner could not read its lstart; its pane id still embeds its start time
+    const t = env();
+    const rec = await ownerPane(t, "sb", "live");
+    updateRecord(t.sockRoot, rec.paneId, { ownerStart: "" });
+    expect(await livePaneCount(t.sockRoot)).toBe(1);
+    const r = await sweepOrphanPanes(t.sockRoot);
+    expect(r).toEqual({ reaped: [], cleaned: [], kept: [] });
     for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
   });
 

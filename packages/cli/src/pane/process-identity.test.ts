@@ -412,7 +412,7 @@ describe("the process table when ps cannot run (macOS refuses the setuid ps in a
       const modulePath = join(import.meta.dir, "process-identity.ts");
       const script =
         `import { readProcessTable, readProcessTableAsync } from ${JSON.stringify(modulePath)};\n` +
-        `const sync = readProcessTable();\n` +
+        "const sync = readProcessTable();\n" +
         `void readProcessTableAsync().then((t) => { console.log(String(sync) + " " + String(t)); process.exit(0); });\n` +
         "setInterval(() => {}, 1000);\n" +
         `setTimeout(() => { console.log("timeout"); process.exit(3); }, 10000);\n`;

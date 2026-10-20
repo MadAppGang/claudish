@@ -485,7 +485,10 @@ async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets
 
 async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Promise<void> {
   const table = readProcessTable();
-  if (ownerAlive(rec, table)) return;
+  if (ownerAlive(rec, table)) {
+    if (!table) out.kept.push(rec.paneId); // alive by kill(pid, 0) alone: unverified
+    return;
+  }
   if (!table) {
     await sweepUnidentifiable(rec, root, out);
     return;
