@@ -2,6 +2,44 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.1.0] - 2026-10-20
+
+### Bug Fixes
+
+- run one magmux --version probe for panes that start together *(pane)* ([`378b854`](https://github.com/MadAppGang/claudish/commit/378b85448d88e01e9112990d3343923ebddaa2aa))
+- corroborate turn settle with the input gate, not the box *(pane)* ([`af427dd`](https://github.com/MadAppGang/claudish/commit/af427ddf81ba1d473b02f9ba89e482d130aff56c))
+- submit each prompt through one gated magmux send *(pane)* ([`1673aeb`](https://github.com/MadAppGang/claudish/commit/1673aeb89ef2c5689306002ea68e2422a525c428))
+- keep an explicit typed:false on a magmux failure reply *(pane)* ([`64233a2`](https://github.com/MadAppGang/claudish/commit/64233a2f90e14765b10b02f531257a250c3dfc1e))
+- read a binding missing its id or path as unbound *(pane)* ([`5e664f2`](https://github.com/MadAppGang/claudish/commit/5e664f22a2b421cd5c17fbc522f7b7d0f1b2f6c7))
+- read maybeSubmitted from the magmux reply *(pane)* ([`2b03645`](https://github.com/MadAppGang/claudish/commit/2b03645c099065293fd88a998726fbb455e15eae))
+- clamp resize_session width to 250 columns, not 500 *(mcp)* ([`f67bd3a`](https://github.com/MadAppGang/claudish/commit/f67bd3aaa6467a7d30daca63bb3588630f1cb3f5))
+- send a resize_session size stored during a redial *(pane)* ([`6978d2a`](https://github.com/MadAppGang/claudish/commit/6978d2a5f5ae463706aaa316e5b93fe6e465169f))
+- require magmux 0.15.1 so a taller pane redraws Claude Code *(team)* ([`243bd01`](https://github.com/MadAppGang/claudish/commit/243bd0142b700839a94036e3a8d8468989c55759))
+- match echo, dialog and working rows at any terminal width *(pane)* ([`cd6baf3`](https://github.com/MadAppGang/claudish/commit/cd6baf37b9ba268926b17805574328ba071bcdd7))
+
+### Documentation
+
+- record the live validation of resize_session and team resize *(reports)* ([`80b6d4e`](https://github.com/MadAppGang/claudish/commit/80b6d4e64518a9be832db6ad152c1a0d09f58b87))
+- close the magmux controller and double-typed prompt items *(roadmap)* ([`2ea9dfb`](https://github.com/MadAppGang/claudish/commit/2ea9dfbd845eafbea155c15ea3e321c3783b189a))
+- document the magmux input gate in pane-session.md *(pane)* ([`d19050c`](https://github.com/MadAppGang/claudish/commit/d19050c1f297e0b1aa2f912dbf15171e07798f1d))
+- update CHANGELOG.md for v12.0.1([`0d875ef`](https://github.com/MadAppGang/claudish/commit/0d875ef062a688e162f1f10c45091dd8f33e3936))
+
+### New Features
+
+- remove the 250-column cap from resize_session *(mcp)* ([`7d43b73`](https://github.com/MadAppGang/claudish/commit/7d43b73263e737c46e491e52ef60de139057459e))
+- read boot readiness and dialogs from the magmux input gate *(pane)* ([`2462745`](https://github.com/MadAppGang/claudish/commit/24627459e8cb4312936eebbff2aa825e32976719))
+- bind each pane to its transcript in magmux's input gate *(pane)* ([`ea1b992`](https://github.com/MadAppGang/claudish/commit/ea1b99280c83421e253b3f3de5a6f3c2d0bbb56c))
+- locate the input box by the cursor row *(pane)* ([`dd5baac`](https://github.com/MadAppGang/claudish/commit/dd5baac62ab053e5cca175952e29dfdfa74ea092))
+- keep magmux reply reason and typed fields *(pane)* ([`c36359f`](https://github.com/MadAppGang/claudish/commit/c36359f614c69cb2c3c424520b81a2d972013c31))
+- list resize in the contract capabilities *(mcp)* ([`ab23345`](https://github.com/MadAppGang/claudish/commit/ab2334508ea8d6ec870e6df1adf13dadaad61c4c))
+- require magmux 0.15.0 and ship it in the npm packages *(team)* ([`2e2e836`](https://github.com/MadAppGang/claudish/commit/2e2e8361b230fe1d4e1cc4aa58ed747ae99c9fb5))
+- add resize_session tool and team mode resize *(mcp)* ([`9c400d2`](https://github.com/MadAppGang/claudish/commit/9c400d235d7e742b2ee92272d42f232512c57cc4))
+
+### Other Changes
+
+- raise the hermetic test step timeout to 40 minutes *(ci)* ([`1f72a19`](https://github.com/MadAppGang/claudish/commit/1f72a1996030d50040b648e62c87960a7d64309e))
+- v12.1.0 *(release)* ([`458adf6`](https://github.com/MadAppGang/claudish/commit/458adf6be7c6d19a7b5de38bbd33b93ebd938211))
+
 ## [12.0.1] - 2026-10-20
 
 ### Bug Fixes
