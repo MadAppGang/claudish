@@ -998,11 +998,13 @@ export function createTempSettingsFile(
  * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
  * left as it was.
  *
- * Every launch loses `CLAUDISH_PANE_ENV` and `CLAUDISH_PANE_CWD` (`PANE_LAUNCH_VARS`).
- * They describe THIS claudish (an MCP pane child), not Claude Code; inherited, a
- * claudish started from the slot's Bash tool would take itself for the pane child
- * (re-apply a stale environment snapshot, chdir). They stay in this process's own
- * `process.env`, which `isPaneChild()` and `magmuxPaneCapability()` read.
+ * Every launch loses `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX`
+ * and `CLAUDISH_HOOK_SESSION` (`PANE_LAUNCH_VARS`). They describe THIS claudish (an
+ * MCP pane child), not Claude Code; inherited, a claudish started from the slot's Bash
+ * tool would take itself for the pane child (re-apply a stale environment snapshot,
+ * chdir), and the model's Bash tool would see the hook inbox path. They stay in this
+ * process's own `process.env`, which `isPaneChild()`, `magmuxPaneCapability()` and the
+ * child's proxy read.
  *
  * `CLAUDISH_PANE_CHILD` is KEPT. It says "this session was started by a claudish
  * owner", which is true of everything the session starts: a claudish run from its
