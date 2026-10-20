@@ -61,7 +61,7 @@ import type {
   RouteInfo,
 } from "./public.js";
 import { RawRequest } from "./raw.js";
-import type { ApplicableHook } from "./registry.js";
+import type { ApplicableHook, UpstreamFacts } from "./registry.js";
 import { recordTelemetryTurn } from "./telemetry/aggregate.js";
 
 /** Hono context key: the per-proxy `RequestHooks`, set by `withHooks`. */
@@ -168,6 +168,11 @@ export interface AttemptInput {
    */
   claudeRequest: MutableClaudeRequest & { metadata?: unknown };
   route: RouteInfo;
+  /**
+   * Catalog facts about the route's upstream, when the handler has a catalog
+   * connection. Built-ins with `selectByUpstream` are selected from them.
+   */
+  upstream?: UpstreamFacts;
   /** The model as Claude Code asked for it. */
   model: string;
   stream: boolean;
@@ -251,7 +256,8 @@ export class HookRequestScope {
     /** The request as the response-side hooks see it: the request chain's final view. */
     readonly facts: RequestFacts,
     readonly session: ProxySessionRef | null,
-    response: ResponsePlan
+    response: ResponsePlan,
+    upstream?: UpstreamFacts
   ) {
     this.held = held;
     this.response = response;
@@ -259,7 +265,7 @@ export class HookRequestScope {
     for (const h of response.interceptHooks) for (const t of h.tools) armed.add(t);
     this.armedTools = armed;
     this.rewriteClaimants = response.rewriteHooks.map((a) => a.hook.id);
-    this.raw = new RawRequest(engine, route, meta, facts);
+    this.raw = new RawRequest(engine, route, meta, facts, upstream);
   }
 
   /**
@@ -286,7 +292,7 @@ export class HookRequestScope {
     session: ProxySessionRef | null,
     input: AttemptInput
   ): Promise<HookRequestScope> {
-    const { claudeRequest, route } = input;
+    const { claudeRequest, route, upstream } = input;
     const sessionId = extractSessionId(claudeRequest);
     const meta: JournalMeta = sessionId
       ? { model: route.modelId, provider: route.provider, sessionId }
@@ -295,11 +301,11 @@ export class HookRequestScope {
     // 2. Applicable hooks. Selection is cheap; the harness scan is not (it walks
     //    a conversation that can be ~180K tokens), so it runs only when some
     //    hook will read it.
-    const requestHooks = engine.select("request", { route });
-    const toolCallHooks = engine.select("toolCall", { route });
-    const rewriteHooks = engine.select("responseRewrite", { route });
+    const requestHooks = engine.select("request", { route, upstream });
+    const toolCallHooks = engine.select("toolCall", { route, upstream });
+    const rewriteHooks = engine.select("responseRewrite", { route, upstream });
     // responseEnd reads ctx.harness too: selected once, here, for the plan below
-    const endHooks = engine.select("responseEnd", { route });
+    const endHooks = engine.select("responseEnd", { route, upstream });
     const anyHook =
       requestHooks.length + toolCallHooks.length + rewriteHooks.length + endHooks.length > 0;
 
@@ -454,7 +460,8 @@ export class HookRequestScope {
       notes.map((n) => n.seq),
       postFacts,
       hookSession,
-      plan
+      plan,
+      upstream
     );
   }
 

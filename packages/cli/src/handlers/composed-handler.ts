@@ -43,6 +43,7 @@ import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
 import { getHookEngine } from "../hooks/index.js";
 import { type RawStreamTap, statsNames } from "../hooks/raw.js";
+import type { UpstreamFacts } from "../hooks/registry.js";
 import { type HookRequestScope, isNativeRoute, requestHooksOf } from "../hooks/request-stage.js";
 import {
   getLogLevel,
@@ -396,7 +397,21 @@ export class ComposedHandler implements ModelHandler {
    * appear, so the OTLP `llm.middleware` attribute is unchanged for them.
    */
   private rawStatsNames(): string[] {
-    return statsNames(getHookEngine(), this.routeInfo());
+    return statsNames(getHookEngine(), this.routeInfo(), this.upstreamFacts());
+  }
+
+  /**
+   * What the catalog says about this handler's upstream, for built-ins selected
+   * from data rather than by model name (`BuiltinHook.selectByUpstream`). Only
+   * with a catalog connection: without one the hooks' name globs decide.
+   */
+  private upstreamFacts(): UpstreamFacts | undefined {
+    const connection = this.options.connection;
+    if (!connection) return undefined;
+    return {
+      wireApi: connection.wire.status === "known" ? connection.wire.api : null,
+      vendor: connection.vendor ?? null,
+    };
   }
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
@@ -1057,6 +1072,7 @@ export class ComposedHandler implements ModelHandler {
       ? await hooks.beginAttempt(c, {
           claudeRequest,
           route: this.routeInfo(),
+          upstream: this.upstreamFacts(),
           model: typeof payload?.model === "string" ? payload.model : this.bareModelName,
           stream: payload?.stream === true,
         })

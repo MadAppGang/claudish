@@ -410,8 +410,12 @@ that returns normally after emptying `messages` is applied as written, which is 
 `handlers/composed-handler-raw.test.ts` holds one test per failure mode above (X-1 to X-8), each with a
 control, plus the in-place edit and the `warn` replacement built from the view.
 
-**The Gemini built-in** (`gemini/thought-signature`, `order: "pre"`, model names containing `gemini`
-or `google/`) keeps a cache keyed `"<provider>\0<modelId>"`, which reproduces the old per-handler
+**The Gemini built-in** (`gemini/thought-signature`, `order: "pre"`) is selected from catalog data
+when the handler has a catalog connection: a Gemini-API wire, or a model whose catalog vendor is
+`google` behind a gateway, whatever its (possibly opaque) id. This is `BuiltinHook.selectByUpstream`
+over the internal `UpstreamFacts` that `ComposedHandler` passes in the applicability scope; they never
+reach a hook context. Without a connection (custom endpoints, dynamic subscriptions) its `models`
+globs decide: names containing `gemini` or `google/`. It keeps a cache keyed `"<provider>\0<modelId>"`, which reproduces the old per-handler
 scope. The old middleware's `afterResponse` had no production caller and was deleted, not migrated.
 `statsNames()` reports the `statsName` of the built-in raw hooks active for a model, so the OTLP
 `middleware_names` attribute is unchanged and user hooks never appear in it.

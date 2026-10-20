@@ -68,7 +68,7 @@ import type {
   RequestFacts,
   RouteInfo,
 } from "./public.js";
-import type { ApplicableHook, HookEventName } from "./registry.js";
+import type { ApplicableHook, HookEventName, UpstreamFacts } from "./registry.js";
 import { HOLD_CAP_BYTES, PING_FRAME } from "./seam-transform.js";
 
 export type RawStage = "providerRequest" | "providerChunk" | "providerStreamEnd" | "response";
@@ -174,13 +174,18 @@ function rawOf(applicable: ApplicableHook): RawMiddleware {
  * `middleware_names` for stats: the `statsName` of every BUILT-IN raw hook that
  * applies to the route. User hooks never appear, so the OTLP `llm.middleware`
  * attribute does not change for users with hooks. Empty when no engine is
- * loaded in this process.
+ * loaded in this process. `upstream` is the route's catalog facts, when the
+ * handler has a catalog connection.
  */
-export function statsNames(engine: HookEngine | null | undefined, route: RouteInfo): string[] {
+export function statsNames(
+  engine: HookEngine | null | undefined,
+  route: RouteInfo,
+  upstream?: UpstreamFacts
+): string[] {
   if (!engine) return [];
   const names: string[] = [];
   for (const stage of RAW_STAGES) {
-    for (const { hook } of engine.registry.applicable(`raw.${stage}`, { route })) {
+    for (const { hook } of engine.registry.applicable(`raw.${stage}`, { route, upstream })) {
       if (hook.source === "builtin" && hook.statsName && !names.includes(hook.statsName)) {
         names.push(hook.statsName);
       }
@@ -209,12 +214,14 @@ export class RawRequest {
     readonly route: RouteInfo,
     readonly meta: JournalMeta,
     /** The request as response-side hooks see it. */
-    readonly facts: RequestFacts
+    readonly facts: RequestFacts,
+    /** Catalog facts about the route's upstream, when the handler has a catalog connection. */
+    readonly upstream?: UpstreamFacts
   ) {}
 
   /** Applicable hooks for one stage, in effective order, minus breaker-disabled ones. */
   hooks(stage: RawStage): ApplicableHook[] {
-    return this.engine.select(`raw.${stage}`, { route: this.route });
+    return this.engine.select(`raw.${stage}`, { route: this.route, upstream: this.upstream });
   }
 
   /** How many raw `response` hooks apply (the seam log's `raw=<n>`). */

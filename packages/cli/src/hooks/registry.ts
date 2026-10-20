@@ -55,10 +55,29 @@ export function isProxyEvent(event: HookEventName): boolean {
   return PROXY_EVENTS.has(event);
 }
 
+/**
+ * What the model catalog says about the upstream a route reaches, when the
+ * handler serving it has a catalog connection. Internal to claudish: never on a
+ * hook context, so it adds nothing to the `claudish/hooks` contract.
+ */
+export interface UpstreamFacts {
+  /** The connection's wire API when the catalog knows it (`"gemini"`, `"chat-completions"`, …). */
+  wireApi: string | null;
+  /** The catalog vendor of the model (`"google"`, …), when known. */
+  vendor: string | null;
+}
+
 /** A built-in hook. Its id carries no `hook:` prefix. */
 export type BuiltinHook = HookDefinition & {
   /** Name reported in stats `middleware_names` while this raw built-in is active. */
   statsName?: string;
+  /**
+   * Selects the hook from catalog data instead of `models` when the route has a
+   * catalog connection (`ApplicabilityScope.upstream`). The model name, possibly
+   * an opaque gateway id, is then not asked again. Without a connection the
+   * `models` globs decide, as for every hook.
+   */
+  selectByUpstream?: (upstream: UpstreamFacts) => boolean;
 };
 
 /** A user hook as the loader produced it. */
@@ -89,6 +108,8 @@ export interface RegisteredHook {
   /** Every event this hook declares a handler for, in a fixed order. */
   events: ReadonlyArray<HookEventName>;
   statsName?: string;
+  /** Built-ins only: see `BuiltinHook.selectByUpstream`. */
+  selectByUpstream?: (upstream: UpstreamFacts) => boolean;
 }
 
 /** A hook selected for one event, with its resolved severity. */
@@ -101,6 +122,8 @@ export interface ApplicableHook {
 export interface ApplicabilityScope {
   /** Proxy events: the route (models, routes, model-scoped severity keys). */
   route?: RouteInfo;
+  /** Proxy events: catalog facts about the route's upstream, when it has a connection. */
+  upstream?: UpstreamFacts;
   /** Session events: the model the caller asked for (model-scoped severity keys). */
   sessionModel?: string;
 }
@@ -127,7 +150,8 @@ function register(
   id: string,
   source: RegisteredHook["source"],
   module?: string,
-  statsName?: string
+  statsName?: string,
+  selectByUpstream?: (upstream: UpstreamFacts) => boolean
 ): RegisteredHook {
   const hook: RegisteredHook = {
     id,
@@ -142,6 +166,7 @@ function register(
   };
   if (module !== undefined) hook.module = module;
   if (statsName !== undefined) hook.statsName = statsName;
+  if (selectByUpstream !== undefined) hook.selectByUpstream = selectByUpstream;
   return hook;
 }
 
@@ -157,7 +182,7 @@ export class HookRegistry {
   ) {
     const ranked = [
       ...builtins.map((def, i) => ({
-        hook: register(def, def.id, "builtin", undefined, def.statsName),
+        hook: register(def, def.id, "builtin", undefined, def.statsName, def.selectByUpstream),
         key: [0, 0, i] as const,
       })),
       ...users.map((u) => ({
@@ -199,15 +224,16 @@ export class HookRegistry {
 
   /**
    * Hooks that apply to `event` in this scope, in effective order: severity is
-   * not `off`, and for proxy events the route's model matches `models` and its
-   * nativeness matches `routes`.
+   * not `off`, and for proxy events the route's nativeness matches `routes` and
+   * its model matches `models` (or, for a built-in with `selectByUpstream` on a
+   * route with a catalog connection, the catalog facts select it).
    */
   applicable(event: HookEventName, scope: ApplicabilityScope = {}): ApplicableHook[] {
     const proxy = isProxyEvent(event);
     const modelId = proxy ? scope.route?.modelId : scope.sessionModel;
     const out: ApplicableHook[] = [];
     for (const hook of this.declaring(event)) {
-      if (proxy && scope.route && !routeMatches(hook, scope.route)) continue;
+      if (proxy && scope.route && !routeMatches(hook, scope.route, scope.upstream)) continue;
       const severity = this.severityOf(hook, modelId);
       if (severity === "off") continue;
       out.push({ hook, severity });
@@ -216,8 +242,9 @@ export class HookRegistry {
   }
 }
 
-function routeMatches(hook: RegisteredHook, route: RouteInfo): boolean {
+function routeMatches(hook: RegisteredHook, route: RouteInfo, upstream?: UpstreamFacts): boolean {
   if (hook.routes === "native" && !route.native) return false;
   if (hook.routes === "foreign" && route.native) return false;
+  if (upstream && hook.selectByUpstream) return hook.selectByUpstream(upstream);
   return hook.models.some((glob) => globMatches(glob, route.modelId));
 }

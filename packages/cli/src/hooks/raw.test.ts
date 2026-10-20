@@ -131,6 +131,39 @@ describe("statsNames", () => {
     expect(statsNames(null, route("gemini-2.5-flash"))).toEqual([]);
   });
 
+  it("with a catalog connection, selects the Gemini built-in from the catalog data, not the name (0d40e396)", () => {
+    const engine = engineOf(builtinHooks({}));
+    const names = (modelId: string, wireApi: string | null, vendor: string | null) =>
+      statsNames(engine, route(modelId), { wireApi, vendor });
+    // a Google model behind a gateway, under an id with neither `gemini` nor `google/`
+    expect(names("or-7f3a2c", "chat-completions", "google")).toEqual(["GeminiThoughtSignature"]);
+    // a Gemini-API wire, vendor unpublished
+    expect(names("opaque-id", "gemini", null)).toEqual(["GeminiThoughtSignature"]);
+    // a connection that is neither: the name is not asked again
+    expect(names("gemini-lookalike", "chat-completions", "openai")).toEqual([]);
+    expect(names("google/whatever", null, null)).toEqual([]);
+  });
+
+  it("the raw tier of a connected attempt runs the Gemini built-in by the same rule", () => {
+    const engine = engineOf(builtinHooks({}));
+    const facts = { model: "x", stream: true, systemText: "", messages: [], tools: [] };
+    const meta = { model: "or-7f3a2c", provider: "openrouter" };
+    const google = new RawRequest(engine, route("or-7f3a2c"), meta, facts, {
+      wireApi: "chat-completions",
+      vendor: "google",
+    });
+    expect(google.hooks("providerRequest").map((a) => a.hook.id)).toEqual([
+      "gemini/thought-signature",
+    ]);
+    const other = new RawRequest(engine, route("gemini-lookalike"), meta, facts, {
+      wireApi: "chat-completions",
+      vendor: "openai",
+    });
+    expect(other.hooks("providerRequest")).toEqual([]);
+    // no connection: the name globs decide
+    expect(rawFor(engine, route("gemini-2.5-flash")).hooks("providerRequest")).toHaveLength(1);
+  });
+
   it("never names a user hook, and an off built-in is not active", () => {
     const user: UserHookInput = {
       id: "hook:u/raw",

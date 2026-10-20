@@ -801,7 +801,7 @@ and requests from team judges, are not held at all.
 
 | Id | What it does |
 |---|---|
-| `gemini/thought-signature` | Raw. Carries Gemini thought signatures between turns, for model names containing `gemini` or `google/`. |
+| `gemini/thought-signature` | Raw. Carries Gemini thought signatures between turns: on a Gemini-API wire or a Google model behind a gateway, as the model catalog lists the route, and otherwise for model names containing `gemini` or `google/`. |
 | `plan-mode/plan-file-path` | Foreign routes. In plan mode, puts the assigned plan-file path into the `ExitPlanMode` tool description, and moves a `Write`, `Edit` or `NotebookEdit` aimed at another file in the plan directory onto the assigned plan file. |
 | `session-context/no-harness-echo` | Foreign routes. Adds a system note telling the model not to reproduce the session context Claude Code injects (hook output, reminders) in its answer. |
 | `observer/divergence` | Foreign routes, off until `hooks.observer.enabled`: `claudish hooks list` shows the severity it would act with (`fix`) and marks it `inactive` while that setting is off. Asks a small local model whether a watched tool call breaks one of claudish's conformance rules, and logs the verdict to `~/.claudish/behavior-divergences.jsonl`. Advisory only. |

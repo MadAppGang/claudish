@@ -9,14 +9,16 @@
 
 import { describe, expect, it } from "bun:test";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
-import { BUILTIN_HOOKS } from "../hooks/builtins/index.js";
+import { BUILTIN_HOOKS, builtinHooks } from "../hooks/builtins/index.js";
 import { planFileInstruction } from "../hooks/builtins/plan-mode.js";
 import { SESSION_CONTEXT_NOTE } from "../hooks/builtins/session-context.js";
 import { HookEngine } from "../hooks/engine.js";
 import type { JournalEntry } from "../hooks/journal.js";
 import { type HookDefinition, act } from "../hooks/public.js";
 import { HookRegistry, type UserHookInput } from "../hooks/registry.js";
+import { hookScopeOf } from "../hooks/request-stage.js";
 import { withHooks } from "../hooks/response-seam.js";
+import { declaredConnection, declaredWire } from "../providers/declared-wire.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./composed-handler.js";
 
@@ -250,5 +252,40 @@ describe("ComposedHandler hook request stage ordering", () => {
     await handleOnce(handler, engine, makePayload("glm-5"));
 
     expect(JSON.stringify(adapter.last?.built.messages)).toContain("APPENDED-BY-HOOK");
+  });
+
+  it("selects the Gemini built-in from the catalog connection, not the model name (0d40e396)", async () => {
+    const engine = new HookEngine({
+      registry: new HookRegistry(builtinHooks({}), [], undefined),
+      config: {},
+      hostMode: "other",
+      journalSink: () => {},
+      warn: () => {},
+      drainTelemetryOutbox: false,
+    });
+    const providerRequestHooks = async (model: string, vendor: string | undefined) => {
+      const connection = {
+        ...declaredConnection(
+          "openrouter",
+          model,
+          "http://127.0.0.1:1",
+          declaredWire("chat-completions", undefined)
+        ),
+        ...(vendor ? { vendor } : {}),
+      };
+      const handler = new ComposedHandler(makeFakeTransport("openrouter"), model, model, 8080, {
+        adapter: new RecordingOpenAIAPIFormat(model),
+        connection,
+      });
+      const c = fakeContext();
+      await handleOnce(handler, engine, makePayload(model), c);
+      return hookScopeOf(c)
+        ?.raw.hooks("providerRequest")
+        .map((a) => a.hook.id);
+    };
+    // an opaque gateway id whose catalog vendor is google
+    expect(await providerRequestHooks("or-7f3a2c", "google")).toEqual(["gemini/thought-signature"]);
+    // a connected route that is not Google: a `gemini` substring is not asked again
+    expect(await providerRequestHooks("gemini-lookalike", "openai")).toEqual([]);
   });
 });

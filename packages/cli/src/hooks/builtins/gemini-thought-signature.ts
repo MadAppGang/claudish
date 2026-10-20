@@ -20,8 +20,13 @@
  * - `providerRequest` (was `beforeRequest`) puts the cached array back on each
  *   assistant message whose tool calls it was recorded for.
  *
- * Active when the bare model name contains `gemini` or `google/`, today's rule.
- * The cache is keyed per route (`<provider>\0<modelId>`): the middleware was
+ * Selection follows the middleware's last rule (claudish 0d40e396). With a
+ * catalog connection it is chosen from data: a Gemini-API wire, or a Google
+ * model behind a gateway (OpenRouter carries the signatures in
+ * `reasoning_details`); the model name, possibly an opaque gateway id, is not
+ * asked again (`selectByUpstream`). Without a connection (custom endpoints,
+ * dynamic subscriptions) the bare model name must contain `gemini` or `google/`
+ * (`models`). The cache is keyed per route (`<provider>\0<modelId>`): the middleware was
  * constructed once per handler, i.e. per served model, and that scope is kept.
  * Each per-route cache stays unbounded, as before.
  *
@@ -83,6 +88,7 @@ export function createGeminiThoughtSignatureHook(): BuiltinHook {
       "Sends Gemini's reasoning_details back with the assistant tool calls they were produced for",
     order: "pre",
     models: ["*gemini*", "*google/*"],
+    selectByUpstream: (upstream) => upstream.wireApi === "gemini" || upstream.vendor === "google",
     routes: "all",
     defaultSeverity: "fix",
     statsName: GEMINI_THOUGHT_SIGNATURE_STATS_NAME,
