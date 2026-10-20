@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.2.2] - 2026-10-20
+
+### Bug Fixes
+
+- show the signer of a live muse@ request over a sibling rejection *(probe)* ([`2735ac1`](https://github.com/MadAppGang/claudish/commit/2735ac1f4e0c1bf25e5976e48b38639c050202e2))
+- set the config TUI's Keychain role to never in an MCP session *(mcp)* ([`bbd4c40`](https://github.com/MadAppGang/claudish/commit/bbd4c40ab3af0f2b6db3be421745e5a06a7cecdb))
+- keep wrapped BREAKING CHANGE footer lines in the changelog *(release)* ([`33822ae`](https://github.com/MadAppGang/claudish/commit/33822aef5b9eae0d3b8d1d0b33bf17472c350eb2))
+
+### Documentation
+
+- record why deepseek-v4-pro answers wrong on Zen Go *(reports)* ([`a7e1770`](https://github.com/MadAppGang/claudish/commit/a7e17707c8159376a365400a88800c68975ce441))
+- record the re-run of the 8 recommended-model Bench rows *(reports)* ([`110c667`](https://github.com/MadAppGang/claudish/commit/110c667e4fda66e4eb14eb12691405fd4369541c))
+- update CHANGELOG.md for v12.2.1([`1eec9a8`](https://github.com/MadAppGang/claudish/commit/1eec9a8e9f87fa2faf2db9b305a557df5d7069a3))
+
+### Other Changes
+
+- v12.2.2 *(release)* ([`9234732`](https://github.com/MadAppGang/claudish/commit/9234732e251d1bc255b969db161e4a8e5b2760e7))
+- v12.2.1 *(release)* ([`fae5141`](https://github.com/MadAppGang/claudish/commit/fae514124649537123c047069312ad1139d6a1b8))
+
 ## [12.2.1] - 2026-10-20
 
 ### Bug Fixes
@@ -123,7 +142,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- meta@<model> no longer routes to OllamaCloud. Use *(ollamacloud)* ([`2724916`](https://github.com/MadAppGang/claudish/commit/2724916dfc3ca0dec5bf4e41c8c2c319ac493de2))
+- meta@<model> no longer routes to OllamaCloud. Use oc@<model> or llama@<model> for OllamaCloud. *(ollamacloud)* ([`2724916`](https://github.com/MadAppGang/claudish/commit/2724916dfc3ca0dec5bf4e41c8c2c319ac493de2))
 
 ### Bug Fixes
 
@@ -246,7 +265,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- a bare `claudish team run` no longer opens the grid; *(team)* ([`3a35680`](https://github.com/MadAppGang/claudish/commit/3a356804b3a777d8a48249e60fbfdae4e4111ce9))
+- a bare `claudish team run` no longer opens the grid; pass --grid for it. *(team)* ([`3a35680`](https://github.com/MadAppGang/claudish/commit/3a356804b3a777d8a48249e60fbfdae4e4111ce9))
 
 ### Bug Fixes
 
@@ -287,8 +306,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- hosts started with `--channels` no longer receive *(mcp)* ([`753a3c3`](https://github.com/MadAppGang/claudish/commit/753a3c3e87ba611afd7609394a4f58a69bf98ff9))
-- CLAUDISH_MCP_TOOLS=channel now selects all tools. Set *(mcp)* ([`46ad7b7`](https://github.com/MadAppGang/claudish/commit/46ad7b787c27ca5d969e8217b614d326ecb772b3))
+- hosts started with `--channels` no longer receive <channel source="claudish"> blocks. Poll list_sessions for a session's state and call get_output once it is COMPLETED. *(mcp)* ([`753a3c3`](https://github.com/MadAppGang/claudish/commit/753a3c3e87ba611afd7609394a4f58a69bf98ff9))
+- CLAUDISH_MCP_TOOLS=channel now selects all tools. Set CLAUDISH_MCP_TOOLS=session for the seven session tools alone. *(mcp)* ([`46ad7b7`](https://github.com/MadAppGang/claudish/commit/46ad7b787c27ca5d969e8217b614d326ecb772b3))
 
 ### Bug Fixes
 
@@ -377,8 +396,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- a request without a catalog connection or a declared *(routing)* ([`10d9516`](https://github.com/MadAppGang/claudish/commit/10d95160b26607dbf3101296ea47c2b0b79bfd54))
-- claudish no longer sends `reasoning_effort` or picks a *(routing)* ([`0d40e39`](https://github.com/MadAppGang/claudish/commit/0d40e3961415e964df2581f076863200e220db60))
+- a request without a catalog connection or a declared `wire` no longer gets reasoning parameters from the model name; declare them in the endpoint's `wire` block or pass --model-params. *(routing)* ([`10d9516`](https://github.com/MadAppGang/claudish/commit/10d95160b26607dbf3101296ea47c2b0b79bfd54))
+- claudish no longer sends `reasoning_effort` or picks a token field by model name on a custom endpoint; use --model-params. *(routing)* ([`0d40e39`](https://github.com/MadAppGang/claudish/commit/0d40e3961415e964df2581f076863200e220db60))
 
 ### Bug Fixes
 
@@ -456,8 +475,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- create_session, send_input, cancel_session, *(mcp)* ([`352e1ee`](https://github.com/MadAppGang/claudish/commit/352e1ee15350e3784675df84a3997f9175e02c1f))
-- MCP `team` and CLI `claudish team` / `--team --mode *(mcp)* ([`7a22c84`](https://github.com/MadAppGang/claudish/commit/7a22c8447009513c98f2547a8251cca47b6b5c8e))
+- create_session, send_input, cancel_session, list_sessions and get_diagnostics answers changed shape: the SessionInfo `status` key is removed (use `state`, or `event` in get_diagnostics); `finishing` is no longer emitted. CLAUDISH_TEAM_CAPTURE is removed. claude_flags that only work in print mode (--max-turns, --max-budget-usd, --fallback-model, --json-schema, --permission-prompt-tool) and positional text are refused. MCP create_session and team, and CLI team/--team, need magmux >= 0.14.0, so they no longer run on Windows. *(mcp)* ([`352e1ee`](https://github.com/MadAppGang/claudish/commit/352e1ee15350e3784675df84a3997f9175e02c1f))
+- MCP `team` and CLI `claudish team` / `--team --mode json` need magmux >= 0.14.0, so they no longer work on Windows. CLAUDISH_TEAM_CAPTURE and TeamRunOptions.captureMode are removed. claude_flags that only work with --print (--max-turns, --max-budget-usd, --fallback-model, --json-schema, --permission-prompt-tool), the transport flags and any positional token are refused with invalid_args. status.json states are the closed nine-value set (PENDING is gone; a new slot is STARTING) and the failure reasons nonzero_exit and background_task_ceiling are gone. team(mode="cancel") answers {run_id, path, results} and an unknown run is a ContractError; team status/list/cancel/capture errors are ContractError JSON. *(mcp)* ([`7a22c84`](https://github.com/MadAppGang/claudish/commit/7a22c8447009513c98f2547a8251cca47b6b5c8e))
 
 ### Bug Fixes
 
@@ -1165,7 +1184,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- OPENCODE_API_KEY no longer authenticates `zgo@` / `zengo@`. *(providers)* ([`a01ffb9`](https://github.com/MadAppGang/claudish/commit/a01ffb9659b4ebb0b05c0d4daf1fa675aa86e396))
+- OPENCODE_API_KEY no longer authenticates `zgo@` / `zengo@`. A user reaching OpenCode Zen Go with only that key must now set OPENCODE_GO_API_KEY. The missing-credential hint names it explicitly and adds: *(providers)* ([`a01ffb9`](https://github.com/MadAppGang/claudish/commit/a01ffb9659b4ebb0b05c0d4daf1fa675aa86e396))
 
 ### Bug Fixes
 
@@ -3183,7 +3202,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- All adapter class names, interface names, and file paths have been([`14efceb`](https://github.com/MadAppGang/claudish/commit/14efceb0fdb819f07180bcef7540eab7d7f7fe05))
+- All adapter class names, interface names, and file paths have been renamed to reflect the three-layer architecture. Code importing old names will break.([`14efceb`](https://github.com/MadAppGang/claudish/commit/14efceb0fdb819f07180bcef7540eab7d7f7fe05))
 
 ### Documentation
 
@@ -3741,7 +3760,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### ⚠ BREAKING CHANGES
 
-- Permission prompts are now ENABLED by default.([`54293f2`](https://github.com/MadAppGang/claudish/commit/54293f20d0a433156221d5b2e845ffab2fc8e293))
+- Permission prompts are now ENABLED by default. This matches normal Claude Code behavior.([`54293f2`](https://github.com/MadAppGang/claudish/commit/54293f20d0a433156221d5b2e845ffab2fc8e293))
 
 ### Bug Fixes
 
