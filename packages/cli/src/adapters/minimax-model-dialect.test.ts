@@ -140,6 +140,81 @@ const M25_SIG = "7caa0d3cc2a449ac1cc68507504693f566245c7b5db3558f6041585e15a848f
 const ANTHROPIC_BLOB =
   "Eo8BCpoKBgcKBWRvbGxhEgxPcmljZSB0b2tlbjKgAZf2hkh6gH0S2kJDZm9vYmFyYmF6cXV1eDNjdmJubWw4cHl0enIxOXF3dHFvcnN0dXYzeHl6MjBzdHJpbmdfZm9vYmFy";
 
+// effort:<level> — the DOCUMENTED M3.1-Flash thinking-depth knob
+// (output_config.effort, low..max, defaults to MAX when omitted — Anthropic-
+// compat doc, 2026-10-19). budget_tokens is not in the doc; whether Flash
+// honors it is unmeasured (forced never rewrites a client-requested budget,
+// and production clients send 31999 — the 4000 cap reached 2 of 3 303
+// requests): effort is the first lever reaching the client-enabled requests,
+// Flash-gated, sharing `forced`'s filter semantics because Flash always thinks.
+describe("MiniMaxModelDialect — effort policy (M3.1-Flash thinking depth)", () => {
+  const flash = () => new MiniMaxModelDialect("MiniMax-M3.1-Flash");
+
+  it("effort:medium injects output_config.effort on the anthropic wire", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:medium";
+    const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
+    flash().prepareRequest(payload, { thinking: { type: "disabled" } }, ANTHROPIC);
+    expect(payload.output_config).toEqual({ effort: "medium" });
+  });
+
+  it("effort does NOT rewrite the client's thinking value — depth is orthogonal to the switch", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:low";
+    const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
+    flash().prepareRequest(payload, { thinking: { type: "disabled" } }, ANTHROPIC);
+    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(payload.output_config).toEqual({ effort: "low" });
+  });
+
+  it("effort applies even when the client already asked for thinking (unlike forced)", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:xhigh";
+    const payload: any = {
+      max_tokens: 32000,
+      thinking: { type: "enabled", budget_tokens: 4096 },
+    };
+    flash().prepareRequest(payload, { thinking: { type: "enabled", budget_tokens: 4096 } }, ANTHROPIC);
+    expect(payload.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+    expect(payload.output_config).toEqual({ effort: "xhigh" });
+  });
+
+  it("effort preserves other output_config fields the client may carry", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:medium";
+    const payload: any = { max_tokens: 32000, output_config: { service_tier: "standard" } };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.output_config).toEqual({ service_tier: "standard", effort: "medium" });
+  });
+
+  it("effort is IGNORED for non-Flash models (the field is M3.1-Flash-only in the doc)", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:medium";
+    const payload: any = { max_tokens: 32000 };
+    dialect().prepareRequest(payload, {}, ANTHROPIC); // MiniMax-M3
+    expect(payload.output_config).toBeUndefined();
+    expect(payload.thinking).toBeUndefined();
+  });
+
+  it("effort is inert on the OpenAI wire (same scope guard as forced)", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:medium";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, OPENAI);
+    expect(payload.output_config).toBeUndefined();
+  });
+
+  it("an invalid level (effort:ultra) falls back to passthrough — no output_config", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:ultra";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.output_config).toBeUndefined();
+  });
+
+  it("effort shares forced's filter semantics: shouldFilterThinking false, own-digest blocks preserved", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:medium";
+    expect(flash().shouldFilterThinking()).toBe(false);
+    expect(flash().preserveThinkingBlock({ type: "thinking", thinking: "…", signature: M3_SIG })).toBe(true);
+    expect(
+      flash().preserveThinkingBlock({ type: "thinking", thinking: "…", signature: ANTHROPIC_BLOB })
+    ).toBe(false);
+  });
+});
+
 describe("MiniMaxModelDialect — preserveThinkingBlock (#324 B1 discriminant)", () => {
   it("forced: M3's own digest signature (SHA-256 of the empty string) is preserved", () => {
     process.env.CLAUDISH_MINIMAX_THINKING = "forced";
