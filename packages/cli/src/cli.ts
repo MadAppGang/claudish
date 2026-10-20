@@ -44,7 +44,8 @@ import type {
   ProbeStepState,
 } from "./probe/probe-tui-app.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import { getModelMapping, loadConfig, readProOnUltracode } from "./profile-config.js";
+import { getRunModelMapping, loadConfig, readProOnUltracode } from "./profile-config.js";
+import { usableProfileModels } from "./project-models.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
@@ -1114,7 +1115,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelHaiku ||
     !config.modelSubagent
   ) {
-    const profileModels = getModelMapping(config.profile);
+    // A project profile's raw-URL tiers are dropped here (project-models.ts).
+    const profileModels = usableProfileModels(getRunModelMapping(config.profile));
 
     // Apply profile models only if not set by CLI flags
     if (!config.modelOpus && profileModels.opus) {

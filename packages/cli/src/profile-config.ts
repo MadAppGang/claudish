@@ -880,18 +880,33 @@ export function setDefaultProfile(name: string, scope: ProfileScope = "global"):
   saveConfigForScope(config, scope);
 }
 
+/** The model tiers a run takes from a profile, and where that profile came from. */
+export interface RunModelMapping {
+  models: ModelMapping;
+  /**
+   * The profile's name when it came from the project `.claudish.json`, which ships with
+   * the checkout; null for the user's own config. `project-models.ts` checks a project
+   * profile's tiers before a run uses them.
+   */
+  projectProfile: string | null;
+}
+
 /**
- * Get model mapping from a profile
- * Uses local-first resolution when no scope is given
+ * The model tiers of the profile a run uses: `profileName`, or the default profile,
+ * resolved local-first exactly as `getProfile(name)` / `getDefaultProfile()` resolve it,
+ * keeping the scope those discard.
  */
-export function getModelMapping(profileName?: string): ModelMapping {
-  const profile = profileName ? getProfile(profileName) : getDefaultProfile();
-
-  if (!profile) {
-    return {};
+export function getRunModelMapping(profileName?: string): RunModelMapping {
+  const local = loadLocalConfig();
+  const name = profileName || local?.defaultProfile || undefined;
+  if (name !== undefined) {
+    const fromLocal = local?.profiles[name];
+    if (fromLocal) return { models: fromLocal.models ?? {}, projectProfile: name };
+    const fromGlobal = loadConfig().profiles[name];
+    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null };
+    if (profileName) return { models: {}, projectProfile: null };
   }
-
-  return profile.models;
+  return { models: getDefaultProfile("global").models, projectProfile: null };
 }
 
 /**
