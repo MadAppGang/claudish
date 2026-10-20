@@ -792,14 +792,70 @@ describe("with the process table unavailable (a sandbox refuses ps): every pane 
     expect(livePaneCount(t.sockRoot)).toBe(1);
     expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(1);
   });
+});
 
-  test("a record written with no ownerStart (its owner could not read ps) counts its live owner", () => {
+describe("owner identity: one check for the pane limit, the record sweep and the socket sweep", () => {
+  const selfId = (start36: string) => `c${process.pid}-${start36}-towner-abcdef`;
+
+  test("no ownerStart: the start time the pane id embeds must match the live pid's", () => {
     const table = requireProcessTable();
-    expect(ownerAlive({ ownerPid: process.pid, ownerStart: "" }, table)).toBe(true);
-    expect(ownerAlive({ ownerPid: deadPid(), ownerStart: "" }, table)).toBe(false);
-    // a recorded start time still tells a reused pid apart
+    const owner = { ownerPid: process.pid, ownerStart: "" };
+    expect(ownerAlive({ ...owner, paneId: selfId(OWNER_START36) }, table)).toBe(true);
+    // the same pid now running a process that started an hour later: a reused pid
+    const anHourEarlier = (Number.parseInt(OWNER_START36, 36) - 3_600_000).toString(36);
+    expect(ownerAlive({ ...owner, paneId: selfId(anHourEarlier) }, table)).toBe(false);
+    const gone = deadPid();
     expect(
-      ownerAlive({ ownerPid: process.pid, ownerStart: "Thu Jan 1 00:00:00 1970" }, table)
+      ownerAlive(
+        { ownerPid: gone, ownerStart: "", paneId: `c${gone}-${OWNER_START36}-towner-abcdef` },
+        table
+      )
     ).toBe(false);
   });
+
+  test("a recorded ownerStart still decides by lstart", () => {
+    const table = requireProcessTable();
+    const paneId = selfId(OWNER_START36);
+    expect(
+      ownerAlive({ paneId, ownerPid: process.pid, ownerStart: ownerStartOfSelf() }, table)
+    ).toBe(true);
+    expect(
+      ownerAlive({ paneId, ownerPid: process.pid, ownerStart: "Thu Jan 1 00:00:00 1970" }, table)
+    ).toBe(false);
+  });
+
+  test("the id start check does not depend on the process timezone", () => {
+    const dir = import.meta.dir;
+    const script = [
+      `import { ownerAlive } from ${JSON.stringify(join(dir, "pane-registry.ts"))};`,
+      `import { OWNER_START36 } from ${JSON.stringify(join(dir, "pane-launch.ts"))};`,
+      `import { readProcessTable } from ${JSON.stringify(join(dir, "process-identity.ts"))};`,
+      "const paneId = `c${process.pid}-${OWNER_START36}-ttz-abcdef`;",
+      'console.log(ownerAlive({ paneId, ownerPid: process.pid, ownerStart: "" }, readProcessTable() ?? []));',
+    ].join("\n");
+    // at least two of these differ from any system zone
+    for (const tz of ["UTC", "Pacific/Kiritimati", "America/Adak"]) {
+      const r = Bun.spawnSync([process.execPath, "-e", script], {
+        env: { ...process.env, TZ: tz },
+      });
+      expect(`${tz}: ${r.stdout.toString().trim()}`).toBe(`${tz}: true`);
+    }
+  }, 30_000);
+
+  test("the recordless-socket sweep keeps a live owner's socket under a non-system TZ", async () => {
+    // bun test runs with TZ=UTC; the socket's id embeds this process's own start
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const sock = join(root, `magmux-${selfId(OWNER_START36)}.sock`);
+    const server = createServer((c) => c.end());
+    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    try {
+      const r = await sweepOrphanPanes(root);
+      expect(r.cleaned).toEqual([]);
+      expect(r.kept).toEqual([]);
+      expect(existsSync(sock)).toBe(true);
+    } finally {
+      server.close();
+    }
+  }, 20_000);
 });

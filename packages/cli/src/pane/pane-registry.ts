@@ -49,6 +49,7 @@ import {
   readProcessTableAsync,
   recordPathOf,
   sameSnapshot,
+  startedAt,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 
@@ -89,16 +90,22 @@ export function ownerStartOfSelf(): string {
   return row?.lstart ?? "";
 }
 
+/** Who owns a pane: the record's fields, or the pid a recordless socket's pane id embeds. */
+export type PaneOwner = Pick<PaneRecord, "paneId" | "ownerPid" | "ownerStart">;
+
 /**
- * The record's owner is alive: same pid, same start time. A record written while its owner
- * could not read the table has no `ownerStart`, so its live pid alone counts as the owner.
+ * THE owner-liveness check, for the pane limit, the record sweep and the recordless-socket
+ * sweep: the owner's pid is alive and is the same process. A recorded `ownerStart` must
+ * equal the row's `lstart`. Without one (written while the owner could not read the
+ * table, or a recordless socket) the start time the pane id embeds must match the row's
+ * timezone-free `startMs`; an id that embeds none is not ours to judge and counts alive.
  */
-export function ownerAlive(
-  rec: Pick<PaneRecord, "ownerPid" | "ownerStart">,
-  table: PsRow[]
-): boolean {
-  const row = table.find((r) => r.pid === rec.ownerPid);
-  return !!row && (!rec.ownerStart || row.lstart === rec.ownerStart);
+export function ownerAlive(owner: PaneOwner, table: PsRow[]): boolean {
+  const row = table.find((r) => r.pid === owner.ownerPid);
+  if (!row) return false;
+  if (owner.ownerStart) return row.lstart === owner.ownerStart;
+  const minted = ownerOfPaneId(owner.paneId);
+  return !minted || startedAt(row, minted.startMs);
 }
 
 /* ───────────────────────────── records ───────────────────────────── */
@@ -513,13 +520,10 @@ export function ownerOfPaneId(id: string): { pid: number; startMs: number } | nu
   return { pid: Number(m[1]), startMs: Number.parseInt(m[2] ?? "", 36) };
 }
 
-function ownerOfIdAlive(id: string, table: PsRow[]): boolean {
+/** The owner a recordless socket's pane id names; null when the id embeds none. */
+function ownerOfSocketId(id: string): PaneOwner | null {
   const o = ownerOfPaneId(id);
-  if (!o) return true; // not ours to judge
-  const row = table.find((r) => r.pid === o.pid);
-  if (!row) return false;
-  const started = Date.parse(row.lstart);
-  return !Number.isFinite(started) || Math.abs(started - o.startMs) < 2000;
+  return o ? { paneId: id, ownerPid: o.pid, ownerStart: "" } : null;
 }
 
 async function sweepRecordlessSocket(root: string, name: string, out: SweepResult): Promise<void> {
@@ -529,7 +533,8 @@ async function sweepRecordlessSocket(root: string, name: string, out: SweepResul
     out.kept.push(id); // the owner may be alive and the socket a live magmux's
     return;
   }
-  if (ownerOfIdAlive(id, table)) return;
+  const owner = ownerOfSocketId(id);
+  if (!owner || ownerAlive(owner, table)) return; // no owner in the id: not ours to judge
   const sockPath = join(root, name);
   let client: MagmuxClient | null = null;
   try {

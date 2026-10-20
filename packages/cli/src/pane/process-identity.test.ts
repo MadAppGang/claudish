@@ -16,6 +16,7 @@ import {
   type PsRow,
   WATCHER_FUNCTIONS,
   WATCHER_SCRIPT,
+  etimeSeconds,
   formatGroupFile,
   groupCheck,
   isLaunchDirPath,
@@ -30,6 +31,7 @@ import {
   readProcessTableAsync,
   sameSnapshot,
   setPsSpawnForTest,
+  startedAt,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 import { FIXTURES } from "./test-helpers/fixtures.js";
@@ -334,6 +336,34 @@ describe("the generated watcher shell agrees with the TS predicates on the same 
       expect(sh).toBe(isLaunchDirPath(root, p) ? "Y" : "N");
     }
     expect(isLaunchDirPath(root, good)).toBe(true);
+  });
+});
+
+describe("start times from etime (timezone-free)", () => {
+  test("etime forms: mm:ss, hh:mm:ss, dd-hh:mm:ss", () => {
+    expect(etimeSeconds("05:07")).toBe(307);
+    expect(etimeSeconds("1:02:03")).toBe(3723);
+    expect(etimeSeconds("01-02:32:10")).toBe(95_530);
+  });
+
+  test("a row with etime gets startMs = spawn time - etime; a row without it parses as before", () => {
+    const at = Date.UTC(2026, 9, 20, 12, 0, 0);
+    const [row] = parsePsTable(
+      "  796     1   796 01-02:30:47 Mon Oct 19 20:34:11 2026     /System/Finder\n",
+      at
+    );
+    expect(row).toMatchObject({ pid: 796, pgid: 796, lstart: "Mon Oct 19 20:34:11 2026" });
+    expect(row?.command).toBe("/System/Finder");
+    expect(row?.startMs).toBe(at - 95_447_000);
+    expect(startedAt(row as PsRow, at - 95_447_000 + 1500)).toBe(true);
+    expect(startedAt(row as PsRow, at - 95_447_000 + 2500)).toBe(false);
+    expect(parsePsTable(fx.ps).every((r) => r.startMs === undefined)).toBe(true);
+  });
+
+  test("a real read carries this process's start within the tolerance", () => {
+    const self = readProcessTable()?.find((r) => r.pid === process.pid) as PsRow;
+    const started = Date.now() - process.uptime() * 1000;
+    expect(Math.abs((self.startMs as number) - started)).toBeLessThan(2000);
   });
 });
 

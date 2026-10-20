@@ -15,8 +15,9 @@
  *     not reused while any member lives, so a passing check proves the group is the
  *     pane's — even when only an unidentifiable grandchild is left.
  *
- * Every process-table read is ONE `LC_ALL=C ps -ax -ww -o pid=,ppid=,pgid=,lstart=,command=`
- * (portable across macOS and Linux; `ps -g` means different things on the two).
+ * Every process-table read is ONE
+ * `LC_ALL=C ps -ax -ww -o pid=,ppid=,pgid=,etime=,lstart=,command=` (portable across macOS
+ * and Linux; `ps -g` means different things on the two).
  *
  * Paths are validated before any `rm` (R3-M2): a control or turn directory is a DIRECT
  * child of the socket root named `launch-` + six `[A-Za-z0-9]`; a socket is exactly
@@ -31,8 +32,17 @@ export interface PsRow {
   pid: number;
   ppid: number;
   pgid: number;
-  /** `lstart`, whitespace collapsed: `Mon Oct 6 12:34:56 2026` */
+  /**
+   * `lstart`, whitespace collapsed: `Mon Oct 6 12:34:56 2026`. Wall-clock time in the
+   * SYSTEM zone with no offset: an identity string, compared only with another `lstart`.
+   */
   lstart: string;
+  /**
+   * Start time in epoch ms: when `ps` was spawned minus its `etime` (whole seconds), so
+   * within about 1 s and independent of every timezone. Absent when the read carried no
+   * `etime` column.
+   */
+  startMs?: number;
   command: string;
 }
 
@@ -62,28 +72,55 @@ export interface PaneIdentity {
   ctlDir: string;
 }
 
-const PS_ARGS = ["-ax", "-ww", "-o", "pid=,ppid=,pgid=,lstart=,command="];
-const PS_ROW = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s?(.*)$/;
+const PS_ARGS = ["-ax", "-ww", "-o", "pid=,ppid=,pgid=,etime=,lstart=,command="];
+// `etime` is `[[dd-]hh:]mm:ss`; it is optional so a recorded table without it still parses
+const PS_ROW =
+  /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(?:((?:\d+-)?(?:\d+:)?\d+:\d+)\s+)?(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s?(.*)$/;
 
 export function collapse(s: string): string {
   return s.trim().replace(/\s+/g, " ");
 }
 
-/** Parse `ps -o pid=,ppid=,pgid=,lstart=,command=` output. Unparseable rows are dropped. */
-export function parsePsTable(text: string): PsRow[] {
+/** `etime` (`[[dd-]hh:]mm:ss`) in seconds. */
+export function etimeSeconds(etime: string): number {
+  const [days, clock] = etime.includes("-") ? etime.split("-") : ["0", etime];
+  const parts = (clock ?? "").split(":").map(Number);
+  while (parts.length < 3) parts.unshift(0);
+  const [h = 0, m = 0, s = 0] = parts;
+  return Number(days) * 86_400 + h * 3600 + m * 60 + s;
+}
+
+/**
+ * Parse `ps -o pid=,ppid=,pgid=[,etime=],lstart=,command=` output. Unparseable rows are
+ * dropped. `spawnedAtMs` (when that `ps` was spawned) turns each `etime` into `startMs`.
+ */
+export function parsePsTable(text: string, spawnedAtMs?: number): PsRow[] {
   const rows: PsRow[] = [];
   for (const line of text.split("\n")) {
     const m = line.match(PS_ROW);
     if (!m) continue;
-    rows.push({
+    const row: PsRow = {
       pid: Number(m[1]),
       ppid: Number(m[2]),
       pgid: Number(m[3]),
-      lstart: collapse(m[4] ?? ""),
-      command: (m[5] ?? "").trim(),
-    });
+      lstart: collapse(m[5] ?? ""),
+      command: (m[6] ?? "").trim(),
+    };
+    if (m[4] && spawnedAtMs !== undefined) row.startMs = spawnedAtMs - etimeSeconds(m[4]) * 1000;
+    rows.push(row);
   }
   return rows;
+}
+
+/** How far a `startMs` may sit from a start time measured in-process (`etime` is whole seconds). */
+const START_TOLERANCE_MS = 2000;
+
+/**
+ * `row` started at `startMs` (epoch ms, measured by the process itself), within
+ * `START_TOLERANCE_MS`. True when the row has no `startMs`: nothing to contradict it.
+ */
+export function startedAt(row: PsRow, startMs: number): boolean {
+  return row.startMs === undefined || Math.abs(row.startMs - startMs) < START_TOLERANCE_MS;
 }
 
 /**
@@ -139,14 +176,15 @@ export function processTableTrusted(rows: PsRow[]): boolean {
  * or no trusted table (`processTableTrusted`). Both readers end here, so they agree on
  * what "unavailable" is.
  */
-function tableOf(stdout: string | null): ProcessTable {
+function tableOf(stdout: string | null, spawnedAtMs: number): ProcessTable {
   if (stdout === null) return null;
-  const rows = parsePsTable(stdout);
+  const rows = parsePsTable(stdout, spawnedAtMs);
   return processTableTrusted(rows) ? rows : null;
 }
 
 /** The whole process table, synchronously (exit hooks, the sweep); null when unavailable. */
 export function readProcessTable(): ProcessTable {
+  const spawnedAt = Date.now();
   let stdout: string | null;
   try {
     stdout = psSpawn.execFileSync("ps", PS_ARGS, {
@@ -156,7 +194,7 @@ export function readProcessTable(): ProcessTable {
   } catch {
     stdout = null;
   }
-  return tableOf(stdout);
+  return tableOf(stdout, spawnedAt);
 }
 
 /**
@@ -166,12 +204,13 @@ export function readProcessTable(): ProcessTable {
  */
 export function readProcessTableAsync(): Promise<ProcessTable> {
   return new Promise((resolve) => {
+    const spawnedAt = Date.now();
     try {
       psSpawn.execFile("ps", PS_ARGS, PS_OPTIONS, (err, stdout) =>
-        resolve(tableOf(err ? null : String(stdout)))
+        resolve(tableOf(err ? null : String(stdout), spawnedAt))
       );
     } catch {
-      resolve(tableOf(null));
+      resolve(tableOf(null, spawnedAt));
     }
   });
 }
