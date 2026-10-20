@@ -11,7 +11,8 @@
  *   3. the shutdown hooks below (signals, stdin EOF), a parallel ≤ 3 s reap.
  *
  * Every signal to a process that is not this process's own unreaped child is preceded
- * by an identity check from `process-identity.ts`.
+ * by an identity check from `process-identity.ts`. A process table that does not list
+ * this process (`processTableTrusted`) decides nothing: the sweep keeps the pane.
  */
 
 import {
@@ -44,6 +45,7 @@ import {
   liveEscaped,
   mergeSnapshots,
   parseGroupFile,
+  processTableTrusted,
   readProcessTable,
   readProcessTableAsync,
   recordPathOf,
@@ -80,12 +82,12 @@ export class PaneLimitError extends Error {
 
 let ownStart: string | null = null;
 
-/** This process's `lstart` (one `ps` call, cached). */
+/** This process's `lstart` (one `ps` call, cached only when it found this process). */
 export function ownerStartOfSelf(): string {
   if (ownStart) return ownStart;
   const row = readProcessTable().find((r) => r.pid === process.pid);
-  ownStart = row?.lstart ?? "";
-  return ownStart;
+  if (row) ownStart = row.lstart;
+  return row?.lstart ?? "";
 }
 
 export function ownerAlive(
@@ -465,6 +467,10 @@ async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets
 
 async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Promise<void> {
   const table = readProcessTable();
+  if (!processTableTrusted(table)) {
+    out.kept.push(rec.paneId); // ps failed: absence is unknown, never dead
+    return;
+  }
   if (ownerAlive(rec, table)) return;
   const watcher = rec.watcherPid ? table.find((r) => r.pid === rec.watcherPid) : undefined;
   if (watcher && isPaneWatcherCommand(watcher.command, rec.paneId)) {
@@ -475,6 +481,10 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   const anyVerified = (t0.group && groupCheck(table, t0.group)) || t0.mag !== null;
   if (anyVerified) await killVerified(rec, root);
   const after = readProcessTable();
+  if (!processTableTrusted(after)) {
+    out.kept.push(rec.paneId);
+    return;
+  }
   const stillAlive =
     (t0.group && groupCheck(after, t0.group)) ||
     liveEscaped(after, t0.group).length > 0 ||
@@ -508,6 +518,10 @@ function ownerOfIdAlive(id: string, table: PsRow[]): boolean {
 async function sweepRecordlessSocket(root: string, name: string, out: SweepResult): Promise<void> {
   const id = name.slice("magmux-".length, -".sock".length);
   const table = readProcessTable();
+  if (!processTableTrusted(table)) {
+    out.kept.push(id); // ps failed: a live magmux socket must not be unlinked
+    return;
+  }
   if (ownerOfIdAlive(id, table)) return;
   const sockPath = join(root, name);
   let client: MagmuxClient | null = null;
