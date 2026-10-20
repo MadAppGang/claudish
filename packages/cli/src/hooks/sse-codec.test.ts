@@ -74,6 +74,45 @@ describe("SseSplitter", () => {
   });
 });
 
+describe("SseSplitter: review fixes", () => {
+  const event = (i: number) =>
+    `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"chunk ${i} of the answer, padded to a typical delta size ......"}}\n\n`;
+
+  it("one 8 MB chunk of 40,000 events splits in linear time", () => {
+    const whole = Array.from({ length: 40_000 }, (_, i) => event(i)).join("");
+    expect(whole.length).toBeGreaterThan(5_000_000);
+    const t0 = performance.now();
+    const events = new SseSplitter().push(bytes(whole));
+    const ms = performance.now() - t0;
+    expect(events.length).toBe(40_000);
+    expect(events.map((e) => e.raw).join("")).toBe(whole);
+    // quadratic: ~5,500 ms measured on Bun 1.4.0; linear: tens of ms
+    expect(ms).toBeLessThan(1_000);
+  });
+
+  it("terminators split across pushes, in every byte position, CRLF and LF mixed", () => {
+    const wire = "event: a\r\ndata: 1\r\n\r\nevent: b\ndata: 2\n\ndata: 3\r\n\ndata: 4\n\r\n\n";
+    const expected = new SseSplitter().push(wire).map((e) => e.raw);
+    for (let cut = 0; cut <= wire.length; cut++) {
+      for (let cut2 = cut; cut2 <= wire.length; cut2 += 3) {
+        const s = new SseSplitter();
+        const got = [
+          ...s.push(wire.slice(0, cut)),
+          ...s.push(wire.slice(cut, cut2)),
+          ...s.push(wire.slice(cut2)),
+        ].map((e) => e.raw);
+        expect(got).toEqual(expected);
+      }
+    }
+    expect(expected).toEqual([
+      "event: a\r\ndata: 1\r\n\r\n",
+      "event: b\ndata: 2\n\n",
+      "data: 3\r\n\n",
+      "data: 4\n\r\n\n",
+    ]);
+  });
+});
+
 describe("parseSseFields", () => {
   it("joins data lines, strips one leading space, ignores comments", () => {
     expect(parseSseFields(": comment\nevent:x\ndata: a\ndata:  b\n\n")).toEqual({
