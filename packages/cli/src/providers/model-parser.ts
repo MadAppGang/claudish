@@ -172,6 +172,22 @@ export function parseModelChain(modelSpec: string): string[] {
 const MODE_MARKER_SEGMENT = /^(pro|standard)(#[a-z]+)?(:\d+)?$/i;
 
 /**
+ * True when a model spec routes to the raw-URL `custom-url` provider: some element of
+ * its chain (`a+b+c`) resolves to `custom-url` (`https://host/…`, `custom-url@https://…`),
+ * so claudish would connect to the host in the spec. Parsed with `parseModelSpec` itself,
+ * not a prefix test, so it stays faithful to what routing does.
+ *
+ * The ONE check for a model chosen by a checkout rather than by the user: a working
+ * directory's `.env` (`dotenv-allowlist.ts`) and a project `.claudish.json` profile
+ * (`project-models.ts`) both refuse such a spec.
+ */
+export function modelSpecNamesRawUrl(modelSpec: string): boolean {
+  return parseModelChain(modelSpec).some(
+    (element) => parseModelSpec(element.trim()).provider === "custom-url"
+  );
+}
+
+/**
  * Parse a model specification string
  *
  * Supports both new and legacy syntax:
@@ -213,6 +229,14 @@ function parseModelSpecWithoutMarkers(modelSpec: string): ParsedModel {
 
   // Check for URL-style model (http:// or https://)
   if (modelSpec.startsWith("http://") || modelSpec.startsWith("https://")) {
+    // `custom-url` is a raw-URL provider: claudish connects to the host in the spec. The
+    // credential authority has no notion of where a model spec came from, so it cannot
+    // deny a repo-chosen host on its own. The guarantee that a spec reaching here was not
+    // chosen by an unreviewed checkout is enforced at the two places a checkout can name
+    // a model, both through `modelSpecNamesRawUrl`: the working directory's `.env`
+    // (`dotenv-allowlist.ts` refuses a `CLAUDISH_MODEL`/`CLAUDISH_MODEL_*` that resolves to
+    // `custom-url`) and a project `.claudish.json` profile (`project-models.ts` drops such
+    // a tier). A custom URL model must come from the shell, a flag or the user's own config.
     return {
       provider: "custom-url",
       model: modelSpec,
