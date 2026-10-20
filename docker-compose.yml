@@ -1,8 +1,27 @@
+# Bound the container's stdout/stderr log files. Whether the default is
+# unbounded depends on each host's daemon config (json-file default: UNBOUNDED;
+# `local`: already rotated+compressed) — read it per machine with
+#   docker inspect <c> --format '{{.HostConfig.LogConfig.Type}}'
+# Options WITHOUT a driver line keep each machine's own driver and bound it:
+# json-file gets the cap directly, `local` re-bounds to the same ceiling.
+# On Docker Desktop (WSL2) the files live inside docker_data.vhdx, which never
+# shrinks, and stay INVISIBLE to `docker system df` (not part of the writable
+# layer it counts) — so an unbounded default has no operator-visible signal.
+# 50m x 4 caps any episode at 200 Mo per container while keeping weeks of
+# diagnostic history (busiest fleet sidecar measured ~8 Mo/day). This bounds
+# DISK, not content: debug logging stays verbose by doctrine (suppression
+# happens at registration level, never streaming-data level).
+x-logging: &default-logging
+  options:
+    max-size: "50m"
+    max-file: "4"
+
 services:
   claudish-proxy:
     build: .
     container_name: ${CLAUDISH_CONTAINER_NAME:-claudish-proxy}
     restart: unless-stopped
+    logging: *default-logging
 
     # How long Docker waits after SIGTERM before SIGKILL.
     #
