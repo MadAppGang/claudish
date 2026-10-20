@@ -60,14 +60,16 @@ BeforeAll {
         [IO.File]::WriteAllText((Join-Path $Sandbox $Name), $Content, (New-Object System.Text.UTF8Encoding($false)))
     }
 
-    function New-ScanSession([string]$Sid, [int]$Sol, [int]$Sonnet, [int]$Total, [string[]]$ExtraFlags = @()) {
+    function New-ScanSession([string]$Sid, [int]$Sol, [int]$Sonnet, [int]$Total, [string[]]$ExtraFlags = @(), [string]$SonnetId = 'claude-sonnet-5') {
         $flags = @('OPENAI-SHAPED') + $ExtraFlags
+        $models = [ordered]@{ 'gpt-6-sol' = $Sol }
+        $models[$SonnetId] = $Sonnet
         [ordered]@{
             session_id = $Sid
             machine    = $env:COMPUTERNAME.ToLower()
             requests   = $Total
             last       = (Get-Date).ToUniversalTime().ToString('o')
-            models     = [ordered]@{ 'gpt-6-sol' = $Sol; 'claude-sonnet-5' = $Sonnet }
+            models     = $models
             flags      = $flags
         }
     }
@@ -335,6 +337,31 @@ Describe 'session-watch scan-skip reachable (CR N2)' {
         $kinds = @(Get-Journal $sb | ForEach-Object { $_.kind })
         $kinds | Should -Contain 'scan-skip'
         $kinds | Should -Not -Contain 'error'      # the pre-N2 shape: default installer made scan-skip unreachable
+    }
+}
+
+Describe 'session-watch sonnet count keys on the role, not the claude- prefix (#555)' {
+    # Since #555 the fleet's settings name bare roles: a session's requested ids
+    # read `sonnet`, not `claude-sonnet-*`. Both spellings must land in the same
+    # verdict. Consent is absent (detector only), identity is established.
+    # Mutation: restore the `-like 'claude-sonnet*'` test => the bare case journals
+    # 'sol-minority' instead and goes red.
+    It '<SonnetId> x60 of 100 -> sonnet-majority, zero kills' -ForEach @(
+        @{ SonnetId = 'sonnet'; Sid = 'eeee5551-0000-0000-0000-000000000001' }
+        @{ SonnetId = 'claude-sonnet-5-5'; Sid = 'eeee5552-0000-0000-0000-000000000002' }
+    ) {
+        $sb = New-WatchSandbox; $script:Sandboxes += $sb
+        Initialize-BenignFixtures $sb
+        Write-SandboxFile $sb 'scan-output.json' (ScanJson @(New-ScanSession $Sid 40 60 100 -SonnetId $SonnetId))
+        $pr = Join-Path $sb 'projects'
+        New-ProjectTranscript $pr 'd--dev-some-lane' $Sid.Substring(0, 8)
+
+        $r = Invoke-Watch $sb -ProjectsRoot $pr
+        $r.Code | Should -Be 0 -Because "child must exit clean; child output was: [$($r.Out)]"
+        $kinds = @(Get-Journal $sb | ForEach-Object { $_.kind })
+        $kinds | Should -Contain 'sonnet-majority'
+        $kinds | Should -Not -Contain 'sol-minority'
+        Get-StopCount $sb | Should -Be 0
     }
 }
 

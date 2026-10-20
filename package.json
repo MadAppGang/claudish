@@ -24,7 +24,7 @@
     "test:strict": "bun run packages/cli/src/test-support/strict-runner.ts",
     "test:scripts": "pwsh -NoProfile -Command \"Invoke-Pester ./scripts/tests -Output Detailed -CI\"",
     "test:scripts:win51": "powershell -NoProfile -Command \"Invoke-Pester ./scripts/tests -Output Detailed -CI\"",
-    "test:scripts:py": "python scripts/tests/test_lane_matrix_archives.py && python scripts/tests/test_qwen_guard.py && python scripts/tests/test_verify_machine_header.py && python scripts/tests/test_coursia_pr_issue_linkage.py && python scripts/tests/test_live_consumption.py && python scripts/tests/test_coursia_dispatch_form.py && python scripts/tests/test_coursia_picker_friction.py && python scripts/tests/test_minimax_chain_pairing.py && python scripts/tests/test_live_session_scan.py && python scripts/tests/test_swarm_signal.py",
+    "test:scripts:py": "python scripts/tests/test_lane_matrix_archives.py && python scripts/tests/test_qwen_guard.py && python scripts/tests/test_verify_machine_header.py && python scripts/tests/test_coursia_pr_issue_linkage.py && python scripts/tests/test_live_consumption.py && python scripts/tests/test_coursia_dispatch_form.py && python scripts/tests/test_coursia_picker_friction.py && python scripts/tests/test_minimax_chain_pairing.py && python scripts/tests/test_live_session_scan.py && python scripts/tests/test_swarm_signal.py && python scripts/tests/test_traffic_consumption_lanes.py",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules",
     "postinstall": "node scripts/postinstall.cjs"
   },

@@ -274,7 +274,10 @@ Write-Host ""
 # per-request pass over captures.
 Write-Host "--- Client-named Anthropic models (descriptive; attribution: native-consumption.py) ---" -ForegroundColor Yellow
 
-$anthropicReqs = $requests | Where-Object { $_ -match 'claude-opus|claude-fable|claude-sonnet' }
+# Keyed on the ROLE inside the model= token, like the hub's roleFromModelName:
+# since #555 clients name bare roles (`opus`, `sonnet`), which a `claude-` prefix
+# test silently stopped counting. haiku stays out (remapped, never Anthropic).
+$anthropicReqs = @($requests | Where-Object { $_ -match 'model=\S*(opus|fable|sonnet)' })
 if ($anthropicReqs.Count -eq 0) {
     Write-Host "  No client-named Anthropic-model traffic this window." -ForegroundColor Green
 } else {
@@ -286,7 +289,7 @@ if ($anthropicReqs.Count -eq 0) {
 
         # Sub-breakdown by model for this machine
         $modelBreakdown = ($anthropicReqs | Where-Object { $_ -match "machine=$($g.Name)" } |
-            Select-String -Pattern 'model=(claude-[a-z0-9.\-]+)' -AllMatches |
+            Select-String -Pattern 'model=(\S+)' -AllMatches |
             ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } |
             Group-Object | Sort-Object Count -Descending |
             ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '

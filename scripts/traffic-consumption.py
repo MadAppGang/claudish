@@ -62,6 +62,10 @@ LANES = [
     (re.compile(r"^deepseek", re.I), "ds@ PAYG"),
     (re.compile(r"^gpt-5\.6-sol|^codex", re.I), "cx@ Sol (OpenAI Pro)"),
     (re.compile(r"^claude-"), "native-anthropic"),
+    # #555: a bare role name as the SERVED model only happens on the native lane
+    # (every other lane serves its resolved target id); the native pin (#218)
+    # normally rewrites it to `claude-*`, this catches the unpinned case.
+    (re.compile(r"^(?:opus|fable|sonnet|haiku)$", re.I), "native-anthropic"),
 ]
 # Les lanes wire-openai ne rapportent aucun champ de cache (piege 3).
 NO_CACHE_LANES = {"gc@ GLM Coding", "ds@ PAYG"}

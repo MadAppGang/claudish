@@ -189,7 +189,10 @@ if ($data -and $data.sessions) {
         $total = [int]$s.requests
         $sonnet = 0
         foreach ($p in $s.models.PSObject.Properties) {
-            if ($p.Name -like 'claude-sonnet*') { $sonnet += [int]$p.Value }
+            # By role, like the hub's roleFromModelName (substring, any case): since
+            # #555 the fleet's settings name bare roles (`sonnet`), and a
+            # `claude-sonnet*` prefix test counted them as zero.
+            if ($p.Name -match 'sonnet') { $sonnet += [int]$p.Value }
         }
 
         if ($sonnet -gt ($total / 2)) {
