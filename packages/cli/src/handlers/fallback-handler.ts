@@ -49,11 +49,16 @@ export class FallbackHandler implements ModelHandler {
   async handle(c: Context, payload: any): Promise<Response> {
     const errors: Array<{ provider: string; status: number; message: string }> = [];
     const startIndex = this.lastSuccessIndex;
+    // Set by the first subscription candidate whose login is rejected. From
+    // then on only subscription candidates are tried, and this response is the
+    // answer if none of them serves.
+    let credentialStop: Response | undefined;
 
     for (let attempt = 0; attempt < this.candidates.length; attempt++) {
       const idx = (startIndex + attempt) % this.candidates.length;
       const { name, handler, provider } = this.candidates[idx];
       const isLast = attempt === this.candidates.length - 1;
+      if (credentialStop && !(provider && isSubscriptionProvider(provider))) continue;
 
       try {
         // If previous attempts failed, signal the winning handler to include fallback metadata
@@ -128,8 +133,16 @@ export class FallbackHandler implements ModelHandler {
         // Claude Code stopped instead of retrying the same hop, and the verdict
         // header was dropped. A terminal verdict keeps its exact message and
         // `upstream_status` the same way (`auth-failure.ts`).
+        //
+        // One exception, for a TERMINAL verdict on a subscription: the chain
+        // moves on to its remaining SUBSCRIPTION candidates, never a metered one
+        // (project owner, 2026-10-20). A bare `glm-5.3` whose Zen Go key expired
+        // is served by the Token Plan the user also holds, not stopped and not
+        // billed per token.
         const verdict = authVerdict(response.headers);
-        if (verdict) {
+        const subscriptionRejected =
+          verdict === "terminal" && !!provider && isSubscriptionProvider(provider);
+        if (verdict && !subscriptionRejected) {
           if (errors.length > 0) {
             logStderr(
               `[Fallback] ${name}: credential ${verdict === "terminal" ? "rejected" : "temporarily unavailable"} — stopping the chain here.`
@@ -140,6 +153,31 @@ export class FallbackHandler implements ModelHandler {
 
         // Clone before reading body so we can still return the original if needed
         const errorBody = await response.clone().text();
+
+        if (
+          subscriptionRejected ||
+          isSubscriptionCredentialRejection(response.status, errorBody, provider)
+        ) {
+          errors.push({ provider: name, status: response.status, message: errorBody });
+          if (!credentialStop) {
+            credentialStop = response;
+            logStderr(
+              `[Fallback] ${name}: subscription login rejected — trying the chain's other subscription providers only; metered providers are skipped.`
+            );
+          }
+          continue;
+        }
+
+        // A later subscription candidate that fails in any other way does not
+        // end the search either: the answer, if none serves, is the login
+        // failure that started it.
+        if (credentialStop) {
+          errors.push({ provider: name, status: response.status, message: errorBody });
+          logStderr(
+            `[Fallback] ${name} failed (HTTP ${response.status}), trying the next subscription provider...`
+          );
+          continue;
+        }
 
         // Non-retryable error (rate limit, server error, bad format) — stop trying
         if (!isRetryableError(response.status, errorBody, name, response.headers, provider)) {
@@ -179,6 +217,15 @@ export class FallbackHandler implements ModelHandler {
           logStderr(`[Fallback] ${name} error: ${err.message}, trying next provider...`);
         }
       }
+    }
+
+    // No subscription served after a login failure: the user is told to renew
+    // that login, with its own message and verdict, not shown a combined error.
+    if (credentialStop) {
+      logStderr(
+        `[Fallback] No subscription provider could serve ${payload.model || "the model"}; metered providers were skipped.`
+      );
+      return credentialStop;
     }
 
     // All providers failed
@@ -224,6 +271,37 @@ export class FallbackHandler implements ModelHandler {
       }
     }
   }
+}
+
+/**
+ * A subscription candidate's dead or rejected login, answered WITHOUT the
+ * verdict header. The header covers every 401 a ComposedHandler places; this
+ * covers a candidate that answers one without it, so the rule holds for every
+ * subscription provider and not only for the code paths that mint the header.
+ * Asked of the uid — a display name is never a subscription.
+ */
+export function isSubscriptionCredentialRejection(
+  status: number,
+  errorBody: string,
+  providerId?: string
+): boolean {
+  if (!providerId || !isSubscriptionProvider(providerId)) return false;
+  const recovered = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
+  // A credential rejection only: a 401 that says the MODEL is not carried
+  // (OpenCode Zen Go's "Model <id> is not supported") is a per-model miss and
+  // advances, as it always did (`isCredentialRejection`).
+  if ((status === 401 || recovered === 401) && isCredentialRejection(401, errorBody)) {
+    return true;
+  }
+  // A RAW 403 credential rejection counts too (measured: `403
+  // {"error":{"type":"invalid_api_key"}}` from a subscription hop advanced
+  // onto the metered `meta@`). Raw only: the upstream body still carries the
+  // provider's own `error.type`, so `isCredentialRejection` can tell Zen Go's
+  // `403 RegionError` (a model opt-in, which advances) from a dead login. A
+  // RECOVERED 403 cannot be told apart that way — claudish's remapped 400
+  // body says `invalid_request_error` — so it keeps advancing; a 403 the
+  // ComposedHandler placed already carries the terminal verdict header.
+  return status === 403 && isCredentialRejection(403, errorBody);
 }
 
 /**
@@ -306,32 +384,11 @@ export function isRetryableError(
   // prevented at the cost of the request.
   if (hasQuotaExhaustionWording(errorBody)) return true;
 
-  // A SUBSCRIPTION's 401 stops the chain whatever its transport answered. The
-  // verdict header above covers every 401 a ComposedHandler places; this covers
-  // a candidate that answers one without it, so the rule holds for every
-  // subscription provider and not only for the code paths that mint the header.
-  // AFTER the quota wording: a spent allowance still advances, with its warning.
-  // Asked of the uid — a display name is never a subscription.
-  if (providerId && isSubscriptionProvider(providerId)) {
-    const recovered = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
-    // A credential rejection only: a 401 that says the MODEL is not carried
-    // (OpenCode Zen Go's "Model <id> is not supported") is a per-model miss and
-    // advances, as it always did (`isCredentialRejection`).
-    if ((status === 401 || recovered === 401) && isCredentialRejection(401, errorBody)) {
-      return false;
-    }
-    // A RAW 403 credential rejection stops it too (measured: `403
-    // {"error":{"type":"invalid_api_key"}}` from a subscription hop advanced
-    // onto the metered `meta@`). Raw only: the upstream body still carries the
-    // provider's own `error.type`, so `isCredentialRejection` can tell Zen Go's
-    // `403 RegionError` (a model opt-in, which advances) from a dead login. A
-    // RECOVERED 403 cannot be told apart that way — claudish's remapped 400
-    // body says `invalid_request_error` — so it keeps advancing; a 403 the
-    // ComposedHandler placed already carries the terminal verdict header above.
-    if (status === 403 && isCredentialRejection(403, errorBody)) {
-      return false;
-    }
-  }
+  // A SUBSCRIPTION's 401 never advances in the ordinary way, whatever its
+  // transport answered. AFTER the quota wording: a spent allowance still
+  // advances, with its warning. `handle()` moves such a rejection on to the
+  // chain's remaining subscription candidates only.
+  if (isSubscriptionCredentialRejection(status, errorBody, providerId)) return false;
 
   // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────
   //
