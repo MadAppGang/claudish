@@ -104,8 +104,8 @@ CODEX_CODE_MODE_KEEP_LOGS=<dir> \
   madbench madbench.yaml --concurrency 4 --trials 5 --report-json <out.json>
 ```
 
-- **Concurrency works through the shim's launch lock** (see "Concurrency" below). Without it,
-  Scenarios that start together fail `agent never started` because of a claudish defect.
+- **Concurrency needs a claudish build with `1066489b`** (see "Concurrency" below). An older
+  build fails Scenarios that start together with `agent never started`.
 - `--trials 5` gives 20 sessions, all on the subscription. Phase 7 used 10/10/3 sessions by
   hand; `--scenario auto --trials 10` adds depth where D1 lived.
 - A graded miss exits 0. Add `--fail-on-failure` where a miss must turn the job red.
@@ -125,7 +125,7 @@ Why each setting:
   equivalent of `--code-mode off` (`code-mode/policy.ts`: flag > env > project > global >
   `auto`). Nothing passes the flag, and `harness.args` belongs to the whole Bench (madbench
   0.47.0 refuses `harness:` on a Scenario), so the environment is how one Scenario turns code
-  mode off. A madbench feature request for per-Scenario harness args is drafted, not yet filed.
+  mode off. Per-Scenario harness args are requested upstream as MadAppGang/madbench#141.
 - **`driver: false`**: every prompt is an order, so a question from the agent fails the Scenario
   by name instead of being answered by a model and becoming a variable.
 
@@ -133,8 +133,8 @@ Why each setting:
 
 The first smoke run, three Scenarios at once, reported two `agent never started: agent did not
 start within 1m0s` with Claude Code ready in both panes. The cause is claudish's, not madbench's:
-`createTempSettingsFile` (`packages/cli/src/claude-runner.ts`) names its `--settings` overlay
-`~/.claudish/settings-<Date.now()>.json`. madbench starts concurrent Scenarios in lock-step (two
+`createTempSettingsFile` (`packages/cli/src/claude-runner.ts`) named its `--settings` overlay
+`~/.claudish/settings-<Date.now()>.json` before `1066489b`. madbench starts concurrent Scenarios in lock-step (two
 claudish debug logs opened in the same millisecond), so two or three processes write ONE file and
 every Claude Code loads the last writer's statusLine and hooks. madbench waits for a sample in
 each run's own `statusline.jsonl`; the losers' stay empty, and all the samples land in the
@@ -142,9 +142,10 @@ winner's. At `--concurrency 3 --trials 3`, 2 of 3 trials collided this way; one 
 then also hung for 300 s, because its sink carried other sessions' samples. Full evidence:
 `ai-docs/sessions/codex-code-mode-bench-20261020-172800-a1c3/conc/DIAGNOSIS.md` (gitignored).
 
-`claudish-under-test` carries a TEMPORARY launch lock (`/tmp/claudish-under-test.launch.lock`,
-held 100 ms per launch) so every process reads a different millisecond. Delete it, and this
-section's workaround, when claudish names the settings file uniquely per process.
+claudish `1066489b` fixed it: the overlay is now `settings-<pid>-<Date.now()>.json` (and the
+Windows status script `status-<pid>-<Date.now()>.js`), so two processes started in the same
+millisecond still write two files. The Bench carries no workaround; it needs a build with that
+commit.
 
 ## Reading a failure
 
@@ -177,7 +178,7 @@ the `relayed= resumed= lost=` tally), so most failures can be read straight from
 
 An `exec` Check keeps its output only on failure, and madbench deletes the workspace after the run,
 so a passing Check keeps none of the log lines it passed on. Until madbench keeps that output in the
-report (feature request drafted, not yet filed), the `provenance` Check carries a TEMPORARY first
+report (MadAppGang/madbench#142), the `provenance` Check carries a TEMPORARY first
 line: with `CODEX_CODE_MODE_KEEP_LOGS=<dir>` set it copies `logs/claudish_*.log` and
 `claudish-provenance.txt` to `<dir>/<workspace name>/`. Match a folder to its Scenario with the
 report's `.results[].session.work_dir`. Delete that line when madbench ships the feature.

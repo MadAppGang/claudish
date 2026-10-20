@@ -89,10 +89,10 @@ scenarios:
         metric: provenance
         # The shim ran, so this worktree's dist/index.js is what claudish was.
         #
-        # TEMPORARY — the first line of this cmd stands in for the madbench
-        # feature request "exec: keep the command's output on a passing Check"
-        # (draft unsent; README.md, "Keeping the logs"). Delete it when madbench
-        # ships it. An exec Check records its output only on failure and the
+        # TEMPORARY — the first line of this cmd stands in for
+        # MadAppGang/madbench#142 (exec: keep the command's output in Evidence
+        # when the Check passes; README.md, "Keeping the logs"). Delete it when
+        # madbench ships it. An exec Check records its output only on failure and the
         # workspace is deleted after the run, so a PASS keeps none of the log
         # lines that proved it. With CODEX_CODE_MODE_KEEP_LOGS=<dir> set, the
         # logs are copied to <dir>/<workspace name>/ (map it to a Scenario by
