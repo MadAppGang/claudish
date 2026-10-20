@@ -10,6 +10,7 @@ import {
   registryVersionAtLeast,
   routeProfile,
 } from "./connection-wire.js";
+import { allConnections, splitOptInConnections } from "./content-use.js";
 
 export type ReasoningControl = "toggle" | "effort" | "adaptive" | "budget" | "none";
 
@@ -58,6 +59,13 @@ export interface SlimModelEntry {
   /** What the model produces. Absent, null or [] means unknown; a list without "text" is not a chat model. */
   outputModalities?: string[] | null;
   aggregators?: AggregatorEntry[];
+  /**
+   * Connections whose wire id opts content into the vendor's product
+   * improvement, moved out of `aggregators` when the catalog is read into memory
+   * (`splitOptInConnections`, `content-use.ts`). Never written to disk. Only an
+   * exact-id reader looks here (`allConnections`); nothing chooses one for a user.
+   */
+  optInConnections?: AggregatorEntry[];
   subscriptionPlanIds?: string[];
   tokenParam?: string;
   routeVariant?: RouteVariant;
@@ -182,8 +190,10 @@ export function wiresMatchRegistry(
   if (routeRegistry.generationId !== catalogGenerationId) return false;
   const { registry } = routeRegistry;
   if (!registryVersionAtLeast(registry.registryVersion, WIRE_REGISTRY_VERSION)) return true;
+  // Every row, opt-in included: an explicit contributor request builds from its
+  // own connection's wire, so that wire is validated like any other.
   return entries.every((entry) =>
-    (entry.aggregators ?? []).every((connection) => {
+    allConnections(entry).every((connection) => {
       if (connection.routeStatus !== "mapped") return true;
       if (!connection.route || !isConnectionWire(connection.wire)) return false;
       const profile = routeProfile(registry, connection.route);
@@ -296,6 +306,11 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
       cache = { ...cache, routeRegistry: registry };
     }
   }
+  // Validated RAW above (the parse and the sidecar attach both see every row),
+  // then split here, before any reader can see it. This is the choke point that
+  // keeps a content-use opt-in wire id from being chosen for a user
+  // (`content-use.ts`).
+  if (cache) cache = { ...cache, entries: cache.entries.map(splitOptInConnections) };
   _readMemo.set(path, { key, cache });
   return cache;
 }

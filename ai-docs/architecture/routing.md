@@ -41,6 +41,8 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 - `dv@`, `devin@` → Devin (Cognition/Codeium subscription — see `ai-docs/architecture/providers/devin.md`)
 - `gk@` → Grok Build subscription (SuperGrok / X Premium+ — see `ai-docs/architecture/providers/grok-subscription.md`). `grok@` stays with the METERED `x-ai` provider
 - `x-ai@`, `xai@`, `grok@` → xAI direct API, metered (`XAI_API_KEY`)
+- `muse@` → Muse Code subscription (`meta-muse-code`: `claudish login muse`, or the Muse CLI's Keychain login; see `ai-docs/architecture/providers/meta-muse-code.md`). No route binding yet, so only an explicit `muse@<wire id>` reaches it
+- `meta@` → Meta Model API, metered (`meta`, `META_API_KEY`, route `meta/direct-api`). Until `ca4be53b` `meta` was an `ollamacloud` shortcut; it moved with no alias, so an old `meta@llama-…` spec now goes to Meta
 - `llama@`, `oc@` → OllamaCloud
 - `litellm@`, `ll@` → LiteLLM (requires LITELLM_BASE_URL)
 - `ollama@` → Ollama (local)
@@ -318,6 +320,44 @@ It runs in two places:
 The catalog itself is extracted, published and documented in the
 [models-index](https://github.com/MadAppGang/models-index) repo; claudish only reads it.
 
+## Contributor wire ids are never chosen implicitly (2026-10-16)
+
+Some vendors publish a second wire id for one model whose use opts the request's CONTENT into
+the vendor's product improvement: `muse-spark-1.3-contributor` beside `muse-spark-1.3` on
+`meta/direct-api`, and `…-contributor-free` beside the plain id on OpenCode Zen. The catalog maps
+both as ordinary connections. On generation `g-20261015133900604-fb6199b5` OpenCode Go mapped
+ONLY the contributor id for `muse-spark-1.3`, so a bare `muse-spark-1.3` went to Go first, opted
+in, with nothing on screen to say so.
+
+Jack's decision: a contributor id is never chosen for the user, on any route. One typed exactly
+(`meta@muse-spark-1.3-contributor`) is sent verbatim.
+
+`isOptInWireId` (`providers/content-use.ts`) matches `-contributor` and `-contributor-free` on the
+last path segment. It is enforced where catalog data enters memory, not at each reader, so a
+reader added later inherits it:
+
+| Entry point | What it does |
+|---|---|
+| `readAllModelsCache`, the refreshed `_memCache`, `_setCatalogEntriesForTest` | `splitOptInConnections`: matching rows move from `aggregators[]` to `optInConnections[]` |
+| `fetchCatalogPage` (Firebase `ModelDoc`s) | `normaliseCatalogPayload`, the same split |
+| `getProbeModel`, `rankProbeCandidates`, `expandSelection` | skip an opt-in id |
+| `discoverProviderModelsCatalog` | offered rows exclude opt-in ids; `discoverProviderServedIds` returns both lists for entitlement |
+
+The rows are moved, never deleted. Only EXACT-id readers consult `allConnections()`:
+`resolveExternalId`'s first step (`publishesWireIdFor`), `findConnection`'s exact step, the
+availability reverse lookup, `allExternalIds`, and `wiresMatchRegistry`, which still validates
+every row. A reader that CHOOSES a wire id reads `aggregators[]` and cannot see an opt-in one.
+
+A provider whose only connection for a model is a contributor one is not gathered. `--probe`
+shows it as `excluded-by-content-use`. A provider that maps both ids keeps its plain candidate
+and shows no drop. Measured on the pinned generation `g-20261016053727894-8a743761` (1189
+models): three chains changed, and each lost only `zengo@<id>-contributor` (`gemini-4-argon`,
+`muse-spark-1.3`, `muse-spark-1.2`).
+
+**Removal trigger:** models-index publishes a content-use field on every route (backend task M3,
+`ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`). Until then this is the one
+wire-id name rule claudish keeps.
+
 ## Route bindings: which claudish provider a catalog route means
 
 A connection names a route binding `(routeId, routeProfileId)`, never a claudish provider.
@@ -354,6 +394,20 @@ Plan absence has two different meanings:
 - `modelDiscovery: "client"` or `"hybrid"`: the authenticated account may reveal models the
   public backend cannot know, so absence remains unknown and the candidate is retained. Devin,
   Antigravity, and the `xai-supergrok` plan use this account-scoped behavior.
+
+Membership gates GATHERED candidates too (`66d10dae`). Before, `gatherFromConnections` kept any
+mapped connection of a `subscription`-tier provider, so a plan whose membership did not include
+the model still became a hop. Now `resolveSubscriptionRouting(...) === "not-served"` sends the
+candidate to `excluded-by-membership`. On the pinned generation `g-20261016053727894-8a743761`,
+seven chains lost only their subscription hop (`zengo@` for `qwen3.7-max`, `glm-5.1`,
+`qwen3.6-plus`, `minimax-m2.5`, `omen-alpha`; `qtoken@` for `deepseek-v3.2`,
+`deepseek-v4-flash`).
+
+**A subscription's terminal credential failure stops the chain.** An expired or revoked login on
+any `SUBSCRIPTION_PROVIDERS` member (and `openai-codex` when its OAuth arm signed) answers 400
+with its login hint and never walks onto the next, usually metered, hop. A model the plan does not
+carry and a spent allowance still advance. The mechanism is in `adapters.md` ("A subscription's
+credential failure stops the chain").
 
 The backend recommendation projection supplies canonical model IDs and exact
 route/profile identities. Claudish resolves them against the generation-pinned

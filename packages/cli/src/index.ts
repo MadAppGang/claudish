@@ -632,6 +632,23 @@ async function runCli() {
       await detectAndSetThemeMode();
     });
 
+    // The credential prompt role, fixed BEFORE parseArgs: `--probe` exits inside
+    // it, and the model picker below may need a credential. A pane child, a
+    // piped or CI launch, and `--probe` never open a credential dialog
+    // (`auth/credentials/prompt-role.ts`).
+    {
+      const { decideLaunchRole, setCredentialPromptRole } = await import(
+        "./auth/credentials/prompt-role.js"
+      );
+      setCredentialPromptRole(
+        decideLaunchRole({
+          argv: process.argv.slice(2),
+          stdinIsTTY: process.stdin.isTTY === true,
+          stderrIsTTY: process.stderr.isTTY === true,
+        })
+      );
+    }
+
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
@@ -1041,6 +1058,35 @@ async function runCli() {
     );
     if (warmOutcome === "hard_fail") {
       process.exit(1);
+    }
+
+    // === Muse Code login, before Claude Code starts ===
+    // In every launch role: the served context window is read before spawn and
+    // needs a signed key; an interactive launch puts any Keychain dialog here,
+    // in front of the user. Needs the warm catalog to see bare names that
+    // gather `meta-muse-code` (`providers/meta-muse/muse-launch.ts`).
+    if (!cliConfig.monitor) {
+      const { prepareMuseLoginForLaunch } = await import("./providers/meta-muse/muse-launch.js");
+      const museModels =
+        typeof cliConfig.model === "string"
+          ? [cliConfig.model]
+          : [
+              cliConfig.model,
+              cliConfig.modelOpus,
+              cliConfig.modelSonnet,
+              cliConfig.modelHaiku,
+              cliConfig.modelSubagent,
+            ];
+      const muse = await traceSpan("startup:muse-login", () =>
+        prepareMuseLoginForLaunch(museModels)
+      );
+      if (muse.kind === "fatal") {
+        process.stderr.write(`[claudish] Error: ${muse.message}\n`);
+        process.exit(1);
+      }
+      if (muse.kind === "warn" && !cliConfig.quiet) {
+        process.stderr.write(`[claudish] Warning: ${muse.message}\n`);
+      }
     }
 
     // === --advisor: startup refusals and notice ===

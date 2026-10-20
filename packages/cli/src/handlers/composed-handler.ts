@@ -87,6 +87,12 @@ import {
   isTerminalError,
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
+import {
+  authVerdictHeaders,
+  classifyAuthFailure,
+  isCredentialRejection,
+  respondAuthFailure,
+} from "./shared/auth-failure.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import type { ConnectionErrorKind } from "./shared/connection-error.js";
 import {
@@ -99,6 +105,7 @@ import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-un
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
+import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
@@ -745,6 +752,60 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * Answer a failure at a credential site that is NOT a connection fault
+   * (`auth-failure.ts`): a terminal one (a dead or unsubscribed login, as the
+   * producer marked it) as 400 with the terminal verdict, so the chain stops and
+   * the message lands inline; a transient one — and any unclassifiable one of a
+   * SUBSCRIPTION — as 503/429 with the transient verdict, retried on the same
+   * hop, never 401.
+   *
+   * An unclassifiable failure of a METERED provider gets 401 only where
+   * `meteredUnknown` is `"401"` (the refreshAuth and forceRefreshAuth catches,
+   * which always answered it, so the chain may try another credential).
+   * Everywhere else it returns null and the caller rethrows it unchanged:
+   * classify first or rethrow — never invent a status.
+   */
+  private answerAuthFailure(
+    c: Context,
+    err: unknown,
+    meteredUnknown: "401" | "rethrow"
+  ): Response | null {
+    const failure = classifyAuthFailure(err);
+    const isSubscription = isSubscriptionProvider(this.provider.name);
+    if (failure.kind === "connection") return null;
+    if (failure.kind === "unknown" && !isSubscription && meteredUnknown === "rethrow") return null;
+    return respondAuthFailure(c, failure, {
+      isSubscription,
+      providerDisplayName: this.provider.displayName,
+    });
+  }
+
+  /**
+   * {@link recoverConnection} at a credential site. A failure the ladder could
+   * not classify as a connection fault (its `"threw"` outcome, e.g. a token
+   * refresh that timed out and was then answered "login expired") is answered by
+   * {@link answerAuthFailure} instead of escaping `handle()` — where
+   * FallbackHandler would record status 0 and advance the chain.
+   */
+  private async recoverAtAuthSite<T>(
+    c: Context,
+    first: unknown,
+    conn: ConnectionErrorInfo,
+    endpoint: string,
+    op: (signal: AbortSignal) => Promise<T>,
+    ctx: Parameters<ComposedHandler["recoverConnection"]>[5],
+    meteredUnknown: "401" | "rethrow"
+  ): Promise<{ kind: "value"; value: T } | { kind: "respond"; response: Response }> {
+    try {
+      return await this.recoverConnection<T>(c, first, conn, endpoint, op, ctx);
+    } catch (thrown) {
+      const response = this.answerAuthFailure(c, thrown, meteredUnknown);
+      if (response) return { kind: "respond", response };
+      throw thrown;
+    }
+  }
+
+  /**
    * Run tier-1 recovery for one classified connection failure.
    *
    * Callers reach this from inside their own `catch`, never before, and only
@@ -932,7 +993,25 @@ export class ComposedHandler implements ModelHandler {
     }
   }
 
+  /**
+   * One request. Once it has been SIGNED (its headers fetched), every answer —
+   * the stream, the JSON form, and an upstream error such as a 5xx or a
+   * remapped 400 — names the credential that signed it, so `--probe` reports
+   * the signer even when the request then failed for another reason. A request
+   * that failed before it was signed (no usable login) names nothing.
+   */
   async handle(c: Context, payload: any): Promise<Response> {
+    const signing: { headers?: Record<string, string> } = {};
+    const response = await this.handleSigned(c, payload, signing);
+    if (!signing.headers || !this.provider.signingCredential) return response;
+    return withSignerHeader(response, this.provider.signingCredential(signing.headers));
+  }
+
+  private async handleSigned(
+    c: Context,
+    payload: any,
+    signing: { headers?: Record<string, string> }
+  ): Promise<Response> {
     const startTime = performance.now();
     // Stamp the recovery deadline's ZERO POINT here, and not wherever something
     // first asks for it.
@@ -1288,7 +1367,7 @@ export class ComposedHandler implements ModelHandler {
           // expression and therefore unclamped — and a maximal connect hang
           // would land the response write a whole connect timeout past the
           // deadline.
-          const outcome = await this.recoverConnection(
+          const outcome = await this.recoverAtAuthSite(
             c,
             err,
             conn,
@@ -1301,7 +1380,8 @@ export class ComposedHandler implements ModelHandler {
               authType: "oauth",
               site: "refreshAuth",
               recovery: recoveryTally,
-            }
+            },
+            "401"
           );
           if (outcome.kind === "respond") return outcome.response;
           // Recovered: fall through as if the first refresh had succeeded.
@@ -1322,21 +1402,20 @@ export class ComposedHandler implements ModelHandler {
             isInteractive: this.isInteractive,
             authType: "oauth",
           });
-          // A terminal setup failure (misconfiguration, revoked entitlement) can
-          // never succeed on retry. Answering 401 sent the client into ~11 retries
-          // over two minutes of backoff, with the actionable message hidden behind
-          // "API error · Retrying". 400 is not retryable, so the explanation lands
-          // inline on the first attempt.
-          if (err?.terminal) {
-            return c.json(
-              wrapAnthropicError(400, err.message, "invalid_request_error"),
-              400 as any
-            );
-          }
-          // Return 401 (auth failure) so FallbackHandler treats this as retryable and
-          // moves to the next provider in the chain. 503 (connection error) would stop
-          // the fallback chain since it is not retryable by design.
-          return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
+          // One classifier for every credential site (`auth-failure.ts`):
+          //   - terminal (misconfiguration, revoked entitlement, expired login)
+          //     → 400 with the terminal verdict. Answering 401 sent the client
+          //     into ~11 retries over two minutes of backoff with the message
+          //     hidden behind "API error · Retrying", and walked the chain.
+          //   - transient (the token host answered 5xx/429) → 503/429 with the
+          //     transient verdict, never 401: the same hop answers on retry.
+          //   - unclassifiable: a SUBSCRIPTION → 503 with the transient verdict
+          //     (retried, never walked; a dead login is marked terminal by its
+          //     producer, `credential-error.ts`); a METERED provider → 401 as
+          //     before, so the chain may try a provider with another credential.
+          const answered = this.answerAuthFailure(c, err, "401");
+          if (answered) return answered;
+          throw err;
         }
       }
       // Update display name in case auth resolved it (e.g., Gemini tier
@@ -1389,9 +1468,14 @@ export class ComposedHandler implements ModelHandler {
     // The touch is refresh-conditional, which makes this rare, not safe.
     // Every header fetch below goes through this, so a header the wire requires
     // (a beta token next to the field it wrote) survives the auth retries too.
+    // The headers of THIS request's latest attempt — the one whose answer is
+    // returned (primary, parameter re-fetch or auth retry), recorded on this
+    // call's own `signing` record so a concurrent request on the same handler
+    // cannot replace it. `handle` names the signer from them (`signingCredential`).
     const fetchHeaders = async (): Promise<Record<string, string>> => {
       const fetched = await this.provider.getHeaders(payload);
       mergeWireHeaders(fetched, wireHeaders);
+      signing.headers = fetched;
       return fetched;
     };
     let headers: Record<string, string>;
@@ -1400,10 +1484,15 @@ export class ComposedHandler implements ModelHandler {
     } catch (err: any) {
       const conn = classifyConnectionError(err);
       if (!conn) {
-        // Anything else keeps its existing route out of here untouched.
+        // A credential failure this site can place is answered here — terminal
+        // as 400; transient, or a subscription's unclassifiable one, as 503/429.
+        // Anything else (a metered provider's unclassifiable throw) keeps its
+        // existing route out of here untouched.
+        const answered = this.answerAuthFailure(c, err, "rethrow");
+        if (answered) return answered;
         throw err;
       }
-      const outcome = await this.recoverConnection<Record<string, string>>(
+      const outcome = await this.recoverAtAuthSite<Record<string, string>>(
         c,
         err,
         conn,
@@ -1418,7 +1507,8 @@ export class ComposedHandler implements ModelHandler {
           authType: "oauth",
           site: "getHeaders",
           recovery: recoveryTally,
-        }
+        },
+        "rethrow"
       );
       if (outcome.kind === "respond") return outcome.response;
       headers = outcome.value;
@@ -1430,7 +1520,10 @@ export class ComposedHandler implements ModelHandler {
     // default-preserving: a transport that leaves `serializeBody` undefined
     // yields `undefined` here and every expression below collapses to exactly
     // what it was before this hook existed.
-    const serialized = this.provider.serializeBody?.(requestPayload);
+    // Always the encoding of the CURRENT `requestPayload`: parameter recovery
+    // replaces the payload and re-encodes it here, so the 401 auth retry below
+    // never resends bytes the provider already rejected.
+    let serialized = this.provider.serializeBody?.(requestPayload);
     headers["Content-Type"] = serialized?.contentType ?? "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
@@ -1481,7 +1574,19 @@ export class ComposedHandler implements ModelHandler {
       // host — check your network/DNS" instead of a mystifying 500. (A Tailscale
       // MagicDNS outage making chatgpt.com unresolvable is what motivated this.)
       const conn = classifyConnectionError(error);
-      if (!conn) throw error;
+      if (!conn) {
+        // Not a connection fault: answer it the way the other credential sites
+        // do. A transport's `enqueueRequest` can mint or refresh a credential
+        // here (`muse@` mints its key per request), so a dead login (terminal
+        // 400), a token host's 429/5xx (transient) or a SUBSCRIPTION's
+        // unclassified throw (transient 503) lands as a response. Escaping
+        // `handle()` instead is the five-sites bug: FallbackHandler records
+        // status 0 and advances a subscription onto a metered hop. A METERED
+        // unknown is still rethrown unchanged ("rethrow").
+        const answered = this.answerAuthFailure(c, error, "rethrow");
+        if (answered) return answered;
+        throw error;
+      }
 
       // Every construct below is built HERE, inside the catch, after
       // classification returned non-null. A successful request never executes
@@ -1530,14 +1635,25 @@ export class ComposedHandler implements ModelHandler {
           : attempt();
       };
 
-      const outcome = await this.recoverConnection<Response>(c, error, conn, endpoint, reissue, {
-        startTime,
-        // The SAME value the primary attempt was bounded by, not a fresh read.
-        deadlineAt,
-        fallbackMeta,
-        site: "fetch",
-        recovery: recoveryTally,
-      });
+      // Through the auth-site wrapper: a re-issue that fails with something
+      // other than a connection fault is classified like any credential
+      // failure, not rethrown out of `handle()` into a status-0 chain advance.
+      const outcome = await this.recoverAtAuthSite<Response>(
+        c,
+        error,
+        conn,
+        endpoint,
+        reissue,
+        {
+          startTime,
+          // The SAME value the primary attempt was bounded by, not a fresh read.
+          deadlineAt,
+          fallbackMeta,
+          site: "fetch",
+          recovery: recoveryTally,
+        },
+        "rethrow"
+      );
       if (outcome.kind === "respond") return outcome.response;
       response = outcome.value;
     }
@@ -1632,7 +1748,8 @@ export class ComposedHandler implements ModelHandler {
           requestPayload = recovery.payload;
           // Re-serialize: a transport that owns its own encoding (Devin) must
           // re-encode the changed payload rather than resend the stale bytes.
-          const retrySerialized = this.provider.serializeBody?.(requestPayload);
+          serialized = this.provider.serializeBody?.(requestPayload);
+          const retrySerialized = serialized;
           // This re-fetch had NO `try` at all. A connection throw therefore
           // escaped handle() entirely and landed in `fallback-handler.ts`'s
           // catch, which pushes `{ status: 0 }` and advances the chain
@@ -1666,8 +1783,14 @@ export class ComposedHandler implements ModelHandler {
             retryResp = await doParamRetry();
           } catch (err: any) {
             const conn = classifyConnectionError(err);
-            if (!conn) throw err;
-            const outcome = await this.recoverConnection<Response>(
+            if (!conn) {
+              // The re-fetch re-reads the headers, so a credential failure can
+              // surface here too; one this site can place is answered.
+              const answered = this.answerAuthFailure(c, err, "rethrow");
+              if (answered) return answered;
+              throw err;
+            }
+            const outcome = await this.recoverAtAuthSite<Response>(
               c,
               err,
               conn,
@@ -1682,12 +1805,27 @@ export class ComposedHandler implements ModelHandler {
                 retriedBeforeLadder: true,
                 site: "parameter-recovery",
                 recovery: recoveryTally,
-              }
+              },
+              "rethrow"
             );
             if (outcome.kind === "respond") return outcome.response;
             retryResp = outcome.value;
           }
           if (retryResp.ok) {
+            response = retryResp;
+          } else if (isCredentialRejection(retryResp.status, await retryResp.clone().text())) {
+            // The re-fetch's credential was REJECTED (401/403 that is not a
+            // model, quota or region answer). That is the newer, decisive fact:
+            // the parameter is fixed and the login is what is wrong now. It
+            // replaces the original 400 and takes the normal error path, so a
+            // 401 still gets the forced refresh, and a subscription's rejection
+            // answers the terminal 400 with the verdict and the
+            // `claudish login …` line (D10). Reporting the parameter 400
+            // instead dropped both, and a metered key could not advance.
+            log(
+              `[${this.provider.displayName}] Retry after ${recovery.note} was rejected ` +
+                `(HTTP ${retryResp.status}); reporting the credential rejection`
+            );
             response = retryResp;
           } else {
             // Fall through to the normal error path with the ORIGINAL response,
@@ -1711,7 +1849,9 @@ export class ComposedHandler implements ModelHandler {
         // transiently, so a ladder that could only re-run one of them would
         // leave the other exactly as exposed as it was.
         const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
-          await this.provider.forceRefreshAuth!();
+          // The headers of the request the upstream rejected, so a transport can
+          // tell a stale failure from one naming the credential it holds now.
+          await this.provider.forceRefreshAuth!({ rejectedHeaders: headers });
           const retryHeaders = await fetchHeaders();
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
@@ -1780,6 +1920,56 @@ export class ComposedHandler implements ModelHandler {
             } catch {
               // Stats must never crash claudish
             }
+            // A 401/403 that SURVIVED a fresh credential is terminal for a
+            // subscription, or wherever the transport says so: answered 400 with
+            // the terminal verdict and the same hint and wording as the generic
+            // remap below, so the login line lands inline and the chain stops.
+            // 401/403 ONLY: Antigravity's terminal 429 keeps its own route.
+            if (retryResp.status === 401 || retryResp.status === 403) {
+              const transportTerminal = this.provider.classifyTerminalError?.(
+                retryResp.status,
+                errorText
+              );
+              // The subscription stop is for a credential rejection only; a model
+              // or allowance miss keeps its pass-through route (`isCredentialRejection`).
+              if (
+                (isSubscriptionProvider(this.provider.name) &&
+                  isCredentialRejection(retryResp.status, errorText)) ||
+                transportTerminal === true
+              ) {
+                const hint = getRecoveryHint(
+                  retryResp.status,
+                  errorText,
+                  this.provider.displayName,
+                  transportTerminal,
+                  this.provider.name
+                );
+                let parsed: unknown;
+                try {
+                  parsed = JSON.parse(errorText);
+                } catch {
+                  parsed = undefined;
+                }
+                const providerMsg = extractProviderMessage(parsed ?? errorText);
+                const surfaced = buildSurfacedErrorMessage({
+                  providerDisplayName: this.provider.displayName,
+                  status: retryResp.status,
+                  hint,
+                  providerMessage: providerMsg,
+                });
+                return c.json(
+                  wrapAnthropicError(
+                    400,
+                    surfaced,
+                    "invalid_request_error",
+                    retryResp.status,
+                    providerMsg
+                  ),
+                  400 as any,
+                  authVerdictHeaders("terminal")
+                );
+              }
+            }
             return c.json(wrapAnthropicError(retryResp.status, errorText), retryResp.status as any);
           }
           return null;
@@ -1799,7 +1989,7 @@ export class ComposedHandler implements ModelHandler {
           // this whole area exists to prevent.
           const conn = classifyConnectionError(err);
           if (conn) {
-            const outcome = await this.recoverConnection<Response>(
+            const outcome = await this.recoverAtAuthSite<Response>(
               c,
               err,
               conn,
@@ -1813,7 +2003,8 @@ export class ComposedHandler implements ModelHandler {
                 authType: "oauth",
                 site: "forceRefreshAuth",
                 recovery: recoveryTally,
-              }
+              },
+              "401"
             );
             if (outcome.kind === "respond") return outcome.response;
             const answered = await settleAuthRetry(outcome.value);
@@ -1860,7 +2051,13 @@ export class ComposedHandler implements ModelHandler {
             } catch {
               // Stats must never crash claudish
             }
-            return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
+            // The same classifier as the refreshAuth catch: terminal → 400 with
+            // the terminal verdict; transient, or a subscription's
+            // unclassifiable failure → 503/429 with the transient verdict; a
+            // metered provider's unclassifiable failure → 401 as before.
+            const answered = this.answerAuthFailure(c, err, "401");
+            if (answered) return answered;
+            throw err;
           }
         }
       } else {
@@ -2001,6 +2198,17 @@ export class ComposedHandler implements ModelHandler {
               ? CONTEXT_OVERFLOW_PHRASE
               : undefined,
           });
+          // A SUBSCRIPTION's rejected credential stops the routing chain here
+          // (`auth-failure.ts`): the next hop would bill the user per token for a
+          // login they can fix. A spent allowance (402/429) is not a credential
+          // failure and still advances, with its warning.
+          // A model the provider does not carry (Zen Go's 401 "Model <id> is not
+          // supported") is NOT a credential rejection and keeps advancing.
+          const verdictHeaders =
+            isSubscriptionProvider(this.provider.name) &&
+            isCredentialRejection(response.status, errorText)
+              ? authVerdictHeaders("terminal")
+              : undefined;
           // Carry the ORIGINAL upstream status as a structured field so
           // machine consumers (probe classification) can tell a remapped
           // auth failure from a genuine 400.
@@ -2015,7 +2223,8 @@ export class ComposedHandler implements ModelHandler {
               // useless to a probe row that clips.
               providerMsg
             ),
-            400 as any
+            400 as any,
+            verdictHeaders
           );
         }
         return c.json(
@@ -2740,6 +2949,34 @@ export class ComposedHandler implements ModelHandler {
 }
 
 /**
+ * Name the credential that signed THIS request on its response, as
+ * `x-claudish-signed-with` (URI-encoded: a tier name need not be a valid
+ * header byte string), for a provider with several login sources (muse@: own
+ * login, borrowed copy, Keychain). Per response, so `--probe` names the signer
+ * of its own request and never a process-wide guess.
+ *
+ * Set on the returned Response, not through `c.header()`: the Responses stream
+ * parser builds its own `new Response`, which never sees the context's headers.
+ * Headers a stream parser built are mutable; a frozen set is copied instead.
+ */
+function withSignerHeader(response: Response, signer: string | undefined): Response {
+  if (!signer) return response;
+  const value = encodeURIComponent(signer);
+  try {
+    response.headers.set("x-claudish-signed-with", value);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.set("x-claudish-signed-with", value);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+}
+
+/**
  * Return a human-readable recovery hint based on HTTP status and error body.
  *
  * `transportTerminal429` is the transport's own verdict on a 429 when it can
@@ -2867,6 +3104,22 @@ export function getRecoveryHint(
     // credential, is what lacks access.
     if (status === 403 && /access denied|accessdenied/i.test(lower)) {
       return "The provider accepted the credential but denied access to this model — check model access or activation for this account in the provider's console, not the key.";
+    }
+    // A SUBSCRIPTION that signs with claudish's own login: the rejected
+    // credential is that login, so the fix is a new login, not a key audit.
+    // Only providers that declare `oauthLoginSlug` get the command (muse@,
+    // kc@, gk@, Antigravity); a subscription signed by a key or by another
+    // CLI's login (Devin, the Alibaba plans) keeps the generic advice below.
+    // `openai-codex` is not in SUBSCRIPTION_PROVIDERS (its arm is decided by
+    // the credential that signed), so a metered cx@ key is never told to log in.
+    const loginSlug = providerUid ? getProviderByName(providerUid)?.oauthLoginSlug : undefined;
+    if (
+      loginSlug &&
+      providerUid &&
+      isSubscriptionProvider(providerUid) &&
+      isCredentialRejection(status, errorText)
+    ) {
+      return `The ${providerName} login was rejected (HTTP ${status}). Run \`claudish login ${loginSlug}\` to sign in again.`;
     }
     const siblingNote = providerUid ? describeSiblingKeys(getProviderByName(providerUid)) : "";
     if (siblingNote) {

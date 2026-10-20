@@ -53,6 +53,12 @@ export interface ProbeResult {
    *   streaming = latencyMs - ttftMs     (token generation)
    */
   timing?: ProbeTiming;
+  /**
+   * The credential that signed THIS probe request, when the provider has
+   * several login sources (muse@): `Muse Code borrowed copy · <tier>`. Read off
+   * the response's `x-claudish-signed-with`, so it is per request.
+   */
+  signedWith?: string;
 }
 
 /**
@@ -88,7 +94,7 @@ export interface ProbeTiming {
  * token-related failure, we surface a login hint instead of masking the link
  * as "skipped".
  */
-const OAUTH_PROVIDERS = new Set(["vertex", "antigravity", "devin"]);
+const OAUTH_PROVIDERS = new Set(["vertex", "antigravity", "devin", "meta-muse-code"]);
 // Ask for a short paragraph so we can sample streaming throughput (tokens/sec).
 // Capped to keep probes quick while leaving room for reasoning models that
 // spend hidden reasoning tokens BEFORE any visible text: at 64 tokens, models
@@ -267,7 +273,8 @@ export async function probeLink(
   if (!response.ok) {
     const body = await safeReadBody(response);
     return annotateOAuthHint(
-      classifyHttpError(response.status, body, ttfbMs),
+      // A request that was signed and then failed still names its signer.
+      { ...classifyHttpError(response.status, body, ttfbMs), ...signedWithOf(response) },
       link.provider,
       isOAuth
     );
@@ -301,10 +308,22 @@ export async function probeLink(
       ...rest,
       latencyMs: totalMs,
       timing,
+      ...signedWithOf(response),
     },
     link.provider,
     isOAuth
   );
+}
+
+/** The `x-claudish-signed-with` the proxy set on this response (ComposedHandler). */
+function signedWithOf(response: Response): { signedWith?: string } {
+  const raw = response.headers.get("x-claudish-signed-with");
+  if (!raw) return {};
+  try {
+    return { signedWith: decodeURIComponent(raw) };
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -335,6 +354,17 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
   if (!isOAuth) return result;
   if (result.state === "live") return result;
 
+  // Muse Code's entitlement failure: the login works but the account is not
+  // subscribed. Logging in again changes nothing, so the hint is the subscribe
+  // link the message names — never a login command.
+  if (provider === "meta-muse-code") {
+    const subscribe = /no active Muse Code subscription[^:]*: subscribe at (\S+?)\.?$/i.exec(
+      result.errorMessage || ""
+    );
+    if (subscribe)
+      return { ...result, state: "auth-failed", actionHint: `subscribe at ${subscribe[1]}` };
+  }
+
   const loginCommand =
     provider === "antigravity"
       ? "claudish login antigravity"
@@ -345,7 +375,9 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
           // would send the user to a command that does not exist.
           provider === "devin"
           ? "devin login"
-          : undefined;
+          : provider === "meta-muse-code"
+            ? "claudish login muse"
+            : undefined;
 
   if (!loginCommand) return result;
 

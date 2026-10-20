@@ -206,8 +206,9 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` | https://console.sakana.ai/get-started |
 | `QWEN_TOKEN_PLAN_API_KEY` | Alibaba Token Plan (`qtoken@`) — Model Studio subscription, metered in Credits | _(none by design — see the note below)_ | https://docs.qwencloud.com/token-plan/overview |
 | `QWEN_CODING_PLAN_API_KEY` | Alibaba Coding Plan (`qcode@`) — Model Studio subscription, metered in requests | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/coding-plan |
+| `META_API_KEY` | Meta Model API, metered (`meta@`). Never signs the `muse@` subscription, which uses `claudish login muse` or the Muse Code CLI's Keychain login | | https://dev.meta.ai |
 | `DASHSCOPE_API_KEY` | Alibaba PAYG (`qpay@`) — Model Studio pay-as-you-go, billed per token | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/get-api-key |
-| `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`, `meta@`) | | https://ollama.com/account |
+| `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`) | | https://ollama.com/account |
 | `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/ |
 | `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/ |
 | `XAI_API_KEY` | xAI / Grok (direct API, detected in model selector) | | https://x.ai/ |
@@ -267,6 +268,7 @@ If none of them answers, the error says so and names both remedies (`VERTEX_PROJ
 | `QWEN_TOKEN_PLAN_BASE_URL` | Alibaba Token Plan endpoint | `https://token-plan.ap-southeast-1.maas.aliyuncs.com` |
 | `QWEN_CODING_PLAN_BASE_URL` | Alibaba Coding Plan endpoint | `https://coding-intl.dashscope.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | Alibaba PAYG endpoint; repoint here for a mainland-China account | `https://dashscope-intl.aliyuncs.com` |
+| `META_BASE_URL` | Meta Model API (`meta@`) | `https://api.meta.ai` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud hosted API | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen API (base; `/v1/chat/completions` appended) | `https://opencode.ai/zen` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server URL (**required** to enable LiteLLM routing) | none |
@@ -374,6 +376,9 @@ Same schema as `~/.claudish/config.json`. Placed in the project root directory (
 | `all-models.json` | Cached full model catalog from OpenRouter | Every 2 days, or on `--models-refresh` |
 | `litellm-models-{hash}.json` | Cached LiteLLM model list per server (hash = SHA-256 of `LITELLM_BASE_URL`) | On each LiteLLM model fetch |
 | `kimi-oauth.json` | Kimi OAuth credentials (access + refresh tokens) | On `claudish --kimi-login` |
+| `meta-muse-oauth.json` | claudish's own Muse Code login (0600) | On `claudish login muse`; deleted by `claudish logout muse` |
+| `meta-muse-borrowed.json` | claudish's copy of the Muse Code CLI's login, so `team` slots and MCP sessions can sign without a Keychain dialog (0600) | After an interactive launch reads the Keychain and Meta confirms the subscription; deleted by `claudish logout muse` |
+| `muse-keychain-read.lock` | Held while one process waits on the Muse Keychain dialog, so other processes wait instead of opening a second one | Removed when the read ends |
 | `logs/` | Debug log files (created when `--debug-claudish` is used) | Per session |
 
 ### 4.4 Config File Override (`--config`)
@@ -462,7 +467,9 @@ rate. The markers need a catalog connection (or a custom endpoint); they are ref
 | `qtoken` | `qwen-token-plan` | Alibaba Token Plan — Model Studio subscription, Credits (`QWEN_TOKEN_PLAN_API_KEY`) |
 | `qcode` | `qwen-coding` | Alibaba Coding Plan — Model Studio subscription, requests (`QWEN_CODING_PLAN_API_KEY`) |
 | `qpay` | `qwen-payg` | Alibaba PAYG — Model Studio pay-as-you-go, per token (`DASHSCOPE_API_KEY`) |
-| `oc`, `llama`, `lc`, `meta` | `ollamacloud` | OllamaCloud hosted API (`OLLAMA_API_KEY`) |
+| `oc`, `llama`, `lc` | `ollamacloud` | OllamaCloud hosted API (`OLLAMA_API_KEY`). `meta` is no longer an OllamaCloud shortcut |
+| `meta` | `meta` | Meta Model API, metered (`META_API_KEY`) |
+| `muse` | `meta-muse-code` | Muse Code subscription (`claudish login muse`, or the Muse Code CLI's Keychain login); see [Muse Code](usage/muse-code.md) |
 | `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY` required) |
 | `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan (`OPENCODE_GO_API_KEY` required) |
 | `v`, `vertex` | `vertex` | Vertex AI — Application Default Credentials (`VERTEX_PROJECT` optional) |

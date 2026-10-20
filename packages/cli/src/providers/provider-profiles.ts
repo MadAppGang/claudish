@@ -36,7 +36,9 @@ import { ComposedHandler } from "../handlers/composed-handler.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { log, logStderr } from "../logger.js";
 import { formatProvenanceLog, resolveCredentialProvenance } from "./api-key-provenance.js";
+import { ensureRouteRegistryReady } from "./catalog-client.js";
 import { declaredConnection, declaredWire } from "./declared-wire.js";
+import { ownerWireForModel } from "./meta-muse/muse-wire.js";
 import { getProviderByName } from "./provider-definitions.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
@@ -45,6 +47,7 @@ import { DevinProviderTransport } from "./transport/devin.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
 import { GrokSubscriptionProviderTransport } from "./transport/grok-subscription.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
+import { MuseCodeTransport } from "./transport/meta-muse-code.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
@@ -218,6 +221,44 @@ export const grokSubscriptionProfile: ProviderProfile = {
     return handler;
   },
 };
+
+/**
+ * Muse Code subscription (`muse@`): OpenAI Responses at api.meta.ai, signed with
+ * a key minted from the Muse Code login. Responses ONLY — the one API on which
+ * subscription billing was verified (muse-wire.md §2) — so the adapter is the
+ * Responses format and the transport adds the CLI's `store: false` body.
+ * The empty api key is intentional: `MuseCodeTransport` signs per request.
+ */
+export const museCodeProfile: AsyncProviderProfile = {
+  async createHandler(ctx) {
+    const transport = new MuseCodeTransport(ctx.provider, ctx.modelName, "");
+    const adapter = new CodexAPIFormat(ctx.modelName);
+    // The output limit and effort encoding are borrowed from Meta's own
+    // direct-API wire for the same id (`muse-wire.ts`). Its own short wait for
+    // the route registry, not the request path's 30 s: a cold registry skips
+    // the borrow (and says so) rather than holding the handler. The cache path
+    // is the test seam, which is never refreshed from the network.
+    if (!ctx.catalogCachePath) await ensureRouteRegistryReady(MUSE_REGISTRY_WAIT_MS);
+    const connection = ownerWireForModel(ctx.modelName, ctx.catalogCachePath);
+    if (!connection) {
+      log(
+        `[Proxy] Muse Code ${ctx.modelName}: no meta/direct-api responses wire to borrow ` +
+          "(model not published there, or the route registry is not ready); effort is the adapter's"
+      );
+    }
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      tokenStrategy: "delta-aware",
+      ...ctx.sharedOpts,
+      ...(connection ? { connection } : {}),
+    });
+    log(`[Proxy] Created Muse Code handler (composed): ${ctx.modelName}`);
+    return handler;
+  },
+};
+
+/** How long building a `muse@` handler waits for the route registry (see museCodeProfile). */
+const MUSE_REGISTRY_WAIT_MS = 5_000;
 
 /**
  * OpenAI-compatible Chat Completions, for a provider the catalog does not route.

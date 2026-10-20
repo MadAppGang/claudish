@@ -173,6 +173,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
     if (name === "glm") return "GLM";
     if (name === "glm-coding") return "GLM Coding";
     if (name === "openai") return "OpenAI";
+    if (name === "meta-muse-code") return "Muse Code";
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 }

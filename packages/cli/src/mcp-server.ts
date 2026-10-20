@@ -21,6 +21,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { config } from "dotenv";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
+import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import { SessionManager } from "./mcp-session/index.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
@@ -470,6 +471,47 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "the model did not produce it. Re-prompt with the required format restated; do NOT " +
     "count this slot as a vote",
 };
+
+/**
+ * The Details cell of a preflight "no route" row: the reason, then EVERY line
+ * of the plan's hint — for a missing credential that is the same login
+ * instruction `--probe` prints. Without it the row read only `No credentials
+ * configured for "meta-muse-code".`, which an agent cannot act on.
+ *
+ * Hints come in two shapes. Most are one remedy sentence (explicit-not-served,
+ * catalog-unreadable, …), kept whole. `buildCredentialHint`'s is a header
+ * (`No credentials found for "<model>". Options:`) and one line per option.
+ * Only a line that REPEATS the reason is dropped, and that header is one: it
+ * restates the reason's "no credentials" before the options.
+ *
+ * One table cell, so the kept lines are joined with ` · ` (a space after a
+ * line ending in `:`), whitespace runs collapse, and a `|` is escaped.
+ */
+export function noRouteCell(reason: string, hint?: string): string {
+  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+  const lines = (hint ?? "")
+    .split("\n")
+    .map(flat)
+    .filter((line) => line && !repeatsNoRouteReason(line, flat(reason)));
+  // A line ending in ":" introduces the next, so it joins with a space.
+  const joined = lines.reduce(
+    (acc, line, i) => (i === 0 ? line : `${acc}${lines[i - 1].endsWith(":") ? " " : " · "}${line}`),
+    ""
+  );
+  const cell = joined ? `${reason} ${joined}` : reason;
+  return cell.replace(/\|/g, "\\|");
+}
+
+/** A hint line that restates the reason: the same text, or the credential hint's header. */
+function repeatsNoRouteReason(line: string, reason: string): boolean {
+  if (line === reason) return true;
+  return (
+    // "No credentials configured for …" and "No credentialed providers in …".
+    reason.startsWith("No credential") &&
+    line.startsWith("No credentials found for ") &&
+    line.endsWith("Options:")
+  );
+}
 
 /** `18864` → `18.4KB`. */
 function fmtSize(n: number): string {
@@ -1274,7 +1316,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           // rather than omitted, because "none of your credentials reaches this model" is the
           // single most useful thing to learn before the run rather than during it.
           failedModels.push(model);
-          rows.push(`| \`${model}\` | — | — | ❌ no route | ${plan.reason} |`);
+          rows.push(
+            `| \`${model}\` | — | — | ❌ no route | ${noRouteCell(plan.reason, plan.hint)} |`
+          );
           continue;
         }
 
@@ -2403,6 +2447,9 @@ function installMcpShutdown(sessionManager: SessionManager): void {
  * Called from index.ts when --mcp flag is used.
  */
 export function startMcpServer() {
+  // An MCP server never opens a credential dialog: its host is a program, and
+  // its panes are pane children (`auth/credentials/prompt-role.ts`).
+  setCredentialPromptRole("never");
   main().catch((error) => {
     console.error("[claudish] MCP fatal error:", error);
     process.exit(1);

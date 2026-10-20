@@ -23,6 +23,11 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
+import {
+  credentialHttpError,
+  isTransientCredentialError,
+  terminalCredentialError,
+} from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
 
@@ -449,7 +454,9 @@ export class KimiOAuth {
 
     // Check if we have credentials
     if (!this.credentials) {
-      throw new Error("No Kimi OAuth credentials found. Please run `claudish login kimi` first.");
+      throw terminalCredentialError(
+        "No Kimi OAuth credentials found. Please run `claudish login kimi` first."
+      );
     }
 
     // Check if token is still valid (with 5-minute buffer)
@@ -481,77 +488,133 @@ export class KimiOAuth {
    */
   private async doRefreshToken(): Promise<string> {
     if (!this.credentials) {
-      throw new Error("No Kimi OAuth credentials found. Please run `claudish login kimi` first.");
+      throw terminalCredentialError(
+        "No Kimi OAuth credentials found. Please run `claudish login kimi` first."
+      );
     }
 
     log("[KimiOAuth] Refreshing access token");
 
+    const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
+    const headers = {
+      "Content-Type": "application/x-www-form-urlencoded",
+      ...this.getPlatformHeaders(),
+    };
+    const body = new URLSearchParams({
+      client_id: OAUTH_CONFIG.clientId,
+      grant_type: "refresh_token",
+      refresh_token: this.credentials.refresh_token,
+    });
+
+    // The request and its body are network: a failure of either keeps its cause
+    // and the endpoint, so connection recovery classifies it, and the login on
+    // disk is left alone (the grok-oauth.ts split).
+    let response: Response;
+    let text: string;
     try {
-      const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
-      const headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        ...this.getPlatformHeaders(),
-      };
-
-      const body = new URLSearchParams({
-        client_id: OAUTH_CONFIG.clientId,
-        grant_type: "refresh_token",
-        refresh_token: this.credentials.refresh_token,
-      });
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Token refresh failed: ${response.status} - ${errorText}`);
-      }
-
-      const tokens = (await response.json()) as TokenResponse;
-
-      // Update credentials (keep existing refresh token if new one not provided)
-      const updatedCredentials: KimiCredentials = {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token || this.credentials.refresh_token,
-        expires_at: Date.now() + tokens.expires_in * 1000,
-        scope: tokens.scope,
-        token_type: tokens.token_type,
-      };
-
-      this.saveCredentials(updatedCredentials);
-      this.credentials = updatedCredentials;
-
-      log(
-        `[KimiOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
-      );
-
-      return updatedCredentials.access_token;
-    } catch (e: any) {
-      log(`[KimiOAuth] Refresh failed: ${e.message}`);
-
-      // Delete invalid credentials
-      const credPath = this.getCredentialsPath();
-      if (existsSync(credPath)) {
-        unlinkSync(credPath);
-      }
-      this.credentials = null;
-
-      // FIX H4: Check for API key fallback (FR5 priority)
-      if (process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY) {
-        log("[KimiOAuth] Falling back to API key mode");
-        // Return empty string to signal fallback to handler
-        // Handler will detect API key and use it instead
-        throw new Error("OAuth_FALLBACK_TO_API_KEY");
-      }
-
-      // No API key available, throw error with instructions
-      throw new Error(
-        `OAuth credentials invalid. Please re-login or set API key:\n  - Run: claudish login kimi\n  - Or set: export MOONSHOT_API_KEY='your-api-key'\n\nDetails: ${e.message}`
+      response = await fetch(url, { method: "POST", headers, body });
+      text = await response.text();
+    } catch (e) {
+      log(`[KimiOAuth] Could not reach ${url}: ${(e as Error).message}`);
+      throw Object.assign(
+        new Error(`Could not reach ${url} to refresh the Kimi token: ${(e as Error).message}`, {
+          cause: e,
+        }),
+        { claudishEndpoint: url }
       );
     }
+
+    if (!response.ok) {
+      const failure = credentialHttpError(
+        `Token refresh failed: ${response.status} - ${text}`,
+        response.status
+      );
+      // A token host that is down or busy (429, 5xx) says nothing about the
+      // login: keep it, and let the request retry.
+      if (isTransientCredentialError(failure)) throw failure;
+      // A CLASSIFIED rejection of the grant is the only case that deletes the
+      // stored login: 401/403, or a 400 whose body names `invalid_grant` (the
+      // grok-oauth.ts rule). Any other status (a 404/405/407/408 from a proxy
+      // in front of the token host, a 400 about something else) is terminal
+      // for this request but proves nothing about the login, so it stays.
+      const status = response.status;
+      const grantRejected =
+        status === 401 || status === 403 || (status === 400 && text.includes("invalid_grant"));
+      if (!grantRejected) throw failure;
+      return this.rejectLogin(failure);
+    }
+
+    // A 2xx that is not JSON is a gateway answering for the token host:
+    // retryable, and the login stays. A 2xx JSON with no access token does not
+    // show the login is dead either: retryable (503), with nothing persisted
+    // and nothing deleted.
+    let tokens: Partial<TokenResponse>;
+    try {
+      tokens = JSON.parse(text) as Partial<TokenResponse>;
+    } catch {
+      throw Object.assign(
+        new Error(
+          "Kimi token refresh answered with a body that is not JSON; retrying will usually work."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
+      );
+    }
+    if (typeof tokens?.access_token !== "string" || tokens.access_token.length === 0) {
+      throw Object.assign(
+        new Error(
+          "The Kimi token host answered without an access token; nothing was saved. Retrying will usually work; run `claudish login kimi` if this persists."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
+      );
+    }
+
+    // Update credentials (keep existing refresh token if new one not provided)
+    const expiresIn = typeof tokens.expires_in === "number" ? tokens.expires_in : 3600;
+    const updatedCredentials: KimiCredentials = {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || this.credentials.refresh_token,
+      expires_at: Date.now() + expiresIn * 1000,
+      scope: tokens.scope ?? this.credentials.scope,
+      token_type: tokens.token_type ?? this.credentials.token_type,
+    };
+
+    this.saveCredentials(updatedCredentials);
+    this.credentials = updatedCredentials;
+
+    log(
+      `[KimiOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
+    );
+
+    return updatedCredentials.access_token;
+  }
+
+  /**
+   * The token host REJECTED the grant (401/403, or 400 `invalid_grant`): the stored
+   * login cannot recover, so it is deleted, and the caller gets the fallback
+   * signal or the login instruction.
+   */
+  private rejectLogin(failure: Error): never {
+    log(`[KimiOAuth] Refresh rejected: ${failure.message}`);
+    const credPath = this.getCredentialsPath();
+    if (existsSync(credPath)) {
+      unlinkSync(credPath);
+    }
+    this.credentials = null;
+
+    // The fallback SIGNAL, always, carrying the login instruction as its cause.
+    // WHICH key may answer is not this login's decision: one KimiOAuth serves
+    // both kimi@ (Moonshot, metered) and kc@ (the Coding Plan), and each
+    // composite owns its own product's key (kimi-credential.ts). The composite
+    // falls back only when ITS key is present, and otherwise throws the cause:
+    // a kc@ user with no KIMI_CODING_API_KEY sees "run `claudish login kimi`",
+    // and MOONSHOT_API_KEY never signs kc@.
+    log("[KimiOAuth] Login rejected; the product's own API key may answer instead");
+    throw new Error("OAuth_FALLBACK_TO_API_KEY", {
+      cause: terminalCredentialError(
+        `Your Kimi login was rejected (${failure.message}). Run \`claudish login kimi\` to sign in again.`,
+        (failure as { upstreamStatus?: number }).upstreamStatus
+      ),
+    });
   }
 
   /**

@@ -24,6 +24,7 @@ import {
   routeProfile,
   wireRequestUrl,
 } from "./connection-wire.js";
+import { allConnections } from "./content-use.js";
 
 export interface ResolvedConnection {
   /** The claudish provider the request is for. */
@@ -79,8 +80,11 @@ function stripVendorPrefix(id: string): string {
   return id.includes("/") ? id.substring(id.lastIndexOf("/") + 1) : id;
 }
 
-function mappedOnRoute(entry: SlimModelEntry, route: CatalogRouteBinding): AggregatorEntry[] {
-  return (entry.aggregators ?? []).filter(
+function mappedOnRoute(
+  connections: AggregatorEntry[],
+  route: CatalogRouteBinding
+): AggregatorEntry[] {
+  return connections.filter(
     (connection) =>
       connection.routeStatus === "mapped" &&
       connection.route?.routeId === route.routeId &&
@@ -94,9 +98,12 @@ function mappedOnRoute(entry: SlimModelEntry, route: CatalogRouteBinding): Aggre
  *
  * 1. A connection whose wire id IS the name: an explicit spec is rewritten to
  *    the provider's wire id before it gets here (`kc@k3`, `or@openai/gpt-6.1-sol`).
+ *    Opt-in rows included, so an explicit `meta@muse-spark-1.3-contributor`
+ *    gets ITS connection and wire (`content-use.ts`).
  * 2. The record whose canonical id or alias is the name (vendor prefix
  *    dropped), then its exact wire id on that route — never a moving pointer
- *    unless the model's own id is one (same rule as `externalIdFor`).
+ *    unless the model's own id is one (same rule as `externalIdFor`), and never
+ *    a content-use opt-in id, since this step chooses one.
  */
 function findConnection(
   entries: SlimModelEntry[],
@@ -104,7 +111,9 @@ function findConnection(
   modelName: string
 ): { entry: SlimModelEntry; connection: AggregatorEntry } | undefined {
   for (const entry of entries) {
-    const connection = mappedOnRoute(entry, route).find((c) => c.externalModelId === modelName);
+    const connection = mappedOnRoute(allConnections(entry), route).find(
+      (c) => c.externalModelId === modelName
+    );
     if (connection) return { entry, connection };
   }
 
@@ -117,7 +126,7 @@ function findConnection(
       candidate.aliases.some((alias) => lower(alias) === name || lower(alias) === bare)
   );
   if (!entry) return undefined;
-  const connections = mappedOnRoute(entry, route);
+  const connections = mappedOnRoute(entry.aggregators ?? [], route);
   const connection = isMovingPointer(entry.modelId)
     ? connections[0]
     : connections.find((c) => !isMovingPointer(c.externalModelId as string));

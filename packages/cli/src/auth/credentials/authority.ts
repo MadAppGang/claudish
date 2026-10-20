@@ -21,6 +21,7 @@ import { DevinCredentialProvider } from "./devin-credential.js";
 import { GrokSubscriptionCredentialProvider } from "./grok-credential.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
+import { MuseCodeCredentialProvider } from "./muse-code-credential.js";
 import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
 import type {
   CredentialProvider,
@@ -254,6 +255,10 @@ export class CredentialAuthority {
     // "x-ai": that is the METERED XAI_API_KEY provider, and crossing them would
     // let a pay-per-token key authenticate a flat-rate `SUB` provider.
     authority.register(new GrokSubscriptionCredentialProvider(), ["grok-subscription"]);
+    // Muse Code: a key minted from a Meta `dca:` login, confirmed by the mint's
+    // entitlement answer. `apiKeyEnvVar: ""`, so the generic loop skips it; it
+    // must NOT alias onto "meta", the METERED META_API_KEY provider.
+    authority.register(new MuseCodeCredentialProvider(), ["meta-muse-code"]);
     authority.register(makeKimiCredential(), ["kimi"]);
     // kimi-coding is a SEPARATE product with its own endpoint + KIMI_CODING_API_KEY.
     // It must NOT alias onto the regular Kimi credential, or the coding endpoint

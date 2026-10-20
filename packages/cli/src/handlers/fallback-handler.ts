@@ -13,13 +13,21 @@ import type { Context } from "hono";
 import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
+import { authVerdict, isCredentialRejection } from "./shared/auth-failure.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
 import { isClaudishConnectionVerdict, isRecoveryHoldResponse } from "./shared/recovery-marker.js";
+import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
 import type { ModelHandler } from "./types.js";
 
 export interface FallbackCandidate {
   /** Human-readable provider name for logging */
   name: string;
+  /**
+   * The claudish provider uid (`kimi-coding`), when the caller knows it. `name`
+   * is a DISPLAY name, so a billing question asked of it answers for nobody:
+   * `isSubscriptionProvider("Kimi Coding")` is false.
+   */
+  provider?: string;
   /** The handler to try */
   handler: ModelHandler;
 }
@@ -44,7 +52,7 @@ export class FallbackHandler implements ModelHandler {
 
     for (let attempt = 0; attempt < this.candidates.length; attempt++) {
       const idx = (startIndex + attempt) % this.candidates.length;
-      const { name, handler } = this.candidates[idx];
+      const { name, handler, provider } = this.candidates[idx];
       const isLast = attempt === this.candidates.length - 1;
 
       try {
@@ -113,11 +121,28 @@ export class FallbackHandler implements ModelHandler {
           return response;
         }
 
+        // A CREDENTIAL VERDICT leaves this handler untouched too, for the
+        // recovery hold's second reason: folded into `formatCombinedError`, a
+        // transient 503 behind an earlier candidate's 404 became a terminal 400
+        // (`exhaustedChainStatus` is 503 only when EVERY error is transient), so
+        // Claude Code stopped instead of retrying the same hop, and the verdict
+        // header was dropped. A terminal verdict keeps its exact message and
+        // `upstream_status` the same way (`auth-failure.ts`).
+        const verdict = authVerdict(response.headers);
+        if (verdict) {
+          if (errors.length > 0) {
+            logStderr(
+              `[Fallback] ${name}: credential ${verdict === "terminal" ? "rejected" : "temporarily unavailable"} — stopping the chain here.`
+            );
+          }
+          return response;
+        }
+
         // Clone before reading body so we can still return the original if needed
         const errorBody = await response.clone().text();
 
         // Non-retryable error (rate limit, server error, bad format) — stop trying
-        if (!isRetryableError(response.status, errorBody, name, response.headers)) {
+        if (!isRetryableError(response.status, errorBody, name, response.headers, provider)) {
           if (errors.length > 0) {
             // We had previous fallback attempts; show combined error
             errors.push({ provider: name, status: response.status, message: errorBody });
@@ -212,7 +237,8 @@ export function isRetryableError(
   status: number,
   errorBody: string,
   provider?: string,
-  headers?: Headers
+  headers?: Headers,
+  providerId?: string
 ): boolean {
   // ── CLAUDISH'S OWN "CANNOT REACH THE HOST" IS NEVER A REASON TO ADVANCE ────
   //
@@ -233,6 +259,18 @@ export function isRetryableError(
   // predicate rather than either half is what stops chain-safety from being a
   // property of which arm happened to answer.
   if (isClaudishConnectionVerdict(headers)) return false;
+
+  // ── A CREDENTIAL VERDICT IS NEVER A REASON TO ADVANCE EITHER ──────────────
+  //
+  // `ComposedHandler` marks its answer to a credential failure it could place
+  // (`auth-failure.ts`): `terminal` — a subscription login that cannot succeed
+  // on retry, answered 400 so the message lands inline — or `transient` — a
+  // 5xx/429 on the credential path, which the SAME hop answers on Claude Code's
+  // own retry. Either way the next candidate is the wrong remedy, and for a
+  // subscription it is a metered one (project owner, 2026-10-16). Above the
+  // quota wording and the `upstream_status` recovery below, because a terminal
+  // 400 carries `upstream_status: 401`, which that recovery reads as retryable.
+  if (authVerdict(headers)) return false;
 
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.
@@ -267,6 +305,33 @@ export function isRetryableError(
   // So the chain advances, and the billing change is made LOUD instead of being
   // prevented at the cost of the request.
   if (hasQuotaExhaustionWording(errorBody)) return true;
+
+  // A SUBSCRIPTION's 401 stops the chain whatever its transport answered. The
+  // verdict header above covers every 401 a ComposedHandler places; this covers
+  // a candidate that answers one without it, so the rule holds for every
+  // subscription provider and not only for the code paths that mint the header.
+  // AFTER the quota wording: a spent allowance still advances, with its warning.
+  // Asked of the uid — a display name is never a subscription.
+  if (providerId && isSubscriptionProvider(providerId)) {
+    const recovered = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
+    // A credential rejection only: a 401 that says the MODEL is not carried
+    // (OpenCode Zen Go's "Model <id> is not supported") is a per-model miss and
+    // advances, as it always did (`isCredentialRejection`).
+    if ((status === 401 || recovered === 401) && isCredentialRejection(401, errorBody)) {
+      return false;
+    }
+    // A RAW 403 credential rejection stops it too (measured: `403
+    // {"error":{"type":"invalid_api_key"}}` from a subscription hop advanced
+    // onto the metered `meta@`). Raw only: the upstream body still carries the
+    // provider's own `error.type`, so `isCredentialRejection` can tell Zen Go's
+    // `403 RegionError` (a model opt-in, which advances) from a dead login. A
+    // RECOVERED 403 cannot be told apart that way — claudish's remapped 400
+    // body says `invalid_request_error` — so it keeps advancing; a 403 the
+    // ComposedHandler placed already carries the terminal verdict header above.
+    if (status === 403 && isCredentialRejection(403, errorBody)) {
+      return false;
+    }
+  }
 
   // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────
   //

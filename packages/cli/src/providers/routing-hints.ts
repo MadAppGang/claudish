@@ -41,6 +41,12 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   glm: { apiKeyEnvVar: "ZHIPU_API_KEY" },
   "glm-coding": { apiKeyEnvVar: "GLM_CODING_API_KEY" },
   deepseek: { apiKeyEnvVar: "DEEPSEEK_API_KEY" },
+  meta: { apiKeyEnvVar: "META_API_KEY" },
+  // No env var: the login is minted from claudish's own Muse login or the Muse
+  // Code CLI's. META_API_KEY is the metered `meta` provider and never signs muse@.
+  "meta-muse-code": {
+    note: "Log in with `claudish login muse`, or `muse login` in an interactive terminal and allow Keychain access",
+  },
   mistralai: { apiKeyEnvVar: "MISTRAL_API_KEY" },
   sakana: { apiKeyEnvVar: "SAKANA_API_KEY" },
   "sakana-subscription": { apiKeyEnvVar: "SAKANA_SUBSCRIPTION_API_KEY" },

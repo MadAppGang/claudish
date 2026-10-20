@@ -40,6 +40,7 @@
 | **Alibaba Coding Plan** | `claudish --model qcode@qwen3.7-plus` |
 | **Alibaba Token Plan** | `claudish --model qtoken@qwen3.7-plus` |
 | **Alibaba PAYG** | `claudish --model qpay@qwen3.7-plus` |
+| **Muse Code** (Meta) | `claudish --model muse@muse-spark-1.3` |
 
 **100% Offline Option — Your code never leaves your machine:**
 ```bash
@@ -161,6 +162,7 @@ claudish login codex           # ChatGPT Plus/Pro (OpenAI's own PKCE flow)
 claudish login antigravity     # Gemini via your Antigravity plan
 claudish login grok            # SuperGrok / X Premium+
 claudish login kimi            # Kimi
+claudish login muse            # Muse Code (Meta), or reuse the Muse Code CLI's login
 
 # Then just name the model
 claudish --model cx@gpt-5.5 "implement user authentication"
@@ -362,6 +364,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `QWEN_CODING_PLAN_API_KEY` | Alibaba Coding Plan (`qcode@`) | _(separate key and host)_ |
 | `QWEN_TOKEN_PLAN_API_KEY` | Alibaba Token Plan (`qtoken@`) | _(separate key and host)_ |
 | `DASHSCOPE_API_KEY` | Alibaba PAYG (`qpay@`) | _(separate key and host)_ |
+| `META_API_KEY` | Meta Model API, metered (`meta@`) | _(never signs the `muse@` subscription)_ |
 | `OLLAMA_API_KEY` | OllamaCloud (`oc@`) | |
 | `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) | |
 | `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`) | _(separate from the metered Zen credential)_ |
@@ -452,6 +455,7 @@ Every one of these also accepts `CUSTOM_<NAME>_KEY` as an alias, and any of them
 | `QWEN_CODING_PLAN_BASE_URL` | Alibaba Coding Plan | `https://coding-intl.dashscope.aliyuncs.com` |
 | `QWEN_TOKEN_PLAN_BASE_URL` | Alibaba Token Plan | `https://token-plan.ap-southeast-1.maas.aliyuncs.com` |
 | `DASHSCOPE_BASE_URL` | Alibaba PAYG | `https://dashscope-intl.aliyuncs.com` |
+| `META_BASE_URL` | Meta Model API (`meta@`) | `https://api.meta.ai` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen | `https://opencode.ai/zen` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server | _(required with LITELLM_API_KEY)_ |
@@ -640,7 +644,9 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `qcode@` | Alibaba Coding Plan | `QWEN_CODING_PLAN_API_KEY` | `qcode@qwen3.7-plus` |
 | `qtoken@` | Alibaba Token Plan | `QWEN_TOKEN_PLAN_API_KEY` | `qtoken@qwen3.7-plus` |
 | `qpay@` | Alibaba PAYG | `DASHSCOPE_API_KEY` | `qpay@qwen3.7-plus` |
-| `llama@`, `lc@`, `meta@` | OllamaCloud | `OLLAMA_API_KEY` | `llama@llama-3.1-70b` |
+| `meta@` | Meta Model API (metered) | `META_API_KEY` | `meta@muse-spark-1.3` |
+| `muse@` | Muse Code subscription (Meta) | _(`claudish login muse`, or the Muse Code CLI's Keychain login)_ | `muse@muse-wonder-full-1.0` |
+| `llama@`, `lc@` | OllamaCloud | `OLLAMA_API_KEY` | `llama@llama-3.1-70b` |
 | `oc@` | OllamaCloud | `OLLAMA_API_KEY` | `oc@llama-3.1-70b` |
 | `zen@` | OpenCode Zen | `OPENCODE_API_KEY` | `zen@gpt-5-nano` |
 | `zgo@`, `zengo@` | OpenCode Zen Go plan | `OPENCODE_GO_API_KEY` | `zgo@glm-5` |

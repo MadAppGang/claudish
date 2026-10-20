@@ -63,6 +63,8 @@ const PUBLIC_PROVIDERS = new Set([
   "qwen-token-plan",
   "qwen-coding",
   "qwen-payg",
+  "meta",
+  "meta-muse-code",
 ]);
 
 // ─── Module-Level State ───────────────────────────────────────────────────────

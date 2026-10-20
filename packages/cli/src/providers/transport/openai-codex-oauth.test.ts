@@ -1,51 +1,103 @@
-/**
- * Regression pin for Step 5b — OpenAI Codex OAuth delegation.
- *
- * OpenAICodexTransport used to read ~/.claudish/codex-oauth.json directly in BOTH
- * getEndpoint() and getHeaders(), and minted OAuth headers / picked the chatgpt.com
- * endpoint inline. Step 5 moves all of that to credentials.getRequestAuth("openai-codex"),
- * cached by a new refreshAuth() (called by composed-handler BEFORE getEndpoint/getHeaders).
- *
- * This test pins:
- *   OAuth present → chatgpt.com/backend-api/codex/responses endpoint
- *                 + buildOAuthHeaders shape (6 headers w/ accountId)
- *                 + transformPayload adds store:false / include + model normalization
- *   No OAuth (key only) → api.openai.com static endpoint + Bearer <apiKey>
- *                 + transformPayload still normalizes model (pure, non-auth) but
- *                   does NOT add the store/include auth bits.
- *   OAuth present but its refresh REJECTED → the same api-key-shaped result, by a
- *                 different mechanism (cachedAuth null → super.getHeaders()).
- *
- * Hermetic: a fake `openai-codex` credential is registered on the REAL authority
- * and delegates to `getRequestAuthMock`, with each fixture shaped like what the
- * REAL half returns, `arm` included. The real credential is saved with
- * `credentials.get` and re-registered in afterAll. Never `mock.module()` the
- * authority: Bun keeps that replacement for the rest of the process, so every
- * later file that imports `credentials` got a fake with no `register` (measured:
- * 9 failures in openai-codex-refresh-outage.test.ts).
- *
- * "No OAuth" is NOT a throw. `CompositeCredentialProvider.getRequestAuth` falls
- * through to `this.fallback.getRequestAuth(ctx)`, and `ApiKeyCredentialProvider`
- * ALWAYS returns an artifact — `{arm:"api-key", headers:{Authorization:"Bearer …"}}`
- * with a key, `{arm:"api-key", headers:{}}` without one. It never returns null and
- * never throws. This file used to model the api-key arm as a throw, which is why it
- * stayed green while `refreshAuth` labelled every metered request `subscription`
- * (review round 1, C-1). The throw is a real path — an AVAILABLE OAuth primary
- * whose refresh is then rejected — so it keeps its own test below, and no longer
- * doubles as the api-key case.
- *
- * `refreshAuth()` also writes the process-wide signed-arm record
- * (auth/credentials/billing-probe.ts). Every test here that calls it must clear
- * that record, or the next FILE in the Bun run inherits a billing answer from a
- * fixture — see the afterEach.
- */
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { credentials } from "../../auth/credentials/authority.js";
-import { clearSignedArm } from "../../auth/credentials/billing-probe.js";
-import type { CredentialProvider } from "../../auth/credentials/types.js";
+const savedEnvironment = new Map(["CLAUDISH_DISABLE_KEYCHAIN"].map((k) => [k, process.env[k]]));
+const testHome = mkdtempSync(join(tmpdir(), "claudish-auth-tests-"));
+process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+const realFetch = globalThis.fetch;
+globalThis.fetch = Object.assign(
+  (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.protocol === "http:" && url.hostname === "127.0.0.1") return realFetch(input, init);
+    throw new Error(`Unexpected external request: ${url.origin}${url.pathname}`);
+  },
+  { preconnect: () => {} }
+) as typeof fetch;
+const keychain = await import("../keychain.js");
+const fakeKeychainDeps = {
+  platform: () => "darwin",
+  run: () => ({ code: 44, stdout: "", stderr: "test: absent" }),
+  runAsync: async () => ({ code: 44, stdout: "", stderr: "test: absent" }),
+  spawnAsync: () => ({
+    done: Promise.resolve({ code: 44, stdout: "", stderr: "test: absent" }),
+    pid: undefined,
+  }),
+};
+keychain.setKeychainTestDeps(fakeKeychainDeps);
+beforeEach(() => {
+  keychain.setKeychainTestDeps(fakeKeychainDeps);
+});
+afterEach(() => {
+  keychain.setKeychainTestDeps(null);
+  keychain.invalidateKeychainCache();
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  keychain.setKeychainTestDeps(null);
+  keychain.invalidateKeychainCache();
+  for (const [key, value] of savedEnvironment) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(testHome, { recursive: true, force: true });
+});
+
+const { credentials } = await import("../../auth/credentials/authority.js");
+
+const museCore = await import("../../providers/meta-muse/muse-credentials.js");
+const museKeychain = await import("../../providers/meta-muse/muse-keychain.js");
+const promptRole = await import("../../auth/credentials/prompt-role.js");
+const catalogClient = await import("../../providers/catalog-client.js");
+const allModelsCache = await import("../../providers/all-models-cache.js");
+// Every seam is a complete fake: omitted fields would restore machine defaults.
+beforeEach(() => {
+  museCore.setMuseCoreTestDeps({
+    dir: () => testHome,
+    now: () => 1_800_000_000_000,
+    readStore: () => null,
+    writeBorrowedCopy: () => {
+      throw new Error("unexpected borrowed-copy write");
+    },
+    mint: async () => {
+      throw new Error("unexpected Muse mint");
+    },
+    keychainLogin: async () => ({ kind: "not-allowed" }),
+  });
+  museKeychain.setMuseKeychainTestDeps({
+    dir: () => testHome,
+    env: () => ({}),
+    now: () => 1_800_000_000_000,
+    sleep: async () => {
+      throw new Error("unexpected Muse Keychain wait");
+    },
+    pid: () => 424242,
+    isAlive: () => false,
+    presence: async () => ({ kind: "absent" }),
+    startRead: () => ({ done: Promise.resolve({ kind: "absent" as const }), pid: undefined }),
+  });
+});
+afterEach(() => {
+  museCore.setMuseCoreTestDeps(null);
+  museCore.resetMuseCredentialState();
+  museKeychain.setMuseKeychainTestDeps(null);
+  museKeychain.resetMuseKeychainState();
+  promptRole._resetCredentialPromptRoleForTest();
+  catalogClient._resetCatalogClient();
+  allModelsCache._clearAllModelsCacheMemo();
+  keychain.invalidateKeychainCache();
+});
+
+const { clearSignedArm } = await import("../../auth/credentials/billing-probe.js");
+afterEach(() => {
+  clearSignedArm();
+  keychain.invalidateKeychainCache();
+});
+
+type CredentialProvider = NonNullable<ReturnType<typeof credentials.get>>;
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
-import { OpenAICodexTransport } from "./openai-codex.js";
+const { OpenAICodexTransport } = await import("./openai-codex.js");
 
 const FAKE_TOKEN = "codex-oauth-token-abc";
 const FAKE_ACCOUNT = "acct-123";
@@ -98,7 +150,7 @@ const fakeCodexCredential: CredentialProvider = {
 
 let realCodexCredential: CredentialProvider | undefined;
 
-beforeAll(() => {
+beforeEach(() => {
   realCodexCredential = credentials.get("openai-codex");
   if (!realCodexCredential) {
     throw new Error("the authority has no openai-codex credential to restore after this file");
@@ -107,7 +159,7 @@ beforeAll(() => {
   credentials.invalidate("openai-codex");
 });
 
-afterAll(() => {
+afterEach(() => {
   // Put the real credential back so no later file in the Bun run signs with the fake.
   if (realCodexCredential) credentials.register(realCodexCredential, ["openai-codex"]);
   credentials.invalidate("openai-codex");
@@ -134,7 +186,7 @@ afterEach(() => {
   // "subscription" behind and the next file answers
   // isSubscriptionProvider("openai-codex") = true on a machine where no
   // credential would sign. Measured: validation/fix2-residue-leak.txt.
-  clearSignedArm("openai-codex");
+  credentials.invalidate("openai-codex");
 });
 
 describe("OpenAICodexTransport — OAuth present (delegated)", () => {
@@ -210,21 +262,24 @@ describe("OpenAICodexTransport — OAuth available but its refresh is rejected",
     });
   });
 
-  test("refreshAuth swallows the throw → cachedAuth null → super endpoint + Bearer apiKey", async () => {
+  test("unclassified refresh rejection propagates without a constructor-key signature", async () => {
+    const t = new OpenAICodexTransport(provider, "gpt-5.1-codex", "sk-codex-key");
+    await expect(t.refreshAuth()).rejects.toThrow("refresh_token rejected");
+  });
+
+  test("E2: successful OAuth followed by rejected refresh never records metered billing", async () => {
+    const { isSubscriptionProvider } = await import(
+      "../../handlers/shared/remote-provider-types.js"
+    );
+    getRequestAuthMock = mock(async () => CODEX_OAUTH_AUTH);
     const t = new OpenAICodexTransport(provider, "gpt-5.1-codex", "sk-codex-key");
     await t.refreshAuth();
-
-    // Same observable result as the api-key arm above, reached by a different
-    // mechanism: null cachedAuth rather than an endpoint-less artifact. Keeping
-    // both is the point — they were conflated once, and the billing label that
-    // was inferred from "cachedAuth is null" was wrong for the api-key arm.
-    expect(t.getEndpoint()).toBe("https://api.openai.com/v1/responses");
-    const headers = await t.getHeaders();
-    expect(headers.Authorization).toBe("Bearer sk-codex-key");
-    expect(headers["chatgpt-account-id"]).toBeUndefined();
-
-    const out = t.transformPayload({ model: "gpt-5.1-codex", input: "y" });
-    expect(out.store).toBeUndefined();
-    expect(out.include).toBeUndefined();
+    expect((await t.getHeaders()).Authorization).toBe(`Bearer ${FAKE_TOKEN}`);
+    const error = new Error("refresh_token rejected");
+    getRequestAuthMock = mock(async () => {
+      throw error;
+    });
+    await expect(t.refreshAuth()).rejects.toBe(error);
+    expect(isSubscriptionProvider("openai-codex")).toBe(true);
   });
 });

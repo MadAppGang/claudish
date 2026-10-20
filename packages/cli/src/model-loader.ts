@@ -16,6 +16,7 @@ import {
   parseCatalogV3Envelope,
 } from "./providers/catalog-v3.js";
 import type { ConnectionWire } from "./providers/connection-wire.js";
+import { normaliseCatalogPayload } from "./providers/content-use.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import type { OpenRouterModel } from "./types.js";
 
@@ -131,6 +132,13 @@ export interface RecommendedSubscriptionRoute {
 export interface RecommendedModelsDoc {
   contractVersion?: 3;
   generationId?: string;
+  /**
+   * claudish's own projection version ({@link RECOMMENDED_PROJECTION_VERSION}).
+   * A disk cache written by an older projection is rebuilt even within its
+   * generation: the `command` it holds may name a wire id the current rules
+   * would never choose.
+   */
+  projectionVersion?: number;
   version: string;
   lastUpdated: string;
   generatedAt?: string;
@@ -349,6 +357,13 @@ const FIREBASE_BASE_URL = "https://us-central1-claudish-6da10.cloudfunctions.net
 const FIREBASE_RECOMMENDED_URL = `${FIREBASE_BASE_URL}?catalog=recommended`;
 
 /**
+ * Bumped when {@link projectRecommendations} would answer differently for the
+ * same generation. 1: content-use opt-in wire ids are never a `command`
+ * (`content-use.ts`); a projection written before that may hold one.
+ */
+export const RECOMMENDED_PROJECTION_VERSION = 1;
+
+/**
  * The projected recommended-models list, on disk.
  *
  * `-v2`, not `recommended-models-cache.json`: the row shape changed (`category`
@@ -383,7 +398,9 @@ async function fetchCatalogPage<T>(
   if (generationId && envelope.generationId !== generationId) {
     throw new Error("Model catalog generation changed during the read");
   }
-  return envelope;
+  // Every Firebase `ModelDoc` read passes through here, so this is where their
+  // content-use opt-in connections are set aside (`content-use.ts`).
+  return { ...envelope, data: normaliseCatalogPayload(envelope.data) };
 }
 
 async function fetchCatalogData<T>(
@@ -552,6 +569,7 @@ export function projectRecommendations(
   return {
     contractVersion: 3,
     generationId: recommendations.generationId,
+    projectionVersion: RECOMMENDED_PROJECTION_VERSION,
     version: recommendations.generationId,
     lastUpdated: stamp,
     generatedAt: stamp,
@@ -726,6 +744,13 @@ function readRecommendedModelsCacheFile(): RecommendedModelsDoc | null {
   try {
     parsed = JSON.parse(readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8"));
   } catch {
+    return null;
+  }
+  // A projection an older build wrote within this same generation may hold a
+  // `command` the current rules would never choose (a content-use opt-in wire
+  // id): rebuild it. Checked on the DISK copy only — the doc reader itself
+  // judges shape, and a freshly projected doc always carries this version.
+  if (!isRecord(parsed) || parsed.projectionVersion !== RECOMMENDED_PROJECTION_VERSION) {
     return null;
   }
   return readProjectedRecommendationsDoc(parsed);

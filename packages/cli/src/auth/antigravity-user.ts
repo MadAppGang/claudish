@@ -14,6 +14,7 @@
  */
 
 import { log } from "../logger.js";
+import { credentialHttpError } from "./credentials/credential-error.js";
 
 /**
  * The Antigravity backend host.
@@ -129,7 +130,11 @@ async function callLoadCodeAssistAntigravity(accessToken: string): Promise<LoadC
   });
 
   if (!res.ok) {
-    throw new Error(`loadCodeAssist (antigravity) failed: ${res.status} ${await res.text()}`);
+    // 429/5xx is transient (retry), a 4xx a terminal setup verdict (`credential-error.ts`).
+    throw credentialHttpError(
+      `loadCodeAssist (antigravity) failed: ${res.status} ${await res.text()}`,
+      res.status
+    );
   }
 
   return (await res.json()) as LoadCodeAssistResponse;

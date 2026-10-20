@@ -218,6 +218,11 @@ export const SUBSCRIPTION_PROVIDERS = new Set([
   //
   // Its metered sibling `opencode-zen` deliberately stays OUT.
   "opencode-zen-go",
+  // Muse Code is Meta's flat-rate plan. Its ONE credential is a key minted from
+  // a Meta login, and the core signs it only after a mint confirmed
+  // `is_subs_active && !require_payment` (muse-mint.ts). The metered `meta`
+  // provider (META_API_KEY) stays OUT.
+  "meta-muse-code",
 ]);
 
 /**

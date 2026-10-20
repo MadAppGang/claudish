@@ -7,6 +7,7 @@
  */
 
 import { credentials } from "../../auth/credentials/authority.js";
+import { terminalCredentialError } from "../../auth/credentials/credential-error.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
 import { getProviderByName } from "../provider-definitions.js";
@@ -78,18 +79,44 @@ export class AnthropicProviderTransport implements ProviderTransport {
     // The transport no longer manages OAuth itself — it delegates to the
     // credential authority, which mints the OAuth artifact (anthropic-version +
     // Bearer token + the X-Msh-* platform headers) and applies the
-    // OAuth_FALLBACK_TO_API_KEY → api-key fallback internally. On failure here
-    // we keep the plain x-api-key path already populated above.
+    // OAuth_FALLBACK_TO_API_KEY → api-key fallback internally. Every failure is
+    // rethrown; nothing falls back to the x-api-key populated above.
     if (this.provider.name === "kimi-coding") {
       try {
         const auth = await credentials.getRequestAuth("kimi-coding", { model: "" });
+        // An artifact that signs nothing: the login is gone (a rejected login
+        // deletes kimi-oauth.json, so on every LATER request the composite
+        // skips the OAuth half) and KIMI_CODING_API_KEY is unset, so the
+        // api-key half returned `{headers:{}}`. The `x-api-key` above is then
+        // `this.apiKey`, the construction-time OAuth token, which upstream
+        // answers with a bare 401. Stop with the login instruction instead.
+        if (!auth.headers.Authorization && !auth.headers["x-api-key"]) {
+          throw terminalCredentialError(
+            "No Kimi Code credential: the Kimi login is missing or was rejected, and KIMI_CODING_API_KEY is not set. Run `claudish login kimi` to sign in."
+          );
+        }
         // If the authority returned an OAuth Bearer, it replaces the api-key auth.
         if (auth.headers.Authorization) {
           delete headers["x-api-key"];
         }
         Object.assign(headers, auth.headers);
       } catch (e: any) {
-        log(`[${this.displayName}] OAuth path failed, falling back to API key: ${e.message}`);
+        // Every failure is rethrown, for ComposedHandler's getHeaders site to
+        // classify: a network fault (recovered), a token host's 429/5xx
+        // (retried), a dead login ("run `claudish login kimi`", terminal).
+        // Swallowing here was the transport-catch bug (CLAUDE.md): the request
+        // went out with `x-api-key: ""` or a stale token.
+        //
+        // The fallback to the Coding Plan's own KIMI_CODING_API_KEY (the same
+        // flat-rate plan) is decided where the key lives: the kimi-coding
+        // composite falls through only when that key is present, and then
+        // returns its artifact without throwing (composite-credential.ts). A
+        // Moonshot key (MOONSHOT_API_KEY / KIMI_API_KEY, a metered product)
+        // belongs to the `kimi` composite and never signs kc@. `this.apiKey`
+        // never signs kc@ alone: for an OAuth user it is the construction-time
+        // token, so an artifact with no header is refused above.
+        log(`[${this.displayName}] OAuth path failed: ${e.message}`);
+        throw e;
       }
     }
 

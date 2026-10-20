@@ -29,6 +29,7 @@
  */
 
 import { log } from "../logger.js";
+import { credentialHttpError, terminalCredentialError } from "./credentials/credential-error.js";
 import { type BaseCredentials, OAuthManager } from "./oauth-manager.js";
 
 /** OIDC issuer for the Grok CLI's identity provider. */
@@ -164,7 +165,9 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   protected async doRefreshToken(): Promise<string> {
     const current = this.credentials;
     if (!current) {
-      throw new Error(`No Grok credentials found. Please run \`${this.loginHint}\` first.`);
+      throw terminalCredentialError(
+        `No Grok credentials found. Please run \`${this.loginHint}\` first.`
+      );
     }
 
     const body = new URLSearchParams({
@@ -179,12 +182,51 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
       body,
     });
 
-    const parsed = (await response.json().catch(() => ({}))) as TokenResponse;
+    // The body is read apart from its parse: a reset while it streams is a
+    // network fault and keeps its cause and endpoint, so connection recovery
+    // classifies it. Only a body that arrived and does not parse is treated as
+    // an answer with no token (the same split as the Muse mint).
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw Object.assign(
+        new Error(
+          `Lost the connection to ${TOKEN_ENDPOINT} while reading the Grok token: ${(error as Error).message}`,
+          { cause: error }
+        ),
+        { claudishEndpoint: TOKEN_ENDPOINT }
+      );
+    }
+    let parsed: TokenResponse;
+    try {
+      parsed = JSON.parse(text) as TokenResponse;
+    } catch {
+      // A 2xx that is not JSON is a gateway answering for the token host, not
+      // a verdict on the grant: retryable. A non-2xx falls to its status below.
+      if (response.ok) {
+        throw Object.assign(
+          new Error(
+            "Grok token refresh answered with a body that is not JSON; retrying will usually work."
+          ),
+          { transient: true as const, upstreamStatus: 503 }
+        );
+      }
+      parsed = {};
+    }
     if (!response.ok || !parsed.access_token) {
       const detail = parsed.error_description ?? parsed.error ?? `HTTP ${response.status}`;
       // `invalid_grant` means the refresh token is dead — only a new login
-      // fixes it, so say that rather than leaving the user to guess.
-      throw new Error(
+      // fixes it, so say that rather than leaving the user to guess. A 429 or
+      // 5xx from the token host is NOT that: it is marked transient, so the
+      // request retries instead of stopping on a login instruction.
+      if (!response.ok) {
+        throw credentialHttpError(
+          `Grok token refresh failed: ${detail}. Run \`${this.loginHint}\` to sign in.`,
+          response.status
+        );
+      }
+      throw terminalCredentialError(
         `Grok token refresh failed: ${detail}. Run \`${this.loginHint}\` to sign in.`
       );
     }

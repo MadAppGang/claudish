@@ -70,8 +70,10 @@
  * identical inputs, and the reason would live nowhere a user could see.
  */
 
+import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
+import type { AggregatorEntry } from "../model-loader.js";
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
-import { externalIdFor, getCatalogEntries } from "./catalog-client.js";
+import { externalIdFor, getCatalogEntries, isMovingPointer } from "./catalog-client.js";
 import {
   CATALOG_ROUTE_BINDINGS,
   type CatalogRouteBinding,
@@ -104,8 +106,33 @@ export interface RouteCandidate {
   source: "catalog-connection" | "namespace-claim";
 }
 
+/**
+ * Why the gatherer set a candidate aside instead of returning it. Each names a
+ * `CandidateOutcome` (`routing-rules.ts`), so a display can show the drop.
+ *
+ * - `excluded-by-content-use`: the provider maps the model only through a
+ *   content-use opt-in wire id, which claudish never chooses (`content-use.ts`).
+ * - `excluded-by-membership`: a subscription's catalog-published plan
+ *   membership does not include the model, although its route is mapped.
+ */
+export type GatheringExclusion = "excluded-by-content-use" | "excluded-by-membership";
+
+/** A candidate the catalog publishes and the gatherer did not keep, with why. */
+export interface ExcludedCandidate {
+  candidate: RouteCandidate;
+  outcome: GatheringExclusion;
+}
+
 export interface CandidateGathering {
+  /** The candidates a routing chain may use, ordered. Never contains an excluded one. */
   candidates: RouteCandidate[];
+  /**
+   * Candidates set aside before any credential is read, ordered like
+   * `candidates`. Kept apart so the only consumer, `explainCatalogChain`, can
+   * show each one with its outcome and never mark it `kept`: one list for both
+   * would make every explanation a hop.
+   */
+  excluded: ExcludedCandidate[];
   /** Mapped connections skipped because their route resolves to no claudish provider. */
   unmappedRoutes: string[];
   /** True when no catalog entry matched the name at all. */
@@ -195,25 +222,25 @@ function findCatalogEntry(entries: SlimModelEntry[], model: string): SlimModelEn
  *     the model is a moving pointer. Its rule — never send a pointer the user did
  *     not ask for — is the one claudish already applies everywhere, so there is
  *     no honest id to send and no candidate.
+ *
+ * One candidate is EXPLAINED rather than skipped or kept: a `subscription`-tier
+ * connection for a model outside its plan's published membership
+ * (`resolveSubscriptionRouting` → `not-served`) goes to `excluded` as
+ * `excluded-by-membership`. A mapped connection is not membership: the catalog
+ * can map a plan's route for a model the plan does not include, and a user rule
+ * naming that provider was already dropped for it, while the gathered path kept
+ * it as a hop. Both paths now ask the same question of the same function.
  */
 function gatherFromConnections(
   entry: SlimModelEntry,
   candidates: RouteCandidate[],
-  unmappedRoutes: Set<string>
+  excluded: ExcludedCandidate[],
+  unmappedRoutes: Set<string>,
+  cachePath: string | undefined
 ): void {
   for (const connection of entry.aggregators ?? []) {
     if (connection.routeStatus !== "mapped") continue;
-
-    // EVERY provider bound to this route, not just the first. One endpoint can
-    // wear several claudish names, each owning a different key silo, and the
-    // user's credential may be in any of them — see `routingProvidersForRoute`.
-    // The routing table only: a lookup-only name is never a candidate.
-    const bound = routingProvidersForRoute(connection.route);
-    const routable = bound.filter((name) => getProviderByName(name)?.tier !== undefined);
-    if (routable.length === 0) {
-      unmappedRoutes.add(routeLabel(connection.route));
-      continue;
-    }
+    const routable = routableProviders(connection, unmappedRoutes);
 
     for (const provider of routable) {
       const tier = getProviderByName(provider)?.tier;
@@ -222,23 +249,103 @@ function gatherFromConnections(
       const wireId = externalIdFor(entry, provider);
       if (!wireId || wireId !== connection.externalModelId) continue;
 
-      candidates.push({
-        provider,
-        wireId,
-        tier,
-        isVendorOwn: isVendorOwnRoute(connection.route, entry),
-        price: connectionPrice(connection.pricing),
-        // A connection that omits `contextWindow` serves the model's headline
-        // window — that is what the field's absence MEANS in the contract, not
-        // missing data. Carrying the entry's value is therefore reading the
-        // catalog, not defaulting: without it, `openai-codex`'s measured 372K cap
-        // on gpt-5.6-sol would sort AHEAD of the OpenAI API's full 1.05M, which
-        // publishes no per-connection number because it is the headline one.
-        contextWindow: connection.contextWindow ?? entry.contextWindow,
-        source: "catalog-connection",
+      const candidate = connectionCandidate(entry, connection, provider, tier, wireId);
+      // The catalog-published subscription tier only: a dynamic subscription's
+      // account decides its models, and `resolveSubscriptionRouting` answers
+      // `unknown` for a client-selected plan anyway.
+      if (
+        tier === "subscription" &&
+        resolveSubscriptionRouting(entry.modelId, provider, cachePath).kind === "not-served"
+      ) {
+        excluded.push({ candidate, outcome: "excluded-by-membership" });
+        continue;
+      }
+      candidates.push(candidate);
+    }
+  }
+
+  // Content-use opt-in rows (`content-use.ts`). They were moved out of
+  // `aggregators` where the catalog entered memory, so nothing above can pick
+  // one. They are EXPLAINED here, never returned as candidates: a provider that
+  // maps this model ONLY through an opt-in id (OpenCode Go's
+  // `muse-spark-1.3-contributor`) shows in `--probe` as dropped, with the reason.
+  // A provider that also maps a plain id already has its candidate, and its
+  // opt-in sibling is not news.
+  const gatheredProviders = new Set([
+    ...candidates.map((candidate) => candidate.provider),
+    ...excluded.map(({ candidate }) => candidate.provider),
+  ]);
+  for (const connection of entry.optInConnections ?? []) {
+    if (connection.routeStatus !== "mapped") continue;
+    for (const provider of routableProviders(connection, unmappedRoutes)) {
+      const tier = getProviderByName(provider)?.tier;
+      if (!tier || gatheredProviders.has(provider)) continue;
+
+      const wireId = optInIdFor(entry, provider);
+      if (!wireId || wireId !== connection.externalModelId) continue;
+
+      excluded.push({
+        candidate: connectionCandidate(entry, connection, provider, tier, wireId),
+        outcome: "excluded-by-content-use",
       });
     }
   }
+}
+
+/**
+ * EVERY provider bound to a connection's route, not just the first. One endpoint
+ * can wear several claudish names, each owning a different key silo, and the
+ * user's credential may be in any of them — see `routingProvidersForRoute`. The
+ * routing table only: a lookup-only name is never a candidate. A route bound to
+ * no defined provider is counted in `unmappedRoutes`.
+ */
+function routableProviders(connection: AggregatorEntry, unmappedRoutes: Set<string>): string[] {
+  const bound = routingProvidersForRoute(connection.route);
+  const routable = bound.filter((name) => getProviderByName(name)?.tier !== undefined);
+  if (routable.length === 0) unmappedRoutes.add(routeLabel(connection.route));
+  return routable;
+}
+
+/**
+ * The opt-in wire id `provider` publishes for the entry, chosen like
+ * {@link externalIdFor} (an exact id over a moving pointer). Only to EXPLAIN a
+ * drop; nothing sends it.
+ */
+function optInIdFor(entry: SlimModelEntry, provider: string): string | null {
+  const wireIds = (entry.optInConnections ?? []).flatMap((connection) =>
+    connection.routeStatus === "mapped" &&
+    catalogRouteMatchesProvider(connection.route, provider) &&
+    typeof connection.externalModelId === "string"
+      ? [connection.externalModelId]
+      : []
+  );
+  if (wireIds.length === 0) return null;
+  if (isMovingPointer(entry.modelId)) return wireIds[0] ?? null;
+  return wireIds.find((wireId) => !isMovingPointer(wireId)) ?? null;
+}
+
+function connectionCandidate(
+  entry: SlimModelEntry,
+  connection: AggregatorEntry,
+  provider: string,
+  tier: RouteTier,
+  wireId: string
+): RouteCandidate {
+  return {
+    provider,
+    wireId,
+    tier,
+    isVendorOwn: isVendorOwnRoute(connection.route, entry),
+    price: connectionPrice(connection.pricing),
+    // A connection that omits `contextWindow` serves the model's headline
+    // window — that is what the field's absence MEANS in the contract, not
+    // missing data. Carrying the entry's value is therefore reading the
+    // catalog, not defaulting: without it, `openai-codex`'s measured 372K cap
+    // on gpt-5.6-sol would sort AHEAD of the OpenAI API's full 1.05M, which
+    // publishes no per-connection number because it is the headline one.
+    contextWindow: connection.contextWindow ?? entry.contextWindow,
+    source: "catalog-connection",
+  };
 }
 
 /**
@@ -408,29 +515,41 @@ export function gatherRouteCandidates(model: string, cachePath?: string): Candid
   const entry = entries ? findCatalogEntry(entries, model) : undefined;
 
   const gathered: RouteCandidate[] = [];
+  const setAside: ExcludedCandidate[] = [];
   const unmappedRoutes = new Set<string>();
 
   // Source order is the dedupe rule: a real catalog connection beats a namespace
   // claim for the same (provider, wireId), because it carries a price and a
   // window the claim cannot know.
-  if (entry) gatherFromConnections(entry, gathered, unmappedRoutes);
+  if (entry) gatherFromConnections(entry, gathered, setAside, unmappedRoutes, cachePath);
   gatherFromNamespaceClaims(model, entry, gathered);
 
+  // JSON, not a delimiter: an injective key is the whole requirement, and any
+  // literal separator is a guess about what a wire id cannot contain. This line
+  // briefly held a raw NUL byte, which made `file(1)` report the module as
+  // binary and grep stop matching it — the trap `devin.ts` hit once before.
+  const keyOf = (candidate: RouteCandidate) =>
+    JSON.stringify([candidate.provider, candidate.wireId]);
   const seen = new Set<string>();
   const candidates = gathered.filter((candidate) => {
-    // JSON, not a delimiter: an injective key is the whole requirement, and any
-    // literal separator is a guess about what a wire id cannot contain. This line
-    // briefly held a raw NUL byte, which made `file(1)` report the module as
-    // binary and grep stop matching it — the trap `devin.ts` hit once before.
-    const key = JSON.stringify([candidate.provider, candidate.wireId]);
+    const key = keyOf(candidate);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
   candidates.sort(compareRouteCandidates);
 
+  const excluded = setAside.filter(({ candidate }) => {
+    const key = keyOf(candidate);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  excluded.sort((a, b) => compareRouteCandidates(a.candidate, b.candidate));
+
   return {
     candidates,
+    excluded,
     unmappedRoutes: [...unmappedRoutes],
     catalogMiss: entry === undefined,
     catalogReadable: entries !== null && entries !== undefined,
@@ -488,10 +607,34 @@ export function catalogDeniesProvider(
   // denied on every model `z-ai` serves, a denial built out of a second key
   // silo. Comparing BINDINGS is what `externalIdFor` and `model-availability.ts`
   // already do, for this reason.
+  //
+  // `aggregators` only, so a model this provider maps ONLY through a content-use
+  // opt-in id is denied implicitly: the fallback hop would otherwise send the
+  // plain name to a route that never published it (`content-use.ts`).
   return !(entry.aggregators ?? []).some(
     (connection) =>
       connection.routeStatus === "mapped" && catalogRouteMatchesProvider(connection.route, provider)
   );
+}
+
+/**
+ * Does `provider` map `model` ONLY through a content-use opt-in wire id?
+ *
+ * True when the catalog entry has no ordinary mapped connection for the
+ * provider and at least one opt-in one (`content-use.ts`). For a routing entry
+ * that names a provider without a model (a user rule `["zgo"]`, the fallback
+ * hop): such a provider can only be sent the opt-in id, which claudish never
+ * chooses, or the plain name, which the route never published. False with no
+ * catalog or no entry — absence of evidence excludes nothing.
+ */
+export function catalogMapsOnlyOptIn(provider: string, model: string, cachePath?: string): boolean {
+  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
+  if (!entries) return false;
+  const entry = findCatalogEntry(entries, model);
+  if (!entry) return false;
+  const mapsHere = (connection: AggregatorEntry) =>
+    connection.routeStatus === "mapped" && catalogRouteMatchesProvider(connection.route, provider);
+  return !(entry.aggregators ?? []).some(mapsHere) && (entry.optInConnections ?? []).some(mapsHere);
 }
 
 /** Who decides which models a route serves. `unknown` denies nothing. */

@@ -1,34 +1,102 @@
-/**
- * Regression pin for Step 5a — Kimi Coding OAuth delegation.
- *
- * The `kimi-coding` branch of AnthropicProviderTransport.getHeaders() used to
- * read ~/.claudish/kimi-oauth.json directly and mint OAuth headers inline. Step 5
- * delegates that to the credential authority's getRequestAuth("kimi-coding").
- *
- * This test pins the EXACT header shape the transport produces for a kimi-coding
- * provider when an OAuth token is available, so the delegated path is byte-for-byte
- * equivalent to the old inline path:
- *   - anthropic-version: 2023-06-01
- *   - Authorization: Bearer <token>
- *   - the 6 X-Msh-* platform headers
- *   - NO x-api-key
- *
- * It also pins that NON-OAuth providers (MiniMax / Z.AI) are unaffected — they keep
- * their plain x-api-key / Bearer + anthropic-version + provider.headers path.
- *
- * Hermetic strategy: fake credentials registered on the REAL authority (the single
- * dispatch point the transport now calls) delegate to `getRequestAuthMock`, so no
- * real OAuth file / SDK is touched. The real credentials are re-registered in
- * afterAll. Never `mock.module()` the authority: Bun keeps that replacement for
- * the rest of the process, and every later file that imports `credentials` got a
- * fake with no `register`.
- */
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { credentials } from "../../auth/credentials/authority.js";
-import type { CredentialProvider } from "../../auth/credentials/types.js";
+const savedEnvironment = new Map(["CLAUDISH_DISABLE_KEYCHAIN"].map((k) => [k, process.env[k]]));
+const testHome = mkdtempSync(join(tmpdir(), "claudish-auth-tests-"));
+process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+const realFetch = globalThis.fetch;
+globalThis.fetch = Object.assign(
+  (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.protocol === "http:" && url.hostname === "127.0.0.1") return realFetch(input, init);
+    throw new Error(`Unexpected external request: ${url.origin}${url.pathname}`);
+  },
+  { preconnect: () => {} }
+) as typeof fetch;
+const keychain = await import("../keychain.js");
+const fakeKeychainDeps = {
+  platform: () => "darwin",
+  run: () => ({ code: 44, stdout: "", stderr: "test: absent" }),
+  runAsync: async () => ({ code: 44, stdout: "", stderr: "test: absent" }),
+  spawnAsync: () => ({
+    done: Promise.resolve({ code: 44, stdout: "", stderr: "test: absent" }),
+    pid: undefined,
+  }),
+};
+keychain.setKeychainTestDeps(fakeKeychainDeps);
+beforeEach(() => {
+  keychain.setKeychainTestDeps(fakeKeychainDeps);
+});
+afterEach(() => {
+  keychain.setKeychainTestDeps(null);
+  keychain.invalidateKeychainCache();
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  keychain.setKeychainTestDeps(null);
+  keychain.invalidateKeychainCache();
+  for (const [key, value] of savedEnvironment) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(testHome, { recursive: true, force: true });
+});
+
+const { credentials } = await import("../../auth/credentials/authority.js");
+
+const museCore = await import("../../providers/meta-muse/muse-credentials.js");
+const museKeychain = await import("../../providers/meta-muse/muse-keychain.js");
+const promptRole = await import("../../auth/credentials/prompt-role.js");
+const catalogClient = await import("../../providers/catalog-client.js");
+const allModelsCache = await import("../../providers/all-models-cache.js");
+// Every seam is a complete fake: omitted fields would restore machine defaults.
+beforeEach(() => {
+  museCore.setMuseCoreTestDeps({
+    dir: () => testHome,
+    now: () => 1_800_000_000_000,
+    readStore: () => null,
+    writeBorrowedCopy: () => {
+      throw new Error("unexpected borrowed-copy write");
+    },
+    mint: async () => {
+      throw new Error("unexpected Muse mint");
+    },
+    keychainLogin: async () => ({ kind: "not-allowed" }),
+  });
+  museKeychain.setMuseKeychainTestDeps({
+    dir: () => testHome,
+    env: () => ({}),
+    now: () => 1_800_000_000_000,
+    sleep: async () => {
+      throw new Error("unexpected Muse Keychain wait");
+    },
+    pid: () => 424242,
+    isAlive: () => false,
+    presence: async () => ({ kind: "absent" }),
+    startRead: () => ({ done: Promise.resolve({ kind: "absent" as const }), pid: undefined }),
+  });
+});
+afterEach(() => {
+  museCore.setMuseCoreTestDeps(null);
+  museCore.resetMuseCredentialState();
+  museKeychain.setMuseKeychainTestDeps(null);
+  museKeychain.resetMuseKeychainState();
+  promptRole._resetCredentialPromptRoleForTest();
+  catalogClient._resetCatalogClient();
+  allModelsCache._clearAllModelsCacheMemo();
+  keychain.invalidateKeychainCache();
+});
+
+const { clearSignedArm } = await import("../../auth/credentials/billing-probe.js");
+afterEach(() => {
+  clearSignedArm();
+  keychain.invalidateKeychainCache();
+});
+type CredentialProvider = NonNullable<ReturnType<typeof credentials.get>>;
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
-import { AnthropicProviderTransport } from "./anthropic-compat.js";
+const { AnthropicProviderTransport } = await import("./anthropic-compat.js");
 
 const FAKE_TOKEN = "kimi-oauth-token-xyz";
 
@@ -74,7 +142,7 @@ function fakeCredential(name: string): CredentialProvider {
 
 const realCredentials = new Map<string, CredentialProvider>();
 
-beforeAll(() => {
+beforeEach(() => {
   for (const name of FAKED_NAMES) {
     const real = credentials.get(name);
     if (!real) {
@@ -86,7 +154,7 @@ beforeAll(() => {
   }
 });
 
-afterAll(() => {
+afterEach(() => {
   // Put the real credentials back so no later file in the Bun run signs with a fake.
   for (const [name, real] of realCredentials) {
     credentials.register(real, [name]);
@@ -129,17 +197,13 @@ describe("AnthropicProviderTransport — kimi-coding OAuth delegation", () => {
     expect(headers["X-Msh-Device-Id"]).toBe("device-abc");
   });
 
-  test("OAuth path failure falls back to the plain x-api-key header", async () => {
+  test("OAuth unavailable propagates unchanged without a constructor-key signature", async () => {
+    const error = new Error("OAuth unavailable");
     getRequestAuthMock = mock(async () => {
-      throw new Error("OAuth unavailable");
+      throw error;
     });
-    const transport = new AnthropicProviderTransport(kimiCoding, "fallback-api-key");
-    const headers = await transport.getHeaders();
-
-    // Falls back to the plain api-key path: x-api-key set, no Bearer.
-    expect(headers["x-api-key"]).toBe("fallback-api-key");
-    expect(headers.Authorization).toBeUndefined();
-    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    const transport = new AnthropicProviderTransport(kimiCoding, "forbidden-constructor-key");
+    await expect(transport.getHeaders()).rejects.toBe(error);
   });
 });
 

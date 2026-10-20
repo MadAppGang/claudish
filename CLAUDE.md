@@ -18,6 +18,11 @@ lives in `ROADMAP.md`.
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
+- `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint
+  as entitlement evidence (per process, on 401, 30-min TTL), the Muse Keychain item read only by an
+  `interactive-launch` or TUI role and never killed, the borrowed 0600 copy team/MCP slots sign with,
+  the contributor guard and its removal trigger (backend M3). Read before editing `meta-muse/`,
+  `prompt-role.ts` or `content-use.ts`
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux,
   and the one `-p` the MCP server does start (`run_prompt` on a Claude model)

@@ -63,6 +63,17 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
     expiresAtField: "expires_at",
     expiryBufferMs: 5 * 60 * 1000,
   },
+  // Muse Code - Meta Device Authorization Grant (RFC 8628)
+  // Login via: claudish login muse
+  //
+  // Only the OWN login is represented here. The borrowed copy and the Muse Code
+  // CLI's Keychain item are other sources, read by `museCredentialStatus()`,
+  // which is what source.ts and the Providers tab ask. No expiry field: the
+  // `dca:` token is used until the key service answers 401.
+  "meta-muse-code": {
+    credentialFile: "meta-muse-oauth.json",
+    validationMode: "check-expiry",
+  },
   // NOTE: there is deliberately no `google` / `gemini-codeassist` entry here.
   // Both used to point at ~/.claudish/gemini-oauth.json, the Gemini Code Assist
   // token. That product was retired by Google for individuals and the provider

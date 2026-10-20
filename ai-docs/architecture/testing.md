@@ -177,6 +177,40 @@ budgeted at 17 — is 576, almost all `U+1160..U+11FF`, conjoining Hangul Jamo t
 When the pin is bumped, RE-BASELINE the budgets against the new oracle. Never
 widen them to clear a red run: the budget is the entire assertion.
 
+## A green local suite can be reading the developer's own `~/.claudish`
+
+The guard snapshots and prevents writes. It does nothing about READS. A production
+fallback that asks "what is on disk under `homedir()`" answers from the developer's
+real state, and Bun keeps `homedir()` on the real home even when a test assigns
+`process.env.HOME`. The test is then green on every developer machine that has the
+file and red on the clean runner, which has none.
+
+Measured 2026-10-20 on PR #301, two cases, both green locally under `test:safe` and
+red on CI; each reproduced locally by making the read return what a clean runner
+returns:
+
+| Test | Real file it read | Local | CI |
+|---|---|---|---|
+| `openai-codex-refresh-outage.test.ts` C2/E2 "unknown refresh" | `~/.claudish/codex-oauth.json`, through the billing probe's `CodexOAuth.hasCredentials()` fallback (`billing-probe.ts`) | subscription, 503 | metered, 401 |
+| `model-selector.muse-code.test.ts` N3 | `~/.claudish/cloud-models-catalog-v3.json`, through `isChatCapable` → `classifyChatCapability` with no `cachePath` | `muse-spark-1.3` is chat | `unknown`, row dropped |
+
+The injected dependency was right in both. The read happened several layers below
+it, in code the test never named. Two seams now exist for this:
+`registerSubscriptionCredentialProbe` makes the billing probe agree with a fake
+credential, and `_setChatCapabilityCachePathForTest` points the chat filter at a
+test-owned catalog.
+
+Before calling a test that reaches routing, billing or the picker green, ask what it
+would read with an empty `~/.claudish`. CI is the only place that state is empty.
+
+The same CI run showed a third red that was not this class:
+`team-cli-signal.test.ts` exited 0 instead of 130 on SIGINT in 5 of 6 local runs,
+on `main`'s code as well. `shutdown()` in `pane/pane-registry.ts` awaited a reap
+whose last waits (the pane watcher, `waitForExit`'s timer) are unref'd, so Bun
+drained the event loop and exited 0 before `process.exit(code)`. The shutdown now
+holds the loop with an interval until the reap ends. A test of an exit code under
+signals needs `--rerun-each`: one run hides a race that loses more often than it wins.
+
 ## Pane tests: a real magmux, a fake child, nothing left behind
 
 MCP `team` slots and `create_session` run as interactive Claude Code in headless magmux panes

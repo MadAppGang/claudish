@@ -9,11 +9,13 @@
  */
 
 import { select } from "@inquirer/prompts";
+import { museCredentialStatusFromFiles } from "../providers/meta-muse/muse-credentials.js";
 import { AntigravityOAuth } from "./antigravity-oauth.js";
 import { hasSharedAntigravityToken } from "./antigravity-token.js";
 import { CodexOAuth } from "./codex-oauth.js";
 import { GrokOAuth } from "./grok-oauth.js";
 import { KimiOAuth } from "./kimi-oauth.js";
+import { MuseCodeOAuth } from "./meta-muse-oauth.js";
 import { hasOAuthCredentials } from "./oauth-registry.js";
 
 interface OAuthInstance {
@@ -58,9 +60,28 @@ const AUTH_PROVIDERS: OAuthProvider[] = [
     getInstance: () => GrokOAuth.getInstance(),
     registryKeys: ["grok-subscription"],
   },
+  {
+    // Meta device code login; logout removes claudish's own login AND its copy
+    // of the Muse Code CLI's login, never the CLI's Keychain item.
+    name: "muse",
+    displayName: "Muse Code (Meta subscription)",
+    prefix: "muse@",
+    getInstance: () => MuseCodeOAuth.getInstance(),
+    registryKeys: ["meta-muse-code"],
+  },
 ];
 
 function getAuthStatus(provider: OAuthProvider): string {
+  // Muse Code's login is claudish's own file or its borrowed copy of the Muse
+  // Code CLI's login; the status reads both files and asks the Keychain nothing.
+  if (provider.name === "muse") {
+    const status = museCredentialStatusFromFiles();
+    return status === "own-login"
+      ? "logged in"
+      : status === "borrowed-copy"
+        ? "using a copy of the Muse Code CLI login"
+        : "not logged in";
+  }
   // Antigravity's token lives in the SHARED keychain, not a ~/.claudish/*-oauth.json
   // file, so hasOAuthCredentials can't see it — check the keychain directly.
   const hasCredentials =

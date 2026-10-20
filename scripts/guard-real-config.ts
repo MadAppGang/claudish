@@ -44,6 +44,7 @@
  */
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   mkdtempSync,
   readFileSync,
@@ -93,6 +94,28 @@ const GUARDED = [
     path: join(homedir(), ".claudish", "openrouter-models.json"),
     label: "REAL OPENROUTER MODEL LIST",
     remedy: "run the MCP search_models path against a temp HOME instead of the real cache dir",
+  },
+  {
+    // The Muse Code login store. Bun 1.4.0's `os.homedir()` ignores a HOME
+    // assigned in-process, so a test that "sets a temp HOME" and then calls
+    // `defaultMuseStoreDir()` writes HERE. Measured: a full-suite run left this
+    // file and the borrowed copy below in a real home dir, holding TESTTOKEN
+    // placeholders, and later files read them as the user's login.
+    path: join(homedir(), ".claudish", "meta-muse-oauth.json"),
+    label: "REAL MUSE CODE LOGIN",
+    secret: true,
+    remedy:
+      "pass a temp `dir` to the Muse store functions and to setMuseCoreTestDeps, or run in a " +
+      "child process spawned with its own HOME; assigning process.env.HOME does not move homedir()",
+  },
+  {
+    // The borrowed 0600 copy of Muse's own Keychain login that team/MCP slots sign with.
+    path: join(homedir(), ".claudish", "meta-muse-borrowed.json"),
+    label: "REAL MUSE CODE BORROWED LOGIN",
+    secret: true,
+    remedy:
+      "pass a temp `dir` to the Muse store functions and to setMuseCoreTestDeps, or run in a " +
+      "child process spawned with its own HOME; assigning process.env.HOME does not move homedir()",
   },
   {
     path: join(homedir(), ".claudish", "catalog-incompatible.json"),
@@ -186,8 +209,18 @@ if (cmd.length === 0) {
 }
 
 const before = new Map(GUARDED.map((g) => [g.path, snapshot(g.path)]));
+/**
+ * A credential store gets no `.guard-backup` sidecar and is restored 0600: a
+ * sidecar would be a second plaintext copy of a real login that `claudish
+ * logout` never removes. The in-memory snapshot is its only restore path.
+ */
+function isSecret(g: (typeof GUARDED)[number]): boolean {
+  return "secret" in g && g.secret === true;
+}
+
 for (const g of GUARDED) {
   if (!before.get(g.path)?.existed) continue;
+  if (isSecret(g)) continue;
   // A sidecar, so the guard's own copy can never overwrite a real backup.
   try {
     copyFileSync(g.path, `${g.path}.guard-backup`);
@@ -246,6 +279,23 @@ const child = spawn(cmd[0], cmd.slice(1), {
   env: childEnv,
 });
 
+/** Put the pre-run bytes back; a credential store is written 0600 whatever the run left. */
+function restoreBytes(guarded: (typeof GUARDED)[number], content: string): void {
+  if (!isSecret(guarded)) {
+    writeFileSync(guarded.path, content, "utf-8");
+    return;
+  }
+  writeFileSync(guarded.path, content, { mode: 0o600 });
+  chmodSync(guarded.path, 0o600);
+}
+
+/** Where a failed restore's copy is, or that a credential store has none. */
+function backupNote(guarded: (typeof GUARDED)[number]): string {
+  return isSecret(guarded)
+    ? "  No sidecar copy exists for a credential store; log in again if it is lost.\n"
+    : `  A copy is at ${guarded.path}.guard-backup\n`;
+}
+
 /** Report one file's mutation, put the original bytes back, and explain the fix. */
 function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): void {
   const prior = before.get(guarded.path) ?? { existed: false, content: null, unreadable: false };
@@ -258,7 +308,7 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
   }
   try {
     if (prior.existed && prior.content !== null) {
-      writeFileSync(guarded.path, prior.content, "utf-8");
+      restoreBytes(guarded, prior.content);
       process.stderr.write("\n  Restored it from the pre-run snapshot.\n");
     } else if (prior.existed && prior.unreadable) {
       // Presence was certain, the bytes were not. Writing anything here would
@@ -290,7 +340,7 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
   } catch (err) {
     process.stderr.write(
       `\n  \x1b[31mRESTORE FAILED\x1b[0m (${err instanceof Error ? err.message : String(err)}).\n` +
-        `  A copy is at ${guarded.path}.guard-backup\n`
+        backupNote(guarded)
     );
   }
   process.stderr.write(
