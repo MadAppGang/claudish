@@ -56,6 +56,7 @@ import {
   isPaneRecordPath,
   isPaneSockPath,
   isPaneWatcherCommand,
+  magmuxNeedle,
   pidMayBeAlive,
   recordPathOf,
   sockPathOf,
@@ -783,7 +784,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
       ownerPid,
       ownerStart: owner === "live" ? ownerStartOfSelf() : "",
       watcherPid: null,
-      magmuxPid: null,
+      magmuxPid: owner === "dead" ? deadPid() : null, // a dead owner's magmux died with it
       panePid: null,
       sessionUuid: crypto.randomUUID(),
       sockPath: sockPathOf(root, paneId),
@@ -858,7 +859,23 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
     for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
   });
 
-  test("recordless sockets: a live owner's is left alone; a dead owner's live one is kept, its refused one removed", async () => {
+  test("a dead owner's refused socket whose magmux pid may be alive, or was never recorded: kept", async () => {
+    // a LIVE listener with a full accept queue refuses too (darwin); only a dead pid proves it gone
+    for (const magmuxPid of [process.pid, null]) {
+      const t = env();
+      const rec = await ownerPane(t, "dr", "dead");
+      updateRecord(t.sockRoot, rec.paneId, { magmuxPid });
+      const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
+      expect({ magmuxPid, r }).toEqual({
+        magmuxPid,
+        r: { reaped: [], cleaned: [], kept: [rec.paneId] },
+      });
+      for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
+    }
+  });
+
+  test("recordless sockets without a table: a live owner's is left alone; a dead owner's are kept, live or refused", async () => {
+    // no table names the pane's magmux, so a refusal proves nothing about it
     const t = env();
     const root = ensureSockRoot(t.sockRoot);
     const gone = deadPid();
@@ -870,12 +887,15 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
     try {
       const r = await withProcessTableUnavailable(() => sweepOrphanPanes(root));
       expect(r.reaped).toEqual([]);
-      expect(r.kept).toEqual([`c${gone}-${OWNER_START36}-tdl-abcdef`]);
-      expect(r.cleaned).toEqual([`c${gone}-${OWNER_START36}-tdr-abcdef`]);
+      expect(r.kept.sort()).toEqual([
+        `c${gone}-${OWNER_START36}-tdl-abcdef`,
+        `c${gone}-${OWNER_START36}-tdr-abcdef`,
+      ]);
+      expect(r.cleaned).toEqual([]);
       expect([ownLive, deadLive, deadRefused].map((p) => existsSync(p))).toEqual([
         true,
         true,
-        false,
+        true,
       ]);
     } finally {
       for (const s of servers) s.close();
@@ -913,7 +933,8 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
     }
   }, 30_000);
 
-  test("a dead owner's recordless socket: an inconclusive probe keeps it, a stale one removes it", async () => {
+  test("a dead owner's recordless socket without a table: only ENOENT removes it", async () => {
+    // no table names its magmux, so ECONNREFUSED is inconclusive here
     for (const code of [...INCONCLUSIVE, ...STALE]) {
       const t = env();
       const root = ensureSockRoot(t.sockRoot);
@@ -923,7 +944,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
       const r = await withDialError(code, () =>
         withProcessTableUnavailable(() => sweepOrphanPanes(root))
       );
-      const removed = STALE.includes(code);
+      const removed = code === "ENOENT";
       expect({ code, kept: r.kept, cleaned: r.cleaned }).toEqual({
         code,
         kept: removed ? [] : [id],
@@ -934,7 +955,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
   }, 30_000);
 });
 
-describe("the pane-socket probe: only ECONNREFUSED and ENOENT prove a socket stale", () => {
+describe("the pane-socket probe: ENOENT, or ECONNREFUSED with magmux proven dead, is stale", () => {
   test("real sockets: live → answers; refused or missing → stale; mode 000 or a plain file → inconclusive", async () => {
     const t = env();
     const root = ensureSockRoot(t.sockRoot);
@@ -949,25 +970,59 @@ describe("the pane-socket probe: only ECONNREFUSED and ENOENT prove a socket sta
     const plain = join(root, "magmux-plain.sock");
     writeFileSync(plain, "");
     try {
-      const answers = await probeSocket(live);
+      const answers = await probeSocket(live, true);
       expect(answers.state).toBe("answers");
       if (answers.state === "answers") answers.client.close();
-      expect(await probeSocket(refused)).toEqual({ state: "stale", code: "ECONNREFUSED" });
-      expect(await probeSocket(join(root, "magmux-none.sock"))).toEqual({
+      expect(await probeSocket(refused, false)).toEqual({ state: "stale", code: "ECONNREFUSED" });
+      expect(await probeSocket(join(root, "magmux-none.sock"), true)).toEqual({
         state: "stale",
         code: "ENOENT",
       });
-      expect(await probeSocket(locked)).toEqual({ state: "inconclusive", code: "EACCES" });
-      expect(await probeSocket(plain)).toEqual({ state: "inconclusive", code: "ENOTSOCK" });
+      expect(await probeSocket(locked, false)).toEqual({ state: "inconclusive", code: "EACCES" });
+      expect(await probeSocket(plain, false)).toEqual({ state: "inconclusive", code: "ENOTSOCK" });
     } finally {
       for (const s of servers) s.close();
     }
   }, 20_000);
 
+  test("ECONNREFUSED while the pane's magmux may live is inconclusive", async () => {
+    // darwin refuses a LIVE listener whose accept queue is full (magmux sockdir.go ReapStale)
+    const prev = setSocketDialForTest(() =>
+      Promise.reject(new MagmuxConnectError("connect ECONNREFUSED", "ECONNREFUSED"))
+    );
+    try {
+      expect(await probeSocket("/nonexistent/magmux-busy.sock", true)).toEqual({
+        state: "inconclusive",
+        code: "ECONNREFUSED",
+      });
+    } finally {
+      setSocketDialForTest(prev);
+    }
+  });
+
+  test("with a readable table, a dead owner's refused recordless socket: kept while a magmux for its id runs, removed once none does", async () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const id = `c${deadPid()}-${OWNER_START36}-trf-abcdef`;
+    const sock = sockPathOf(root, id);
+    await staleSocket(sock);
+    // a process whose argv carries the pane's magmux needle, as a busy magmux's would
+    const mag = Bun.spawn(["/bin/sh", "-c", "sleep 30; true", "sh", magmuxNeedle(id)]);
+    try {
+      expect(await sweepOrphanPanes(root)).toEqual({ reaped: [], cleaned: [], kept: [id] });
+      expect(existsSync(sock)).toBe(true);
+    } finally {
+      mag.kill("SIGKILL");
+      await mag.exited;
+    }
+    expect(await sweepOrphanPanes(root)).toEqual({ reaped: [], cleaned: [id], kept: [] });
+    expect(existsSync(sock)).toBe(false);
+  }, 20_000);
+
   test("a dial that never settles is inconclusive", async () => {
     const prev = setSocketDialForTest(() => new Promise<never>(() => {}));
     try {
-      expect(await probeSocket("/nonexistent/magmux-x.sock")).toEqual({
+      expect(await probeSocket("/nonexistent/magmux-x.sock", false)).toEqual({
         state: "inconclusive",
         code: "ETIMEDOUT",
       });
