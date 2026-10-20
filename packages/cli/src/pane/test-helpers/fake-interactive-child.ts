@@ -499,10 +499,13 @@ function drawInput(): void {
   render();
   if (selfSubmitting) {
     if (selfSubmit) clearTimeout(selfSubmit);
-    selfSubmit = setTimeout(() => {
-      externalSubmitDone = true;
-      acceptText(S.box);
-    }, historyWithheld ? 300 : 75);
+    selfSubmit = setTimeout(
+      () => {
+        externalSubmitDone = true;
+        acceptText(S.box);
+      },
+      historyWithheld ? 300 : 75
+    );
   }
   if (
     scenario === "command_left_box" &&
@@ -1041,7 +1044,7 @@ async function submit(line: string): Promise<void> {
 let ignoredEnters = 0;
 const ignoredEnterLimit =
   scenario === "enter_ignored_forever"
-    ? Infinity
+    ? Number.POSITIVE_INFINITY
     : Number(scenario.match(/^enter_ignored_(\d+)$/)?.[1]) || 0;
 
 function onEnter(): void {

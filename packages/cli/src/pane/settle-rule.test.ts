@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   CORROBORATION_GRACE_MS,
-  SECONDARY_QUIET_MS,
   type CorroborationFacts,
+  SECONDARY_QUIET_MS,
   type SettleInput,
   agentCountMismatch,
   decideSettle,

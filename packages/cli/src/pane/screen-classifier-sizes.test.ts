@@ -30,7 +30,11 @@ const STATES = [
   "answer-short",
 ] as const;
 
-for (const [cols, rows] of [[80, 24], [120, 40], [250, 60]] as const) {
+for (const [cols, rows] of [
+  [80, 24],
+  [120, 40],
+  [250, 60],
+] as const) {
   describe(`${cols}x${rows} real Claude Code captures`, () => {
     test.each([...STATES])("%s", (state) => {
       const screen = loadScreen(`size-${cols}x${rows}-${state}`);

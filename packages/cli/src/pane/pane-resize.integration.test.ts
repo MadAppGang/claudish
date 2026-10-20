@@ -37,7 +37,8 @@ async function resizeAvailable(): Promise<boolean> {
     );
     const socket = await waitFor(
       () => {
-        if (proc?.exitCode !== null) throw new Error("magmux capability probe exited before its socket appeared");
+        if (proc?.exitCode !== null)
+          throw new Error("magmux capability probe exited before its socket appeared");
         try {
           return findSocket(env.sockRoot);
         } catch (error) {
@@ -48,7 +49,8 @@ async function resizeAvailable(): Promise<boolean> {
       { what: "capability probe socket", timeoutMs: 5_000, intervalMs: 50 }
     ).catch(async (error) => {
       proc?.kill("SIGTERM");
-      const stderr = proc?.stderr instanceof ReadableStream ? await new Response(proc.stderr).text() : "";
+      const stderr =
+        proc?.stderr instanceof ReadableStream ? await new Response(proc.stderr).text() : "";
       throw new Error(`${String(error)}; magmux stderr: ${stderr}`);
     });
     client = await MagmuxClient.connect(socket);
@@ -67,7 +69,10 @@ async function resizeAvailable(): Promise<boolean> {
     client?.close();
     proc?.kill("SIGTERM");
     if (proc) {
-      const ended = await Promise.race([proc.exited.then(() => true), Bun.sleep(2_000).then(() => false)]);
+      const ended = await Promise.race([
+        proc.exited.then(() => true),
+        Bun.sleep(2_000).then(() => false),
+      ]);
       if (!ended) {
         proc.kill("SIGKILL");
         await proc.exited;
@@ -98,8 +103,7 @@ function findSocket(dir: string): string | undefined {
 }
 
 const RESIZE_AVAILABLE = await resizeAvailable();
-if (!RESIZE_AVAILABLE)
-  console.warn(`pane resize SKIPPED — ${resizeUnavailableReason}`);
+if (!RESIZE_AVAILABLE) console.warn(`pane resize SKIPPED — ${resizeUnavailableReason}`);
 
 const T_TEST = 60_000;
 type Json = Record<string, unknown>;
@@ -142,155 +146,249 @@ describe.skipIf(!RESIZE_AVAILABLE)("pane resize through MCP (requires magmux res
     const created = await call("create_session", { model });
     const id = created.session_id as string;
     await waitFor(async () => (await row(id))?.state === "AWAITING_INPUT", {
-      what: "promptless session ready", timeoutMs: 20_000, intervalMs: 100,
+      what: "promptless session ready",
+      timeoutMs: 20_000,
+      intervalMs: 100,
     });
     return id;
   }
   async function capture(id: string): Promise<CaptureResult> {
-    return await call("capture_session", { session_id: id }) as unknown as CaptureResult;
+    return (await call("capture_session", { session_id: id })) as unknown as CaptureResult;
   }
   async function resize(id: string, cols: number, rows: number): Promise<ResizeResult> {
-    return await call("resize_session", { session_id: id, cols, rows }) as unknown as ResizeResult;
+    return (await call("resize_session", {
+      session_id: id,
+      cols,
+      rows,
+    })) as unknown as ResizeResult;
   }
   async function redrawn(id: string, cols: number, rows: number): Promise<CaptureResult> {
-    return await waitFor(async () => {
-      const c = await capture(id);
-      return c.cols === cols && c.rows === rows && c.lines.some((l) => new RegExp(`─{${cols - 1},}`).test(l))
-        ? c : undefined;
-    }, { what: "fake child SIGWINCH redraw", timeoutMs: 10_000, intervalMs: 100 });
+    return await waitFor(
+      async () => {
+        const c = await capture(id);
+        return c.cols === cols &&
+          c.rows === rows &&
+          c.lines.some((l) => new RegExp(`─{${cols - 1},}`).test(l))
+          ? c
+          : undefined;
+      },
+      { what: "fake child SIGWINCH redraw", timeoutMs: 10_000, intervalMs: 100 }
+    );
   }
 
-  test("resize reports coherent capture geometry, seq and a full-width box rule", async () => {
-    const id = await create();
-    const before = await capture(id);
-    const r = await resize(id, 100, 40);
-    expect(r).toMatchObject({ session_id: id, cols: 100, rows: 40, changed: true });
-    expect(typeof r.seq).toBe("number");
-    expect(r.seq).toBeGreaterThan(before.seq);
-    const c = await capture(id);
-    expect(c.cols).toBe(100);
-    expect(c.rows).toBe(40);
-    expect(c.seq).toBeGreaterThanOrEqual(r.seq);
-    expect((await redrawn(id, 100, 40)).lines.some((l) => /─{99,}/.test(l))).toBe(true);
-  }, T_TEST);
+  test(
+    "resize reports coherent capture geometry, seq and a full-width box rule",
+    async () => {
+      const id = await create();
+      const before = await capture(id);
+      const r = await resize(id, 100, 40);
+      expect(r).toMatchObject({ session_id: id, cols: 100, rows: 40, changed: true });
+      expect(typeof r.seq).toBe("number");
+      expect(r.seq).toBeGreaterThan(before.seq);
+      const c = await capture(id);
+      expect(c.cols).toBe(100);
+      expect(c.rows).toBe(40);
+      expect(c.seq).toBeGreaterThanOrEqual(r.seq);
+      expect((await redrawn(id, 100, 40)).lines.some((l) => /─{99,}/.test(l))).toBe(true);
+    },
+    T_TEST
+  );
 
   for (const growth of [
     { name: "160x50 → 160x60", from: undefined, cols: 160 },
     { name: "100x40 → 220x60", from: { cols: 100, rows: 40 }, cols: 220 },
   ]) {
-    test(`row grow ${growth.name} preserves the input box and settles the next turn`, async () => {
-      const id = await create();
-      expect(await capture(id)).toMatchObject({ cols: 160, rows: 50 });
-      const firstPrompt = "answer before growing the pane";
-      await call("send_input", { session_id: id, text: firstPrompt });
-      await waitFor(async () => {
-        const s = await row(id);
-        return s?.state === "AWAITING_INPUT" && (s.turns_completed as number) >= 1;
-      }, { what: "first turn settled before grow", timeoutMs: 25_000, intervalMs: 100 });
+    test(
+      `row grow ${growth.name} preserves the input box and settles the next turn`,
+      async () => {
+        const id = await create();
+        expect(await capture(id)).toMatchObject({ cols: 160, rows: 50 });
+        const firstPrompt = "answer before growing the pane";
+        await call("send_input", { session_id: id, text: firstPrompt });
+        await waitFor(
+          async () => {
+            const s = await row(id);
+            return s?.state === "AWAITING_INPUT" && (s.turns_completed as number) >= 1;
+          },
+          { what: "first turn settled before grow", timeoutMs: 25_000, intervalMs: 100 }
+        );
 
-      if (growth.from) {
-        await resize(id, growth.from.cols, growth.from.rows);
-        await redrawn(id, growth.from.cols, growth.from.rows);
-      }
-      await resize(id, growth.cols, 60);
-      const c = await redrawn(id, growth.cols, 60);
-      expect(c).toMatchObject({ cols: growth.cols, rows: 60 });
-      const rule = new RegExp(`─{${growth.cols - 1},}`);
-      expect(c.lines.slice(-6).some((l) => rule.test(l))).toBe(true);
-      expect(c.lines.some((l) => l.includes("─") && /cwd • fake|bypass permissions on/.test(l)))
-        .toBe(false);
+        if (growth.from) {
+          await resize(id, growth.from.cols, growth.from.rows);
+          await redrawn(id, growth.from.cols, growth.from.rows);
+        }
+        await resize(id, growth.cols, 60);
+        const c = await redrawn(id, growth.cols, 60);
+        expect(c).toMatchObject({ cols: growth.cols, rows: 60 });
+        const rule = new RegExp(`─{${growth.cols - 1},}`);
+        expect(c.lines.slice(-6).some((l) => rule.test(l))).toBe(true);
+        expect(
+          c.lines.some((l) => l.includes("─") && /cwd • fake|bypass permissions on/.test(l))
+        ).toBe(false);
 
-      const prompt = "answer after growing the pane";
-      await call("send_input", { session_id: id, text: prompt });
-      const answer = `ANSWER contract-fake-model ${createHash("sha1").update(prompt).digest("hex").slice(0, 8)}`;
-      await waitFor(async () => {
-        const s = await row(id);
-        const screen = await capture(id);
-        return s?.state === "AWAITING_INPUT" && (s.turns_completed as number) >= 2
-          && screen.lines.some((l) => l.includes(answer));
-      }, { what: "grown pane turn settled with answer", timeoutMs: 25_000, intervalMs: 100 });
-    }, T_TEST);
+        const prompt = "answer after growing the pane";
+        await call("send_input", { session_id: id, text: prompt });
+        const answer = `ANSWER contract-fake-model ${createHash("sha1").update(prompt).digest("hex").slice(0, 8)}`;
+        await waitFor(
+          async () => {
+            const s = await row(id);
+            const screen = await capture(id);
+            return (
+              s?.state === "AWAITING_INPUT" &&
+              (s.turns_completed as number) >= 2 &&
+              screen.lines.some((l) => l.includes(answer))
+            );
+          },
+          { what: "grown pane turn settled with answer", timeoutMs: 25_000, intervalMs: 100 }
+        );
+      },
+      T_TEST
+    );
   }
 
-  test("same size leaves the idle capture seq unchanged", async () => {
-    const id = await create();
-    await resize(id, 100, 40);
-    await redrawn(id, 100, 40);
-    const stable = await waitFor(async () => {
-      const a = await capture(id);
-      await Bun.sleep(400);
-      const b = await capture(id);
-      return a.seq === b.seq ? b : undefined;
-    }, { what: "stable resized screen", timeoutMs: 10_000, intervalMs: 100 });
-    const r = await resize(id, 100, 40);
-    expect(r).toMatchObject({ cols: 100, rows: 40, changed: false, seq: stable.seq });
-    expect(await call("capture_session", { session_id: id, since_seq: stable.seq }))
-      .toEqual({ unchanged: true, seq: stable.seq, final: false });
-  }, T_TEST);
+  test(
+    "same size leaves the idle capture seq unchanged",
+    async () => {
+      const id = await create();
+      await resize(id, 100, 40);
+      await redrawn(id, 100, 40);
+      const stable = await waitFor(
+        async () => {
+          const a = await capture(id);
+          await Bun.sleep(400);
+          const b = await capture(id);
+          return a.seq === b.seq ? b : undefined;
+        },
+        { what: "stable resized screen", timeoutMs: 10_000, intervalMs: 100 }
+      );
+      const r = await resize(id, 100, 40);
+      expect(r).toMatchObject({ cols: 100, rows: 40, changed: false, seq: stable.seq });
+      expect(await call("capture_session", { session_id: id, since_seq: stable.seq })).toEqual({
+        unchanged: true,
+        seq: stable.seq,
+        final: false,
+      });
+    },
+    T_TEST
+  );
 
-  test("small dimensions clamp to 80 columns and 24 rows", async () => {
-    const id = await create();
-    expect(await resize(id, 5, 5)).toMatchObject({ cols: 80, rows: 24, changed: true });
-    await redrawn(id, 80, 24);
-  }, T_TEST);
+  test(
+    "small dimensions clamp to 80 columns and 24 rows",
+    async () => {
+      const id = await create();
+      expect(await resize(id, 5, 5)).toMatchObject({ cols: 80, rows: 24, changed: true });
+      await redrawn(id, 80, 24);
+    },
+    T_TEST
+  );
 
-  test("a running slow turn survives resize and completes with its answer", async () => {
-    const id = await create("fake-tool_slow");
-    const prompt = "answer after the slow tool";
-    await call("send_input", { session_id: id, text: prompt });
-    await waitFor(async () => {
-      const s = await row(id);
-      return s?.state === "RUNNING" && s.activity === "Bash";
-    }, { what: "slow Bash tool running", timeoutMs: 20_000, intervalMs: 100 });
-    expect(await resize(id, 100, 40)).toMatchObject({ cols: 100, rows: 40, changed: true });
-    const answer = `ANSWER fake-tool_slow ${createHash("sha1").update(prompt).digest("hex").slice(0, 8)}`;
-    await waitFor(async () => {
-      const s = await row(id);
+  test(
+    "a running slow turn survives resize and completes with its answer",
+    async () => {
+      const id = await create("fake-tool_slow");
+      const prompt = "answer after the slow tool";
+      await call("send_input", { session_id: id, text: prompt });
+      await waitFor(
+        async () => {
+          const s = await row(id);
+          return s?.state === "RUNNING" && s.activity === "Bash";
+        },
+        { what: "slow Bash tool running", timeoutMs: 20_000, intervalMs: 100 }
+      );
+      expect(await resize(id, 100, 40)).toMatchObject({ cols: 100, rows: 40, changed: true });
+      const answer = `ANSWER fake-tool_slow ${createHash("sha1").update(prompt).digest("hex").slice(0, 8)}`;
+      await waitFor(
+        async () => {
+          const s = await row(id);
+          const c = await capture(id);
+          return (
+            s?.state === "AWAITING_INPUT" &&
+            (s.turns_completed as number) >= 1 &&
+            c.lines.some((l) => l.includes(answer))
+          );
+        },
+        { what: "resized turn settled with answer", timeoutMs: 25_000, intervalMs: 100 }
+      );
+      await call("send_input", { session_id: id, text: "/exit" });
+      await waitFor(async () => (await row(id))?.state === "COMPLETED", {
+        what: "answered session COMPLETED",
+        timeoutMs: 15_000,
+        intervalMs: 100,
+      });
+    },
+    T_TEST
+  );
+
+  test(
+    "concurrent resize calls leave the last caller's dimensions",
+    async () => {
+      const id = await create();
+      const calls = [resize(id, 120, 40), resize(id, 90, 30), resize(id, 140, 45)];
+      const results = await Promise.all(calls);
+      for (const r of results) expect(typeof r.seq).toBe("number");
       const c = await capture(id);
-      return s?.state === "AWAITING_INPUT" && (s.turns_completed as number) >= 1
-        && c.lines.some((l) => l.includes(answer));
-    }, { what: "resized turn settled with answer", timeoutMs: 25_000, intervalMs: 100 });
-    await call("send_input", { session_id: id, text: "/exit" });
-    await waitFor(async () => (await row(id))?.state === "COMPLETED", {
-      what: "answered session COMPLETED", timeoutMs: 15_000, intervalMs: 100,
-    });
-  }, T_TEST);
+      expect(c).toMatchObject({ cols: 140, rows: 45 });
+      await redrawn(id, 140, 45);
+    },
+    T_TEST
+  );
 
-  test("concurrent resize calls leave the last caller's dimensions", async () => {
-    const id = await create();
-    const calls = [resize(id, 120, 40), resize(id, 90, 30), resize(id, 140, 45)];
-    const results = await Promise.all(calls);
-    for (const r of results) expect(typeof r.seq).toBe("number");
-    const c = await capture(id);
-    expect(c).toMatchObject({ cols: 140, rows: 45 });
-    await redrawn(id, 140, 45);
-  }, T_TEST);
+  test(
+    "team resize addresses one live slot and its capture",
+    async () => {
+      const path = join(layout.cwd, "resize-team");
+      const started = await call("team", {
+        mode: "run",
+        path,
+        models: ["contract-fake-model"],
+        input: "stay running @@HANG@@",
+      });
+      const r = (await call("team", {
+        mode: "resize",
+        path,
+        slot: "01",
+        cols: 110,
+        rows: 35,
+      })) as unknown as TeamResizeResult;
+      expect(r).toMatchObject({
+        run_id: started.run_id,
+        path,
+        slot: "01",
+        cols: 110,
+        rows: 35,
+        changed: true,
+      });
+      expect(typeof r.seq).toBe("number");
+      const c = await call("team", { mode: "capture", path, slot: "01" });
+      expect(c).toMatchObject({ cols: 110, rows: 35 });
+      expect(c.seq as number).toBeGreaterThanOrEqual(r.seq);
+    },
+    T_TEST
+  );
 
-  test("team resize addresses one live slot and its capture", async () => {
-    const path = join(layout.cwd, "resize-team");
-    const started = await call("team", {
-      mode: "run", path, models: ["contract-fake-model"], input: "stay running @@HANG@@",
-    });
-    const r = (await call("team", { mode: "resize", path, slot: "01", cols: 110, rows: 35 })) as unknown as TeamResizeResult;
-    expect(r).toMatchObject({ run_id: started.run_id, path, slot: "01", cols: 110, rows: 35, changed: true });
-    expect(typeof r.seq).toBe("number");
-    const c = await call("team", { mode: "capture", path, slot: "01" });
-    expect(c).toMatchObject({ cols: 110, rows: 35 });
-    expect(c.seq as number).toBeGreaterThanOrEqual(r.seq);
-  }, T_TEST);
-
-  test("cancelled session resize preserves the final capture's size", async () => {
-    const id = await create();
-    await resize(id, 100, 40);
-    await redrawn(id, 100, 40);
-    await call("cancel_session", { session_id: id });
-    const final = await waitFor(async () => {
-      const c = await capture(id);
-      return c.final ? c : undefined;
-    }, { what: "cancelled final capture", timeoutMs: 15_000, intervalMs: 100 });
-    expect(await resize(id, 140, 45)).toMatchObject({
-      session_id: id, cols: final.cols, rows: final.rows, changed: false, seq: final.seq,
-    });
-    expect(await capture(id)).toEqual(final);
-  }, T_TEST);
+  test(
+    "cancelled session resize preserves the final capture's size",
+    async () => {
+      const id = await create();
+      await resize(id, 100, 40);
+      await redrawn(id, 100, 40);
+      await call("cancel_session", { session_id: id });
+      const final = await waitFor(
+        async () => {
+          const c = await capture(id);
+          return c.final ? c : undefined;
+        },
+        { what: "cancelled final capture", timeoutMs: 15_000, intervalMs: 100 }
+      );
+      expect(await resize(id, 140, 45)).toMatchObject({
+        session_id: id,
+        cols: final.cols,
+        rows: final.rows,
+        changed: false,
+        seq: final.seq,
+      });
+      expect(await capture(id)).toEqual(final);
+    },
+    T_TEST
+  );
 });

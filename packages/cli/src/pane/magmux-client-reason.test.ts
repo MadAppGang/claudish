@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { type Socket, createServer } from "node:net";
 import { join } from "node:path";
 import { MagmuxClient, type MagmuxReply } from "./magmux-client.js";
 
@@ -26,8 +26,7 @@ async function exchange(replies: FailureLine[], fragmented = false): Promise<Mag
     let buffer = "";
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
-      let newline: number;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
+      for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
         if (!line) continue;
@@ -65,7 +64,9 @@ async function exchange(replies: FailureLine[], fragmented = false): Promise<Mag
     client = await MagmuxClient.dial(sockPath);
     const results: MagmuxReply[] = [];
     for (let index = 0; index < replies.length; index++) {
-      results.push(await client.request({ type: "send", pane: 0, text: "run the tests", typed: true }, 2000));
+      results.push(
+        await client.request({ type: "send", pane: 0, text: "run the tests", typed: true }, 2000)
+      );
     }
     return results;
   } finally {
@@ -74,7 +75,7 @@ async function exchange(replies: FailureLine[], fragmented = false): Promise<Mag
     try {
       if (server.listening) {
         await new Promise<void>((resolve, reject) => {
-          server.close((error) => error ? reject(error) : resolve());
+          server.close((error) => (error ? reject(error) : resolve()));
         });
       }
     } finally {
@@ -88,12 +89,24 @@ async function exchange(replies: FailureLine[], fragmented = false): Promise<Mag
 
 describe("U2 MagmuxClient failure reply fields", () => {
   test("keeps busy reason and typed true", async () => {
-    const reply: FailureLine = { ok: false, code: "busy", error: "typing stopped", reason: "dialog:permission", typed: true };
+    const reply: FailureLine = {
+      ok: false,
+      code: "busy",
+      error: "typing stopped",
+      reason: "dialog:permission",
+      typed: true,
+    };
     expect(await exchange([reply])).toEqual([reply]);
   });
 
   test("keeps not_accepted reason and typed true", async () => {
-    const reply: FailureLine = { ok: false, code: "not_accepted", error: "the text is still in the box", reason: "still_in_box", typed: true };
+    const reply: FailureLine = {
+      ok: false,
+      code: "not_accepted",
+      error: "the text is still in the box",
+      reason: "still_in_box",
+      typed: true,
+    };
     expect(await exchange([reply])).toEqual([reply]);
   });
 
@@ -105,21 +118,36 @@ describe("U2 MagmuxClient failure reply fields", () => {
   });
 
   test("keeps typed while omitting absent reason", async () => {
-    const reply: FailureLine = { ok: false, code: "pane_dead", error: "pane died while typing", typed: true };
+    const reply: FailureLine = {
+      ok: false,
+      code: "pane_dead",
+      error: "pane died while typing",
+      typed: true,
+    };
     const results = await exchange([reply]);
     expect(results).toEqual([reply]);
     expect(Object.hasOwn(results[0]!, "reason")).toBe(false);
   });
 
   test("preserves an explicitly false typed field", async () => {
-    const reply: FailureLine = { ok: false, code: "busy", error: "not ready", reason: "terminal_not_ready", typed: false };
+    const reply: FailureLine = {
+      ok: false,
+      code: "busy",
+      error: "not ready",
+      reason: "terminal_not_ready",
+      typed: false,
+    };
     const results = await exchange([reply]);
     expect(results).toEqual([reply]);
     expect(Object.hasOwn(results[0]!, "typed")).toBe(true);
   });
 
   test("omits both fields on an ordinary failure", async () => {
-    const reply: FailureLine = { ok: false, code: "no_such_pane", error: "no pane 0 (it may have been closed)" };
+    const reply: FailureLine = {
+      ok: false,
+      code: "no_such_pane",
+      error: "no pane 0 (it may have been closed)",
+    };
     const results = await exchange([reply]);
     expect(results).toEqual([reply]);
     expect(Object.hasOwn(results[0]!, "reason")).toBe(false);
@@ -127,7 +155,13 @@ describe("U2 MagmuxClient failure reply fields", () => {
   });
 
   test("keeps an unknown reason verbatim", async () => {
-    const reply: FailureLine = { ok: false, code: "busy", error: "new gate state", reason: "dialog:future_kind", typed: true };
+    const reply: FailureLine = {
+      ok: false,
+      code: "busy",
+      error: "new gate state",
+      reason: "dialog:future_kind",
+      typed: true,
+    };
     expect(await exchange([reply])).toEqual([reply]);
   });
 
@@ -143,7 +177,13 @@ describe("U2 MagmuxClient failure reply fields", () => {
   });
 
   test("keeps optional fields when a failure line arrives in fragments", async () => {
-    const reply: FailureLine = { ok: false, code: "busy", error: "question appeared", reason: "dialog:question", typed: true };
+    const reply: FailureLine = {
+      ok: false,
+      code: "busy",
+      error: "question appeared",
+      reason: "dialog:question",
+      typed: true,
+    };
     expect(await exchange([reply], true)).toEqual([reply]);
   });
 });

@@ -6,10 +6,10 @@ import type { MagmuxReply } from "../magmux-client.js";
 import { type PaneSession, type PaneSessionOptions, startPaneSession } from "../pane-session.js";
 import type { PaneSnapshot, SettledTurn } from "../types.js";
 import {
+  type PaneTestEnv,
   killLeftovers,
   makePaneTestEnv,
   newSessionUuid,
-  type PaneTestEnv,
   waitNoOrphans,
 } from "./hermetic-env.js";
 

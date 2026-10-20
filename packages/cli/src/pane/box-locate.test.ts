@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { isRuleRow, locateBox } from "./box-locate.js";
-import { boxTopRow, type ScreenState } from "./screen-model.js";
+import { type ScreenState, boxTopRow } from "./screen-model.js";
 import { loadScreen } from "./test-helpers/fixtures.js";
 
 // Literal row indexes read from the real captures, independent of either locator.
@@ -182,15 +182,23 @@ describe("U5 locateBox at captured widths", () => {
   });
 
   test("includes a bounding rule exactly 40 rows from the cursor", () => {
-    for (const [above, below] of [[40, 1], [1, 40]] as const) {
+    for (const [above, below] of [
+      [40, 1],
+      [1, 40],
+    ] as const) {
       expect(locateBox(withRuleDistances(above, below))).toEqual({
-        top: 0, bottom: 41, caretRow: above,
+        top: 0,
+        bottom: 41,
+        caretRow: above,
       });
     }
   });
 
   test("does not search beyond 40 rows for either bounding rule", () => {
-    for (const [above, below] of [[41, 1], [1, 41]] as const) {
+    for (const [above, below] of [
+      [41, 1],
+      [1, 41],
+    ] as const) {
       expect(locateBox(withRuleDistances(above, below))).toBeNull();
     }
   });
@@ -207,7 +215,15 @@ describe("U6 isRuleRow without a width test", () => {
 
   test("rejects 19-cell indented dashed empty and missing rows", () => {
     const rule = loadScreen("repl-typed").lines[45]!.slice(0, 20);
-    for (const line of [rule.slice(0, 19), ` ${rule}`, `${rule} `, "╌".repeat(20), "-".repeat(20), "", undefined]) {
+    for (const line of [
+      rule.slice(0, 19),
+      ` ${rule}`,
+      `${rule} `,
+      "╌".repeat(20),
+      "-".repeat(20),
+      "",
+      undefined,
+    ]) {
       expect(isRuleRow(line)).toBe(false);
     }
   });
@@ -239,7 +255,9 @@ describe("U6 isRuleRow without a width test", () => {
   test("locating a box never reads cols", () => {
     const screen = loadScreen("repl-typed");
     Object.defineProperty(screen, "cols", {
-      get() { throw new Error("locateBox read cols"); },
+      get() {
+        throw new Error("locateBox read cols");
+      },
     });
     expect(locateBox(screen)).toEqual({ top: 45, bottom: 47, caretRow: 46 });
   });

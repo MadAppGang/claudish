@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { checkGateBinding, normaliseTranscriptPath } from "./gate-binding.js";
@@ -252,7 +260,9 @@ describe("U1 classifySendReply", () => {
     for (const reason of ["text_mismatch", "empty_box", "still_in_box", "unconfirmed"] as const) {
       for (const fields of [{}, { typed: false }, { typed: true }]) {
         expect(
-          classifySendReply(failure("not_accepted", "pane 0: refusal detail", { reason, ...fields }))
+          classifySendReply(
+            failure("not_accepted", "pane 0: refusal detail", { reason, ...fields })
+          )
         ).toEqual({
           kind: "not_accepted",
           reason,
@@ -271,7 +281,13 @@ describe("U1 classifySendReply", () => {
     const error = formatDetail(message, "it differs from what was sent");
     expect(
       classifySendReply(failure("not_accepted", error, { reason: "text_mismatch", typed: true }))
-    ).toEqual({ kind: "not_accepted", reason: "text_mismatch", maybeSubmitted: true, typed: true, detail: error });
+    ).toEqual({
+      kind: "not_accepted",
+      reason: "text_mismatch",
+      maybeSubmitted: true,
+      typed: true,
+      detail: error,
+    });
   });
 
   test("does not mark noLoss, windowCut or lostAgain mismatches maybeSubmitted", () => {
@@ -285,7 +301,13 @@ describe("U1 classifySendReply", () => {
       const error = formatDetail(MISMATCH_MESSAGE, detail);
       expect(
         classifySendReply(failure("not_accepted", error, { reason: "text_mismatch", typed: true }))
-      ).toEqual({ kind: "not_accepted", reason: "text_mismatch", maybeSubmitted: false, typed: true, detail: error });
+      ).toEqual({
+        kind: "not_accepted",
+        reason: "text_mismatch",
+        maybeSubmitted: false,
+        typed: true,
+        detail: error,
+      });
     }
   });
 
@@ -342,7 +364,14 @@ describe("U1 classifySendReply", () => {
   });
 
   test("keeps other README codes and unknown codes unexpected", () => {
-    for (const code of ["unknown_verb", "unsupported", "internal", "pane_is_control", "too_small", "future_code"]) {
+    for (const code of [
+      "unknown_verb",
+      "unsupported",
+      "internal",
+      "pane_is_control",
+      "too_small",
+      "future_code",
+    ]) {
       expect(classifySendReply(failure(code, "upstream detail"))).toEqual({
         kind: "unexpected",
         code,
@@ -355,44 +384,105 @@ describe("U1 classifySendReply", () => {
 describe("U3 sendBudgetMs", () => {
   // Literal expected values from magmux's TestSendBudgetWorkedValues; no copied formula oracle.
   test.each([
-    ["Go short submit", { readyTimeoutMs: 0, text: "", keys: 0, submit: true, typed: false }, 20780],
-    ["Go 500 keys and a submit", { readyTimeoutMs: 0, text: "", keys: 500, submit: true, typed: false }, 42780],
-    ["Go readyTimeoutMs 60000", { readyTimeoutMs: 60000, text: "", keys: 0, submit: true, typed: false }, 70780],
-    ["Go TYPE with three writes", { readyTimeoutMs: 0, text: "a\nb", keys: 0, submit: false, typed: true }, 14840],
-    ["13-character SUBMIT", { readyTimeoutMs: 10000, text: "run the tests", keys: 1, submit: true }, 20844],
-    ["300-character file-template SUBMIT", { readyTimeoutMs: 10000, text: "x".repeat(300), keys: 1, submit: true }, 21024],
-    ["512-character typed SUBMIT", { readyTimeoutMs: 10000, text: "x".repeat(512), keys: 1, submit: true }, 21144],
-    ["command TYPE", { readyTimeoutMs: 10000, text: "/model haiku", keys: 0, submit: false }, 14800],
+    [
+      "Go short submit",
+      { readyTimeoutMs: 0, text: "", keys: 0, submit: true, typed: false },
+      20780,
+    ],
+    [
+      "Go 500 keys and a submit",
+      { readyTimeoutMs: 0, text: "", keys: 500, submit: true, typed: false },
+      42780,
+    ],
+    [
+      "Go readyTimeoutMs 60000",
+      { readyTimeoutMs: 60000, text: "", keys: 0, submit: true, typed: false },
+      70780,
+    ],
+    [
+      "Go TYPE with three writes",
+      { readyTimeoutMs: 0, text: "a\nb", keys: 0, submit: false, typed: true },
+      14840,
+    ],
+    [
+      "13-character SUBMIT",
+      { readyTimeoutMs: 10000, text: "run the tests", keys: 1, submit: true },
+      20844,
+    ],
+    [
+      "300-character file-template SUBMIT",
+      { readyTimeoutMs: 10000, text: "x".repeat(300), keys: 1, submit: true },
+      21024,
+    ],
+    [
+      "512-character typed SUBMIT",
+      { readyTimeoutMs: 10000, text: "x".repeat(512), keys: 1, submit: true },
+      21144,
+    ],
+    [
+      "command TYPE",
+      { readyTimeoutMs: 10000, text: "/model haiku", keys: 0, submit: false },
+      14800,
+    ],
     ["command Enter SUBMIT", { readyTimeoutMs: 10000, text: "", keys: 1, submit: true }, 20824],
   ] as const)("matches %s exactly", (_name, shape, expected) => {
     expect(sendBudgetMs(shape)).toBe(expected);
   });
 
   test("defaults nonpositive readiness waits and clamps only above 60000", () => {
-    for (const [ready, expected] of [[0, 10000], [-5, 10000], [1, 1], [2500, 2500], [60000, 60000], [600000, 60000]] as const) {
+    for (const [ready, expected] of [
+      [0, 10000],
+      [-5, 10000],
+      [1, 1],
+      [2500, 2500],
+      [60000, 60000],
+      [600000, 60000],
+    ] as const) {
       expect(readyWaitMs(ready)).toBe(expected);
     }
   });
 
   test("uses the default or clamped readiness wait in the full budget", () => {
-    for (const [readyTimeoutMs, expected] of [[0, 20844], [-5, 20844], [60000, 70844], [600000, 70844]] as const) {
-      expect(sendBudgetMs({ readyTimeoutMs, text: "run the tests", keys: 1, submit: true })).toBe(expected);
+    for (const [readyTimeoutMs, expected] of [
+      [0, 20844],
+      [-5, 20844],
+      [60000, 70844],
+      [600000, 70844],
+    ] as const) {
+      expect(sendBudgetMs({ readyTimeoutMs, text: "run the tests", keys: 1, submit: true })).toBe(
+        expected
+      );
     }
   });
 
   test("counts typed writes at rune and newline boundaries", () => {
     for (const [text, expected] of [
-      ["", 0], ["hi", 1], ["a".repeat(32), 1], ["a".repeat(33), 2],
-      ["a".repeat(512), 16], ["a\nb", 3], ["a\r\nb", 3], ["a\rb", 3],
-      ["\n", 1], ["\r\n", 1], ["\r", 1], ["\n\n", 2],
-      ["😀".repeat(32), 1], ["😀".repeat(33), 2],
+      ["", 0],
+      ["hi", 1],
+      ["a".repeat(32), 1],
+      ["a".repeat(33), 2],
+      ["a".repeat(512), 16],
+      ["a\nb", 3],
+      ["a\r\nb", 3],
+      ["a\rb", 3],
+      ["\n", 1],
+      ["\r\n", 1],
+      ["\r", 1],
+      ["\n\n", 2],
+      ["😀".repeat(32), 1],
+      ["😀".repeat(33), 2],
     ] as const) {
       expect(typedWriteCount(text)).toBe(expected);
     }
   });
 
   test("uses rune and newline write counts in full TYPE budgets", () => {
-    for (const [text, expected] of [["😀".repeat(33), 14820], ["a\nb", 14840], ["a\r\nb", 14840], ["a\rb", 14840]] as const) {
+    for (const [text, expected] of [
+      ["😀".repeat(33), 14820],
+      ["a\nb", 14840],
+      ["a\r\nb", 14840],
+      ["a\rb", 14840],
+    ] as const) {
       expect(sendBudgetMs({ readyTimeoutMs: 10000, text, keys: 0, submit: false })).toBe(expected);
     }
   });
@@ -401,58 +491,105 @@ describe("U3 sendBudgetMs", () => {
 describe("U4 parseGateInput", () => {
   test("selects pane 0 by id rather than array position", () => {
     expect(
-      parseGateInput({ panes: [
-        { pane: 7, input: { ready: false, reason: "dialog:trust" } },
-        { pane: 0, input: { ready: true } },
-      ] }, 1234)
+      parseGateInput(
+        {
+          panes: [
+            { pane: 7, input: { ready: false, reason: "dialog:trust" } },
+            { pane: 0, input: { ready: true } },
+          ],
+        },
+        1234
+      )
     ).toEqual({ ready: true, reason: null, dialog: null, detail: null, receivedAt: 1234 });
   });
 
   test("returns null when pane 0 or its input is absent", () => {
-    for (const list of [undefined, null, {}, { panes: [] },
+    for (const list of [
+      undefined,
+      null,
+      {},
+      { panes: [] },
       { panes: [{ pane: 1, input: { ready: true } }] },
-      paneList({}), paneList({ input: null }),
+      paneList({}),
+      paneList({ input: null }),
     ]) {
       expect(parseGateInput(list, 1234)).toBeNull();
     }
   });
 
   test("preserves the documented reason detail and caller timestamp", () => {
-    expect(parseGateInput(paneList({ input: {
-      ready: false, reason: "box_not_empty", detail: "the input box holds text",
-    } }), 42)).toEqual({
-      ready: false, reason: "box_not_empty", dialog: null,
-      detail: "the input box holds text", receivedAt: 42,
+    expect(
+      parseGateInput(
+        paneList({
+          input: {
+            ready: false,
+            reason: "box_not_empty",
+            detail: "the input box holds text",
+          },
+        }),
+        42
+      )
+    ).toEqual({
+      ready: false,
+      reason: "box_not_empty",
+      dialog: null,
+      detail: "the input box holds text",
+      receivedAt: 42,
     });
   });
 
   test("parses all eight dialog kinds", () => {
     for (const dialog of DIALOG_KINDS) {
-      expect(parseGateInput(paneList({ input: { ready: false, reason: `dialog:${dialog}` } }), 10)).toEqual({
-        ready: false, reason: `dialog:${dialog}`, dialog, detail: null, receivedAt: 10,
+      expect(
+        parseGateInput(paneList({ input: { ready: false, reason: `dialog:${dialog}` } }), 10)
+      ).toEqual({
+        ready: false,
+        reason: `dialog:${dialog}`,
+        dialog,
+        detail: null,
+        receivedAt: 10,
       });
     }
   });
 
   test("keeps future dialog and readiness reasons raw", () => {
     for (const reason of ["dialog:future_kind", "future_readiness_reason"]) {
-      expect(parseGateInput(paneList({ input: { ready: false, reason, detail: "new detail" } }), 10)).toEqual({
-        ready: false, reason, dialog: null, detail: "new detail", receivedAt: 10,
+      expect(
+        parseGateInput(paneList({ input: { ready: false, reason, detail: "new detail" } }), 10)
+      ).toEqual({
+        ready: false,
+        reason,
+        dialog: null,
+        detail: "new detail",
+        receivedAt: 10,
       });
     }
   });
 
   test("ignores undocumented boxHasText and dismissable fields", () => {
-    expect(parseGateInput(paneList({ input: {
-      ready: true, boxHasText: true, dismissable: ["permission"],
-    } }), 10)).toEqual({ ready: true, reason: null, dialog: null, detail: null, receivedAt: 10 });
+    expect(
+      parseGateInput(
+        paneList({
+          input: {
+            ready: true,
+            boxHasText: true,
+            dismissable: ["permission"],
+          },
+        }),
+        10
+      )
+    ).toEqual({ ready: true, reason: null, dialog: null, detail: null, receivedAt: 10 });
   });
 
   test("normalises omitted reason and detail and refreshes receivedAt", () => {
     const list = paneList({ input: { ready: false } });
     for (const now of [0, 100, 200]) {
       expect(parseGateInput(list, now)).toEqual({
-        ready: false, reason: null, dialog: null, detail: null, receivedAt: now,
+        ready: false,
+        reason: null,
+        dialog: null,
+        detail: null,
+        receivedAt: now,
       });
     }
   });
@@ -463,50 +600,90 @@ describe("U4 R1.8 parseGateBinding", () => {
   const transcriptPath = "/isolated/config/projects/project-a/session-a.jsonl";
 
   test("selects pane 0 binding by id rather than array position", () => {
-    expect(parseGateBinding({ panes: [
-      { pane: 2, bound: "mtime", sessionId: "other-session", transcriptPath: "/other/session.jsonl" },
-      { pane: 0, bound: "named", sessionId, transcriptPath },
-    ] })).toEqual({ bound: "named", boundRaw: "named", sessionId, transcriptPath });
+    expect(
+      parseGateBinding({
+        panes: [
+          {
+            pane: 2,
+            bound: "mtime",
+            sessionId: "other-session",
+            transcriptPath: "/other/session.jsonl",
+          },
+          { pane: 0, bound: "named", sessionId, transcriptPath },
+        ],
+      })
+    ).toEqual({ bound: "named", boundRaw: "named", sessionId, transcriptPath });
   });
 
   test("preserves named prompt and mtime binding kinds without promoting them", () => {
     for (const bound of ["named", "prompt", "mtime"] as const) {
       expect(parseGateBinding(paneList({ bound, sessionId, transcriptPath }))).toEqual({
-        bound, boundRaw: bound, sessionId, transcriptPath,
+        bound,
+        boundRaw: bound,
+        sessionId,
+        transcriptPath,
       });
     }
   });
 
   test("returns null when pane 0 is absent", () => {
-    for (const list of [undefined, null, {}, { panes: [] }, { panes: [{ pane: 1, bound: "named", sessionId, transcriptPath }] }]) {
+    for (const list of [
+      undefined,
+      null,
+      {},
+      { panes: [] },
+      { panes: [{ pane: 1, bound: "named", sessionId, transcriptPath }] },
+    ]) {
       expect(parseGateBinding(list)).toBeNull();
     }
   });
 
   test("reports missing binding metadata as unbound rather than named", () => {
     expect(parseGateBinding(paneList({}))).toEqual({
-      bound: "unbound", boundRaw: null, sessionId: null, transcriptPath: null,
+      bound: "unbound",
+      boundRaw: null,
+      sessionId: null,
+      transcriptPath: null,
     });
     expect(parseGateBinding(paneList({ sessionId, transcriptPath }))).toEqual({
-      bound: "unbound", boundRaw: null, sessionId, transcriptPath,
+      bound: "unbound",
+      boundRaw: null,
+      sessionId,
+      transcriptPath,
     });
   });
 
   test("keeps an unknown raw binding while classifying it unbound", () => {
-    expect(parseGateBinding(paneList({ bound: "future_binding", sessionId, transcriptPath }))).toEqual({
-      bound: "unbound", boundRaw: "future_binding", sessionId, transcriptPath,
+    expect(
+      parseGateBinding(paneList({ bound: "future_binding", sessionId, transcriptPath }))
+    ).toEqual({
+      bound: "unbound",
+      boundRaw: "future_binding",
+      sessionId,
+      transcriptPath,
     });
   });
 
   test("treats missing identity or path as unbound without borrowing another pane", () => {
     // R1.8: a missing binding field is unbound, even if bound itself says named.
     for (const [own, missing] of [
-      [{ bound: "named", transcriptPath }, { sessionId: null, transcriptPath }],
-      [{ bound: "named", sessionId }, { sessionId, transcriptPath: null }],
+      [
+        { bound: "named", transcriptPath },
+        { sessionId: null, transcriptPath },
+      ],
+      [
+        { bound: "named", sessionId },
+        { sessionId, transcriptPath: null },
+      ],
     ] as const) {
-      expect(parseGateBinding({ panes: [
-        { pane: 1, bound: "named", sessionId, transcriptPath }, { pane: 0, ...own },
-      ] })).toEqual({ bound: "unbound", boundRaw: "named", ...missing });
+      expect(
+        parseGateBinding({
+          panes: [
+            { pane: 1, bound: "named", sessionId, transcriptPath },
+            { pane: 0, ...own },
+          ],
+        })
+      ).toEqual({ bound: "unbound", boundRaw: "named", ...missing });
     }
   });
 });
@@ -569,7 +746,9 @@ describe("U11 checkGateBinding and normaliseTranscriptPath", () => {
     ];
     for (const transcriptPath of paths) {
       expect(normaliseTranscriptPath(transcriptPath)).toBe(canonical);
-      expect(checkGateBinding(namedList(expected, { transcriptPath }), expected)).toEqual({ ok: true });
+      expect(checkGateBinding(namedList(expected, { transcriptPath }), expected)).toEqual({
+        ok: true,
+      });
     }
   });
 
@@ -582,8 +761,12 @@ describe("U11 checkGateBinding and normaliseTranscriptPath", () => {
     const canonical = realpathSync(expected.transcriptPath);
     for (const transcriptPath of [join(parentLink, `${expected.sessionUuid}.jsonl`), fileLink]) {
       expect(normaliseTranscriptPath(transcriptPath)).toBe(canonical);
-      expect(checkGateBinding(namedList(expected, { transcriptPath }), expected)).toEqual({ ok: true });
-      expect(checkGateBinding(namedList(expected), { ...expected, transcriptPath })).toEqual({ ok: true });
+      expect(checkGateBinding(namedList(expected, { transcriptPath }), expected)).toEqual({
+        ok: true,
+      });
+      expect(checkGateBinding(namedList(expected), { ...expected, transcriptPath })).toEqual({
+        ok: true,
+      });
     }
   });
 
@@ -603,14 +786,18 @@ describe("U11 checkGateBinding and normaliseTranscriptPath", () => {
       expect(existsSync(expectedPath)).toBe(false);
       expect(normaliseTranscriptPath(actualPath)).toBe(canonical);
       expect(normaliseTranscriptPath(expectedPath)).toBe(canonical);
-      expect(checkGateBinding(
-        namedList(expected, { transcriptPath: actualPath, transcriptSeen: false }),
-        { ...expected, transcriptPath: expectedPath }
-      )).toEqual({ ok: true });
-      expect(checkGateBinding(
-        namedList(expected, { transcriptPath: expectedPath, transcriptSeen: false }),
-        { ...expected, transcriptPath: actualPath }
-      )).toEqual({ ok: true });
+      expect(
+        checkGateBinding(
+          namedList(expected, { transcriptPath: actualPath, transcriptSeen: false }),
+          { ...expected, transcriptPath: expectedPath }
+        )
+      ).toEqual({ ok: true });
+      expect(
+        checkGateBinding(
+          namedList(expected, { transcriptPath: expectedPath, transcriptSeen: false }),
+          { ...expected, transcriptPath: actualPath }
+        )
+      ).toEqual({ ok: true });
       expect(existsSync(expectedPath)).toBe(false);
     }
   });
@@ -640,18 +827,26 @@ describe("U11 checkGateBinding and normaliseTranscriptPath", () => {
       { bound: "named" },
     ];
     for (const binding of bindings) {
-      expectUnbound({ panes: [
-        { pane: 1, ...declaredPane, bound: "named", sessionId, transcriptPath },
-        { pane: 0, ...declaredPane, ...binding },
-      ] }, expected);
+      expectUnbound(
+        {
+          panes: [
+            { pane: 1, ...declaredPane, bound: "named", sessionId, transcriptPath },
+            { pane: 0, ...declaredPane, ...binding },
+          ],
+        },
+        expected
+      );
     }
   });
 
   test("rejects a different session id even when the transcript path matches", () => {
     const { expected } = bindingSetup();
-    expectUnbound(namedList(expected, {
-      sessionId: "22222222-2222-4222-8222-222222222222",
-    }), expected);
+    expectUnbound(
+      namedList(expected, {
+        sessionId: "22222222-2222-4222-8222-222222222222",
+      }),
+      expected
+    );
   });
 
   test("rejects a different transcript path even when the session id or basename matches", () => {
@@ -662,13 +857,16 @@ describe("U11 checkGateBinding and normaliseTranscriptPath", () => {
     symlinkSync(otherProject, otherParentLink, "dir");
     const sameBasename = join(otherProject, `${expected.sessionUuid}.jsonl`);
     const differentBasename = join(projectDir, "other-session.jsonl");
-    for (const transcriptPath of [sameBasename, differentBasename]) writeFileSync(transcriptPath, "");
+    for (const transcriptPath of [sameBasename, differentBasename])
+      writeFileSync(transcriptPath, "");
     for (const transcriptPath of [
       sameBasename,
       differentBasename,
       join(otherParentLink, `${expected.sessionUuid}.jsonl`),
     ]) {
-      expect(normaliseTranscriptPath(transcriptPath)).not.toBe(realpathSync(expected.transcriptPath));
+      expect(normaliseTranscriptPath(transcriptPath)).not.toBe(
+        realpathSync(expected.transcriptPath)
+      );
       expectUnbound(namedList(expected, { transcriptPath }), expected);
     }
   });

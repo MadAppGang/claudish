@@ -11,14 +11,14 @@ import type { MagmuxReply } from "./magmux-client.js";
 import { inputBox } from "./screen-classifier.js";
 import type { ScreenState } from "./screen-model.js";
 import {
+  type GateRun,
+  type SendTrace,
   clientOf,
   disposeGatePanes,
   gateUntil,
   gatedSends,
-  type GateRun,
   startGatePane,
   submissions,
-  type SendTrace,
 } from "./test-helpers/gated-pane.js";
 import { MAGMUX, NO_MAGMUX_MESSAGE } from "./test-helpers/hermetic-env.js";
 
@@ -105,7 +105,9 @@ async function assertLoudLoss(r: GateRun, reason: string): Promise<void> {
   expect(r.transitions.some(({ to }) => to === "EMPTY" || to === "COMPLETED")).toBe(false);
   expect(submissions(r)).toEqual([]);
   const failedAt = r.transitions.find(({ to }) => to === "FAILED")?.at ?? 0;
-  expect(failedAt - (gatedSends(r)[0]?.at ?? Infinity)).toBeGreaterThanOrEqual(29_000);
+  expect(failedAt - (gatedSends(r)[0]?.at ?? Number.POSITIVE_INFINITY)).toBeGreaterThanOrEqual(
+    29_000
+  );
   expect(failedAt - (gatedSends(r)[0]?.at ?? 0)).toBeLessThanOrEqual(31_000);
 }
 
@@ -221,7 +223,9 @@ describe.skipIf(!MAGMUX)(
           ({ reply }) => reply?.ok && reply.result.evidence === "history"
         );
         expect(confirmation?.repliedAt).toBeDefined();
-        expect(runningAt).toBeGreaterThanOrEqual(confirmation?.repliedAt ?? Infinity);
+        expect(runningAt).toBeGreaterThanOrEqual(
+          confirmation?.repliedAt ?? Number.POSITIVE_INFINITY
+        );
         expect(existsSync(r.transcript)).toBe(false);
         await settled(r);
         assertOneCopy(r, PROMPT);
@@ -294,7 +298,9 @@ describe.skipIf(!MAGMUX)(
           );
           expect(clears).toHaveLength(command ? 1 : 0);
           if (command)
-            expect(clears[0]?.at).toBeGreaterThanOrEqual(typed[0]?.repliedAt ?? Infinity);
+            expect(clears[0]?.at).toBeGreaterThanOrEqual(
+              typed[0]?.repliedAt ?? Number.POSITIVE_INFINITY
+            );
         },
         T
       );
@@ -450,7 +456,7 @@ describe.skipIf(!MAGMUX)(
         expect(snapshot.anomalies).toContain("gate_vim_mode");
         expect(submissions(r)).toEqual([]);
         expect(
-          (r.transitions.find(({ to }) => to === "FAILED")?.at ?? Infinity) -
+          (r.transitions.find(({ to }) => to === "FAILED")?.at ?? Number.POSITIVE_INFINITY) -
             (gatedSends(r)[0]?.at ?? 0)
         ).toBeLessThan(12_000);
       },
@@ -498,7 +504,8 @@ describe.skipIf(!MAGMUX)(
           expect(snapshot.detail).toContain("-- INSERT --");
           expect(snapshot.anomalies).toContain("gate_vim_mode");
           expect(
-            (r.transitions.find(({ to }) => to === "FAILED")?.at ?? Infinity) - startedAt
+            (r.transitions.find(({ to }) => to === "FAILED")?.at ?? Number.POSITIVE_INFINITY) -
+              startedAt
           ).toBeLessThan(5000);
           expect(gatedSends(r)).toEqual([]);
           expect(submissions(r)).toEqual([]);
@@ -607,7 +614,9 @@ describe.skipIf(!MAGMUX)(
         for (const send of gatedSends(r)) {
           expect(send.message.readyTimeoutMs as number).toBeGreaterThanOrEqual(1000);
           expect(send.message.readyTimeoutMs as number).toBeLessThanOrEqual(10_000);
-          expect(send.at + (send.timeout ?? Infinity)).toBeLessThanOrEqual(began + 30_000);
+          expect(send.at + (send.timeout ?? Number.POSITIVE_INFINITY)).toBeLessThanOrEqual(
+            began + 30_000
+          );
           expect(send.repliedAt).toBeDefined();
         }
         expect(submissions(r)).toEqual([]);
