@@ -24,6 +24,11 @@ import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
+import {
+  SIGNING_SECRETS_KEY,
+  createSigningSecrets,
+  releaseWhenBodyEnds,
+} from "./handlers/shared/call-context.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
@@ -1061,6 +1066,26 @@ export async function createProxyServer(
 
   const app = new Hono();
   app.use("*", cors());
+
+  // Signing-credential redaction (`redact.ts`): every request gets a lease, and
+  // every credential value a handler signs with for it is registered there
+  // (`ComposedHandler`'s `fetchHeaders`). The lease belongs to the INBOUND
+  // request, never to one hop, because `FallbackHandler` logs its combined
+  // error after every hop has returned, and it is released only once the
+  // response body is fully delivered, cancelled or has errored: a streamed body
+  // is still parsed and logged long after the handler returned.
+  app.use("*", async (c, next) => {
+    const secrets = createSigningSecrets();
+    c.set(SIGNING_SECRETS_KEY, secrets);
+    const release = () => secrets.lease.release();
+    try {
+      await next();
+    } catch (err) {
+      release();
+      throw err;
+    }
+    c.res = releaseWhenBodyEnds(c.res, release);
+  });
 
   // Did the child ever ask a MODEL for anything? A failed run with this still at
   // zero died inside Claude Code before any model was contacted — the one fact

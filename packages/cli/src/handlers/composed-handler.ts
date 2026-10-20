@@ -108,6 +108,7 @@ import {
   isCredentialRejection,
   respondAuthFailure,
 } from "./shared/auth-failure.js";
+import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import type { ConnectionErrorKind } from "./shared/connection-error.js";
 import {
@@ -475,6 +476,19 @@ export class ComposedHandler implements ModelHandler {
       providerDisplayName: provider.displayName,
       ...(options.requestRole === "advisor" ? { writesTokenFile: false } : {}),
     });
+  }
+
+  /**
+   * The endpoint a binding signs for, read only for its credential query
+   * parameters (Gemini's `?key=`). Never throws: a transport that cannot name
+   * its endpoint here simply contributes no query value.
+   */
+  private signedEndpoint(binding: AuthBinding | undefined): string | undefined {
+    try {
+      return this.provider.getEndpoint(this.targetModel, binding);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
@@ -1667,9 +1681,16 @@ export class ComposedHandler implements ModelHandler {
     // returned (primary, parameter re-fetch or auth retry), recorded on this
     // call's own `signing` record so a concurrent request on the same handler
     // cannot replace it. `handle` names the signer from them (`signingCredential`).
+    //
+    // Every attempt's credential values are registered for redaction right
+    // here, before any of them can be echoed back: the primary fetch, the
+    // parameter re-fetch, the 401 retry's fresh token and every Responses leg
+    // sign through this one function. From now until the inbound request's
+    // body ends, every log sink and every `redactSecrets` caller replaces them.
     const fetchHeaders = async (b: AuthBinding | undefined): Promise<Record<string, string>> => {
       const fetched = await this.provider.getHeaders(payload, b);
       mergeWireHeaders(fetched, wireHeaders);
+      addSigningSecrets(c, credentialValuesFromRequest(fetched, this.signedEndpoint(b)));
       signing.headers = fetched;
       return fetched;
     };
