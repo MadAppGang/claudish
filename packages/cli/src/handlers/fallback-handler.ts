@@ -15,6 +15,7 @@ import { redactForClient } from "../redact.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { authVerdict, isCredentialRejection } from "./shared/auth-failure.js";
+import { abortedResponse, callAborted } from "./shared/call-context.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
 import {
   hasStreamFailureMarker,
@@ -65,6 +66,9 @@ export class FallbackHandler implements ModelHandler {
       const { name, handler, provider } = this.candidates[idx];
       const isLast = attempt === this.candidates.length - 1;
       if (credentialStop && !(provider && isSubscriptionProvider(provider))) continue;
+      // An internal call whose deadline passed (call-context.ts) never reaches
+      // another hop. Never true for a request from Claude Code.
+      if (callAborted(c)) return abortedResponse();
 
       try {
         // If previous attempts failed, signal the winning handler to include fallback metadata
@@ -81,6 +85,9 @@ export class FallbackHandler implements ModelHandler {
         }
 
         const response = await handler.handle(c, payload);
+        // The caller stopped waiting while this hop ran: its answer goes back
+        // as it is, before any retry decision or stderr line.
+        if (callAborted(c)) return response;
 
         // Success — cache the working provider index and return immediately
         if (response.ok) {
@@ -231,6 +238,7 @@ export class FallbackHandler implements ModelHandler {
           }
         }
       } catch (err: any) {
+        if (callAborted(c)) return abortedResponse();
         errors.push({ provider: name, status: 0, message: redactForClient(String(err?.message)) });
         if (!isLast) {
           logStderr(`[Fallback] ${name} error: ${err.message}, trying next provider...`);
