@@ -13,14 +13,18 @@
  *    `turn_duration` only after it read the final response's `message_stop`, so
  *    the line is on disk first by construction, whatever the earlier stages did.
  * 2. AFTER it is enqueued, the consumers run on what was parsed, off the client
- *    path: warn-mode `responseRewrite`, then `responseEnd`, whose `end` line is
- *    written in a `finally`.
+ *    path and as separate dispatches, independent of each other: the warn-mode
+ *    `responseRewrite` chain, and the `responseEnd` chain, whose `end` line is
+ *    written in a `finally`, after its last step. Nothing is awaited ahead of
+ *    `responseEnd`, so the owner's inbox bound (the `responseEnd` dispatch bound,
+ *    never below the default timeout, + 500 ms) covers the `end` line.
  *
- * Observe-mode and warn-severity `toolCall` hooks run as each tool block
- * completes. Because the tap is the last stage, every consumer sees exactly
+ * The observe-mode and warn-severity `toolCall` hooks run as one chain per tool
+ * block, as each block completes. Because the tap is the last stage, every consumer sees exactly
  * what the client received. A throw in the tap's parser stops parsing and the
  * bytes keep flowing (fail open); a client cancel or an upstream error writes
- * `end` with `aborted: true` at once.
+ * `end` with `aborted: true` at once, unless `message_stop` already went out: the
+ * `responseEnd` dispatch then owns `end`, after its payload.
  */
 
 import { randomUUID } from "node:crypto";
@@ -58,6 +62,26 @@ export class EndLine {
   }
 }
 
+/**
+ * Run the consumers of one finished response (§5.3): the warn-mode `responseRewrite`
+ * chain and the `responseEnd` chain, as two independent dispatches, and write `end`
+ * once the `responseEnd` chain ended. Neither rejects into the caller.
+ */
+export function runResponseConsumers(
+  hooks: SeamHooks,
+  view: Parameters<SeamHooks["end"]>[0],
+  req: string,
+  end: EndLine
+): void {
+  const failed = (err: unknown) =>
+    log(`[hooks] tap consumers failed: ${err instanceof Error ? err.message : err}`);
+  void hooks.observeRewrite(view).catch(failed);
+  void hooks
+    .end(view, req)
+    .catch(failed)
+    .finally(() => end.write(false));
+}
+
 export function observeTap(
   source: ReadableStream<Uint8Array>,
   hooks: SeamHooks,
@@ -75,19 +99,7 @@ export function observeTap(
     void hooks.observeToolCall({ id, name, rawArgs }).catch(() => {});
   };
 
-  const onMessageStop = () => {
-    const view = collectorView(collector);
-    void (async () => {
-      try {
-        await hooks.observeRewrite(view);
-        await hooks.end(view, req);
-      } catch (err) {
-        log(`[hooks] tap consumers failed: ${err instanceof Error ? err.message : err}`);
-      } finally {
-        end.write(false);
-      }
-    })();
-  };
+  const onMessageStop = () => runResponseConsumers(hooks, collectorView(collector), req, end);
 
   return new ReadableStream<Uint8Array>(
     {
@@ -96,7 +108,9 @@ export function observeTap(
         try {
           result = await reader.read();
         } catch (err) {
-          end.write(true);
+          // After `message_stop` the response is complete and `end` belongs to
+          // responseEnd, as on a cancel: a later read error must not cut it short.
+          if (!stopped) end.write(true);
           controller.error(err);
           return;
         }
@@ -144,7 +158,7 @@ export function observeTap(
         if (carriesStop) onMessageStop();
       },
       cancel(reason) {
-        end.write(true);
+        if (!stopped) end.write(true);
         return reader.cancel(reason).catch(() => {});
       },
     },
