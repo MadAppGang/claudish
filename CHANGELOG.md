@@ -2,6 +2,81 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.0.0] - 2026-10-20
+
+### ⚠ BREAKING CHANGES
+
+- closed hooks no longer run concurrently. Two hooks changing one tool's description, schema or a tool call's arguments both apply in chain order, and a later replaceToolDescription drops an earlier append (plan-mode's included). A stored responseEnd note now precedes the request hooks' notes in the system prompt. *(hooks)* ([`1d2a2a7`](https://github.com/MadAppGang/claudish/commit/1d2a2a7895fac0fff41528c9ea864f0c4fa820b3))
+- a .env in the working directory no longer sets claudish's other settings. CLAUDISH_PORT, CLAUDISH_RECOVERY, OLLAMA_HOST, GOOGLE_APPLICATION_CREDENTIALS, every *_BASE_URL and every other variable outside provider API keys and CLAUDISH_MODEL / CLAUDISH_MODEL_* must come from the shell or an MCP server's env. *(hooks)* ([`7e83473`](https://github.com/MadAppGang/claudish/commit/7e834738f8a7a75c716cf81f54b50ccd2e9bda14))
+- `claudish behavior` is removed with no alias; use `claudish hooks list|corpus|telemetry`. The `behavior` config block is no longer read (it is reported once with where each key moved), and telemetry consent is not carried over. *(hooks)* ([`42bc36c`](https://github.com/MadAppGang/claudish/commit/42bc36ccdf8d0de6918cf1ac373865925286380a))
+- the behavior config block no longer configures the proxy. Move behavior.rules to hooks.severity and behavior.hooks to hooks.modules (rewritten to the claudish/hooks contract, apiVersion 1). claudish reports a behavior block on stderr once per process. *(hooks)* ([`dfa70e5`](https://github.com/MadAppGang/claudish/commit/dfa70e5f9fbdd7ac88379804d847663fcc1505ab))
+
+### Bug Fixes
+
+- store the exit code with the exit, so a settle in the capture window keeps it *(pane)* ([`3dce467`](https://github.com/MadAppGang/claudish/commit/3dce467709aaab2dbc2d9e3626957a0b0db6bfb6))
+- pass configFile in v12.1.2's native-cursor pane-launch tests after rebase onto v12.1.2 *(hooks)* ([`f79034a`](https://github.com/MadAppGang/claudish/commit/f79034a494c3b7767a259c7e91eb2ff9537461d5))
+- run session hooks on v12.1.0's gated send and settle after rebase onto v12.1.0 *(hooks)* ([`c2476b3`](https://github.com/MadAppGang/claudish/commit/c2476b3e26c31ba3516881995db786a55a60c054))
+- run v12.0.1's muse@ and prompt-role tests on the hook APIs after rebase onto v12.0.1 *(hooks)* ([`ef9fc16`](https://github.com/MadAppGang/claudish/commit/ef9fc16385e9ac13155976160ad6e01200aa6d8e))
+- run hook tests on v11.1.0's session records and nesting rule after rebase onto v11.1.0 *(hooks)* ([`5fdca91`](https://github.com/MadAppGang/claudish/commit/5fdca91b5cd64aa4193e9b5f41eedd3698980382))
+- select gemini/thought-signature from catalog data after rebase onto v11.1.0 *(hooks)* ([`1eb8620`](https://github.com/MadAppGang/claudish/commit/1eb86203fe15728c7f18a9186fa55fd94e000651))
+- apply response-rewrite steps over what the previous step left *(hooks)* ([`a720867`](https://github.com/MadAppGang/claudish/commit/a7208679d34e8511a31bee3618b2093cbedfa885))
+- make every hook context read-only all the way down *(hooks)* ([`b7577fd`](https://github.com/MadAppGang/claudish/commit/b7577fd0bac780ee67d2690bdae8ac48e8f43acf))
+- ignore a project .claudish.json model that points at a raw URL *(config)* ([`a7ee35f`](https://github.com/MadAppGang/claudish/commit/a7ee35f70c63fcd9f48d72df29294db48e3791a7))
+- load a repository .env through the allowlist in --mcp mode too *(mcp)* ([`117ab9e`](https://github.com/MadAppGang/claudish/commit/117ab9e80a7cbb4dc797f0fb7f7722e32ad4a39b))
+- reject a cwd .env model pin that resolves to a raw URL *(hooks)* ([`b689eb6`](https://github.com/MadAppGang/claudish/commit/b689eb69cb9ec8727e434fb042e091024da428f0))
+- write the debug log for --mcp --debug-claudish and -d *(mcp)* ([`17b13b9`](https://github.com/MadAppGang/claudish/commit/17b13b9b497079c8043fe71933e882707d7cc1a5))
+- report invalid and ignored hooks config in hooks list *(hooks)* ([`ede23d4`](https://github.com/MadAppGang/claudish/commit/ede23d4441738f5b1d4abd64b4250b45d91e498b))
+- spawn the login child with --no-env-file, keeping --config *(tui)* ([`5ecd6fc`](https://github.com/MadAppGang/claudish/commit/5ecd6fcfe57d5874d01249b8de32a027f8264523))
+- drop every env-file name when Bun loaded the env files *(hooks)* ([`9046d3c`](https://github.com/MadAppGang/claudish/commit/9046d3c6cd1b3276e218753b27cb36493655f9d6))
+- read only API keys and model settings from a cwd .env *(hooks)* ([`7e83473`](https://github.com/MadAppGang/claudish/commit/7e834738f8a7a75c716cf81f54b50ccd2e9bda14))
+- pass the credentials path to gcloud as an argument *(vertex)* ([`758dac2`](https://github.com/MadAppGang/claudish/commit/758dac26d5d4af76546c9cfbf38a973f575d5ff8))
+- pass the parent's --config file to each pane child *(team)* ([`d881379`](https://github.com/MadAppGang/claudish/commit/d881379de41eb8f7032aec784dc5bdc865aa4439))
+- ignore claudish control variables set by cwd env files *(hooks)* ([`7be22b4`](https://github.com/MadAppGang/claudish/commit/7be22b4c0a07cfaf3fae686834e903d8516432ee))
+- pass hooks frozen copies of the request messages and tools *(hooks)* ([`bb9965b`](https://github.com/MadAppGang/claudish/commit/bb9965bface896f5bce77725b66585f1aa750591))
+- validate hook inbox lines at the owner before queueing them *(hooks)* ([`f5718a5`](https://github.com/MadAppGang/claudish/commit/f5718a561ee56c452afd349098f4beb07155cbbd))
+- run responseEnd without waiting for warn responseRewrite *(hooks)* ([`3841f73`](https://github.com/MadAppGang/claudish/commit/3841f73daed51ec544d13c06f2a8d82eea900ff6))
+- re-wrap stderr and stdout writers replaced after capture *(hooks)* ([`b679f66`](https://github.com/MadAppGang/claudish/commit/b679f66f65cc17e5181b993105604d7743dc5ab4))
+
+### Documentation
+
+- stop naming the magus monitor as a session-record reader([`855f152`](https://github.com/MadAppGang/claudish/commit/855f1527ad57471c750c79b4d954e37272e522d2))
+- add --no-env-file to the run-from-source recipes *(serve)* ([`3e71277`](https://github.com/MadAppGang/claudish/commit/3e71277f48c400651d54f1b649c115568c803ac3))
+- describe hook records and stop naming the magus monitor *(mcp)* ([`3d32b9d`](https://github.com/MadAppGang/claudish/commit/3d32b9d20a322ad391edae8596998bed560f91e7))
+- replace behavior-layer.md with the hook system rationale *(hooks)* ([`71a3b21`](https://github.com/MadAppGang/claudish/commit/71a3b21655546bdefd0ad8479d010228771229ef))
+- document the hooks key and the removed behavior block *(config)* ([`39d075b`](https://github.com/MadAppGang/claudish/commit/39d075be2659368b06fed957716e92285dadd41b))
+- add the hooks guide with type-checked examples *(hooks)* ([`eb289f3`](https://github.com/MadAppGang/claudish/commit/eb289f3beae033c51d077b6743632fbafdf926d3))
+- update CHANGELOG.md for v12.3.2([`d36d27a`](https://github.com/MadAppGang/claudish/commit/d36d27a942e162329a164c9224c7dce079dcaed7))
+
+### New Features
+
+- run an event's hooks in turn, each seeing earlier edits *(hooks)* ([`1d2a2a7`](https://github.com/MadAppGang/claudish/commit/1d2a2a7895fac0fff41528c9ea864f0c4fa820b3))
+- wrap claudish -i in magmux when session hooks are loaded *(launcher)* ([`a026b5e`](https://github.com/MadAppGang/claudish/commit/a026b5e0c62734bf434af64379374ad13b9f9d22))
+- run session hooks in claudish -i through InteractiveDriver *(hooks)* ([`47125a9`](https://github.com/MadAppGang/claudish/commit/47125a9798face34236731644c2c58cb22a99ae9))
+- add InProcessSink for claudish -i responseEnd injections *(hooks)* ([`c9b8790`](https://github.com/MadAppGang/claudish/commit/c9b87909bc1083deebbd2a6f881e5cb015b2cd7e))
+- match a human-typed prompt by provenance, not by shape *(pane)* ([`70dc58a`](https://github.com/MadAppGang/claudish/commit/70dc58a4e7ea04010c04fc657bed0a7edb94ed35))
+- drive session hooks for create_session and team panes *(mcp)* ([`b29cad8`](https://github.com/MadAppGang/claudish/commit/b29cad80d6d2dd89ae285ba879984cc2f9c2c350))
+- hold a settled turn in SETTLING while session hooks run *(pane)* ([`67ba543`](https://github.com/MadAppGang/claudish/commit/67ba5436d6e9829ac6b5b4c59bf07f13e633fff4))
+- add SessionHookBinding for pane owners *(hooks)* ([`06c35c7`](https://github.com/MadAppGang/claudish/commit/06c35c7512ca7dd2a1b0158a37d90fd427450b55))
+- keep CLAUDISH_HOOK_INBOX and CLAUDISH_HOOK_SESSION in panes *(pane)* ([`3c5efb3`](https://github.com/MadAppGang/claudish/commit/3c5efb3e38d1ae3a6e134f634c6973beab106a92))
+- replace claudish behavior with claudish hooks *(hooks)* ([`42bc36c`](https://github.com/MadAppGang/claudish/commit/42bc36ccdf8d0de6918cf1ac373865925286380a))
+- export claudish/hooks types and runtime from the package *(hooks)* ([`5fa15b1`](https://github.com/MadAppGang/claudish/commit/5fa15b1bdfd7a8a8590f2bc3acea18385ea70ed5))
+- replace MiddlewareManager with the raw hook tier *(hooks)* ([`6057c0c`](https://github.com/MadAppGang/claudish/commit/6057c0c6a00b6a3d29b4d86a09c2e18f3cb96131))
+- add the response seam above every stream parser *(hooks)* ([`97a4e87`](https://github.com/MadAppGang/claudish/commit/97a4e870ce85613552e4bff9ab6742b42c68aa98))
+- replace applyRequest with the hook request stage *(hooks)* ([`dfa70e5`](https://github.com/MadAppGang/claudish/commit/dfa70e5f9fbdd7ac88379804d847663fcc1505ab))
+- add the hook engine, module loader and closed actions *(hooks)* ([`90abd6f`](https://github.com/MadAppGang/claudish/commit/90abd6fe39b40fdc166c1a091e5f6fe7c19a824a))
+
+### Other Changes
+
+- v13.0.0 *(release)* ([`435a303`](https://github.com/MadAppGang/claudish/commit/435a3030fb8f48fbc4e80649e0205809bea6c401))
+
+### Performance
+
+- split SSE events in one pass over each chunk *(hooks)* ([`f217f43`](https://github.com/MadAppGang/claudish/commit/f217f43f35cdac3c216c27c270ce6599482fbff0))
+
+### Refactoring
+
+- move findOwnPane to pane/own-pane.ts *(recovery)* ([`b8bf958`](https://github.com/MadAppGang/claudish/commit/b8bf95843d23a8bf9172ab23c56fe229fa343a6a))
+
 ## [12.3.2] - 2026-10-20
 
 ### Bug Fixes
