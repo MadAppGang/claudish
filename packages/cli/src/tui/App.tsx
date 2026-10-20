@@ -145,6 +145,7 @@ import {
   providerIsReady,
   providerIsReadyForDisplay,
   providerLoginAction,
+  providerSetLabel,
 } from "./providers.js";
 import { A, C } from "./theme.js";
 import type {
@@ -2337,6 +2338,8 @@ export function App({ requestLogin }: AppProps = {}) {
         // issue that an earlier in-process attempt hit — the child
         // gets a fresh Node runtime with no OpenTUI residue.
         const action = providerLoginAction(selectedProvider);
+        const setLabel =
+          providerSetLabel(selectedProvider) === "project" ? "a project" : "an API key";
         const command =
           action?.kind === "gcloud-adc"
             ? "gcloud auth application-default login"
@@ -2345,7 +2348,7 @@ export function App({ requestLogin }: AppProps = {}) {
               : "";
         if (!action) {
           setStatusMsg(
-            `${selectedProvider.displayName} doesn't support OAuth login. Press s to set an API key.`
+            `${selectedProvider.displayName} doesn't support OAuth login. Press s to set ${setLabel}.`
           );
         } else if (!requestLogin) {
           // Fallback: wrapper didn't provide the login bridge. Tell the
@@ -2399,6 +2402,7 @@ export function App({ requestLogin }: AppProps = {}) {
         // we don't want to flip the badge to FAIL just because nothing is
         // configured. Use the right hint based on provider capabilities.
         const caps = providerAuthCapabilities(selectedProvider, config);
+        const setLabel = providerSetLabel(selectedProvider);
         // A running local server is testable even when not config-enabled.
         const localRunning =
           selectedProviderIsLocal && localLiveness[selectedProvider.catalogName] === "running";
@@ -2410,12 +2414,14 @@ export function App({ requestLogin }: AppProps = {}) {
             );
           } else if (caps.apiKey.supported && caps.oauth.supported) {
             setStatusMsg(
-              `${selectedProvider.displayName}: no credentials. Press s to set a key or l to login.`
+              `${selectedProvider.displayName}: no credentials. Press s to set a ${setLabel} or l to login.`
             );
           } else if (caps.oauth.supported) {
             setStatusMsg(`${selectedProvider.displayName}: no credentials. Press l to login.`);
           } else if (caps.apiKey.supported) {
-            setStatusMsg(`${selectedProvider.displayName}: no key set. Press s to set an API key.`);
+            setStatusMsg(
+              `${selectedProvider.displayName}: no ${setLabel} set. Press s to set ${setLabel === "project" ? "a project" : "an API key"}.`
+            );
           } else {
             setStatusMsg(`${selectedProvider.displayName} doesn't support auth from the TUI.`);
           }
@@ -2851,6 +2857,7 @@ export function App({ requestLogin }: AppProps = {}) {
             ? {
                 apiKey: !!selectedProvider.apiKeyEnvVar,
                 oauth: Boolean(providerLoginAction(selectedProvider)),
+                setLabel: providerSetLabel(selectedProvider),
                 endpoint: !!selectedProvider.endpointEnvVar,
                 local: selectedProviderIsLocal,
                 localEnabled: selectedLocalEnabled,

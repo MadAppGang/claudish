@@ -44,6 +44,19 @@ describe.serial("Vertex Providers-tab actions and guidance", () => {
     expect(providers.providerLoginAction(devin)).toBeUndefined();
   });
 
+  test("Vertex labels its editable value as a project", () => {
+    expect(providers.providerSetLabel(providerDef("vertex"))).toBe("project");
+  });
+
+  test("every other provider keeps the key label", () => {
+    const otherProviders = providers.getProviderDefs().filter((p) => p.catalogName !== "vertex");
+    expect(otherProviders.length).toBeGreaterThan(0);
+
+    for (const provider of otherProviders) {
+      expect(providers.providerSetLabel(provider)).toBe("key");
+    }
+  });
+
   test("the resolved-project credential note states only the project and its source", () => {
     const note = providers.providerCredentialNote(providerDef("vertex"));
 

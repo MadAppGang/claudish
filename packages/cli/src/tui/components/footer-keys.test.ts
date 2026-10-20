@@ -15,6 +15,21 @@ function keyLabels(caps: Parameters<typeof footer.providerFooterKeys>[0]): strin
 }
 
 describe("Providers-tab footer keys", () => {
+  test('setLabel "project" shows s set project instead of s set key', () => {
+    const keys = keyLabels({ ...baseCaps, setLabel: "project" });
+
+    expect(keys).toContainEqual(["s", "set project"]);
+    expect(keys).not.toContainEqual(["s", "set key"]);
+  });
+
+  test("an absent setLabel keeps s set key", () => {
+    expect(keyLabels(baseCaps)).toContainEqual(["s", "set key"]);
+  });
+
+  test('setLabel "key" keeps s set key', () => {
+    expect(keyLabels({ ...baseCaps, setLabel: "key" })).toContainEqual(["s", "set key"]);
+  });
+
   test("OAuth login support shows l login", () => {
     expect(keyLabels({ ...baseCaps, oauth: true })).toContainEqual(["l", "login"]);
   });

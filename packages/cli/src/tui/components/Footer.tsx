@@ -19,6 +19,7 @@ interface FooterProps {
     endpoint: boolean;
     local: boolean;
     localEnabled: boolean;
+    setLabel?: "project" | "key";
   };
 }
 
@@ -44,7 +45,8 @@ export function providerFooterKeys(
   // shortcut equivalent to `e endpoint`.
   const showUrl = providerCaps ? providerCaps.endpoint : true;
   const keys: Array<[string, string, string]> = [[C.blue, "↑↓", "navigate"]];
-  if (showKey) keys.push([C.green, "s", "set key"]);
+  if (showKey)
+    keys.push([C.green, "s", providerCaps?.setLabel === "project" ? "set project" : "set key"]);
   if (showEndpoint)
     keys.push([
       C.green,

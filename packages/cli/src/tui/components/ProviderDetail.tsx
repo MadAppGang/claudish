@@ -1,5 +1,5 @@
 import { DETAIL_H } from "../constants.js";
-import type { AuthSource, ProviderDef } from "../providers.js";
+import { type AuthSource, type ProviderDef, providerSetLabel } from "../providers.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
 import type { Mode, TestResultsMap } from "../types.js";
@@ -146,7 +146,7 @@ export function ProviderDetail({
         borderColor={C.focusBorder}
         title={
           mode === "input_key"
-            ? ` Set API Key — ${selectedProvider.displayName} → ${keySaveTarget} `
+            ? ` Set ${providerSetLabel(selectedProvider) === "project" ? "Project" : "API Key"} — ${selectedProvider.displayName} → ${keySaveTarget} `
             : ` Set Endpoint — ${selectedProvider.displayName} `
         }
         backgroundColor={C.bg}

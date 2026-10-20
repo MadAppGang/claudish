@@ -60,6 +60,10 @@ export function providerLoginAction(p: ProviderDef): ProviderLoginAction | undef
   return undefined;
 }
 
+export function providerSetLabel(p: ProviderDef): "project" | "key" {
+  return p.catalogName === "vertex" ? "project" : "key";
+}
+
 // Skip virtual providers that have no API key and no TUI presence
 const SKIP = new Set(["qwen", "native-anthropic"]);
 
