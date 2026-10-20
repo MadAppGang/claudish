@@ -31,6 +31,7 @@ import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
   type GroupSnapshot,
   type PaneIdentity,
+  type ProcessTable,
   type PsRow,
   findPaneMagmux,
   formatGroupFile,
@@ -45,10 +46,12 @@ import {
   liveEscaped,
   mergeSnapshots,
   parseGroupFile,
+  pidMayBeAlive,
   readProcessTable,
   readProcessTableAsync,
   recordPathOf,
   sameSnapshot,
+  sockPathOf,
   startedAt,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
@@ -99,8 +102,11 @@ export type PaneOwner = Pick<PaneRecord, "paneId" | "ownerPid" | "ownerStart">;
  * equal the row's `lstart`. Without one (written while the owner could not read the
  * table, or a recordless socket) the start time the pane id embeds must match the row's
  * timezone-free `startMs`; an id that embeds none is not ours to judge and counts alive.
+ * With the table unavailable only `kill(pid, 0)` can answer (`pidMayBeAlive`): ESRCH is
+ * dead, anything else alive.
  */
-export function ownerAlive(owner: PaneOwner, table: PsRow[]): boolean {
+export function ownerAlive(owner: PaneOwner, table: ProcessTable): boolean {
+  if (!table) return pidMayBeAlive(owner.ownerPid);
   const row = table.find((r) => r.pid === owner.ownerPid);
   if (!row) return false;
   if (owner.ownerStart) return row.lstart === owner.ownerStart;
@@ -290,15 +296,10 @@ async function tick(): Promise<void> {
 
 /* ───────────────────────────── the pane limit ───────────────────────────── */
 
-/**
- * Records with a live owner whose reap has not finished, across every owner, plus our
- * reservations. With the table unavailable every such record's owner counts as alive.
- */
+/** Records with a live owner whose reap has not finished, across every owner, plus our reservations. */
 export function livePaneCount(root: string = sockRootFor()): number {
   const table = readProcessTable();
-  const counted = readRecords(root).filter(
-    (r) => !r.reapFailed && (!table || ownerAlive(r, table))
-  ).length;
+  const counted = readRecords(root).filter((r) => !r.reapFailed && ownerAlive(r, table)).length;
   return counted + reserved;
 }
 
@@ -484,11 +485,11 @@ async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets
 
 async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Promise<void> {
   const table = readProcessTable();
+  if (ownerAlive(rec, table)) return;
   if (!table) {
-    out.kept.push(rec.paneId); // nothing can be verified: the owner may be alive
+    await sweepUnidentifiable(rec, root, out);
     return;
   }
-  if (ownerAlive(rec, table)) return;
   const watcher = rec.watcherPid ? table.find((r) => r.pid === rec.watcherPid) : undefined;
   if (watcher && isPaneWatcherCommand(watcher.command, rec.paneId)) {
     out.kept.push(rec.paneId); // the watcher is mid-job
@@ -513,6 +514,37 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   else out.cleaned.push(rec.paneId);
 }
 
+/** A unix socket at `sockPath` accepts a connection: some magmux still serves it. */
+async function socketAnswers(sockPath: string): Promise<boolean> {
+  try {
+    (await MagmuxClient.dial(sockPath)).close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A dead owner's record (kill(pid, 0) answered ESRCH) while the table is unavailable.
+ * No process can be identified, so nothing is signalled. A watcher pid that may be alive
+ * may be mid-job, and a socket that still answers is a live magmux: both keep the files,
+ * and the pane is left running for a sweep that can read the table. Otherwise the pane's
+ * magmux is gone and its files are removed, as the dead-owner path does when nothing is
+ * verified alive.
+ */
+async function sweepUnidentifiable(rec: PaneRecord, root: string, out: SweepResult) {
+  if (rec.watcherPid && pidMayBeAlive(rec.watcherPid)) {
+    out.kept.push(rec.paneId);
+    return;
+  }
+  if (await socketAnswers(sockPathOf(root, rec.paneId))) {
+    out.kept.push(rec.paneId);
+    return;
+  }
+  removePaneFiles(root, rec);
+  out.cleaned.push(rec.paneId);
+}
+
 /** `c<pid>-<start36>-…`: the owner pid and start (ms) a pane id embeds. */
 export function ownerOfPaneId(id: string): { pid: number; startMs: number } | null {
   const m = id.match(/^c(\d+)-([0-9a-z]+)-/);
@@ -529,10 +561,6 @@ function ownerOfSocketId(id: string): PaneOwner | null {
 async function sweepRecordlessSocket(root: string, name: string, out: SweepResult): Promise<void> {
   const id = name.slice("magmux-".length, -".sock".length);
   const table = readProcessTable();
-  if (!table) {
-    out.kept.push(id); // the owner may be alive and the socket a live magmux's
-    return;
-  }
   const owner = ownerOfSocketId(id);
   if (!owner || ownerAlive(owner, table)) return; // no owner in the id: not ours to judge
   const sockPath = join(root, name);
@@ -542,6 +570,12 @@ async function sweepRecordlessSocket(root: string, name: string, out: SweepResul
   } catch {
     rmSync(sockPath, { force: true });
     out.cleaned.push(id);
+    return;
+  }
+  if (!table) {
+    // a live magmux of a dead owner: without the table nothing identifies its processes
+    client.close();
+    out.kept.push(id);
     return;
   }
   const list = await client.request<{ panes?: Array<{ pid?: number; pane?: number }> }>({

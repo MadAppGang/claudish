@@ -374,8 +374,8 @@ describe("the process table when ps cannot run (macOS refuses the setuid ps in a
   });
 
   test("readProcessTableAsync resolves null, never rejects, when execFile throws synchronously", async () => {
-    // Bun throws EPERM from execFile itself; an unguarded executor rejected, and the MCP
-    // server's unhandled rejection (setPanePid) exited it with status 1
+    // Bun throws EPERM from execFile itself; a rejection here is unhandled in setPanePid
+    // and exits the MCP server with status 1
     await withProcessTableUnavailable(async () => {
       await expect(readProcessTableAsync()).resolves.toBeNull();
       expect(readProcessTable()).toBeNull();

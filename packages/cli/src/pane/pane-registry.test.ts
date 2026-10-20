@@ -16,7 +16,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:net";
+import { type Server, createServer } from "node:net";
 import { join } from "node:path";
 import { waitForExit } from "../process-tree.js";
 import {
@@ -43,6 +43,7 @@ import {
   reservePanes,
   reservedPaneCount,
   sweepOrphanPanes,
+  updateRecord,
   writeRecord,
 } from "./pane-registry.js";
 import { startPaneSession } from "./pane-session.js";
@@ -51,6 +52,7 @@ import {
   isPaneRecordPath,
   isPaneSockPath,
   isPaneWatcherCommand,
+  pidMayBeAlive,
   recordPathOf,
   sockPathOf,
 } from "./process-identity.js";
@@ -217,7 +219,7 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
     const t = env();
     const { s, uuid } = await withProcessTableUnavailable(async () => {
       const started = await hangSession(t);
-      // onSnapshot → setPanePid → readProcessTableAsync, which rejected unhandled
+      // onSnapshot → setPanePid → readProcessTableAsync must resolve, never reject
       for (let i = 0; i < 100 && !readRecord(t.sockRoot, started.s.paneId)?.panePid; i++)
         await Bun.sleep(50);
       await Bun.sleep(200);
@@ -734,24 +736,37 @@ describe("reservations", () => {
   });
 });
 
-describe("with the process table unavailable (a sandbox refuses ps): every pane is assumed alive", () => {
-  /** A pane of THIS live process, as another owner's sweep or count would find it. */
-  function liveOwnerPane(t: PaneTestEnv, label: string): PaneRecord {
+describe("with the process table unavailable (a sandbox refuses ps): owners judged by kill(pid, 0)", () => {
+  /** A listening unix socket standing in for a live magmux. */
+  async function liveSocket(path: string): Promise<Server> {
+    const server = createServer((c) => c.end());
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    return server;
+  }
+
+  /**
+   * A pane record as another owner's sweep or count would find it: owned by THIS live
+   * process, or by a pid that is gone (an owner SIGKILLed inside a sandbox, so its
+   * record has no ownerStart and nothing removed it). The socket is a plain file: it
+   * refuses a connection, as a dead magmux's does.
+   */
+  function ownerPane(t: PaneTestEnv, label: string, owner: "live" | "dead"): PaneRecord {
     const root = ensureSockRoot(t.sockRoot);
-    const paneId = `c${process.pid}-${OWNER_START36}-t${label}-abcdef`;
+    const ownerPid = owner === "live" ? process.pid : deadPid();
+    const paneId = `c${ownerPid}-${OWNER_START36}-t${label}-abcdef`;
     const ctl = join(root, `launch-${label}Ctl1`);
     const turn = join(root, `launch-${label}Trn1`);
     mkdirSync(ctl, { mode: 0o700 });
     mkdirSync(turn, { mode: 0o700 });
     const rec: PaneRecord = {
       paneId,
-      ownerPid: process.pid,
-      ownerStart: ownerStartOfSelf(), // read while the table is still readable
+      ownerPid,
+      ownerStart: owner === "live" ? ownerStartOfSelf() : "",
       watcherPid: null,
       magmuxPid: null,
       panePid: null,
       sessionUuid: crypto.randomUUID(),
-      sockPath: join(root, `magmux-${paneId}.sock`),
+      sockPath: sockPathOf(root, paneId),
       launcherDir: ctl,
       turnDir: turn,
       createdAt: new Date().toISOString(),
@@ -761,37 +776,90 @@ describe("with the process table unavailable (a sandbox refuses ps): every pane 
     return rec;
   }
 
-  test("the sweep keeps a live owner's record, socket and dirs", async () => {
-    const t = env();
-    const rec = liveOwnerPane(t, "sw");
-    const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
-    expect(r.kept).toContain(rec.paneId);
-    expect(r.cleaned).toEqual([]);
-    expect(readRecord(t.sockRoot, rec.paneId)).not.toBeNull();
-    for (const p of [rec.sockPath, rec.launcherDir, rec.turnDir]) expect(existsSync(p)).toBe(true);
+  const filesOf = (rec: PaneRecord) => [rec.sockPath, rec.launcherDir, rec.turnDir];
+
+  test("the ps-free probe: ESRCH is dead; success and EPERM are alive", () => {
+    expect(pidMayBeAlive(process.pid)).toBe(true);
+    expect(pidMayBeAlive(deadPid())).toBe(false);
+    expect(pidMayBeAlive(1)).toBe(true); // launchd/init: EPERM
   });
 
-  test("the sweep leaves a recordless live socket alone", async () => {
+  test("a live owner: counted, and the sweep keeps its record, socket and dirs", async () => {
     const t = env();
-    const root = ensureSockRoot(t.sockRoot);
-    const sock = join(root, `magmux-c${process.pid}-${OWNER_START36}-tls-abcdef.sock`);
-    const server = createServer((c) => c.end());
-    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    const rec = ownerPane(t, "lv", "live");
+    expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(1);
+    const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
+    expect(r).toEqual({ reaped: [], cleaned: [], kept: [] });
+    expect(readRecord(t.sockRoot, rec.paneId)).not.toBeNull();
+    for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
+  });
+
+  test("a dead owner whose magmux is gone: not counted, and the sweep removes its files", async () => {
+    const t = env();
+    const rec = ownerPane(t, "dd", "dead");
+    expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(0);
+    const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
+    expect(r.cleaned).toEqual([rec.paneId]);
+    expect(readRecord(t.sockRoot, rec.paneId)).toBeNull();
+    for (const p of filesOf(rec)) expect(existsSync(p)).toBe(false);
+  });
+
+  test("dead owners never fill the pane limit", async () => {
+    const t = env();
+    for (let i = 0; i < MAX_LIVE_PANES; i++) ownerPane(t, i.toString(36).padStart(2, "0"), "dead");
+    // 48 records of dead owners: a start must still be admitted, not refused as pane_limit
+    await withProcessTableUnavailable(() => reservePanes(1, t.sockRoot));
+    releasePaneReservations(1);
+  });
+
+  test("a dead owner whose magmux still answers: not counted, files kept, nothing signalled", async () => {
+    const t = env();
+    const rec = ownerPane(t, "dm", "dead");
+    rmSync(rec.sockPath);
+    const server = await liveSocket(rec.sockPath);
     try {
-      const r = await withProcessTableUnavailable(() => sweepOrphanPanes(root));
-      expect(r.cleaned).toEqual([]);
-      expect(existsSync(sock)).toBe(true);
+      expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(0);
+      const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
+      expect(r.kept).toEqual([rec.paneId]);
+      expect(readRecord(t.sockRoot, rec.paneId)).not.toBeNull();
+      for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
     } finally {
       server.close();
     }
   }, 20_000);
 
-  test("the pane limit counts a live owner's record", async () => {
+  test("a dead owner whose watcher pid may be alive: kept (the watcher may be mid-job)", async () => {
     const t = env();
-    liveOwnerPane(t, "lc");
-    expect(livePaneCount(t.sockRoot)).toBe(1);
-    expect(await withProcessTableUnavailable(() => livePaneCount(t.sockRoot))).toBe(1);
+    const rec = ownerPane(t, "dw", "dead");
+    updateRecord(t.sockRoot, rec.paneId, { watcherPid: process.pid });
+    const r = await withProcessTableUnavailable(() => sweepOrphanPanes(t.sockRoot));
+    expect(r.kept).toEqual([rec.paneId]);
+    for (const p of filesOf(rec)) expect(existsSync(p)).toBe(true);
   });
+
+  test("recordless sockets: a live owner's is left alone; a dead owner's live one is kept, its refused one removed", async () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const gone = deadPid();
+    const ownLive = join(root, `magmux-c${process.pid}-${OWNER_START36}-tls-abcdef.sock`);
+    const deadLive = join(root, `magmux-c${gone}-${OWNER_START36}-tdl-abcdef.sock`);
+    const deadRefused = join(root, `magmux-c${gone}-${OWNER_START36}-tdr-abcdef.sock`);
+    const servers = [await liveSocket(ownLive), await liveSocket(deadLive)];
+    writeFileSync(deadRefused, "");
+    try {
+      const r = await withProcessTableUnavailable(() => sweepOrphanPanes(root));
+      expect(r.reaped).toEqual([]);
+      expect(r.kept).toEqual([`c${gone}-${OWNER_START36}-tdl-abcdef`]);
+      expect(r.cleaned).toEqual([`c${gone}-${OWNER_START36}-tdr-abcdef`]);
+      expect([ownLive, deadLive, deadRefused].map((p) => existsSync(p))).toEqual([
+        true,
+        true,
+        false,
+      ]);
+    } finally {
+      for (const s of servers) s.close();
+    }
+  }, 20_000);
 });
 
 describe("owner identity: one check for the pane limit, the record sweep and the socket sweep", () => {

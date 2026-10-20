@@ -126,14 +126,34 @@ export function startedAt(row: PsRow, startMs: number): boolean {
 /**
  * The process table, or null when it is UNAVAILABLE: `ps` could not run, failed, or
  * printed no row. A readable table is never empty (it lists the reader), so null never
- * means "no process": every caller treats what it would have looked up as possibly
- * alive — no reap, no sweep, no file removed, no owner counted dead.
+ * means "no process". Without a table no process can be identified, so nothing is
+ * signalled and no group is verified; only an owner's liveness has a fallback
+ * (`pidMayBeAlive`), and only a pane whose magmux no longer answers its socket has its
+ * files removed. A crashed owner's magmux and Claude Code are left running until a sweep
+ * that can read the table.
  *
  * Measured: macOS refuses to exec the setuid `/bin/ps` from ANY Seatbelt sandbox, even
  * `sandbox-exec -p '(version 1)(allow default)'` (EPERM, `posix_spawn 'ps'`), so inside
  * one every read is null for the life of the process.
  */
 export type ProcessTable = PsRow[] | null;
+
+/**
+ * Whether `pid` may be a live process, with no `ps`: `kill(pid, 0)`. Only ESRCH proves it
+ * gone; success, EPERM (another user's process) or anything else counts as alive. It
+ * cannot tell a reused pid apart. Measured under `sandbox-exec -p '(version 1)(allow
+ * default)'`: a live process started outside the sandbox → success, a reaped child →
+ * ESRCH, launchd → EPERM, the same as outside it.
+ */
+export function pidMayBeAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return true; // 0 and negatives name groups
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
 
 const PS_ENV = { PATH: "/bin:/usr/bin:/usr/sbin:/sbin", LC_ALL: "C" };
 const PS_OPTIONS = { env: PS_ENV, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 } as const;
