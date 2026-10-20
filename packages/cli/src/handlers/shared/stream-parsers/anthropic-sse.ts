@@ -12,6 +12,7 @@
 import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
+import { redactForClient } from "../../../redact.js";
 import { sseDataPayload } from "./sse-line.js";
 
 interface AnthropicPassthroughOpts {
@@ -426,7 +427,7 @@ export function createAnthropicPassthroughStream(
                         encoder.encode(
                           `event: error\ndata: ${JSON.stringify({
                             type: "error",
-                            error: { type: "api_error", message: errMsg },
+                            error: { type: "api_error", message: redactForClient(errMsg) },
                           })}\n\n`
                         )
                       );
@@ -498,7 +499,7 @@ export function createAnthropicPassthroughStream(
                           encoder.encode(
                             `event: error\ndata: ${JSON.stringify({
                               type: "error",
-                              error: { type: "api_error", message: errMsg },
+                              error: { type: "api_error", message: redactForClient(errMsg) },
                             })}\n\n`
                           )
                         );

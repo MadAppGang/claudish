@@ -15,6 +15,7 @@
  */
 
 import { log } from "../../../../logger.js";
+import { redactForClient } from "../../../../redact.js";
 import { messageStartUsage } from "../message-start-usage.js";
 
 /** STARTED → ARGS-COMPLETE → STOPPED. A block stopped without ARGS-COMPLETE was cut off. */
@@ -200,7 +201,7 @@ export class ClaudeSseSink {
   endWithText(text: string, usage: { input_tokens: number; output_tokens: number }): void {
     const idx = this.nextIndex();
     this.startBlock(idx, { type: "text", text: "" });
-    this.delta(idx, { type: "text_delta", text });
+    this.delta(idx, { type: "text_delta", text: redactForClient(text) });
     this.stopBlock(idx);
     this.endMessage("end_turn", usage);
   }
@@ -210,7 +211,7 @@ export class ClaudeSseSink {
    * tool_use of it runs) and retries the turn.
    */
   endWithError(message: string, type = "api_error"): void {
-    this.send("error", { type: "error", error: { type, message } });
+    this.send("error", { type: "error", error: { type, message: redactForClient(message) } });
     this.finish();
   }
 

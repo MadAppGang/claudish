@@ -9,6 +9,7 @@
 
 import type { Context } from "hono";
 import { log } from "../../../logger.js";
+import { redactForClient } from "../../../redact.js";
 import {
   type ToolSchema,
   extractToolCallsFromText,
@@ -674,7 +675,10 @@ export function createStreamingResponseHandler(
                 err ??
                 "Upstream stream ended with no finish_reason while a tool call was in flight. " +
                   "The tool call is incomplete and was not dispatched.";
-              send("error", { type: "error", error: { type: "api_error", message } });
+              send("error", {
+                type: "error",
+                error: { type: "api_error", message: redactForClient(message) },
+              });
             } else {
               // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
               const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started);

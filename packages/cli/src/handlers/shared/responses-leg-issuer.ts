@@ -28,6 +28,7 @@
 
 import { log } from "../../logger.js";
 import type { SerializedBody } from "../../providers/transport/types.js";
+import { redactForClient } from "../../redact.js";
 import { classifyConnectionError } from "./connection-error.js";
 import { deadlineClamp, mergeSignalIntoInit } from "./transient-retry.js";
 
@@ -175,7 +176,7 @@ export function createLegIssuer<B extends LegAuthBinding = LegAuthBinding>(
       }
 
       if (!response.ok) {
-        const text = await response.text().catch(() => "");
+        const text = redactForClient(await response.text().catch(() => ""));
         const message = `HTTP ${response.status} on retry leg ${leg}: ${text.slice(0, 500)}`;
         log(`[ResponsesTurn] ${message}`);
         return { kind: "error", message };

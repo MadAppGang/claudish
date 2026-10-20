@@ -57,6 +57,7 @@ import {
   readString,
   readVarintValue,
 } from "../../../providers/devin/proto-codec.js";
+import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
 
 /** Response field numbers. Protocol constants, not model data. */
@@ -276,7 +277,13 @@ export function createDevinConnectStream(
 
         if (reason === "error") {
           log(`[DevinConnect] stream error: ${errorMessage}`);
-          send("error", { type: "error", error: { type: "api_error", message: errorMessage } });
+          send("error", {
+            type: "error",
+            error: {
+              type: "api_error",
+              message: errorMessage === undefined ? errorMessage : redactForClient(errorMessage),
+            },
+          });
         } else {
           send("message_delta", {
             type: "message_delta",

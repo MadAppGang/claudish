@@ -79,6 +79,7 @@ import {
   splitWireMarkers,
 } from "./providers/wire-markers.js";
 import { closeAllEpisodes } from "./recovery/coordinator.js";
+import { redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import type { ProxyServer } from "./types.js";
 
@@ -1115,7 +1116,10 @@ export async function createProxyServer(
   app.onError((err, c) => {
     logStderr(`[Proxy] Unhandled error on ${c.req.method} ${c.req.path}: ${err?.message ?? err}`);
     log(`[Proxy] Unhandled error stack: ${err?.stack ?? "(no stack)"}`);
-    return c.json(wrapAnthropicError(500, `Proxy error: ${err?.message ?? String(err)}`), 500);
+    return c.json(
+      wrapAnthropicError(500, redactForClient(`Proxy error: ${err?.message ?? String(err)}`)),
+      500
+    );
   });
 
   app.get("/", (c) =>
@@ -1252,7 +1256,7 @@ export async function createProxyServer(
         {
           provider,
           model: null,
-          reason: e instanceof Error ? e.message : String(e),
+          reason: redactForClient(e instanceof Error ? e.message : String(e)),
         },
         500
       );
@@ -1285,9 +1289,12 @@ export async function createProxyServer(
       return c.json({ input_tokens: Math.ceil(txt.length / 4) });
     } catch (e) {
       if (isTerminalRoutingFailure(e)) {
-        return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
+        return c.json(
+          wrapAnthropicError(400, redactForClient(e.message), "invalid_request_error"),
+          400
+        );
       }
-      return c.json(wrapAnthropicError(500, String(e)), 500);
+      return c.json(wrapAnthropicError(500, redactForClient(String(e))), 500);
     }
   });
 
@@ -1343,9 +1350,12 @@ export async function createProxyServer(
       // client shows the real reason (e.g. missing key) instead of looping on
       // "API error · Retrying". Other errors stay 500.
       if (isTerminalRoutingFailure(e)) {
-        return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
+        return c.json(
+          wrapAnthropicError(400, redactForClient(e.message), "invalid_request_error"),
+          400
+        );
       }
-      return c.json(wrapAnthropicError(500, String(e)), 500);
+      return c.json(wrapAnthropicError(500, redactForClient(String(e))), 500);
     }
   });
 

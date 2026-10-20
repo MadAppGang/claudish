@@ -207,6 +207,15 @@ export function redactSigningValues(text: string): string {
 }
 
 /**
+ * The registry pass for text sent back to Claude Code (an error body, an SSE
+ * error frame). A response body is not a log line, so it never passes through
+ * `log`; every site that puts upstream text into one calls this instead.
+ */
+export function redactForClient(text: string): string {
+  return redactSigningValues(text);
+}
+
+/**
  * Strip credentials from text. Safe to run on anything; never throws.
  *
  * Deliberately does NOT do blanket high-entropy matching — that would redact

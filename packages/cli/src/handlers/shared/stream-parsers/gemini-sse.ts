@@ -10,6 +10,7 @@ import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
 import type { MiddlewareManager } from "../../../middleware/manager.js";
+import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { sseDataPayload } from "./sse-line.js";
 
@@ -155,7 +156,10 @@ export function createGeminiSseStream(
 
           if (reason === "error") {
             log(`[GeminiSSE] Stream error: ${err}`);
-            send("error", { type: "error", error: { type: "api_error", message: err } });
+            send("error", {
+              type: "error",
+              error: { type: "api_error", message: err === undefined ? err : redactForClient(err) },
+            });
           } else {
             const hasToolCalls = toolCalls.size > 0;
             // Anthropic's contract for a cut-off turn is "max_tokens". Reporting

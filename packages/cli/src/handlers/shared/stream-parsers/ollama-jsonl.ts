@@ -11,6 +11,7 @@
 
 import type { Context } from "hono";
 import { log } from "../../../logger.js";
+import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
 
 export function createOllamaJsonlStream(
@@ -99,7 +100,10 @@ export function createOllamaJsonlStream(
           }
 
           if (reason === "error") {
-            send("error", { type: "error", error: { type: "api_error", message: err } });
+            send("error", {
+              type: "error",
+              error: { type: "api_error", message: err === undefined ? err : redactForClient(err) },
+            });
           } else {
             send("message_delta", {
               type: "message_delta",

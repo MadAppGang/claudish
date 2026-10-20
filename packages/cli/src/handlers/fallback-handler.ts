@@ -11,6 +11,7 @@
 
 import type { Context } from "hono";
 import { logStderr } from "../logger.js";
+import { redactForClient } from "../redact.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { authVerdict, isCredentialRejection } from "./shared/auth-failure.js";
@@ -230,7 +231,7 @@ export class FallbackHandler implements ModelHandler {
           }
         }
       } catch (err: any) {
-        errors.push({ provider: name, status: 0, message: err.message });
+        errors.push({ provider: name, status: 0, message: redactForClient(String(err?.message)) });
         if (!isLast) {
           logStderr(`[Fallback] ${name} error: ${err.message}, trying next provider...`);
         }
@@ -258,7 +259,7 @@ export class FallbackHandler implements ModelHandler {
     const summary = errors
       .map(
         (e) =>
-          `  ${e.provider}: HTTP ${e.status || "ERR"} — ${truncate(parseErrorMessage(e.message), 150)}`
+          `  ${e.provider}: HTTP ${e.status || "ERR"} — ${truncate(parseErrorMessage(redactForClient(e.message)), 150)}`
       )
       .join("\n");
 
@@ -274,7 +275,7 @@ export class FallbackHandler implements ModelHandler {
           attempts: errors.map((e) => ({
             provider: e.provider,
             status: e.status,
-            error: truncate(parseErrorMessage(e.message), 200),
+            error: truncate(parseErrorMessage(redactForClient(e.message)), 200),
           })),
         },
       },

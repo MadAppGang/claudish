@@ -84,6 +84,7 @@ import {
   uiLeaseValid,
 } from "../recovery/coordinator.js";
 import { resolveRecoveryEnabled, resolveTier1DeadlineMs } from "../recovery/settings.js";
+import { redactForClient } from "../redact.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
@@ -2152,7 +2153,9 @@ export class ComposedHandler implements ModelHandler {
           if (retryResp.ok) {
             response = retryResp; // fall through to stream handling below
           } else {
-            const errorText = await retryResp.text();
+            // Redacted at the read, so the returned body, the logs, the capture
+            // and the stats classification all see the same credential-free text.
+            const errorText = redactForClient(await retryResp.text());
             // Not resent: the refresh signed in another account. No key is
             // wrong and no retry went out, so neither message may say so.
             const resent = !notResentResponses.has(retryResp);
@@ -2347,7 +2350,9 @@ export class ComposedHandler implements ModelHandler {
           }
         }
       } else {
-        const errorText = await response.text();
+        // Redacted at the read: the returned body, the logs, the capture and the
+        // stats classification below all use this one credential-free text.
+        const errorText = redactForClient(await response.text());
         log(`[${this.provider.displayName}] Error: ${errorText}`);
         // Durable copy, opt-in via CLAUDISH_UPSTREAM_ERROR_LOG. `log()` only
         // persists under --debug, so without this the body that distinguishes a
@@ -2914,7 +2919,7 @@ export class ComposedHandler implements ModelHandler {
       // The fault graduated to a status-level failure. The !response.ok handling
       // is already behind us, so stop here rather than re-entering it.
       if (!next.ok) {
-        const body = await next.text().catch(() => "");
+        const body = redactForClient(await next.text().catch(() => ""));
         log(`[${this.provider.displayName}] retry returned HTTP ${next.status}`);
         return {
           kind: "exhausted",
@@ -3010,7 +3015,7 @@ export class ComposedHandler implements ModelHandler {
       // The fault graduated to a status-level failure. The !response.ok handling
       // is already behind us, so stop here rather than re-entering it.
       if (!next.ok) {
-        const body = await next.text().catch(() => "");
+        const body = redactForClient(await next.text().catch(() => ""));
         log(`[${this.provider.displayName}] retry returned HTTP ${next.status}`);
         return {
           kind: "exhausted",
