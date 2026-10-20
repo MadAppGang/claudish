@@ -45,13 +45,11 @@ scenarios:
       - type: file-changes
         must: { update: slugify.ts }
         must-not: { touch: slugify.test.ts }
-      # The model drove tools through the proxy: it read the code...
+      # The model drove tools through the proxy: it read the code. Which tool made the
+      # edit is not checked: file-changes above proves the edit landed, and on
+      # 2026-10-20 claude-opus-5-5 and claude-fable-5-1 fixed the test with a Bash
+      # heredoc, so an Edit-or-Write Check failed two working models.
       - type: any-of
         checks:
           - { type: session:tool-used, value: Read }
           - { type: session:tool-used, value: Bash }
-      # ...and changed it with a file tool.
-      - type: any-of
-        checks:
-          - { type: session:tool-used, value: Edit }
-          - { type: session:tool-used, value: Write }
