@@ -145,6 +145,32 @@ reads it.
   drops a cache fetched under another version, because that answer is a different
   dynamic models catalog, not a stale copy of the same one.
 
+## The picker lists `agentModelSorts`, routing lists `models`
+
+`agy models` prints exactly `agentModelSorts[*].groups[*].modelIds`, in that
+order — on the 2026-10-14 account, 13 ids. The `models` dict carries more: older
+generations (`gemini-2.5-*`, `gemini-3-*`, `gemini-3.5-*`) and
+`gemini-3.8-flash-tiered`, which agy does not offer for selection.
+
+`getServedAntigravityModels` returns that list as `agentModelIds` (flattened over
+every sort and group, order kept, deduplicated). The `ag@` picker then lists
+exactly those ids that are also served and not declared excluded, in agy's order.
+When the field is absent or empty the picker falls back to every selectable served
+id, newest first — absent means unknown, not "none".
+
+**The narrowing happens in the picker, not in the discovery fetcher.**
+`fetchAntigravityModelsCatalog` still returns every selectable id; agy's ids lead
+and carry `providerOrder` (their position), the rest carry none.
+`buildRowsFromDiscovered` keeps only the rows that carry it, in that order. The
+fetcher's list is not the picker's alone: `providerServesModel` — the routing
+chain's availability filter — and `discoverContextWindow` read it too, and a
+dynamic models catalog is the one source allowed to answer "not-served", which
+REMOVES a hop. Narrowing the fetcher would have routed a bare `gemini-2.5-pro`
+past the subscription to a metered provider.
+
+Routing is unchanged: `resolveAntigravityModelId` and the transport resolve
+against the full `servedIds`, so a typed `ag@gemini-2.5-pro` still works.
+
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
 Antigravity rows set `ignoreCatalogReleaseDate`. `compareByReleaseDateDesc` sorts
