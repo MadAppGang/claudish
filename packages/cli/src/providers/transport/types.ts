@@ -227,6 +227,19 @@ export interface ProviderTransport {
   serializeBody?(payload: any): { body: SerializedBody; contentType: string };
 
   /**
+   * Optional: credential values this transport sends OUTSIDE the headers that
+   * `getHeaders()` returns, for exact-value redaction (`redact.ts`). Devin
+   * encodes its key into the request body; Antigravity's capacity fallback
+   * signs its own fetches. ComposedHandler registers what this returns for
+   * the request's lifetime, so an upstream error echoing the value is masked
+   * in every log sink and in the error text returned to Claude Code.
+   *
+   * Values only, read at call time; never logged. A transport whose every
+   * credential travels in `getHeaders()` leaves this undefined.
+   */
+  redactionSecrets?(): string[];
+
+  /**
    * Extra options to merge into the fetch RequestInit.
    * Used for custom agents (e.g., undici dispatcher with long timeouts for local models).
    * Called once per request — may return per-request values like AbortSignal.

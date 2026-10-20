@@ -1692,6 +1692,7 @@ export class ComposedHandler implements ModelHandler {
       const fetched = await this.provider.getHeaders(payload, b);
       mergeWireHeaders(fetched, wireHeaders);
       addSigningSecrets(c, credentialValuesFromRequest(fetched, this.signedEndpoint(b)));
+      addSigningSecrets(c, this.provider.redactionSecrets?.() ?? []);
       signing.headers = fetched;
       return fetched;
     };
@@ -1741,6 +1742,9 @@ export class ComposedHandler implements ModelHandler {
     // replaces the payload and re-encodes it here, so the 401 auth retry below
     // never resends bytes the provider already rejected.
     let serialized = this.provider.serializeBody?.(requestPayload);
+    // A credential the transport put in the BODY (Devin) is registered as soon
+    // as the bytes exist, read from the same source the encoder just used.
+    addSigningSecrets(c, this.provider.redactionSecrets?.() ?? []);
     headers["Content-Type"] = serialized?.contentType ?? "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
