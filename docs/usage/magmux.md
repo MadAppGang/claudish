@@ -60,10 +60,17 @@ has finished, and closes the pane when the slot or session ends.
 
 **Requirements:**
 
-- **magmux 0.15.1 or newer.** The npm package bundles it on macOS and Linux; otherwise
-  `brew install MadAppGang/tap/magmux`. With an older magmux, or none, `team(mode:"run")`,
-  `create_session` and `claudish team` / `--team` refuse with `magmux_unavailable`; claudish
-  never substitutes print mode.
+- **magmux 0.17.0 or newer.** The npm package bundles it on macOS and Linux; otherwise
+  `brew install MadAppGang/tap/magmux` (or `brew upgrade MadAppGang/tap/magmux`). With an older
+  magmux, or none, `team(mode:"run")`, `create_session` and `claudish team` / `--team` refuse with
+  `magmux_unavailable: <path> is version <v>; panes need >= 0.17.0 …`; claudish never substitutes
+  print mode. 0.17.0 is the floor because claudish now delivers every prompt through magmux's
+  Claude Code input gate, bound to the pane's own transcript: magmux types the prompt only into an
+  empty input box, presses Enter only when the box holds exactly that text, and says whether it was
+  submitted. A prompt that is never accepted fails with `prompt_not_accepted`, and its
+  `reason_detail` quotes magmux's answer — for example `magmux not_accepted still_in_box: …`,
+  `busy vim_mode: vim editing mode is on …`, or `magmux could not tell whether the prompt was
+  submitted …` — instead of a silent empty answer.
 - **macOS or Linux.** Windows is not supported for MCP `team`, `create_session`, or CLI
   `claudish team` / `--team`.
 

@@ -216,12 +216,14 @@ long-lived; there is no poll-interval race in that model.
 The controller's `CtrlAwaitingPermission` state is not something a driver can rely on. Read in
 magmux 0.14.0's source: `ClaudeCodeController` never produces `awaiting_permission` (only a plugin
 controller can push it), so a permission block shows up in `list` as `awaiting_input`; and a
-`claudish` pane has no controller at all. The
+`claudish` pane is DECLARED to the controller for its input gate (magmux 0.17.0, bound by name to
+the pane's own transcript), but claudish never reads the controller's turn state. The
 cheaper route for automation is not to be asked: claudish's pane children run with `-y`, under
 which `--permission-mode default` produces no dialog (measured), and `--no-auto-approve` is a
 reserved flag. A permission dialog therefore appears only for plan approval
-(`--permission-mode plan`). `PaneSession` recognises it, and AskUserQuestion, from a closed list of
-named dialog headers on the screen plus the pending tool in the transcript; team fails such a slot
+(`--permission-mode plan`). `PaneSession` recognises it, and AskUserQuestion, from the pending tool in the transcript plus
+the gate's `dialog:permission`, `dialog:plan` or `dialog:question` (AskUserQuestion from the
+transcript alone); team fails such a slot
 `blocked`, an MCP session waits in `AWAITING_PERMISSION` or `AWAITING_INPUT` for `send_input`.
 
 ## What this means when you are writing code here

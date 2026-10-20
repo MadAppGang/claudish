@@ -13,7 +13,7 @@ The server exposes **15 tools** across four groups: low-level (3), agentic (3), 
 Every `team` slot and every `create_session` session is a real, interactive Claude Code session
 running your model, inside its own headless [magmux](magmux.md) pane. That needs:
 
-- **magmux 0.15.1 or newer.** It is bundled with the npm package on macOS and Linux; otherwise
+- **magmux 0.17.0 or newer.** It is bundled with the npm package on macOS and Linux; otherwise
   install it with `brew install MadAppGang/tap/magmux`. Without it, `team(mode:"run")`,
   `create_session` and the CLI's `claudish team` / `--team` refuse with
   `Error: magmux_unavailable: …` instead of falling back to anything else.
@@ -411,6 +411,9 @@ Explain what a session actually did. Call it first whenever a session fails, tim
 completes with empty or surprising output — it needs no re-run and no debug flag. Returns the
 session's final screen, the upstream error bodies, the recent state records, anomalies, the
 resolved model chain, accounting, and the paths to the full records (the transcript included).
+For a prompt that was not accepted, `gate` is magmux's current input-gate reading (`ready`,
+`reason`, `detail`) and `lastSend` is magmux's answer to claudish's last gated send (`kind`,
+`reason`, `accept`, `evidence`, `retypeCause`, `attempts`).
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
@@ -440,8 +443,9 @@ Set a session's terminal size. The child gets a real resize signal and Claude Co
 new width; the next `capture_session` reports the new `cols`/`rows` under a new `seq`. Allowed in
 every state, mid-turn included. When several callers resize the same session, the last one wins.
 
-Needs magmux 0.15.1 or newer. 0.15.0 added the resize op, but a pane that grew taller kept its old
-scroll region, which garbled Claude Code's input box and stopped its turns from ending. `list_sessions` and
+Works with every magmux sessions accept (0.17.0 or newer). Resizing itself needs 0.15.1: 0.15.0
+added the resize op, but a pane that grew taller kept its old scroll region, which garbled Claude
+Code's input box and stopped its turns from ending. `list_sessions` and
 `team` list `resize` in `capabilities`. If magmux lacks the `resize` verb, the call answers
 `resize_unsupported`.
 
@@ -673,7 +677,7 @@ CLAUDISH_MCP_TOOLS=session OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
 
 **Check magmux** (needed by `team` and sessions):
 ```bash
-magmux --version   # 0.15.1 or newer
+magmux --version   # 0.17.0 or newer
 ```
 
 ---
@@ -686,7 +690,7 @@ magmux --version   # 0.15.1 or newer
 
 **Rate limits:** OpenRouter has rate limits. Heavy parallel usage might hit them.
 
-**Platforms:** `team` and sessions need magmux 0.15.1+ and run on macOS and Linux only; Windows is not supported for them.
+**Platforms:** `team` and sessions need magmux 0.17.0+ and run on macOS and Linux only; Windows is not supported for them.
 
 ---
 

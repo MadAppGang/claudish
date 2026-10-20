@@ -21,7 +21,8 @@ it said `9.0.0` until 10.7.0).
 - **SessionManager** — the sessions' policy and records: creates sessions, owns the queue of
   `send_input`, decides a turn's verdict, writes the session records, enforces `timeout_seconds`
 - **PaneSession** (`packages/cli/src/pane/`) — the mechanism: one interactive Claude Code in its
-  own headless magmux pane, with the transcript as its turn oracle. Team uses the same driver
+  own headless magmux pane, with the transcript as its turn oracle and magmux's input gate deciding
+  input (readiness, dialogs, prompt acceptance). Team uses the same driver
 - **ScrollbackBuffer** — in-memory ring buffer (2000 lines), holding each settled turn's answer prose
 
 ### The transport: an interactive Claude Code in a headless magmux pane
@@ -51,7 +52,7 @@ A refusal is an `invalid_args` error before any credential work. `create_session
 argument becomes `--agent <name>`; an unknown name is refused by the child itself (FAILED
 `agent_rejected`), so claudish runs no agent probe of its own.
 
-**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.15.1,
+**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.17.0,
 else `Error: magmux_unavailable: …`), credential pre-hydration, the parent session read, a pane
 reservation (`Error: pane_limit: …` past 48 live panes per user), `prompt.md`, `spawn.json`, then the
 pane. `create_session` returns `{session_id, state}` once the pane exists, without waiting for boot.
@@ -121,9 +122,19 @@ at the verdict of the turn that prompt started. WITHOUT a prompt it is interacti
 `cancel_session`, the timeout, or the child exiting 0 after `/exit` or a settled turn. A
 `send_input` call converts a one-shot session to interactive.
 
-**`waiting_for_input` means a real wait, and nothing else.** It holds iff the session is idle at
-an empty input box between turns, or a turn is blocked on a question; `awaiting_permission` iff a
-permission or plan-approval dialog is open. A one-shot session is terminal at its verdict, so there
+**`waiting_for_input` means a real wait, and nothing else.** It holds iff the session is idle
+between turns — the turn settled on Claude Code's own end-of-turn record, and magmux's input gate
+reported the box ready (which means empty) with no dialog, or could not confirm that within 32 s of
+chat quiet (recorded as `settle_gate_unconfirmed:<why>`) — or a turn is blocked on a question
+(a pending AskUserQuestion in the transcript, or another pending tool with the gate reporting
+`dialog:question`). `awaiting_permission` holds iff a tool is pending in the transcript and the gate
+reports `dialog:permission` or `dialog:plan`. Before the gate these rested on claudish finding the
+box on the screen; the moments they open moved slightly: the first wait opens at the gate's `ready`
+(box and raw terminal still 1 s, plus Claude Code's boot reset or a 3.5 s floor), polled every
+250 ms, instead of a box stable 3 s; RUNNING starts at the gate's history evidence, earlier than the
+transcript witness behind a slow UserPromptSubmit hook; and a session that once stayed RUNNING for
+good on a box claudish could not find now reaches `waiting_for_input` after the 32 s grace. The
+record vocabulary of `waits.jsonl` is unchanged. A one-shot session is terminal at its verdict, so there
 is no "answered but still exiting" state for a wait to be confused with — 10.4.0's `finishing`
 event is gone with the transport (RB1). The wait for Claude Code's end-of-turn record after
 the model's message ends survives only as `activity:"finishing"` on a RUNNING session. A
@@ -266,7 +277,9 @@ screen, so that is what is captured.
   `outputBytes`, turns, tokens, `costUsd`, `toolCalls`, `pendingInputs`; the pane facts — `phase`,
   `connected`, the redacted `screenTail`, `sockPath`, the head of magmux's own stderr,
   `preambleBytes`, the current turn's `readCoverage`, the child's `claudeCodeVersion`,
-  `anomalies`; the tail of the event ring; the upstream error bodies; and the paths: the
+  `anomalies`, the input gate's fresh reading `gate: {ready, reason, detail, ageMs} | null` and the
+  last gated send `lastSend: {kind, reason?, accept?, evidence?, retypeCause?, attempts} | null`;
+  the tail of the event ring; the upstream error bodies; and the paths: the
   transcript, the session directory, `events.jsonl`, `upstream-errors.jsonl`. A session no longer in
   memory answers from its directory, including `screen.txt`.
 - **`outputBytes` counts the CHILD's prose only.** `recordNote` exists so claudish's own
@@ -335,7 +348,8 @@ redraw at that size has landed, so a capture with that `since_seq` already sees 
 are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
 `resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or
 the pane is unreachable). `capabilities` lists `resize` since the pin moved to magmux 0.15.1. The
-floor is 0.15.1, not 0.15.0 (the first release with the op): 0.15.0 kept the scroll region's old
+resize floor was 0.15.1, not 0.15.0 (the first release with the op; the pane floor is now 0.17.0, for
+the input gate's transcript binding): 0.15.0 kept the scroll region's old
 bottom after a row grow and clamped cursor-down to it, so Claude Code's relative-move redraw
 collapsed its input box onto the old last row and `pathPrimary` never settled the next turn. The
 fake child redraws with relative cursor-down for that reason. The per-pane check of magmux's `verbs` stays as the defence against a

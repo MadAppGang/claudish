@@ -27,7 +27,9 @@ lives in `ROADMAP.md`.
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux,
   and the one `-p` the MCP server does start (`run_prompt` on a Claude model)
 - `pane-session.md` — MCP and CLI `team` slots and `create_session` as interactive Claude Code in
-  headless magmux panes: transcript turn oracle, settle on `turn_duration` (32 s quiet path gated
+  headless magmux panes: transcript turn oracle, the magmux ≥ 0.17.0 input gate bound to the
+  pane's own transcript (one gated send per prompt, readiness and dialogs from `list` `input`, the
+  box located by the cursor, no width cap), settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
   the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no

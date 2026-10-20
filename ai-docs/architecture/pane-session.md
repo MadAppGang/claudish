@@ -23,7 +23,8 @@ first for why print mode is not a faithful subset of the REPL.
 ```
 owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pane watcher  (/bin/sh, argv0 claudish-pane-watcher)
    │
-   └── spawn, detached ──▶ magmux --headless --no-status --id <paneId> --sock-dir <root> -e ". <ctl>/pane-launch.sh"
+   └── spawn, detached ──▶ magmux --headless --no-status --controller claude-code --session-id <uuid>
+                                  --transcript <transcript path> --id <paneId> --sock-dir <root> -e ". <ctl>/pane-launch.sh"
                                COLUMNS=160 LINES=50 (launch size), SHELL=<ctl>/sh-shim
                                └─ pane 0: sh-shim -l -c ". pane-launch.sh"  =  /bin/sh -c …
                                     └─ cd -- '<realpath cwd>' || exit 97
@@ -41,21 +42,31 @@ owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pa
   only), which is the one the child gets as `--add-dir`. The model is never pointed at the control
   files (R3-M2). Before any `rm`, both the TypeScript and the watcher's shell check that a path is a
   direct child of the root named `launch-` plus six `[A-Za-z0-9]`.
-- **The pane command must never name `claude`.** magmux attaches its `ClaudeCodeController` to a
-  pane whose command contains `claude `, ends in `claude` or has that basename, and the
-  controller's mtime-based transcript discovery can lock onto the parent's or a sibling's
-  transcript. `paneCommand()` throws rather than produce such a command.
+- **The pane is DECLARED to magmux's Claude Code controller**, and that declaration is bound to one
+  transcript: `--controller claude-code --session-id <uuid> --transcript <path>` comes before the
+  `-e` it binds, with the same uuid claudish passes Claude Code and the same path its transcript
+  follower derives ("The transcript binding" below). `--id <paneId> --sock-dir` stays adjacent:
+  that pair is how the reap, the sweep and the watcher recognise the pane's magmux.
+- **The pane command must still never name `claude`.** magmux attaches its controller to a direct
+  `claude` command by itself (gate basis `direct`): by its mtime discovery, not by name, and with
+  Claude Code's `--settings` rewritten. `paneCommand()` throws rather than produce such a command.
 
-## The transcript is the turn oracle; magmux is not
+## The transcript is the turn oracle; magmux's input gate decides input
 
-magmux supplies three things: liveness (`exit` events, pids), the screen (`watch` frames) and input
-(`send`). It does not know when a turn started or ended:
+magmux supplies liveness (`exit` events, pids), the screen (`watch` frames), input (`send`) and,
+for a declared pane, its **input gate**: a gated `send` waits for the input box, types, verifies
+the box holds exactly the text, presses Enter and replies once it has attributable evidence, and
+`list` publishes the pane's `input` readiness (`ready`, `reason`, `detail`). claudish reads every
+INPUT decision from the gate (is the REPL ready, is a dialog open, was the prompt submitted) and
+every TURN decision from the transcript (when a turn ended, its answer, its accounting). It never
+reads the controller's own turn state, nor `list`'s `prompt`/`response` keys.
 
-- a `claudish …` pane has no controller, so magmux pushes no per-pane state for it;
-- "running" right after a `send` proves nothing: every PTY write clears magmux's `inputReady`,
-  and its idle heuristic re-promotes the pane 5 s after the last printed text.
+The split is by evidence class. The gate reads this pane's own screen, termios and history; a
+turn's ending is only in the transcript (`turn_duration` waits for Stop hooks, the screen does
+not), and "running" on the screen right after a `send` proves nothing: every PTY write clears
+magmux's `inputReady`, and its idle heuristic re-promotes the pane 5 s after the last printed text.
 
-Acceptance, settle, the answer and the accounting therefore come from the transcript Claude Code
+Settle, the answer and the accounting therefore come from the transcript Claude Code
 writes for the `--session-id <uuid>` claudish minted. Its path is derived, never searched for:
 `<CLAUDE_CONFIG_DIR or $HOME/.claude>/projects/<every non-alphanumeric character of realpath(cwd)
 replaced by ->/<uuid>.jsonl`, plus `<uuid>/subagents/agent-<id>.jsonl`. The launcher `cd`s to the
@@ -69,7 +80,9 @@ the screen.
 **Turns are segmented by claudish's own deliveries, never by user records.** Before delivering a
 prompt the follower polls and records the transcript size; turn N owns every record past that
 offset and before turn N+1's. Evidence from an earlier turn can therefore never satisfy a later
-one. The turn is ACCEPTED when its **witness** appears after the offset: a main-chain user record
+one. The turn is ACCEPTED at the input gate's confirmation ("Delivery mechanics") or when its
+**witness** appears after the offset, whichever comes first; settle needs the witness either way.
+The witness is a main-chain user record
 whose text equals the typed line (`origin.kind:"human"`), or a `<command-name>/x</command-name>`
 record for a slash command — a user record, or (2.1.287+, `/color yellow` captured on 2.1.291) a
 `system/local_command` record, which a user-record-only witness never accepts. A slash command is
@@ -82,8 +95,57 @@ prompt into a busy REPL. Accepted at the typed record, compaction is a RUNNING t
 (D10), and the prompts queued behind it wait for path L. `/model` and `/pear` write no such record
 and are still witnessed by `<command-name>`. Measured: the witness lands 370–470 ms after a typed send; with a
 `sleep 12` UserPromptSubmit hook the box clears at once but the witness arrives 12,501 ms later.
+That lag is why acceptance no longer waits for the witness: the gate's `evidence:"history"` is read
+from this pane's own screen and does not wait for the hook. A gate-accepted turn whose transcript
+is readable but shows no witness 30 s (`ADMIT_TIMEOUT_MS`) later records `witness_missing` once and
+stays RUNNING; no timer ends it (D10). What Claude Code writes for a prompt a UserPromptSubmit hook
+BLOCKS was not measured.
 
 The follower polls on every frame (debounced 250 ms) and on a 1 s backstop.
+
+## The transcript binding: why magmux ≥ 0.17.0
+
+magmux's gate reads the pane's transcript and Claude Code's session registry: for readiness, for
+its `evidence:"transcript"`, and for the `convChange` test that keeps its one automatic retype from
+submitting a second copy. In 0.16.0 it found that transcript by DISCOVERY, and for a claudish pane
+discovery can pick the wrong one (read in source, `controller_claude.go:532-645` at 4c6060c):
+
+- the pane command carries no prompt (`-e ". pane-launch.sh"`), so discovery takes the newest
+  `.jsonl` in the cwd's project directory, "fresh" preferred, and "preexisting" marks only the files
+  present at the controller's FIRST scan;
+- the child writes no transcript until its first prompt is accepted, so for that whole window the
+  candidates are only OTHER sessions' files: a sibling `team` slot in the same cwd started 300 ms
+  later, or the parent Claude Code session, still being written;
+- claims are per magmux PROCESS, and every claudish pane is its own magmux, so no claim excludes a
+  sibling's file; and discovery read `os.UserHomeDir()`, not `CLAUDE_CONFIG_DIR`.
+
+A pane locked onto another session can report `busy dialog:<kind>` for a dialog that is not on its
+own screen, and can see "a turn started" in the other session and refuse its retype (a false "may
+have been submitted"). So claudish requires magmux 0.17.0, which takes `--session-id` and
+`--transcript` bound to the `-e` that follows, claims exactly that file (also before it exists),
+never falls back to discovery, and echoes the binding per pane in `list`.
+
+**The binding check, on every attach** (`gate-binding.ts`, first connect and every redial): pane 0
+must show `gateBasis: "declared"`, an `input` object, `bound: "named"`, `sessionId` equal to the
+uuid, and `transcriptPath` equal to the follower's path. Both paths are compared after resolving
+their deepest EXISTING ancestor with `realpath` (the file and often its project directory do not
+exist before the first prompt, and `/var` must equal `/private/var`). Anything else is FAILED
+`pane_lost` with detail `input_gate_unavailable: …` or `input_gate_unbound: magmux <v> bound pane 0
+to <path> (<bound>), not <ours>: <what differs>`; a failed `list` is `input_gate_unbound … list
+failed`. Until the check passes on a connection, no gate reading from it is read and no send is
+made. `transcriptSeen: false` is normal before the first prompt and is not read. Measured on 0.17.0
+(fake child, hermetic env): `bound named`, the claudish uuid and the path under `CLAUDE_CONFIG_DIR`,
+50 ms after launch, before any transcript file existed.
+
+**What the gate is read from.** magmux publishes no readiness event (`snapshotChanged` does not
+compare `input`), so `PaneSession` polls `list` every 250 ms (`GATE_POLL_MS`; magmux refreshes
+`input` at 4 Hz), one request in flight, reply timeout 1 s. A reading older than 1 s
+(`GATE_STALE_MS`), or any reading while disconnected, is UNKNOWN, and unknown is never a decision.
+The same reply's `pid` and `dead` back the `exit` event: pane 0 dead for 1 s with no event records
+`exit_event_missing` and takes the exit path. Only the documented `input` fields are read
+(`ready`, `reason`, `detail`); `ready: true` already means the box is EMPTY, because the published
+view is computed with the typing query and refuses `box_not_empty` last, after every dialog and
+vim test (`controller_claude.go:411`, `controller_claude_input.go:360`).
 
 ## The session registry: a second reader, telemetry only
 
@@ -96,15 +158,22 @@ pid, and drops a record whose pid is dead. It reads the raw file because `claude
 documented reader, refuses under a user's `disableAgentView` and omits fields; the file itself is
 undocumented, and a torn write can leave a trailing `}` (#96438), which the parser tolerates.
 
-It is TELEMETRY: no decision reads it. Each evaluation compares it with what the screen says and
-counts the onset of a disagreement as an anomaly — `registry_record_missing` (no live record 5 s after
-boot was ready), `registry_idle_screen_booting` (registry idle for 2 s, `readBoot` not `repl`: the
-signature of the `--agent` border bug, measured at 2.3 s instead of the 90 s `boot_timeout`),
-`registry_idle_screen_working`, `registry_waiting_no_dialog`, `screen_dialog_registry_not_waiting`,
-and `registry_status_unknown:<status>`. The research that measured it — readiness 20/20 idle and
-19/20 under load, dialog open 34–36 ms ahead of the screen, correct through `/compact`, auto-compaction
-and background work where the screen is not — is `ai-docs/reports/pane-ui-independent-signals.md`.
-When the field counts show it agreeing, it can replace the screen reads it shadows, one at a time.
+It is TELEMETRY in claudish: no claudish decision reads it. (magmux's gate does read it, by the
+bound session id, for its own readiness.) Each evaluation compares it with the input gate and
+counts the onset of a disagreement held for 2 s as an anomaly — `registry_record_missing` (no live
+record 5 s after boot was ready), `registry_idle_gate_starting` (registry idle while the gate still
+says `starting`/`no_input_box`, held 5 s because the gate legitimately says `starting` for up to
+its 3.5 s boot floor plus 1 s of stillness; the signature of the `--agent` border bug, and the
+canary for magmux missing the box at a new width), `registry_idle_screen_working` (registry idle,
+a working row on the screen), `registry_waiting_gate_no_dialog`, `gate_dialog_registry_not_waiting`, and
+`registry_status_unknown:<status>`. Two more compare the gate with the screen:
+`gate_ready_box_not_located` (gate ready, `locateBox` null) and `gate_dialog_screen_unrecognised`
+(gate `dialog:permission|plan|question`, the closed dialog list does not match). Comparisons with
+the gate are skipped, neither counted nor reset, while the gate reading is unknown. The research
+that measured the registry — readiness 20/20 idle and 19/20 under load, dialog open 34–36 ms ahead
+of the screen, correct through `/compact`, auto-compaction and background work where the screen is
+not — is `ai-docs/reports/pane-ui-independent-signals.md`. These field counts decide, later,
+whether the remaining screen cross-checks can go.
 
 **Not used: an in-child mod.** A Claude Code mod loaded with `--plugin-dir` reports busy, dialogs and
 submits from inside the child, but it is early access, Anthropic can serve it off remotely with no
@@ -112,30 +181,41 @@ local override (#99130), and it delays SessionStart by about 250 ms. Parked in `
 trigger. Nor is any of its prompt paths, the messaging socket or an argv first prompt a delivery
 route: a pane child receives every prompt the way a user gives it — typed, pasted, or an image paste.
 
-## Boot: read from screen content, and never accept a dialog
+## Boot: ready when the gate says so, and never accept a dialog
 
-Boot is ready when the screen shows the REPL input box — a full-width `─` rule, a row starting
-`❯` + U+00A0, a second rule — with nothing typed, for 3 s (`REPL_STABLE_MS`). Placeholder text in the box carries
-magmux attribute 2 (faint) and does not count as typed. Under `--agent` the top rule carries the
-agent's name at its right end (`──── dev:reviewer ─`); `isBoxRule` accepts that one label, and
-until 10.4.2 it did not, so every slot given an `agent` failed `boot_timeout` at 90 s with a ready
-box on screen (fixture `repl-boot-agent`). Measured spawn → empty box: 0.67–1.97 s
-with catalog warm-up off; the ≈11 s of earlier research included claudish's 4–7 s catalog warm-up.
+Boot is ready when the input gate's published `input.ready` is true. claudish no longer reads the
+box for it: magmux's readiness already requires the box and a raw terminal both still for 1 s, AND
+either an observed boot stdin reset or 3.5 s since the terminal first went raw. Measured spawn → empty box on the real
+child: 0.67–1.97 s with catalog warm-up off (the ≈11 s of earlier research included claudish's 4–7 s
+catalog warm-up). The fake child never blips termios, so it waits the floor: `ready` at 3.9–4.2 s
+(magmux 0.17.0).
 
-**Why 3 s and not 500 ms.** Claude Code draws the box and then, 1–2 s later, resets stdin (a
-termios cooked→raw blip). A line typed into that window is lost or sits in the box unsubmitted, in
-normal editor mode as well as vim. Measured 2026-10-16 (Claude Code 2.1.301, magmux 0.15.1, magmux
-owner): with the box stable for 500 ms and `--settings {"editorMode":"normal"}`, 2/2 team slots
-failed `prompt_not_accepted`, the retry failed one, and the third try got through. A stable box is
-not proof the child reads its input, so boot waits the reset out; the cost is ≈2.5 s per boot.
+**Why magmux waits for the boot reset.** Claude Code draws the box and then, 1–2 s later, resets
+stdin (a termios cooked→raw blip). A line typed into that window is lost or sits in the box
+unsubmitted, in normal editor mode as well as vim. Measured 2026-10-16 (Claude Code 2.1.301, magmux
+0.15.1, magmux owner): with the box stable for 500 ms and `--settings {"editorMode":"normal"}`, 2/2
+team slots failed `prompt_not_accepted`, the retry failed one, and the third try got through. A
+stable box is not proof the child reads its input. claudish used to wait the reset out itself (box
+stable 3 s, `REPL_STABLE_MS`, ≈2.5 s per boot); magmux now does, and if a reset still lands after
+`ready`, its gated send retypes once and says so (`retypeCause: "terminal_reset"`, counted as
+`gate_retyped:terminal_reset`). A rising count is a boot floor too short for some Claude Code.
 
-What blocks boot is decided by **"no input box"**, and named by a closed list:
+What blocks boot is decided by **the gate not being ready on a screen static for 5 s**
+(`BOOT_STATIC_MS`), and named by the gate's dialog kind first, the screen's words second:
 
-| screen (static 5 s, no input box) | outcome |
+| gate (static 5 s, not ready) | outcome |
 |---|---|
-| `Choose the text style` (onboarding), `Is this a project you created or one you trust` (trust), `running in Bypass Permissions mode`, `Detected a custom API key in your environment` | FAILED `first_run_dialog`, dialog text in `detail` |
-| any other screen with choice markers — a selection footer (`Enter to confirm · Esc to cancel`, `Enter to select`), numbered Yes/No rows, `Press Enter to continue` — e.g. `New MCP server found in this project` | FAILED `boot_blocked`, screen text in `detail` |
-| still changing at 90 s | FAILED `boot_timeout` (or `boot_blocked` if it went static) |
+| `dialog:trust`, `dialog:bypass`, `dialog:api_key`, `dialog:onboarding` | FAILED `first_run_dialog`, the dialog's words from the screen (`dialogText`) in `detail` |
+| any reason, with a named first-run marker on screen (`Choose the text style`, `Is this a project you created or one you trust`, `running in Bypass Permissions mode`, `Detected a custom API key in your environment`) | FAILED `first_run_dialog`; magmux files a reworded boot dialog under `select` |
+| `vim_mode` | FAILED `boot_blocked`, `vim editing mode is on (-- INSERT -- under the box)` |
+| `dialog:select` or another `dialog:*` | FAILED `boot_blocked`, screen text in `detail` |
+| `starting`, `terminal_not_ready`, `no_input_box` with choice markers on screen (`Press Enter to continue`, numbered Yes/No rows, a selection footer — e.g. `New MCP server found in this project`, which magmux has no kind for) | FAILED `boot_blocked`, screen text in `detail` |
+| not ready at 90 s | FAILED `boot_timeout`, or `boot_blocked` when the screen is static and the gate names a dialog or the screen names something; `detail` ends `gate: <reason> (<detail>)` |
+
+Under `--agent` the top rule carries the agent's name at its right end (`──── dev:reviewer ─`);
+until 10.4.2 claudish's own box test refused that one label and every slot given an `agent` failed
+`boot_timeout` at 90 s with a ready box on screen (fixture `repl-boot-agent`). The gate's
+`registry_idle_gate_starting` comparison is the canary for the same class of miss on magmux's side.
 
 **Nothing is ever auto-accepted.** Every 2.1.290 boot dialog has `❯ No, exit` as its default, and
 accepting one on the user's behalf (trusting a folder, enabling a project's MCP servers) is a
@@ -149,8 +229,11 @@ anomaly `resent_enter` (measured 2026-10-16, Claude Code 2.1.301, magmux 0.15.1)
 merges settings per key, so the user's other settings still apply. Claude Code keeps only the LAST
 `--settings` flag, so a caller's `claude_flags --settings` is merged into claudish's temp file
 (`mergeUserSettingsIfPresent`) and one `--settings <path>` is emitted; in a pane `editorMode` is
-forced over the caller's. magmux 0.16.0 forces the same value for its panes; once it is the
-minimum, this key can go. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
+forced over the caller's. This key stays: magmux forces normal mode only for a DIRECT `claude`
+pane; for a declared wrapper its `editorOverride` is `delegated` ("the wrapper must force normal
+mode itself"). If vim mode is on anyway, the gate refuses to type (`vim_mode`) and the prompt fails
+with `vim editing mode is on` — at once when the published view already says so, else after the
+in-flight send's ready wait (≤ 10 s) — instead of sitting unsent. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
 `ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
@@ -167,17 +250,26 @@ before the first subscription, so its `exit` event is never pushed to us: every 
 The rule is the pure function `decideSettle` in `pane/settle-rule.ts`. A turn needs its witness, at
 least one assistant message after it, and nothing waking the model after that message. Then:
 
-| path | evidence | screen corroboration |
+| path | evidence | gate corroboration |
 |---|---|---|
 | **P** | `system/turn_duration` after the last assistant message, `pendingBackgroundAgentCount` 0 (absent means 0), background agents balanced, no pending tool | yes |
 | **I** | `[Request interrupted by user…]` after the last assistant message; `turn_duration` optional | yes |
-| **S** | no `turn_duration`: an ending `stop_reason`, Stop hooks KNOWN finished, and no transcript append and no change above the box for `secondaryQuietMs` | yes; records `settled_without_turn_duration` |
+| **S** | no `turn_duration`: an ending `stop_reason`, Stop hooks KNOWN finished, and no transcript append and no change above the located box for `secondaryQuietMs` (the transcript quiet alone when no box is located) | yes; records `settled_without_turn_duration` |
 | **X** | the pane has exited: an ending `stop_reason` and nothing waking after it | none (the pane is gone) |
 | **L** | a LOCAL slash command: its `<local-command-stdout>` after the witness and no assistant message; the answer is that stdout | yes (none once the pane exited) |
 
-Corroboration is: no further main-chain chat record for 500 ms, and the screen shows an empty input
-box, no choice dialog and no working row. While the socket is disconnected the screen is stale, so
-P and I settle with the anomaly `screen_unverified` and S waits for the reconnect.
+Corroboration is: no further main-chain chat record for 500 ms, and the input gate's fresh reading
+is `ready` (which already means an EMPTY box) with no dialog, and no working row is drawn above the
+box located by the cursor. **Corroboration can delay a transcript-proven ending, never veto it.**
+When it cannot confirm idle, the turn settles anyway once the chat has been quiet for 32 s
+(`GATE_GRACE_MS` = `secondaryQuietMs`), with `settle_gate_unconfirmed:<why>`: the gate's reason
+(`box_not_empty`, `dialog:<kind>`, `starting`, …), `working`, or `gate_unknown` for a stale reading
+on a connected session. That window confirms an ending Claude Code already recorded, the same
+standing as S's window, so D10 holds; and a turn can no longer stay RUNNING for good on a box
+claudish failed to find, which the old hard veto allowed. A box that is not located is unknown and
+never vetoes. A pending tool still blocks P before corroboration is consulted, so an open dialog
+cannot be settled through. While the socket is disconnected the screen and gate are stale, so P and
+I settle at once with `screen_unverified` and S waits for the reconnect.
 
 **Local commands (path L).** A local command writes no assistant record and no `turn_duration`
 (captured on 2.1.291: `/compact` → `compact_boundary`, the summary, the caveat, `<command-name>`,
@@ -262,8 +354,9 @@ after it, which was never observed.
   started and orphaned between two 2 s ticks is never recorded; that window remains.
 
 **A turn that never gets its record.** When the activity is `finishing` (the model's message ended,
-Claude Code's end-of-turn record has not arrived) and the screen has been static with no Stop-hook
-row for 3 × `secondaryQuietMs`, the anomaly `turn_end_record_missing` is added (R3-M4) and the team
+Claude Code's end-of-turn record has not arrived) and nothing above the located box has changed
+(the transcript's quiet when no box is located), with no Stop-hook row anywhere on the screen, for
+3 × `secondaryQuietMs`, the anomaly `turn_end_record_missing` is added (R3-M4) and the team
 note tells the caller to cancel. The CONDITION is live (`turnEndRecordMissing` on the snapshot): it
 clears the moment activity leaves `finishing`, and only while it holds do `activity_by_slot` and the
 row's `activity` read `finishing: turn_end_record_missing`; the anomaly stays as history. A sticky
@@ -279,24 +372,64 @@ settles, and the anomaly stays as history. It never settles or ends a turn: Clau
 witness, never the decider (D23). Session 779a03f0 (2026-10-16) sat at claudish 2 pending, Claude
 Code 0 until cancel, with nothing on the row to say why.
 
-**Blocked.** A pending `AskUserQuestion` comes from the transcript. A permission or plan-approval
-dialog also needs the screen: `hasChoiceDialog` is a CLOSED list (R3-H1) — a named header
-(`Do you want to proceed?`, `Do you want to create|make this edit to|overwrite|delete …?`,
-`Would you like to proceed?`, the `Enter to select · ↑/↓ to navigate` footer), a `1.` option row
-below the last `⏺` block, and no input box. An unrecognised layout is "not a dialog", an honest
-unknown, never `blocked`: numbered prose with a `No, …(esc)` line over a running Bash is a captured
-negative fixture. The owner decides what a block means: team fails the slot `blocked` with the
+**Blocked.** A pending `AskUserQuestion` comes from the transcript alone. Any other pending tool
+is blocked only when the gate names the dialog: `dialog:permission` or `dialog:plan` → PERMISSION,
+`dialog:question` → QUESTION; any other reading, or an unknown one, stays RUNNING — an honest
+unknown, never `blocked`. The question's text is read from the screen (`dialogText`: the non-empty
+rows below the last `⏺` row, with no box test), because `input` carries only the kind. claudish's
+own closed dialog list (`choiceDialog`, R3-H1: a named header such as `Do you want to proceed?`,
+`Do you want to create|make this edit to|overwrite|delete …?`, `Would you like to proceed?`, the
+`Enter to select · ↑/↓ to navigate` footer, and a `1.` option row below the last `⏺` block) no
+longer decides; it is the cross-check behind `gate_dialog_screen_unrecognised`. Numbered prose with
+a `No, …(esc)` line over a running Bash stays a captured negative fixture. The owner decides what a block means: team fails the slot `blocked` with the
 question as its detail (D19, team has no answering verb); an MCP session waits in AWAITING_INPUT or
 AWAITING_PERMISSION. A caller reaches a permission dialog only through `--permission-mode plan`:
 `-y` beats `--permission-mode default`, and `--no-auto-approve` is reserved.
 
-**Degraded mode, per turn.** When the transcript is still absent or empty 10 s after delivery, or
-the screen says transcript saving is off, a turn may be accepted from the screen (the box emptied of
-the line, and an echo or a change above the box) and settled from it (empty box, no dialog, not
-working, an answer or error row present, 6 s of quiet above the box). It records `degraded_mode`, the
+**Degraded mode, per turn: settle only, never acceptance.** A turn is never accepted from the
+screen any more; degraded mode begins only AFTER the gate accepted the prompt with evidence, so it
+can produce an EMPTY answer only for a prompt that really was submitted. When the transcript is
+off, or still absent or empty 10 s (`DEGRADED_ENTRY_MS`) after that acceptance, the turn settles
+from the screen: gate `ready` with no dialog (a fresh reading required), no working row above the
+located box, an answer or error row present, and 6 s of quiet above the located box (the whole
+screen's quiet when no box is located, stricter because the status line ticks). It records `degraded_mode`, the
 turn's `turnSource` is `screen`, and it REVERTS (`degraded_reverted`) as soon as the transcript shows
 the witness — a slow UserPromptSubmit hook is the usual cause. A screen-settled turn records
 `screen_answer_may_be_truncated`, and a file-delivered one `read_coverage_unverified`.
+
+## The input box is located by the cursor, and what still reads the screen
+
+The screen is now read only for TEXT and for quiet, never for an input decision. Where a reader
+needs to know which rows are the input box, `locateBox` (`pane/box-locate.ts`) finds it from the
+frame's hidden cursor: the nearest rule row within 40 rows above the cursor and the nearest below
+it, a rule being `─` from column 0 to the row's end, at least 20 cells, with at most one ` label ─`
+tail (the `--agent` name); the row under the top rule must be the prompt row (`❯` + U+00A0, a bare
+`❯`, or `!` in bash mode); and neither that row nor the cursor row may be a SELECTED option, `❯` +
+an ASCII space + a number + `.` — the box prompt is `❯` + U+00A0, so a prompt typed as `1. Red` is
+still the box. An AskUserQuestion footer below the rules is a dialog, not the box. Anything else is
+"not located", an unknown: it never vetoes and never counts as a box.
+
+Why the cursor and not the rule's width: the old test (`isBoxRule`, a rule at least `cols − 1`
+long) held only at the captured widths. In every captured REPL screen from 80 to 500 columns the
+hidden cursor sits on the box's text row (on the last row when the typed line wraps), also while
+working and during a UserPromptSubmit hook, and inside the dialog when one is open; every rule spans
+exactly the full width (350 × 80 and 500 × 100 captured on 2.1.303, plus the same six states reached
+by growing a 160 × 50 pane with magmux's `resize`). All screen test data carries a `cursor`.
+
+| reader | what it reads | box needed? |
+|---|---|---|
+| `aboveBoxChangedAt` (screen model) | the quiet above the box, for S and degraded settle | located; a change while either frame is unlocated counts as above-box |
+| `workingAboveBox` | the working row, for corroboration | located; `null` (no veto) when not |
+| `menuAbove` | the slash menu's highlight, before a command's Enter | located; else `menu_unverified` and no Escape |
+| `screenAnswer` | the degraded answer | ends at the top rule found by the old `isBoxRule` test, else at the screen's end; a rule row ends a prose block, so the fallback cannot pull the box or status line into the answer |
+| `dialogText` | a dialog's or boot dialog's words | no: the rows below the last `⏺` |
+| `nameBootScreen` | a named first-run marker or choice markers on a static boot screen | no |
+| `stopHookRunning`, `transcriptSavingOff`, `screenErrorRows`, `agentRejectedLine` | Stop-hook row, saving-off notice, error rows, the `--agent` refusal | no |
+| `isWorking`, `choiceDialog` | telemetry cross-checks only (`registry_idle_screen_working`, `gate_dialog_screen_unrecognised`) | the old `isBoxRule` test |
+
+`isBoxRule` (a rule at least `cols − 1` long) and the readers built on it (`inputBox`, `readBoot`)
+remain for the degraded answer's end row, the two telemetry checks, the boot canary and their own
+tests; no readiness, acceptance, dialog or corroboration decision calls them.
 
 ## Prompt delivery by kind (D13)
 
@@ -342,32 +475,123 @@ read that file") never reaches `response-<slot>.md` or the pattern, and its size
 answer. Every assistant message of the turn was read from the transcript, so a mismatch means the
 model did not produce the shape, not that the capture lost it (`team-capture.md`).
 
-**Delivery mechanics.** `send {typed:true}` types the line as keystrokes. A send is retried only when
-magmux refused it (`busy`, `pane_*`) or it was never written; when the REPLY was lost
-(`client_timeout`, `client_lost`) magmux may already have typed it, so the next frame decides: the
-line in the box (or, for an Enter send, its witness or echo) means it landed (`send_reply_lost`), and
-only an empty box is typed again — a blind retry put the line in the box twice and no witness could
-match. With no witness 10 s after delivery, a line still in the box is cleared with ctrl-u, retyped
-once and submitted (`resent_enter`, then `retyped_prompt`): a line typed into the startup stdin
-reset (Boot, above) may show in the box without the child holding it as input, so a bare
-second Enter cannot be relied on to submit it. The first frame after ctrl-u is not evidence: under
-load it can be a stale redraw still holding the line (report-F, three parallel slots: ctrl-u at
-+1020 ms, the empty box first drawn at +1830 ms; a single 500 ms frame wait read the stale box,
-pressed a bare Enter on a box ctrl-u had already emptied, and the prompt was lost). So frames are
-read until the box stops showing the line, for up to `NUDGE_CLEAR_DEADLINE_MS` (3 s, ~3.7x the
-measured 810 ms): an empty box is retyped, a box holding anything else is `clear_failed` and
-nothing is typed, and only a line STILL in the box at the deadline gets the old remedy, one more
-Enter. A second copy is never typed while the first could still be in the box. The retyped line is the same line, so the witness and read coverage
-are unchanged. A panel command (`/cost`, `/usage`, `/config`: a full-screen panel, no record,
-input swallowed until Esc) gets an Esc 500 ms after delivery (`panel_dismissed`), and once the empty
-box is back its admission ends without a turn (`panel_command`); it used to wait the 30 s bound and
-was then taken as a degraded acceptance. The prompt a session was CREATED with must be accepted
-within 30 s, else FAILED `prompt_not_accepted`; a later `send_input` that is never accepted returns
-the session to idle with the anomaly `send_not_accepted`. `/exit` and `/quit` are control lines, not
-turns: 2.1.282–2.1.285 still write the command's caveat, `<command-name>/exit` and
-`<local-command-stdout>(no content)` records into the SETTLED turn (real records in
-`corpus-redacted/exit-command.jsonl`), 2.1.291 writes none; after a delivered `/exit` an IDLE session
-never re-wakes, so the exit ends COMPLETED via `exit_clean`.
+**Delivery mechanics: one gated send.** Every line goes through ONE gated magmux `send`
+(`{text, typed:true, readyTimeoutMs}`, Enter included), never `noGate`, never `dismissDialogs`. The
+gate waits for the box to be ready and empty, types, re-reads the box from 150 ms after the last
+byte every 40 ms for at least 1.2 s (`SendVerifyMin`), presses Enter only when the box holds EXACTLY
+the line, and replies only with attributable evidence. Ctrl-u and Escape are KEYS sends, which the
+gate never touches. `pane/input-gate.ts` translates each reply into a closed `SendOutcome` and
+`PaneSession`'s admission loop switches over it exhaustively, at most one gated send in flight:
+
+| reply | Enter pressed? | what claudish does |
+|---|---|---|
+| `ok`, `evidence:"history"` (`accept` `confirmed`, `resent_enter`, or `submitted_by_other`) | yes | accepted: RUNNING. `resent_enter`, `submitted_by_other` and `retyped` are counted (`gate_resent_enter`, `gate_submitted_by_other`, `gate_retyped:<retypeCause>`), never failures |
+| `ok`, `evidence:"transcript"` | yes | accepted only if claudish's own witness is present, else treated as `unconfirmed` (`gate_transcript_evidence[_unwitnessed]`) |
+| `busy` `starting`, `terminal_not_ready`, `no_input_box`, `typing_in_progress`, `queue_full`, `in_flight` | no | next attempt after 250 ms |
+| `busy` with `typed:true`, `busy box_not_empty`, `not_accepted text_mismatch` | no | the next send first clears the box (below); after a mismatch it waits 1 s for a late draw |
+| `busy vim_mode`, `busy dialog:trust\|bypass\|api_key\|onboarding` | no | stop, never a key: `prompt_not_accepted` (vim) or `first_run_dialog` |
+| `busy dialog:permission\|question\|plan` | no | wait for the dialog to leave, within the deadline; a re-woken turn owns it |
+| `not_accepted empty_box` | no | next attempt; on a command's Enter step, `gate_command_left_box` and no retype (below) |
+| `not_accepted still_in_box` | yes, ignored | witness present → accepted; else once: ctrl-u and one more attempt; twice: wait for the witness |
+| `not_accepted unconfirmed`, `text_mismatch` with `maybeSubmitted`, a lost reply (`client_timeout`, `client_lost`) | maybe | NEVER typed again. Only claudish's own witness can accept, until the deadline |
+| `bad_request`, `unknown_verb`, `unsupported`, `internal` | — | stop: `send_bad_request` / `send_unexpected:<code>` |
+| `pane_dead`, `no_such_pane` | — | the exit path decides |
+
+**`maybeSubmitted` (magmux 0.17.0).** A `text_mismatch` has two variants that say it is UNKNOWN
+whether the text was submitted: the box showed the text and then emptied without magmux's Enter
+("leftBox"), or stayed empty while the conversation moved ("convMoved"); both end "check the
+conversation before sending it again". claudish reads the reply's `maybeSubmitted` field, with that
+phrase as the fallback for a reply without it, sends nothing more for that prompt and waits for its
+own witness; at the deadline the prompt fails with `magmux could not tell whether the prompt was
+submitted (the box emptied without its Enter) and no transcript record of it appeared`. A witness
+that arrives after the deadline re-wakes the idle session as that same turn (`late_witness`): a
+prompt that WAS submitted is reported late, never lost. The cost is accepted: if Claude Code starts
+a turn by itself while a claudish line is typed and never drawn, magmux answers convMoved although
+nobody submitted it, and the caller sees a loud failure it can resend instead of a possible
+duplicate.
+
+**Leftover text is cleared BEFORE a send, from the published view.** A typed gated send into a
+non-empty box types nothing and waits its WHOLE `readyTimeoutMs` before answering `busy
+box_not_empty`, as `busy vim_mode` and `busy dialog:<kind>` do. So before every send that types,
+claudish reads the fresh published `input`: `box_not_empty` (or text this admission itself may have
+left) → KEYS ctrl-u, then up to 1 s for a `ready` reading received at least 250 ms after the reply
+that left the text (magmux republishes at 4 Hz, so an earlier reading can predate a late draw);
+`vim_mode` or a boot dialog → stop now; a permission, question or plan dialog → wait for it to
+leave. Because `box_not_empty` is evaluated last by the gate, it already proves no dialog and a
+settled terminal, so that ctrl-u cannot land on a dialog. A lost TYPE reply on a new connection
+waits out the old delivery's own budget first, since a ctrl-u from another connection is not
+ordered behind it. Measured (I10b, magmux 0.17.0): vim mode on before the send stops in 2.2 s wall,
+boot included; a send already in flight when vim turns on still costs its ready wait (≈ 10 s).
+
+**Every attempt fits the 30 s admission.** The client request timeout is magmux's own upper bound
+(`protocol.SendBudget`, ported as `sendBudgetMs` at 4c6060c) plus 2 s, and no attempt is started
+whose timeout would end after the deadline:
+`ReadyWait(rt) + 2 × (writes × 10 + keys × 22 + 150 + 1200 + 40) + (submit ? 6000 : 0) + 2000` ms,
+`writes` = runs of ≤ 32 runes, one per newline. claudish's shapes (keys counts the final Enter):
+
+| shape | fixed part (budget − rt) | budget at rt 10 000 |
+|---|---|---|
+| 13-character SUBMIT (1 write) | 10 844 | 20 844 |
+| 300-character file-template SUBMIT (10 writes) | 11 024 | 21 024 |
+| 512-character typed SUBMIT (16 writes) | 11 144 | 21 144 |
+| command TYPE `/model haiku` (1 write, no submit) | 4 800 | 14 800 |
+| command Enter SUBMIT (`{keys:["enter"], enter:false}`, no text) | 10 824 | 20 824 |
+
+`rt = min(10 000, left − fixed(step) − 2 000 − reserve)`, where the reserve for a command's TYPE is
+the Enter step's fixed part + 2 000 + 1 000; below 1 000 no attempt starts. So `readyTimeoutMs` is
+magmux's 10 s default whenever there is room, never above it (a 60 s ready wait is a 71 s send),
+never below 1 s. A plain or file prompt gets one full attempt (client timeout ≈ 23 s) and a second
+only after a fast refusal (`text_mismatch` in ≈ 1.5–4 s); a command's TYPE gets rt 9 376 and its
+Enter at least 1 000, the last timeout ending at 30.0 s. That is what keeps the created prompt's 30 s
+bound, `team(mode:"run")`'s 120 s, and a later send's return to idle at 30 s strict; the old sizing
+let an in-flight reply run past the deadline. Drift in magmux's constants is safe in direction: an
+under-estimate becomes a lost reply (no resend, a slower failure), never a duplicate. A bump of the
+pin re-reads `protocol/sendbudget.go`.
+
+**Why neither a lost prompt nor a doubled one can happen (D-A, D-B), by construction.** D-A was two
+10 s timers racing: claudish's ctrl-u nudge emptied the box, its screen-based acceptance then saw
+"empty box and a change above it" and accepted, and a lost prompt became a quiet empty answer. The
+nudge, the resend timer and screen acceptance are deleted; the only acceptance paths are a gate
+`ok` with a NEW history entry carrying the verified text, and claudish's own witness. An emptied box
+is never evidence: "a lost prompt looks exactly like a submitted one" (magmux README). Every ctrl-u
+is issued by the admission loop between two of its own sends, never beside an acceptance decision.
+D-B was a frame read ~150 ms after typing that saw an empty box (Claude Code draws typed text
+300–800 ms late), so claudish typed again and `/model haiku` arrived as `haiku/model haiku`. claudish
+no longer reads the box to decide a retype; its only retype follows `still_in_box` (Enter pressed and
+ignored, the text proven present), once, after ctrl-u, through the gate. The gate types only into an
+empty box and presses Enter only on an exact match; magmux's own single retype needs the box
+COMPLETELY empty and either a terminal reset after the first byte (`terminal_reset`) or no draw for
+the whole 3 s window with no conversation change (`never_drawn`), and never for a paste. claudish
+keeps `typed:true` on every send so no line is ever a paste. Two copies can still be TYPED (a very
+late draw after a retype), but Enter is pressed only on a box holding exactly one, so two copies are
+never SUBMITTED. The DA-* and DB-* tests in `pane-gated-delivery.integration.test.ts` prove both at
+production timings, with no `timings` overrides.
+
+**Slash commands are two sends, because the gate has no menu handling.** A leading `/` opens
+Claude Code's command menu, and Enter on an open menu runs the HIGHLIGHTED item, not the typed one.
+So a command is a TYPE (`enter:false`, answered `in_box`), a menu check on the located box (an open
+menu whose highlight is not the typed name gets Escape; a box that is not located records
+`menu_unverified` and gets none), then the Enter as a gated SUBMIT (`{keys:["enter"], enter:false}`).
+`ok submitted_by_other` on the TYPE accepts and skips the Enter; `empty_box` on the Enter means the
+command left the box without claudish's Enter and may have run, so it is never retyped. A panel
+command (`/cost`, `/usage`, `/config`; `/model` with no argument: a full-screen panel or picker, no
+transcript record, input swallowed until Esc) shows as `unconfirmed` or `busy dialog:select` on its
+Enter; once the gate says `no_input_box` or `dialog:select` with `Esc to cancel` on screen for
+500 ms it gets one Escape (`panel_dismissed` / `picker_dismissed`, never while the gate names a boot
+dialog), and when the gate is ready again its admission ends without a turn (`panel_command`).
+
+The prompt a session was CREATED with must be accepted within 30 s, else FAILED
+`prompt_not_accepted`, whose `reason_detail` names the gate's answer (`magmux not_accepted
+still_in_box: …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
+…`, `busy vim_mode: vim editing mode is on …`, or `prompt not accepted in N s; last magmux reply:
+busy <reason> (<gate detail>)`); a later `send_input` that is never accepted returns the session to
+idle with the anomaly `send_not_accepted`. `get_diagnostics` carries the fresh `gate` reading and the
+`lastSend` (kind, reason, accept, evidence, retypeCause, attempts). `/exit` and `/quit` are control
+lines, not turns: one gated SUBMIT whose reply is recorded only as an anomaly
+(`control_send:<kind>[:<reason>]`); 2.1.282–2.1.285 still write the command's caveat,
+`<command-name>/exit` and `<local-command-stdout>(no content)` records into the SETTLED turn (real
+records in `corpus-redacted/exit-command.jsonl`), 2.1.291 writes none; after a delivered `/exit` an
+IDLE session never re-wakes, so the exit ends COMPLETED via `exit_clean`.
 
 **`send_input` is queued (D17).** It is accepted in every non-terminal state. `send` reads the
 transcript before it evaluates, so a turn whose end record already landed settles INSIDE the send;
@@ -530,15 +754,18 @@ as `since_seq` never reads a pre-resize frame as current.
 at other widths its checks are width-proof: echo prefixes are `min(40, cols − 4)` long and compared
 against box text with row breaks removed, dialog markers match the dialog region joined into one
 string, and the working row tolerates a wrapped tail. They are validated on real Claude Code screens
-captured at 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A resize redraw moves the above-box region, which only DELAYS
-settle and boot (it restarts their quiet clocks) and never completes them. Two places would have
-read a redraw as evidence and therefore ignore it inside the quiet window, an interval
-[from, until) opened at the SEND (the SIGWINCH redraw can land before the reply) and extended to
-`RESIZE_QUIET_MS` (2 s) past a `changed:true` or lost (`client_lost`/`client_timeout`) reply. It
-is never retracted: a lost reply may follow an applied resize, and moving the start to the reply
-would push an earlier redraw out of it. Ignored there are degraded admission (`maybeDegradedAccept` counts only the echo there, so an undelivered prompt
-still fails `prompt_not_accepted`), and the activity timestamp behind `idle_seconds` and
-`last_activity_at` (a separate activity clock; `screen.changedAt` still moves).
+captured at 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A
+resize redraw moves the above-box region, which only DELAYS settle (it restarts its quiet clocks)
+and never completes it; during the redraw the cursor can be stale for a frame, and the answer for
+that frame is "box not located", an unknown, never a wrong box. A resize during an admission only
+delays the gate's readiness inside the attempt's budget: magmux re-reads screen and termios fresh
+for every decision. One place would read a redraw as evidence and therefore ignores it inside the
+quiet window, an interval [from, until) opened at the SEND (the SIGWINCH redraw can land before the
+reply) and extended to `RESIZE_QUIET_MS` (2 s) past a `changed:true` or lost
+(`client_lost`/`client_timeout`) reply: the activity timestamp behind `idle_seconds` and
+`last_activity_at` (a separate activity clock; `screen.changedAt` still moves). The window is never
+retracted: a lost reply may follow an applied resize, and moving the start to the reply would push
+an earlier redraw out of it. (Screen-based admission, its other reader, is deleted.)
 
 **What does not follow a resize.** `COLUMNS`/`LINES` in the child's environment stay at the launch
 values — they are shell-managed keys of the snapshot, and Claude Code reads the TTY winsize, not
@@ -626,19 +853,26 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   `watch {mode:"frames", fps:4}` per pane feeds an in-memory screen whose `seq` is 0 until the first
   frame and then grows by one per visible change (text, spans, cursor, alt screen, size) for the
   pane's life. `capture` and `capture_session` are memory reads. `aboveBoxChangedAt` moves only when a
-  row ABOVE the input box changes, so the status line ticking under the box never holds a quiet window
+  row ABOVE the input box (located by the cursor) changes, so the status line ticking under the box never holds a quiet window
   open. 4 fps (research recommended 2–4) halves boot, witness and settle latency at no idle cost.
-- `assertMagmuxAvailable` requires `magmux --version` ≥ 0.15.1 (cached per binary), and every
-  connect re-checks `capabilities` (`protocol: 1`, version ≥ 0.15.1). claudish never substitutes print mode.
-  The release job bundles a pinned magmux and checks the pin against `MIN_MAGMUX_VERSION`.
+- `assertMagmuxAvailable` requires `magmux --version` ≥ 0.17.0 (cached per binary; the floor is the
+  transcript binding, not the gate alone: 0.16.0 had the gate but bound it by discovery), and every
+  connect re-checks `capabilities` (`protocol: 1`, version ≥ 0.17.0) and then the binding (`list`).
+  An older magmux is refused with `magmux_unavailable: <path> is version <v>; panes need >= 0.17.0
+  (…); upgrade: brew upgrade MadAppGang/tap/magmux`; claudish never falls back to the box-reading
+  path or to print mode: one validator per fact. The release job bundles the magmux pinned in
+  `.github/magmux.env` (v0.17.0), test.yml runs the pane suites against that pin, and release.yml
+  checks the pin against `MIN_MAGMUX_VERSION`.
 - **Latent, outside this driver:** `team-grid.ts` (CLI `--grid`) does not pass `--sock-dir`, so an
   inherited `MAGMUX_SOCK_DIR` would move its socket (F7).
 
 ## Bounds (D9, D10)
 
 - **`team(mode:"run")` returns once every slot has left STARTING**: its prompt was accepted
-  (RUNNING) or it failed boot or admission. Bounded by boot 90 s + admission 30 s; with the fake child
-  a slot reaches RUNNING in 1.2–1.9 s. The dev plugin's team gate polls until no slot is RUNNING, so
+  (RUNNING) or it failed boot or admission. Bounded by boot 90 s + admission 30 s, and every admission attempt is sized so its
+  client timeout ends by the 30 s deadline ("Delivery mechanics"). With the fake child the gate is
+  ready 3.9–4.2 s after spawn (it waits magmux's 3.5 s boot floor; the fake never resets stdin);
+  1.2–1.9 s to RUNNING was measured before the gate. The dev plugin's team gate polls until no slot is RUNNING, so
   a slot still STARTING on its first poll would end the gate with zero ballots. Slots of one run spawn
   300 ms apart, so N REPLs do not write `~/.claude.json` in the same instant.
 - **No claudish timer ends a team slot after its prompt was accepted.** Boot and admission bound
@@ -654,8 +888,8 @@ terminals absorb, so a late pane `exit` cannot overturn a CANCELLED or TIMEOUT.
 
 | phase | wire state | leaves by |
 |---|---|---|
-| BOOTING | STARTING | boot ready (IDLE, or ADMITTING with a queued prompt); dialog, blocked screen, 90 s → FAILED |
-| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | witness → RUNNING; 30 s → FAILED `prompt_not_accepted` (created prompt) or back to IDLE (a later send) |
+| BOOTING | STARTING | gate `ready` (IDLE, or ADMITTING with a queued prompt); boot dialog, blocked screen, 90 s → FAILED; binding check failed → FAILED `pane_lost` |
+| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send) |
 | RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED |
 | IDLE | AWAITING_INPUT | queued send → ADMITTING; background re-wake → RUNNING (same turn); clean exit after `/exit` or ≥ 1 settled turn → COMPLETED |
 | QUESTION | AWAITING_INPUT | the tool resolves → RUNNING; `onBlocked` verdict → FAILED |
@@ -726,10 +960,14 @@ type and new fields may only be added.
 
 | file | what |
 |---|---|
-| `pane/pane-session.ts` | `PaneSession`, `startPaneSession`: spawn order, boot, admission pump, settle, exit path, reap |
-| `pane/settle-rule.ts` | the pure P/I/S/X decision and `SECONDARY_QUIET_MS` |
+| `pane/pane-session.ts` | `PaneSession`, `startPaneSession`: spawn order, the binding check, the gate poll, boot, the admission loop, settle, exit path, reap |
+| `pane/input-gate.ts` | the gate adapter: `classifySendReply` (reply → closed `SendOutcome`), `parseGateInput`, `parseGateBinding`, `sendBudgetMs` (magmux's `SendBudget`); pure, translation only |
+| `pane/gate-binding.ts` | `checkGateBinding`: pane 0 declared, gated and bound by name to this session's id and transcript |
+| `pane/box-locate.ts` | `locateBox` / `inspectBox`: the input box from the cursor row, no width test |
+| `pane/settle-rule.ts` | the pure P/I/S/X/L decision, gate corroboration and its 32 s grace, `SECONDARY_QUIET_MS` |
 | `pane/transcript-follower.ts` | the turn-scoped reducer: witness, waking records, background balance, read coverage, answer start |
-| `pane/screen-model.ts`, `pane/screen-classifier.ts` | frames → screen with our `seq`; boot, dialogs, working row, degraded answer |
+| `pane/screen-model.ts`, `pane/screen-classifier.ts` | frames → screen with our `seq`; dialog text, boot screen names, working row, degraded answer |
+| `pane/pane-size.ts` | launch size, the resize clamp (magmux's limits), `RESIZE_QUIET_MS` |
 | `pane/prompt-delivery.ts` | delivery by kind, the turn file, line splitting |
 | `pane/pane-launch.ts` | root, ids, environment, launcher, shim, flag check, magmux check, spawns |
 | `pane/process-identity.ts` | the identity predicates and the generated watcher script |

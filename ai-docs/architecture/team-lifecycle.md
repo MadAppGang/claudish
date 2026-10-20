@@ -170,7 +170,9 @@ than working around it.
 
 **It does block through boot and admission, and only through them.** The bound
 is boot 90 s + admission 30 s = 120 s, before any work exists, so nothing can be
-lost to it; with the fake child a slot reaches RUNNING in 1.2–1.9 s. Returning any
+lost to it. The 30 s is strict: every gated send of an admission is sized so its
+client timeout ends by the deadline (`pane-session.md`, "Delivery mechanics"). With
+the fake child the gate is ready 3.9–4.2 s after spawn (magmux's 3.5 s boot floor). Returning any
 earlier breaks a real consumer: the dev plugin's team gate polls until no slot is
 RUNNING, so a slot still STARTING on its first poll would end the gate with zero
 ballots. Boot and admission failures are therefore in the `run` answer itself.
