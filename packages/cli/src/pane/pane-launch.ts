@@ -512,38 +512,66 @@ export function versionAtLeast(v: string, min: string): boolean {
   return true;
 }
 
-const magmuxCache = new Map<string, { binary: string; version: string }>();
+type MagmuxBinary = { binary: string; version: string };
+
+/** Successes only: a failed probe is never cached, so the next caller probes again. */
+const magmuxCache = new Map<string, MagmuxBinary>();
+/** The probe in flight per key: six slots starting at once run `--version` once, not six times. */
+const magmuxProbes = new Map<string, Promise<MagmuxBinary>>();
 const execFileAsync = promisify(execFile);
 
 /** The magmux binary and its version (≥ MIN_MAGMUX_VERSION), cached per process. Never a `-p` fallback. */
-export async function assertMagmuxAvailable(
-  binary?: string
-): Promise<{ binary: string; version: string }> {
-  const cached = magmuxCache.get(binary ?? "");
+export async function assertMagmuxAvailable(binary?: string): Promise<MagmuxBinary> {
+  const key = binary ?? "";
+  const cached = magmuxCache.get(key);
   if (cached) return cached;
+  const inFlight = magmuxProbes.get(key);
+  if (inFlight) return inFlight;
+  const probe = (async () => {
+    try {
+      const result = await probeMagmux(binary);
+      magmuxCache.set(key, result);
+      return result;
+    } finally {
+      magmuxProbes.delete(key);
+    }
+  })();
+  magmuxProbes.set(key, probe);
+  return probe;
+}
+
+async function probeMagmux(binary?: string): Promise<MagmuxBinary> {
   const found = binary ?? findMagmuxBinaryOrNull();
   if (!found)
     throw new MagmuxUnavailableError(
       "magmux_unavailable: magmux not found (bundled package or PATH); install it: brew install MadAppGang/tap/magmux"
     );
+  let version = await readMagmuxVersion(found);
+  // Under load a run has exited 0 with no version in its output, and six concurrent probes
+  // refused a good 0.17.0 as "version unknown". Ask once more before refusing; a real version
+  // below the floor is an answer and is not retried.
+  if (!version) version = await readMagmuxVersion(found);
+  if (!version || !versionAtLeast(version, MIN_MAGMUX_VERSION))
+    throw new MagmuxUnavailableError(
+      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION} (the Claude Code input gate bound to a named transcript); upgrade: brew upgrade MadAppGang/tap/magmux`
+    );
+  return { binary: found, version };
+}
+
+/** The `X.Y.Z` from one `<binary> --version` run, read from stdout and stderr together; "" when absent. */
+async function readMagmuxVersion(found: string): Promise<string> {
   let out = "";
   try {
     // async: the first create_session or team run must not stall the MCP server's event
     // loop for up to 5 s (every other session's frames and socket share it)
-    out = (await execFileAsync(found, ["--version"], { encoding: "utf8", timeout: 5000 })).stdout;
+    const r = await execFileAsync(found, ["--version"], { encoding: "utf8", timeout: 5000 });
+    out = `${r.stdout}\n${r.stderr}`;
   } catch (e) {
     throw new MagmuxUnavailableError(
       `magmux_unavailable: ${found} --version failed: ${e instanceof Error ? e.message : String(e)}`
     );
   }
-  const version = out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "";
-  if (!version || !versionAtLeast(version, MIN_MAGMUX_VERSION))
-    throw new MagmuxUnavailableError(
-      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION} (the Claude Code input gate bound to a named transcript); upgrade: brew upgrade MadAppGang/tap/magmux`
-    );
-  const result = { binary: found, version };
-  magmuxCache.set(binary ?? "", result);
-  return result;
+  return out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "";
 }
 
 /* ───────────────────────────── launcher ───────────────────────────── */
