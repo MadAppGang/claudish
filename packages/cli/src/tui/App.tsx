@@ -171,6 +171,10 @@ interface AppProps {
   requestLogin?: (action: ProviderLoginAction) => void;
 }
 
+export function nextStatusAfterProbeReady(current: string | null): string | null {
+  return current === "Starting probe proxy…" ? null : current;
+}
+
 /**
  * Resolve a batch of 1Password entries into an `{ENV_VAR: secret}` map.
  *
@@ -1346,6 +1350,7 @@ export function App({ requestLogin }: AppProps = {}) {
       // in memory; the request path itself never prompts.
       if (prov.catalogName === "meta-muse-code") await prepareMuseLoginForTuiAction();
       const proxyUrl = await ensureProbeProxy();
+      setStatusMsg(nextStatusAfterProbeReady);
       const catalogModel = getProbeModel(prov.catalogName);
       // Models that already failed this round — passed to discovery so we
       // get the NEXT candidate, not the same one again.
