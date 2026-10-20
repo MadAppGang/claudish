@@ -49,6 +49,10 @@ function wrapToLines(text: string, maxWidth: number, maxLines: number): string[]
   return lines;
 }
 
+export function credentialNoteLines(note: string, width: number, hasFailure: boolean): string[] {
+  return wrapToLines(note, width - 4 - "Auth:  ".length, hasFailure ? 1 : 2);
+}
+
 interface ProviderDetailProps {
   selectedProvider: ProviderDef;
   mode: Mode;
@@ -211,6 +215,7 @@ export function ProviderDetail({
     tr && (tr.status === "failed" || tr.status === "unavailable")
       ? (tr.providerMessage ?? tr.error)
       : undefined;
+  const noteLines = credentialNote ? credentialNoteLines(credentialNote, width, !!failureText) : [];
 
   return (
     <box
@@ -345,14 +350,15 @@ export function ProviderDetail({
           credential is not an environment variable — it names the source
           precisely (which project, from the ADC file or `gcloud config`) or, when
           nothing resolved, both remedies. */}
-      {credentialNote && (
-        <text>
+      {noteLines.map((line, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: positional slices of one string
+        <text key={i}>
           <span fg={C.blue} attributes={A.bold}>
-            {"Auth:  "}
+            {i === 0 ? "Auth:  " : "       "}
           </span>
-          <span fg={hasKey ? C.green : C.yellow}>{credentialNote}</span>
+          <span fg={hasKey ? C.green : C.yellow}>{line}</span>
         </text>
-      )}
+      ))}
       {selectedProvider.endpointEnvVar && (
         <text>
           <span fg={C.blue} attributes={A.bold}>
@@ -361,7 +367,9 @@ export function ProviderDetail({
           <span fg={C.cyan}>{activeEndpoint || selectedProvider.defaultEndpoint || "default"}</span>
         </text>
       )}
-      {!failureText && (
+      {/* Two Auth: lines use the description's row; the description remains in
+          the list's DESCRIPTION column. */}
+      {!failureText && noteLines.length < 2 && (
         <text>
           <span fg={C.blue} attributes={A.bold}>
             Desc:{" "}
