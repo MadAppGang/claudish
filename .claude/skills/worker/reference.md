@@ -79,6 +79,40 @@ voir le skill **`worker-issues`** — cycle complémentaire à celui-ci, même m
      `~/.claudish/session-watch.kill.enabled` — à n'armer qu'après ≥24 h de journal
      sain (classification conforme à la politique réconciliée), geste consigné
      dashboard.
+   - **Veille quota MiniMax** (mandat user 19/10 « lander les crédits », actif
+     jusqu'au reset ~25/10 23:05Z — ensuite évaluer reconduction avant retrait) :
+     organe **mono-observateur** — seul le siège hub (po-2025, celui dont le
+     profil playwright persistant porte la session console) lit la console ;
+     les autres sièges worker ne relancent PAS playwright (quatre lectures
+     d'une même console, quatre journaux qui ne fusionnent jamais), ils lisent
+     `~/.claudish/minimax-plan-watch.log` ou la ligne dashboard du siège hub.
+     À chaque cycle de CE siège : lire
+     `https://platform.minimax.io/console/usage` via MCP
+     playwright (profil persistant : l'auth survit aux sessions ; si page =
+     login/« no active subscription » **avec données vides**, c'est un rendu
+     transitoire — attendre 3-5 s et re-snapshotter avant de conclure). Extraire
+     `5h %`, `weekly % + resets in`, credits. **Appender** (jamais tronquer) une
+     entrée NDJSON dans `~/.claudish/minimax-plan-watch.log` :
+     `{ts, type:"reading", h5_pct, h5_reset_min, week_pct, week_reset_h, credits}` ;
+     pour l'attribution (≈1×/jour, pas chaque cycle) : Usage Details sur la fenêtre
+     → Export CSV → `.playwright-mcp/` → sommer par modèle (attention : tilde
+     fullwidth `～` dans les heures, `—` = zéro ; console = compte ENTIER, hub =
+     share partiel) + `[Request]` hub par machine sur la fenêtre.
+     Projection (formule, pas lib) : fenêtre hebdo = reset_anchor − 7 j ;
+     `elapsed_h = now − window_start` ; `pace = week_pct / elapsed_h` ;
+     `eta_h = (100 − week_pct) / pace` ; `projected_pct_at_reset = pace × 168`.
+     Seuils : WARN dashboard si `eta_h < week_reset_h` ET marge
+     `week_reset_h − eta_h > 24` (mur avant reset certain, marge > 1 j) ;
+     **ASK registre** (jamais de geste auto) si `eta_h < 48`. Leviers — nommés
+     comme des leviers, pas comme leur état d'un soir donné : réduire la
+     profondeur de réflexion (`CLAUDISH_MINIMAX_THINKING=effort:<level>` une
+     fois #545 atterri), armer la cascade haiku (`CLAUDISH_FAILOVER_ACTIVE`,
+     recreate drainé #310), limiter la concurrence de la lane
+     (`mmc@MiniMax-M3.1-Flash:N` dans le modelMap, drain restart) ;
+     **jamais config-armer au mur** (tue l'auto-recovery). Crédits = 0 :
+     mur hebdo = erreur 429 nue pour la lane haiku, pas de décharge douce.
+     Contexte décision : baseline 12-18/10 = pace qui *atterrit juste* (~94 % du
+     quota à reset) ; fenêtre 19/10 = pace ×1,7 (projection 159 %, mur ~23/10).
 4. **Commit + PR AVANT le rapport** — ne jamais annoncer un travail non commité.
    `cd d:/Dev/claudish && git pull origin main` d'abord ; conventional commits.
 5. **Rapport [DONE] sur le dashboard workspace** — faits, métriques, décisions prises

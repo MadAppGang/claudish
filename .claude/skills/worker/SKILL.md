@@ -32,6 +32,13 @@ skill **`worker-issues`**.
      silence ; le reste → INFO. Dures : watermark mis à jour après relais ; **JAMAIS tronquer les
      journaux** (trace durable des éditions d'infra) ; consent kill
      (`session-watch.kill.enabled`) : ≥24 h de journal sain avant armement, consigné.
+   - **Veille quota MiniMax** (mandat user 19/10) : organe **mono-observateur** — seul
+     le siège hub (po-2025, celui dont le profil playwright persistant porte la session
+     console) lit la console et appende `~/.claudish/minimax-plan-watch.log` ; les autres
+     sièges ne relancent PAS playwright, ils lisent son journal ou sa ligne dashboard
+     (une condition asynchrone = un observateur). Seuils WARN/ASK, formule de projection
+     et leviers : `reference.md` §« Cycle » — l'énoncé canonique y vit seul, ne pas le
+     reformuler ici (deux énoncés dérivent, mesuré : contradiction 36 h/24 h).
 4. **Commit + PR AVANT le rapport** — ne jamais annoncer un travail non commité.
    `git pull origin main` d'abord ; conventional commits. Body PR/commentaire :
    `--body-file <f>` — `--body @f` publie le chemin (6 corps vides au 13/10) ;
