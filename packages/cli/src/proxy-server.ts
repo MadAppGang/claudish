@@ -78,6 +78,7 @@ import {
   resolveFailoverTargetForSession,
   resolveDelegationOwner,
   setRoleNominalResolver,
+  setRoleNominalBucketResolver,
   markStepFailed,
   earliestWalledReprobeAt,
   ARM_TTL_MAX_MS,
@@ -908,10 +909,33 @@ export async function createProxyServer(
     );
     if ("bucket" in decision) return decision.bucket;
     await ensureCatalogReady("openrouter", 5000);
+    return concreteStepBucketOfSync(stepTarget);
+  };
+
+  /**
+   * Sync twin of `concreteStepBucketOf`, for the failover module's role-step
+   * delegation: `resolveRoleStep` runs inside the synchronous resolution and
+   * cannot await. Same classification, same `route()` decision; only the
+   * catalog warm-up is skipped — it serves OpenRouter vendor-prefix resolution,
+   * the request side has warmed it long before any delegation resolves, and a
+   * cold catalog leaves the same accepted approximation as a mis-credentialed
+   * primary (see nominalBucketOfModel).
+   */
+  const concreteStepBucketOfSync = (stepTarget: string): string => {
+    const decision = classifyNominalBucket(stepTarget, (m) =>
+      matchUserRoutingOverride(m, userRoutingRules)
+    );
+    if ("bucket" in decision) return decision.bucket;
     const plan = route(decision.routeModel, effectiveRoutingRules, effectiveFallbackProvider);
     if (plan.kind === "ok" && plan.primary) return plan.primary.provider;
     return providerBucketOf(stepTarget);
   };
+
+  // A `role:` step whose target nominal is a bare routing-chain name
+  // (`modelMap.sonnet = glm-5.3`) must see the wall on the bucket that name
+  // actually draws on — the route() primary, not anything the failover module
+  // can classify alone. Registered next to the nominal resolver's twin.
+  setRoleNominalBucketResolver(concreteStepBucketOfSync);
 
   /**
    * #412 (review ai-01 08/10, point 1) — is this request's NOMINAL target the

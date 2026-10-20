@@ -225,14 +225,14 @@ afterEach(async () => {
   resetFailoverForTests();
 });
 
-async function spin(defaultModel?: string): Promise<void> {
+async function spin(defaultModel?: string, modelMap?: Record<string, string>): Promise<void> {
   activeProxy = await createProxyServer(
     PROXY_PORT,
     undefined,
     defaultModel,
     false,
     undefined,
-    undefined,
+    modelMap,
     { quiet: true }
   );
 }
@@ -334,6 +334,47 @@ describe("#274 review — delegated bookkeeping through the real cascade loop", 
     expect(calls.s1).toBe(1);
     // All three attempts were real walls, and the bucket stays armed.
     expect(isBucketWalled(bucketOfNominal())).toBe(true);
+  }, 30_000);
+});
+
+// The hub shape: the profile's modelMap names the sonnet nominal by a BARE
+// routing-chain name (`glm-5.3`), which a user routing rule sends to its
+// provider — here the nom-ep endpoint, so the wall lives on bucket `nom-ep`.
+// The failover module cannot classify that name on its own; the proxy injects
+// the bucket resolver at startup. Without it the delegation served the walled
+// nominal (hub 08/10→20/10: 15 of 31 `Sonnet role` walls with glm-coding
+// already armed). Mutation proof: delete the setRoleNominalBucketResolver
+// registration in proxy-server ⇒ B1 goes red (402, calls.nm=1, calls.s0=0).
+describe("role-step delegation to a BARE routing-chain nominal (hub shape)", () => {
+  function routeGlmToNom(): void {
+    const cfg = JSON.parse(readFileSync(REAL_CONFIG_PATH, "utf-8"));
+    cfg.routing = { "glm-5.3": ["nom-ep"] };
+    writeFileSync(REAL_CONFIG_PATH, JSON.stringify(cfg), "utf-8");
+  }
+
+  test("B1: the nominal's route() bucket is walled → the delegation joins sonnet's cascade, the nominal is never paid", async () => {
+    routeGlmToNom(); // rules load at startup — before spin()
+    await spin(undefined, { sonnet: "glm-5.3" });
+    // The proxy's own resolvers stay installed: no setRoleNominalResolver here.
+    resetFailoverForTests({ ...DELEGATION_ENV, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+    expect(armFailover("sonnet", "test: glm wall on its route() primary", "nom-ep")).toBe(true);
+
+    const r1 = await postMessage("claude-opus-5");
+    expect(r1.status).toBe(200);
+    expect(calls.nm).toBe(0); // the walled nominal is not re-paid
+    expect(calls.s0).toBe(1); // sonnet's cascade step 0 serves
+  }, 30_000);
+
+  test("B2: the same bucket healthy → the delegation serves the bare nominal", async () => {
+    routeGlmToNom();
+    await spin(undefined, { sonnet: "glm-5.3" });
+    resetFailoverForTests({ ...DELEGATION_ENV, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+    wallEndpoints.delete("nm");
+
+    const r1 = await postMessage("claude-opus-5");
+    expect(r1.status).toBe(200);
+    expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(0);
   }, 30_000);
 });
 

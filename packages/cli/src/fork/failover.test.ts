@@ -46,6 +46,7 @@ import {
   resolveConcreteTarget,
   resolveDelegationOwner,
   setRoleNominalResolver,
+  setRoleNominalBucketResolver,
   NATIVE_BUCKET,
 } from "./failover.js";
 import type { DelegationOwner } from "./failover.js";
@@ -2425,6 +2426,44 @@ describe("#274 — role-step resolution", () => {
     const step = getFailoverRule("opus")!.steps[1];
     expect(resolveConcreteTarget("opus", step)).toBe("gc@glm-5.2");
   });
+
+  // The hub shape: modelMap.sonnet is the BARE `glm-5.3`, which classifies to
+  // no bucket on its own (route() decides it — `glm-coding`). Before the
+  // injected bucket resolver, the delegation served that nominal even with its
+  // bucket walled (hub 08/10→20/10: 15 of 31 `Sonnet role` walls landed while
+  // glm-coding was already armed).
+  describe("bare routing-chain nominal (hub shape)", () => {
+    afterEach(() => setRoleNominalBucketResolver(null));
+
+    it("joins the target's cascade when the resolver-named bucket is walled", () => {
+      initFailover(env274({ CLAUDISH_FAILOVER_ACTIVE: "opus", CLAUDISH_FAILOVER_AUTO: "1" }));
+      setRoleNominalResolver((r) => (r === "sonnet" ? "glm-5.3" : undefined));
+      setRoleNominalBucketResolver((m) => (m === "glm-5.3" ? "glm-coding" : undefined));
+      armFailover("sonnet", "test wall", "glm-coding");
+      const { step, stepIndex } = resolveFailoverTarget("opus");
+      expect(stepIndex).toBe(0);
+      expect(step!.target).toBe("mistral@glm-5.3"); // sonnet's cascade step 0, never the walled glm-5.3
+      const d = resolveDelegationOwner("opus", step!);
+      expect(d!.owner).toEqual({ role: "sonnet", nominal: false, stepIndex: 0 });
+    });
+
+    it("serves the nominal while the resolver-named bucket is healthy", () => {
+      initFailover(env274({ CLAUDISH_FAILOVER_ACTIVE: "opus" }));
+      setRoleNominalResolver((r) => (r === "sonnet" ? "glm-5.3" : undefined));
+      setRoleNominalBucketResolver((m) => (m === "glm-5.3" ? "glm-coding" : undefined));
+      armFailover("sonnet", "a sibling bucket's wall", "minimax-coding");
+      const { step } = resolveFailoverTarget("opus");
+      expect(step!.target).toBe("glm-5.3");
+    });
+
+    it("without a bucket resolver the bare nominal is served (no bucket to test)", () => {
+      initFailover(env274({ CLAUDISH_FAILOVER_ACTIVE: "opus", CLAUDISH_FAILOVER_AUTO: "1" }));
+      setRoleNominalResolver((r) => (r === "sonnet" ? "glm-5.3" : undefined));
+      armFailover("sonnet", "test wall", "glm-coding");
+      const { step } = resolveFailoverTarget("opus");
+      expect(step!.target).toBe("glm-5.3");
+    });
+  });
 });
 
 // ── #331 — a role: step's TTL binds only its walled CONCRETE ───────────────────
@@ -2447,8 +2486,9 @@ describe("#331 — a role: step's TTL binds only its walled concrete", () => {
       CLAUDISH_FAILOVER_AUTO: "1",
       ...extra,
     } as NodeJS.ProcessEnv);
-  // No setRoleNominalResolver: the hub shape (modelMap absent) — the
-  // delegation resolves straight into sonnet's cascade steps.
+  // No setRoleNominalResolver: a proxy started without a modelMap — the
+  // delegation resolves straight into sonnet's cascade steps. (The hub runs
+  // WITH the profile's modelMap: see "bare routing-chain nominal" above.)
 
   it("T1: delegation ADVANCED past the walled concrete → the delegating step is probeable again (the 24 h freeze)", () => {
     initFailover(env331());

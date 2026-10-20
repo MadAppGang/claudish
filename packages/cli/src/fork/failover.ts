@@ -614,6 +614,24 @@ export function setRoleNominalResolver(fn: ((role: FailoverRole) => string | und
   roleNominalResolver = fn;
 }
 
+/** The provider bucket a role's NOMINAL model draws on, named the way the
+ * proxy's request side names it — injected by proxy-server next to the nominal
+ * resolver. Keyed by the nominal MODEL the resolver above returned, never by
+ * role: the bucket tested must be the one the delegation would actually serve
+ * (#367, W21). A bare routing-chain nominal (`glm-5.3`) carries no bucket this
+ * module can derive: its meter is the `route()` primary (`glm-coding`), and a
+ * user routing rule can send any bare name anywhere. Without it a delegation
+ * cannot see that nominal's wall and serves it walled (hub, 08/10→20/10: 15 of
+ * the 31 `Sonnet role` delegation walls landed while `glm-coding` was already
+ * armed). Unset (unit tests) → the local classification below. */
+let roleNominalBucketResolver: ((nominal: string) => string | undefined) | null = null;
+
+export function setRoleNominalBucketResolver(
+  fn: ((nominal: string) => string | undefined) | null
+): void {
+  roleNominalBucketResolver = fn;
+}
+
 /** #274: which cascade OWNS the concrete model a delegation just resolved to.
  * Derived BY the resolution itself (see resolveRoleStep) — a reverse
  * target→step lookup cannot find it: role-steps carry targets refreshed in
@@ -644,10 +662,17 @@ function resolveRoleStep(
   const targetRole = step.roleRef!;
   const nominal = roleNominalResolver?.(targetRole);
   if (nominal) {
-    const nb = classifyNominalBucket(nominal, () => false);
-    if ("bucket" in nb) {
+    // The proxy's own bucket first — the same routing decision the request
+    // side keys walls on, user routing rules included. The local
+    // classification only stands in when no resolver is injected.
+    let bucket = roleNominalBucketResolver?.(nominal);
+    if (bucket === undefined) {
+      const nb = classifyNominalBucket(nominal, () => false);
+      if ("bucket" in nb) bucket = nb.bucket;
+    }
+    if (bucket !== undefined) {
       const walledNow =
-        isBucketWalled(nb.bucket) || isBucketWalled(LEGACY_ROLE_WIDE_BUCKET);
+        isBucketWalled(bucket) || isBucketWalled(LEGACY_ROLE_WIDE_BUCKET);
       if (!walledNow) {
         step.target = nominal;
         return { concrete: nominal, owner: { role: targetRole, nominal: true } };
@@ -657,13 +682,12 @@ function resolveRoleStep(
         // bucket so the wall owns a failover (a role-step resolves to the
         // nominal if healthy — a walled bucket is not healthy, and with nowhere
         // to fall the delegating role advances to its own next step).
-        armFailover(targetRole, `role-step nominal ${nominal} found its bucket ${nb.bucket} walled with no cascade`, nb.bucket);
+        armFailover(targetRole, `role-step nominal ${nominal} found its bucket ${bucket} walled with no cascade`, bucket);
       }
     } else {
-      // Bare routing-chain nominal: the credential-filtered bucket is a
-      // proxy-side (route()) call the failover module must not make. Serving
-      // the nominal is the safe default — its own refusal walls the bucket it
-      // names, and the NEXT delegation resolves to the target's cascade.
+      // Bare routing-chain nominal and no bucket resolver (unit tests): the
+      // credential-filtered bucket is a proxy-side (route()) call this module
+      // must not make, so serving the nominal is the only safe default.
       step.target = nominal;
       return { concrete: nominal, owner: { role: targetRole, nominal: true } };
     }
@@ -2140,6 +2164,7 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     dwellPins.clear();
     dwellYieldTombstones.clear();
     roleNominalResolver = null;
+    roleNominalBucketResolver = null;
     armAfterRefusals = 2;
     armGraceMs = 0;
     armRetryAfterCeilingMs = 120_000;
