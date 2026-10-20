@@ -18,7 +18,7 @@ body = """
 {% if breaking | length > 0 %}
     ### ⚠ BREAKING CHANGES
     {% for commit in breaking %}
-        - {{ commit.breaking_description | default(value=commit.message) | split(pat="\n") | first | trim }}\
+        - {{ commit.breaking_description | default(value=commit.message) | split(pat="\n\n") | first | split(pat="\n") | join(sep=" ") | trim }}\
           {% if commit.scope %} *({{ commit.scope }})* {% endif %}\
           ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/MadAppGang/claudish/commit/{{ commit.id }}))\
     {% endfor %}
