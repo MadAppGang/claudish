@@ -365,8 +365,8 @@ function isWindows(): boolean {
 export function createStatusLineScript(tokenFilePath: string): string {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
-  const timestamp = Date.now();
-  const scriptPath = join(claudishDir, `status-${timestamp}.js`);
+  // pid + timestamp, like the settings file: unique across same-millisecond launches.
+  const scriptPath = join(claudishDir, `status-${process.pid}-${Date.now()}.js`);
 
   // Escape backslashes for Windows paths in the script
   const escapedTokenPath = tokenFilePath.replace(/\\/g, "\\\\");
@@ -811,8 +811,10 @@ export function createTempSettingsFile(
     // Directory may already exist
   }
 
-  const timestamp = Date.now();
-  const tempPath = join(claudishDir, `settings-${timestamp}.json`);
+  // The pid keeps the name unique across processes started in the same millisecond
+  // (madbench, team slots): with the timestamp alone they shared one file and each
+  // Claude Code loaded the last writer's status line and hooks.
+  const tempPath = join(claudishDir, `settings-${process.pid}-${Date.now()}.json`);
 
   // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
   // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
