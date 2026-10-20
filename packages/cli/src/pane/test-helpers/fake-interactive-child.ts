@@ -30,11 +30,19 @@
  * leaves a REPL behind. `CONTRACT_FAKE_SIGTERM_MARKER` is written on SIGTERM or SIGHUP.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { projectDirNameFor } from "../../mcp-session/home-dir.js";
+import { wrapPrompt } from "./repl-wrap.js";
 
 /* ───────────────────────────── argv and env ───────────────────────────── */
 
@@ -60,8 +68,8 @@ const scenario = asClaude
   : model.startsWith("fake-")
     ? model.slice(5).replace(/-\d+$/, "")
     : "marker";
-const COLS = Number(env.COLUMNS) || 160;
-const ROWS = Number(env.LINES) || 50;
+let COLS = Number(env.COLUMNS) || 160;
+let ROWS = Number(env.LINES) || 50;
 const cwd = (() => {
   try {
     return realpathSync(process.cwd());
@@ -263,6 +271,7 @@ const writeTranscript = ![
   "missing_no_warning",
   "screen_fast",
   "screen_api_error",
+  "never_submit_transcript_off",
 ].includes(scenario);
 
 function newMsgId(): string {
@@ -398,7 +407,6 @@ const rec = {
 /* ───────────────────────────── screen ───────────────────────────── */
 
 const BANNER = screenLines("repl-boot-empty").slice(0, 4);
-const RULE = "─".repeat(COLS);
 const STATUS = [
   "  cwd • fake • $0.000 • N/A",
   "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
@@ -408,12 +416,14 @@ const PLACEHOLDER = 'Try "how does <filepath> work?"'; // repl-boot-placeholder,
 const S = {
   booted: false,
   box: "",
+  drawnBox: "", // F4: bytes reach the editor before its next render
   history: [] as string[],
   working: null as string | null,
   full: null as string[] | null, // a whole fixture screen (dialogs, panels)
   menu: null as string | null,
   statusTick: 0,
   ghost: false,
+  vim: false,
 };
 
 function fit(l: string): string {
@@ -423,33 +433,46 @@ function fit(l: string): string {
 function render(): void {
   let out = "\x1b[H\x1b[2J";
   const rows = S.full ? S.full.slice(0, ROWS) : replRows();
+  let cursorRow = 0;
   rows.forEach((l, y) => {
     if (!l) return;
-    out += `\x1b[${y + 1};1H`;
+    // Claude Code walks down relatively; CUP here would hide stale scroll-region bugs.
+    if (y > cursorRow) out += `\r\x1b[${y - cursorRow}B`;
+    cursorRow = y;
     if (l.startsWith("\u0000ghost")) out += `❯ \x1b[2m${PLACEHOLDER}\x1b[22m`;
     else out += fit(l);
   });
-  const boxRow = S.full ? ROWS - 1 : ROWS - 4;
-  out += `\x1b[${boxRow + 1};${3 + Array.from(S.box.split("\n").pop() ?? "").length}H`;
+  const lastBoxLine = wrapPrompt(S.drawnBox, COLS).at(-1) ?? "❯ ";
+  const selected = S.full?.findIndex((line) => /^❯ /.test(line));
+  const boxRow = S.full
+    ? selected !== undefined && selected >= 0
+      ? selected
+      : ROWS - 1
+    : ROWS - 4;
+  const cursorCol = S.full ? 2 : Math.min(COLS - 1, Bun.stringWidth(lastBoxLine));
+  out += `\x1b[${boxRow + 1};${cursorCol + 1}H`;
   process.stdout.write(out);
 }
 
 function replRows(): string[] {
+  const RULE = "─".repeat(COLS);
   const out: string[] = Array.from({ length: ROWS }, () => "");
-  const boxLines = S.box.split("\n");
+  const boxLines = wrapPrompt(S.drawnBox, COLS).slice(-(ROWS - 9));
   const top = ROWS - 4 - boxLines.length;
   BANNER.forEach((l, i) => {
     out[i] = i === 3 ? `${l.slice(0, 11)}${cwd}` : l;
   });
   out[top] = RULE;
   boxLines.forEach((l, i) => {
-    out[top + 1 + i] = i === 0 ? `❯ ${l}` : `  ${l}`;
+    out[top + 1 + i] = l;
   });
-  if (!S.box && S.ghost) out[top + 1] = "\u0000ghost";
+  if (!S.drawnBox && S.ghost) out[top + 1] = "\u0000ghost";
   out[ROWS - 3] = RULE;
   out[ROWS - 2] = S.statusTick ? `${STATUS[0]} · ${S.statusTick}` : (STATUS[0] as string);
-  out[ROWS - 1] = STATUS[1] as string;
-  const above: string[] = [...S.history];
+  out[ROWS - 1] = S.vim ? "-- INSERT --" : (STATUS[1] as string);
+  const above = S.history.flatMap((line) =>
+    line.startsWith("❯ ") ? wrapPrompt(line.slice(2), COLS, true) : [line]
+  );
   if (S.working) above.push(S.working);
   if (S.menu) above.push("", S.menu);
   const room = top - 4;
@@ -458,6 +481,49 @@ function replRows(): string[] {
     out[4 + i] = l;
   });
   return out;
+}
+
+const renderLagMs = Math.max(0, Number(env.FAKE_RENDER_LAG_MS) || 0);
+let inputRender: ReturnType<typeof setTimeout> | null = null;
+let selfSubmit: ReturnType<typeof setTimeout> | null = null;
+let externalSubmitDone = false;
+
+function drawInput(): void {
+  if (inputRender) clearTimeout(inputRender);
+  inputRender = null;
+  const selfSubmitting = scenario.startsWith("self_submit") && S.box && !externalSubmitDone;
+  const historyWithheld = scenario === "self_submit_history_withheld";
+  // F14a must submit before the first verify read at 150 ms; never draw the exact text.
+  // F14b needs a non-exact prefix visible to verify before the box empties, with no history.
+  S.drawnBox = selfSubmitting ? (historyWithheld ? S.box.slice(0, -1) : "") : S.box;
+  render();
+  if (selfSubmitting) {
+    if (selfSubmit) clearTimeout(selfSubmit);
+    selfSubmit = setTimeout(
+      () => {
+        externalSubmitDone = true;
+        acceptText(S.box);
+      },
+      historyWithheld ? 300 : 75
+    );
+  }
+  if (
+    scenario === "command_left_box" &&
+    !env.FAKE_COMMAND_LEFT_BOX_FILE &&
+    S.box.startsWith("/model ") &&
+    !externalSubmitDone
+  ) {
+    if (selfSubmit) clearTimeout(selfSubmit);
+    selfSubmit = setTimeout(() => {
+      externalSubmitDone = true;
+      acceptText(S.box);
+    }, 1800);
+  }
+}
+
+function renderInput(): void {
+  if (!renderLagMs) drawInput();
+  else if (!inputRender) inputRender = setTimeout(drawInput, renderLagMs);
 }
 
 function showHistory(...rows: string[]): void {
@@ -628,6 +694,11 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       rec.text(answerFor(c));
       rec.stopSummary();
       showHistory(`⏺ ${answerFor(c)}`, finishedRow());
+      return;
+    case "settle_box_text":
+      await answerTurn(c);
+      S.box = "Unsent text after the end record";
+      drawInput();
       return;
     case "td_withheld":
       // the answer, but no turn_duration: the test appends it itself, at the moment it chooses
@@ -884,7 +955,6 @@ async function permission(_c: string): Promise<void> {
 
 async function screenOnlyTurn(line: string): Promise<void> {
   // degraded scenarios: no transcript evidence at all; the screen is the only witness
-  S.history.push(`❯ ${line}`);
   if (scenario === "no_transcript") S.history.push("  ⎿  Transcript saving is off");
   if (scenario !== "screen_fast") {
     S.working = "✶ Simmering… (1s)";
@@ -904,7 +974,6 @@ async function screenOnlyTurn(line: string): Promise<void> {
 const LOCAL_COMMANDS = new Set(["compact", "model", "color"]);
 
 async function localCommandTurn(name: string, args: string): Promise<void> {
-  S.history.push(`❯ /${name}${args ? ` ${args}` : ""}`);
   let stdout = `Set model to \`${args}\``;
   if (name === "compact") {
     // file order as captured: the typed line, the boundary and summary, then the
@@ -938,20 +1007,24 @@ async function submit(line: string): Promise<void> {
     )
       return await screenOnlyTurn(line);
     if (scenario === "slow_prompt_hook") {
-      S.history.push(`❯ ${line}`);
       S.working = "✶ Blanching… (running UserPromptSubmit hook · 2s)";
       render();
       await sleep(gap("PROMPT_HOOK", 12_000));
       S.working = null;
       rec.user(line);
     } else {
-      if (scenario !== "immediate_write") await sleep(gap("WITNESS", 50));
+      if (scenario !== "immediate_write")
+        await sleep(
+          gap(
+            "WITNESS",
+            ["self_submit_history_withheld", "command_left_box"].includes(scenario) ? 5000 : 50
+          )
+        );
       const slash = line.match(/^\/([A-Za-z0-9][A-Za-z0-9:_-]*)\s*(.*)$/);
       if (slash && LOCAL_COMMANDS.has(slash[1] as string))
         return await localCommandTurn(slash[1] as string, slash[2] ?? "");
       if (slash) rec.command(slash[1] as string, slash[2] ?? "");
       else rec.user(line);
-      S.history.push(`❯ ${line.split("\n")[0]}`);
     }
     S.working = "✶ Simmering… (thinking)";
     render();
@@ -968,9 +1041,16 @@ async function submit(line: string): Promise<void> {
 
 /* ───────────────────────────── keys ───────────────────────────── */
 
+let ignoredEnters = 0;
+const ignoredEnterLimit =
+  scenario === "enter_ignored_forever"
+    ? Number.POSITIVE_INFINITY
+    : Number(scenario.match(/^enter_ignored_(\d+)$/)?.[1]) || 0;
+
 function onEnter(): void {
   const text = S.box;
-  if (!text.trim()) return;
+  if (!text.trim() || S.vim) return;
+  if (ignoredEnters++ < ignoredEnterLimit || scenario === "never_submit_transcript_off") return;
   if (scenario === "menu_eats_enter" && !menuEaten) {
     menuEaten = true; // the first Enter only closes a menu (phase-2 keylog: Esc/Enter on menus)
     S.menu = null;
@@ -981,12 +1061,22 @@ function onEnter(): void {
   if (scenario === "promptless_first_send_ignored" && !firstSubmitIgnored) {
     firstSubmitIgnored = true;
     S.box = "";
-    render();
+    drawInput();
     return;
   }
+  acceptText(text);
+}
+
+/** F9 counts accepted submissions, not Enter attempts or transient box contents. */
+function acceptText(text: string): void {
+  if (!text.trim() || (busy && !/^\/(exit|quit)$/.test(text.trim()))) return;
+  if (env.FAKE_SUBMIT_LOG)
+    appendFileSync(env.FAKE_SUBMIT_LOG, `${JSON.stringify({ text, at: Date.now() })}\n`);
   S.box = "";
   S.menu = null;
-  render();
+  if (!["history_withheld", "self_submit_history_withheld", "command_left_box"].includes(scenario))
+    S.history.push(`❯ ${text}`);
+  drawInput(); // history and empty box are one render, as in the real REPL
   const t = text.trim();
   if (t === "/exit" || t === "/quit") return void exitCommand(t.slice(1));
   if (t === "/cost") {
@@ -1026,8 +1116,36 @@ function updateMenu(): void {
   else S.menu = null;
 }
 
+let firstBurstDropped = false;
+let dropUntil = 0;
+
+/** F6/F13 lose a whole typing burst, not just its first character. */
+function dropTyping(ch: string): boolean {
+  if (Date.now() < dropUntil) {
+    dropUntil = Date.now() + 700;
+    return true;
+  }
+  if (
+    !firstBurstDropped &&
+    ch >= " " &&
+    ["late_reset_swallow", "drop_first_prompt"].includes(scenario)
+  ) {
+    firstBurstDropped = true;
+    dropUntil = Date.now() + 700;
+    if (scenario === "late_reset_swallow" && process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+      // A swallowed burst must not become kernel-echoed box text while cooked.
+      spawnSync("stty", ["-echo"], { stdio: ["inherit", "ignore", "ignore"] });
+      setTimeout(() => process.stdin.setRawMode(true), 120);
+    }
+    return true;
+  }
+  return false;
+}
+
 /** One plain key (not an escape sequence). */
 function onKey(ch: string): void {
+  if (dropTyping(ch)) return;
   if (ch === "\x1b") {
     onEsc();
     return;
@@ -1069,7 +1187,7 @@ function onData(buf: Buffer): void {
     onKey(s[0] as string);
     s = s.slice(1);
   }
-  render();
+  renderInput();
 }
 
 /* ───────────────────────────── lifecycle ───────────────────────────── */
@@ -1091,7 +1209,7 @@ function restore(): void {
 async function exitCommand(name: string): Promise<void> {
   if (env.FAKE_EXIT_RECORDS !== "none") {
     rec.localCommand(name, "", "(no content)");
-    showHistory(`❯ /${name}`, "  ⎿  (no content)");
+    showHistory("  ⎿  (no content)");
     await sleep(gap("EXIT", 600));
   }
   return quit(0);
@@ -1115,6 +1233,30 @@ function markSignal(sig: string): void {
 }
 
 function installSignals(): void {
+  process.on("SIGWINCH", () => {
+    try {
+      // Bun's stdout dimensions can still be stale inside SIGWINCH; query the pty.
+      const size = spawnSync("stty", ["size"], { stdio: ["inherit", "pipe", "ignore"] });
+      const match =
+        size.status === 0
+          ? size.stdout
+              ?.toString()
+              .trim()
+              .match(/^(\d+)\s+(\d+)$/)
+          : null;
+      if (match) {
+        const rows = Number(match[1]);
+        const cols = Number(match[2]);
+        if (Number.isSafeInteger(rows) && rows > 0 && Number.isSafeInteger(cols) && cols > 0) {
+          ROWS = rows;
+          COLS = cols;
+        }
+      }
+    } catch {
+      // Keep the current dimensions if the terminal size cannot be read.
+    }
+    render();
+  });
   const ignoreTerm = scenario === "ignore_term";
   const ignoreHup = scenario === "ignore_hup" || ignoreTerm;
   process.on("SIGTERM", () => {
@@ -1186,7 +1328,30 @@ async function boot(): Promise<void> {
   process.stdout.write("\x1b[?1049h\x1b[?2004h");
   S.booted = true;
   S.ghost = scenario === "idle_suggestion";
+  S.vim = scenario === "vim_insert" && !env.FAKE_VIM_FILE;
+  if (scenario === "never_submit_transcript_off") S.history.push("  ⎿  Transcript saving is off");
   render();
+  // F1: the first box precedes Claude Code's cooked → raw startup reset.
+  if (scenario !== "no_boot_reset" && process.stdin.isTTY) {
+    await sleep(100);
+    process.stdin.setRawMode(false);
+    await sleep(120);
+    process.stdin.setRawMode(true);
+  }
+  if (env.FAKE_VIM_FILE)
+    setInterval(() => {
+      if (!S.vim && existsSync(env.FAKE_VIM_FILE as string)) {
+        S.vim = true;
+        render();
+      }
+    }, 20);
+  if (scenario === "command_left_box" && env.FAKE_COMMAND_LEFT_BOX_FILE)
+    setInterval(() => {
+      if (externalSubmitDone || !S.box.startsWith("/model ")) return;
+      if (env.FAKE_COMMAND_LEFT_BOX_FILE && !existsSync(env.FAKE_COMMAND_LEFT_BOX_FILE)) return;
+      externalSubmitDone = true;
+      acceptText(S.box);
+    }, 20);
   if (scenario === "status_tick")
     setInterval(() => {
       S.statusTick++;

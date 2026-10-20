@@ -27,7 +27,9 @@ lives in `ROADMAP.md`.
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux,
   and the one `-p` the MCP server does start (`run_prompt` on a Claude model)
 - `pane-session.md` — MCP and CLI `team` slots and `create_session` as interactive Claude Code in
-  headless magmux panes: transcript turn oracle, settle on `turn_duration` (32 s quiet path gated
+  headless magmux panes: transcript turn oracle, the magmux ≥ 0.17.0 input gate bound to the
+  pane's own transcript (one gated send per prompt, readiness and dialogs from `list` `input`, the
+  box located by the cursor, no width cap), settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
   the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
@@ -35,9 +37,9 @@ lives in `ROADMAP.md`.
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-sessions.md` — the 14-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, the session records the magus monitor reads),
-  `run_prompt`'s Claude Code print path, progress keepalive
+- `mcp-sessions.md` — the 15-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, the session records the
+  magus monitor reads), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every

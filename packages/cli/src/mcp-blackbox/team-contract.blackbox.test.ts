@@ -34,7 +34,15 @@ type Json = Record<string, unknown>;
 
 /* ─────────────── literals from the frozen contract (§8 Types) ─────────────── */
 
-const CAPABILITIES = ["list", "status", "cancel", "capture", "capture_since_seq", "capture_spans"];
+const CAPABILITIES = [
+  "list",
+  "status",
+  "cancel",
+  "capture",
+  "capture_since_seq",
+  "capture_spans",
+  "resize",
+];
 const SLOT_STATES = [
   "STARTING",
   "RUNNING",

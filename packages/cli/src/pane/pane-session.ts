@@ -23,8 +23,28 @@ import { join } from "node:path";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
-import type { CaptureResult, CaptureUnchanged, FailureReason, SlotState } from "./contract.js";
-import { MagmuxClient, type MagmuxConnectError } from "./magmux-client.js";
+import { locateBox, locatedBoxText } from "./box-locate.js";
+import {
+  type CaptureResult,
+  type CaptureUnchanged,
+  ContractErrorException,
+  type FailureReason,
+  type SlotState,
+} from "./contract.js";
+import { checkGateBinding } from "./gate-binding.js";
+import {
+  BOOT_DIALOG_KINDS,
+  type GateDialogKind,
+  type GateInput,
+  SEND_READY_WAIT_DEFAULT_MS,
+  type SendOutcome,
+  type SendOutcomeKind,
+  assertNever,
+  classifySendReply,
+  parseGateInput,
+  sendBudgetMs,
+} from "./input-gate.js";
+import { MagmuxClient, type MagmuxConnectError, type MagmuxReply } from "./magmux-client.js";
 import {
   type ClaudishLaunch,
   FATAL_MAGMUX_STDERR,
@@ -61,6 +81,14 @@ import {
   writeRecord,
 } from "./pane-registry.js";
 import {
+  DEFAULT_PANE_COLS,
+  DEFAULT_PANE_ROWS,
+  type PaneSize,
+  RESIZE_QUIET_MS,
+  clampPaneSize,
+  samePaneSize,
+} from "./pane-size.js";
+import {
   type GroupSnapshot,
   type PaneIdentity,
   groupCheck,
@@ -74,15 +102,17 @@ import { type Delivery, planDelivery, writeTurnFile } from "./prompt-delivery.js
 import {
   agentRejectedLine,
   choiceDialog,
-  hasChoiceDialog,
-  inputBox,
+  dialogText,
+  flatText,
   isWorking,
-  readBoot,
+  menuAbove,
+  nameBootScreen,
   screenAnswer,
   screenErrorRows,
   screenText,
   stopHookRunning,
   transcriptSavingOff,
+  workingAboveBox,
 } from "./screen-classifier.js";
 import {
   type MagmuxCapture,
@@ -94,8 +124,8 @@ import {
 import { KNOWN_STATUSES, type RegistryRecord, SessionRegistry } from "./session-registry.js";
 import {
   CORROBORATION_MS,
+  type CorroborationFacts,
   SECONDARY_QUIET_MS,
-  type ScreenFacts,
   type SettleDecision,
   agentCountMismatch,
   decideSettle,
@@ -114,30 +144,38 @@ export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
 export const BOOT_TIMEOUT_MS = 90_000;
 export const ADMIT_TIMEOUT_MS = 30_000;
-/** Without a witness this long after delivery: re-press Enter, or enter degraded mode. */
-export const RESEND_AFTER_MS = 10_000;
+/**
+ * A turn the input gate accepted with no transcript witness this long after the acceptance
+ * settles from the screen (degraded mode). Acceptance itself is never inferred from the
+ * screen (architecture-v2 §5.7).
+ */
 export const DEGRADED_ENTRY_MS = 10_000;
 /** Degraded settle: no change above the box for 2 × this. */
 export const SCREEN_SETTLE_QUIET_MS = 3_000;
 /** A panel command's screen must have been up this long after delivery before Esc. */
 const PANEL_SETTLE_MS = 500;
 /**
- * The REPL box must read empty this long before boot is ready. Claude Code draws its
- * input box and then, 1–2 s later, resets stdin (a termios cooked→raw blip); a prompt
- * typed into that window is lost or never submitted, in vim and normal editor mode
- * alike. Measured 2026-10-16 (Claude Code 2.1.301, magmux 0.15.1): at 500 ms, 2/2 team
- * slots failed `prompt_not_accepted`. 3 s waits the reset out.
+ * @deprecated Nothing reads it: boot readiness is magmux's `input.ready` (architecture-v2
+ * §6.2), which waits for the box and a raw terminal both still for 1 s AND for Claude
+ * Code's boot stdin reset (or 3.5 s after the terminal first went raw) — the hazard this
+ * 3 s wait existed for. Kept only so the integration test that pins it still loads; delete
+ * it with that test.
  */
 export const REPL_STABLE_MS = 3_000;
 /**
- * After the nudge's ctrl-u, how long to keep reading frames for the box to stop showing the
- * line before concluding ctrl-u did not take. The first frame after the key is not evidence:
- * under load it can be a stale redraw still holding the line. Measured 2026-10-16 (report-F,
- * three parallel slots): 810 ms from ctrl-u to the first frame with the empty box, and a
- * single 500 ms frame wait read the stale box, sent a bare Enter on an emptied box and lost
- * the prompt. 3 s is ~3.7x that latency and still ends well inside `ADMIT_TIMEOUT_MS`.
+ * A gated send's client request timeout is magmux's own upper bound on it
+ * (`sendBudgetMs`, protocol.SendBudget) plus this. Every admission attempt is sized so
+ * that timeout ends by the admission deadline (architecture-v2 R1.4).
  */
-export const NUDGE_CLEAR_DEADLINE_MS = 3_000;
+const SEND_CLIENT_SLACK_MS = 2_000;
+/** No attempt is started with less readiness wait than this (R1.4). */
+const MIN_READY_TIMEOUT_MS = 1_000;
+/** A `busy` refusal (Enter not pressed): the next attempt after this. */
+const BUSY_RETRY_MS = 250;
+/** After a `text_mismatch`: magmux's verify settle, so a late draw has landed (sendbudget.go). */
+const MISMATCH_SETTLE_MS = 1_000;
+/** After a ctrl-u from the admission loop: wait at most this for a fresh `ready` reading. */
+const CLEAR_WAIT_MS = 1_000;
 /** A dialog or choice screen static this long blocks boot. */
 const BOOT_STATIC_MS = 5_000;
 const TICK_MS = 250;
@@ -146,10 +184,50 @@ const WATCH_FPS = 4;
 const POLL_BACKSTOP_MS = 1_000;
 /** R3-M4: a `finishing` turn with a static screen for this many secondary windows. */
 const TURN_END_MISSING_FACTOR = 3;
+/** A resize reply, and the screen showing the new size after it. */
+const RESIZE_REPLY_MS = 10_000;
+const RESIZE_SCREEN_MS = 1_000;
+/**
+ * magmux's input gate is read by polling `list` (it publishes no readiness event and
+ * refreshes `input` at 4 Hz): one request in flight at a time, this often, while connected.
+ */
+const GATE_POLL_MS = 250;
+const GATE_REPLY_MS = 1_000;
+/** A gate reading older than this, or any reading while disconnected, is unknown. */
+const GATE_STALE_MS = 1_000;
+/**
+ * The most gate corroboration may delay a transcript-closed turn (architecture-v2 §7.1,
+ * Jack's decision J2): after this much chat quiet it settles with `settle_gate_unconfirmed`.
+ */
+export const GATE_GRACE_MS = SECONDARY_QUIET_MS;
+/**
+ * `list` showing pane 0 dead this long with no `exit` event: take the exit path anyway.
+ * The event stays the primary path (it carries `lastLine`); this is its backstop.
+ */
+const GATE_DEAD_BACKSTOP_MS = 1_000;
+/** Gate reasons that carry no dialog kind: a static screen under one is named from its words. */
+const GATE_KINDLESS_REASONS: ReadonlySet<string> = new Set([
+  "starting",
+  "terminal_not_ready",
+  "no_input_box",
+]);
+/** Dialogs a turn can open; a boot dialog kind is never one of them. */
+const RUNTIME_DIALOG_KINDS: ReadonlySet<GateDialogKind> = new Set<GateDialogKind>([
+  "permission",
+  "question",
+  "plan",
+  "select",
+]);
 /** The session registry is re-read at most this often (telemetry only). */
 const REGISTRY_READ_MS = 250;
 /** A registry/screen disagreement must hold this long before it is counted. */
 const REGISTRY_DISAGREE_MS = 2_000;
+/**
+ * `registry_idle_gate_starting` must hold this long: while it waits for Claude Code's boot
+ * reset the gate says `starting` for up to its 3.5 s floor plus 1 s of stillness, a window
+ * in which the registry can already read idle. Longer than that, it is the canary.
+ */
+const REGISTRY_GATE_BOOT_DISAGREE_MS = 5_000;
 /** No live registry record this long after boot was ready: `registry_record_missing`. */
 const REGISTRY_MISSING_MS = 5_000;
 const MAX_ANOMALY_KEYS = 64;
@@ -176,6 +254,8 @@ export interface PaneSessionOptions {
   shape: "one-shot" | "interactive";
   /** enqueued before boot; delivered on boot_ready */
   initialPrompt?: string;
+  /** the pane's size at launch, clamped here; DEFAULT_PANE_COLS × DEFAULT_PANE_ROWS when absent */
+  initialSize?: PaneSize;
   /** false when callerFlags remove Read (§2.3 rule 4) */
   readAvailable: boolean;
   decide: (turn: SettledTurn) => FinalVerdict | "continue";
@@ -198,12 +278,30 @@ export interface PaneSessionOptions {
     secondaryQuietMs?: number;
     screenSettleQuietMs?: number;
     degradedEntryMs?: number;
+    /**
+     * @deprecated ignored: there is no resend timer; magmux's input gate resends Enter
+     * itself (architecture-v2 §5.1). Kept so the tests that still pass it load.
+     */
     resendAfterMs?: number;
     corroborationMs?: number;
+    /** GATE_GRACE_MS */
+    gateGraceMs?: number;
     bootStaticMs?: number;
+    /** @deprecated ignored: boot readiness is magmux's `input.ready` (see `REPL_STABLE_MS`) */
     replStableMs?: number;
-    nudgeClearDeadlineMs?: number;
   };
+}
+
+/**
+ * What `resize` answers: the size SET, whether the pane's size moved, and the screen's
+ * seq after it. `pending` = the socket is reconnecting; the size is applied on the redial.
+ */
+export interface PaneResizeOutcome {
+  cols: number;
+  rows: number;
+  changed: boolean;
+  seq: number;
+  pending?: true;
 }
 
 export type SendResult =
@@ -225,6 +323,25 @@ export interface PaneDiagnostics {
     complete: boolean;
     reads: number;
   } | null;
+  /**
+   * magmux's input gate as last read (`list` → pane 0 `input`); `ageMs` since it was read.
+   * null: never read on this connection, or disconnected. Additive (architecture-v2 §9).
+   */
+  gate: { ready: boolean; reason: string | null; detail: string | null; ageMs: number } | null;
+  /** The last gated send's outcome, in the input gate's own words; null before any send. */
+  lastSend: PaneLastSend | null;
+}
+
+/** `get_diagnostics`' view of the last gated send (architecture-v2 §9, R1.2). */
+export interface PaneLastSend {
+  kind: SendOutcomeKind;
+  /** a `busy` / `not_accepted` reason, or a client / magmux code */
+  reason?: string;
+  accept?: string;
+  evidence?: string;
+  retypeCause?: string;
+  /** gated sends of the admission (or control line) it belongs to */
+  attempts: number;
 }
 
 export interface PaneSession {
@@ -236,6 +353,12 @@ export interface PaneSession {
   snapshot(): PaneSnapshot;
   capture(sinceSeq?: number, opts?: { spans?: boolean }): CaptureResult | CaptureUnchanged;
   send(text: string): SendResult;
+  /**
+   * Set the terminal size (clamped). Allowed in every live state; a terminal session
+   * answers its last size with `changed:false`. Throws `ContractErrorException` with
+   * `resize_unsupported` (magmux lacks the op) or `delivery_unavailable`.
+   */
+  resize(cols: number, rows: number): Promise<PaneResizeOutcome>;
   turnAnswer(index: number): string;
   /** main-chain assistant message ids the transcript has shown, first-seen order, each once */
   assistantMessageIds(): readonly string[];
@@ -245,17 +368,70 @@ export interface PaneSession {
   reaped(): Promise<void>;
 }
 
+/**
+ * Which gated send of an admission comes next (architecture-v2 §5.4): `submit` types the
+ * line and presses Enter in one send; a slash command is `type` (no Enter), a menu check,
+ * then `enter` (`{keys:["enter"]}`, itself a gated SUBMIT).
+ */
+type SubmitStep = "submit" | "type" | "enter";
+
+/**
+ * Why no further send of an admission is made: Enter may have been pressed and nothing
+ * proves it, so only claudish's own transcript witness can accept now (§5.6, R1.3).
+ */
+type SubmittedUnproven =
+  | "unconfirmed"
+  | "reply_lost"
+  | "still_in_box_twice"
+  | "maybe_submitted_by_other";
+
 interface Admission {
   index: number;
   text: string;
   plan: Delivery;
+  /** the one line every gated send of this admission types */
+  line: string;
   initial: boolean;
   startedAt: number;
-  deliveredAt: number | null;
-  resent: boolean;
-  panelEscaped: boolean;
-  /** degraded acceptance armed (no transcript evidence after the entry delay) */
-  degraded: boolean;
+  /** startedAt + (initial ? admitTimeoutMs : ADMIT_TIMEOUT_MS); no attempt outlives it */
+  deadline: number;
+  step: SubmitStep;
+  /** a gated send of this admission awaits its reply */
+  inFlight: boolean;
+  /** gated sends made */
+  attempts: number;
+  submittedUnproven: SubmittedUnproven | null;
+  /** the one ctrl-u + resend after `still_in_box` was used */
+  stuckRetried: boolean;
+  /** a command that opened a panel or picker (§5.4 `panelStep`) */
+  panel: null | {
+    showingSince: number | null;
+    escaped: boolean;
+    /** Enter reached the pane (`unconfirmed`), or not (`busy dialog:select`) */
+    entered: boolean;
+  };
+  /** no further attempt: a stop row of §5.2 already decided, or the pane is gone */
+  stopped: boolean;
+  /** the box may hold this admission's own text (a lost TYPE reply, a withheld Enter) */
+  clearFirst: boolean;
+  /**
+   * When the reply that set `clearFirst` arrived. Only a gate reading received after it (by
+   * one publication interval) may clear the flag: an older one can say `ready` while that
+   * delivery's text is still being drawn (Revision 3 item 2, DB-2).
+   */
+  clearAfter: number;
+  /** a TYPE whose reply was lost: its delivery may still be typing until `until` (R1.5.3) */
+  lostType: { client: MagmuxClient; until: number } | null;
+  /** the latest reply, for `prompt_not_accepted`'s detail */
+  last: SendOutcome | null;
+  /** anomaly keys counted once per admission */
+  noted: Set<string>;
+}
+
+/** A `resize` call waiting for the drain worker's send that carries its size (or a later one). */
+interface ResizeWaiter {
+  resolve: (r: PaneResizeOutcome) => void;
+  reject: (e: unknown) => void;
 }
 
 interface ScreenTurn {
@@ -319,7 +495,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private initialPending: boolean;
   private shape: "one-shot" | "interactive";
   private queue: string[] = [];
-  private screen: ScreenState = emptyScreen(160, 50);
+  private screen: ScreenState;
   private final = false;
   private turnIndex = 0;
   private admission: Admission | null = null;
@@ -358,8 +534,44 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private exitScrollback = "";
   private exitLastLine = "";
 
-  private bootKind: string | null = null;
-  private bootKindSince = 0;
+  /** the size the viewer asked for last (clamped); the drain worker always sends THIS one */
+  private desiredSize: PaneSize;
+  /** the pane's size as magmux last confirmed it; null = unknown (a lost or timed-out reply) */
+  private appliedSize: PaneSize | null;
+  /** `capabilities.verbs` contains "resize", as of the latest attach */
+  private supportsResize = false;
+  private resizeWaiters: ResizeWaiter[] = [];
+  private resizeDraining = false;
+  /** the size of the worker's last send on this connection; null = none since the attach */
+  private lastSentSize: PaneSize | null = null;
+  /**
+   * The resize quiet window [from, until): opened at a send, only ever extended (a lost
+   * reply may follow an applied resize, so nothing retracts it); 0 = never opened.
+   */
+  private resizeQuietFrom = 0;
+  private resizeQuietUntil = 0;
+  /** the last screen change that is activity, i.e. not a resize redraw (M4) */
+  private activityChangedAt = 0;
+
+  /** the last `list` → pane 0 `input` reading; read through `gateNow()`, never directly */
+  private gate: GateInput | null = null;
+  /** this connection passed the binding check: its gate readings may be trusted */
+  private gateTrusted = false;
+  private gateInFlight = false;
+  private gateTimer: ReturnType<typeof setInterval> | null = null;
+  /** when `list` first showed pane 0 dead with no `exit` event yet; 0 = not dead */
+  private gateDeadSince = 0;
+  /** the last gated send's outcome (`get_diagnostics`) */
+  private lastSend: PaneLastSend | null = null;
+  /**
+   * When the current turn was accepted, by the gate's evidence or the witness: the
+   * degraded-entry clock (§5.7) and the `witness_missing` clock (§5.8). null: not accepted.
+   */
+  private turnAcceptedAt: number | null = null;
+  private turnErrorLogSize = 0;
+  private witnessMissingCounted = false;
+  /** a later send abandoned unwitnessed: a witness arriving in IDLE re-wakes this turn (§5.3) */
+  private abandonedIndex: number | null = null;
 
   private magmux: ChildProcess | null = null;
   private watcher: ChildProcess | null = null;
@@ -396,6 +608,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.turnDir = ids.turnDir;
     this.identity = { paneId: ids.paneId, sessionUuid: o.sessionUuid, ctlDir: ids.ctlDir };
     this.shape = o.shape;
+    const size = launchSize(o);
+    this.desiredSize = size;
+    // magmux sizes the pane from COLUMNS/LINES at launch, so the launch size is applied
+    this.appliedSize = { ...size };
+    this.screen = emptyScreen(size.cols, size.rows);
     this.initialPending = !!o.initialPrompt;
     if (o.initialPrompt) this.queue.push(o.initialPrompt);
     this.secondaryQuietMs = o.timings?.secondaryQuietMs ?? SECONDARY_QUIET_MS;
@@ -451,6 +668,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         ctlDir: this.ctlDir,
         cwd: input.cwd,
         env: input.env,
+        sessionUuid: this.o.sessionUuid,
+        transcriptPath: this.o.transcriptPath,
       });
     } catch (e) {
       return this.spawnFailed(e);
@@ -467,6 +686,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     proc.stderr?.on("data", (d: string) => this.onStderr(d));
     proc.on("exit", (code, sig) => this.onMagmuxExit(code, sig));
     this.ticker = setInterval(() => this.step(() => this.evaluate()), TICK_MS);
+    this.gateTimer = setInterval(() => this.pollGate(), GATE_POLL_MS);
     if (this.o.timeoutMs !== undefined)
       this.timeoutTimer = setTimeout(
         () => this.step(() => this.fire("timeout")),
@@ -510,7 +730,6 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       client.close();
       return;
     }
-    this.client = client;
     client.on("snapshot", (e) => this.onSnapshot(e));
     client.on("frame", (f: MagmuxFrame) => this.onFrame(f));
     client.on("exit", (e) => void this.onPaneExit(e));
@@ -518,11 +737,22 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       if (e?.pane === 0) this.paneClosed = true;
     });
     client.on("disconnected", () => this.onDisconnected(client));
-    const caps = await client.request<{ version?: string; protocol?: number }>({
+    const caps = await client.request<{ version?: string; protocol?: number; verbs?: unknown }>({
       type: "capabilities",
     });
+    // The resize flag is set BEFORE this.client: a resize arriving in between sees a
+    // disconnected session (stored, pending), never a connected one without the op.
+    this.supportsResize =
+      caps.ok && Array.isArray(caps.result.verbs) && caps.result.verbs.includes("resize");
+    // dropped while asking: `disconnected` has already started the redial
+    if (client.isClosed) return;
+    this.client = client;
+    // no gate reading is trusted on this connection until its binding check passes
+    this.gateTrusted = false;
+    this.gate = null;
+    const magmuxVersion = caps.ok ? String(caps.result.version ?? "") : "";
     if (caps.ok) {
-      const v = String(caps.result.version ?? "");
+      const v = magmuxVersion;
       if (caps.result.protocol !== 1 || !versionAtLeast(v, MIN_MAGMUX_VERSION)) {
         this.step(() =>
           this.fire("pane_lost", {
@@ -532,6 +762,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         return;
       }
     }
+    // a size set while disconnected, or one whose reply was lost, is applied now
+    this.lastSentSize = null;
+    if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();
     await client.request({ type: "watch", pane: 0, mode: "frames", fps: WATCH_FPS });
     // An `exit` pushed before this connection subscribed (a child that dies in its first
     // milliseconds, or one that exited in a reconnect gap) is only visible in `list`.
@@ -541,7 +774,97 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (p0?.dead === true && !this.paneExited) {
       if (!reconnect) await this.nextFrame(500); // let the keyframe land: the final screen decides agent_rejected
       void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
+      return;
     }
+    if (!this.verifyGateBinding(client, list, magmuxVersion) || !list.ok) return;
+    this.gateTrusted = true;
+    this.onGateList(client, list.result);
+  }
+
+  /**
+   * The binding check (architecture-v2 R1.0), on every attach: magmux's input gate is
+   * trusted only for a pane it bound BY NAME to this session's id and transcript. Anything
+   * else fails the pane; claudish never falls back to magmux's transcript discovery.
+   * True only when the gate of this connection may be read.
+   */
+  private verifyGateBinding(
+    client: MagmuxClient,
+    list: MagmuxReply<{ panes?: Array<Record<string, unknown>> }>,
+    magmuxVersion: string
+  ): boolean {
+    // dropped while asking: the redial attaches again and re-checks
+    if (client.isClosed || isTerminalPhase(this.phase)) return false;
+    if (!list.ok) {
+      this.step(() =>
+        this.fire("pane_lost", {
+          detail: `input_gate_unbound: magmux ${magmuxVersion || "?"} list failed (${list.code}: ${list.error}), so the binding of pane 0 is unknown`,
+        })
+      );
+      return false;
+    }
+    // no pane 0: it is gone, and the exit path owns that
+    if (!list.result.panes?.some((p) => p.pane === 0)) return false;
+    const check = checkGateBinding(list.result, {
+      sessionUuid: this.o.sessionUuid,
+      transcriptPath: this.o.transcriptPath,
+      magmuxVersion,
+    });
+    if (!check.ok) {
+      this.step(() => this.fire("pane_lost", { detail: check.detail }));
+      return false;
+    }
+    return true;
+  }
+
+  /* ───────────────────────────── the input gate ───────────────────────────── */
+
+  /**
+   * One `list` on the current connection, unless one is in flight (architecture-v2 §6.1).
+   * Only after this connection's binding check passed: a reading from an unbound pane could
+   * describe another session's dialog.
+   */
+  private pollGate(): void {
+    const c = this.client;
+    if (!c || !this.gateTrusted || this.gateInFlight) return;
+    if (this.reaping || isTerminalPhase(this.phase)) return;
+    this.gateInFlight = true;
+    void c
+      .request<{ panes?: Array<Record<string, unknown>> }>({ type: "list" }, GATE_REPLY_MS)
+      .then((r) => {
+        this.gateInFlight = false;
+        if (r.ok) this.onGateList(c, r.result);
+      });
+  }
+
+  /**
+   * A `list` reply: pane 0's `input` is the gate reading; its `pid`/`dead` back up the
+   * `exit` event. A reading that changed `ready` or `reason` is evaluated at once rather
+   * than at the next tick.
+   */
+  private onGateList(c: MagmuxClient, result: { panes?: Array<Record<string, unknown>> }): void {
+    if (c !== this.client || !this.gateTrusted || isTerminalPhase(this.phase)) return;
+    const now = Date.now();
+    const p0 = result.panes?.find((p) => p.pane === 0);
+    if (typeof p0?.pid === "number" && !this.panePidValue) this.setPanePid(p0.pid);
+    if (p0?.dead === true && !this.paneExited) {
+      if (this.gateDeadSince === 0) this.gateDeadSince = now;
+      else if (now - this.gateDeadSince >= GATE_DEAD_BACKSTOP_MS) {
+        this.anomaly("exit_event_missing");
+        void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
+        return;
+      }
+    } else this.gateDeadSince = 0;
+    const prev = this.gate;
+    this.gate = parseGateInput(result, now);
+    const g = this.gate;
+    if (prev?.ready !== g?.ready || prev?.reason !== g?.reason) this.step(() => this.evaluate());
+  }
+
+  /** The gate's latest reading, or null when unknown: disconnected, unbound, or stale. */
+  private gateNow(): GateInput | null {
+    const g = this.gate;
+    if (!g || !this.client || !this.gateTrusted) return null;
+    return Date.now() - g.receivedAt <= GATE_STALE_MS ? g : null;
   }
 
   /* ───────────────────────────── magmux events ───────────────────────────── */
@@ -566,7 +889,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private onFrame(f: MagmuxFrame): void {
     if (f.pane !== undefined && f.pane !== 0) return;
+    const seq = this.screen.seq;
     this.screen = applyFrame(this.screen, f);
+    if (this.screen.seq !== seq && !this.inResizeQuiet(this.screen.changedAt))
+      this.activityChangedAt = this.screen.changedAt;
     this.framePending = true;
     if (!this.claudeCodeVersion) {
       const m = this.screen.lines.join("\n").match(/Claude Code v(\d+\.\d+\.\d+)/);
@@ -576,7 +902,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   private onDisconnected(client: MagmuxClient): void {
-    if (this.client === client) this.client = null;
+    if (this.client === client) {
+      this.client = null;
+      // a reading from before the drop says nothing about now
+      this.gate = null;
+      this.gateTrusted = false;
+    }
     if (this.reaping || !alive(this.magmux)) return;
     if (isTerminalPhase(this.phase)) return;
     void this.reconnect();
@@ -770,9 +1101,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /**
-   * Telemetry only (pane-session.md, "The session registry"): compare Claude Code's own
-   * session record with what the screen says, and count each disagreement once at its onset.
-   * No decision reads the registry.
+   * Telemetry only (pane-session.md, "The session registry"; architecture-v2 §6.4): compare
+   * Claude Code's own session record with magmux's input gate (and, for working, the
+   * screen), and the gate with the screen readers it is replacing; count each disagreement
+   * once at its onset. No decision reads the registry; these counts decide, later, whether
+   * the screen cross-checks can go.
    */
   private checkRegistry(): void {
     const now = Date.now();
@@ -793,21 +1126,33 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.disagree(`registry_status_unknown:${status.slice(0, 32)}`, true, now, 0);
     if (!this.client) return; // a stale screen proves nothing
     const idle = status === "idle";
-    const dialog = hasChoiceDialog(this.screen);
-    this.disagree(
-      "registry_idle_screen_booting",
-      this.phase === "BOOTING" && idle && readBoot(this.screen).kind !== "repl",
-      now
-    );
     this.disagree(
       "registry_idle_screen_working",
       this.phase === "RUNNING" && idle && isWorking(this.screen),
       now
     );
-    this.disagree("registry_waiting_no_dialog", status === "waiting" && !dialog, now);
+    // an unknown gate reading is not a disagreement, and does not end one either
+    const g = this.gateNow();
+    if (!g) return;
+    // the `--agent` border signature, and the canary for magmux missing the box at a new width
     this.disagree(
-      "screen_dialog_registry_not_waiting",
-      dialog && (status === "idle" || status === "busy"),
+      "registry_idle_gate_starting",
+      this.phase === "BOOTING" && idle && (g.reason === "starting" || g.reason === "no_input_box"),
+      now,
+      REGISTRY_GATE_BOOT_DISAGREE_MS
+    );
+    this.disagree("registry_waiting_gate_no_dialog", status === "waiting" && g.ready, now);
+    this.disagree(
+      "gate_dialog_registry_not_waiting",
+      g.dialog !== null && RUNTIME_DIALOG_KINDS.has(g.dialog) && (idle || status === "busy"),
+      now
+    );
+    this.disagree("gate_ready_box_not_located", g.ready && locateBox(this.screen) === null, now);
+    // canary for magmux's dialog markers drifting from claudish's closed list
+    this.disagree(
+      "gate_dialog_screen_unrecognised",
+      (g.dialog === "permission" || g.dialog === "plan" || g.dialog === "question") &&
+        choiceDialog(this.screen) === null,
       now
     );
   }
@@ -846,34 +1191,65 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return this.o.timings?.[key] ?? dflt;
   }
 
+  /**
+   * Boot (architecture-v2 §6.2): ready is magmux's `input.ready`, which already requires the
+   * box and a raw terminal both still for 1 s and Claude Code's boot stdin reset seen (or
+   * 3.5 s since the terminal went raw). What blocks boot is the gate's dialog kind, named
+   * from the screen's words only where the gate has no kind for it. Nothing is ever
+   * accepted: no key is sent while booting.
+   */
   private evalBoot(): void {
     const now = Date.now();
-    const r = readBoot(this.screen);
-    if (r.kind !== this.bootKind) {
-      this.bootKind = r.kind;
-      this.bootKindSince = now;
-    }
-    const staticFor = this.screen.seq === 0 ? 0 : now - this.screen.changedAt;
-    const staticMs = this.t("bootStaticMs", BOOT_STATIC_MS);
-    if (r.kind === "repl" && now - this.bootKindSince >= this.t("replStableMs", REPL_STABLE_MS)) {
+    const g = this.gateNow();
+    if (g?.ready) {
       this.bootReady();
       return;
     }
-    if (r.kind === "dialog" && staticFor >= staticMs) {
-      this.fire("boot_dialog", { detail: r.text });
-      return;
-    }
-    if (r.kind === "choice" && staticFor >= staticMs) {
-      this.fire("boot_blocked", { detail: r.text });
+    const staticFor = this.screen.seq === 0 ? 0 : now - this.screen.changedAt;
+    const settled = staticFor >= this.t("bootStaticMs", BOOT_STATIC_MS);
+    const block = g && settled ? this.bootBlock(g) : null;
+    if (block) {
+      this.fire(block.ev, { detail: block.detail });
       return;
     }
     if (now - this.startedAtMs >= (this.o.bootTimeoutMs ?? BOOT_TIMEOUT_MS)) {
-      const blocked = this.screen.seq > 0 && staticFor >= staticMs && r.kind !== "booting";
+      const blocked =
+        this.screen.seq > 0 &&
+        settled &&
+        (g?.reason?.startsWith("dialog:") === true ||
+          nameBootScreen(this.screen).kind !== "booting");
+      const gate = g
+        ? `gate: ${g.reason ?? "ready"}${g.detail ? ` (${g.detail})` : ""}`
+        : "gate: unknown";
       this.fire("boot_deadline", {
         reason: blocked ? "boot_blocked" : "boot_timeout",
-        detail: screenTailOf(this.screen),
+        detail: `${screenTailOf(this.screen)}\n${gate}`,
       });
     }
+  }
+
+  /**
+   * A static boot screen the gate does not call ready: a boot dialog kind fails
+   * `first_run_dialog` with the dialog's words; otherwise the screen names it — a named
+   * first-run marker is `first_run_dialog` (magmux files a reworded boot dialog under
+   * `select`); vim mode, `select` or another dialog kind is `boot_blocked`; a reason with no
+   * kind (`starting`, `no_input_box`, …) blocks only on choice markers (`Press Enter to
+   * continue`, the unnamed MCP-server prompt), which magmux has no kind for.
+   * null: nothing names a blocking screen, so boot keeps waiting for its deadline.
+   */
+  private bootBlock(g: GateInput): { ev: "boot_dialog" | "boot_blocked"; detail: string } | null {
+    if (g.dialog && BOOT_DIALOG_KINDS.has(g.dialog))
+      return { ev: "boot_dialog", detail: dialogText(this.screen) };
+    const named = nameBootScreen(this.screen);
+    // the gate is not ready and the screen is static: a named first-run dialog is that dialog
+    if (named.kind === "dialog") return { ev: "boot_dialog", detail: named.text };
+    if (g.reason === "vim_mode")
+      return { ev: "boot_blocked", detail: "vim editing mode is on (-- INSERT -- under the box)" };
+    if (g.reason?.startsWith("dialog:"))
+      return { ev: "boot_blocked", detail: screenText(this.screen) };
+    if (named.kind === "choice" && g.reason !== null && GATE_KINDLESS_REASONS.has(g.reason))
+      return { ev: "boot_blocked", detail: named.text };
+    return null;
   }
 
   private bootReady(): void {
@@ -902,7 +1278,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const head = this.queue.shift() as string;
       if (isControl(head)) {
         this.exitRequested = true;
-        void this.typeLine(head.trim(), true);
+        void this.submitControl(head.trim());
         return;
       }
       this.fire("admit");
@@ -933,6 +1309,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.screenTurn = null;
     this.rewakeOfSettled = false;
     this.settledChatOffset = null;
+    this.turnAcceptedAt = null;
+    this.witnessMissingCounted = false;
+    this.abandonedIndex = null;
     if (plan.mode === "refused" || plan.mode === "control") {
       this.anomaly(`delivery_refused:${plan.mode === "refused" ? plan.reason : "control"}`);
       this.admission = null;
@@ -953,86 +1332,516 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         ? { file: plan.file, text: plan.fileContent }
         : null;
     this.follower.openTurn({ index, offset, witness: plan.witness, delivery });
-    this.admission = {
-      index,
-      text,
-      plan,
-      initial,
-      startedAt: Date.now(),
-      deliveredAt: null,
-      resent: false,
-      panelEscaped: false,
-      degraded: false,
-    };
-    void this.deliver(this.admission);
+    // the test seam bounds only the CREATED prompt's admission, as its option says
+    const bound = initial ? (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS) : ADMIT_TIMEOUT_MS;
+    const adm = newAdmission({ index, text, plan, initial, bound });
+    this.admission = adm;
+    void this.runAdmission(adm);
   }
 
-  private async deliver(adm: Admission): Promise<void> {
-    if (await this.typeAndSubmit(adm.plan)) adm.deliveredAt = Date.now();
+  /** This admission is still the live one: nothing accepted, expired or ended it meanwhile. */
+  private admitting(adm: Admission): boolean {
+    return this.admission === adm && this.phase === "ADMITTING";
   }
 
-  /** Type the plan's line and submit it. False for a plan with nothing to type. */
-  private async typeAndSubmit(plan: Delivery): Promise<boolean> {
-    if (plan.mode !== "typed" && plan.mode !== "file" && plan.mode !== "command") return false;
-    if (plan.mode === "command") {
-      await this.typeLine(plan.line, false);
-      await this.nextFrame(500);
-      const box = inputBox(this.screen);
-      const name = plan.line.match(/^\/\S+/)?.[0] ?? "";
-      if (box?.menuOpen && box.menuItem !== name) await this.key("escape");
-      await this.key("enter");
-    } else {
-      await this.typeLine(plan.line, true);
+  /**
+   * The admission loop (architecture-v2 §5.3, R1.4): at most one gated send in flight, each
+   * sized so that its client timeout ends by the admission deadline, and every reply handled
+   * by the exhaustive switch of `onSendOutcome`. magmux's gate presses Enter only on a box
+   * holding exactly the line; claudish never reads the box to decide a retype, never resends
+   * a SUBMIT whose reply was lost or that may have been submitted, and never accepts on the
+   * screen. Claudish's own transcript witness accepts in `evalAdmission` whatever the loop is
+   * doing ("the witness always wins"); the loop sees that at its next check and stops.
+   *
+   * The loop ends with no decision when Enter may have been pressed unproven
+   * (`submittedUnproven`), when a stop row decided (`stopped`), or when no attempt fits
+   * before the deadline; `evalAdmission` then expires the admission at its deadline.
+   */
+  private async runAdmission(adm: Admission): Promise<void> {
+    try {
+      while (this.admitting(adm) && adm.submittedUnproven === null && !adm.stopped) {
+        if (Date.now() >= adm.deadline) return;
+        if (adm.panel) {
+          // a command opened a picker or panel: `panelStep` dismisses it, or hands it back
+          await this.pause(adm, TICK_MS);
+          continue;
+        }
+        if (!this.client || !this.gateTrusted) {
+          await this.awaitTrustedClient(adm);
+          continue;
+        }
+        // a stop row, an ended admission or a wait re-checks from the top of the loop
+        if ((await this.beforeSend(adm)) !== "send") continue;
+        if (!this.admitting(adm) || !(await this.attemptOnce(adm))) return;
+      }
+    } finally {
+      adm.inFlight = false;
     }
+  }
+
+  /** Nothing is written while disconnected: the redial's attach re-checks the binding first. */
+  private awaitTrustedClient(adm: Admission): Promise<void> {
+    return this.waitFor(
+      () => !this.admitting(adm) || (!!this.client && this.gateTrusted),
+      Math.max(0, adm.deadline - Date.now())
+    );
+  }
+
+  /**
+   * One gated send of the admission's current step, and its outcome handled. False when no
+   * attempt fits before the deadline, or the admission ended while the send was out.
+   */
+  private async attemptOnce(adm: Admission): Promise<boolean> {
+    const c = this.client;
+    if (!c) return true; // the loop waits for the redial
+    const step = adm.step;
+    const shape = sendShape(step, adm.line);
+    const rt = readyTimeoutFor(step, adm.line, adm.deadline - Date.now());
+    if (rt === null) return false;
+    const timeout = sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS;
+    const sentAt = Date.now();
+    adm.inFlight = true;
+    adm.attempts++;
+    let reply: MagmuxReply;
+    try {
+      reply = await c.request({ ...shape.msg, readyTimeoutMs: rt }, timeout);
+    } finally {
+      adm.inFlight = false;
+    }
+    const out = classifySendReply(reply);
+    adm.last = out;
+    this.noteLastSend(out, adm.attempts);
+    // the witness accepted it, or the session ended, while the send was out
+    if (!this.admitting(adm)) return false;
+    await this.onSendOutcome(adm, out, step, { client: c, until: sentAt + timeout });
     return true;
   }
 
   /**
-   * §2.9 step 4: retry only a send magmux refused (`busy`, `pane_*`) or one never
-   * written (`client_closed`). A send whose REPLY was lost (`client_timeout`,
-   * `client_lost`) may already have been typed, so the screen decides: retyping it
-   * blindly put the line in the box twice and no witness could ever match.
+   * One gated reply → what the admission does next (architecture-v2 §5.2, R1.1-R1.5). The
+   * switch is exhaustive over the closed `SendOutcome`; `input-gate.ts` only translates.
    */
-  private async typeLine(text: string, enter: boolean): Promise<boolean> {
-    let why = "disconnected";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const c = this.client;
-      if (c) {
-        const r = await c.request({ type: "send", pane: 0, text, typed: true, enter }, 10_000);
-        if (r.ok) return true;
-        why = r.code;
-        if (r.code === "client_timeout" || r.code === "client_lost") {
-          if (await this.landedAfterLostReply(text, enter)) return true;
+  private async onSendOutcome(
+    adm: Admission,
+    out: SendOutcome,
+    step: SubmitStep,
+    sent: { client: MagmuxClient; until: number }
+  ): Promise<void> {
+    switch (out.kind) {
+      case "accepted":
+        this.onGateAccepted(adm, out);
+        return;
+      case "in_box":
+        if (step !== "type") {
+          // a send that carried an Enter answered as a TYPE: whether Enter was pressed is unknown
+          this.anomaly("send_unexpected:in_box");
+          this.stopAdmission(adm, "magmux answered in_box to a send that carried an Enter");
+          return;
         }
-      }
-      await Bun.sleep(500);
+        if (out.retyped) this.anomaly(`gate_retyped:${out.retypeCause ?? "unknown"}`);
+        await this.menuCheck(adm);
+        adm.step = "enter";
+        return;
+      case "busy":
+        await this.onBusy(adm, out, step);
+        return;
+      case "not_accepted":
+        await this.onNotAccepted(adm, out, step);
+        return;
+      case "bad_request":
+        // nothing was written: a claudish bug (planDelivery emits printable text only)
+        this.anomaly("send_bad_request");
+        this.stopAdmission(adm, `send_bad_request: ${out.error}`);
+        return;
+      case "reply_lost":
+        this.anomaly("send_reply_lost");
+        if (step === "type") {
+          // R1.5.3: a TYPE presses no Enter, so its text is cleared and typed again, once the
+          // delivery behind the lost reply can no longer be typing
+          adm.lostType = sent;
+          markClearFirst(adm);
+          return;
+        }
+        // magmux carries the delivery on, Enter included: never resent; the witness decides
+        adm.submittedUnproven = "reply_lost";
+        return;
+      case "unsent":
+        // never written: the next attempt waits for the redial
+        await this.pause(adm, BUSY_RETRY_MS);
+        return;
+      case "pane_gone":
+        // the exit path decides (`onPaneExit`); no further attempt
+        adm.stopped = true;
+        return;
+      case "unexpected":
+        this.anomaly(`send_unexpected:${out.code}`);
+        this.stopAdmission(adm, `send_unexpected: ${out.code}${out.error ? `: ${out.error}` : ""}`);
+        return;
+      default:
+        assertNever(out);
     }
-    this.anomaly(`delivery_failed:${why}`);
+  }
+
+  /**
+   * `ok`: history evidence (this pane's own screen) accepts at once; transcript evidence
+   * only together with claudish's own witness (§5.6: until the named binding is trusted for
+   * it, a transcript the gate read is not attributable on its own), else it is `unconfirmed`.
+   */
+  private onGateAccepted(adm: Admission, out: Extract<SendOutcome, { kind: "accepted" }>): void {
+    if (out.accept === "resent_enter") this.anomaly("gate_resent_enter");
+    if (out.accept === "submitted_by_other") this.anomaly("gate_submitted_by_other");
+    if (out.retyped) this.anomaly(`gate_retyped:${out.retypeCause ?? "unknown"}`);
+    if (out.dismissed.length > 0) this.anomaly("gate_dismissed_unexpected");
+    if (out.evidence === "transcript") {
+      this.anomaly("gate_transcript_evidence");
+      if (!this.witnessNow()) {
+        this.anomaly("gate_transcript_evidence_unwitnessed");
+        adm.submittedUnproven = "unconfirmed";
+        return;
+      }
+    }
+    this.acceptAdmission(adm);
+  }
+
+  /** `busy`: Enter was NOT pressed. */
+  private async onBusy(
+    adm: Admission,
+    out: Extract<SendOutcome, { kind: "busy" }>,
+    step: SubmitStep
+  ): Promise<void> {
+    const reason = out.reason || "unknown";
+    if (this.stopOnGateBlock(adm, reason, out.dialog)) return;
+    if (out.dialog === "select" && step === "enter") {
+      // the command's own Enter met a picker or panel: dismiss it (§5.4 `panelStep`)
+      this.noteOnce(adm, "gate_dialog_at_admission:select");
+      adm.panel = { showingSince: null, escaped: false, entered: false };
+      return;
+    }
+    if (out.dialog) {
+      // a re-woken turn owns the dialog; evalIdle/evalRunning see it
+      this.noteOnce(adm, `gate_dialog_at_admission:${out.dialog}`);
+    } else if (out.typed) {
+      // the box may hold all or part of the text: the next send's precondition clears it
+      this.anomaly("gate_typed_withheld");
+      markClearFirst(adm);
+    } else if (reason === "box_not_empty") {
+      this.anomaly("gate_box_not_empty");
+      markClearFirst(adm);
+    } else {
+      // starting, terminal_not_ready, no_input_box, typing_in_progress, queue_full, in_flight, …
+      this.noteOnce(adm, `gate_busy:${reason}`);
+    }
+    await this.pause(adm, BUSY_RETRY_MS);
+  }
+
+  /**
+   * The §5.2 stop rows a gate reason decides on its own, from a reply or from the published
+   * view: a boot dialog kind (`first_run_dialog`) and vim mode. True when it stopped.
+   */
+  private stopOnGateBlock(adm: Admission, reason: string, dialog: GateDialogKind | null): boolean {
+    if (dialog && BOOT_DIALOG_KINDS.has(dialog)) {
+      // a question for the human: never a key, never accepted
+      this.anomaly(`gate_boot_dialog:${dialog}`);
+      this.stopAdmission(adm, dialogText(this.screen) || `busy ${reason}`, "first_run_dialog");
+      return true;
+    }
+    if (reason === "vim_mode") {
+      this.anomaly("gate_vim_mode");
+      this.stopAdmission(adm, "busy vim_mode: vim editing mode is on (-- INSERT -- under the box)");
+      return true;
+    }
     return false;
   }
 
-  /** After a lost reply: the line is in the box (typed), or already submitted (echo, witness). */
-  private async landedAfterLostReply(text: string, enter: boolean): Promise<boolean> {
-    await this.nextFrame(1000);
-    const head = text.slice(0, 40);
-    const box = inputBox(this.screen);
-    let landed = !!box && box.text.startsWith(head);
-    if (landed && enter) await this.key("enter");
-    if (!landed && enter) {
-      this.follower.poll();
-      const cur = this.follower.view().current;
-      landed =
-        (!!cur && cur.index === this.turnIndex && cur.acceptedAt !== null) ||
-        this.screen.lines.some((l) => l.startsWith(`❯ ${head}`));
-    }
-    if (landed) this.anomaly("send_reply_lost");
-    return landed;
+  /**
+   * Revision 3 item 1: magmux answers `busy vim_mode` and `busy dialog:<kind>` only after the
+   * send's WHOLE `readyTimeoutMs`, so before a send that types, the fresh published view is
+   * read first, as R1.5.2 does for `box_not_empty`. Vim mode or a boot dialog stops the
+   * admission with no send; a turn's own dialog (permission, question, plan) starts no send
+   * until it leaves, within the deadline. A stale or missing reading decides nothing: the
+   * send goes, and the gate decides.
+   * `"send"`: go ahead; `"stopped"`: a stop row decided; `"waited"`: re-check from the top.
+   */
+  private async precheckGate(adm: Admission): Promise<"send" | "stopped" | "waited"> {
+    const g = this.gateNow();
+    if (!g || g.ready) return "send";
+    if (this.stopOnGateBlock(adm, g.reason ?? "unknown", g.dialog)) return "stopped";
+    const kind = g.dialog;
+    if (kind !== "permission" && kind !== "question" && kind !== "plan") return "send";
+    this.noteOnce(adm, `gate_dialog_at_admission:${kind}`);
+    await this.waitFor(
+      () => !this.admitting(adm) || this.gateNow()?.dialog !== kind,
+      Math.max(0, adm.deadline - Date.now())
+    );
+    return "waited";
   }
 
+  /**
+   * The preconditions of a send that types: leftover text cleared, then the pre-check. A
+   * command's Enter types nothing and has none.
+   */
+  private async beforeSend(adm: Admission): Promise<"send" | "stopped" | "waited"> {
+    if (adm.step === "enter") return "send";
+    // R1.5.2 / R1.5.3: clear leftover text BEFORE a send that types
+    await this.clearLeftover(adm);
+    if (!this.admitting(adm)) return "stopped";
+    return this.precheckGate(adm);
+  }
+
+  /** `not_accepted`: Enter withheld (`text_mismatch`, `empty_box`) or pressed (the other two). */
+  private async onNotAccepted(
+    adm: Admission,
+    out: Extract<SendOutcome, { kind: "not_accepted" }>,
+    step: SubmitStep
+  ): Promise<void> {
+    switch (out.reason) {
+      case "text_mismatch":
+        if (out.maybeSubmitted) {
+          // R1.3: the text may already have been submitted by another writer: no ctrl-u and no
+          // further send; only claudish's own witness can accept now
+          this.anomaly("gate_maybe_submitted_by_other");
+          adm.submittedUnproven = "maybe_submitted_by_other";
+          return;
+        }
+        this.anomaly("gate_text_mismatch");
+        markClearFirst(adm);
+        if (adm.plan.mode === "command") adm.step = "type";
+        // magmux's verify settle: a late draw lands before the box is read again
+        await this.pause(adm, MISMATCH_SETTLE_MS);
+        return;
+      case "empty_box":
+        if (step === "enter") {
+          // R1.1: the typed command left the box without claudish's Enter, so it may have
+          // run; retyping it is the D-B duplicate in another form
+          this.anomaly("gate_command_left_box");
+          adm.submittedUnproven = "maybe_submitted_by_other";
+          return;
+        }
+        this.anomaly("gate_empty_box");
+        await this.pause(adm, BUSY_RETRY_MS);
+        return;
+      case "still_in_box":
+        // Enter was pressed and ignored, the text proven present
+        if (this.witnessNow()) {
+          this.acceptAdmission(adm);
+          return;
+        }
+        this.anomaly("gate_still_in_box");
+        if (adm.stuckRetried) {
+          adm.submittedUnproven = "still_in_box_twice";
+          return;
+        }
+        adm.stuckRetried = true;
+        await this.clearBox(adm);
+        if (adm.plan.mode === "command") adm.step = "type";
+        return;
+      case "unconfirmed":
+        // Enter was pressed with no attributable evidence: never retyped
+        this.anomaly("gate_unconfirmed");
+        adm.submittedUnproven = "unconfirmed";
+        if (step === "enter") adm.panel = { showingSince: null, escaped: false, entered: true };
+        return;
+      default:
+        assertNever(out.reason);
+    }
+  }
+
+  /** Accept from the async loop, inside one event-processing step. */
+  private acceptAdmission(adm: Admission): void {
+    this.step(() => {
+      if (this.admitting(adm)) this.accept();
+    });
+  }
+
+  /**
+   * A §5.2 stop row: no further attempt. The created prompt fails now with `detail` (its
+   * first line is `reason_detail`); a later send returns the session to IDLE.
+   */
+  private stopAdmission(adm: Admission, detail: string, reason?: FailureReason): void {
+    adm.stopped = true;
+    this.step(() => {
+      if (!this.admitting(adm)) return;
+      this.admission = null;
+      if (adm.initial) {
+        this.fire("admit_deadline", { reason, detail: `${detail}\n${screenTailOf(this.screen)}` });
+        return;
+      }
+      this.anomaly("send_not_accepted");
+      this.abandonedIndex = adm.index;
+      this.fire("admit_abandoned");
+    });
+  }
+
+  /** The current turn's witness, after a fresh read of the transcript. */
+  private witnessNow(): boolean {
+    return this.witnessed(this.pollFollower(true).current);
+  }
+
+  private noteOnce(adm: Admission, key: string): void {
+    if (adm.noted.has(key)) return;
+    adm.noted.add(key);
+    this.anomaly(key);
+  }
+
+  /** Wait `ms`, or less if the admission ends meanwhile. */
+  private pause(adm: Admission, ms: number): Promise<void> {
+    return this.waitFor(() => !this.admitting(adm), ms);
+  }
+
+  /** A gate reading received after `after` says the box is ready (and therefore empty). */
+  private freshReady(after: number): boolean {
+    const g = this.gateNow();
+    return !!g && g.receivedAt > after && g.ready;
+  }
+
+  /** KEYS ctrl-u, then wait at most `CLEAR_WAIT_MS` for a fresh `ready` reading. */
+  private async clearBox(adm: Admission): Promise<void> {
+    const at = Date.now();
+    await this.key("ctrl-u");
+    await this.waitFor(() => !this.admitting(adm) || this.freshReady(at), CLEAR_WAIT_MS);
+  }
+
+  /**
+   * The precondition of every gated send that types (R1.5.2): a gated send into a non-empty
+   * box types nothing and waits its whole `readyTimeoutMs`, so leftover text is cleared
+   * first, from the published view. `box_not_empty` is the gate's LAST readiness rule, so it
+   * already proves no dialog and a settled terminal: this ctrl-u cannot land on a dialog.
+   * Text this admission may itself have left (`clearFirst`) is judged only on a reading
+   * received after the reply that set the flag (Revision 3 item 2): an older one can say
+   * `ready` while that delivery's text is still being drawn (DB-2). Such a reading that is
+   * `ready` clears the flag; one naming a dialog or vim mode keeps it, and the pre-check
+   * decides; any other clears the box. With no newer reading within `CLEAR_WAIT_MS`, the
+   * ctrl-u goes anyway: a ctrl-u on an empty box is harmless, a send into a full one costs
+   * its whole `readyTimeoutMs`.
+   *
+   * R1.5.3: after a TYPE whose reply was lost, a ctrl-u on the SAME connection is
+   * lane-ordered behind that delivery; one on a NEW connection is not and could land
+   * mid-typing, so it waits until the lost TYPE's own client timeout has passed.
+   */
+  private async clearLeftover(adm: Admission): Promise<void> {
+    const lost = adm.lostType;
+    if (lost) {
+      adm.lostType = null;
+      if (lost.client !== this.client || lost.client.isClosed)
+        await this.pause(adm, Math.max(0, lost.until - Date.now()));
+      if (!this.admitting(adm)) return;
+    }
+    if (adm.clearFirst) await this.clearOwnLeftover(adm);
+    else if (this.gateNow()?.reason === "box_not_empty") await this.clearBox(adm);
+  }
+
+  /** `clearFirst`: judged on a reading received after the reply that set it (see above). */
+  private async clearOwnLeftover(adm: Admission): Promise<void> {
+    // the published view trails the pane by up to one refresh: a reading received within
+    // that interval of the reply may still show the box as it was before the text landed
+    const after = adm.clearAfter + GATE_POLL_MS;
+    const newer = (): GateInput | null => {
+      const g = this.gateNow();
+      return g && g.receivedAt > after ? g : null;
+    };
+    await this.waitFor(
+      () => !this.admitting(adm) || newer() !== null,
+      CLEAR_WAIT_MS + GATE_POLL_MS
+    );
+    if (!this.admitting(adm)) return;
+    const g = newer();
+    if (g?.ready) {
+      adm.clearFirst = false;
+      return;
+    }
+    // a dialog or vim mode: no key; the pre-check decides, and the flag waits for a clear box
+    if (g && (g.dialog !== null || g.reason === "vim_mode")) return;
+    adm.clearFirst = false;
+    await this.clearBox(adm);
+  }
+
+  /**
+   * After a command's TYPE (`in_box`): Enter on an open `/` menu runs the HIGHLIGHTED item,
+   * not the typed one, and the gate has no menu handling, so a menu whose highlight is not
+   * the typed name is closed with Escape first (§5.4). Read on the box located by the cursor;
+   * a box not located is `menu_unverified`, and no Escape.
+   */
+  private async menuCheck(adm: Admission): Promise<void> {
+    const name = adm.line.match(/^\/\S+/)?.[0] ?? "";
+    // our frames trail magmux's own verify by up to one frame interval
+    await this.waitFor(() => {
+      if (!this.admitting(adm)) return true;
+      const box = locateBox(this.screen);
+      return !!box && locatedBoxText(this.screen, box).startsWith(name);
+    }, 2 * TICK_MS);
+    if (!this.admitting(adm)) return;
+    const box = locateBox(this.screen);
+    if (!box) {
+      this.anomaly("menu_unverified");
+      return;
+    }
+    const menu = menuAbove(this.screen.lines, box.top);
+    if (menu.menuOpen && menu.menuItem !== name) await this.key("escape");
+  }
+
+  /** The last gated send, as `get_diagnostics` reports it. */
+  private noteLastSend(out: SendOutcome, attempts: number): PaneLastSend {
+    const s: PaneLastSend = { kind: out.kind, attempts };
+    switch (out.kind) {
+      case "accepted":
+        s.accept = out.accept;
+        s.evidence = out.evidence;
+        if (out.retypeCause) s.retypeCause = out.retypeCause;
+        break;
+      case "in_box":
+        s.accept = "in_box";
+        if (out.retypeCause) s.retypeCause = out.retypeCause;
+        break;
+      case "busy":
+      case "not_accepted":
+        s.reason = out.reason;
+        break;
+      case "bad_request":
+        s.reason = "bad_request";
+        break;
+      case "reply_lost":
+      case "unsent":
+      case "pane_gone":
+      case "unexpected":
+        s.reason = out.code;
+        break;
+      default:
+        assertNever(out);
+    }
+    this.lastSend = s;
+    return s;
+  }
+
+  /**
+   * `/exit` / `/quit` (§5.4 `control`): one gated SUBMIT. Its reply is only recorded; the
+   * pane's exit decides.
+   */
+  private async submitControl(line: string): Promise<void> {
+    const c = this.client;
+    if (!c) {
+      this.anomaly("control_send:unsent");
+      return;
+    }
+    const rt = SEND_READY_WAIT_DEFAULT_MS;
+    const shape = sendShape("submit", line);
+    const r = await c.request(
+      { ...shape.msg, readyTimeoutMs: rt },
+      sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS
+    );
+    const out = classifySendReply(r);
+    const s = this.noteLastSend(out, 1);
+    if (out.kind !== "accepted")
+      this.anomaly(`control_send:${out.kind}${s.reason ? `:${s.reason}` : ""}`);
+  }
+
+  /** One KEYS send (ctrl-u, Escape): no text and no final Enter, never gated. */
   private async key(k: string): Promise<boolean> {
     const c = this.client;
     if (!c) return false;
-    const r = await c.request({ type: "send", pane: 0, keys: [k], enter: false }, 10_000);
+    const r = await c.request(
+      { type: "send", pane: 0, keys: [k], enter: false, noGate: true },
+      10_000
+    );
     return r.ok;
   }
 
@@ -1048,175 +1857,174 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     });
   }
 
+  /**
+   * Synchronous, on every evaluation: the witness accepts whatever the loop is doing; a
+   * command's panel is stepped; the deadline expires the admission once no gated send is
+   * out (every attempt is sized to end by it).
+   */
   private evalAdmission(view: TranscriptView): void {
     const adm = this.admission;
     if (!adm) return;
-    const cur = view.current;
-    if (cur && cur.index === adm.index && cur.acceptedAt !== null) {
+    if (this.witnessed(view.current)) {
       this.accept();
       return;
     }
-    const now = Date.now();
-    const since = adm.deliveredAt ? now - adm.deliveredAt : 0;
-    if (adm.deliveredAt && adm.plan.mode === "command" && this.panelCommand(adm, since)) return;
-    if (adm.deliveredAt && since >= this.t("resendAfterMs", RESEND_AFTER_MS)) this.nudge(adm);
-    if (
-      adm.deliveredAt &&
-      (view.availability === "off" || since >= this.t("degradedEntryMs", DEGRADED_ENTRY_MS))
-    )
-      this.maybeDegradedAccept(adm, view);
-    if (this.phase !== "ADMITTING") return;
-    if (now - adm.startedAt >= (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS)) this.admitExpired(adm);
+    if (adm.panel) this.panelStep(adm);
+    if (!this.admitting(adm)) return;
+    if (Date.now() >= adm.deadline && !adm.inFlight) this.admitExpired(adm);
   }
 
-  /** A full-screen panel: no input box, no choice dialog, and its `Esc to cancel` footer. */
-  private panelOpen(): boolean {
+  /** A full-screen panel or picker: the gate sees no box (or a `select` dialog), and `Esc to cancel`. */
+  private panelShowing(g: GateInput | null): boolean {
     return (
-      !inputBox(this.screen) &&
-      !hasChoiceDialog(this.screen) &&
-      /Esc to cancel/.test(screenText(this.screen))
+      !!g &&
+      (g.reason === "no_input_box" || g.dialog === "select") &&
+      /Esc to cancel/.test(flatText(this.screen.lines))
     );
   }
 
   /**
-   * A delivered panel command (`/cost`, `/usage`, `/config`, …) writes no transcript record
-   * and swallows input until Esc (phase2-captures §3, §10), so it can never be witnessed.
-   * Once it is on screen it is dismissed at once, and when the empty box is back the
-   * admission ends without a turn: a later prompt is not held for the 30 s admission bound.
-   * True when this step handled the admission.
+   * A panel command (`/cost`, `/usage`, `/config`; `/model` with no argument) writes no
+   * transcript record and swallows input until Esc (phase2-captures §3, §10), so it can never
+   * be witnessed. Once it has been up for `PANEL_SETTLE_MS` it gets one Escape, and when the
+   * gate is ready again the admission ends without a turn (§5.4). Never an Escape while the
+   * gate names a boot dialog (`panelShowing` admits only `no_input_box` and `select`).
    */
-  private panelCommand(adm: Admission, since: number): boolean {
-    if (!adm.panelEscaped) {
-      if (since < PANEL_SETTLE_MS || !this.panelOpen()) return false;
-      adm.panelEscaped = true;
-      this.anomaly("panel_dismissed");
+  private panelStep(adm: Admission): void {
+    const p = adm.panel;
+    if (!p) return;
+    const g = this.gateNow();
+    if (!p.escaped) {
+      if (!this.panelShowing(g)) {
+        p.showingSince = null;
+        return;
+      }
+      const now = Date.now();
+      p.showingSince ??= now;
+      if (now - p.showingSince < PANEL_SETTLE_MS) return;
+      p.escaped = true;
+      this.anomaly(g?.dialog === "select" ? "picker_dismissed" : "panel_dismissed");
       void this.key("escape");
-      return true;
-    }
-    const box = inputBox(this.screen);
-    if (!box || box.text !== "" || this.panelOpen()) return false;
-    this.admission = null;
-    this.anomaly("panel_command");
-    if (adm.initial)
-      this.fire("admit_deadline", {
-        detail: `${adm.text.trim()} opened a panel and wrote no transcript record`,
-      });
-    else this.fire("admit_abandoned");
-    return true;
-  }
-
-  /**
-   * +10 s without a witness: the line still in the box → clear it, retype it once and
-   * submit; a panel → Esc. The line sits unsent when it was typed into Claude Code's
-   * startup stdin reset (see `REPL_STABLE_MS`), where a bare second Enter cannot be relied
-   * on to submit it. Ctrl-U clears the box (phase2-captures keylog). The same line is
-   * retyped, so the turn's witness and read coverage are unchanged.
-   */
-  /**
-   * Read frames after the nudge's ctrl-u until the box no longer shows the line, or
-   * `NUDGE_CLEAR_DEADLINE_MS` passes. `empty`: ctrl-u took. `other`: the box holds
-   * something else (or is gone from the screen at the deadline). `line`: the line is still
-   * there at the deadline. `gone`: the admission ended meanwhile.
-   */
-  private async awaitClearedBox(
-    adm: Admission,
-    head: string
-  ): Promise<"empty" | "line" | "other" | "gone"> {
-    const end = Date.now() + this.t("nudgeClearDeadlineMs", NUDGE_CLEAR_DEADLINE_MS);
-    for (;;) {
-      if (this.admission !== adm || this.phase !== "ADMITTING") return "gone";
-      const box = inputBox(this.screen);
-      if (box && box.text === "") return "empty";
-      if (box && !box.text.startsWith(head)) return "other";
-      const left = end - Date.now();
-      if (left <= 0) return box ? "line" : "other";
-      // Resolves on the next frame (screen seq change) or at the deadline.
-      await this.nextFrame(left);
-    }
-  }
-
-  private nudge(adm: Admission): void {
-    const box = inputBox(this.screen);
-    const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    const head = line.slice(0, 40);
-    if (!adm.resent && box && line && box.text.startsWith(head)) {
-      adm.resent = true;
-      this.anomaly("resent_enter");
-      void (async () => {
-        if (box.menuOpen) await this.key("escape");
-        await this.key("ctrl-u");
-        const after = await this.awaitClearedBox(adm, head);
-        if (after === "gone") return; // accepted or ended meanwhile: nothing to resend
-        if (after === "empty") {
-          this.anomaly("retyped_prompt");
-          await this.typeAndSubmit(adm.plan);
-        } else if (after === "line") {
-          // Ctrl-U did not take within the deadline: the old remedy, one more Enter.
-          // Never type a second copy while the first could still be in the box.
-          await this.key("enter");
-        } else {
-          this.anomaly("clear_failed");
-        }
-      })();
       return;
     }
-    if (
-      !adm.panelEscaped &&
-      !box &&
-      !hasChoiceDialog(this.screen) &&
-      /Esc to cancel/.test(screenText(this.screen))
-    ) {
-      // A panel command (`/cost`, `/usage`, …) writes no record and swallows input until Esc.
-      adm.panelEscaped = true;
-      this.anomaly("panel_dismissed");
-      void this.key("escape");
+    if (!g) return;
+    if (g.ready) {
+      this.admission = null;
+      this.anomaly("panel_command");
+      if (adm.initial)
+        this.fire("admit_deadline", {
+          detail: `${adm.text.trim()} opened a panel and wrote no transcript record`,
+        });
+      else this.fire("admit_abandoned");
+      return;
     }
-  }
-
-  /** Degraded acceptance (§2.8): the box emptied of the line, and an echo or a change above it. */
-  private maybeDegradedAccept(adm: Admission, view: TranscriptView): void {
-    if (view.availability === "ok") return;
-    const box = inputBox(this.screen);
-    if (!box || box.text !== "") return;
-    const line = adm.plan.mode === "control" || adm.plan.mode === "refused" ? "" : adm.plan.line;
-    const echo = this.screen.lines.some((l) => l.startsWith(`❯ ${line.slice(0, 40)}`));
-    const changed = adm.deliveredAt !== null && this.screen.aboveBoxChangedAt > adm.deliveredAt;
-    if (!echo && !changed) return;
-    this.turnSource = "screen";
-    this.anomaly("degraded_mode");
-    this.screenTurn = { echo: line, acceptedAt: Date.now(), errorLogSize: this.errorLogSize() };
-    this.accept();
+    // Esc closed a menu, not a panel, and the command (whose Enter was never pressed) is
+    // still in the box: the loop presses its Enter through the gate again
+    if (!p.entered && g.reason === "box_not_empty") adm.panel = null;
   }
 
   private accept(): void {
     this.admission = null;
     this.initialDelivery = false;
-    this.lastChatSeenAt = Date.now();
+    const now = Date.now();
+    this.lastChatSeenAt = now;
+    this.turnAcceptedAt = now;
+    this.turnErrorLogSize = this.errorLogSize();
     this.fire("prompt_accepted");
   }
 
   private admitExpired(adm: Admission): void {
     this.admission = null;
     if (adm.initial) {
-      this.fire("admit_deadline", { detail: screenTailOf(this.screen) });
+      this.fire("admit_deadline", {
+        detail: `${this.notAcceptedLine(adm)}\n${screenTailOf(this.screen)}`,
+      });
       return;
     }
     this.anomaly("send_not_accepted");
+    // a witness that still arrives re-wakes the session as this turn (evalIdle)
+    this.abandonedIndex = adm.index;
     this.fire("admit_abandoned");
   }
 
-  private screenFacts(): ScreenFacts | null {
+  /**
+   * The first line of `prompt_not_accepted`'s detail, i.e. `reason_detail`: the input
+   * gate's own answer (the magus session reads it).
+   */
+  private notAcceptedLine(adm: Admission): string {
+    const secs = Math.round((Date.now() - adm.startedAt) / 1000);
+    switch (adm.submittedUnproven) {
+      case "maybe_submitted_by_other":
+        return "magmux could not tell whether the prompt was submitted (the box emptied without its Enter) and no transcript record of it appeared";
+      case "unconfirmed":
+        return `magmux not_accepted unconfirmed: Enter was pressed with no evidence it was submitted, and no transcript record appeared in ${secs} s`;
+      case "reply_lost": {
+        const code = adm.last?.kind === "reply_lost" ? adm.last.code : "client_lost";
+        return `the magmux send reply was lost (${code}) and no transcript record of the prompt appeared in ${secs} s`;
+      }
+      case "still_in_box_twice":
+        return "magmux not_accepted still_in_box: the prompt stayed in the input box after Enter, twice";
+      case null:
+        return `prompt not accepted in ${secs} s; ${describeLastReply(adm, this.gateNow())}`;
+      default:
+        return assertNever(adm.submittedUnproven);
+    }
+  }
+
+  /**
+   * Settle corroboration (architecture-v2 §7.1, R1.5.1): the gate's fresh reading, plus the
+   * working row and the quiet ABOVE the box located by the cursor. Null while disconnected.
+   * An unlocated box yields nulls, never a veto.
+   */
+  private corroborationFacts(): CorroborationFacts | null {
     if (!this.client) return null;
-    const box = inputBox(this.screen);
+    const g = this.gateNow();
     return {
-      boxEmpty: !!box && box.text === "",
-      choiceDialog: hasChoiceDialog(this.screen),
-      working: isWorking(this.screen),
-      aboveBoxQuietMs: Date.now() - this.screen.aboveBoxChangedAt,
+      gate: g ? { ready: g.ready, dialog: g.dialog, reason: g.reason } : null,
+      working: workingAboveBox(this.screen),
+      aboveBoxQuietMs: this.aboveBoxQuietMs(),
     };
   }
 
+  /** ms since a row above the located box changed; null when this frame locates no box. */
+  private aboveBoxQuietMs(): number | null {
+    return locateBox(this.screen) ? Date.now() - this.screen.aboveBoxChangedAt : null;
+  }
+
+  /**
+   * A turn the gate accepted that the transcript has not witnessed: with the transcript off,
+   * or still absent or empty `DEGRADED_ENTRY_MS` after the acceptance, it settles from the
+   * screen (§5.7, degraded mode now begins only AFTER an evidenced acceptance); with the
+   * transcript `ok` and no witness `ADMIT_TIMEOUT_MS` after it, `witness_missing` is counted
+   * once (§5.8) and the turn stays RUNNING: no timer ends it (D10).
+   */
+  private checkUnwitnessed(view: TranscriptView): void {
+    const at = this.turnAcceptedAt;
+    if (at === null || this.rewakeOfSettled || this.witnessed(view.current)) return;
+    const since = Date.now() - at;
+    const missing = view.availability === "absent" || view.availability === "empty";
+    if (
+      view.availability === "off" ||
+      (missing && since >= this.t("degradedEntryMs", DEGRADED_ENTRY_MS))
+    ) {
+      const d = this.currentDelivery;
+      this.turnSource = "screen";
+      this.anomaly("degraded_mode");
+      this.screenTurn = {
+        echo: d && d.mode !== "refused" ? d.line : "",
+        acceptedAt: at,
+        errorLogSize: this.turnErrorLogSize,
+      };
+      return;
+    }
+    if (view.availability === "ok" && since >= ADMIT_TIMEOUT_MS && !this.witnessMissingCounted) {
+      this.witnessMissingCounted = true;
+      this.anomaly("witness_missing");
+    }
+  }
+
   private evalRunning(view: TranscriptView): void {
+    if (this.turnSource === "transcript") this.checkUnwitnessed(view);
     if (this.turnSource === "screen") {
       this.evalScreenTurn(view);
       return;
@@ -1234,22 +2042,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
     if (this.detectBlocked(t)) return;
     const now = Date.now();
+    const transcriptQuietMs = now - (view.lastAppendAt ?? this.startedAtMs);
     const decision = decideSettle({
       turn: t,
       session: view.session,
-      transcriptQuietMs: now - (view.lastAppendAt ?? this.startedAtMs),
+      transcriptQuietMs,
       chatQuietMs: now - this.lastChatSeenAt,
-      screen: this.screenFacts(),
+      facts: this.corroborationFacts(),
       paneExited: false,
       secondaryQuietMs: this.secondaryQuietMs,
       corroborationMs: this.corroborationMs,
+      corroborationGraceMs: this.t("gateGraceMs", GATE_GRACE_MS),
     });
     if (decision.settled) {
       this.settle(t, decision, null);
       return;
     }
     this.activity = decision.activity;
-    this.checkTurnEndMissing();
+    this.checkTurnEndMissing(t, transcriptQuietMs);
     this.checkAgentCountMismatch(t);
   }
 
@@ -1263,15 +2073,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /**
    * R3-M4: `finishing` with a static screen and no Stop-hook UI for N secondary windows.
    * The condition is live (it clears the moment work resumes); the anomaly counts how often
-   * it began.
+   * it began. A turn whose end record WAS written (turn_duration, or an interrupt) is not
+   * missing one: "the turn ended and the gate disagrees" is `settle_gate_unconfirmed`.
+   * Quiet is measured above the located box, else from the transcript (architecture-v2 §7.2).
    */
-  private checkTurnEndMissing(): void {
-    if (this.activity !== "finishing") {
+  private checkTurnEndMissing(t: TurnView, transcriptQuietMs: number): void {
+    if (this.activity !== "finishing" || t.turnDurationAfterLast || t.interruptAfterLast) {
       this.turnEndMissing = false;
       return;
     }
     if (!this.client) return;
-    const quiet = Date.now() - this.screen.aboveBoxChangedAt;
+    const quiet = this.aboveBoxQuietMs() ?? transcriptQuietMs;
     const missing =
       quiet >= TURN_END_MISSING_FACTOR * this.secondaryQuietMs && !stopHookRunning(this.screen);
     if (missing && !this.turnEndMissing) this.anomaly("turn_end_record_missing");
@@ -1293,18 +2105,28 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.agentMismatch = key;
   }
 
-  /** Blocked detection (H7): AskUserQuestion from the transcript; permission needs the dialog too. */
+  /**
+   * Blocked detection (architecture-v2 §6.3): a pending AskUserQuestion from the transcript
+   * alone; any other pending tool blocks only when magmux's input gate names the dialog
+   * (`dialog:permission`/`dialog:plan`, or `dialog:question`). Anything else, an unknown
+   * gate included, stays RUNNING: an honest unknown, never `blocked`.
+   */
   private detectBlocked(t: TurnView): boolean {
     const pending = t.pendingTool;
     if (!pending || this.phase !== "RUNNING") return false;
     let kind: PaneBlock["kind"] | null = null;
     if (pending.name === "AskUserQuestion") kind = "question";
-    else if (this.client && hasChoiceDialog(this.screen)) kind = "permission";
+    else {
+      const dialog = this.gateNow()?.dialog ?? null;
+      if (dialog === "permission" || dialog === "plan") kind = "permission";
+      else if (dialog === "question") kind = "question";
+    }
     if (!kind) return false;
     this.blockedToolId = pending.id;
     this.fire(kind === "question" ? "blocked_question" : "blocked_permission");
     this.activity = pending.name;
-    const text = blockText(pending, choiceDialog(this.screen)?.text ?? null);
+    // the screen supplies only the words; with no frame yet there are none to give
+    const text = blockText(pending, this.screen.seq > 0 ? dialogText(this.screen) || null : null);
     let v: FinalVerdict | "wait";
     try {
       v = this.o.onBlocked({ kind, tool: pending.name, text });
@@ -1317,6 +2139,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private evalIdle(view: TranscriptView): void {
     const t = view.current;
+    // A later send abandoned unwitnessed (§5.3, R1.3) whose witness arrives now: magmux's
+    // delivery DID land. It is this same turn, reported late, never lost.
+    if (
+      t &&
+      this.abandonedIndex !== null &&
+      t.index === this.abandonedIndex &&
+      t.acceptedAt !== null &&
+      !this.exitRequested
+    ) {
+      this.abandonedIndex = null;
+      this.anomaly("late_witness");
+      this.turnAcceptedAt = Date.now();
+      this.turnErrorLogSize = this.errorLogSize();
+      this.lastChatSeenAt = Date.now();
+      this.fire("rewake");
+      this.activity = "thinking";
+      return;
+    }
     // After a delivered /exit only the pane's exit can follow, never a re-wake: Claude
     // Code 2.1.282–2.1.285 write the command's own records into the settled turn.
     if (!t || this.settledChatOffset === null || this.exitRequested) return;
@@ -1411,12 +2251,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return !!t && t.index === this.turnIndex && t.acceptedAt !== null;
   }
 
-  /** Degraded settle (§2.8): empty box, no dialog, not working, and an answer or error row gone quiet. */
+  /**
+   * Degraded settle (architecture-v2 §7.3): the gate ready (an empty box) and naming no
+   * dialog, no working row above the located box, and an answer or error row gone quiet.
+   * Quiet is above the located box, else the whole screen's (stricter: a ticking status line
+   * delays it), used only with no transcript witness.
+   */
   private screenSettleReady(view: TranscriptView, answer: string, apiError: unknown): boolean {
-    const box = inputBox(this.screen);
-    if (!box || box.text !== "" || hasChoiceDialog(this.screen) || isWorking(this.screen))
-      return false;
-    const quiet = Date.now() - this.screen.aboveBoxChangedAt;
+    const g = this.gateNow();
+    if (!g || !g.ready || g.dialog !== null || workingAboveBox(this.screen) === true) return false;
+    const quiet = this.aboveBoxQuietMs() ?? Date.now() - this.screen.changedAt;
     if (view.availability === "off" && quiet >= this.secondaryQuietMs) return true;
     return (
       (!!answer || !!apiError) && quiet >= 2 * this.t("screenSettleQuietMs", SCREEN_SETTLE_QUIET_MS)
@@ -1506,7 +2350,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       session: view.session,
       transcriptQuietMs: Number.MAX_SAFE_INTEGER,
       chatQuietMs: Number.MAX_SAFE_INTEGER,
-      screen: null,
+      facts: null,
       paneExited: true,
       secondaryQuietMs: this.secondaryQuietMs,
       corroborationMs: 0,
@@ -1565,7 +2409,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   snapshot(): PaneSnapshot {
     const view = this.follower.view();
     const terminal = isTerminalPhase(this.phase);
-    const lastAct = Math.max(this.screen.changedAt, view.lastAppendAt ?? 0);
+    // M4: a resize redraw is not activity, so it never resets idle_seconds
+    const lastAct = Math.max(this.activityChangedAt, view.lastAppendAt ?? 0);
     const cur = view.current;
     const hasTranscript =
       view.availability === "ok" && view.usage.tokensIn + view.usage.tokensOut > 0;
@@ -1656,6 +2501,167 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return { ok: true, queued: this.queue.length };
   }
 
+  async resize(cols: number, rows: number): Promise<PaneResizeOutcome> {
+    const size = clampPaneSize(cols, rows);
+    if (isTerminalPhase(this.phase)) return this.lastSizeOutcome();
+    if (!this.supportsResize)
+      throw new ContractErrorException(
+        "resize_unsupported",
+        'this magmux has no resize op (capabilities.verbs lacks "resize"); a newer magmux is needed'
+      );
+    if (!this.client) return this.pendingOutcome(size);
+    // Same size and nothing in flight: no request. Otherwise magmux's `changed` decides.
+    if (
+      samePaneSize(this.appliedSize, size) &&
+      samePaneSize(this.desiredSize, size) &&
+      !this.resizeDraining
+    )
+      return { ...size, changed: false, seq: this.screen.seq };
+    this.desiredSize = size;
+    return new Promise<PaneResizeOutcome>((resolve, reject) => {
+      this.resizeWaiters.push({ resolve, reject });
+      this.kickResize();
+    });
+  }
+
+  /** Store the size for the redial (`attach` applies it) and answer it as pending. */
+  private pendingOutcome(size: PaneSize): PaneResizeOutcome {
+    this.desiredSize = { ...size };
+    return { ...size, changed: true, seq: this.screen.seq, pending: true };
+  }
+
+  /** A terminal pane's answer: the size of its last screen, unchanged. */
+  private lastSizeOutcome(): PaneResizeOutcome {
+    return { cols: this.screen.cols, rows: this.screen.rows, changed: false, seq: this.screen.seq };
+  }
+
+  /** A screen change at `at` falls within the resize quiet window. */
+  private inResizeQuiet(at: number): boolean {
+    return this.resizeQuietFrom > 0 && at >= this.resizeQuietFrom && at < this.resizeQuietUntil;
+  }
+
+  /** Open the quiet window (or keep the open one's start) and extend its end, never retract it. */
+  private extendResizeQuiet(): void {
+    const now = Date.now();
+    if (now >= this.resizeQuietUntil) this.resizeQuietFrom = now;
+    this.resizeQuietUntil = Math.max(this.resizeQuietUntil, now + RESIZE_QUIET_MS);
+  }
+
+  /**
+   * A size no waiter carries is still owed: a `pending` one stored while the worker sat in
+   * its screen wait, whose redial's `attach` kick found the worker running. Only a size the
+   * worker has not sent on this connection is owed, so a refused one is never resent.
+   */
+  private resizeOwed(): boolean {
+    return (
+      !!this.client &&
+      this.supportsResize &&
+      !isTerminalPhase(this.phase) &&
+      !samePaneSize(this.appliedSize, this.desiredSize) &&
+      !samePaneSize(this.lastSentSize, this.desiredSize)
+    );
+  }
+
+  /** Start the per-pane drain worker unless it runs already. */
+  private kickResize(): void {
+    if (this.resizeDraining) return;
+    this.resizeDraining = true;
+    void this.drainResize().finally(() => {
+      this.resizeDraining = false;
+      // a waiter, or an owed size, that arrived after the loop's last check
+      if (this.resizeWaiters.length > 0 || this.resizeOwed()) this.kickResize();
+    });
+  }
+
+  /**
+   * The single resize worker of this pane (H3, M3): one request at a time, always the
+   * LATEST desired size, so the sizes of a drag coalesce. Each send answers every waiter
+   * queued before it; a waiter that arrives during it gets the next send. With no waiter
+   * it runs once (`attach` re-applying the size after a redial), and again while a size is
+   * owed. The phase is re-checked after every await: a terminal pane answers its last
+   * size, `changed:false`.
+   */
+  private async drainResize(): Promise<void> {
+    let first = true;
+    while (first || this.resizeWaiters.length > 0 || this.resizeOwed()) {
+      first = false;
+      const batch = this.resizeWaiters.splice(0);
+      const answer = (r: PaneResizeOutcome) => {
+        for (const w of batch) w.resolve(r);
+      };
+      const fail = (e: ContractErrorException) => {
+        for (const w of batch) w.reject(e);
+      };
+      if (isTerminalPhase(this.phase)) {
+        answer(this.lastSizeOutcome());
+        continue;
+      }
+      const want = { ...this.desiredSize };
+      const c = this.client;
+      if (!c) {
+        answer(this.pendingOutcome(want));
+        continue;
+      }
+      if (!this.supportsResize) {
+        fail(new ContractErrorException("resize_unsupported", "this magmux has no resize op"));
+        continue;
+      }
+      // opened before the send: the child's SIGWINCH redraw can arrive before the reply
+      this.lastSentSize = want;
+      this.extendResizeQuiet();
+      const r = await c.request<{ cols?: number; rows?: number; changed?: boolean }>(
+        { type: "resize", pane: 0, cols: want.cols, rows: want.rows },
+        RESIZE_REPLY_MS
+      );
+      if (isTerminalPhase(this.phase)) {
+        answer(this.lastSizeOutcome());
+        continue;
+      }
+      if (!r.ok) {
+        // magmux may have applied a request whose reply was lost: the size is unknown, and
+        // its redraw may still arrive
+        if (r.code === "client_lost" || r.code === "client_timeout") {
+          this.appliedSize = null;
+          this.extendResizeQuiet();
+        }
+        // the connection is gone: the redial's attach re-applies desiredSize
+        if (r.code === "client_lost" || r.code === "client_closed") {
+          answer(this.pendingOutcome(this.desiredSize));
+          continue;
+        }
+        fail(
+          new ContractErrorException(
+            "delivery_unavailable",
+            `magmux did not resize the pane: ${r.code}${r.error ? `: ${r.error}` : ""}`
+          )
+        );
+        continue;
+      }
+      const set = {
+        cols: typeof r.result.cols === "number" ? r.result.cols : want.cols,
+        rows: typeof r.result.rows === "number" ? r.result.rows : want.rows,
+      };
+      this.appliedSize = set;
+      if (r.result.changed !== true) {
+        answer({ ...set, changed: false, seq: this.screen.seq });
+        continue;
+      }
+      this.extendResizeQuiet();
+      // H4: the answer's seq is the first screen at the new size (magmux's forced keyframe)
+      await this.waitFor(
+        () =>
+          isTerminalPhase(this.phase) ||
+          (this.screen.cols === set.cols && this.screen.rows === set.rows),
+        RESIZE_SCREEN_MS
+      );
+      if (isTerminalPhase(this.phase)) {
+        answer(this.lastSizeOutcome());
+        continue;
+      }
+      answer({ ...set, changed: true, seq: this.screen.seq });
+    }
+  }
+
   turnAnswer(index: number): string {
     const done = this.answers.get(index);
     if (done !== undefined) return done;
@@ -1670,6 +2676,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   diagnostics(): PaneDiagnostics {
     const cur = this.follower.view().current;
     const rec = this.registryRec;
+    const g = this.gate;
     return {
       magmuxStderr: this.stderrHead,
       registry: rec
@@ -1684,6 +2691,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
             reads: cur.readCoverage.reads,
           }
         : null,
+      gate:
+        g && this.client
+          ? { ready: g.ready, reason: g.reason, detail: g.detail, ageMs: Date.now() - g.receivedAt }
+          : null,
+      lastSend: this.lastSend ? { ...this.lastSend } : null,
     };
   }
 
@@ -1749,6 +2761,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.reaping = true;
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = null;
+    if (this.gateTimer) clearInterval(this.gateTimer);
+    this.gateTimer = null;
     await this.captureGroupBeforeReap();
     const c = this.client;
     if (c && !c.isClosed && !this.paneClosed) {
@@ -1864,6 +2878,142 @@ function signalQuietly(target: number, sig: NodeJS.Signals): void {
   }
 }
 
+/** The pane's size at launch: the owner's initial size, clamped, else the default. */
+function launchSize(o: PaneSessionOptions): PaneSize {
+  return o.initialSize
+    ? clampPaneSize(o.initialSize.cols, o.initialSize.rows)
+    : { cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS };
+}
+
+/** A fresh admission of a typed, file or command plan; its first step follows the plan's kind. */
+function newAdmission(a: {
+  index: number;
+  text: string;
+  plan: Extract<Delivery, { mode: "typed" | "file" | "command" }>;
+  initial: boolean;
+  bound: number;
+}): Admission {
+  const now = Date.now();
+  return {
+    index: a.index,
+    text: a.text,
+    plan: a.plan,
+    line: a.plan.line,
+    initial: a.initial,
+    startedAt: now,
+    deadline: now + a.bound,
+    step: a.plan.mode === "command" ? "type" : "submit",
+    inFlight: false,
+    attempts: 0,
+    submittedUnproven: null,
+    stuckRetried: false,
+    panel: null,
+    stopped: false,
+    clearFirst: false,
+    clearAfter: 0,
+    lostType: null,
+    last: null,
+    noted: new Set(),
+  };
+}
+
+/** The box may hold this admission's own text, as of the reply received now. */
+function markClearFirst(adm: Admission): void {
+  adm.clearFirst = true;
+  adm.clearAfter = Date.now();
+}
+
+/**
+ * The wire request of one admission step and the shape `sendBudgetMs` sizes it by. `keys`
+ * counts the final Enter as one key (an upper bound either way). Every send is typed
+ * (`typed:true`, R1.2: a paste is never retyped and is verified by token count). `noGate`
+ * and `dismissDialogs` are never set.
+ */
+function sendShape(
+  step: SubmitStep,
+  line: string
+): {
+  msg: Record<string, unknown>;
+  budget: { text: string; keys: number; submit: boolean };
+} {
+  switch (step) {
+    case "submit":
+      return {
+        msg: { type: "send", pane: 0, text: line, typed: true, enter: true },
+        budget: { text: line, keys: 1, submit: true },
+      };
+    case "type":
+      return {
+        msg: { type: "send", pane: 0, text: line, typed: true, enter: false },
+        budget: { text: line, keys: 0, submit: false },
+      };
+    case "enter":
+      // a final Enter key is a SUBMIT to the gate (verified `non_empty`), R1.5.4
+      return {
+        msg: { type: "send", pane: 0, keys: ["enter"], enter: false },
+        budget: { text: "", keys: 1, submit: true },
+      };
+    default:
+      return assertNever(step);
+  }
+}
+
+/** `sendBudgetMs` minus its readiness wait: what an attempt costs beyond waiting for the box. */
+function fixedSendMs(step: SubmitStep, line: string): number {
+  const rt = SEND_READY_WAIT_DEFAULT_MS;
+  return sendBudgetMs({ ...sendShape(step, line).budget, readyTimeoutMs: rt }) - rt;
+}
+
+/**
+ * The `readyTimeoutMs` of the next attempt, or null when none fits (R1.4): the client
+ * timeout (`sendBudgetMs + SEND_CLIENT_SLACK_MS`) must end by the deadline, and a command's
+ * TYPE leaves room for its Enter SUBMIT. Never above magmux's default 10 s, never below
+ * `MIN_READY_TIMEOUT_MS`.
+ */
+function readyTimeoutFor(step: SubmitStep, line: string, leftMs: number): number | null {
+  const reserve =
+    step === "type" ? fixedSendMs("enter", line) + SEND_CLIENT_SLACK_MS + MIN_READY_TIMEOUT_MS : 0;
+  const rt = Math.min(
+    SEND_READY_WAIT_DEFAULT_MS,
+    leftMs - fixedSendMs(step, line) - SEND_CLIENT_SLACK_MS - reserve
+  );
+  return rt < MIN_READY_TIMEOUT_MS ? null : Math.floor(rt);
+}
+
+/** The latest reply of an admission that ended with nothing submitted, in the gate's words. */
+function describeLastReply(
+  adm: { last: SendOutcome | null; attempts: number },
+  gate: GateInput | null
+): string {
+  const o = adm.last;
+  if (!o) {
+    const g = gate ? (gate.ready ? "ready" : (gate.reason ?? "not ready")) : "unknown";
+    return adm.attempts === 0
+      ? `no gated send fitted before the deadline (gate: ${g})`
+      : `no magmux reply (gate: ${g})`;
+  }
+  switch (o.kind) {
+    case "busy":
+      return `last magmux reply: busy ${o.reason || "unknown"}${o.typed ? " (typed, Enter withheld)" : ""}${gate?.detail ? ` (${gate.detail})` : ""}`;
+    case "not_accepted":
+      return `last magmux reply: not_accepted ${o.reason}`;
+    case "accepted":
+      return `last magmux reply: ok ${o.accept} (${o.evidence})`;
+    case "in_box":
+      return "last magmux reply: in_box (the command was typed, its Enter never sent)";
+    case "bad_request":
+      return `last magmux reply: bad_request ${o.error}`;
+    case "reply_lost":
+    case "unsent":
+    case "pane_gone":
+      return `last magmux reply: ${o.code}`;
+    case "unexpected":
+      return `last magmux reply: ${o.code}`;
+    default:
+      return assertNever(o);
+  }
+}
+
 function isControl(text: string): boolean {
   const t = text.trim();
   return t === "/exit" || t === "/quit";
@@ -1917,7 +3067,13 @@ function preparePane(
     dirs = createLaunchDirs(root);
     const argv = buildClaudishPaneArgv(o.spawnModel, o.sessionUuid, dirs.turnDir, o.callerFlags);
     writeLauncherFiles(dirs.ctlDir, launcherScript(cwd, launch, argv));
-    const { magmuxEnv } = buildPaneEnv({ parentEnv, slotEnv: o.slotEnv, cwd, ctlDir: dirs.ctlDir });
+    const { magmuxEnv } = buildPaneEnv({
+      parentEnv,
+      slotEnv: o.slotEnv,
+      cwd,
+      ctlDir: dirs.ctlDir,
+      ...launchSize(o),
+    });
     return { paneId, sockPath, cwd, ...dirs, magmuxEnv };
   } catch (e) {
     for (const d of dirs ? [dirs.ctlDir, dirs.turnDir] : [])

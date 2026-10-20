@@ -21,6 +21,13 @@
  *
  * Nothing here is a timer that ends work (D10): S's window only confirms an ending that
  * has already happened, and an unsettled turn just reports its `activity`.
+ *
+ * Corroboration (architecture-v2 §7.1, R1.5.1) reads magmux's input gate, not the box: an
+ * ending is clean when the gate is ready (which already means an EMPTY box), names no
+ * dialog, and no working row is drawn above the box located by the cursor. Corroboration
+ * can DELAY a transcript-proven ending, never veto it: after `corroborationGraceMs` of chat
+ * quiet the turn settles anyway, with `settle_gate_unconfirmed:<why>`. That window confirms
+ * an ending Claude Code already recorded, the same standing as S's window, so D10 holds.
  */
 
 import type { SessionFacts, TurnView } from "./transcript-follower.js";
@@ -38,15 +45,23 @@ export const CORROBORATION_MS = 500;
 /** Stop reasons the harness itself continues; they never end a turn except through I. */
 const CONTINUING = new Set(["tool_use", "pause_turn"]);
 
-export interface ScreenFacts {
-  /** an input box is visible and its typed text is empty (placeholder cells excluded) */
-  boxEmpty: boolean;
-  /** hasChoiceDialog(screen) */
-  choiceDialog: boolean;
-  /** isWorking(screen) — a veto only */
-  working: boolean;
-  /** ms since a row above the input box last changed */
-  aboveBoxQuietMs: number;
+/**
+ * The most corroboration may delay a transcript-proven ending (Jack's decision J2, R1.6):
+ * the secondary window, so a gate that cannot confirm idle costs at most what S costs.
+ */
+export const CORROBORATION_GRACE_MS = SECONDARY_QUIET_MS;
+
+/** What the gate and the screen say at a candidate ending (architecture-v2 §3.2, R1.5.1). */
+export interface CorroborationFacts {
+  /**
+   * magmux's published input gate; null when its last reading is stale. `ready` already
+   * means the box is empty: the published view refuses `box_not_empty` (R1.5.1).
+   */
+  gate: { ready: boolean; dialog: string | null; reason: string | null } | null;
+  /** a working row above the LOCATED box; null when the box is not located (never a veto) */
+  working: boolean | null;
+  /** ms since a row above the located box last changed; null when the box is not located */
+  aboveBoxQuietMs: number | null;
 }
 
 export interface SettleInput {
@@ -56,11 +71,13 @@ export interface SettleInput {
   transcriptQuietMs: number;
   /** ms since this turn's last main-chain chat record was READ (corroboration window) */
   chatQuietMs: number;
-  /** null while the socket is disconnected: the in-memory screen is stale */
-  screen: ScreenFacts | null;
+  /** null while the socket is disconnected: the in-memory screen and the gate are stale */
+  facts: CorroborationFacts | null;
   paneExited: boolean;
   secondaryQuietMs?: number;
   corroborationMs?: number;
+  /** default CORROBORATION_GRACE_MS */
+  corroborationGraceMs?: number;
 }
 
 export type SettledBy = "turn_duration" | "interrupt" | "quiet" | "exit" | "local_command";
@@ -100,12 +117,28 @@ function activityOf(t: TurnView | null): string {
   return "thinking";
 }
 
+/**
+ * Why the gate does not confirm idle, or null when it does (R1.5.1). A stale gate reading
+ * is unknown; an unlocated box (`working: null`) is not a reason.
+ */
+function unconfirmedBy(f: CorroborationFacts): string | null {
+  const g = f.gate;
+  if (g === null) return "gate_unknown";
+  if (!g.ready || g.dialog !== null) return (g.reason ?? "not_ready").slice(0, 48);
+  if (f.working === true) return "working";
+  return null;
+}
+
 function corroborated(input: SettleInput): { ok: boolean; anomaly?: string } {
   const quiet = input.corroborationMs ?? CORROBORATION_MS;
   if (input.chatQuietMs < quiet) return { ok: false };
-  if (!input.screen) return { ok: true, anomaly: "screen_unverified" };
-  const s = input.screen;
-  return { ok: s.boxEmpty && !s.choiceDialog && !s.working };
+  if (!input.facts) return { ok: true, anomaly: "screen_unverified" };
+  const why = unconfirmedBy(input.facts);
+  if (why === null) return { ok: true };
+  // never a permanent veto: an ending the transcript proved settles after the grace
+  if (input.chatQuietMs >= (input.corroborationGraceMs ?? CORROBORATION_GRACE_MS))
+    return { ok: true, anomaly: `settle_gate_unconfirmed:${why}` };
+  return { ok: false };
 }
 
 type Path = SettleDecision | null; // null = this path does not apply / not yet
@@ -150,9 +183,12 @@ function pathPrimary(t: TurnView, input: SettleInput): Path {
 /** S — no turn_duration: Stop hooks known finished and full quiet for the secondary window. */
 function pathSecondary(t: TurnView, input: SettleInput): Path {
   if (!endingStop(t) || !stopHooksFinished(t, input.session)) return null;
-  if (!input.screen) return null; // S waits for the reconnect
+  if (!input.facts) return null; // S waits for the reconnect
   const window = input.secondaryQuietMs ?? SECONDARY_QUIET_MS;
-  if (input.transcriptQuietMs < window || input.screen.aboveBoxQuietMs < window) return null;
+  if (input.transcriptQuietMs < window) return null;
+  // box not located: the transcript's quiet decides alone (S is already gated on Stop hooks)
+  const above = input.facts.aboveBoxQuietMs;
+  if (above !== null && above < window) return null;
   const c = corroborated(input);
   return c.ok
     ? settledAs("quiet", t.lastAssistant?.stopReason ?? null, c, ["settled_without_turn_duration"])

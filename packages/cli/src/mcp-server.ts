@@ -79,6 +79,7 @@ import {
   preflightTeamRun,
   readTeamInputFile,
   readTeamStatus,
+  resizeTeamSlot,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -138,7 +139,7 @@ Each session is an interactive Claude Code running the model in its own headless
 3. send_input may be called at any time; it is queued until the session is idle.
 4. COMPLETED: call get_output for the answer.
 5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
-6. capture_session reads a session's current screen; cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
+6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
 
 The session_id from create_session is the key for every session tool.`;
 
@@ -458,7 +459,7 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "the child never read all of its task file — check that its agent or tool flags allow " +
     "Read and that the model can call tools; `what` says which lines were read",
   child_exited: "read the evidence screen, then retry or drop the model",
-  pane_lost: "magmux died — check `magmux --version` ≥ 0.14.0 and retry",
+  pane_lost: "magmux died — check `magmux --version` ≥ 0.15.1 and retry",
   blocked:
     "the child asked a question team cannot answer — make the prompt self-contained or use " +
     "create_session",
@@ -797,6 +798,17 @@ function optionalInteger(raw: unknown, name: string): number | undefined {
   return raw;
 }
 
+/** A required integer argument such as `cols`; absent or not an integer → `invalid_args`. */
+function requiredInteger(raw: unknown, name: string, mode?: string): number {
+  const n = optionalInteger(raw, name);
+  if (n === undefined)
+    throw new ContractErrorException(
+      "invalid_args",
+      `'${name}' is required${mode ? ` for mode '${mode}'` : ""}`
+    );
+  return n;
+}
+
 /**
  * `team(mode="status")` (§8 B): the legacy payload of the newest run at `path` plus
  * `contract_version`, `capabilities` and `run`. Given a `run_id` that a newer run at the
@@ -838,9 +850,12 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
   });
 }
 
-/** `list` / `status` / `cancel` / `capture`: memory reads, JSON answers, ContractError errors. */
+/**
+ * `list` / `status` / `cancel` / `capture` / `resize`: memory reads and the two pane verbs,
+ * JSON answers, ContractError errors.
+ */
 export async function teamContractVerb(
-  mode: "list" | "status" | "cancel" | "capture",
+  mode: "list" | "status" | "cancel" | "capture" | "resize",
   args: Record<string, unknown>
 ): Promise<ToolAnswer> {
   try {
@@ -852,6 +867,8 @@ export async function teamContractVerb(
     const slot = optionalString(args.slot, "slot");
     const since = optionalInteger(args.since_seq, "since_seq");
     const spans = optionalBoolean(args.spans, "spans");
+    const cols = mode === "resize" ? requiredInteger(args.cols, "cols", mode) : undefined;
+    const rows = mode === "resize" ? requiredInteger(args.rows, "rows", mode) : undefined;
     switch (mode) {
       case "status":
         return contractAnswer(teamStatusAnswer(path, runId));
@@ -861,6 +878,13 @@ export async function teamContractVerb(
         if (slot === undefined)
           throw new ContractErrorException("invalid_args", "'slot' is required for mode 'capture'");
         return contractAnswer(captureTeamSlot(path, slot, since, spans, runId));
+      }
+      case "resize": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'resize'");
+        return contractAnswer(
+          await resizeTeamSlot(path, slot, cols as number, rows as number, runId)
+        );
       }
     }
   } catch (e) {
@@ -1412,8 +1436,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "slot is an interactive Claude Code session in its own headless magmux pane. " +
       "Modes: 'run' (START the models and return once each has taken its prompt — it does " +
       "NOT wait for answers), 'status' (per-slot state; read `run.slots`), 'list' (every " +
-      "run this server holds), 'capture' (one slot's screen), 'cancel' (stop one slot or " +
-      "the whole run), 'judge' (blind-vote on existing outputs), 'run-and-judge' (the " +
+      "run this server holds), 'capture' (one slot's screen), 'resize' (set one slot's " +
+      "terminal size), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
       "blocking pipeline). Poll 'status' (read run.slots) or 'list'. " +
       "NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted. A team slot is a full " +
       "Claude Code session and may work for a long time; a slot inside a build or test " +
@@ -1430,21 +1454,21 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture"],
+          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture", "resize"],
           description:
             "Operation mode. 'run' STARTS the models and returns once every slot has taken " +
             "its prompt (or failed to) — it does not wait for answers. Poll 'status' (read " +
             "`run.slots`) or 'list' for progress, then 'judge' once the slots have " +
-            "finished. 'capture' returns one slot's screen. 'run-and-judge' is the blocking " +
-            "pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
+            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size. " +
+            "'run-and-judge' is the blocking pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
             "the whole run.",
         },
         slot: {
           type: "string",
           description:
-            "For 'cancel' and 'capture': the anonymised slot id (e.g. '02') from the slot " +
-            "map 'run' returned. 'capture' requires it; for 'cancel', omit it to stop every " +
-            "slot in the run.",
+            "For 'cancel', 'capture' and 'resize': the anonymised slot id (e.g. '02') from the " +
+            "slot map 'run' returned. 'capture' and 'resize' require it; for 'cancel', omit it " +
+            "to stop every slot in the run.",
         },
         path: {
           type: "string",
@@ -1455,7 +1479,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         run_id: {
           type: "string",
           description:
-            "For 'status', 'cancel' and 'capture': the run_id a 'run' answer returned. It " +
+            "For 'status', 'cancel', 'capture' and 'resize': the run_id a 'run' answer " +
+            "returned. It " +
             "addresses THAT run while this server retains it, even after a newer run reused " +
             "the path. Omit it to address the newest run at 'path'.",
         },
@@ -1468,6 +1493,18 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         spans: {
           type: "boolean",
           description: "For 'capture': also return the colour/attribute spans of each line.",
+        },
+        cols: {
+          type: "integer",
+          description:
+            "For 'resize' (required): the terminal width in columns, clamped to 80–9999. The " +
+            "answer {run_id, path, slot, cols, rows, changed, seq} reports the size set.",
+        },
+        rows: {
+          type: "integer",
+          description:
+            "For 'resize' (required): the terminal height in rows, clamped to 24–9999 and to " +
+            "at most 4 000 000 cells (cols × rows).",
         },
         models: {
           type: "array",
@@ -1561,7 +1598,13 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       const mode = args.mode as string;
-      if (mode === "list" || mode === "status" || mode === "cancel" || mode === "capture") {
+      if (
+        mode === "list" ||
+        mode === "status" ||
+        mode === "cancel" ||
+        mode === "capture" ||
+        mode === "resize"
+      ) {
         return teamContractVerb(mode, args);
       }
       try {
@@ -1907,7 +1950,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "it in its own headless magmux pane. Returns at once with state STARTING; nothing is " +
       "pushed while it runs: poll list_sessions (about once every 10 s) for its state, then " +
       "call get_output once it is COMPLETED. With a prompt it is one-shot (it ends when that turn " +
-      "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.14.0 " +
+      "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.15.1 " +
       "(darwin and linux).",
     inputSchema: {
       type: "object",
@@ -2225,7 +2268,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
   tools.push({
     name: "capture_session",
     description:
-      "Read a session's current terminal screen (160×50): {seq, cols, rows, cursor, lines, final, " +
+      "Read a session's current terminal screen: {seq, cols, rows, cursor, lines, final, " +
       "spans?}. A memory read, meant for polling about once per second. Pass the last `seq` as " +
       "since_seq to get {unchanged:true, seq, final} while nothing changed. `final:true` is the " +
       "last screen of a closed pane. Errors are a JSON ContractError.",
@@ -2253,6 +2296,44 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const since = optionalInteger(args.since_seq, "since_seq");
         const spans = optionalBoolean(args.spans, "spans");
         return contractAnswer(sessionManager.captureSession(sessionId, since, spans));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "resize_session",
+    description:
+      "Set a session's terminal size: the child gets a real SIGWINCH and Claude Code reflows. " +
+      "Allowed at any time, mid-turn included; the last call wins. The size is clamped to " +
+      "cols 80–9999, rows 24–9999 and at most 4 000 000 cells (magmux's limits); the answer " +
+      "{session_id, cols, rows, changed, seq, pending?} reports the size set. `seq` is the screen's seq after the resize: the next capture_session " +
+      "shows the new cols/rows. `changed:false` = already that size. `pending:true` = the pane " +
+      "is starting or its socket is reconnecting; the size is applied then. A finished session " +
+      "answers its last size with changed:false. Errors are a JSON ContractError " +
+      "(`resize_unsupported` when the installed magmux has no resize op).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        cols: { type: "integer", description: "Terminal width in columns (clamped to 80–9999)" },
+        rows: {
+          type: "integer",
+          description: "Terminal height in rows (clamped to 24–9999 and 4 000 000 cells)",
+        },
+      },
+      required: ["session_id", "cols", "rows"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const cols = requiredInteger(args.cols, "cols");
+        const rows = requiredInteger(args.rows, "rows");
+        return contractAnswer(await sessionManager.resizeSession(sessionId, cols, rows));
       } catch (e) {
         return contractErrorAnswer(e);
       }

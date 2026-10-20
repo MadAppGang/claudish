@@ -1,4 +1,4 @@
-> The 14-tool MCP surface and its four groups, the sessions behind it (panes, records, polling), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+> The 15-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -21,7 +21,8 @@ it said `9.0.0` until 10.7.0).
 - **SessionManager** — the sessions' policy and records: creates sessions, owns the queue of
   `send_input`, decides a turn's verdict, writes the session records, enforces `timeout_seconds`
 - **PaneSession** (`packages/cli/src/pane/`) — the mechanism: one interactive Claude Code in its
-  own headless magmux pane, with the transcript as its turn oracle. Team uses the same driver
+  own headless magmux pane, with the transcript as its turn oracle and magmux's input gate deciding
+  input (readiness, dialogs, prompt acceptance). Team uses the same driver
 - **ScrollbackBuffer** — in-memory ring buffer (2000 lines), holding each settled turn's answer prose
 
 ### The transport: an interactive Claude Code in a headless magmux pane
@@ -51,7 +52,7 @@ A refusal is an `invalid_args` error before any credential work. `create_session
 argument becomes `--agent <name>`; an unknown name is refused by the child itself (FAILED
 `agent_rejected`), so claudish runs no agent probe of its own.
 
-**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.14.0,
+**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.17.0,
 else `Error: magmux_unavailable: …`), credential pre-hydration, the parent session read, a pane
 reservation (`Error: pane_limit: …` past 48 live panes per user), `prompt.md`, `spawn.json`, then the
 pane. `create_session` returns `{session_id, state}` once the pane exists, without waiting for boot.
@@ -121,9 +122,19 @@ at the verdict of the turn that prompt started. WITHOUT a prompt it is interacti
 `cancel_session`, the timeout, or the child exiting 0 after `/exit` or a settled turn. A
 `send_input` call converts a one-shot session to interactive.
 
-**`waiting_for_input` means a real wait, and nothing else.** It holds iff the session is idle at
-an empty input box between turns, or a turn is blocked on a question; `awaiting_permission` iff a
-permission or plan-approval dialog is open. A one-shot session is terminal at its verdict, so there
+**`waiting_for_input` means a real wait, and nothing else.** It holds iff the session is idle
+between turns — the turn settled on Claude Code's own end-of-turn record, and magmux's input gate
+reported the box ready (which means empty) with no dialog, or could not confirm that within 32 s of
+chat quiet (recorded as `settle_gate_unconfirmed:<why>`) — or a turn is blocked on a question
+(a pending AskUserQuestion in the transcript, or another pending tool with the gate reporting
+`dialog:question`). `awaiting_permission` holds iff a tool is pending in the transcript and the gate
+reports `dialog:permission` or `dialog:plan`. Before the gate these rested on claudish finding the
+box on the screen; the moments they open moved slightly: the first wait opens at the gate's `ready`
+(box and raw terminal still 1 s, plus Claude Code's boot reset or a 3.5 s floor), polled every
+250 ms, instead of a box stable 3 s; RUNNING starts at the gate's history evidence, earlier than the
+transcript witness behind a slow UserPromptSubmit hook; and a session that once stayed RUNNING for
+good on a box claudish could not find now reaches `waiting_for_input` after the 32 s grace. The
+record vocabulary of `waits.jsonl` is unchanged. A one-shot session is terminal at its verdict, so there
 is no "answered but still exiting" state for a wait to be confused with — 10.4.0's `finishing`
 event is gone with the transport (RB1). The wait for Claude Code's end-of-turn record after
 the model's message ends survives only as `activity:"finishing"` on a RUNNING session. A
@@ -266,7 +277,9 @@ screen, so that is what is captured.
   `outputBytes`, turns, tokens, `costUsd`, `toolCalls`, `pendingInputs`; the pane facts — `phase`,
   `connected`, the redacted `screenTail`, `sockPath`, the head of magmux's own stderr,
   `preambleBytes`, the current turn's `readCoverage`, the child's `claudeCodeVersion`,
-  `anomalies`; the tail of the event ring; the upstream error bodies; and the paths: the
+  `anomalies`, the input gate's fresh reading `gate: {ready, reason, detail, ageMs} | null` and the
+  last gated send `lastSend: {kind, reason?, accept?, evidence?, retypeCause?, attempts} | null`;
+  the tail of the event ring; the upstream error bodies; and the paths: the
   transcript, the session directory, `events.jsonl`, `upstream-errors.jsonl`. A session no longer in
   memory answers from its directory, including `screen.txt`.
 - **`outputBytes` counts the CHILD's prose only.** `recordNote` exists so claudish's own
@@ -304,12 +317,12 @@ into one unattributable file. The capture **redacts at write time** now that it 
 only a path a user opted into: a 401/403 body routinely echoes the credential that failed,
 and `get_diagnostics` hands these records to an agent.
 
-## MCP Tools (14 total)
+## MCP Tools (15 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
 - **Agentic** (3): `preflight`, `team`, `report_error`
-- **Session** (7): `create_session`, `send_input`, `get_output`, `cancel_session`,
-  `list_sessions`, `get_diagnostics`, `capture_session`
+- **Session** (8): `create_session`, `send_input`, `get_output`, `cancel_session`,
+  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`
 - **Debug** (1): `compare_models`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
@@ -327,10 +340,22 @@ what a caller cannot see from the model id.
 `pane-session.md`): `list_sessions` answers `{contract_version, capabilities, sessions}` with one
 `SessionRow` per session (state, reason, `reason_detail`, tokens, `cost_usd`, tool calls, turns, `idle_seconds`,
 `activity`, `pane`); `cancel_session` answers `{session_id, state, changed}`; `capture_session`
-answers the session's current 160×50 screen `{seq, cols, rows, cursor, lines, final, spans?}`, or
-`{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant for polling
-at about 1 Hz. Their errors are a JSON `ContractError`. `team` gains the same verbs as modes
-(`list`, `status`, `capture`, `cancel`).
+answers the session's current screen `{seq, cols, rows, cursor, lines, final, spans?}` (160×50 at
+launch), or `{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant
+for polling at about 1 Hz. `resize_session` answers `{session_id, cols, rows, changed, seq,
+pending?}`: the size actually set after clamping to 80–9999 × 24–9999 and at most 4 000 000 cells, and the screen `seq` once the
+redraw at that size has landed, so a capture with that `since_seq` already sees it. Their errors
+are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
+`resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or
+the pane is unreachable). `capabilities` lists `resize` since the pin moved to magmux 0.15.1. The
+resize floor was 0.15.1, not 0.15.0 (the first release with the op; the pane floor is now 0.17.0, for
+the input gate's transcript binding): 0.15.0 kept the scroll region's old
+bottom after a row grow and clamped cursor-down to it, so Claude Code's relative-move redraw
+collapsed its input box onto the old last row and `pathPrimary` never settled the next turn. The
+fake child redraws with relative cursor-down for that reason. The per-pane check of magmux's `verbs` stays as the defence against a
+binary that passes the version floor but lacks the op. `team` gains the same verbs as modes (`list`, `status`, `capture`,
+`cancel`, `resize`). Why the size is the viewer's and what resizing costs the screen heuristics:
+`pane-session.md`, "Terminal size".
 
 The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
@@ -341,12 +366,12 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 
 | Value | Tools |
 |---|---|
-| unset, `all` | all 14 |
+| unset, `all` | all 15 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error` |
-| `session` | the 7 session tools |
+| `session` | the 8 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 14, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+| `channel`, or any other value | all 15, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
 
 Unknown values keep selecting everything, because a server that lists fewer tools than its host
 expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
@@ -354,7 +379,7 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 14 tools` after the unknown-value warning, but an MCP
+stderr startup line shows `tools: channel, 15 tools` after the unknown-value warning, but an MCP
 host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
@@ -545,7 +570,7 @@ not checked". `testing.md` has the rules.
   `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
   and a live team run.
 
-**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 14-name list, the session-only 7 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` and `capture_session` each broke both pins on the way in, which is the guard working.
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session` and `resize_session` each broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 

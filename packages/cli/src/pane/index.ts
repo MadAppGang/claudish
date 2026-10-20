@@ -38,11 +38,25 @@ export {
 export {
   type PaneBlock,
   type PaneDiagnostics,
+  type PaneLastSend,
   type PaneSession,
+  type PaneResizeOutcome,
   type PaneSessionOptions,
   PaneStartError,
   type SendResult,
   startPaneSession,
 } from "./pane-session.js";
+export {
+  clampPaneSize,
+  DEFAULT_PANE_COLS,
+  DEFAULT_PANE_ROWS,
+  MAX_PANE_CELLS,
+  MAX_PANE_COLS,
+  MAX_PANE_ROWS,
+  MIN_PANE_COLS,
+  MIN_PANE_ROWS,
+  type PaneSize,
+  RESIZE_QUIET_MS,
+} from "./pane-size.js";
 export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 export type { Phase } from "./slot-state.js";

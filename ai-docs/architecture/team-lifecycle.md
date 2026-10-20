@@ -96,7 +96,9 @@ its handle, then SIGTERM and SIGKILL on the pane's process GROUP after an
 identity check. The group matters: `claudish` runs the real CLI under Bun, which
 runs `claude`, with a Bash-tool grandchild below that, so signalling one process
 leaves the rest billing. `team(mode:"cancel")` stops one slot (`slot`) or the
-whole run and answers per slot `{state, changed}`.
+whole run and answers per slot `{state, changed}`. `team(mode:"resize")` changes
+one slot's terminal size and nothing else — it neither ends nor restarts a turn,
+and its redraw does not count as activity (`pane-session.md`, "Terminal size").
 
 ## `outputSize` is not a progress signal, and callers read it as one
 
@@ -168,7 +170,9 @@ than working around it.
 
 **It does block through boot and admission, and only through them.** The bound
 is boot 90 s + admission 30 s = 120 s, before any work exists, so nothing can be
-lost to it; with the fake child a slot reaches RUNNING in 1.2–1.9 s. Returning any
+lost to it. The 30 s is strict: every gated send of an admission is sized so its
+client timeout ends by the deadline (`pane-session.md`, "Delivery mechanics"). With
+the fake child the gate is ready 3.9–4.2 s after spawn (magmux's 3.5 s boot floor). Returning any
 earlier breaks a real consumer: the dev plugin's team gate polls until no slot is
 RUNNING, so a slot still STARTING on its first poll would end the gate with zero
 ballots. Boot and admission failures are therefore in the `run` answer itself.
@@ -184,7 +188,7 @@ Runs this process started are kept in memory keyed by `run_id`
 (`<team_session_id>-<base36 start ms>-<6 hex>`), with an index of the newest run
 per path. A path holds at most one ACTIVE run; `run` on an ACTIVE path is refused.
 A SETTLED run (every slot terminal) stays listable and capturable for 30 minutes,
-at most 20 of them, oldest evicted first. `status`, `cancel` and `capture` take an
+at most 20 of them, oldest evicted first. `status`, `cancel`, `capture` and `resize` take an
 optional `run_id`, which addresses THAT run while it is retained even after a newer
 run reused the path; without one they address the newest run at `path`. After
 eviction, or after a server restart, `status` still answers from `status.json`
@@ -256,7 +260,7 @@ the non-terminal STARTING, RUNNING, AWAITING_INPUT and AWAITING_PERMISSION
 included — as failed; the verdict is `completed` when any slot is ok (the channel
 frame's rule), `cancelled` when all were cancelled. Only `run` writes a record:
 `run-and-judge` returns its verdict in the call, and `judge`/`status`/`list`/
-`capture`/`cancel` start no work. `loadDiskRecord` returns null for a
+`capture`/`cancel`/`resize` start no work. `loadDiskRecord` returns null for a
 `kind: "team"` directory, so session tools answer a `team-*` id as unknown and
 `list_sessions` (in-memory only) never lists one.
 
