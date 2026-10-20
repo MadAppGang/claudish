@@ -1,6 +1,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { ENV } from "./config.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
@@ -977,13 +986,42 @@ function persistErrorLog(
 
 /**
  * Validate that sessionPath is within cwd (prevents path traversal in MCP tools).
- * Returns the resolved absolute path.
+ *
+ * Both sides are compared as realpaths, so symlinks are resolved: another
+ * spelling of cwd (macOS `/var` vs `/private/var`) is accepted, and a symlink
+ * inside cwd that points outside it — or dangles — is refused. The path may not
+ * exist yet; its nearest existing ancestor is resolved and the rest re-appended.
+ * Returns the resolved absolute path in the caller's spelling.
  */
 export function validateSessionPath(sessionPath: string): string {
   const resolved = resolve(sessionPath);
-  const cwd = process.cwd();
-  if (!resolved.startsWith(`${cwd}/`) && resolved !== cwd) {
-    throw new Error(`Session path must be within current directory: ${sessionPath}`);
+  const outside = () => new Error(`Session path must be within current directory: ${sessionPath}`);
+
+  // Walk up to the nearest ancestor that exists (lstat: a dangling link counts as existing).
+  let existing = resolved;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      lstatSync(existing);
+      break;
+    } catch {
+      const parent = dirname(existing);
+      if (parent === existing) break;
+      tail.unshift(basename(existing));
+      existing = parent;
+    }
+  }
+
+  let real: string;
+  try {
+    real = join(realpathSync(existing), ...tail);
+  } catch {
+    throw outside(); // a dangling symlink leads nowhere we can vouch for
+  }
+
+  const cwd = realpathSync(process.cwd());
+  if (real !== cwd && !real.startsWith(cwd + sep)) {
+    throw outside();
   }
   return resolved;
 }
