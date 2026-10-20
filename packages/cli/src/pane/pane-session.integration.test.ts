@@ -734,7 +734,9 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.send("/cost").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
           const s = await until(r, (x) => x.turnsCompleted === 1 && x.state === "AWAITING_INPUT");
-          expect(Date.now() - at).toBeLessThan(10_000); // well inside the 30 s admission bound
+          // Held behind the panel means the 30 s admission bound (≈ 30 s); 20 s leaves room
+          // for full-suite load, which measured 13.3 s for a prompt that was not held.
+          expect(Date.now() - at).toBeLessThan(20_000);
           expect(s.anomalies).toContain("panel_dismissed");
           expect(s.anomalies).toContain("panel_command");
           expect(s.anomalies).not.toContain("send_not_accepted");
