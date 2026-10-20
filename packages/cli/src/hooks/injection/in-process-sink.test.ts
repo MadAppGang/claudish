@@ -135,7 +135,9 @@ describe("sinkFromEnv with a process sink", () => {
     const inProcess = new InProcessSink();
     setProcessSink(inProcess);
     const env = { [HOOK_INBOX_ENV]: "/tmp/never-written-inbox.jsonl" };
-    expect(sinkFromEnv({ ...env, CLAUDISH_PANE_CHILD: "1" })).toBeInstanceOf(InboxFileSink);
+    expect(
+      sinkFromEnv({ ...env, CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: "/w" })
+    ).toBeInstanceOf(InboxFileSink);
     // outside a pane child the variable is not an owner's: the process sink stays
     expect(sinkFromEnv(env)).toBe(inProcess);
   });

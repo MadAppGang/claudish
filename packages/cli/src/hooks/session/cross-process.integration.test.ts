@@ -1,6 +1,6 @@
 /**
  * Cross-process session hooks (hook-system architecture §2.3, §11.3 "Cross-process"):
- * the owner (a real channel `SessionManager` in this process) + the REAL child claudish
+ * the owner (a real MCP `SessionManager` in this process) + the REAL child claudish
  * (`src/index.ts` as `CLAUDISH_BIN`) in a real magmux pane + the fake Claude Code in
  * proxied mode (`FAKE_CLAUDE_PROXY=1`), whose every turn is a streaming `/v1/messages`
  * through the child's proxy to a stub upstream (`stub@fake-model` via `customEndpoints`
@@ -13,8 +13,8 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { SessionManager } from "../../channel/session-manager.js";
 import * as logger from "../../logger.js";
+import { SessionManager } from "../../mcp-session/session-manager.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,

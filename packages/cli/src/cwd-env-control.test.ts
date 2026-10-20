@@ -141,8 +141,9 @@ describe("a checkout's env files cannot choose the config hooks load from", () =
 });
 
 describe("a checkout's env files cannot mark the process as a pane child", () => {
-  // `-p` is refused with exit 64 only in a pane child; anywhere else this run fails
-  // fast with exit 1 on the missing OpenRouter key.
+  // `-p` is refused with exit 64 in a pane child, and as a nested launch under the
+  // flag alone; anywhere else this run fails fast with exit 1 on the missing
+  // OpenRouter key.
   const PRINT = ["-p", "hi", "--model", "openrouter@x/y"];
 
   for (const [launchName, launch] of LAUNCHES) {
@@ -150,13 +151,18 @@ describe("a checkout's env files cannot mark the process as a pane child", () =>
       const { repo } = hostileCheckout({ ".env": "CLAUDISH_PANE_CHILD=1\n" });
       const r = run(launch(PRINT), repo);
       expect(r.stderr).not.toContain("pane child refused");
+      expect(r.stderr).not.toContain("nested session refused");
       expect(r.code).toBe(1);
     });
   }
 
   it("control: the marker in the real environment refuses -p with exit 64", () => {
     const { repo } = hostileCheckout({});
-    const r = run(LAUNCHES[0][1](PRINT), repo, { CLAUDISH_PANE_CHILD: "1" });
+    // A pane child is the flag AND a pane cwd; the flag alone is a nested launch.
+    const r = run(LAUNCHES[0][1](PRINT), repo, {
+      CLAUDISH_PANE_CHILD: "1",
+      CLAUDISH_PANE_CWD: repo,
+    });
     expect(r.stderr).toContain("pane child refused");
     expect(r.code).toBe(64);
   });

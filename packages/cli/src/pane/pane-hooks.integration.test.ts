@@ -6,8 +6,8 @@
  * The binding is a test double whose `settle()` returns a promise the test resolves,
  * except where a row says "real binding" (H-21, H-21b, H-24, the cap and the
  * sessionStart rows), which run `createSessionHookBinding` over a real engine. The
- * owner is the real channel `SessionManager` (observed through get_output,
- * get_diagnostics, its frames and events.jsonl) or the real team orchestrator
+ * owner is the real MCP `SessionManager` (observed through get_output,
+ * get_diagnostics and events.jsonl, whose `state` records give the row events) or the real team orchestrator
  * (response-<slot>.md and the slot's status row). Every test ends with the
  * no-orphan check.
  */
@@ -17,8 +17,6 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "../channel/session-manager.js";
-import type { ChannelEvent, SessionManagerOptions } from "../channel/types.js";
 import { HookEngine } from "../hooks/engine.js";
 import type { JournalEntry } from "../hooks/journal.js";
 import type { HookDefinition } from "../hooks/public.js";
@@ -29,6 +27,8 @@ import {
   type SessionHookBinding,
   createSessionHookBinding,
 } from "../hooks/session/binding.js";
+import { SessionManager, sessionEventFor } from "../mcp-session/session-manager.js";
+import type { SessionManagerOptions } from "../mcp-session/types.js";
 import {
   type TeamHandle,
   type TeamRunOptions,
@@ -176,7 +176,8 @@ interface Chan {
   t: PaneTestEnv;
   manager: SessionManager;
   id: string;
-  frames: ChannelEvent[];
+  /** the row event of every state the session entered, from events.jsonl `state` records */
+  rowEvents(): string[];
   info(): ReturnType<SessionManager["getSession"]>;
   output(): string;
   anomalies(): readonly string[];
@@ -195,7 +196,6 @@ async function channel(o: {
   extraEnv?: Record<string, string>;
 }): Promise<Chan> {
   const t = env(o.script, o.extraEnv);
-  const frames: ChannelEvent[] = [];
   const b = o.binding;
   const manager = new SessionManager({
     maxSessions: 20,
@@ -206,7 +206,6 @@ async function channel(o: {
     hookEngine: async () => o.engine ?? null,
     ...(b ? { hookBinding: typeof b === "function" ? b : () => b } : {}),
     ...(o.magmuxBinary ? { magmuxBinary: o.magmuxBinary } : {}),
-    onStateChange: (_id, ev) => void frames.push(ev),
   });
   const prompt = o.prompt === undefined ? "Reply with the first answer." : o.prompt;
   const id = await manager.createSession({
@@ -219,7 +218,10 @@ async function channel(o: {
     t,
     manager,
     id,
-    frames,
+    rowEvents: () =>
+      eventsOf({ manager, id } as Chan)
+        .filter((e) => e.type === "state")
+        .map((e) => sessionEventFor({ state: e.to as SlotState, activity: null }).event),
     info: () => manager.getSession(id),
     output: () => manager.getOutput(id).output,
     anomalies: () => manager.getDiagnostics(id).anomalies,
@@ -341,9 +343,9 @@ describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MES
           const diag = c.manager.getDiagnostics(c.id);
           expect(diag.phase).toBe("SETTLING");
           expect(diag.anomalies.some((a) => a.startsWith("illegal_transition"))).toBe(false);
-          expect(c.frames.map((f) => f.type)).not.toContain("waiting_for_input");
-          // the frame for RUNNING is "running", never a tool frame named "hook"
-          expect(c.frames.some((f) => f.type === "tool_executing")).toBe(false);
+          expect(c.rowEvents()).not.toContain("waiting_for_input");
+          // the row event for RUNNING with activity "hook" is "running", never a tool named "hook"
+          expect(sessionEventFor(info).event).toBe("running");
         } finally {
           await done(c);
         }
@@ -697,7 +699,7 @@ wait $child
           const end = await c.terminal();
           expect(end.state).toBe("COMPLETED");
           expect(c.anomalies()).toContain("hook_injection_dropped:send_not_accepted");
-          expect(c.frames.map((f) => f.type)).not.toContain("waiting_for_input");
+          expect(c.rowEvents()).not.toContain("waiting_for_input");
           expect(lineCount(c.output(), "ANS-ONE")).toBe(1);
           expect(ctl.dropped).toEqual([{ text: "HOOK-PING", reason: "send_not_accepted" }]);
         } finally {
@@ -839,7 +841,7 @@ wait $child
           const end = await c.terminal();
           expect(end.state).toBe("COMPLETED");
           // no wait opened between chain turns
-          expect(c.frames.map((f) => f.type)).not.toContain("waiting_for_input");
+          expect(c.rowEvents()).not.toContain("waiting_for_input");
           const waits = join(c.manager.getDiagnostics(c.id).sessionDir, "waits.jsonl");
           expect(existsSync(waits) ? readFileSync(waits, "utf8") : "").toBe("");
         } finally {
@@ -1015,7 +1017,7 @@ wait $child
             "MORE-3",
           ]);
           expect(c.anomalies()).toContain("hook_injection_dropped:capped");
-          expect(c.frames.map((f) => f.type)).not.toContain("waiting_for_input");
+          expect(c.rowEvents()).not.toContain("waiting_for_input");
         } finally {
           await done(c);
         }
@@ -1349,7 +1351,6 @@ wait $child
             .filter((e) => e.type === "anomaly")
             .map((e) => e.key);
           expect(keys).not.toContain("prompt_not_read");
-          expect(c.frames.some((f) => f.extraMeta?.prompt_not_read === "true")).toBe(false);
         } finally {
           await done(c);
         }

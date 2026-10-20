@@ -99,7 +99,7 @@ describe("UnavailableSink and sinkFromEnv", () => {
 
   it("uses the inbox the owner named, else none", () => {
     const path = inbox();
-    const child = { CLAUDISH_PANE_CHILD: "1", [HOOK_INBOX_ENV]: path };
+    const child = { CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: "/w", [HOOK_INBOX_ENV]: path };
     const sink = sinkFromEnv(child);
     expect(sink).toBeInstanceOf(InboxFileSink);
     expect((sink as InboxFileSink).path).toBe(path);
