@@ -17,7 +17,7 @@ Two separate Gemini flows, deliberately split:
 
 The Antigravity half of the old `auth/gemini-oauth.ts` was extracted to **`auth/antigravity-user.ts`** (project/tier resolution, `retrieveUserQuota`, live discovery of the account's dynamic models catalog) before that file was deleted — Antigravity depends on it, so deleting wholesale would have taken `ag@` down too. All three calls now share ONE identity (the Antigravity User-Agent). `retrieveUserQuota` used to keep the gemini-cli UA it was written with; measured 2026-08-18 on a real Ultra account, same token and project, only the UA varying — the gemini-cli UA returned 4 quota buckets (the membership of the retired free Code Assist plan) and the Antigravity UA returned 24. This backend gates its ANSWER on request identity, not just the tier label it displays.
 
-**Why not just spoof the identity:** the backend has two independent gates. `loadCodeAssist` gates the visible *tier* on request identity (`User-Agent` + `metadata.ideType: ANTIGRAVITY`), but `streamGenerateContent` gates *generation* on the OAuth **client that minted the token** — headers can't fake it (403 PERMISSION_DENIED). So claudish does not spoof; it **reuses the user's own Antigravity token**.
+**Why not just spoof the identity:** the backend has two independent gates. `loadCodeAssist` gates the visible *tier* on request identity (`User-Agent` + `metadata.ideType: ANTIGRAVITY`), but `streamGenerateContent` gates *generation* on the OAuth **client that minted the token** — headers can't fake it (403 PERMISSION_DENIED). So claudish does not spoof; it **reuses the user's own Antigravity token**. A third gate sits on top of both: the client VERSION in the User-Agent decides which models exist at all — see [The client version gates discovery AND generation](#the-client-version-gates-discovery-and-generation-2026-10-14).
 
 ## THE HOST IS NOT `cloudcode-pa` (v7.66.0)
 
@@ -111,6 +111,40 @@ dropped a real model from the picker.
 
 Only `tab_*` needs a prefix rule; it appears in no list and carries no flag.
 
+## The client version gates discovery AND generation (2026-10-14)
+
+claudish sent `antigravity/cli/1.1.9` from a hard-coded literal while the
+installed `agy` was 1.3.5. Same token, project and host, only the version in the
+User-Agent varying:
+
+| UA version | `fetchAvailableModels` | `defaultAgentModelId` | `streamGenerateContent` `gemini-4-argon-low` |
+|---|---|---|---|
+| 1.1.9 | 23 ids; no `gemini-4*`, no `gemini-3.8-flash-{high,medium,low}` | `claude-opus-5-5-low` | **404** |
+| 1.3.5 | 29 ids; + `gemini-4-argon-{high,medium,low}`, + `gemini-3.8-flash-{high,medium,low}` | `gemini-4-argon-medium` | **200** |
+
+So the version is not cosmetic: a pinned one hides every model released after
+the pin, from the picker AND from generation, with nothing in the response to say
+so. The earlier claim that the UA "does not gate generation" was true only for
+models old enough to predate every version claudish ever sent.
+
+**The version is read from agy, once per auth session.** agy auto-updates, and
+claudish already depends on it for the token, so the installed agy's version is
+the one value that cannot drift. `auth/antigravity-token.ts` runs `agy --version`
+(prints `1.3.5`, 0.04 s) whenever `getValidAntigravityAccessToken` or
+`forceRefreshAntigravityToken` hands out an access token that differs from the
+one the last read was made for — a new token means agy just ran, which is when it
+may have updated. Same token → the cached value, at the cost of a string compare.
+The value lives in `auth/antigravity-client-version.ts`; `buildAntigravityUserAgent`
+reads it.
+
+- **A failed read keeps the previous good version.** It never demotes a session to
+  the floor, and it is not retried until the token changes.
+- **`1.1.9` remains only as a floor** for when agy cannot be read at all (not
+  installed, broken). It is not a target; nothing ever pins to it again.
+- **The served-models cache is keyed to the version.** `getServedAntigravityModels`
+  drops a cache fetched under another version, because that answer is a different
+  dynamic models catalog, not a stale copy of the same one.
+
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
 Antigravity rows set `ignoreCatalogReleaseDate`. `compareByReleaseDateDesc` sorts
@@ -126,6 +160,9 @@ The catalog dates *base* models; Antigravity serves *variants* it does not list.
 Six dated of nineteen was worse than zero: a partial signal ranked confidently on
 incomplete evidence. Suppressed, the whole dynamic models catalog falls through to version-parts
 and orders 3.7 > 3.6 > 3.5 > 3.1 > 3 > 2.5.
+
+That rule now governs only the fallback list. When the backend sends
+`agentModelSorts`, the picker shows agy's own order instead (previous section).
 
 
 **Token lifecycle** (`auth/antigravity-token.ts`, macOS):
