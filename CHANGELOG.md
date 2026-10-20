@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.2.1] - 2026-10-20
+
+### Bug Fixes
+
+- compare session paths to cwd by realpath *(team)* ([`6af3a69`](https://github.com/MadAppGang/claudish/commit/6af3a690588861f9bd5da2b66b76c91af98161f0))
+- keep the MCP server alive when ps cannot be spawned *(pane)* ([`df391d3`](https://github.com/MadAppGang/claudish/commit/df391d32005110818a38b72c47e42fd8fc4b8da6))
+
+### Documentation
+
+- update CHANGELOG.md for v12.2.0([`55c1906`](https://github.com/MadAppGang/claudish/commit/55c19061a504686e168b715cb3604e785a09222b))
+
+### Other Changes
+
+- v12.2.1 *(release)* ([`6278a3e`](https://github.com/MadAppGang/claudish/commit/6278a3eb696c40c267d7dff98af5e25fbad5818b))
+
 ## [12.2.0] - 2026-10-20
 
 ### Bug Fixes
