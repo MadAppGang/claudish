@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.0.1] - 2026-10-20
+
+### Bug Fixes
+
+- copy tool, reasoning and vision support into recommended rows *(catalog)* ([`14e7e60`](https://github.com/MadAppGang/claudish/commit/14e7e606f7c2b1331dcd8741047ee989a541eefe))
+
+### Documentation
+
+- document supportsTools, supportsReasoning and supportsVision *(catalog)* ([`ad0c82e`](https://github.com/MadAppGang/claudish/commit/ad0c82e62f9e03bba91ee6cd60977b27363162f9))
+- stamp the playbook verified at the v12.0.0 merge *(release)* ([`dfd23e6`](https://github.com/MadAppGang/claudish/commit/dfd23e6203566381138fc1946dc7a43ad7b90338))
+- update CHANGELOG.md for v12.0.0([`f1d641a`](https://github.com/MadAppGang/claudish/commit/f1d641ae0ced799f0dabae3803e399d7719adf9a))
+
+### Other Changes
+
+- v12.0.1 *(release)* ([`c6115ea`](https://github.com/MadAppGang/claudish/commit/c6115eacdadbfa181bb238fe0bad9686d61bb72b))
+
 ## [12.0.0] - 2026-10-20
 
 ### ⚠ BREAKING CHANGES
