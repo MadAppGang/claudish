@@ -43,6 +43,7 @@ import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
+  MIN_MAGMUX_VERSION,
   SLOT_STATES,
   type SlotState,
   TERMINAL_STATES,
@@ -457,7 +458,7 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "the child never read all of its task file — check that its agent or tool flags allow " +
     "Read and that the model can call tools; `what` says which lines were read",
   child_exited: "read the evidence screen, then retry or drop the model",
-  pane_lost: "magmux died — check `magmux --version` ≥ 0.14.0 and retry",
+  pane_lost: `magmux died — check \`magmux --version\` ≥ ${MIN_MAGMUX_VERSION} and retry`,
   blocked:
     "the child asked a question team cannot answer — make the prompt self-contained or use " +
     "create_session",
@@ -1863,7 +1864,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "it in its own headless magmux pane. Returns at once with state STARTING; nothing is " +
       "pushed while it runs: poll list_sessions (about once every 10 s) for its state, then " +
       "call get_output once it is COMPLETED. With a prompt it is one-shot (it ends when that turn " +
-      "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.14.0 " +
+      `settles); without one it is interactive and waits for send_input. Needs magmux >= ${MIN_MAGMUX_VERSION} ` +
       "(darwin and linux).",
     inputSchema: {
       type: "object",
