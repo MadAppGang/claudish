@@ -726,7 +726,7 @@ still fit one row. MTL-140 lowered it to 40 on real Claude Code 2.1.304 screens 
   flattened screen (`nameBootScreen`), which is the path `bootBlock` takes when the gate has no
   boot kind. Not captured live at 40 columns: the capturing account trusts `/`, so no trust
   prompt appears.
-- 24 rows still hold the tallest captured dialog (Bash permission, rows 5–22).
+- 24 rows still hold the tallest captured dialog (Bash permission, rows 6–23 of 24).
 
 The ceiling is magmux's own (`mux/size.go`), so a clamped size can never
 earn its `too_small`/`too_large`: the `resize` op refuses a side over 10 000, but the launch size it

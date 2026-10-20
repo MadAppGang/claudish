@@ -21,7 +21,7 @@
  * (`size-40x24-*`) still give magmux's gate `dialog:permission` and `dialog:question`, a
  * ready empty box and a located box; the classifier matches every marker against the
  * dialog region flattened into one string, so a marker wrapped across rows still names its
- * dialog. 24 rows still hold the tallest captured dialog (Bash permission, rows 5–22).
+ * dialog. 24 rows still hold the tallest captured dialog (Bash permission, rows 6–23).
  * A smaller screen would turn a dialog into "no input box, no dialog": an honest unknown
  * that never settles.
  */
