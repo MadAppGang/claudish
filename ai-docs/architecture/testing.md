@@ -236,9 +236,8 @@ and the fake dumps the argv, env, cwd and `--settings` it was given.
 **The environment is built by ALLOWLIST** (`makePaneTestEnv()`, and `serverEnv(layout)` for a
 real MCP server), never by deleting from `process.env`: no `ANTHROPIC_*` or provider key survives
 because none is listed, and `HOME`, `CLAUDE_CONFIG_DIR`, `ZDOTDIR` and `XDG_CONFIG_HOME` all point
-into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout:
-short, so socket paths stay under magmux's 100-byte limit, and never the user's
-`/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
+into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout,
+never the user's `/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
 sessions.
 
 **Drop `CLAUDISH_PANE_CHILD` from any env spread from `process.env`.** The flag reaches everything a

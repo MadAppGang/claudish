@@ -70,7 +70,7 @@ describe("magmux version probe", () => {
     "B1: six overlapping callers share exactly one probe",
     async () => {
       const fake = fakeMagmux(`sleep 0.3
-printf '%s\\n' 'magmux 0.17.0 (test-build)'`);
+printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION} (test-build)'`);
 
       const results = await Promise.all(
         Array.from({ length: 6 }, () => assertMagmuxAvailable(fake.binary))
@@ -78,7 +78,7 @@ printf '%s\\n' 'magmux 0.17.0 (test-build)'`);
 
       expect(results).toHaveLength(6);
       for (const result of results) {
-        expect(result).toEqual({ binary: fake.binary, version: "0.17.0" });
+        expect(result).toEqual({ binary: fake.binary, version: MIN_MAGMUX_VERSION });
       }
       expect(fake.runs()).toBe(1);
     },
@@ -88,11 +88,11 @@ printf '%s\\n' 'magmux 0.17.0 (test-build)'`);
   test(
     "B2: accepts a version printed only on stderr",
     async () => {
-      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.17.0' >&2");
+      const fake = fakeMagmux(`printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}' >&2`);
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual({
         binary: fake.binary,
-        version: "0.17.0",
+        version: MIN_MAGMUX_VERSION,
       });
       expect(fake.runs()).toBe(1);
     },
@@ -105,11 +105,11 @@ printf '%s\\n' 'magmux 0.17.0 (test-build)'`);
       const fake = fakeMagmux(`if [ "$(wc -l < "$counter")" -eq 1 ]; then
   exit 0
 fi
-printf '%s\\n' 'magmux 0.17.0'`);
+printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}'`);
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual({
         binary: fake.binary,
-        version: "0.17.0",
+        version: MIN_MAGMUX_VERSION,
       });
       expect(fake.runs()).toBe(2);
     },
@@ -122,7 +122,7 @@ printf '%s\\n' 'magmux 0.17.0'`);
       const fake = fakeMagmux(`printf '%s\\n' 'magmux development build'
 printf '%s\\n' 'version metadata unavailable' >&2`);
 
-      await expectUnavailable(fake.binary, "is version unknown", ">= 0.17.0");
+      await expectUnavailable(fake.binary, "is version unknown", `>= ${MIN_MAGMUX_VERSION}`);
       expect(fake.runs()).toBe(2);
     },
     testTimeout
@@ -133,8 +133,7 @@ printf '%s\\n' 'version metadata unavailable' >&2`);
     async () => {
       const fake = fakeMagmux("printf '%s\\n' 'magmux 0.16.0'");
 
-      expect(MIN_MAGMUX_VERSION).toBe("0.17.0");
-      await expectUnavailable(fake.binary, "is version 0.16.0", ">= 0.17.0");
+      await expectUnavailable(fake.binary, "is version 0.16.0", `>= ${MIN_MAGMUX_VERSION}`);
       expect(fake.runs()).toBe(1);
     },
     testTimeout
@@ -146,7 +145,7 @@ printf '%s\\n' 'version metadata unavailable' >&2`);
       const fake = fakeMagmux(`if [ "$(wc -l < "$counter")" -eq 1 ]; then
   printf '%s\\n' 'magmux 0.16.0'
 else
-  printf '%s\\n' 'magmux 0.17.0'
+  printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}'
 fi`);
 
       await expectUnavailable(fake.binary, "is version 0.16.0");
@@ -154,7 +153,7 @@ fi`);
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual({
         binary: fake.binary,
-        version: "0.17.0",
+        version: MIN_MAGMUX_VERSION,
       });
       expect(fake.runs()).toBe(2);
     },
@@ -164,8 +163,8 @@ fi`);
   test(
     "B7: a successful probe is cached for subsequent calls",
     async () => {
-      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.17.0'");
-      const expected = { binary: fake.binary, version: "0.17.0" };
+      const fake = fakeMagmux(`printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}'`);
+      const expected = { binary: fake.binary, version: MIN_MAGMUX_VERSION };
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual(expected);
       expect(fake.runs()).toBe(1);
@@ -193,7 +192,7 @@ exit 7`);
   test(
     "B8: a non-executable binary rejects with a version-command failure",
     async () => {
-      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.17.0'");
+      const fake = fakeMagmux(`printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}'`);
       chmodSync(fake.binary, 0o644);
 
       await expectUnavailable(fake.binary, "--version failed");
@@ -205,11 +204,11 @@ exit 7`);
   test(
     "B9: accepts a release candidate and returns only its version triple",
     async () => {
-      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.17.0-rc1'");
+      const fake = fakeMagmux(`printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}-rc1'`);
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual({
         binary: fake.binary,
-        version: "0.17.0",
+        version: MIN_MAGMUX_VERSION,
       });
       expect(fake.runs()).toBe(1);
     },

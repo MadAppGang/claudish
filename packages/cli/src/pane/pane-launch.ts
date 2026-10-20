@@ -37,7 +37,7 @@ import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { isPaneShellManagedKey } from "./child-env.js";
 import { DEFAULT_PANE_COLS, DEFAULT_PANE_ROWS } from "./pane-size.js";
-import { type WatcherArgs, isValidPaneId, sockPathOf, watcherArgv } from "./process-identity.js";
+import { type WatcherArgs, isValidPaneId, watcherArgv } from "./process-identity.js";
 
 /* ───────────────────────────── socket root ───────────────────────────── */
 
@@ -112,16 +112,6 @@ export function mintPaneId(kind: "t" | "s", label: string): string {
   const id = `${head}${clean}${tail}`;
   if (!isValidPaneId(id)) throw new Error(`minted an invalid pane id: ${id}`);
   return id;
-}
-
-/** Unix socket paths must stay under 100 bytes, or magmux silently binds elsewhere. */
-export function sockPathFor(root: string, id: string): string {
-  const p = sockPathOf(root, id);
-  if (Buffer.byteLength(p) >= 100)
-    throw new PaneRootError(
-      `pane socket path ${p} is ${Buffer.byteLength(p)} bytes; it must be < 100`
-    );
-  return p;
 }
 
 /* ───────────────────────────── environment ───────────────────────────── */
@@ -490,11 +480,12 @@ export const KNOWN_CLAUDISH_FLAGS: readonly string[] = Object.keys(CLAUDISH_FLAG
 /* ───────────────────────────── magmux binary ───────────────────────────── */
 
 /**
- * 0.17.0: the Claude Code input gate with a declared transcript (`--session-id`,
- * `--transcript`, and `list`'s `bound`/`sessionId`/`transcriptPath`). A pre-release such as
- * `0.17.0-rc1` passes: `versionAtLeast` compares the numeric triple only.
+ * The first magmux that binds and dials its socket at any path depth (0.18.0). It also carries
+ * what 0.17.0 introduced: the Claude Code input gate with a declared transcript
+ * (`--session-id`, `--transcript`, and `list`'s `bound`/`sessionId`/`transcriptPath`). A
+ * pre-release such as `0.18.0-rc1` passes: `versionAtLeast` compares the numeric triple only.
  */
-export const MIN_MAGMUX_VERSION = "0.17.0";
+export const MIN_MAGMUX_VERSION = "0.18.0";
 
 export class MagmuxUnavailableError extends Error {
   readonly code = "magmux_unavailable";
@@ -520,7 +511,7 @@ const magmuxCache = new Map<string, MagmuxBinary>();
 const magmuxProbes = new Map<string, Promise<MagmuxBinary>>();
 const execFileAsync = promisify(execFile);
 
-/** The magmux binary and its version (≥ MIN_MAGMUX_VERSION), cached per process. Never a `-p` fallback. */
+/** The magmux binary and its version (≥ `MIN_MAGMUX_VERSION`), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(binary?: string): Promise<MagmuxBinary> {
   const key = binary ?? "";
   const cached = magmuxCache.get(key);
@@ -553,7 +544,7 @@ async function probeMagmux(binary?: string): Promise<MagmuxBinary> {
   if (!version) version = await readMagmuxVersion(found);
   if (!version || !versionAtLeast(version, MIN_MAGMUX_VERSION))
     throw new MagmuxUnavailableError(
-      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION} (the Claude Code input gate bound to a named transcript); upgrade: brew upgrade MadAppGang/tap/magmux`
+      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION} (a socket at any path depth, and the Claude Code input gate bound to a named transcript); upgrade: brew upgrade MadAppGang/tap/magmux`
     );
   return { binary: found, version };
 }
@@ -658,8 +649,12 @@ export function spawnPaneWatcher(args: WatcherArgs): ChildProcess {
   return proc;
 }
 
-/** Fatal magmux stderr: it ignores an invalid id or socket dir and binds somewhere else. */
-export const FATAL_MAGMUX_STDERR = /ignoring --id|ignoring --sock-dir|magmux: socket/;
+/**
+ * Fatal magmux stderr: an invalid `--id` (magmux ignores it and binds under its pid), an
+ * unusable `--sock-dir` / `MAGMUX_SOCK_DIR` (magmux exits 1), or a failed socket bind.
+ */
+export const FATAL_MAGMUX_STDERR =
+  /ignoring --id|magmux: (?:--sock-dir|MAGMUX_SOCK_DIR) |magmux: socket/;
 
 export interface MagmuxSpawnInput {
   binary: string;

@@ -121,7 +121,8 @@ discovery can pick the wrong one (read in source, `controller_claude.go:532-645`
 
 A pane locked onto another session can report `busy dialog:<kind>` for a dialog that is not on its
 own screen, and can see "a turn started" in the other session and refuse its retype (a false "may
-have been submitted"). So claudish requires magmux 0.17.0, which takes `--session-id` and
+have been submitted"). So claudish requires the binding magmux 0.17.0 introduced (the floor is
+now 0.18.0, for deep socket paths; see "magmux socket traps"): it takes `--session-id` and
 `--transcript` bound to the `-e` that follows, claims exactly that file (also before it exists),
 never falls back to discovery, and echoes the binding per pane in `list`.
 
@@ -835,12 +836,14 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
 ## magmux socket traps
 
 - **Always pass `--sock-dir`**, and strip `MAGMUX_*`: an inherited `MAGMUX_SOCK_DIR` moves the
-  socket (measured). An invalid `--id` or `--sock-dir` is IGNORED, with exit 0 and a stderr line, and
-  magmux binds somewhere else; `ignoring --id`, `ignoring --sock-dir` and `magmux: socket` on stderr
-  are therefore fatal (`pane_lost`). Ids are validated client-side (`[A-Za-z0-9_-]{1,64}`, not all
-  digits — an all-digit id collides with a pid socket).
-- **A socket path must be under 100 bytes**, or the bind fails; `sockPathFor` asserts it, which is why
-  test roots are `/tmp/cpt-<8 hex>`.
+  socket (measured). An invalid `--id` is IGNORED, with a stderr line, and magmux binds under its pid;
+  an unusable `--sock-dir` / `MAGMUX_SOCK_DIR` exits 1 with `magmux: --sock-dir "<dir>": <reason>`
+  (or `magmux: MAGMUX_SOCK_DIR "<dir>": …`), and a failed bind prints `magmux: socket <path>: <err>`.
+  All three on stderr are fatal (`FATAL_MAGMUX_STDERR`, `pane_lost`). Ids are validated client-side
+  (`[A-Za-z0-9_-]{1,64}`, not all digits — an all-digit id collides with a pid socket).
+- **A socket path may be any length.** magmux ≥ 0.18.0 binds and dials a socket deeper than
+  `sun_path` (104 bytes on darwin, 108 on linux), so `CLAUDISH_PANE_ROOT` can sit anywhere, such as
+  inside a sandbox's home. `sockPathOf` (`process-identity.ts`) is the one place the path is built.
 - **`--id` sockets are never reaped after a SIGKILL** (seven stale ones were found during research).
   claudish unlinks its own sockets, and the sweep cleans recordless ones.
 - **EOF is not death.** magmux keeps its panes when a client leaves, and it closes slow subscribers
@@ -855,14 +858,15 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   pane's life. `capture` and `capture_session` are memory reads. `aboveBoxChangedAt` moves only when a
   row ABOVE the input box (located by the cursor) changes, so the status line ticking under the box never holds a quiet window
   open. 4 fps (research recommended 2–4) halves boot, witness and settle latency at no idle cost.
-- `assertMagmuxAvailable` requires `magmux --version` ≥ 0.17.0 (cached per binary; the floor is the
-  transcript binding, not the gate alone: 0.16.0 had the gate but bound it by discovery), and every
-  connect re-checks `capabilities` (`protocol: 1`, version ≥ 0.17.0) and then the binding (`list`).
-  An older magmux is refused with `magmux_unavailable: <path> is version <v>; panes need >= 0.17.0
-  (…); upgrade: brew upgrade MadAppGang/tap/magmux`; claudish never falls back to the box-reading
-  path or to print mode: one validator per fact. The release job bundles the magmux pinned in
-  `.github/magmux.env` (v0.17.0), test.yml runs the pane suites against that pin, and release.yml
-  checks the pin against `MIN_MAGMUX_VERSION`.
+- `assertMagmuxAvailable` requires `magmux --version` ≥ `MIN_MAGMUX_VERSION` (0.18.0, the first
+  release that binds and dials a deep socket; cached per binary). It is also above the transcript
+  binding, which needs 0.17.0, not the gate alone: 0.16.0 had the gate but bound it by discovery.
+  Every connect re-checks `capabilities` (`protocol: 1`, version ≥ `MIN_MAGMUX_VERSION`) and then
+  the binding (`list`). An older magmux is refused with `magmux_unavailable: <path> is version <v>;
+  panes need >= 0.18.0 (…); upgrade: brew upgrade MadAppGang/tap/magmux`; claudish never falls back
+  to the box-reading path or to print mode: one validator per fact. The release job bundles the
+  magmux pinned in `.github/magmux.env` (v0.18.0), test.yml runs the pane suites against that pin,
+  and release.yml checks the pin against `MIN_MAGMUX_VERSION`.
 - **Latent, outside this driver:** `team-grid.ts` (CLI `--grid`) does not pass `--sock-dir`, so an
   inherited `MAGMUX_SOCK_DIR` would move its socket (F7).
 

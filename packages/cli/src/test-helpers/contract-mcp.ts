@@ -37,8 +37,8 @@ export const MAGMUX_AVAILABLE = findMagmuxBinaryOrNull() !== null;
 export const NO_MAGMUX_MESSAGE = "magmux not installed — not checked";
 
 /**
- * A short pane root per layout (`/tmp/cpt-<8 hex>`, so socket paths stay < 100 bytes),
- * passed to the server as CLAUDISH_PANE_ROOT: its sweep, its pane limit and the
+ * A pane root per layout (`/tmp/cpt-<8 hex>`), passed to the server as
+ * CLAUDISH_PANE_ROOT: its sweep, its pane limit and the
  * no-orphan check stay inside the test (§20.4).
  */
 const paneRoots = new Map<string, string>();
